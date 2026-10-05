@@ -3,7 +3,8 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection } from './image-frames';
-import { encodeDecodedAnimation, zipPageImages } from './image-frame-output';
+import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
+import { assertAnimationBudget } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -2506,20 +2507,26 @@ export async function convertImage(
         ...frameFields,
       };
     }
-    if (selection.zipPages) {
-      const zipped = await zipPageImages(
-        selection.zipPages,
-        (page) =>
-          convertImage(
-            inputBuffer,
-            targetFormat,
-            { ...options, page, pages: undefined, multiPageOutput: undefined },
-            originalFilename,
-            sourceFormat
-          ),
-        baseName,
-        outputExtensionOf(fmt)
+    const convertPage = (page: number) =>
+      convertImage(
+        inputBuffer,
+        targetFormat,
+        { ...options, page, pages: undefined, multiPageOutput: undefined },
+        originalFilename,
+        sourceFormat
       );
+    if (selection.tiffPages) {
+      const joined = await joinPageTiffs(selection.tiffPages, convertPage);
+      return {
+        buffer: joined,
+        mimeType: 'image/tiff',
+        filename: `${baseName}.${outputExtensionOf(fmt)}`,
+        size: joined.length,
+        ...frameFields,
+      };
+    }
+    if (selection.zipPages) {
+      const zipped = await zipPageImages(selection.zipPages, convertPage, baseName, outputExtensionOf(fmt));
       return {
         buffer: zipped,
         mimeType: 'application/zip',
@@ -2643,6 +2650,11 @@ export async function convertImage(
   // Resize options
   const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
   if (resizeOptions) {
+    const canvas = frameSelection?.keepsAnimation ? frameSelection.canvas : undefined;
+    if (canvas) {
+      const resized = resizedDimensions(canvas.width, canvas.height, resizeOptions);
+      assertAnimationBudget(resized.width, resized.height, canvas.frames, 'The resized animation');
+    }
     pipeline = pipeline.resize(resizeOptions);
   }
 

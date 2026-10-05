@@ -1,4 +1,5 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
+import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 
 import { PIPELINE_OPERATIONS } from './enums';
 
@@ -79,11 +80,13 @@ export const ConversionOptionsSchema = {
     width: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image width in pixels.',
     },
     height: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image height in pixels.',
     },
     dimensions: {

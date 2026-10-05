@@ -20,6 +20,7 @@ import {
 } from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
 import { validateTierPageLimit } from '@/lib/conversions';
+import { tierMaxPages } from '@/lib/conversions/page-range';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
@@ -264,7 +265,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Normalize page / pages option and validate tier page limits
+    const maxPages = tierMaxPages(auth.user.tier);
     if (options) {
+      options.maxPages = maxPages;
       if (!options.pages && options.page) {
         options.pages = String(options.page);
       }
@@ -281,6 +284,7 @@ export async function POST(req: NextRequest) {
       let pageRangeError: string | null = null;
       for (const t of tasks) {
         if (t.options) {
+          t.options.maxPages = maxPages;
           if (!t.options.pages && t.options.page) {
             t.options.pages = String(t.options.page);
           }

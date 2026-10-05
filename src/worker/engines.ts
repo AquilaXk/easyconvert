@@ -29,7 +29,7 @@ import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges, pageEntryName, PageInterval } from '../lib/conversions/page-range';
+import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -984,19 +984,13 @@ async function convertPdfToTextWithPoppler(
 }
 
 function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
-  let requestedPages: number[];
-  if (options.pages) {
-    requestedPages = parsePageRanges(options.pages, pageCount);
-  } else if (typeof options.page === 'number') {
-    if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
-      throw new InvalidPageRangeError(
-        `Page number ${options.page} is out of bounds (1-${pageCount})`
-      );
-    }
-    requestedPages = [options.page];
-  } else {
-    requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-  }
+  const requestedPages =
+    resolvePageSelection(
+      options.page,
+      options.pages,
+      pageCount,
+      (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)
+    ) ?? Array.from({ length: pageCount }, (_, i) => i + 1);
 
   if (requestedPages.length === 0) {
     throw new InvalidPageRangeError('No pages selected for rendering');

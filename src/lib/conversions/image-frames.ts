@@ -1,8 +1,10 @@
 import sharp from 'sharp';
 import { ConversionFailedError, InvalidPageRangeError } from '../types';
-import { decodeApngFrames, parseApng, type ApngInfo } from './image-apng';
-import type { AnimationTiming, RawFrame } from './image-animation';
-import { parsePageRanges } from './page-range';
+import { ApngCompositor, parseApng, type ApngAnimation } from './image-apng';
+import type { AnimationMetadata, FrameSource, RawFrame } from './image-animation';
+import { assertAggregatePagePixels, assertAnimationBudget, RGBA_BYTES_PER_PIXEL } from './image-limits';
+import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
+import { resolvePageSelection, TIER_MAX_PAGES } from './page-range';
 
 /**
  * Frame and page selection for multi-frame image sources.
@@ -10,13 +12,16 @@ import { parsePageRanges } from './page-range';
  * Documented defaults (reported to callers as `sourceFrameCount` and `frameUsed`):
  *  - Animated sources (GIF, WebP, APNG):
  *      animated target (gif, webp)  -> every frame, its delay and the loop count are kept;
- *      any still target             -> frame 1; `page` selects another frame.
+ *      any still target             -> frame 1 (for an APNG whose default image is not part of the
+ *                                      animation, that default image); `page` selects another frame.
  *  - Multi-page document sources (TIFF, HEIF image sequences):
- *      tiff target                  -> every page is kept in one multi-page TIFF;
+ *      tiff target                  -> one multi-page TIFF with every page (or the selected pages);
  *      any other target             -> one image per page in a ZIP (`<name>-p001.<ext>`, the naming the
- *                                      PDF page renderer uses); `page`/`pages` select pages, a single
- *                                      selected page is returned as a plain image.
- *  - `page` outside 1..N throws InvalidPageRangeError.
+ *                                      PDF page renderer uses); a single selected page is a plain image.
+ *  - `page` and `pages` select pages; when both are given they must agree. `multiPageOutput: 'first'`
+ *    reduces any selection to its first page before a keep-everything default applies.
+ *  - A page outside 1..N throws InvalidPageRangeError; a document source with more pages than the tier
+ *    allows (`maxPages`) or more pixels than the aggregate budget is refused.
  */
 
 /** Targets whose container can hold an animation. */
@@ -30,124 +35,66 @@ const DOCUMENT_SOURCE_FORMATS: ReadonlySet<string> = new Set(['tiff', 'heif']);
 const MULTI_PAGE_TIFF_TARGET = 'tiff';
 const FIRST_FRAME = 1;
 const SINGLE_FRAME = 1;
-const EXIF_ORIENTATION_NORMAL = 1;
 const PLAY_ONCE = 1;
-const ALL_PAGES = -1;
+const FIRST_QUARTER_TURN_ORIENTATION = 5;
+
+/** Pages a tier may convert when the caller does not name one (the free tier's limit). */
+const DEFAULT_MAX_PAGES = TIER_MAX_PAGES.free;
 
 /** Selection-relevant options. */
 export interface FrameOptions {
-  page?: number | string;
-  pages?: string;
+  page?: number | string | null;
+  pages?: string | null;
   multiPageOutput?: 'zip' | 'first';
+  stripMetadata?: boolean;
+  /** Most pages one request may convert; set by the API from the caller's tier. */
+  maxPages?: number;
 }
 
-/** An animation whose frames are decoded one by one so the caller can transform them before encoding. */
-export interface DecodedAnimation {
-  frameCount: number;
-  timing: AnimationTiming;
-  /** Decodes frame `index` (0-based) as RGBA, with EXIF orientation applied where the source has one. */
-  loadFrame(index: number): Promise<RawFrame>;
+/** An animation whose frames are decoded and composed one by one, in order. */
+export interface DecodedAnimation extends FrameSource {
+  metadata: AnimationMetadata;
 }
 
 export interface FrameSelection {
-  /** What sharp decodes: the source itself, or one APNG frame as raw RGBA. */
+  /** What sharp decodes: the source itself, or one composed APNG frame as raw RGBA. */
   source: Buffer;
   input: sharp.SharpOptions;
   /** sharp's own animated pipeline keeps every frame (gif/webp source to gif/webp target). */
   keepsAnimation: boolean;
   /** Frames the caller decodes and assembles itself (oriented animations, APNG). */
   animation?: DecodedAnimation;
-  /** Pages to convert one by one and package as a ZIP. */
+  /** Pages to convert one by one and package as a ZIP (or as one PDF). */
   zipPages?: number[];
+  /** Pages to convert one by one and merge into one multi-page TIFF. */
+  tiffPages?: number[];
+  /** Frames and size of the animation that is kept, for output budgets. */
+  canvas?: { width: number; height: number; frames: number };
   sourceFrameCount?: number;
   frameUsed?: number;
 }
 
-function outOfRange(page: number | string, frames: number): InvalidPageRangeError {
+function frameOutOfRange(page: number | string, frames: number): InvalidPageRangeError {
   return new InvalidPageRangeError(`Frame ${String(page)} is out of range: the image has ${frames} frames (1-${frames})`);
 }
 
-function parseSinglePage(page: number | string, frames: number): number {
-  const requested = Number(page);
-  if (!Number.isInteger(requested) || requested < 1 || requested > frames) throw outOfRange(page, frames);
+/**
+ * Pages the request asks for, or undefined when it asks for none. `page` and `pages` must agree when both
+ * are present; `multiPageOutput: 'first'` keeps only the first selected page (page 1 without a selection).
+ */
+export function resolveRequestedPages(options: FrameOptions, count: number): number[] | undefined {
+  const requested = resolvePageSelection(options.page, options.pages, count, frameOutOfRange);
+  if (options.multiPageOutput === 'first') return [requested?.[0] ?? FIRST_FRAME];
   return requested;
-}
-
-/** Pages the request asks for (`page`, else `pages`), or undefined when it asks for none. */
-function requestedPages(options: FrameOptions, frames: number): number[] | undefined {
-  if (options.page !== undefined) return [parseSinglePage(options.page, frames)];
-  if (options.pages !== undefined) return parsePageRanges(options.pages, frames);
-  return undefined;
 }
 
 function singleSource(
   source: Buffer,
   input: sharp.SharpOptions,
   sourceFrameCount: number,
-  frameUsed: number
+  frameUsed: number | undefined
 ): FrameSelection {
   return { source, input, keepsAnimation: false, sourceFrameCount, frameUsed };
-}
-
-function timingOf(meta: sharp.Metadata, frames: number): AnimationTiming {
-  const delaysMs = meta.delay ?? [];
-  if (delaysMs.length !== frames) {
-    throw new ConversionFailedError(`The image reports ${delaysMs.length} frame delays for ${frames} frames`);
-  }
-  return { delaysMs, loop: meta.loop ?? PLAY_ONCE };
-}
-
-/** Animation of a GIF or WebP whose frames are decoded page by page (used when sharp cannot orient them in bulk). */
-function decodedSharpAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number): DecodedAnimation {
-  return {
-    frameCount: frames,
-    timing: timingOf(meta, frames),
-    async loadFrame(index) {
-      const { data, info } = await sharp(buffer, { page: index })
-        .rotate()
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      return { data, width: info.width, height: info.height };
-    },
-  };
-}
-
-function decodedApngAnimation(buffer: Buffer, apng: ApngInfo): DecodedAnimation {
-  let decoded: Promise<RawFrame[]> | undefined;
-  return {
-    frameCount: apng.frameCount,
-    timing: { delaysMs: apng.delaysMs, loop: apng.plays },
-    async loadFrame(index) {
-      decoded ??= decodeApngFrames(buffer, apng);
-      return (await decoded)[index];
-    },
-  };
-}
-
-async function selectApngFrames(
-  buffer: Buffer,
-  apng: ApngInfo,
-  targetFormat: string,
-  options: FrameOptions
-): Promise<FrameSelection> {
-  const frames = apng.frameCount;
-  const requested = requestedPages(options, frames);
-  if (requested === undefined && ANIMATED_IMAGE_TARGETS.has(targetFormat)) {
-    return {
-      source: buffer,
-      input: {},
-      keepsAnimation: false,
-          animation: decodedApngAnimation(buffer, apng),
-      sourceFrameCount: frames,
-    };
-  }
-  const page = singleFrameOf(requested, frames);
-  if (page === FIRST_FRAME && apng.defaultImageIsFirstFrame) {
-    return singleSource(buffer, {}, frames, page);
-  }
-  const frame = await decodedApngAnimation(buffer, apng).loadFrame(page - 1);
-  return singleSource(frame.data, { raw: { width: frame.width, height: frame.height, channels: 4 } }, frames, page);
 }
 
 /** The one frame an animated source converts to a still image: the requested one, else frame 1. */
@@ -161,6 +108,104 @@ function singleFrameOf(requested: number[] | undefined, frames: number): number 
   return requested[0];
 }
 
+// ---- APNG ------------------------------------------------------------------------------------------------
+
+function apngAnimation(animation: ApngAnimation): DecodedAnimation {
+  const compositor = new ApngCompositor(animation);
+  return {
+    width: animation.width,
+    height: animation.height,
+    frameCount: animation.frameCount,
+    timing: { delaysMs: animation.delaysMs, loop: animation.plays },
+    metadata: {},
+    async frame(index): Promise<RawFrame> {
+      if (index !== compositor.framesDrawn) {
+        throw new ConversionFailedError(`Animated PNG frames are composed in order: frame ${index + 1} requested after ${compositor.framesDrawn}`);
+      }
+      await compositor.advance();
+      return { data: compositor.snapshot(), width: animation.width, height: animation.height };
+    },
+  };
+}
+
+async function selectApng(
+  buffer: Buffer,
+  animation: ApngAnimation,
+  targetFormat: string,
+  options: FrameOptions
+): Promise<FrameSelection> {
+  const frames = animation.frameCount;
+  const { width, height } = animation;
+  const requested = resolveRequestedPages(options, frames);
+  if (requested === undefined && ANIMATED_IMAGE_TARGETS.has(targetFormat)) {
+    assertAnimationBudget(width, height, frames, 'The animated PNG');
+    return {
+      source: buffer,
+      input: {},
+      keepsAnimation: false,
+      animation: apngAnimation(animation),
+      canvas: { width, height, frames },
+      sourceFrameCount: frames,
+    };
+  }
+  assertAnimationBudget(width, height, SINGLE_FRAME, 'The animated PNG canvas');
+  if (requested === undefined) {
+    // Frame 1 is the default image when an fcTL precedes it; otherwise the default image is not a frame.
+    return singleSource(buffer, {}, frames, animation.defaultIsFirstFrame ? FIRST_FRAME : undefined);
+  }
+  const page = singleFrameOf(requested, frames);
+  if (page === FIRST_FRAME && animation.defaultIsFirstFrame) return singleSource(buffer, {}, frames, page);
+  const composer = apngAnimation(animation);
+  let frame = await composer.frame(0);
+  for (let index = 1; index < page; index += 1) frame = await composer.frame(index);
+  return singleSource(frame.data, { raw: { width, height, channels: RGBA_BYTES_PER_PIXEL } }, frames, page);
+}
+
+// ---- GIF and WebP ----------------------------------------------------------------------------------------
+
+/**
+ * Animation of a GIF or WebP decoded once as sharp's stacked "toilet roll" image (which keeps libvips'
+ * pixel limit) and oriented frame by frame from the raw pixels. The size is checked against the decoded
+ * animation budget before anything is decoded.
+ */
+function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number, orientation: number, options: FrameOptions): DecodedAnimation {
+  const storedWidth = meta.width ?? 0;
+  const storedHeight = meta.height ?? 0;
+  const swaps = orientation >= FIRST_QUARTER_TURN_ORIENTATION;
+  const delaysMs = meta.delay ?? [];
+  if (delaysMs.length !== frames) {
+    throw new ConversionFailedError(`The image reports ${delaysMs.length} frame delays for ${frames} frames`);
+  }
+  assertAnimationBudget(storedWidth, storedHeight, frames, 'The oriented animation');
+  const frameBytes = storedWidth * storedHeight * RGBA_BYTES_PER_PIXEL;
+  let stack: Buffer | undefined;
+  const metadata: AnimationMetadata = {};
+  if (options.stripMetadata !== true) {
+    if (meta.icc) metadata.icc = meta.icc;
+    if (meta.exif) metadata.exif = withUprightOrientation(meta.exif);
+  }
+  return {
+    width: swaps ? storedHeight : storedWidth,
+    height: swaps ? storedWidth : storedHeight,
+    frameCount: frames,
+    timing: { delaysMs, loop: meta.loop ?? PLAY_ONCE },
+    metadata,
+    async frame(index): Promise<RawFrame> {
+      if (!stack) {
+        const decoded = await sharp(buffer, { animated: true }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        if (decoded.data.length !== frameBytes * frames) {
+          throw new ConversionFailedError(`The animation decoded to ${decoded.data.length} bytes, expected ${frames} frames of ${frameBytes} bytes`);
+        }
+        stack = decoded.data;
+      }
+      const slice = stack.subarray(index * frameBytes, (index + 1) * frameBytes);
+      const oriented = orientRgbaFrame({ data: slice, width: storedWidth, height: storedHeight }, orientation);
+      if (index === frames - 1) stack = undefined;
+      return oriented;
+    },
+  };
+}
+
 function selectAnimationFrames(
   buffer: Buffer,
   meta: sharp.Metadata,
@@ -168,61 +213,62 @@ function selectAnimationFrames(
   targetFormat: string,
   options: FrameOptions
 ): FrameSelection {
-  const requested = requestedPages(options, frames);
+  const requested = resolveRequestedPages(options, frames);
   if (requested === undefined && ANIMATED_IMAGE_TARGETS.has(targetFormat)) {
-    const needsOrientation = meta.orientation !== undefined && meta.orientation !== EXIF_ORIENTATION_NORMAL;
-    if (needsOrientation) {
+    const orientation = meta.orientation ?? EXIF_ORIENTATION_NORMAL;
+    const width = meta.width ?? 0;
+    const height = meta.height ?? 0;
+    if (orientation !== EXIF_ORIENTATION_NORMAL) {
+      const animation = orientedAnimation(buffer, meta, frames, orientation, options);
       return {
         source: buffer,
         input: {},
         keepsAnimation: false,
-              animation: decodedSharpAnimation(buffer, meta, frames),
+        animation,
+        canvas: { width: animation.width, height: animation.height, frames },
         sourceFrameCount: frames,
       };
     }
+    assertAnimationBudget(width, height, frames, 'The animation');
     return {
       source: buffer,
       input: { animated: true },
       keepsAnimation: true,
-          sourceFrameCount: frames,
+      canvas: { width, height, frames },
+      sourceFrameCount: frames,
     };
   }
   const page = singleFrameOf(requested, frames);
   return singleSource(buffer, { page: page - 1 }, frames, page);
 }
 
-function selectDocumentPages(
+// ---- TIFF and HEIF pages -----------------------------------------------------------------------------------
+
+async function selectDocumentPages(
   buffer: Buffer,
-  meta: sharp.Metadata,
   pageCount: number,
   targetFormat: string,
   options: FrameOptions
-): FrameSelection {
-  const requested = requestedPages(options, pageCount);
-  if (requested === undefined && targetFormat === MULTI_PAGE_TIFF_TARGET) {
-    if (meta.orientation !== undefined && meta.orientation !== EXIF_ORIENTATION_NORMAL) {
-      throw new ConversionFailedError(
-        `This ${pageCount}-page image carries EXIF orientation ${meta.orientation}, which cannot be applied to every page of one TIFF; select pages with the "page" option`
-      );
-    }
-    return {
-      source: buffer,
-      input: { pages: ALL_PAGES },
-      keepsAnimation: false,
-      sourceFrameCount: pageCount,
-    };
-  }
+): Promise<FrameSelection> {
+  const requested = resolveRequestedPages(options, pageCount);
   const pages = requested ?? Array.from({ length: pageCount }, (_unused, index) => index + 1);
-  if (pages.length === SINGLE_FRAME || options.multiPageOutput === 'first') {
-    return singleSource(buffer, { page: pages[0] - 1 }, pageCount, pages[0]);
+  const cap = options.maxPages ?? DEFAULT_MAX_PAGES;
+  if (pages.length > cap) {
+    throw new InvalidPageRangeError(
+      `This image has ${pages.length} pages to convert, over the limit of ${cap} pages per request; select pages with the "page" or "pages" option`
+    );
   }
-  return {
-    source: buffer,
-    input: {},
-    keepsAnimation: false,
-      zipPages: pages,
-    sourceFrameCount: pageCount,
-  };
+  if (pages.length === SINGLE_FRAME) return singleSource(buffer, { page: pages[0] - 1 }, pageCount, pages[0]);
+  let pixels = 0;
+  for (const page of pages) {
+    const pageMeta = await sharp(buffer, { page: page - 1 }).metadata();
+    pixels += (pageMeta.width ?? 0) * (pageMeta.height ?? 0);
+  }
+  assertAggregatePagePixels(pixels, pages.length);
+  const selection: FrameSelection = { source: buffer, input: {}, keepsAnimation: false, sourceFrameCount: pageCount };
+  if (targetFormat === MULTI_PAGE_TIFF_TARGET) selection.tiffPages = pages;
+  else selection.zipPages = pages;
+  return selection;
 }
 
 /**
@@ -232,7 +278,7 @@ function selectDocumentPages(
 export async function selectFrames(buffer: Buffer, targetFormat: string, options: FrameOptions): Promise<FrameSelection> {
   const untouched: FrameSelection = { source: buffer, input: {}, keepsAnimation: false };
   const apng = parseApng(buffer);
-  if (apng) return selectApngFrames(buffer, apng, targetFormat, options);
+  if (apng) return selectApng(buffer, apng, targetFormat, options);
 
   const meta = await sharp(buffer).metadata();
   const frames = meta.pages ?? SINGLE_FRAME;
@@ -241,7 +287,7 @@ export async function selectFrames(buffer: Buffer, targetFormat: string, options
     return selectAnimationFrames(buffer, meta, frames, targetFormat, options);
   }
   if (DOCUMENT_SOURCE_FORMATS.has(meta.format)) {
-    return selectDocumentPages(buffer, meta, frames, targetFormat, options);
+    return selectDocumentPages(buffer, frames, targetFormat, options);
   }
   return untouched;
 }

@@ -31,7 +31,28 @@ export interface AnimationEncodeOptions {
   dither: number;
 }
 
+/** Frames produced one at a time, so an animation never has to be held in memory as encoded and raw frames at once. */
+export interface FrameSource {
+  width: number;
+  height: number;
+  frameCount: number;
+  timing: AnimationTiming;
+  /** Frame `index` (0-based); called once per frame, in order. */
+  frame(index: number): Promise<RawFrame>;
+}
+
+/** Metadata written into a WebP animation (a GIF has no place for it). */
+export interface AnimationMetadata {
+  /** ICC profile, kept as is. */
+  icc?: Buffer;
+  /** EXIF block, already upright (Orientation 1). */
+  exif?: Buffer;
+}
+
 const RGBA_CHANNELS = 4;
+const ALPHA_OFFSET = 3;
+const OPAQUE_ALPHA = 255;
+const EXIF_PREFIX = 'Exif\0\0';
 
 // ---- GIF -------------------------------------------------------------------------------------------------
 const GIF_SIGNATURE = 'GIF89a';
@@ -58,6 +79,7 @@ const GIF_MAX_LOOP_FIELD = 0xffff;
 const NETSCAPE_ID = 'NETSCAPE2.0';
 const NETSCAPE_SUBBLOCK_LOOP = 1;
 const SINGLE_PLAY = 1;
+const NETSCAPE_BLOCK_BYTES = 19;
 
 interface ParsedGifFrame {
   descriptor: Buffer;
@@ -120,9 +142,8 @@ function gifLoopField(loop: number): number {
   return loop === 0 ? 0 : Math.min(loop - 1, GIF_MAX_LOOP_FIELD);
 }
 
-function gifGraphicControl(delayMs: number, frame: ParsedGifFrame): Buffer {
+function gifGraphicControl(delayMs: number, frame: ParsedGifFrame, disposal: number): Buffer {
   const hasTransparency = frame.transparentIndex !== null;
-  const disposal = hasTransparency ? GIF_DISPOSAL_RESTORE_BACKGROUND : GIF_DISPOSAL_KEEP;
   const delayCs = Math.min(GIF_MAX_DELAY_CS, Math.round(delayMs / GIF_CENTISECOND_MS));
   const gce = Buffer.from([GIF_BLOCK_EXTENSION, GIF_LABEL_GRAPHIC_CONTROL, 4, 0, 0, 0, frame.transparentIndex ?? 0, 0]);
   gce[3] = (disposal << GIF_GCE_DISPOSAL_SHIFT) | (hasTransparency ? GIF_GCE_TRANSPARENT_FLAG : 0);
@@ -137,31 +158,53 @@ function gifImageBlock(frame: ParsedGifFrame): Buffer {
   return Buffer.concat([Buffer.from([GIF_BLOCK_IMAGE]), descriptor, frame.colourTable, frame.imageData]);
 }
 
-async function encodeGif(frames: RawFrame[], timing: AnimationTiming, options: AnimationEncodeOptions): Promise<Buffer> {
+/** True when any pixel of an RGBA buffer is not fully opaque. */
+function hasTransparentPixel(rgba: Buffer): boolean {
+  for (let at = ALPHA_OFFSET; at < rgba.length; at += RGBA_CHANNELS) {
+    if (rgba[at] !== OPAQUE_ALPHA) return true;
+  }
+  return false;
+}
+
+function assertFrameSize(frame: RawFrame, source: FrameSource, index: number): void {
+  if (frame.width !== source.width || frame.height !== source.height) {
+    throw new ConversionFailedError(
+      `Animation frame ${index + 1} is ${frame.width}x${frame.height} but the animation is ${source.width}x${source.height}`
+    );
+  }
+}
+
+async function encodeGif(source: FrameSource, options: AnimationEncodeOptions): Promise<Buffer> {
   const parsed: ParsedGifFrame[] = [];
-  for (const frame of frames) {
+  let anyTransparency = false;
+  for (let index = 0; index < source.frameCount; index += 1) {
+    const frame = await source.frame(index);
+    assertFrameSize(frame, source, index);
+    anyTransparency = anyTransparency || hasTransparentPixel(frame.data);
     const single = await sharp(frame.data, { raw: { width: frame.width, height: frame.height, channels: RGBA_CHANNELS } })
       .gif({ colours: options.colours, dither: options.dither })
       .toBuffer();
     parsed.push(parseSingleFrameGif(single));
   }
-  const { width, height } = frames[0];
   const header = Buffer.alloc(GIF_HEADER_BYTES + GIF_LSD_BYTES);
   header.write(GIF_SIGNATURE, 0, 'latin1');
-  header.writeUInt16LE(width, GIF_HEADER_BYTES);
-  header.writeUInt16LE(height, GIF_HEADER_BYTES + 2);
+  header.writeUInt16LE(source.width, GIF_HEADER_BYTES);
+  header.writeUInt16LE(source.height, GIF_HEADER_BYTES + 2);
   header[GIF_HEADER_BYTES + 4] = GIF_COLOUR_RESOLUTION_BITS; // no global colour table; every frame carries its own
   const parts: Buffer[] = [header];
-  if (timing.loop !== SINGLE_PLAY) {
-    const netscape = Buffer.alloc(19);
+  if (source.timing.loop !== SINGLE_PLAY) {
+    const netscape = Buffer.alloc(NETSCAPE_BLOCK_BYTES);
     netscape.set([GIF_BLOCK_EXTENSION, GIF_LABEL_APPLICATION, NETSCAPE_ID.length], 0);
     netscape.write(NETSCAPE_ID, 3, 'latin1');
     netscape.set([3, NETSCAPE_SUBBLOCK_LOOP], 14);
-    netscape.writeUInt16LE(gifLoopField(timing.loop), 16);
+    netscape.writeUInt16LE(gifLoopField(source.timing.loop), 16);
     parts.push(netscape);
   }
+  // Frames are full composited pictures. When any of them has transparency, every frame restores the
+  // background first so no earlier picture shows through a later frame's transparent pixels.
+  const disposal = anyTransparency ? GIF_DISPOSAL_RESTORE_BACKGROUND : GIF_DISPOSAL_KEEP;
   parsed.forEach((frame, index) => {
-    parts.push(gifGraphicControl(timing.delaysMs[index], frame), gifImageBlock(frame));
+    parts.push(gifGraphicControl(source.timing.delaysMs[index], frame, disposal), gifImageBlock(frame));
   });
   parts.push(Buffer.from([GIF_BLOCK_TRAILER]));
   return Buffer.concat(parts);
@@ -172,6 +215,18 @@ const RIFF_HEADER_BYTES = 12;
 const RIFF_CHUNK_HEADER_BYTES = 8;
 const WEBP_FLAG_ANIMATION = 0x02;
 const WEBP_FLAG_ALPHA = 0x10;
+const WEBP_FLAG_ICC = 0x20;
+const WEBP_FLAG_EXIF = 0x08;
+const VP8X_BYTES = 10;
+const VP8X_WIDTH_OFFSET = 4;
+const VP8X_HEIGHT_OFFSET = 7;
+const ANIM_BYTES = 6;
+const ANIM_LOOP_OFFSET = 4;
+const ANMF_HEADER_BYTES = 16;
+const ANMF_WIDTH_OFFSET = 6;
+const ANMF_HEIGHT_OFFSET = 9;
+const ANMF_DURATION_OFFSET = 12;
+const ANMF_FLAGS_OFFSET = 15;
 const WEBP_ANMF_DO_NOT_BLEND = 0x02;
 const WEBP_UINT24_BYTES = 3;
 const WEBP_MAX_DURATION_MS = 0xffffff;
@@ -211,55 +266,76 @@ function webpImageChunks(webp: Buffer): { chunks: Buffer; hasAlpha: boolean } {
   return { chunks: Buffer.concat(kept), hasAlpha };
 }
 
-async function encodeWebp(frames: RawFrame[], timing: AnimationTiming, options: AnimationEncodeOptions): Promise<Buffer> {
-  const { width, height } = frames[0];
+async function encodeWebp(source: FrameSource, options: AnimationEncodeOptions, metadata: AnimationMetadata): Promise<Buffer> {
   const anmf: Buffer[] = [];
   let anyAlpha = false;
-  for (let index = 0; index < frames.length; index += 1) {
-    const frame = frames[index];
+  for (let index = 0; index < source.frameCount; index += 1) {
+    const frame = await source.frame(index);
+    assertFrameSize(frame, source, index);
     const single = await sharp(frame.data, { raw: { width: frame.width, height: frame.height, channels: RGBA_CHANNELS } })
       .webp({ quality: options.quality })
       .toBuffer();
     const image = webpImageChunks(single);
     anyAlpha = anyAlpha || image.hasAlpha;
-    const header = Buffer.alloc(16);
+    const header = Buffer.alloc(ANMF_HEADER_BYTES);
     // Frame X and Y stay 0 (stored in units of two pixels).
-    writeUInt24LE(header, frame.width - 1, 6);
-    writeUInt24LE(header, frame.height - 1, 9);
-    writeUInt24LE(header, Math.min(WEBP_MAX_DURATION_MS, timing.delaysMs[index]), 12);
-    header[15] = WEBP_ANMF_DO_NOT_BLEND;
+    writeUInt24LE(header, frame.width - 1, ANMF_WIDTH_OFFSET);
+    writeUInt24LE(header, frame.height - 1, ANMF_HEIGHT_OFFSET);
+    writeUInt24LE(header, Math.min(WEBP_MAX_DURATION_MS, source.timing.delaysMs[index]), ANMF_DURATION_OFFSET);
+    header[ANMF_FLAGS_OFFSET] = WEBP_ANMF_DO_NOT_BLEND;
     anmf.push(riffChunk('ANMF', Buffer.concat([header, image.chunks])));
   }
-  const vp8x = Buffer.alloc(10);
-  vp8x[0] = WEBP_FLAG_ANIMATION | (anyAlpha ? WEBP_FLAG_ALPHA : 0);
-  writeUInt24LE(vp8x, width - 1, 4);
-  writeUInt24LE(vp8x, height - 1, 7);
-  const anim = Buffer.alloc(6);
-  anim.writeUInt16LE(Math.min(timing.loop, WEBP_MAX_LOOP), 4); // background colour stays 0 (transparent black)
-  const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), riffChunk('VP8X', vp8x), riffChunk('ANIM', anim), ...anmf]);
+  let flags = WEBP_FLAG_ANIMATION;
+  if (anyAlpha) flags |= WEBP_FLAG_ALPHA;
+  if (metadata.icc) flags |= WEBP_FLAG_ICC;
+  if (metadata.exif) flags |= WEBP_FLAG_EXIF;
+  const vp8x = Buffer.alloc(VP8X_BYTES);
+  vp8x[0] = flags;
+  writeUInt24LE(vp8x, source.width - 1, VP8X_WIDTH_OFFSET);
+  writeUInt24LE(vp8x, source.height - 1, VP8X_HEIGHT_OFFSET);
+  const anim = Buffer.alloc(ANIM_BYTES);
+  anim.writeUInt16LE(Math.min(source.timing.loop, WEBP_MAX_LOOP), ANIM_LOOP_OFFSET); // background colour stays 0
+  const body = [Buffer.from('WEBP', 'latin1'), riffChunk('VP8X', vp8x)];
+  if (metadata.icc) body.push(riffChunk('ICCP', metadata.icc));
+  body.push(riffChunk('ANIM', anim), ...anmf);
+  if (metadata.exif) body.push(riffChunk('EXIF', webpExifPayload(metadata.exif)));
+  const content = Buffer.concat(body);
   const riff = Buffer.alloc(RIFF_CHUNK_HEADER_BYTES);
   riff.write('RIFF', 0, 'latin1');
-  riff.writeUInt32LE(body.length, 4);
-  return Buffer.concat([riff, body]);
+  riff.writeUInt32LE(content.length, 4);
+  return Buffer.concat([riff, content]);
+}
+
+/** The WebP EXIF chunk holds the TIFF block directly, without the `Exif\0\0` prefix of JPEG APP1. */
+function webpExifPayload(exif: Buffer): Buffer {
+  return exif.toString('latin1', 0, EXIF_PREFIX.length) === EXIF_PREFIX ? exif.subarray(EXIF_PREFIX.length) : exif;
 }
 
 /**
- * Encodes decoded frames as an animated GIF or WebP that keeps the given per-frame delays and loop count.
- * All frames must share one size.
+ * Encodes the frames of `source` as an animated GIF or WebP that keeps the given per-frame delays and loop
+ * count. All frames must share the source's size.
  */
 export async function assembleAnimation(
-  frames: RawFrame[],
-  timing: AnimationTiming,
+  source: FrameSource,
   target: 'gif' | 'webp',
-  options: AnimationEncodeOptions
+  options: AnimationEncodeOptions,
+  metadata: AnimationMetadata = {}
 ): Promise<Buffer> {
+  if (source.frameCount === 0) throw new ConversionFailedError('Cannot assemble an animation without frames');
+  if (source.timing.delaysMs.length !== source.frameCount) {
+    throw new ConversionFailedError(`Expected ${source.frameCount} frame delays but received ${source.timing.delaysMs.length}`);
+  }
+  return target === 'gif' ? encodeGif(source, options) : encodeWebp(source, options, metadata);
+}
+
+/** A frame source over frames that are already in memory. */
+export function frameSourceOf(frames: RawFrame[], timing: AnimationTiming): FrameSource {
   if (frames.length === 0) throw new ConversionFailedError('Cannot assemble an animation without frames');
-  if (timing.delaysMs.length !== frames.length) {
-    throw new ConversionFailedError(`Expected ${frames.length} frame delays but received ${timing.delaysMs.length}`);
-  }
-  const { width, height } = frames[0];
-  if (frames.some((frame) => frame.width !== width || frame.height !== height)) {
-    throw new ConversionFailedError('Animation frames must all have the same size');
-  }
-  return target === 'gif' ? encodeGif(frames, timing, options) : encodeWebp(frames, timing, options);
+  return {
+    width: frames[0].width,
+    height: frames[0].height,
+    frameCount: frames.length,
+    timing,
+    frame: async (index) => frames[index],
+  };
 }

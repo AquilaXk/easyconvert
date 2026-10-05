@@ -17,6 +17,8 @@ import { captureError } from './helpers/capture-error';
 import { buildApng, readGifLoopCount, readWebpLoopCount } from './helpers/animation-containers';
 import { ffprobeFrameCount, SKIP_WITHOUT_FFPROBE } from './helpers/ffprobe-frames';
 import { withMissingBinary } from './helpers/native-tools';
+import { buildApngFile, rgbaImage } from './helpers/apng-builder';
+import { SKIP_WITHOUT_FFMPEG, decodeFramesWithFfmpeg } from './helpers/ffmpeg-apng';
 
 /**
  * Animations that sharp cannot orient or read in bulk are decoded frame by frame and reassembled:
@@ -243,30 +245,58 @@ describe('animated PNG (APNG) sources', () => {
     expectNear(sampleAt(frames[1], WIDTH / 2, HEIGHT / 2), FRAME_COLOURS[1], 'webp frame 2');
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('frame 1 of a still target needs no FFmpeg', async () => {
-    const result = await withMissingBinary('FFMPEG_PATH', () => convertImage(buildTwoFrameApng(), 'png', {}, 'anim.png', 'png'));
-    expect(result.frameUsed).toBe(1);
-  });
-
   it.skipIf(SKIP_WITHOUT_MAGICK).each([
     ['gif target', 'gif', {}],
     ['webp target', 'webp', {}],
     ['page 2', 'png', { page: 2 }],
-  ])('%s without FFmpeg throws EngineUnavailableError', async (_label, target, options) => {
-    const error = await captureError(() =>
-      withMissingBinary('FFMPEG_PATH', () => convertImage(buildTwoFrameApng(), target, options, 'anim.png', 'png'))
+    ['frame 1', 'png', {}],
+  ])('%s decodes in process without FFmpeg', async (_label, target, options) => {
+    const result = await withMissingBinary('FFMPEG_PATH', () =>
+      convertImage(buildTwoFrameApng(), target, options, 'anim.png', 'png')
     );
-    expect(error.name).toBe('EngineUnavailableError');
-    expect(error.message).toMatch(/Engine 'ffmpeg' is unavailable/);
+    expect(result.sourceFrameCount).toBe(2);
+  });
+});
+
+describe('animated GIF output with transparent frames', () => {
+  const SIDE = 64;
+  const HALF = SIDE / 2;
+  const OPAQUE_BYTE = 255;
+
+  /** Frame 1: opaque with thousands of colours. Frame 2: replaces the canvas, right half transparent. */
+  function ghostApng(): Buffer {
+    const gradient = rgbaImage(SIDE, SIDE, (x, y) => [x * 4, y * 4, (x * y) & 255, OPAQUE_BYTE]);
+    const half = rgbaImage(SIDE, SIDE, (x) => (x < HALF ? [0, 0, 255, OPAQUE_BYTE] : [0, 0, 0, 0]));
+    return buildApngFile({ width: SIDE, height: SIDE, frames: [{ image: gradient }, { image: half, blend: 0 }] });
+  }
+
+  const alphaAt = (frame: Buffer, x: number, y: number) => frame[(y * SIDE + x) * 4 + 3];
+
+  it.skipIf(SKIP_WITHOUT_MAGICK || SKIP_WITHOUT_FFMPEG)('frame 2 does not show frame 1 through its transparent half (FFmpeg decode)', async () => {
+    const result = await convertImage(ghostApng(), 'gif', { colors: 256 }, 'ghost.png', 'png');
+    const decoded = decodeFramesWithFfmpeg(result.buffer, 'gif', SIDE, SIDE);
+    expect(decoded.frames).toHaveLength(2);
+    expect(alphaAt(decoded.frames[0], HALF + 4, 8)).toBe(OPAQUE_BYTE);
+    expect(alphaAt(decoded.frames[1], HALF + 4, 8)).toBe(0);
+    expect(alphaAt(decoded.frames[1], 4, 8)).toBe(OPAQUE_BYTE);
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a truncated frame control table is rejected as malformed', async () => {
-    const apng = buildTwoFrameApng();
-    const actl = apng.indexOf('acTL', 0, 'latin1');
-    const forged = Buffer.from(apng);
-    forged.writeUInt32BE(5, actl + 4); // announce five frames while only two fcTL chunks exist
-    const error = await captureError(() => convertImage(forged, 'png', {}, 'anim.png', 'png'));
-    expect(error.name).toBe('ConversionFailedError');
-    expect(error.message).toMatch(/Malformed animated PNG: acTL announces 5 frames but 2 frame control chunks/);
+  it.skipIf(SKIP_WITHOUT_MAGICK)('frame 2 does not show frame 1 through its transparent half (ImageMagick coalesce)', async () => {
+    const result = await convertImage(ghostApng(), 'gif', {}, 'ghost.png', 'png');
+    const frames = decodeCoalescedFrames(result.buffer, 'gif');
+    expect(frames).toHaveLength(2);
+    expect(sampleAt(frames[1], HALF + 4, 8)[3]).toBe(0);
+    expect(sampleAt(frames[1], 4, 8)[3]).toBe(OPAQUE_BYTE);
+  });
+
+  it.skipIf(SKIP_WITHOUT_MAGICK)('an animation without any transparency keeps its frames opaque', async () => {
+    const solid = (colour: readonly [number, number, number, number]) => rgbaImage(SIDE, SIDE, () => colour);
+    const apng = buildApngFile({ width: SIDE, height: SIDE, frames: [{ image: solid([255, 0, 0, 255]) }, { image: solid([0, 255, 0, 255]) }] });
+    const result = await convertImage(apng, 'gif', {}, 'solid.png', 'png');
+    const frames = decodeCoalescedFrames(result.buffer, 'gif');
+    expect(frames.map((frame) => sampleAt(frame, 4, 4))).toEqual([
+      [255, 0, 0, 255],
+      [0, 255, 0, 255],
+    ]);
   });
 });

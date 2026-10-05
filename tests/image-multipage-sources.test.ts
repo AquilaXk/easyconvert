@@ -153,10 +153,12 @@ describe('multi-page TIFF to TIFF', () => {
     PAGE_COLOURS.forEach((colour, index) => expectCentreColour(result.buffer, 'tif', colour, `tiff page ${index + 1}`, index));
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('rejects pages that need an orientation one TIFF cannot apply to all of them', async () => {
-    const error = await captureError(() => convertImage(buildOrientedMultiPageTiff(), 'tiff', {}, 'scan.tif', 'tiff'));
-    expect(error.name).toBe('ConversionFailedError');
-    expect(error.message).toMatch(/EXIF orientation 6/);
+  it.skipIf(SKIP_WITHOUT_MAGICK)('orients every page and leaves no rotating tag', async () => {
+    const result = await convertImage(buildOrientedMultiPageTiff(), 'tiff', {}, 'scan.tif', 'tiff');
+    const sizes = withTempImage(result.buffer, 'tif', (file) => runIdentify(['-format', '%wx%h %[orientation]\n', file]).trim().split('\n'));
+    // Orientation right-top (6) turns the stored 30x20 pages into 20x30 and no page keeps the tag.
+    expect(sizes).toHaveLength(PAGE_COLOURS.length);
+    sizes.forEach((line) => expect(line).toMatch(/^20x30 (Undefined|TopLeft)$/));
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('resizes every page', async () => {

@@ -240,6 +240,11 @@ function countTokenPages(token: string, maxAllowed: number, userTier: string): n
 /**
  * Validates that requested page ranges do not exceed maximum page limits for the specified tier.
  */
+/** Most pages one request may convert for `userTier`; unknown tiers get the free tier's limit. */
+export function tierMaxPages(userTier = 'free'): number {
+  return TIER_MAX_PAGES[userTier.toLowerCase()] ?? TIER_MAX_PAGES.free;
+}
+
 export function validateTierPageLimit(spec: string, userTier = 'free'): void {
   const normalizedTier = userTier.toLowerCase();
   const maxAllowed = TIER_MAX_PAGES[normalizedTier] ?? TIER_MAX_PAGES.free;
@@ -265,4 +270,30 @@ const MIN_PAGE_DIGITS = 3;
 export function pageEntryName(baseName: string, pageNumber: number, lastPage: number, extension: string): string {
   const padLength = Math.max(MIN_PAGE_DIGITS, String(lastPage).length);
   return `${baseName}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
+}
+
+/**
+ * Resolves the pages a request selects from its `page` (one page) and `pages` (ranges) options, or undefined
+ * when it selects none. `null` and an empty string count as absent. When both are given they must select
+ * the same single page, otherwise the request is ambiguous and is refused.
+ */
+export function resolvePageSelection(
+  page: number | string | null | undefined,
+  spec: string | null | undefined,
+  pageCount: number,
+  outOfRange: (page: number | string, pageCount: number) => InvalidPageRangeError
+): number[] | undefined {
+  const ranges = spec === null || spec === '' ? undefined : spec;
+  if (page === null || page === undefined) {
+    return ranges === undefined ? undefined : parsePageRanges(ranges, pageCount);
+  }
+  const single = Number(page);
+  if (!Number.isInteger(single) || single < 1 || single > pageCount) throw outOfRange(page, pageCount);
+  if (ranges !== undefined) {
+    const listed = parsePageRanges(ranges, pageCount);
+    if (listed.length !== 1 || listed[0] !== single) {
+      throw new InvalidPageRangeError(`The "page" option (${single}) and the "pages" option ("${ranges}") select different pages`);
+    }
+  }
+  return [single];
 }
