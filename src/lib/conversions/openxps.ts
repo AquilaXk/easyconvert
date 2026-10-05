@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { ConversionFailedError } from '../types';
+import { crc32 } from './archive';
 
 export interface XpsPageElement {
   text?: string;
@@ -38,29 +39,52 @@ function escapeXml(unsafe: string): string {
 const XPS_UNITS_PER_INCH = 96;
 const PNG_SIGNATURE_BYTES = 8;
 const PNG_CHUNK_OVERHEAD = 12;
+const PNG_CHUNK_TYPE_OFFSET = 4;
+const PNG_CHUNK_DATA_OFFSET = 8;
+const PHYS_DATA_BYTES = 9;
 const PHYS_UNIT_METRE = 1;
 const INCHES_PER_METRE = 39.3701;
+/** Pixels per metre of a 96 dpi picture, the density an XPS unit (1/96 inch) is measured in. */
+const PIXELS_PER_METRE_AT_96_DPI = Math.round(XPS_UNITS_PER_INCH * INCHES_PER_METRE);
 /** Digits kept when a viewbox size is not a whole number of units. */
 const VIEWBOX_DECIMALS = 4;
 
+function pngChunk(type: string, data: Buffer): Buffer {
+  const chunk = Buffer.alloc(PNG_CHUNK_OVERHEAD + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write(type, PNG_CHUNK_TYPE_OFFSET, 'latin1');
+  data.copy(chunk, PNG_CHUNK_DATA_OFFSET);
+  chunk.writeUInt32BE(crc32(chunk.subarray(PNG_CHUNK_TYPE_OFFSET, PNG_CHUNK_DATA_OFFSET + data.length)), PNG_CHUNK_DATA_OFFSET + data.length);
+  return chunk;
+}
+
 /**
- * Pixels per inch of a PNG along x and y, from its pHYs chunk. A PNG without a physical size (or with only an
- * aspect ratio) is taken as 96 dpi, the density XPS measures its units in.
+ * Copy of a PNG whose physical size says 96 dpi on both axes (a pHYs chunk replaced or added right after
+ * IHDR). XPS measures an image brush in 1/96 inch, and renderers disagree about what a picture stored at
+ * another density means; at 96 dpi its viewbox is its pixel size everywhere. The image data is not touched.
  */
-export function pngDpi(png: Buffer): { dpiX: number; dpiY: number } {
+export function withPngDensity96(png: Buffer): Buffer {
+  const physical = Buffer.alloc(PHYS_DATA_BYTES);
+  physical.writeUInt32BE(PIXELS_PER_METRE_AT_96_DPI, 0);
+  physical.writeUInt32BE(PIXELS_PER_METRE_AT_96_DPI, 4);
+  physical[8] = PHYS_UNIT_METRE;
+  const parts: Buffer[] = [png.subarray(0, PNG_SIGNATURE_BYTES)];
   let pos = PNG_SIGNATURE_BYTES;
+  let insertedAfterHeader = false;
   while (pos + PNG_CHUNK_OVERHEAD <= png.length) {
     const length = png.readUInt32BE(pos);
-    const type = png.toString('latin1', pos + 4, pos + 8);
-    if (type === 'pHYs' && length === 9 && pos + PNG_CHUNK_OVERHEAD + length <= png.length && png[pos + 16] === PHYS_UNIT_METRE) {
-      const perMetreX = png.readUInt32BE(pos + 8);
-      const perMetreY = png.readUInt32BE(pos + 12);
-      if (perMetreX > 0 && perMetreY > 0) return { dpiX: perMetreX / INCHES_PER_METRE, dpiY: perMetreY / INCHES_PER_METRE };
+    const type = png.toString('latin1', pos + PNG_CHUNK_TYPE_OFFSET, pos + PNG_CHUNK_DATA_OFFSET);
+    const end = pos + PNG_CHUNK_OVERHEAD + length;
+    if (end > png.length) throw new ConversionFailedError('Cannot set the density of a truncated PNG');
+    if (type !== 'pHYs') parts.push(png.subarray(pos, end));
+    if (type === 'IHDR' && !insertedAfterHeader) {
+      parts.push(pngChunk('pHYs', physical));
+      insertedAfterHeader = true;
     }
-    if (type === 'IDAT' || type === 'IEND') break;
-    pos += PNG_CHUNK_OVERHEAD + length;
+    pos = end;
   }
-  return { dpiX: XPS_UNITS_PER_INCH, dpiY: XPS_UNITS_PER_INCH };
+  if (!insertedAfterHeader) throw new ConversionFailedError('Cannot set the density of a PNG without an IHDR chunk');
+  return Buffer.concat(parts);
 }
 
 function viewboxSize(pixels: number, dpi: number | undefined): string {

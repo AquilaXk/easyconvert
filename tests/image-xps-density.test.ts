@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertImage } from '../src/lib/conversions/image';
 import { buildOpenXpsPackage } from '../src/lib/conversions/openxps';
-import { encodePng, rgbaImage, type PngImage } from './helpers/apng-builder';
+import { crc32, encodePng, rgbaImage, type PngImage } from './helpers/apng-builder';
 import { SKIP_WITHOUT_MUPDF, renderXpsPoints } from './helpers/mupdf-render';
 import { captureError } from './helpers/capture-error';
 
@@ -106,5 +106,40 @@ describe('buildOpenXpsPackage viewbox', () => {
     const error = await captureError(() => buildOpenXpsPackage([page(dpi, dpi)], 'doc'));
     expect(error.name).toBe('ConversionFailedError');
     expect(error.message).toMatch(/XPS image on page 1 needs a positive density/);
+  });
+});
+
+describe('convertImage to xps normalises the embedded picture to 96 dpi', () => {
+  const embedded = async (xps: Buffer) => {
+    const zip = await JSZip.loadAsync(xps);
+    const fpage = await zip.file('Documents/1/Pages/1.fpage')!.async('string');
+    const png = await zip.file('Documents/1/Resources/Images/image1.png')!.async('nodebuffer');
+    return { viewbox: /Viewbox="([^"]+)"/.exec(fpage)?.[1], png };
+  };
+  const physicalSize = (png: Buffer): number[] | undefined => {
+    const at = png.indexOf('pHYs', 0, 'latin1');
+    return at < 0 ? undefined : [png.readUInt32BE(at + 4), png.readUInt32BE(at + 8), png[at + 12]];
+  };
+
+  it.each([
+    ['300 dpi', PIXELS_PER_METRE[300]],
+    ['72 dpi', PIXELS_PER_METRE[72]],
+    ['no density', undefined],
+  ])('%s source: pHYs says 96 dpi and the viewbox is the pixel size', async (_label, pixelsPerMetre) => {
+    for (const options of [{}, { stripMetadata: true }]) {
+      const result = await convertImage(encodePng(quadrants(pixelsPerMetre)), 'xps', options, 'q.png', 'png');
+      const { viewbox, png } = await embedded(result.buffer);
+      expect(viewbox, JSON.stringify(options)).toBe(`0,0,${SIDE},${SIDE}`);
+      expect(physicalSize(png), JSON.stringify(options)).toEqual([PIXELS_PER_METRE[96], PIXELS_PER_METRE[96], 1]);
+    }
+  });
+
+  it('keeps the picture intact: still a valid PNG ending in IEND with a correct pHYs CRC', async () => {
+    const result = await convertImage(encodePng(quadrants(PIXELS_PER_METRE[300])), 'xps', {}, 'q.png', 'png');
+    const { png } = await embedded(result.buffer);
+    expect(png.subarray(1, 4).toString('latin1')).toBe('PNG');
+    const at = png.indexOf('pHYs', 0, 'latin1');
+    expect(png.readUInt32BE(at + 9 + 4)).toBe(crc32(png.subarray(at, at + 4 + 9)));
+    expect(png.subarray(png.length - 8, png.length - 4).toString('latin1')).toBe('IEND');
   });
 });

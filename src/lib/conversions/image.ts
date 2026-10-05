@@ -6,7 +6,7 @@ import { selectFrames, type FrameSelection } from './image-frames';
 import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
 import { assertAnimationBudget } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
-import { buildOpenXpsPackage, pngDpi } from './openxps';
+import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -3118,11 +3118,10 @@ export async function convertImage(
             {
               title: baseName,
               image: {
-                buffer: picture.data,
+                buffer: withPngDensity96(picture.data),
                 format: 'png',
                 width: picture.info.width,
                 height: picture.info.height,
-                ...pngDpi(picture.data),
               },
             },
           ],
