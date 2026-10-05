@@ -3,6 +3,8 @@ import { ConversionFailedError, ConversionOptions, ConversionResult } from '../t
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
+import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
+import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
 /**
  * Universal Font Conversion Engine
@@ -465,6 +467,9 @@ export function decodeUIntBase128(buffer: Buffer, cursor: { offset: number }): n
   throw new Error('UIntBase128 overflow in WOFF2');
 }
 
+const WOFF2_NULL_TRANSFORM = 3;
+const WOFF2_TRANSFORM_SHIFT = 6;
+
 /**
  * Encodes ParsedFont into W3C compliant WOFF2 format container with Table Directory.
  */
@@ -480,7 +485,10 @@ export function encodeWoff2(font: ParsedFont): Buffer {
     const table = font.tables[tag];
     const knownIdx = WOFF2_KNOWN_TAGS.indexOf(tag);
     if (knownIdx >= 0 && knownIdx < 63) {
-      dirBytes.push(knownIdx & 0x3f);
+      // glyf and loca are stored as they are, which WOFF2 spells as the null transform (version 3);
+      // version 0 would announce the transformed glyph stream that this encoder does not write.
+      const nullTransform = tag === 'glyf' || tag === 'loca' ? WOFF2_NULL_TRANSFORM << WOFF2_TRANSFORM_SHIFT : 0;
+      dirBytes.push((knownIdx & 0x3f) | nullTransform);
     } else {
       dirBytes.push(63);
       for (let i = 0; i < 4; i++) {
@@ -838,16 +846,28 @@ function buildGlyphToUnicodeMap(cmapTable: SfntTable | undefined): Map<number, s
   return glyphToUnicode;
 }
 
-/**
- * Extracts authentic vector glyphs from TrueType 'glyf', 'loca', and 'cmap' tables
- */
-export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number }> {
+interface SvgGlyphRecord {
+  glyphId: number;
+  /** The character the cmap maps to this glyph; '' when none (or when XML cannot carry it). */
+  unicode: string;
+  /** Glyph name declared by the source (SVG glyph-name), '' when none. */
+  name: string;
+  d: string;
+  advWidth: number;
+}
+
+function writableUnicode(glyphToUnicode: Map<number, string>, glyphId: number): string {
+  const char = glyphToUnicode.get(glyphId);
+  return char !== undefined && isXmlCharacter(char.codePointAt(0) as number) ? char : '';
+}
+
+/** Reads every glyph of a TrueType font (including .notdef) as an SVG path with its advance. */
+function readTrueTypeGlyphRecords(font: ParsedFont): SvgGlyphRecord[] {
   const glyfTable = font.tables['glyf'];
   const locaTable = font.tables['loca'];
   const headTable = font.tables['head'];
   const hmtxTable = font.tables['hmtx'];
   const hheaTable = font.tables['hhea'];
-  const cmapTable = font.tables['cmap'];
 
   if (!glyfTable || !locaTable || !headTable) {
     return [];
@@ -858,59 +878,104 @@ export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string
   if (numGlyphs <= 0) return [];
 
   const numOfHMetrics = hheaTable && hheaTable.data.length >= 36 ? hheaTable.data.readUInt16BE(34) : 1;
+  const glyphToUnicode = buildGlyphToUnicodeMap(font.tables['cmap']);
 
-  const glyphToUnicode = buildGlyphToUnicodeMap(cmapTable);
-
-  const glyphs: Array<{ unicode: string; d: string; advWidth: number }> = [];
-
-  for (let g = 0; g < Math.min(numGlyphs, 512); g++) {
+  const records: SvgGlyphRecord[] = [];
+  for (let g = 0; g < numGlyphs; g++) {
     const offset = isShortLoca ? locaTable.data.readUInt16BE(g * 2) * 2 : locaTable.data.readUInt32BE(g * 4);
     const nextOffset = isShortLoca ? locaTable.data.readUInt16BE((g + 1) * 2) * 2 : locaTable.data.readUInt32BE((g + 1) * 4);
 
-    let advWidth = 1000;
+    let advWidth = DEFAULT_SVG_ADVANCE;
     if (hmtxTable && g < numOfHMetrics && g * 4 + 2 <= hmtxTable.data.length) {
       advWidth = hmtxTable.data.readUInt16BE(g * 4);
     }
 
+    let d = '';
     if (nextOffset > offset && offset < glyfTable.data.length) {
-      const contours = parseSimpleGlyph(glyfTable.data, offset);
-      const d = contoursToSvgPath(contours);
-      const unicodeChar = glyphToUnicode.get(g) || (g >= 32 && g <= 126 ? String.fromCharCode(g) : `&#x${g.toString(16)};`);
-      glyphs.push({ unicode: unicodeChar, d, advWidth });
+      d = contoursToSvgPath(parseSimpleGlyph(glyfTable.data, offset));
     }
+    records.push({ glyphId: g, unicode: writableUnicode(glyphToUnicode, g), name: font.glyphNames?.[g] ?? '', d, advWidth });
   }
-
-  return glyphs;
+  return records;
 }
 
 /**
- * Encodes ParsedFont into W3C SVG Font representation
+ * Extracts authentic vector glyphs from TrueType 'glyf', 'loca', and 'cmap' tables. The .notdef
+ * glyph is left out (an SVG font stores it as missing-glyph), and so is every glyph that is neither
+ * mapped to a character nor named, since an SVG font addresses glyphs by character or name only.
+ */
+export function extractTrueTypeGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number; name?: string }> {
+  return readTrueTypeGlyphRecords(font)
+    .filter((record) => record.glyphId > 0 && (record.unicode !== '' || record.name !== ''))
+    .map(({ unicode, d, advWidth, name }) => (name === '' ? { unicode, d, advWidth } : { unicode, d, advWidth, name }));
+}
+
+function glyphElement(record: SvgGlyphRecord): string {
+  const attributes: string[] = [];
+  if (record.unicode !== '') attributes.push(`unicode="${escapeXml(record.unicode)}"`);
+  if (record.name !== '') attributes.push(`glyph-name="${escapeXml(record.name)}"`);
+  attributes.push(`horiz-adv-x="${record.advWidth}"`);
+  if (record.d !== '') attributes.push(`d="${record.d}"`);
+  return `<glyph ${attributes.join(' ')} />`;
+}
+
+/** The advance most glyphs share, written as the font element default. */
+function mostCommonAdvance(records: SvgGlyphRecord[]): number {
+  const counts = new Map<number, number>();
+  for (const record of records) counts.set(record.advWidth, (counts.get(record.advWidth) ?? 0) + 1);
+  let best = DEFAULT_SVG_ADVANCE;
+  let bestCount = 0;
+  for (const [advance, count] of counts) {
+    if (count > bestCount) {
+      best = advance;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * Encodes ParsedFont into W3C SVG Font representation. The metrics, advances, missing-glyph and
+ * glyph paths all come from the font; a font without outlines is rejected.
  */
 export function encodeSvgFont(font: ParsedFont, defaultName: string): Buffer {
   const family = font.fontFamily || defaultName || 'EasyConvertFont';
 
   // Real outlines only: TrueType glyf, or the CFF charstrings of an OpenType CFF font.
-  let extracted = extractTrueTypeGlyphs(font);
-  if (extracted.length === 0 && font.tables['CFF ']) {
-    extracted = extractCffGlyphs(font);
+  let records = readTrueTypeGlyphRecords(font);
+  const hasOutlines = (list: SvgGlyphRecord[]): boolean => list.some((record) => record.glyphId > 0 && record.d !== '');
+  if (!hasOutlines(records) && font.tables['CFF ']) {
+    records = readCffGlyphRecords(font);
   }
-  if (extracted.length === 0) {
+  if (!hasOutlines(records)) {
     throw new FontOutlinesMissingError(
-      'Cannot write an SVG font: the font has no extractable glyph outlines (no non-empty glyf glyphs or cmap-mapped CFF glyphs).'
+      'Cannot write an SVG font: the font has no extractable glyph outlines (no non-empty glyf glyphs or CFF glyphs).'
     );
   }
-  const glyphsXml: string[] = [];
-  for (const g of extracted) {
-    glyphsXml.push(`<glyph unicode="${escapeXml(g.unicode)}" horiz-adv-x="${g.advWidth}" d="${g.d}" />`);
+  const notdef = records[0];
+  const addressable = records.filter((record) => record.glyphId > 0 && (record.unicode !== '' || record.name !== ''));
+
+  const head = font.tables['head'];
+  const unitsPerEm = head && head.data.length >= HEAD_MIN_BYTES ? head.data.readUInt16BE(HEAD_UNITS_PER_EM_OFFSET) : DEFAULT_CFF_UNITS_PER_EM;
+  const hhea = font.tables['hhea'];
+  let descent = Math.round(unitsPerEm * SVG_DEFAULT_DESCENT_PER_EM);
+  let ascent = unitsPerEm - descent;
+  if (hhea && hhea.data.length >= HHEA_MIN_BYTES) {
+    ascent = hhea.data.readInt16BE(HHEA_ASCENDER_OFFSET);
+    descent = hhea.data.readInt16BE(HHEA_DESCENDER_OFFSET);
   }
+
+  const missingAttributes = [`horiz-adv-x="${notdef.advWidth}"`];
+  if (notdef.d !== '') missingAttributes.push(`d="${notdef.d}"`);
+  const glyphsXml = addressable.map(glyphElement);
 
   const svg = `<?xml version="1.0" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <font id="${escapeXml(family)}" horiz-adv-x="1000">
-      <font-face font-family="${escapeXml(family)}" units-per-em="1000" ascent="800" descent="-200" />
-      <missing-glyph horiz-adv-x="500" d="M0 0 L500 0 L500 800 L0 800 Z" />
+    <font id="${escapeXml(family)}" horiz-adv-x="${mostCommonAdvance(addressable)}">
+      <font-face font-family="${escapeXml(family)}" units-per-em="${unitsPerEm}" ascent="${ascent}" descent="${descent}" />
+      <missing-glyph ${missingAttributes.join(' ')} />
       ${glyphsXml.join('\n      ')}
     </font>
   </defs>
@@ -1202,43 +1267,137 @@ export function parseCmapTable(data: Buffer): Map<number, number> {
   return map;
 }
 
+/** Outline data that createCanonicalFont turns into glyf, loca and matching metrics tables. */
+export interface CanonicalFontOutlines {
+  unitsPerEm: number;
+  ascent: number;
+  /** Distance below the baseline as a positive number. */
+  descent: number;
+  /** One entry per glyph id; glyph 0 is .notdef. */
+  glyphs: Array<{ contours: GlyphPoint[][]; advWidth: number }>;
+  /** Authored glyph names, one per glyph id ('' when a glyph has none). */
+  glyphNames?: string[];
+}
+
+/** Largest deviation of an SVG arc from the true ellipse, per em, so 0.1 font units at 1000 units per em. */
+const SVG_ARC_TOLERANCE_PER_EM = 0.0001;
+
 /**
- * Decodes SVG Font into ParsedFont
+ * Turns SVG path data into TrueType contours: lines and exact quadratics are kept, cubics and arcs
+ * become chains of quadratics within the quadratic tolerance, and every point lands on the integer grid.
+ */
+function svgPathToContours(
+  d: string | null,
+  label: string,
+  tolerances: { quadratic: number; arc: number }
+): GlyphPoint[][] {
+  if (d === null || d.trim() === '') return [];
+  let subpaths: SvgSubpath[];
+  try {
+    subpaths = parseSvgPathData(d, { arcTolerance: tolerances.arc });
+  } catch (error) {
+    if (error instanceof SvgPathDataError) throw new SvgPathDataError(`SVG font ${label}: ${error.message}`);
+    throw error;
+  }
+  const subject = `Cannot convert the SVG font to TrueType: ${label}`;
+  const budget = { points: 0 };
+  const contours: GlyphPoint[][] = [];
+  for (const subpath of subpaths) {
+    const raw: GlyphPoint[] = [{ x: subpath.start.x, y: subpath.start.y, onCurve: true }];
+    let current: BezierPoint = subpath.start;
+    for (const segment of subpath.segments) {
+      if (segment.kind === 'line') {
+        raw.push({ x: segment.to.x, y: segment.to.y, onCurve: true });
+      } else if (segment.kind === 'quad') {
+        raw.push({ x: segment.c.x, y: segment.c.y, onCurve: false });
+        raw.push({ x: segment.to.x, y: segment.to.y, onCurve: true });
+      } else {
+        for (const piece of cubicToQuadraticBezier(current, segment.c1, segment.c2, segment.to, tolerances.quadratic)) {
+          raw.push({ x: piece.q.x, y: piece.q.y, onCurve: false });
+          raw.push({ x: piece.p.x, y: piece.p.y, onCurve: true });
+        }
+      }
+      current = segment.to;
+    }
+    const points = roundContourToGlyfGrid(raw, subject);
+    if (points === null) continue;
+    addToPointBudget(budget, points.length, subject);
+    contours.push(points);
+  }
+  return contours;
+}
+
+/**
+ * Decodes an SVG font into ParsedFont with real glyf outlines: every glyph's path data (M L H V C
+ * S Q T A Z, absolute and relative) becomes a TrueType contour, units-per-em, ascent and descent
+ * set the metrics, horiz-adv-x the advances, unicode the cmap and glyph-name the glyph names.
+ * A font without any usable glyph path throws FontOutlinesMissingError.
  */
 export function decodeSvgFont(buffer: Buffer, defaultName: string): ParsedFont {
-  const text = buffer.toString('utf-8');
-  const familyMatch = text.match(/font-family="([^"]+)"/i) || text.match(/<font\s+id="([^"]+)"/i);
-  const family = familyMatch ? familyMatch[1] : defaultName;
-
-  const glyphRegex = /<glyph\s+([^>]+)\/?>/gi;
-  let match: RegExpExecArray | null;
-  const mappings: Array<{ charCode: number; glyphId: number }> = [];
-  let gId = 1; // 0 is .notdef
-
-  while ((match = glyphRegex.exec(text)) !== null) {
-    const attrStr = match[1];
-    const uMatch = attrStr.match(/unicode="([^"]*)"/i);
-    if (uMatch && uMatch[1]) {
-      const uStr = uMatch[1];
-      let codePoint: number | undefined;
-      if (uStr.startsWith('&#x') || uStr.startsWith('&#X')) {
-        codePoint = Number.parseInt(uStr.slice(3, -1), 16);
-      } else if (uStr.startsWith('&#')) {
-        codePoint = Number.parseInt(uStr.slice(2, -1), 10);
-      } else {
-        codePoint = uStr.codePointAt(0);
-      }
-      if (codePoint !== undefined && !Number.isNaN(codePoint) && codePoint > 0) {
-        mappings.push({ charCode: codePoint, glyphId: gId++ });
-      }
-    }
+  const svg: SvgFont | null = parseSvgFontDocument(buffer.toString('utf-8'));
+  if (svg === null) {
+    throw new FontOutlinesMissingError('Cannot read the SVG font: the document has no <font> element with glyphs.');
   }
+  const unitsPerEm = Math.round(svg.unitsPerEm);
+  if (!(unitsPerEm >= MIN_UNITS_PER_EM && unitsPerEm <= MAX_UNITS_PER_EM)) {
+    throw new ConversionFailedError(
+      `Invalid SVG font: units-per-em ${svg.unitsPerEm} is outside ${MIN_UNITS_PER_EM}-${MAX_UNITS_PER_EM}.`
+    );
+  }
+  const tolerances = {
+    quadratic: unitsPerEm * QUADRATIC_TOLERANCE_PER_EM,
+    arc: unitsPerEm * SVG_ARC_TOLERANCE_PER_EM,
+  };
 
-  return createCanonicalFont(buffer, family, mappings.length > 0 ? mappings : undefined);
+  const glyphs: CanonicalFontOutlines['glyphs'] = [];
+  const glyphNames: string[] = [''];
+  const mappings: Array<{ charCode: number; glyphId: number }> = [];
+  const mapped = new Set<number>();
+  const notdef = svg.missingGlyph;
+  glyphs.push({
+    contours: notdef === null ? [] : svgPathToContours(notdef.d, 'missing-glyph', tolerances),
+    advWidth: notdef === null ? svg.advance : notdef.advance,
+  });
+  svg.glyphs.forEach((glyph) => {
+    const glyphId = glyphs.length;
+    glyphs.push({
+      contours: svgPathToContours(glyph.d, glyph.label, tolerances),
+      advWidth: glyph.advance,
+    });
+    glyphNames.push(glyph.glyphName ?? '');
+    // The first glyph for a character wins; a multi-character unicode (ligature) has no cmap entry.
+    if (glyph.codePoint !== null && !mapped.has(glyph.codePoint)) {
+      mapped.add(glyph.codePoint);
+      mappings.push({ charCode: glyph.codePoint, glyphId });
+    }
+  });
+
+  if (!glyphs.some((glyph) => glyph.contours.length > 0)) {
+    throw new FontOutlinesMissingError('Cannot convert the SVG font: none of its glyphs has a usable path (d attribute).');
+  }
+  return createCanonicalFont(buffer, svg.family ?? defaultName, mappings, {
+    unitsPerEm,
+    ascent: svg.ascent,
+    descent: svg.descent,
+    glyphs,
+    glyphNames,
+  });
 }
 
 const GLYPH_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9._]{0,62}$/;
+const POST_VERSION_2 = 0x00020000;
 const POST_HEADER_BYTES = 32;
+const POST_STANDARD_GLYPH_COUNT = 258;
+const OS2_AVG_CHAR_WIDTH_OFFSET = 2;
+const OS2_FS_SELECTION_OFFSET = 62;
+const OS2_FIRST_CHAR_OFFSET = 64;
+const OS2_LAST_CHAR_OFFSET = 66;
+const OS2_TYPO_ASCENDER_OFFSET = 68;
+const OS2_TYPO_DESCENDER_OFFSET = 70;
+const OS2_WIN_ASCENT_OFFSET = 74;
+const OS2_WIN_DESCENT_OFFSET = 76;
+const OS2_FS_SELECTION_REGULAR = 0x40;
+const HEAD_UNITS_PER_EM_FIELD = 18;
 
 /**
  * Final glyph names: an authored name is kept when it is a valid PostScript name and not used
@@ -1258,20 +1417,105 @@ function resolveGlyphNames(authored: string[] | undefined, glyphCount: number): 
   return names;
 }
 
+/** Builds a 'post' table of version 2.0 that names every glyph after .notdef with a custom string. */
+function buildPostTableWithNames(names: string[]): Buffer {
+  const header = Buffer.alloc(POST_HEADER_BYTES + 2 + names.length * 2);
+  header.writeUInt32BE(POST_VERSION_2, 0);
+  header.writeUInt16BE(names.length, POST_HEADER_BYTES);
+  const strings: Buffer[] = [];
+  names.forEach((name, g) => {
+    if (g === 0) return; // index 0 is the standard .notdef name
+    header.writeUInt16BE(POST_STANDARD_GLYPH_COUNT + strings.length, POST_HEADER_BYTES + 2 + g * 2);
+    const bytes = Buffer.from(name, 'ascii');
+    strings.push(Buffer.concat([Buffer.from([bytes.length]), bytes]));
+  });
+  return Buffer.concat([header, ...strings]);
+}
+
+function int16Metric(value: number, name: string): number {
+  const rounded = Math.round(value);
+  if (!Number.isFinite(rounded) || rounded < INT16_MIN || rounded > INT16_MAX) {
+    throw new ConversionFailedError(`Invalid font: ${name} ${value} is outside the 16-bit range.`);
+  }
+  return rounded;
+}
+
+/**
+ * Builds glyf, loca, hmtx and post from glyph outlines and writes the matching values into the
+ * head, hhea, maxp and OS/2 buffers of createCanonicalFont.
+ */
+function applyOutlinesToCanonicalTables(
+  outlines: CanonicalFontOutlines,
+  mappings: Array<{ charCode: number; glyphId: number }>,
+  target: { head: Buffer; hhea: Buffer; maxp: Buffer; os2: Buffer }
+): { glyf: Buffer; loca: Buffer; hmtx: Buffer; post: Buffer } {
+  const { glyphs } = outlines;
+  const built = buildGlyfAndLoca(glyphs);
+  built.maxp.writeUInt16BE(MAXP_ZONES_WITHOUT_TWILIGHT, MAXP_MAX_ZONES_OFFSET);
+  built.maxp.copy(target.maxp);
+
+  const metrics = measureGlyphs(glyphs);
+  target.head.writeUInt16BE(outlines.unitsPerEm, HEAD_UNITS_PER_EM_FIELD);
+  applyGlyphMetrics(target.head, target.hhea, metrics, glyphs.length, built.indexToLocFormat);
+  const ascent = int16Metric(outlines.ascent, 'ascent');
+  const descent = int16Metric(outlines.descent, 'descent');
+  target.hhea.writeInt16BE(ascent, HHEA_ASCENDER_OFFSET);
+  target.hhea.writeInt16BE(-descent, HHEA_DESCENDER_OFFSET);
+
+  const drawn = glyphs.filter((glyph) => glyph.contours.length > 0);
+  const widthSum = (drawn.length > 0 ? drawn : glyphs).reduce((sum, glyph) => sum + glyph.advWidth, 0);
+  const widthCount = drawn.length > 0 ? drawn.length : glyphs.length;
+  target.os2.writeInt16BE(int16Metric(widthSum / widthCount, 'average advance width'), OS2_AVG_CHAR_WIDTH_OFFSET);
+  target.os2.writeUInt16BE(OS2_FS_SELECTION_REGULAR, OS2_FS_SELECTION_OFFSET);
+  const bmpCodes = mappings.map((m) => m.charCode).filter((code) => code <= UINT16_MAX);
+  if (bmpCodes.length > 0) {
+    target.os2.writeUInt16BE(Math.min(...bmpCodes), OS2_FIRST_CHAR_OFFSET);
+    target.os2.writeUInt16BE(Math.max(...bmpCodes), OS2_LAST_CHAR_OFFSET);
+  }
+  target.os2.writeInt16BE(ascent, OS2_TYPO_ASCENDER_OFFSET);
+  target.os2.writeInt16BE(-descent, OS2_TYPO_DESCENDER_OFFSET);
+  target.os2.writeUInt16BE(Math.max(0, ascent), OS2_WIN_ASCENT_OFFSET);
+  target.os2.writeUInt16BE(Math.abs(descent), OS2_WIN_DESCENT_OFFSET);
+
+  return {
+    glyf: built.glyf,
+    loca: built.loca,
+    hmtx: metrics.hmtx,
+    post: buildPostTableWithNames(resolveGlyphNames(outlines.glyphNames, glyphs.length)),
+  };
+}
+
 /**
  * Creates canonical valid SFNT font containing minimal required tables:
- * 'head', 'hhea', 'maxp', 'OS/2', 'hmtx', 'cmap', 'name', 'post'
+ * 'head', 'hhea', 'maxp', 'OS/2', 'hmtx', 'cmap', 'name', 'post'.
+ *
+ * Without `outlines` the font has no glyph shapes (identity tables only). With `outlines` it also
+ * carries 'glyf' and 'loca' built from them, and head, hhea, maxp, OS/2, hmtx and post describe
+ * those glyphs; `charMappings` then maps characters to glyph ids of `outlines.glyphs`.
  */
 export function createCanonicalFont(
   seedData: Buffer,
   fontFamily: string,
-  charMappings?: Array<{ charCode: number; glyphId: number }>
+  charMappings?: Array<{ charCode: number; glyphId: number }>,
+  outlines?: CanonicalFontOutlines
 ): ParsedFont {
   const seedBuffer = Buffer.isBuffer(seedData) ? seedData : Buffer.from(seedData || '');
   const tables: Record<string, SfntTable> = {};
-  const mappings = charMappings && charMappings.length > 0 ? charMappings : [{ charCode: 65, glyphId: 1 }];
+  // A font with outlines maps only what the caller gives it; the outline-free identity font maps 'A'.
+  let mappings = charMappings ?? [];
+  if (outlines === undefined && mappings.length === 0) mappings = [{ charCode: 65, glyphId: 1 }];
   const maxGid = mappings.reduce((m, item) => Math.max(m, item.glyphId), 1);
-  const totalGlyphs = Math.max(2, maxGid + 1);
+  const totalGlyphs = outlines !== undefined ? outlines.glyphs.length : Math.max(2, maxGid + 1);
+  if (outlines !== undefined) {
+    if (totalGlyphs < 1 || totalGlyphs > UINT16_MAX) {
+      throw new ConversionFailedError(`Cannot build a font with ${totalGlyphs} glyphs (1-${UINT16_MAX} are allowed).`);
+    }
+    for (const mapping of mappings) {
+      if (mapping.glyphId < 0 || mapping.glyphId >= totalGlyphs) {
+        throw new ConversionFailedError(`Cannot map U+${mapping.charCode.toString(16)} to glyph ${mapping.glyphId}: the font has ${totalGlyphs} glyphs.`);
+      }
+    }
+  }
 
   // 1. 'head' table (54 bytes)
   const head = Buffer.alloc(54);
@@ -1323,17 +1567,24 @@ export function createCanonicalFont(
   const cmap = createDualCmapTable(mappings);
 
   // 7. 'hmtx' table (4 bytes per glyph)
-  const hmtx = Buffer.alloc(totalGlyphs * 4);
+  let hmtx: Buffer = Buffer.alloc(totalGlyphs * 4);
   for (let i = 0; i < totalGlyphs; i++) {
     hmtx.writeUInt16BE(i === 0 ? 500 : 600, i * 4);
     hmtx.writeInt16BE(i === 0 ? 0 : 50, i * 4 + 2);
   }
 
   // 8. 'post' table (32 bytes version 3.0)
-  const post = Buffer.alloc(32);
+  let post: Buffer = Buffer.alloc(32);
   post.writeUInt32BE(0x00030000, 0);
 
-  const rawTables: { tag: string; data: Buffer }[] = [
+  const rawTables: { tag: string; data: Buffer }[] = [];
+  if (outlines !== undefined) {
+    const built = applyOutlinesToCanonicalTables(outlines, mappings, { head, hhea, maxp, os2 });
+    hmtx = built.hmtx;
+    post = built.post;
+    rawTables.push({ tag: 'glyf', data: built.glyf }, { tag: 'loca', data: built.loca });
+  }
+  rawTables.push(
     { tag: 'OS/2', data: os2 },
     { tag: 'cmap', data: cmap },
     { tag: 'head', data: head },
@@ -1341,8 +1592,8 @@ export function createCanonicalFont(
     { tag: 'hmtx', data: hmtx },
     { tag: 'maxp', data: maxp },
     { tag: 'name', data: nameBuf },
-    { tag: 'post', data: post },
-  ];
+    { tag: 'post', data: post }
+  );
 
   rawTables.forEach((t) => {
     tables[t.tag] = {
@@ -1360,6 +1611,7 @@ export function createCanonicalFont(
     numTables: rawTables.length,
     tables,
     fontFamily,
+    ...(outlines?.glyphNames ? { glyphNames: outlines.glyphNames } : {}),
   };
 }
 
@@ -2570,6 +2822,12 @@ const QUADRATIC_TOLERANCE_PER_EM = 0.0005;
 const FEWEST_DISTINCT_POINTS_PER_CONTOUR = 2;
 const FONT_MATRIX_IDENTITY_EPSILON = 1e-9;
 const SVG_PATH_DECIMALS = 100;
+/** Advance written for a glyph when the font has no hmtx entry for it. */
+const DEFAULT_SVG_ADVANCE = 1000;
+/** SVG 1.1 leaves descent unspecified; a fifth of an em is the conventional value. */
+const SVG_DEFAULT_DESCENT_PER_EM = 0.2;
+const HHEA_ASCENDER_OFFSET = 4;
+const HHEA_DESCENDER_OFFSET = 6;
 
 function makeSfntTable(tag: string, data: Buffer): SfntTable {
   return { tag, checkSum: calculateTableChecksum(data), offset: 0, length: data.length, data };
@@ -2878,11 +3136,8 @@ function cffContoursToSvgPath(contours: CffContour[], matrix: CffMatrix | null):
   return parts.join(' ');
 }
 
-/**
- * Extracts real vector glyphs from the CFF table of an OpenType font. Only glyphs the cmap maps to
- * a character are returned, since an SVG font addresses glyphs by character.
- */
-export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number }> {
+/** Reads every glyph of an OpenType CFF font (including .notdef) as an SVG path with its advance. */
+function readCffGlyphRecords(font: ParsedFont): SvgGlyphRecord[] {
   const cffTable = font.tables['CFF '];
   if (!cffTable) return [];
   const cff = parseCff(cffTable.data);
@@ -2891,16 +3146,24 @@ export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: 
   const glyphToUnicode = buildGlyphToUnicodeMap(font.tables['cmap']);
   const advances = readHorizontalAdvances(font, cff.numGlyphs);
 
-  const result: Array<{ unicode: string; d: string; advWidth: number }> = [];
+  const records: SvgGlyphRecord[] = [];
   for (let g = 0; g < cff.numGlyphs; g++) {
-    const unicode = glyphToUnicode.get(g);
-    if (unicode === undefined) continue;
     const glyph = cff.glyph(g);
     const d = cffContoursToSvgPath(glyph.contours, fontMatrixToUnits(glyph.matrix, unitsPerEm));
     const advWidth = advances === null ? Math.round(glyph.width) : advances[g];
-    result.push({ unicode, d, advWidth });
+    records.push({ glyphId: g, unicode: writableUnicode(glyphToUnicode, g), name: font.glyphNames?.[g] ?? '', d, advWidth });
   }
-  return result;
+  return records;
+}
+
+/**
+ * Extracts real vector glyphs from the CFF table of an OpenType font. Only glyphs the cmap maps to
+ * a character are returned, since an SVG font addresses glyphs by character.
+ */
+export function extractCffGlyphs(font: ParsedFont): Array<{ unicode: string; d: string; advWidth: number }> {
+  return readCffGlyphRecords(font)
+    .filter((record) => record.unicode !== '')
+    .map(({ unicode, d, advWidth }) => ({ unicode, d, advWidth }));
 }
 
 /**
