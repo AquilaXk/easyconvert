@@ -25,7 +25,6 @@
  * header (both from CAMF), producing linear sRGB, then the sRGB transfer curve.
  */
 import { RawDecodeError } from '../types';
-import { RAW_DECODE_MAX_PIXELS } from './raw-formats';
 import { applyMatrixAndSrgbEncode, exposureScale, MAX_SAMPLE_16, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
 
 const FOVB_MAGIC = 'FOVb';
@@ -55,6 +54,8 @@ const TRUE_PLANE_ALIGNMENT = 16;
 const TRUE_MAX_CODE_BITS = 8;
 const TRUE_MAX_TABLE_PAIRS = 256;
 const TRUE_MAX_EXTRA_BITS = 16;
+/** Largest Foveon sensor array (the 15 MP x 3 layer sensors) with headroom. */
+const X3F_MAX_PIXELS = 30_000_000;
 const SAMPLE_MAX = 0xffff;
 const BITS_PER_BYTE = 8;
 const BIT_WINDOW = 32;
@@ -268,10 +269,8 @@ export interface FoveonLayers {
 /** Decodes the three layers of a TRUE-format sensor section. */
 export function decodeTrueLayers(file: Buffer, image: X3fImageSection): FoveonLayers {
   const { columns: width, rows: height } = image;
-  if (width < 2 || height < 2 || width * height > RAW_DECODE_MAX_PIXELS) {
-    throw new RawDecodeError(
-      `Decoded RAW image of ${width}x${height} pixels exceeds the ${RAW_DECODE_MAX_PIXELS} pixel limit`
-    );
+  if (width < 2 || height < 2 || width * height > X3F_MAX_PIXELS) {
+    throw new RawDecodeError(`Decoded RAW image of ${width}x${height} pixels exceeds the ${X3F_MAX_PIXELS} pixel limit`);
   }
   const sectionEnd = image.offset + image.length;
   const seedStart = image.offset + IMAGE_HEADER_BYTES;
@@ -287,6 +286,8 @@ export function decodeTrueLayers(file: Buffer, image: X3fImageSection): FoveonLa
   for (let layer = 0; layer < TRUE_PLANES; layer += 1) {
     const planeEnd = planeStart + planeSizes[layer];
     if (planeEnd > sectionEnd) throw fail(`layer ${layer} extends past its section`);
+    // Every sample costs at least one bit, so a smaller plane cannot hold the declared image.
+    if (planeSizes[layer] * BITS_PER_BYTE < width * height) throw fail(`layer ${layer} is too small for ${width}x${height} samples`);
     planes.push(decodeTruePlane(file, planeStart, planeEnd, width, height, seeds[layer], lookup));
     planeStart += Math.ceil(planeSizes[layer] / TRUE_PLANE_ALIGNMENT) * TRUE_PLANE_ALIGNMENT;
   }

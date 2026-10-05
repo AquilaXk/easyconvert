@@ -22,8 +22,9 @@ import {
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
-import { decodeBrcmRaw, findBrcmTrailer } from '../lib/conversions/raw-brcm';
-import { decodeX3f, isX3f } from '../lib/conversions/raw-x3f';
+import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
+import { isX3f } from '../lib/conversions/raw-x3f';
+import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
@@ -1440,7 +1441,8 @@ export async function convertWithInProcessRawSensor(
   if (!recognized) return null;
 
   const startTime = Date.now();
-  const decoded = src === 'x3f' ? decodeX3f(file) : decodeBrcmRaw(file);
+  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const decoded = await decodeRawInThread(src as 'x3f' | 'raw', file, timeout, options.signal);
   const intermediate = encode16BitTiff(decoded.width, decoded.height, decoded.rgb16);
   const converted = await convertImage(intermediate, tgt, options, originalFilename, 'tiff');
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';

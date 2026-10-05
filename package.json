@@ -17,7 +17,7 @@
     "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
     "bench:zstd": "PERF_BENCH=1 vitest run tests/zstd-streaming-dict.test.ts",
     "worker": "tsx src/worker/index.ts",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node20 --outfile=dist/raw-decode-worker.js --packages=external",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
     "generate:sdk": "tsx scripts/generate-sdk.ts"
   },

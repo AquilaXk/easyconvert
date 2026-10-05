@@ -22,7 +22,6 @@
  * the file) and the sRGB transfer curve. The output is 16-bit RGB.
  */
 import { RawDecodeError } from '../types';
-import { RAW_DECODE_MAX_PIXELS } from './raw-formats';
 import { applyMatrixAndSrgbEncode, clamp16, exposureScale, MAX_SAMPLE_16, RGB_CHANNELS, type Matrix3x3 } from './raw-srgb';
 
 export type BayerOrder = 'RGGB' | 'GBRG' | 'BGGR' | 'GRBG';
@@ -53,16 +52,23 @@ const LOW_BITS_MASK = 0x3;
 const SENSOR_MAX_VALUE = (1 << BITS_PER_PIXEL) - 1;
 const STRIDE_ALIGNMENT_BYTES = 32;
 const MIN_DIMENSION = 4;
-const MAX_DIMENSION = 0xffff;
 
-/**
- * Black level per sensor, in 10-bit counts. The values are the sensors' pedestal in the camera
- * stack's tuning data (1024 and 4096 on its 16-bit scale).
- */
-const SENSOR_BLACK_LEVELS: ReadonlyMap<string, number> = new Map([
-  ['ov5647', 16],
-  ['imx219', 64],
+interface SensorCalibration {
+  /** Black level in 10-bit counts: the sensor's pedestal in the camera stack's tuning data (1024 and 4096 on its 16-bit scale). */
+  blackLevel: number;
+  /** Full pixel array of the sensor; a frame cannot be larger. */
+  maxWidth: number;
+  maxHeight: number;
+}
+
+const SENSORS: ReadonlyMap<string, SensorCalibration> = new Map([
+  ['ov5647', { blackLevel: 16, maxWidth: 2592, maxHeight: 1944 }],
+  ['imx219', { blackLevel: 64, maxWidth: 3280, maxHeight: 2464 }],
 ]);
+
+function sensorOf(name: string): SensorCalibration | undefined {
+  return SENSORS.get(name.split(' ')[0]);
+}
 
 /** Share of the white range below which / above which a 2x2 cell is ignored by the white balance estimate. */
 const WB_LOW_FRACTION = 0.05;
@@ -136,8 +142,8 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
     throw fail('the header block is cut short');
   }
   const sensor = readSensorName(file, trailer);
-  const black = SENSOR_BLACK_LEVELS.get(sensor.split(' ')[0]);
-  if (black === undefined) throw fail(`no calibration is known for the "${sensor}" sensor`);
+  const calibration = sensorOf(sensor);
+  if (calibration === undefined) throw fail(`no calibration is known for the "${sensor}" sensor`);
 
   const width = file.readUInt16LE(trailer + OFFSET_WIDTH);
   const height = file.readUInt16LE(trailer + OFFSET_HEIGHT);
@@ -147,10 +153,8 @@ export function parseBrcmHeader(file: Buffer, trailer: number): BrcmFrame {
   if (width < MIN_DIMENSION || height < MIN_DIMENSION || width % PIXELS_PER_GROUP !== 0 || height % 2 !== 0) {
     throw fail(`unsupported frame size ${width}x${height}`);
   }
-  if (width > MAX_DIMENSION || height > MAX_DIMENSION || width * height > RAW_DECODE_MAX_PIXELS) {
-    throw new RawDecodeError(
-      `Decoded RAW image of ${width}x${height} pixels exceeds the ${RAW_DECODE_MAX_PIXELS} pixel limit`
-    );
+  if (width > calibration.maxWidth || height > calibration.maxHeight) {
+    throw fail(`the ${width}x${height} frame is larger than the ${calibration.maxWidth}x${calibration.maxHeight} ${sensor.split(' ')[0]} sensor`);
   }
 
   const rowBytes = (width / PIXELS_PER_GROUP) * BYTES_PER_GROUP;
@@ -305,7 +309,7 @@ export function decodeBrcmRaw(file: Buffer): DecodedRgb16 {
   if (trailer < 0) throw new RawDecodeError('The file has no Raspberry Pi "BRCM" sensor block', true);
   const frame = parseBrcmHeader(file, trailer);
   const { width, height, bayer } = frame;
-  const blackLevel = SENSOR_BLACK_LEVELS.get(frame.sensor.split(' ')[0])!;
+  const blackLevel = sensorOf(frame.sensor)!.blackLevel;
   const whiteRange = SENSOR_MAX_VALUE - blackLevel;
 
   const raw = unpackRaw10(file, frame);

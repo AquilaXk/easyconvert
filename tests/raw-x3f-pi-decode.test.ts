@@ -177,7 +177,7 @@ describe.skipIf(!ENABLED)('Raspberry Pi RAW hostile input', () => {
       buffer.writeUInt16LE(huge, trailer + OFFSET_HEIGHT_COPY);
       buffer.writeUInt32LE(81920, trailer + OFFSET_STRIDE);
     });
-    await expectRejected(file, 'raw', /pixel limit/);
+    await expectRejected(file, 'raw', /larger than/);
   });
 
   it('rejects disagreeing copies of the frame size', async () => {
