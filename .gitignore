@@ -48,9 +48,12 @@ GEMINI.md
 .agents/
 .codex/
 
-# Claude Code personal overrides (shared config lives in CLAUDE.md and .claude/)
+# Agent configuration, instructions and planning docs stay local
+CLAUDE.md
 CLAUDE.local.md
-.claude/settings.local.json
+.claude/
+implementation_plan.md
+walkthrough.md
 
 # Git worktrees (manual and Claude Code managed)
 .worktrees/
