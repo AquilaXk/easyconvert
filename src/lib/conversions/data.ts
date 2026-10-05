@@ -194,7 +194,7 @@ function canonicalEncoding(label: string): string {
   try {
     return new TextDecoder(label).encoding;
   } catch {
-    throw new UnsupportedOptionError(`Unsupported text encoding "${label}"; pass a WHATWG encoding label.`);
+    throw new UnsupportedOptionError(`Option "encoding" must be a WHATWG encoding label; "${label}" is not one.`);
   }
 }
 
@@ -289,13 +289,36 @@ function detectDelimiter(text: string, nominal: string): string {
 }
 
 function resolveDelimiter(text: string, src: string, requested?: string): string {
-  if (requested !== undefined) {
-    if (requested.length === 0 || Papa.BAD_DELIMITERS.some((bad) => requested.includes(bad))) {
-      throw new UnsupportedOptionError(`Unsupported delimiter ${JSON.stringify(requested)}.`);
-    }
-    return requested;
+  return requested ?? detectDelimiter(text, src === 'csv' ? ',' : '\t');
+}
+
+const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set(DELIMITER_CANDIDATES);
+const BOOLEAN_DATA_OPTIONS = ['bom', 'escapeFormulas'] as const;
+
+function optionError(name: string, expectation: string, value: unknown): UnsupportedOptionError {
+  return new UnsupportedOptionError(`Option "${name}" must be ${expectation}; got ${JSON.stringify(value) ?? typeof value}.`);
+}
+
+/**
+ * Options arrive as parsed request JSON, so their types are checked before use: a wrong type is
+ * a typed 400, never a TypeError deep in a parser.
+ */
+function assertDataOptions(options: unknown): asserts options is ConversionOptions {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new UnsupportedOptionError('Conversion options must be an object.');
   }
-  return detectDelimiter(text, src === 'csv' ? ',' : '\t');
+  const { delimiter, encoding } = options as Record<string, unknown>;
+  if (delimiter !== undefined && (typeof delimiter !== 'string' || !ALLOWED_DELIMITERS.has(delimiter))) {
+    throw optionError('delimiter', 'one of ",", ";", TAB or "|"', delimiter);
+  }
+  if (encoding !== undefined) {
+    if (typeof encoding !== 'string') throw optionError('encoding', 'a WHATWG encoding label', encoding);
+    canonicalEncoding(encoding);
+  }
+  for (const name of BOOLEAN_DATA_OPTIONS) {
+    const value = (options as Record<string, unknown>)[name];
+    if (value !== undefined && typeof value !== 'boolean') throw optionError(name, 'true or false', value);
+  }
 }
 
 function lineNumberAt(text: string, index: number): number {
@@ -728,6 +751,7 @@ export async function convertData(
   options: ConversionOptions = {},
   originalFilename: string
 ): Promise<ConversionResult> {
+  assertDataOptions(options);
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();

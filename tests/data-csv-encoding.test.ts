@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
+import { convertData } from '../src/lib/conversions/data';
+import { ConversionOptionsSchema, validateOrProblem } from '../src/lib/api/contracts';
 import {
   ConversionFailedError,
   DataEncodingError,
@@ -269,6 +271,53 @@ describe('CSV output BOM and formula escaping', () => {
   it('rejects a delimiter option that cannot separate fields', async () => {
     const err = await rejection(convertFile(Buffer.from('a,b\n1,2\n'), 'csv', 'json', { delimiter: '"' }, 'x.csv'));
     expect(err).toBeInstanceOf(UnsupportedOptionError);
-    expect(err.message).toBe('Unsupported delimiter "\\"".');
+    expect(err.message).toMatch(/"delimiter"/);
+  });
+});
+
+describe('data conversion options are type-checked', () => {
+  // Options arrive as parsed request JSON, so any JSON type can reach the engine.
+  const INVALID_OPTIONS: readonly [label: string, options: Record<string, unknown>][] = [
+    ['numeric delimiter', { delimiter: 5 }],
+    ['object delimiter', { delimiter: {} }],
+    ['array delimiter', { delimiter: ['a'] }],
+    ['null delimiter', { delimiter: null }],
+    ['multi-character delimiter', { delimiter: '::' }],
+    ['delimiter outside , ; TAB |', { delimiter: ':' }],
+    ['numeric encoding', { encoding: 5 }],
+    ['null encoding', { encoding: null }],
+    ['string bom', { bom: 'no' }],
+    ['numeric escapeFormulas', { escapeFormulas: 1 }],
+  ];
+
+  for (const [label, options] of INVALID_OPTIONS) {
+    it(`rejects a ${label} with a typed option error`, async () => {
+      const err = await rejection(convertFile(Buffer.from('a,b\n1,2\n'), 'csv', 'json', options, 'x.csv'));
+      expect(err).toBeInstanceOf(UnsupportedOptionError);
+      expect(err.message).toMatch(new RegExp(`"${Object.keys(options)[0]}"`));
+    });
+  }
+
+  it('rejects options that are not an object', async () => {
+    const err = await rejection(convertData(Buffer.from('[{"a":1}]'), 'json', 'csv', null as never, 'x.json'));
+    expect(err).toBeInstanceOf(UnsupportedOptionError);
+    expect(err.message).toMatch(/options must be an object/);
+  });
+
+  it('declares encoding, bom and escapeFormulas with their types in the v1 options contract', () => {
+    const valid = validateOrProblem(ConversionOptionsSchema, { encoding: 'euc-kr', bom: false, escapeFormulas: true });
+    expect(valid.ok).toBe(true);
+    for (const options of [{ encoding: 5 }, { bom: 'no' }, { escapeFormulas: 1 }]) {
+      const result = validateOrProblem(ConversionOptionsSchema, options);
+      expect(result.ok).toBe(false);
+      expect(result.problem?.status).toBe(422);
+    }
+  });
+
+  it('accepts each allowed delimiter character', async () => {
+    for (const delimiter of [',', ';', '\t', '|']) {
+      const records = await csvToRecords(Buffer.from(`a${delimiter}b\n1${delimiter}2\n`), 'x.csv', { delimiter });
+      expect(records).toEqual([{ a: '1', b: '2' }]);
+    }
   });
 });
