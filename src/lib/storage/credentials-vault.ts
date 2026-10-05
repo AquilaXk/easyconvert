@@ -97,6 +97,23 @@ interface StoredCredentialEnvelope {
 
 const VAULT_PREFIX = 'vault:cred:';
 
+/**
+ * Credentials could not be written to the shared store. They are not kept in process memory
+ * instead: a copy that other instances cannot see would pass for saved and then vanish on the
+ * next request or restart.
+ */
+export class CredentialsVaultPersistenceError extends Error {
+  readonly code = 'CREDENTIALS_VAULT_UNAVAILABLE';
+
+  constructor(options?: { cause?: unknown }) {
+    super('Credential storage is unavailable; the credentials were not saved.');
+    this.name = 'CredentialsVaultPersistenceError';
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
 function getVaultMasterKey(): Buffer {
   const secret =
     process.env.STORAGE_VAULT_KEY ||
@@ -198,8 +215,8 @@ export class CredentialsVault {
       expiresAt,
     };
 
-    // Persist in Redis if active
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      // A configured Redis is the only store: if the write fails, the save fails.
       try {
         const key = `${VAULT_PREFIX}${id}`;
         const serialized = JSON.stringify(envelope);
@@ -209,10 +226,11 @@ export class CredentialsVault {
           await this.redisClient.set(key, serialized);
         }
       } catch (err) {
-        console.warn('[CredentialsVault] Redis save failed, falling back to in-memory store:', err);
-        this.inMemoryStore.set(id, envelope);
+        console.error('[CredentialsVault] Redis save failed:', err);
+        throw new CredentialsVaultPersistenceError({ cause: err });
       }
     } else {
+      // No Redis configured (local development and tests): single-process memory.
       this.inMemoryStore.set(id, envelope);
     }
 

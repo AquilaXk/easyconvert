@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import {
   credentialsVault,
+  CredentialsVaultPersistenceError,
   CustomerStorageCredentials,
   StorageProviderType,
   StorageAdapterError,
@@ -96,6 +97,9 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err: unknown) {
+    if (err instanceof CredentialsVaultPersistenceError) {
+      return createProblemDetailsResponse(503, err.message, instanceUri);
+    }
     const message = err instanceof Error ? err.message : 'Failed to register credentials';
     return createProblemDetailsResponse(500, message, instanceUri);
   }
