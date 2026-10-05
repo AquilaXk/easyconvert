@@ -29,12 +29,17 @@ const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
 /** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
-const DANGEROUS_URI_PREFIXES = [
+/** Lowercase, whitespace-free prefixes of URIs that execute or render active content. */
+const SCRIPT_URI_PREFIXES = [
   'javascript:',
   'vbscript:',
   'data:text/html',
   'data:image/svg+xml',
   'data:application/javascript',
+] as const;
+
+const DANGEROUS_URI_PREFIXES = [
+  ...SCRIPT_URI_PREFIXES,
   'http:',
   'https:',
   'file:',
@@ -153,6 +158,11 @@ function isWordCharAt(str: string, index: number): boolean {
   const isUpper = code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z;
   const isLower = code >= 0x61 && code <= 0x7a;
   return isDigit || isUpper || isLower || code === 0x5f;
+}
+
+/** Takes a URI after entity decoding, whitespace/control removal and lowercasing; true for script-capable URIs. */
+function isScriptUri(normalized: string): boolean {
+  return SCRIPT_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing. */
@@ -873,6 +883,13 @@ function hasDangerousUriItem(raw: string): boolean {
     .some((item) => isDangerousUri(normalizeUriText(item)));
 }
 
+/** True when any `;`-separated item of an animation value is a script-capable URI, whatever attribute it targets. */
+function hasScriptUriItem(raw: string): boolean {
+  return decodeHtmlEntities(raw)
+    .split(ANIMATION_VALUE_SEPARATOR)
+    .some((item) => isScriptUri(normalizeUriText(item)));
+}
+
 /** True when `isHostile` accepts the raw value of any to/from/by/values attribute. */
 function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean): boolean {
   return tag.attributes.some(
@@ -887,13 +904,15 @@ function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean)
 function isHostileAnimation(tag: TagToken): boolean {
   if (!ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
   const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
-  if (target === undefined) return false;
+  if (target === undefined) return hasAnimationValue(tag, hasScriptUriItem);
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isEventHandlerName(targetName)) return true;
   if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
-  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, hasExternalReference);
-  if (!LINK_ATTRIBUTES.has(targetName)) return false;
-  return hasAnimationValue(tag, hasDangerousUriItem);
+  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) {
+    return hasAnimationValue(tag, (value) => hasExternalReference(value) || hasScriptUriItem(value));
+  }
+  if (LINK_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, hasDangerousUriItem);
+  return hasAnimationValue(tag, hasScriptUriItem);
 }
 
 /**

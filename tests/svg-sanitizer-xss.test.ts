@@ -993,3 +993,52 @@ describe('animations writing external references into presentation attributes (i
     expect(out).toBe('<svg></svg>');
   });
 });
+
+describe('animations writing dangerous URIs into any attribute (issue #403 item 3)', () => {
+  const hostile = [
+    '<set attributeName="fill" to="javascript:alert(1)"/>',
+    '<set attributeName="data" to="data:text/html,<b>x</b>"/>',
+    '<animate attributeName="d" values="M0 0;vbscript:msgbox(1)"/>',
+    '<animate attributeName="title" from="a" to="data:image/svg+xml,x"/>',
+    '<animateTransform attributeName="transform" by="javascript:alert(1)"/>',
+    '<animateMotion attributeName="path" values="data:text/html;base64,AAAA"/>',
+    '<SET AttributeName="Anything" TO="JavaScript:alert(1)"/>',
+    '<set attributeName="x" to="jav&#x61;script&#58;alert(1)"/>',
+    '<set attributeName="x" to="java&#9;script:alert(1)"/>',
+    '<set attributeName="x" to=" java script:alert(1)"/>',
+    '<s:animate attributeName="x" values="a&#59;javascript:alert(1)"/>',
+    '<set to="javascript:alert(1)"/>',
+  ];
+
+  for (const animation of hostile) {
+    it(`removes ${animation}`, () => {
+      const out = sanitizeSvgString(`<svg><rect>${animation}<circle/></rect></svg>`);
+      expect(executableConstructs(out)).toEqual([]);
+      expect(out).toBe('<svg><rect><circle/></rect></svg>');
+    });
+  }
+
+  const benign = [
+    '<set attributeName="fill" to="red"/>',
+    '<set attributeName="class" to="javascript-theme"/>',
+    '<set attributeName="title" to="data: a note"/>',
+    '<animate attributeName="d" values="M0 0;M1 1" dur="1s"/>',
+    '<animate attributeName="opacity" from="0" to="1" dur="1s"/>',
+  ];
+
+  for (const animation of benign) {
+    it(`keeps ${animation}`, () => {
+      const input = `<svg><rect>${animation}</rect></svg>`;
+      expect(sanitizeSvgString(input)).toBe(input);
+    });
+  }
+
+  it('removes many hostile animations in linear time', () => {
+    const FIVE_MB = 5 * 1024 * 1024;
+    const unit = '<set attributeName="x" to="javascript:alert(1)"/>';
+    const start = performance.now();
+    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(out).toBe('<svg></svg>');
+  });
+});
