@@ -28,7 +28,6 @@ const STYLE_ATTRIBUTE = 'style';
 const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
-/** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
 /** Lowercase, whitespace-free prefixes of URIs that execute or render active content. */
 const SCRIPT_URI_PREFIXES = [
   'javascript:',
@@ -38,6 +37,7 @@ const SCRIPT_URI_PREFIXES = [
   'data:application/javascript',
 ] as const;
 
+/** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
 const DANGEROUS_URI_PREFIXES = [
   ...SCRIPT_URI_PREFIXES,
   'http:',
