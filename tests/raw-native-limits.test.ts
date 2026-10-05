@@ -58,11 +58,20 @@ describe('native RAW decoder resource bounds', () => {
   });
 
   it('maps an output-size signal (SIGXFSZ) to a client error and cleans up', async () => {
-    const before = readdirSync(os.tmpdir()).filter((name) => name.startsWith(TEMP_PREFIX));
-    const error = await convertWithStub(signalStub('XFSZ'));
-    expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/output limit/);
-    expect(readdirSync(os.tmpdir()).filter((name) => name.startsWith(TEMP_PREFIX))).toEqual(before);
+    // A private temp root keeps decodes from other test files out of the cleanup check.
+    const privateTmp = mkdtempSync(path.join(STUB_DIR, 'tmp-'));
+    const previousTmp = process.env.TMPDIR;
+    process.env.TMPDIR = privateTmp;
+    try {
+      expect(os.tmpdir()).toBe(privateTmp);
+      const error = await convertWithStub(signalStub('XFSZ'));
+      expect(error).toBeInstanceOf(RawDecodeError);
+      expect((error as RawDecodeError).message).toMatch(/output limit/);
+      expect(readdirSync(privateTmp).filter((name) => name.startsWith(TEMP_PREFIX))).toEqual([]);
+    } finally {
+      if (previousTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmp;
+    }
   });
 
   it('keeps a decoder timeout out of the client-error class', async () => {
