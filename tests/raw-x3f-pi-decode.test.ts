@@ -188,9 +188,9 @@ describe.skipIf(!ENABLED)('region comparison negative controls', () => {
       file[at] = state >>> 24;
     }
     const result = await dispatchConversion(file, 'raw', 'png', {}, 'noise.raw');
-    const failed = exceeded(await compareWithPreview(result.buffer, frame.previewJpeg), TOLERANCE[name]);
-    expect(failed).toContain('lumaRankCorrelation');
-    expect(failed).toContain('chromaRelativeError');
+    const comparison = await compareWithPreview(result.buffer, frame.previewJpeg);
+    expect(comparison.lumaRankCorrelation).toBeLessThan(TOLERANCE[name].lumaRankCorrelation - 0.3);
+    expect(comparison.chromaRelativeError).toBeGreaterThan(TOLERANCE[name].chromaRelativeError);
   }, DECODE_TIMEOUT_MS);
 
   it.each(['x3f-sd14', 'x3f-merrill', 'x3f-quattro'] as const)('an %s file with damaged compressed sensor data is rejected with RawDecodeError', async (name) => {
