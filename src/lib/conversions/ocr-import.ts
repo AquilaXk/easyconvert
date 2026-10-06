@@ -16,6 +16,15 @@ import { OcrMarkupError, readMarkup, type MarkupAttributes, type MarkupHandler }
  */
 
 const PERCENT_SCALE = 100;
+/** Largest coordinate, size or baseline offset accepted, in pixels; a 1 m scan at 1200 dpi is about 47,000. */
+export const OCR_MARKUP_MAX_COORDINATE_PX = 1_000_000;
+const MAX_CONFIDENCE_PERCENT = 100;
+/** Sub-percent noise from scaling a 0..1 confidence (0.57 * 100 is 56.99999999999999) is rounded off. */
+const CONFIDENCE_PRECISION_DIGITS = 12;
+/** Decimal integers and numbers of at most nine digits per part; no sign other than `-`, no exponent, no hex. */
+const DECIMAL_INTEGER = /^-?\d{1,9}$/;
+const DECIMAL_NUMBER = /^-?\d{1,9}(?:\.\d{1,9})?$/;
+const POSITIVE_INTEGER = /^[1-9]\d{0,8}$/;
 const HOCR_BBOX_VALUES = 4;
 const HOCR_BASELINE_VALUES = 2;
 const ALTO_POINT_PAIR_VALUES = 4;
@@ -85,25 +94,51 @@ function collapseSpace(parts: string[]): string {
   return words.join(' ');
 }
 
-function numberList(source: string, separators: ReadonlySet<string>): number[] | null {
-  const values: number[] = [];
+/** Splits on the separator characters, dropping empty tokens. */
+function tokens(source: string, separators: ReadonlySet<string>): string[] {
+  const out: string[] = [];
   let start = -1;
   for (let i = 0; i <= source.length; i++) {
     const separator = i === source.length || separators.has(source[i]);
     if (separator && start !== -1) {
-      const value = Number(source.slice(start, i));
-      if (!Number.isFinite(value)) return null;
-      values.push(value);
+      out.push(source.slice(start, i));
       start = -1;
     } else if (!separator && start === -1) {
       start = i;
     }
   }
-  return values;
+  return out;
 }
 
 const HOCR_NUMBER_SEPARATORS: ReadonlySet<string> = new Set([' ', '\t']);
 const ALTO_NUMBER_SEPARATORS: ReadonlySet<string> = new Set([' ', ',', '\t', '\n', '\r']);
+
+function decimalInteger(token: string, what: string): number {
+  if (!DECIMAL_INTEGER.test(token)) throw new OcrMarkupError(`${what} '${token}' is not a decimal integer.`);
+  return Number(token);
+}
+
+function decimalNumber(token: string, what: string): number {
+  if (!DECIMAL_NUMBER.test(token)) throw new OcrMarkupError(`${what} '${token}' is not a decimal number.`);
+  return Number(token);
+}
+
+function inRange(value: number, min: number, max: number, what: string): number {
+  if (value < min || value > max) throw new OcrMarkupError(`${what} ${value} is outside ${min}..${max}.`);
+  return value;
+}
+
+function coordinate(value: number, what: string): number {
+  return inRange(value, 0, OCR_MARKUP_MAX_COORDINATE_PX, what);
+}
+
+function offsetWithinBounds(value: number, what: string): number {
+  return inRange(value, -OCR_MARKUP_MAX_COORDINATE_PX, OCR_MARKUP_MAX_COORDINATE_PX, what);
+}
+
+function assertAreaNotEmpty(width: number, height: number, what: string): void {
+  if (width <= 0 || height <= 0) throw new OcrMarkupError(`${what} has zero area (${width}x${height}).`);
+}
 
 function boxFromValues(values: number[], what: string): Box {
   const [x0, y0, x1, y1] = values;
@@ -145,10 +180,10 @@ function forEachProperty(title: string, visit: (name: string, value: string) => 
   }
 }
 
-function singleNumber(value: string, name: string): number {
-  const values = numberList(value, HOCR_NUMBER_SEPARATORS);
-  if (values === null || values.length !== 1) throw new OcrMarkupError(`hOCR property ${name} needs one number.`);
-  return values[0];
+function singleNumber(value: string, name: string, max: number): number {
+  const found = tokens(value, HOCR_NUMBER_SEPARATORS);
+  if (found.length !== 1) throw new OcrMarkupError(`hOCR property ${name} needs one number.`);
+  return inRange(decimalNumber(found[0], `hOCR ${name}`), 0, max, `hOCR ${name}`);
 }
 
 function readHocrProperties(title: string | undefined): HocrProperties {
@@ -156,23 +191,29 @@ function readHocrProperties(title: string | undefined): HocrProperties {
   if (!title) return props;
   forEachProperty(title, (name, value) => {
     if (name === 'bbox') {
-      const values = numberList(value, HOCR_NUMBER_SEPARATORS);
-      if (values === null || values.length !== HOCR_BBOX_VALUES) throw new OcrMarkupError('hOCR bbox needs four numbers.');
+      const found = tokens(value, HOCR_NUMBER_SEPARATORS);
+      if (found.length !== HOCR_BBOX_VALUES) throw new OcrMarkupError('hOCR bbox needs four numbers.');
+      const values = found.map((token) => coordinate(decimalInteger(token, 'hOCR bbox value'), 'hOCR bbox value'));
       props.bbox = boxFromValues(values, 'hOCR bbox');
     } else if (name === 'baseline') {
-      const values = numberList(value, HOCR_NUMBER_SEPARATORS);
-      if (values === null || values.length !== HOCR_BASELINE_VALUES) {
-        throw new OcrMarkupError('hOCR baseline needs a slope and an offset.');
-      }
-      props.baseline = { slope: values[0], offset: values[1] };
+      const found = tokens(value, HOCR_NUMBER_SEPARATORS);
+      if (found.length !== HOCR_BASELINE_VALUES) throw new OcrMarkupError('hOCR baseline needs a slope and an offset.');
+      props.baseline = {
+        slope: offsetWithinBounds(decimalNumber(found[0], 'hOCR baseline slope'), 'hOCR baseline slope'),
+        offset: offsetWithinBounds(decimalNumber(found[1], 'hOCR baseline offset'), 'hOCR baseline offset'),
+      };
     } else if (name === 'x_size') {
-      props.xSize = singleNumber(value, name);
+      props.xSize = singleNumber(value, name, OCR_MARKUP_MAX_COORDINATE_PX);
     } else if (name === 'x_ascenders') {
-      props.xAscenders = singleNumber(value, name);
+      props.xAscenders = singleNumber(value, name, OCR_MARKUP_MAX_COORDINATE_PX);
     } else if (name === 'x_descenders') {
-      props.xDescenders = singleNumber(value, name);
+      props.xDescenders = singleNumber(value, name, OCR_MARKUP_MAX_COORDINATE_PX);
     } else if (name === 'x_wconf') {
-      props.xWconf = singleNumber(value, name);
+      props.xWconf = singleNumber(value, name, MAX_CONFIDENCE_PERCENT);
+    } else if (name === 'ppageno') {
+      const found = tokens(value, HOCR_NUMBER_SEPARATORS);
+      if (found.length !== 1) throw new OcrMarkupError('hOCR property ppageno needs one number.');
+      coordinate(decimalInteger(found[0], 'hOCR ppageno'), 'hOCR ppageno');
     }
   });
   return props;
@@ -231,8 +272,10 @@ function finishHocrLine(line: LineDraft): OcrLineBlock | null {
     // The offset is relative to the bottom-left corner of the line box.
     const startY = box.y1 + baseline.offset;
     const lineWidth = box.x1 - box.x0;
-    const result: OcrBaseline = { x0: box.x0, y0: startY, x1: box.x1, y1: startY + baseline.slope * lineWidth };
-    if (lineWidth > 0) block.baseline = result;
+    const endY = startY + baseline.slope * lineWidth;
+    offsetWithinBounds(startY, 'hOCR baseline point');
+    offsetWithinBounds(endY, 'hOCR baseline point');
+    if (lineWidth > 0) block.baseline = { x0: box.x0, y0: startY, x1: box.x1, y1: endY };
   }
   if (line.props.xSize !== undefined) block.rowHeight = line.props.xSize;
   if (line.props.xAscenders !== undefined) block.ascenders = line.props.xAscenders;
@@ -270,6 +313,7 @@ class HocrReader implements MarkupHandler {
     if (kind === 'page') {
       const box = readHocrProperties(attributes.title).bbox;
       if (!box) throw new OcrMarkupError('An ocr_page has no bbox.');
+      assertAreaNotEmpty(box.x1 - box.x0, box.y1 - box.y0, 'An ocr_page');
       this.page = { width: box.x1 - box.x0, height: box.y1 - box.y0, lines: [] };
       this.pages.push(this.page);
       this.block = undefined;
@@ -395,7 +439,7 @@ function assembleParsedOcrResult(pages: OcrPageResult[]): OcrResult {
 export function parseHocr(hocrContent: string): OcrResult {
   if (typeof hocrContent !== 'string' || hocrContent === '') throw new OcrMarkupError('The hOCR document is empty.');
   const reader = new HocrReader();
-  readMarkup(hocrContent, reader);
+  readMarkup(hocrContent, reader, { html: true });
   if (reader.pages.length === 0) throw new OcrMarkupError('The hOCR document has no ocr_page.');
   const pages = reader.pages.map((page, index) =>
     buildOcrPage(index + 1, page.width, page.height, page.lines, reader.language)
@@ -409,27 +453,30 @@ export function parseHocr(hocrContent: string): OcrResult {
 
 function altoNumber(attributes: MarkupAttributes, name: string): number | undefined {
   const raw = attributes[name];
-  if (raw === undefined || raw.trim() === '') return undefined;
-  const value = Number(raw);
-  if (!Number.isFinite(value)) throw new OcrMarkupError(`ALTO attribute ${name} is not a number: '${raw}'.`);
-  return value;
+  if (raw === undefined || raw === '') return undefined;
+  return decimalNumber(raw, `ALTO attribute ${name}`);
+}
+
+function altoCoordinate(attributes: MarkupAttributes, name: string): number | undefined {
+  const value = altoNumber(attributes, name);
+  return value === undefined ? undefined : coordinate(value, `ALTO ${name}`);
 }
 
 function altoBox(attributes: MarkupAttributes): Box | null {
-  const x = altoNumber(attributes, 'HPOS');
-  const y = altoNumber(attributes, 'VPOS');
-  const width = altoNumber(attributes, 'WIDTH');
-  const height = altoNumber(attributes, 'HEIGHT');
+  const x = altoCoordinate(attributes, 'HPOS');
+  const y = altoCoordinate(attributes, 'VPOS');
+  const width = altoCoordinate(attributes, 'WIDTH');
+  const height = altoCoordinate(attributes, 'HEIGHT');
   if (x === undefined || y === undefined || width === undefined || height === undefined) return null;
-  if (width < 0 || height < 0) throw new OcrMarkupError('An ALTO element has a negative size.');
   return { x0: x, y0: y, x1: x + width, y1: y + height };
 }
 
 /** BASELINE is a polyline `x1,y1 x2,y2 ...`; older schema versions use a single y position. */
 function altoBaseline(raw: string | undefined, line: Box | null): OcrBaseline | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
-  const values = numberList(raw, ALTO_NUMBER_SEPARATORS);
-  if (values === null) throw new OcrMarkupError(`ALTO BASELINE is not a list of numbers: '${raw}'.`);
+  const values = tokens(raw, ALTO_NUMBER_SEPARATORS).map((token) =>
+    offsetWithinBounds(decimalNumber(token, 'ALTO BASELINE value'), 'ALTO BASELINE value')
+  );
   if (values.length === ALTO_SINGLE_BASELINE_VALUES) {
     if (line === null) return undefined;
     return { x0: line.x0, y0: values[0], x1: line.x1, y1: values[0] };
@@ -450,6 +497,13 @@ interface AltoLineDraft {
   paragraph: OcrLayoutGroup;
 }
 
+/** PHYSICAL_IMG_NR is the page's position in the source scan set: a positive integer when present. */
+function physicalImageNumber(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (!POSITIVE_INTEGER.test(raw)) throw new OcrMarkupError(`ALTO PHYSICAL_IMG_NR '${raw}' is not a positive integer.`);
+  return Number(raw);
+}
+
 class AltoReader implements MarkupHandler {
   readonly pages: Array<{ number: number | undefined; width: number; height: number; lines: OcrLineBlock[] }> = [];
   private page: AltoReader['pages'][number] | null = null;
@@ -460,10 +514,11 @@ class AltoReader implements MarkupHandler {
 
   open(name: string, attributes: MarkupAttributes): void {
     if (name === 'Page') {
-      const width = altoNumber(attributes, 'WIDTH');
-      const height = altoNumber(attributes, 'HEIGHT');
+      const width = altoCoordinate(attributes, 'WIDTH');
+      const height = altoCoordinate(attributes, 'HEIGHT');
       if (width === undefined || height === undefined) throw new OcrMarkupError('An ALTO Page has no WIDTH and HEIGHT.');
-      this.page = { number: altoNumber(attributes, 'PHYSICAL_IMG_NR'), width, height, lines: [] };
+      assertAreaNotEmpty(width, height, 'An ALTO Page');
+      this.page = { number: physicalImageNumber(attributes.PHYSICAL_IMG_NR), width, height, lines: [] };
       this.pages.push(this.page);
     } else if (name === 'ComposedBlock') {
       if (this.composedDepth++ === 0) this.block = this.groupFrom(attributes);
@@ -518,7 +573,9 @@ class AltoReader implements MarkupHandler {
     if (!box) throw new OcrMarkupError(`The ALTO String '${text}' has no HPOS, VPOS, WIDTH and HEIGHT.`);
     const word: OcrWord = { text, bbox: toBBox(box) };
     const wc = altoNumber(attributes, 'WC');
-    if (wc !== undefined) word.confidence = wc * PERCENT_SCALE;
+    if (wc !== undefined) {
+      word.confidence = Number((inRange(wc, 0, 1, 'ALTO WC') * PERCENT_SCALE).toPrecision(CONFIDENCE_PRECISION_DIGITS));
+    }
     this.line.words.push(word);
   }
 

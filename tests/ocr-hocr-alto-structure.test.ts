@@ -136,7 +136,7 @@ describe('parseHocr', () => {
     expect(() => parseHocr("<div class='ocr_page' title='bbox 0 0 10'/>")).toThrow(/bbox needs four numbers/);
     expect(() => parseHocr("<div class='ocr_page' title='bbox 10 0 0 10'/>")).toThrow(/negative size/);
     expect(() => parseHocr('<html><body class="ocr_page" title="bbox 0 0 1 1"><p></body></html>')).toThrow(/does not match/);
-    expect(() => parseHocr('<html>&nbsp;</html>')).toThrow(/unknown or malformed character reference/);
+    expect(() => parseHocr('<html>&bogus;</html>')).toThrow(/unknown or malformed character reference/);
   });
 });
 
@@ -183,7 +183,7 @@ describe('parseAlto', () => {
     ).toThrow(/String 'x' has no HPOS/);
     expect(() =>
       parseAlto('<alto><Layout><Page WIDTH="10" HEIGHT="ten"/></Layout></alto>')
-    ).toThrow(/HEIGHT is not a number/);
+    ).toThrow(/HEIGHT 'ten' is not a decimal number/);
     expect(() =>
       parseAlto(
         '<alto><Layout><Page WIDTH="10" HEIGHT="10"><TextLine BASELINE="1,2 3"><String CONTENT="x" HPOS="0" VPOS="0" WIDTH="1" HEIGHT="1"/></TextLine></Page></Layout></alto>'
