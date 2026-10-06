@@ -736,6 +736,20 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Preserve lossless pixel compression during document export.',
     },
+    imageDpi: {
+      type: 'integer',
+      minimum: 72,
+      maximum: 1200,
+      description:
+        'Office to PDF: downsample embedded images to this resolution (72-1200). Defaults to keeping images at their source resolution.',
+    },
+    jpegQuality: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description:
+        'Office to PDF: re-encode embedded JPEG images at this quality (1-100). Defaults to keeping the source JPEG stream byte for byte.',
+    },
     watermark: {
       type: 'object',
       description: 'PDF text or image watermarking options.',

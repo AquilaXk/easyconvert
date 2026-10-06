@@ -18,6 +18,8 @@ export type ExternalOracleTool =
   | 'pdftoppm'
   | 'pdftocairo'
   | 'pdffonts'
+  | 'pdfimages'
+  | 'verapdf'
   | 'ffmpeg'
   | 'ffprobe'
   | 'flac'
@@ -53,7 +55,16 @@ export class OracleToolMissingError extends Error {
 
 const toolCache = new Map<string, string | null>();
 
+/** Tools that are not on PATH on a typical host and are located through the environment variable the worker also reads. */
+const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH' };
+
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
+  // The override is read on every call: a test may point the variable at a different binary.
+  const envName = TOOL_PATH_ENV[tool];
+  const envOverride = envName ? process.env[envName] : undefined;
+  if (envOverride && fs.existsSync(envOverride)) {
+    return envOverride;
+  }
   if (toolCache.has(tool)) {
     return toolCache.get(tool)!;
   }

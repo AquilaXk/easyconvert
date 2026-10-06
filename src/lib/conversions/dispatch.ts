@@ -8,7 +8,8 @@ import {
   RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
-import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
+import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
+import { directPdfAExportConformance, pdfaMetadata } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
 import {
   executeWorkerConversion,
@@ -101,19 +102,31 @@ function materialize(result: WorkerConversionResult): WorkerConversionResult {
   return { ...result, buffer, size: buffer.length, filePath: undefined };
 }
 
+/** Engines that are LibreOffice: their PDF export can write PDF/A in the same pass. */
+const SOFFICE_ENGINES: ReadonlySet<string> = new Set(['native-soffice', 'native-soffice-pool']);
+
 /**
  * Applies watermark, PDF/A and protection to PDF output a native engine produced. The in-process
  * engine already applies them inside convertFile, so its output is never processed twice.
+ *
+ * An Office export LibreOffice already wrote as PDF/A skips the Draw round trip, which re-encodes
+ * images and drops the outline and links; its identification and validation are checked instead.
  */
 async function postProcessNativePdf(
   result: WorkerConversionResult,
   tgt: string,
   options: WorkerEngineOptions
 ): Promise<WorkerConversionResult> {
+  if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE) return result;
+  const exportedAs = SOFFICE_ENGINES.has(result.engineUsed) ? directPdfAExportConformance(options) : null;
   const needsPostProcessing = Boolean(options.watermark || options.pdfa || options.protect);
-  if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE || !needsPostProcessing) return result;
+  if (!needsPostProcessing && !exportedAs) return result;
   const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
-  await applyPdfPostProcessing(processed, options);
+  await applyPdfPostProcessing(processed, exportedAs ? { ...options, pdfa: undefined } : options);
+  if (exportedAs) {
+    const verdict = await verifyPdfA(processed.buffer, exportedAs);
+    processed.metadata = { ...processed.metadata, ...pdfaMetadata(verdict.pdfaValidated, verdict.conformanceLevel) };
+  }
   if (processed.filePath) {
     fs.writeFileSync(processed.filePath, processed.buffer);
   }

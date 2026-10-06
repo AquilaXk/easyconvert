@@ -27,6 +27,7 @@ import {
   type FfmpegEnvironmentInfo,
   checkFfmpeg,
 } from './media';
+import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -670,7 +671,8 @@ export async function convertFile(
  * converting so an incompatible request fails without spending conversion work.
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
-  if (options.pdfa && options.protect) {
+  assertPdfExportOptions(options);
+  if (resolvePdfAConformance(options) && options.protect) {
     // ISO 19005 forbids encryption in PDF/A files.
     throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
   }
@@ -692,6 +694,7 @@ export async function applyPdfPostProcessing(result: ConversionResult, options: 
   if (options.pdfa) {
     const pdfaRes = await convertToPdfA(pdf, options.pdfa);
     pdf = pdfaRes.buffer;
+    result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }
   if (options.protect) {
     pdf = await protectPdf(pdf, options.protect);

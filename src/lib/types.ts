@@ -20,6 +20,8 @@ export interface FormatOptionsSchema {
   fit?: boolean;
   stripMetadata?: boolean;
   dpi?: boolean;
+  imageDpi?: boolean;
+  jpegQuality?: boolean;
   layout?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
@@ -208,6 +210,10 @@ export interface ConversionOptions {
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+  /** Office to PDF: downsample embedded images to this resolution (72-1200). Default: keep them. */
+  imageDpi?: number;
+  /** Office to PDF: re-encode embedded JPEGs at this quality (1-100). Default: keep the stream. */
+  jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
@@ -344,6 +350,8 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
+  metadata?: Record<string, unknown>;
 }
 
 // S3 Chunked Upload Types

@@ -16,6 +16,7 @@ import {
   getSanitizedEnvironment,
 } from '../../security/process-sandbox';
 import { resolveBinaryPath } from './utils';
+import { buildPdfExportFilterData } from '../pdf-export-options';
 
 /**
  * Locate LibreOffice binary on the host or in container.
@@ -91,6 +92,50 @@ async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; con
 }
 
 /**
+ * Checks that a PDF identifies itself as the requested PDF/A level and, when veraPDF is installed,
+ * that veraPDF reports it compliant. `pdfaValidated` is true only when veraPDF validated it.
+ * Used for the Draw round trip and for Office exports that LibreOffice wrote as PDF/A directly.
+ */
+export async function verifyPdfA(
+  pdf: Buffer,
+  conformance: PdfAConformance
+): Promise<{ pdfaValidated: boolean; conformanceLevel: PdfAConformance }> {
+  const part = PDFA_PART[conformance];
+  if (!part) {
+    throw new PdfPostprocessError(`Unsupported PDF/A conformance level: ${conformance}`);
+  }
+  const id = await readPdfAIdentification(pdf);
+  if (id.part !== part || (id.conformance ?? '').toUpperCase() !== 'B') {
+    throw new PdfPostprocessError(
+      `PDF/A conversion failed: PDF/A identification is part "${id.part ?? 'none'}" conformance "${id.conformance ?? 'none'}", expected ${part}B.`
+    );
+  }
+
+  const verapdf = getVerapdfBinaryPath();
+  if (!verapdf) {
+    return { pdfaValidated: false, conformanceLevel: conformance };
+  }
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert_verapdf_'));
+  try {
+    const candidate = path.join(workDir, 'candidate.pdf');
+    fs.writeFileSync(candidate, pdf);
+    let report: string;
+    try {
+      report = execFileSync(verapdf, ['--format', 'json', candidate], { timeout: VERAPDF_TIMEOUT_MS }).toString('utf-8');
+    } catch (err: any) {
+      // veraPDF exits non-zero for non-compliant files but still prints the report.
+      report = err?.stdout?.toString('utf-8') ?? '';
+    }
+    if (!parseVerapdfReport(report)) {
+      throw new PdfPostprocessError(`PDF/A conversion failed: the output is not PDF/A compliant (${conformance}).`);
+    }
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+  return { pdfaValidated: true, conformanceLevel: conformance };
+}
+
+/**
  * Converts a PDF to PDF/A-1b, 2b, or 3b with LibreOffice. The result must be a new file whose XMP
  * identifies the requested part; when veraPDF is installed it must also report compliance.
  * `pdfaValidated` is true only when veraPDF validated the output.
@@ -126,10 +171,24 @@ export async function convertToPdfA(
     fs.writeFileSync(inputPdf, pdfBuffer);
 
     // LibreOffice opens a PDF in Draw, so the Draw PDF export filter applies.
-    const filterDef = `pdf:draw_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"${part}"}}`;
+    // The default image settings keep JPEG streams byte for byte, as in the Office export.
+    const filterDef = `pdf:draw_pdf_Export:${JSON.stringify(buildPdfExportFilterData({ pdfa: { conformance } }))}`;
+    // A private profile per job: concurrent jobs must not share (or lock) the default profile.
+    const profileDir = path.join(workDir, 'profile');
     const resolved = resolveSandboxedCommand(
       soffice,
-      ['--headless', '--convert-to', filterDef, '--outdir', outDir, inputPdf],
+      [
+        '--headless',
+        '--norestore',
+        '--nofirststartwizard',
+        '--nologo',
+        `-env:UserInstallation=file://${profileDir}`,
+        '--convert-to',
+        filterDef,
+        '--outdir',
+        outDir,
+        inputPdf,
+      ],
       { networkIsolated: true }
     );
 
@@ -152,28 +211,7 @@ export async function convertToPdfA(
       throw new PdfPostprocessError('PDF/A conversion failed: the document was not converted.');
     }
 
-    const id = await readPdfAIdentification(resultBuffer);
-    if (id.part !== part || (id.conformance ?? '').toUpperCase() !== 'B') {
-      throw new PdfPostprocessError(
-        `PDF/A conversion failed: PDF/A identification is part "${id.part ?? 'none'}" conformance "${id.conformance ?? 'none'}", expected ${part}B.`
-      );
-    }
-
-    let pdfaValidated = false;
-    const verapdf = getVerapdfBinaryPath();
-    if (verapdf) {
-      let report: string;
-      try {
-        report = execFileSync(verapdf, ['--format', 'json', outputPdf], { timeout: VERAPDF_TIMEOUT_MS }).toString('utf-8');
-      } catch (err: any) {
-        // veraPDF exits non-zero for non-compliant files but still prints the report.
-        report = err?.stdout?.toString('utf-8') ?? '';
-      }
-      if (!parseVerapdfReport(report)) {
-        throw new PdfPostprocessError(`PDF/A conversion failed: the output is not PDF/A compliant (${conformance}).`);
-      }
-      pdfaValidated = true;
-    }
+    const { pdfaValidated } = await verifyPdfA(resultBuffer, conformance);
 
     return {
       buffer: resultBuffer,
