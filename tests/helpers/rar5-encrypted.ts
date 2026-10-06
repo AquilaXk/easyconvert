@@ -110,7 +110,7 @@ function encryptAes256Cbc(plain: Buffer, key: Buffer, iv: Buffer): Buffer {
   const padded = Buffer.alloc(Math.ceil(plain.length / AES_BLOCK_BYTES) * AES_BLOCK_BYTES);
   plain.copy(padded);
   // The RAR 5.0 spec mandates AES-256-CBC without padding.
-  const cipher = createCipheriv('aes-256-cbc', key, iv);
+  const cipher = createCipheriv('aes-256-cbc', key, iv); // NOSONAR S5542: RAR 5.0 header and data encryption is AES-256-CBC without padding by specification; this generates a decryption fixture, not a protection
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(padded), cipher.final()]);
 }
