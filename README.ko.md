@@ -196,6 +196,11 @@ npm install
 - `JOB_SECRET_KEK`: 대기열 작업 데이터에 저장되는 서명 URL과 요청 헤더를 봉인하는 전용 비밀 값입니다(AES-256-GCM, 작업 ID에 결합). 프로덕션에서는 웹 앱과 모든 워커에 필수이며, `openssl rand -hex 32`처럼 32바이트 이상의 무작위 값을 사용하세요. JWT, 보관소, 암호화 비밀 값은 이 용도로 재사용하지 않습니다. 이 값이 없으면 `docker compose up`은 워커를 시작하지 않습니다. 프로덕션이 아니면 값이 없을 때 개발용 키를 사용합니다.
 - `JOB_SECRET_KEK_PREVIOUS`: 선택 사항입니다. 키를 교체할 때 이전 `JOB_SECRET_KEK` 값을 넣으면 교체 전에 대기열에 들어간 작업을 계속 열 수 있습니다. 해당 작업이 끝나면 제거하세요. 설정되지 않은 키로 봉인된 작업은 알 수 없는 키 오류로 실패합니다.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: 변환 전에 정지 이미지(또는 문서 안의 이미지)가 선언할 수 있는 최대 픽셀 수입니다. 이보다 큰 이미지는 픽셀을 디코딩하기 전에 컨테이너 헤더만 읽고 HTTP 413으로 거부합니다. 기본값은 100000000(100메가픽셀)이며 십진수만 허용하고, 268402689(16383 x 16383)보다 크면 이 값으로 낮춥니다. 잘못된 값은 로그에 한 번 알리고 무시합니다. 프로세스 안에서 픽셀 단위로 처리하는 경로(Oklab/Riemersma 팔레트 양자화, 카메라 RAW 센서, Ultra HDR)에는 더 엄격한 내장 한도가 적용됩니다.
+- `TRUSTED_PROXIES`: 클라이언트 IP 신뢰 모드이며 `NODE_ENV=production`에서는 필수입니다. 서버 앞단 프록시 홉의 CIDR 목록으로 설정하거나, 서버가 직접 노출된 경우 `none`으로 설정합니다(이 경우 모든 클라이언트가 하나의 속도 제한 버킷을 공유합니다). 설정하지 않으면 엣지가 `/api/*`에 503을 반환합니다.
+- `TRUSTED_CDN`: 검증된 Cloudflare 엣지 홉의 `CF-Connecting-IP`를 신뢰하려면 `cloudflare`로 설정합니다.
+- `TRUSTED_PROXY_HEADER`: 프록시가 관리하는 단일 전달 헤더이며 `x-forwarded-for`(기본값) 또는 `forwarded`입니다.
+
+전체 배포 규약은 [docs/client-ip-trust.md](docs/client-ip-trust.md)를 참고하세요.
 
 ### 개발 서버 실행
 

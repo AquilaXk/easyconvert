@@ -200,6 +200,11 @@ npm install
 - `JOB_SECRET_KEK`: dedicated secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for both the web app and every worker: use a random value of at least 32 bytes, for example `openssl rand -hex 32`; the JWT, vault and encryption secrets are never reused for this. `docker compose up` refuses to start the workers until it is set. Outside production a development key is used when it is unset.
 - `JOB_SECRET_KEK_PREVIOUS`: optional; during a rotation, set it to the old `JOB_SECRET_KEK` value so jobs queued before the change can still be opened. Remove it once those jobs have finished. A job sealed under a key that is neither configured fails with an unknown-key error.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: most pixels a still image (or an image inside a document) may declare before conversion; larger pictures are refused with HTTP 413 from the container header, before any pixel is decoded. Default 100000000 (100 megapixels), a plain decimal number, lowered to 268402689 (16383 x 16383) when larger; a malformed value is reported once in the log and ignored. Tighter built-in budgets apply to in-process per-pixel paths (Oklab and Riemersma palette quantization, camera RAW sensors, Ultra HDR).
+- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers `/api/*` with 503.
+- `TRUSTED_CDN`: set to `cloudflare` to honour `CF-Connecting-IP` from verified Cloudflare edge hops.
+- `TRUSTED_PROXY_HEADER`: the single forwarding header your proxy maintains, `x-forwarded-for` (default) or `forwarded`.
+
+See [docs/client-ip-trust.md](docs/client-ip-trust.md) for the full deployment contract.
 
 ### Development Server
 
