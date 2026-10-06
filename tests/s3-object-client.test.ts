@@ -16,6 +16,7 @@ import {
   StorageServiceError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import { S3_MAX_PARTS, S3_MIN_PART_BYTES } from '../src/lib/storage/adapters/s3';
+import { isStrictOracleMode, missingRealS3ServerMessage, readRealS3Server } from './helpers/s3-test-server';
 import { startS3StubServer, s3EtagMd5, type S3StubServer } from './helpers/s3-stub-server';
 
 /**
@@ -714,29 +715,21 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
 });
 
 /**
- * Real-server leg. It needs an S3-compatible server that verifies SigV4 itself (MinIO, or the
- * OCI compat endpoint of a scratch bucket), described by environment variables. Without them the
- * leg is skipped; under ORACLE_STRICT_MODE=1 its absence is a failure, because a green strict run
- * must mean the client was checked against a server it did not write.
+ * Real-server leg. It runs against the S3-compatible server described by STORAGE_TEST_S3_* (see
+ * tests/helpers/s3-test-server.ts), which verifies SigV4 itself. Without them the leg is skipped;
+ * under ORACLE_STRICT_MODE=1 their absence is a failure, because a green strict run must mean the
+ * client was checked against a server it did not write.
  */
-const REAL_ENDPOINT = process.env.STORAGE_TEST_S3_ENDPOINT;
-const REAL_ACCESS_KEY = process.env.STORAGE_TEST_S3_ACCESS_KEY_ID;
-const REAL_SECRET_KEY = process.env.STORAGE_TEST_S3_SECRET_ACCESS_KEY;
-const REAL_BUCKET = process.env.STORAGE_TEST_S3_BUCKET ?? 'easyconvert-client-test';
-const REAL_REGION = process.env.STORAGE_TEST_S3_REGION ?? 'us-east-1';
-const REAL_CONFIGURED = Boolean(REAL_ENDPOINT && REAL_ACCESS_KEY && REAL_SECRET_KEY);
-const STRICT = process.env.ORACLE_STRICT_MODE === '1';
+const REAL_SERVER = readRealS3Server();
 
-describe.skipIf(!REAL_CONFIGURED && !STRICT)('S3ObjectClient against a real S3-compatible server', () => {
-  if (!REAL_CONFIGURED) {
+describe.skipIf(!REAL_SERVER && !isStrictOracleMode())('S3ObjectClient against a real S3-compatible server', () => {
+  if (!REAL_SERVER) {
     it('requires STORAGE_TEST_S3_ENDPOINT, STORAGE_TEST_S3_ACCESS_KEY_ID and STORAGE_TEST_S3_SECRET_ACCESS_KEY', () => {
-      throw new Error(
-        'ORACLE_STRICT_MODE=1 requires an S3-compatible test server: set STORAGE_TEST_S3_ENDPOINT, ' +
-          'STORAGE_TEST_S3_ACCESS_KEY_ID and STORAGE_TEST_S3_SECRET_ACCESS_KEY (CI service container, see #476).'
-      );
+      throw new Error(missingRealS3ServerMessage());
     });
     return;
   }
+  const { endpoint, accessKeyId, secretAccessKey, bucket, region } = REAL_SERVER;
 
   let real: S3ObjectClient;
   const prefix = `client-test-${crypto.randomBytes(4).toString('hex')}/`;
@@ -746,21 +739,21 @@ describe.skipIf(!REAL_CONFIGURED && !STRICT)('S3ObjectClient against a real S3-c
     const { signS3Request, EMPTY_PAYLOAD_SHA256 } = await import('../src/lib/storage/s3-sigv4');
     const signed = signS3Request({
       method: 'PUT',
-      origin: REAL_ENDPOINT as string,
-      path: `/${REAL_BUCKET}`,
+      origin: endpoint,
+      path: `/${bucket}`,
       payloadHash: EMPTY_PAYLOAD_SHA256,
-      credentials: { accessKeyId: REAL_ACCESS_KEY as string, secretAccessKey: REAL_SECRET_KEY as string },
-      region: REAL_REGION,
+      credentials: { accessKeyId, secretAccessKey },
+      region,
     });
     const created = await fetch(signed.url, { method: 'PUT', headers: signed.headers });
     // 200 on create, 409 when the bucket already exists and is ours.
     expect([200, 409]).toContain(created.status);
     real = new S3ObjectClient({
-      endpoint: REAL_ENDPOINT as string,
-      region: REAL_REGION,
-      bucket: REAL_BUCKET,
-      accessKeyId: REAL_ACCESS_KEY as string,
-      secretAccessKey: REAL_SECRET_KEY as string,
+      endpoint,
+      region,
+      bucket,
+      accessKeyId,
+      secretAccessKey,
       partSizeBytes: S3_MIN_PART_BYTES,
     });
   });
@@ -775,7 +768,8 @@ describe.skipIf(!REAL_CONFIGURED && !STRICT)('S3ObjectClient against a real S3-c
 
   it('round-trips an object with a range read, metadata and a listing', async () => {
     const body = crypto.randomBytes(100_000);
-    const key = `${prefix}dir/ünï file+1.bin`;
+    // The apostrophe and quotes come back as numeric character references from Go servers (&#39;, &#34;).
+    const key = `${prefix}dir/ünï file+1 it's "q" & <t>.bin`;
     await real.putBuffer(key, body, { contentType: 'application/x-real', metadata: { filename: 'a.bin' } });
     const head = await real.headObject(key);
     expect(head).toMatchObject({ size: body.length, contentType: 'application/x-real' });
