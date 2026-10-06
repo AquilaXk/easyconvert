@@ -198,6 +198,7 @@ export interface ConversionOptions {
   fastStart?: boolean;
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
+  /** @deprecated No-op. No in-process lossy encoder exists; such targets always require FFmpeg. */
   allowPureLossyBitstream?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
@@ -659,9 +660,11 @@ export class MissingVolumeError extends Error {
 
 export class ArchiveEntryCollisionError extends Error {
   readonly status = 422;
+  readonly entryName: string;
   constructor(entryName: string, message?: string) {
     super(message || `Archive entry name collision detected for "${entryName}".`);
     this.name = 'ArchiveEntryCollisionError';
+    this.entryName = entryName;
   }
 }
 
