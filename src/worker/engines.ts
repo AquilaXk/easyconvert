@@ -54,7 +54,12 @@ import {
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { extractWithSpannedStream7z } from '../lib/conversions/archive';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
+import {
+  LIBREOFFICE_POOL_ENGINE_NAME,
+  LibreOfficePoolManager,
+  LibreOfficePoolTimeoutError,
+  resolveLibreOfficeFilter,
+} from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -1559,6 +1564,15 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
 }
 
 /**
+ * Whether LibreOffice is not installed, as opposed to installed but failing. The daemon pool reports
+ * its own failures (a readiness probe that fails or hangs) as EngineUnavailableError under its own
+ * engine name; those are LibreOffice failures, not a missing renderer.
+ */
+function isLibreOfficeMissing(err: unknown): err is EngineUnavailableError {
+  return err instanceof EngineUnavailableError && err.engineName !== LIBREOFFICE_POOL_ENGINE_NAME;
+}
+
+/**
  * Decides how text and HTML go to PDF. Complex-script text needs LibreOffice. HTML prefers it for
  * its full structure, and so do CJK Markdown and HWP; plain CJK text stays in-process when the
  * installed fonts cover it. With an explicit orientation, everything but complex-script text stays
@@ -1715,7 +1729,7 @@ export async function executeWorkerConversion(
       if (isNativeTextPdf && !options.signal?.aborted) {
         // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
         const message = err instanceof Error ? err.message : String(err);
-        if (isComplexText && err instanceof EngineUnavailableError) {
+        if (isComplexText && isLibreOfficeMissing(err)) {
           throw new ComplexScriptRequiresNativeEngineError(
             `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
           );
