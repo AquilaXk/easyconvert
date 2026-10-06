@@ -7,6 +7,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { UnsupportedOptionError } from '../src/lib/types';
 import { HAS_SOFFICE } from './helpers/native-tools';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
 const PDFINFO = getOracleToolPath('pdfinfo');
@@ -57,20 +58,22 @@ describe('PDF post-processing on native-routed output', () => {
     CONVERT_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !PDFINFO)(
-    'embeds PDF/A identification metadata in docx->pdf output when pdfa is requested (needs soffice, pdfinfo)',
+  oracleTest(
+    'embeds PDF/A identification metadata in docx->pdf output when pdfa is requested',
+    ['soffice', 'pdfinfo', 'verapdf'],
     async () => {
       const result = await dispatchConversion(
         SAMPLE_DOCX,
         'docx',
         'pdf',
-        { pdfa: { conformance: 'pdfa-1b' } },
+        { pdfa: { conformance: 'pdfa-2b' } },
         'sample.docx'
       );
       expect(result.engineUsed).toMatch(/^native-soffice/);
       const xmp = pdfinfo(result.buffer, ['-meta']);
-      expect(xmp).toContain('pdfaid:part');
+      expect(xmp).toMatch(/<pdfaid:part>2<\/pdfaid:part>/);
       expect(xmp).toMatch(/<pdfaid:conformance>B<\/pdfaid:conformance>/);
+      expect(result.metadata).toMatchObject({ pdfaValidated: true, pdfaProfile: 'pdfa-2b' });
     },
     CONVERT_TIMEOUT_MS
   );

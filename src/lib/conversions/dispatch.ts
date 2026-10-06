@@ -9,7 +9,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
-import { directPdfAExportConformance, pdfaMetadata } from './pdf-export-options';
+import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
 import {
   executeWorkerConversion,
@@ -119,10 +119,10 @@ async function postProcessNativePdf(
 ): Promise<WorkerConversionResult> {
   if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE) return result;
   const exportedAs = SOFFICE_ENGINES.has(result.engineUsed) ? directPdfAExportConformance(options) : null;
-  const needsPostProcessing = Boolean(options.watermark || options.pdfa || options.protect);
+  const needsPostProcessing = Boolean(options.watermark || resolvePdfAConformance(options) || options.protect);
   if (!needsPostProcessing && !exportedAs) return result;
   const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
-  await applyPdfPostProcessing(processed, exportedAs ? { ...options, pdfa: undefined } : options);
+  await applyPdfPostProcessing(processed, options, { pdfaExported: exportedAs !== null });
   if (exportedAs) {
     const verdict = await verifyPdfA(processed.buffer, exportedAs);
     processed.metadata = { ...processed.metadata, ...pdfaMetadata(verdict.pdfaValidated, verdict.conformanceLevel) };

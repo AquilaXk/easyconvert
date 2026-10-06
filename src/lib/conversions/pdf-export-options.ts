@@ -56,10 +56,10 @@ export function resolvePdfAConformance(options: ConversionOptions): PdfAConforma
 /**
  * The PDF/A level LibreOffice writes while it exports an Office document, or null when the PDF
  * must be converted afterwards. A watermark is drawn on the finished PDF and would break a PDF/A
- * export, so a request that combines `pdfa` with `watermark` is converted after the watermark.
+ * export, so a watermarked PDF/A request is exported plain and converted after the watermark.
  */
 export function directPdfAExportConformance(options: ConversionOptions): PdfAConformance | null {
-  if (options.pdfa && options.watermark) return null;
+  if (options.watermark) return null;
   return resolvePdfAConformance(options);
 }
 

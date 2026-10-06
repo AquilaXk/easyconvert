@@ -1838,7 +1838,7 @@ export async function executeWorkerConversion(
       filePath: finalPath,
       engineUsed: 'internal-fallback',
       executionTimeMs: Date.now() - startTime,
-      metadata: fallbackMetadata,
+      metadata: { ...internalRes.metadata, ...fallbackMetadata },
       fallbackReason,
       fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
     };
@@ -1847,7 +1847,7 @@ export async function executeWorkerConversion(
     ...internalRes,
     engineUsed: 'internal-fallback',
     executionTimeMs: Date.now() - startTime,
-    metadata: fallbackMetadata,
+    metadata: { ...internalRes.metadata, ...fallbackMetadata },
     fallbackReason,
     fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
   };

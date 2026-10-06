@@ -49,6 +49,17 @@ const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 
+/** Core properties with a creation date, as Office writes them. LibreOffice's PDF/A-1 XMP needs one to match the Info dictionary. */
+const CORE_PROPERTIES_PART =
+  `${XML_HEADER}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" ` +
+  'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
+  'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>Fixture</dc:title><dc:creator>EasyConvert tests</dc:creator>' +
+  '<dcterms:created xsi:type="dcterms:W3CDTF">2026-01-15T09:30:00Z</dcterms:created>' +
+  '<dcterms:modified xsi:type="dcterms:W3CDTF">2026-01-15T09:30:00Z</dcterms:modified></cp:coreProperties>';
+const CORE_PROPERTIES_RELATIONSHIP = `<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>`;
+const CORE_PROPERTIES_OVERRIDE =
+  '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>';
+
 export async function buildDocxWithJpeg(jpeg: Buffer): Promise<Buffer> {
   const cx = JPEG_WIDTH * EMU_PER_PIXEL;
   const cy = JPEG_HEIGHT * EMU_PER_PIXEL;
@@ -61,13 +72,14 @@ export async function buildDocxWithJpeg(jpeg: Buffer): Promise<Buffer> {
       '<Default Extension="jpg" ContentType="image/jpeg"/>' +
       '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
       '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
-      '</Types>'
+      `${CORE_PROPERTIES_OVERRIDE}</Types>`
   );
   zip.file(
     '_rels/.rels',
     `${XML_HEADER}<Relationships xmlns="${NS_PKG_REL}">` +
-      `<Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="word/document.xml"/></Relationships>`
+      `<Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="word/document.xml"/>${CORE_PROPERTIES_RELATIONSHIP}</Relationships>`
   );
+  zip.file('docProps/core.xml', CORE_PROPERTIES_PART);
   zip.file(
     'word/_rels/document.xml.rels',
     `${XML_HEADER}<Relationships xmlns="${NS_PKG_REL}">` +
@@ -113,6 +125,28 @@ export async function buildDocxWithJpeg(jpeg: Buffer): Promise<Buffer> {
       '</w:body></w:document>'
   );
   zip.file('word/media/image1.jpg', jpeg);
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+}
+
+/** A DOCX with one paragraph per string and no other content (no image, outline or link). */
+export async function buildTextDocx(paragraphs: readonly string[]): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file(
+    '[Content_Types].xml',
+    `${XML_HEADER}<Types xmlns="${NS_CT}">` +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      `${CORE_PROPERTIES_OVERRIDE}</Types>`
+  );
+  zip.file(
+    '_rels/.rels',
+    `${XML_HEADER}<Relationships xmlns="${NS_PKG_REL}">` +
+      `<Relationship Id="rId1" Type="${NS_REL}/officeDocument" Target="word/document.xml"/>${CORE_PROPERTIES_RELATIONSHIP}</Relationships>`
+  );
+  zip.file('docProps/core.xml', CORE_PROPERTIES_PART);
+  const body = paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join('');
+  zip.file('word/document.xml', `${XML_HEADER}<w:document xmlns:w="${NS_W}"><w:body>${body}</w:body></w:document>`);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 

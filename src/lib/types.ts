@@ -763,6 +763,21 @@ export class PdfPostprocessError extends Error {
   }
 }
 
+/**
+ * veraPDF validated a PDF/A output and it failed. `failedRules` lists the rule IDs
+ * (`<clause>-<test number>`, for example `6.2.11.4.1-1`) in the order veraPDF reports them.
+ */
+export class PdfAValidationError extends PdfPostprocessError {
+  constructor(
+    readonly profile: PdfAConformance,
+    readonly failedRules: readonly string[]
+  ) {
+    const rules = failedRules.length > 0 ? ` Failed rules: ${failedRules.join(', ')}.` : '';
+    super(`PDF/A validation failed: the output is not PDF/A compliant (${profile}).${rules}`);
+    this.name = 'PdfAValidationError';
+  }
+}
+
 export interface HocrExportOptions {
   documentTitle?: string;
   filename?: string;

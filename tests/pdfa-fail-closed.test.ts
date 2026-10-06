@@ -8,7 +8,7 @@ import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { convertToPdfA, parseVerapdfReport } from '../src/lib/conversions/pdf-postprocess/pdfa';
 import { convertFile } from '../src/lib/conversions';
-import { PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
+import { EngineUnavailableError, PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
 
 /**
  * PDF/A output must be a converted, PDF/A-identified file: a converter that writes nothing or
@@ -58,6 +58,14 @@ async function pdfWithPdfAId(part: number, conformance: string): Promise<Buffer>
   return Buffer.from(await doc.save());
 }
 
+/** A validator stand-in that reports every file compliant, so the tests below reach the converter checks. */
+function passingValidator(): string {
+  return script(
+    'verapdf-passes-everything',
+    `echo '{"report":{"jobs":[{"validationResult":[{"compliant":true,"profileName":"PDF/A"}]}]}}'`
+  );
+}
+
 /** A fake converter that copies `source` into the `--outdir` it receives as the output. */
 function fakeConverterCopying(source: string): string {
   return script(
@@ -86,7 +94,7 @@ afterAll(() => {
 describe('convertToPdfA fails closed', () => {
   it('rejects a converter run that produced no output file', async () => {
     setEnv('SOFFICE_PATH', script('soffice-silent', 'exit 0'));
-    setEnv('VERAPDF_PATH', '');
+    setEnv('VERAPDF_PATH', passingValidator());
     await expect(convertToPdfA(await samplePdf('no output'), { conformance: 'pdfa-1b' })).rejects.toThrow(
       PdfPostprocessError
     );
@@ -99,7 +107,7 @@ describe('convertToPdfA fails closed', () => {
     const inputCopy = path.join(workDir, 'echo-source.pdf');
     fs.writeFileSync(inputCopy, input);
     setEnv('SOFFICE_PATH', fakeConverterCopying(inputCopy));
-    setEnv('VERAPDF_PATH', '');
+    setEnv('VERAPDF_PATH', passingValidator());
     await expect(convertToPdfA(input, { conformance: 'pdfa-1b' })).rejects.toThrow(/not converted/);
   });
 
@@ -107,23 +115,22 @@ describe('convertToPdfA fails closed', () => {
     const wrongPart = path.join(workDir, 'part2.pdf');
     fs.writeFileSync(wrongPart, await pdfWithPdfAId(2, 'B'));
     setEnv('SOFFICE_PATH', fakeConverterCopying(wrongPart));
-    setEnv('VERAPDF_PATH', '');
+    setEnv('VERAPDF_PATH', passingValidator());
     await expect(convertToPdfA(await samplePdf('wrong part'), { conformance: 'pdfa-1b' })).rejects.toThrow(
       /PDF\/A identification/
     );
   });
 
-  it('returns identified output and reports it as unvalidated when no validator is installed', async () => {
+  it('fails with an engine-unavailable error, before converting, when no validator is installed', async () => {
     const converted = await pdfWithPdfAId(1, 'B');
     const convertedPath = path.join(workDir, 'part1.pdf');
     fs.writeFileSync(convertedPath, converted);
     setEnv('SOFFICE_PATH', fakeConverterCopying(convertedPath));
     setEnv('VERAPDF_PATH', '');
 
-    const result = await convertToPdfA(await samplePdf('identified'), { conformance: 'pdfa-1b' });
-    expect(result.buffer.equals(converted)).toBe(true);
-    expect(result.pdfaValidated).toBe(false);
-    expect(result.conformanceLevel).toBe('pdfa-1b');
+    const run = convertToPdfA(await samplePdf('identified'), { conformance: 'pdfa-1b' });
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'verapdf' });
   });
 
   it('rejects output the validator reports as non-compliant', async () => {
@@ -187,7 +194,7 @@ function requireLibreOfficeDraw(): void {
 }
 
 describe('real LibreOffice conversion', () => {
-  oracleTest('identifies the converted file as the requested PDF/A part', ['soffice', 'pdfinfo'], async () => {
+  oracleTest('identifies the converted file as the requested PDF/A part', ['soffice', 'pdfinfo', 'verapdf'], async () => {
     requireLibreOfficeDraw();
     const result = await convertToPdfA(await samplePdf('LibreOffice archival record'), { conformance: 'pdfa-2b' });
     const out = path.join(workDir, 'real-pdfa.pdf');
@@ -201,7 +208,7 @@ describe('real LibreOffice conversion', () => {
 describe('watermark before PDF/A', () => {
   oracleTest(
     'keeps the watermark inside the PDF/A output with every font embedded',
-    ['soffice', 'pdftotext', 'pdffonts'],
+    ['soffice', 'pdftotext', 'pdffonts', 'verapdf'],
     async () => {
       requireLibreOfficeDraw();
       // Horizontal and small enough to fit the page, so pdftotext reads the whole stamp in order.

@@ -682,17 +682,23 @@ export function assertPdfPostProcessOptions(options: ConversionOptions): void {
  * PDF post-processing shared by every conversion route: watermark, PDF/A, then protection.
  * Updates `result.buffer` and `result.size` in place; a result without a buffer is left untouched.
  */
-export async function applyPdfPostProcessing(result: ConversionResult, options: ConversionOptions): Promise<void> {
+export async function applyPdfPostProcessing(
+  result: ConversionResult,
+  options: ConversionOptions,
+  /** `pdfaExported`: the PDF is already a PDF/A export of the requested level, so it is not converted again. */
+  state: { pdfaExported?: boolean } = {}
+): Promise<void> {
   if (!Buffer.isBuffer(result.buffer)) return;
   assertPdfPostProcessOptions(options);
-  if (!options.watermark && !options.pdfa && !options.protect) return;
+  const pdfaLevel = state.pdfaExported ? null : resolvePdfAConformance(options);
+  if (!options.watermark && !pdfaLevel && !options.protect) return;
   let pdf = result.buffer;
   // Watermark first: any edit after the PDF/A conversion would break conformance.
   if (options.watermark) {
     pdf = await applyPdfWatermark(pdf, options.watermark);
   }
-  if (options.pdfa) {
-    const pdfaRes = await convertToPdfA(pdf, options.pdfa);
+  if (pdfaLevel) {
+    const pdfaRes = await convertToPdfA(pdf, { ...options.pdfa, conformance: pdfaLevel });
     pdf = pdfaRes.buffer;
     result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }

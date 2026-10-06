@@ -17,6 +17,7 @@ import {
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { withMissingBinary } from './helpers/native-tools';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 
@@ -295,21 +296,27 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
   });
 
   describe('3. PDF/A Archival Conversion & Metadata Reporting', () => {
-    it('reports transparent validation metadata (pdfaValidated: false when veraPDF is absent)', async () => {
+    oracleTest(
+      'reports the verified level and a validated verdict when veraPDF validated the output',
+      ['soffice', 'verapdf'],
+      async () => {
+        const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
+
+        const result = await convertToPdfA(originalPdf, { conformance: 'pdfa-2b' });
+
+        expect(result.buffer.length).toBeGreaterThan(0);
+        expect(result.conformanceLevel).toBe('pdfa-2b');
+        expect(result.pdfaValidated).toBe(true);
+      },
+      120_000
+    );
+
+    it('answers with an engine-unavailable error instead of an unvalidated file when veraPDF is absent', async () => {
       const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
 
-      // When LibreOffice is available, converts and sets pdfaValidated; when not, throws EngineUnavailableError
-      const soffice = getOracleToolPath('soffice');
-      if (soffice) {
-        const result = await convertToPdfA(originalPdf, { conformance: 'pdfa-1b' });
-        expect(result.buffer.length).toBeGreaterThan(0);
-        expect(result.conformanceLevel).toBe('pdfa-1b');
-        expect(result.pdfaValidated).toBe(false); // VeraPDF is absent
-      } else {
-        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-1b' })).rejects.toThrow(
-          EngineUnavailableError
-        );
-      }
+      await withMissingBinary('VERAPDF_PATH', async () => {
+        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-2b' })).rejects.toThrow(EngineUnavailableError);
+      });
     });
 
     it('fails closed when input buffer is empty', async () => {

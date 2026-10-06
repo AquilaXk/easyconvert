@@ -141,7 +141,7 @@ describe('Office to PDF export fidelity (#558)', () => {
 
   oracleTest(
     'docx to PDF/A-2b exports directly: same JPEG stream, outline and link as the plain export',
-    [...TOOLS, 'python3'],
+    [...TOOLS, 'python3', 'verapdf'],
     async () => {
       const plain = await dispatchConversion(docx, 'docx', 'pdf', {}, 'fx.docx');
       const archival = await dispatchConversion(docx, 'docx', 'pdf', { pdfa: { conformance: 'pdfa-2b' } }, 'fx.docx');
@@ -157,7 +157,7 @@ describe('Office to PDF export fidelity (#558)', () => {
 
   oracleTest(
     'a PDF input still goes through the Draw round trip and keeps its JPEG stream',
-    TOOLS,
+    [...TOOLS, 'verapdf'],
     async () => {
       const plain = await dispatchConversion(docx, 'docx', 'pdf', {}, 'fx.docx');
       const archival = await dispatchConversion(
