@@ -1225,6 +1225,13 @@ function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channel
   if (chosen.kind === SUBFRAME_FIXED || chosen.kind === SUBFRAME_LPC) {
     const estimated = chosen.coding.bits;
     chosen.bits += refineResidual(chosen.folded, n, chosen.order, chosen.coding) - estimated;
+    // Candidates were ranked on estimates; the exact size may no longer beat raw samples.
+    const verbatimBits = SUBFRAME_HEADER_BITS + chosen.wasted + n * chosen.bps;
+    if (chosen.bits >= verbatimBits) {
+      chosen.kind = SUBFRAME_VERBATIM;
+      chosen.order = 0;
+      chosen.bits = verbatimBits;
+    }
   }
 }
 
