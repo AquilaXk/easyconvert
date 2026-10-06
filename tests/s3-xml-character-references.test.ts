@@ -6,10 +6,10 @@ import { S3ObjectClient } from '../src/lib/storage/s3-object-client';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 
 /**
- * Regression for numeric character references in S3 answers. MinIO and other Go servers write a
- * quote as `&#34;` and an apostrophe as `&#39;` (Go's encoding/xml), where AWS S3 writes `&quot;`.
- * A real MinIO server answered a CompleteMultipartUpload with `<ETag>&#34;<md5>-3&#34;</ETag>`, and
- * the client returned the ETag with the entities still in it.
+ * Regression for numeric character references in S3 answers. Servers built on Go's encoding/xml
+ * write a quote as `&#34;` and an apostrophe as `&#39;`, where others write `&quot;`. The real-server
+ * test leg answered a CompleteMultipartUpload with `<ETag>&#34;<md5>-3&#34;</ETag>`, and the client
+ * returned the ETag with the entities still in it.
  *
  * Oracles, none from src/: the XML 1.0 specification (section 4.1 character references and the
  * `Char` production), Go's documented EscapeText output, and MD5 recomputed with node:crypto.
@@ -115,6 +115,18 @@ describe('S3ObjectClient against a server that escapes XML like Go (&#34;, &#39;
       retryBaseDelayMs: 0,
       requestTimeoutMs: 5_000,
     });
+  });
+
+  it('lists keys that XML cannot carry, and keys with + and spaces, exactly as stored', async () => {
+    const stored = ['listing/ctrl\u0001char.bin', 'listing/plus+and space.bin', 'listing/percent%41.bin'];
+    for (const key of stored) {
+      server.objects.set(key, { body: Buffer.from('x'), contentType: 'application/octet-stream', etag: `"${md5Hex(Buffer.from('x'))}"` });
+    }
+    const listed: string[] = [];
+    for await (const object of client.listAll('listing/', 10)) listed.push(object.key);
+    expect([...listed].sort()).toEqual([...stored].sort());
+    const listRequest = server.requests.find((request) => request.query.get('list-type') === '2');
+    expect(listRequest?.query.get('encoding-type')).toBe('url');
   });
 
   it('returns the multipart ETag without quotes or entities', async () => {

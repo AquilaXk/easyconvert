@@ -1010,9 +1010,12 @@ export class S3ObjectClient {
     if (!isIntegerInRange(maxKeys, 1, S3_LIST_PAGE_MAX_KEYS)) {
       throw new StorageAdapterError(`maxKeys must be between 1 and ${S3_LIST_PAGE_MAX_KEYS}`, this.providerName);
     }
+    // URL-encoded keys: a key holding a character XML 1.0 cannot carry (a control such as U+0001)
+    // would otherwise make the whole page unreadable.
     const query: Array<[string, string]> = [
       ['list-type', '2'],
       ['max-keys', String(maxKeys)],
+      ['encoding-type', 'url'],
     ];
     if (options.prefix) query.push(['prefix', options.prefix]);
     if (options.continuationToken) query.push(['continuation-token', options.continuationToken]);
@@ -1028,8 +1031,19 @@ export class S3ObjectClient {
     return this.parseListObjects(text ?? '');
   }
 
+  /** Reverses the form URL encoding of `encoding-type=url`: `+` is a space, `%XX` a UTF-8 byte. */
+  private decodeListedKey(encoded: string): string {
+    try {
+      return decodeURIComponent(encoded.replaceAll('+', ' '));
+    } catch {
+      throw this.malformed('ListObjectsV2 answer has a Key that is not valid URL encoding');
+    }
+  }
+
   private parseListObjects(xml: string): ListObjectsPage {
     const objects: ListedObject[] = [];
+    // A server that ignores encoding-type answers without <EncodingType>; its keys are plain text.
+    const urlEncoded = readXmlElement(stripEntryBlocks(xml, ['Contents']), 'EncodingType') === 'url';
     const open = '<Contents>';
     const close = '</Contents>';
     let from = xml.indexOf(open);
@@ -1039,7 +1053,8 @@ export class S3ObjectClient {
         throw this.malformed('ListObjectsV2 answer has an unterminated <Contents>');
       }
       const block = xml.slice(from + open.length, end);
-      const key = readXmlElement(block, 'Key');
+      const rawKey = readXmlElement(block, 'Key');
+      const key = urlEncoded && rawKey !== undefined ? this.decodeListedKey(rawKey) : rawKey;
       const size = Number.parseInt(readXmlElement(block, 'Size') ?? '', 10);
       if (key === undefined || !Number.isSafeInteger(size) || size < 0) {
         throw this.malformed('ListObjectsV2 answer has an entry without a valid Key and Size');

@@ -131,6 +131,19 @@ function metadataFrom(headers: http.IncomingHttpHeaders): Record<string, string>
   return metadata;
 }
 
+/** Form URL encoding of UTF-8 bytes: unreserved bytes kept, space as `+`, everything else `%XX`. */
+function formEncode(text: string): string {
+  let out = '';
+  for (const byte of Buffer.from(text, 'utf-8')) {
+    const isUnreserved =
+      (byte >= 0x41 && byte <= 0x5a) || (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39) || '-_.~'.includes(String.fromCharCode(byte));
+    if (isUnreserved) out += String.fromCharCode(byte);
+    else if (byte === 0x20) out += '+';
+    else out += `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return out;
+}
+
 export async function startS3StubServer(options: {
   bucket: string;
   credentials: Record<string, string>;
@@ -470,8 +483,14 @@ export async function startS3StubServer(options: {
     return Buffer.compare(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8'));
   }
 
-  /** ListObjectsV2: lexicographic keys, `prefix`, `max-keys`, and an opaque continuation token. */
+  /**
+   * ListObjectsV2: lexicographic keys, `prefix`, `max-keys`, an opaque continuation token, and
+   * `encoding-type=url`, which URL-encodes Key and Prefix (form encoding: space as `+`, every byte
+   * outside `A-Za-z0-9-_.~` as `%XX`) so keys holding characters XML cannot carry still list.
+   */
   function handleListObjects(record: StubRequestRecord, bucket: string, res: http.ServerResponse): void {
+    const urlEncoded = record.query.get('encoding-type') === 'url';
+    const keyText = (key: string): string => (urlEncoded ? formEncode(key) : escapeText(key));
     const prefix = record.query.get('prefix') ?? '';
     const maxKeys = Number(record.query.get('max-keys') ?? DEFAULT_MAX_KEYS);
     const token = record.query.get('continuation-token');
@@ -484,12 +503,13 @@ export async function startS3StubServer(options: {
     const next = truncated ? Buffer.from(page[page.length - 1], 'utf-8').toString('base64url') : '';
     const entries = page.map((key) => {
       const object = objects.get(key) as StoredStubObject;
-      return `<Contents><Key>${escapeText(key)}</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${etagText(object.etag)}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
+      return `<Contents><Key>${keyText(key)}</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${etagText(object.etag)}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
     });
     send(
       res,
       200,
-      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${bucket}</Name><Prefix>${escapeText(prefix)}</Prefix>` +
+      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${bucket}</Name><Prefix>${keyText(prefix)}</Prefix>` +
+        (urlEncoded ? '<EncodingType>url</EncodingType>' : '') +
         (truncated ? `<NextContinuationToken>${next}</NextContinuationToken>` : '') +
         `<KeyCount>${page.length}</KeyCount><MaxKeys>${maxKeys}</MaxKeys><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListBucketResult>`
     );
