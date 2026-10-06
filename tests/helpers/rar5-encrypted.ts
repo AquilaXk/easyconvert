@@ -24,6 +24,8 @@ export interface Rar5Options {
   password: string;
   /** Encrypts the headers too, not only the entry data. */
   headerEncrypted?: boolean;
+  /** Unix st_mode stored for every entry; a regular file readable by its owner when omitted. */
+  fileAttributes?: number;
 }
 
 const SIGNATURE = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00]);
@@ -37,7 +39,8 @@ const FLAG_EXTRA_AREA = 0x01;
 const FLAG_DATA_AREA = 0x02;
 /** File flag: the CRC32 of the unpacked data is present. */
 const FILE_FLAG_CRC32 = 0x04;
-const FILE_ATTRIBUTES = 0x20;
+/** Unix st_mode of a regular file readable by its owner (the attribute field holds st_mode for host OS Unix). */
+const FILE_ATTRIBUTES = 0o100644;
 /** Compression info 0: version 0, not solid, method 0 (store), smallest dictionary. */
 const COMPRESSION_STORE = 0;
 const HOST_OS_UNIX = 1;
@@ -123,7 +126,7 @@ function sealBlock(fields: Buffer): Buffer {
   return Buffer.concat([crc, size, fields]);
 }
 
-function fileBlock(entry: Rar5Entry, password: string, index: number): { header: Buffer; data: Buffer } {
+function fileBlock(entry: Rar5Entry, password: string, index: number, attributes: number): { header: Buffer; data: Buffer } {
   const salt = fixedBytes(`salt:${index}`, SALT_BYTES);
   const iv = fixedBytes(`iv:${index}`, IV_BYTES);
   const entryKeys = deriveKeys(password, salt);
@@ -143,7 +146,7 @@ function fileBlock(entry: Rar5Entry, password: string, index: number): { header:
   const typeFields = Buffer.concat([
     vint(FILE_FLAG_CRC32),
     vint(entry.data.length),
-    vint(FILE_ATTRIBUTES),
+    vint(attributes),
     crc,
     vint(COMPRESSION_STORE),
     vint(HOST_OS_UNIX),
@@ -166,7 +169,7 @@ function fileBlock(entry: Rar5Entry, password: string, index: number): { header:
 export function buildEncryptedRar5(entries: readonly Rar5Entry[], options: Rar5Options): Buffer {
   const blocks: Array<{ header: Buffer; data: Buffer }> = [
     { header: sealBlock(Buffer.concat([vint(HEAD_MAIN), vint(0), vint(0)])), data: Buffer.alloc(0) },
-    ...entries.map((entry, index) => fileBlock(entry, options.password, index)),
+    ...entries.map((entry, index) => fileBlock(entry, options.password, index, options.fileAttributes ?? FILE_ATTRIBUTES)),
     { header: sealBlock(Buffer.concat([vint(HEAD_END), vint(0), vint(0)])), data: Buffer.alloc(0) },
   ];
   if (!options.headerEncrypted) {

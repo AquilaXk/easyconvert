@@ -430,6 +430,8 @@ describe('archive password delivery to the real 7z binary', () => {
     ];
     /** unrar exits with 11 (RARX_BADPWD) when the password does not decrypt the archive. */
     const UNRAR_BAD_PASSWORD_STATUS = 11;
+    /** Unix st_mode values (host OS Unix) with no owner read permission: no access, write-only. */
+    const NON_READABLE_UNIX_MODES = [0o100000, 0o100200] as const;
     const VARIANTS = [
       { label: 'encrypted data', headerEncrypted: false },
       { label: 'encrypted headers', headerEncrypted: true },
@@ -456,6 +458,15 @@ describe('archive password delivery to the real 7z binary', () => {
 
       oracleTest(`extractRarArchive decrypts RAR5 ${variant.label} with the right password`, ['unrar'], async () => {
         expectFilesMatch(extractRarArchive(encryptedRar5(), { password: PASSWORD }), RAR5_FILES);
+      });
+
+      oracleTest(`extractRarArchive reads RAR5 ${variant.label} entries whose stored Unix mode forbids reading`, ['unrar'], async () => {
+        // root reads any file, so only a non-root user (the worker, the CI runner) can show the failure.
+        if (process.getuid?.() === 0) throw new OracleToolMissingError('non-root user', 'root ignores file modes, so unreadable extracted entries go unnoticed');
+        for (const fileAttributes of NON_READABLE_UNIX_MODES) {
+          const archive = buildEncryptedRar5(RAR5_FILES, { password: PASSWORD, headerEncrypted: variant.headerEncrypted, fileAttributes });
+          expectFilesMatch(extractRarArchive(archive, { password: PASSWORD }), RAR5_FILES);
+        }
       });
 
       oracleTest(`extractRarArchive rejects a wrong password for RAR5 ${variant.label} with InvalidArchivePasswordError`, ['unrar'], async () => {

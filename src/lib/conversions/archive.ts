@@ -403,6 +403,32 @@ export async function createZipArchive(
 /** Longest one unrar extraction may run. */
 const UNRAR_EXTRACT_TIMEOUT_MS = 30_000;
 
+/** unrar restores the Unix mode stored in the archive; the owner needs these bits to read and remove the result. */
+const EXTRACTED_DIRECTORY_MODE = 0o700;
+const EXTRACTED_FILE_MODE = 0o600;
+
+/**
+ * Gives the owner access to everything an extraction wrote. An archive may store any mode, down to
+ * no permission bits; unrar applies it, so a worker that is not root could neither read the entries
+ * nor delete the directory. Walks iteratively and stops at the archive file-count limit.
+ */
+function makeExtractedTreeAccessible(root: string): void {
+  const pending = [root];
+  let visited = 0;
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    fs.chmodSync(dir, EXTRACTED_DIRECTORY_MODE);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      visited += 1;
+      if (visited > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(fullPath);
+      else if (entry.isFile()) fs.chmodSync(fullPath, EXTRACTED_FILE_MODE);
+    }
+  }
+}
+
 export const ARCHIVE_SECURITY_LIMITS = {
   MAX_FILES: 1000,
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
@@ -1889,6 +1915,7 @@ export function extractRarArchive(
         }
       }
 
+      makeExtractedTreeAccessible(extractDir);
       walkDir(extractDir, '');
       return extracted;
     } catch (err) {
@@ -1902,7 +1929,14 @@ export function extractRarArchive(
     } finally {
       try {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-        if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+        if (fs.existsSync(extractDir)) {
+          try {
+            makeExtractedTreeAccessible(extractDir);
+          } catch {
+            // Best effort: the removal below runs either way.
+          }
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        }
       } catch {}
     }
   }
