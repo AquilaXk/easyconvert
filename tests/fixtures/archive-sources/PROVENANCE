@@ -1,0 +1,53 @@
+Archive source fixtures for tests/archive-source-listing-keys.test.ts
+=====================================================================
+
+Every file is a real container of its format, written by a tool other than 7-Zip (the tool under test reads
+them; it never produced them). Built on Ubuntu 24.04. 7-Zip 23.01 and p7zip 16.02 both list every file with
+keys inside the whitelist in src/lib/conversions/archive-extraction-safety.ts.
+
+Common payload (WORK/src), timestamps set to 2024-01-02 03:04:06 with `touch -d`:
+
+  hello.txt        "hello archive\n"                     (14 bytes)
+  dir/nested.txt   "nested file\n"                       (12 bytes)
+  dir/data.bin     bytes 0x00..0xFF in order             (256 bytes)
+
+The test regenerates these literals; it never reads the expected bytes back from an extraction.
+`generators/` holds the scripts and spec for the hand-assembled formats and the RPM.
+
+File                       Tool and version                              Command (run in WORK)
+-------------------------  --------------------------------------------  ---------------------------------------------------------------
+joliet-rockridge.iso       xorriso 1.5.6                                 xorriso -as mkisofs -no-pad -J -R -V PROBE -o joliet-rockridge.iso src
+udf.iso                    genisoimage 1.1.11                            genisoimage -no-pad -udf -V PROBE -o udf.iso src
+bootable.iso               genisoimage 1.1.11 (El Torito, no-emul)       genisoimage -no-pad -V PROBE -b boot.img -no-emul-boot -c boot.cat -J -R -o bootable.iso isoboot
+                                                                         (isoboot/ holds hello.txt and boot.img = 2048 zero bytes)
+probe.cab                  gcab 1.6                                      (cd src && gcab -c ../probe.cab hello.txt dir/nested.txt dir/data.bin)
+probe.arj                  arj 3.10.22 (ARJ32 v3.10)                     (cd src && arj a -r ../probe.arj hello.txt dir)
+probe.lzh                  generators/mklzh.py (level 0 header, -lh0-)   python3 mklzh.py; read back with lhasa 0.4.0 (`lha l`) before use
+probe.rpm                  rpmbuild 4.18.2                               rpmbuild -bb --define "_topdir $PWD/rpmtop" --define "_binary_payload w9.gzdio"
+                                                                         --define "_buildhost probe" probe.spec   (generators/probe.spec)
+probe.rpm.payload.cpio     rpm2cpio 4.18.2                               rpm2cpio probe.rpm > probe.rpm.payload.cpio   (expected bytes for the extracted payload)
+probe.deb                  dpkg-deb 1.22.6                               dpkg-deb --root-owner-group -Znone -b debroot probe.deb
+                                                                         (debroot/opt/probe/ mirrors the payload tree; the test parses the ar members itself)
+probe.wim                  wimlib-imagex 1.14.4                          wimlib-imagex capture src probe.wim probe --no-acls
+newc.cpio                  bsdtar 3.7.2 (libarchive 3.7.2)               (cd src && bsdtar --format newc -cf ../newc.cpio hello.txt dir)
+odc.cpio                   bsdtar 3.7.2 (libarchive 3.7.2)               (cd src && bsdtar --format odc -cf ../odc.cpio hello.txt dir)
+empty-hfsplus.img          mkfs.hfsplus (hfsprogs 540.1.linux3)          truncate -s 600K empty-hfsplus.img && mkfs.hfsplus -v PROBE empty-hfsplus.img
+                                                                         (empty volume: no HFS+ writer that works on a plain image file was available)
+probe.dmg                  generators/mkapm.py + mkdmg.py (UDIF, zlib)   python3 mkapm.py && python3 mkdmg.py   (wraps an Apple partition map around empty-hfsplus.img);
+                                                                         dmg2img 1.6.7 converts it back to the identical partitioned image
+probe-ext4.img             mke2fs 1.47.0                                 truncate -s 1M probe-ext4.img && mkfs.ext4 -q -d src probe-ext4.img
+probe-fat.img              mkfs.vfat 4.2 + mtools 4.0.43                 truncate -s 512K fat.raw && mkfs.vfat fat.raw && mcopy -i fat.raw src/hello.txt ::hello.txt &&
+                                                                         mmd -i fat.raw ::dir && mcopy -i fat.raw src/dir/nested.txt src/dir/data.bin ::dir/
+probe.vhd                  qemu-img 8.2.2 (fixed VHD of probe-fat.img)   qemu-img convert -f raw -O vpc -o subformat=fixed fat.raw probe.vhd
+probe.chm                  generators/mkchm.py (ITSF v3, section 0)      python3 mkchm.py; every object read back with chmlib (python3-chm 0.8.6)
+probe.squashfs             mksquashfs 4.6.1                              mksquashfs src probe.squashfs -noappend -all-root
+probe.msi                  msibuild (msitools 0.103)                     msibuild probe.msi -s Probe Tester && msibuild probe.msi -a hello.txt src/hello.txt &&
+                                                                         msibuild probe.msi -a data.bin src/dir/data.bin
+probe-nsis.exe             makensis 3.09 (NSIS)                          makensis probe.nsi   (Section: File src/hello.txt, src/dir/nested.txt, src/dir/data.bin under $TEMP\probe)
+long.txt.Z                 ncompress 5.0                                 compress -c long.txt > long.txt.Z
+long.txt.lzma              xz 5.4.5 (lzma alone)                         lzma -kc long.txt > long.txt.lzma
+                           (long.txt = 400 lines `line NNNN of the archive probe payload\n`, NNNN zero-padded 0000..0399, 15600 bytes)
+
+Listing keys seen with `7z l -slt -ba` (7-Zip 23.01 and p7zip 16.02) that were not in the whitelist before this change:
+  Metadata Changed   UDF images, HFS+ volumes (also inside the DMG)
+All other keys (including p7zip 16.02's `User` and `Group` for ext4 and DEB) were already allowed.

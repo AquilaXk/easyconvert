@@ -1,5 +1,4 @@
 import JSZip from 'jszip';
-import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -44,6 +43,10 @@ import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
+import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
+import { parseHtmlToPdfBlocks } from './html-blocks';
+import { decodeTextInput } from './text-input';
+import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from './markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
 
@@ -554,6 +557,9 @@ export async function convertDocument(
     textContent = extractTextFromDoc(inputBuffer);
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
+  } else if (STRICT_TEXT_PDF_SOURCES.has(src) && tgt === 'pdf') {
+    // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
+    textContent = decodeTextInput(inputBuffer);
   } else {
     textContent = inputBuffer.toString('utf-8');
   }
@@ -712,6 +718,30 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. */
+const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm']);
+/** Source formats parsed as HTML when rendered to PDF. */
+const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
+const MARKDOWN_SOURCE_FORMAT = 'md';
+const FORM_FEED = '\f';
+
+/** Plain text as preformatted blocks; a form feed starts a new page. */
+function plainTextToPdfBlocks(text: string): PdfBlock[] {
+  const blocks: PdfBlock[] = [];
+  text
+    .replace(/^\ufeff/, '')
+    .split(FORM_FEED)
+    .forEach((page, index) => {
+      if (index > 0) blocks.push({ kind: 'pageBreak' });
+      blocks.push({ kind: 'preformatted', text: page });
+    });
+  return blocks;
+}
+
+/**
+ * Renders text, Markdown or HTML to PDF in-process. The page holds only the document content,
+ * drawn with embedded fonts that cover every character (EngineUnavailableError otherwise).
+ */
 async function generatePdfFromText(
   text: string,
   sourceType: string,
@@ -720,135 +750,23 @@ async function generatePdfFromText(
 ): Promise<ConversionResult> {
   assertNoComplexScript(text, `Pure-TS ${sourceType.toUpperCase()} to PDF conversion`);
 
-  return new Promise((resolve, reject) => {
-    const isLandscape = options.orientation === 'landscape';
-    const doc = new PDFDocument({
-      size: 'A4',
-      layout: isLandscape ? 'landscape' : 'portrait',
-      margin: 50,
-      info: {
-        Title: baseName,
-        Creator: 'EasyConvert Platform',
-      },
-    });
+  let blocks: PdfBlock[];
+  let title = baseName;
+  if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {
+    // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
+    const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
+    const parsed = await parseHtmlToPdfBlocks(html);
+    blocks = parsed.blocks;
+    title = parsed.title || baseName;
+  } else {
+    blocks = plainTextToPdfBlocks(text);
+  }
 
-    const chunks: Buffer[] = [];
-    doc.on('data', (chunk) => chunks.push(chunk));
-    doc.on('end', () => {
-      const buffer = Buffer.concat(chunks);
-      resolve({
-        buffer,
-        mimeType: 'application/pdf',
-        filename: `${baseName}.pdf`,
-        size: buffer.length,
-      });
-    });
-    doc.on('error', (err) => reject(err));
-
-    // Lavender-themed header bar
-    doc.rect(50, 40, doc.page.width - 100, 3).fill('#5C6BC0');
-    doc.moveDown(1.5);
-
-    // Document Title
-    doc.fillColor('#1F2340').fontSize(18).text(baseName, { underline: false });
-    doc.moveDown(0.5);
-
-    // Check for markdown tables if source is md
-    const hasTable = sourceType === 'md' && /\|[^\n]+\|/.test(text);
-
-    if (hasTable && options.preserveTables !== false) {
-      // Parse markdown sections and tables
-      const lines = text.split(/\r?\n/);
-      let inTable = false;
-      let tableRows: string[][] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (line.startsWith('|') && line.endsWith('|')) {
-          if (/^\|[\s\-:]+\|\s*$/.test(line)) {
-            // Separator row
-            continue;
-          }
-          const cells = line.split('|').slice(1, -1).map((c) => c.trim());
-          tableRows.push(cells);
-          inTable = true;
-        } else {
-          if (inTable && tableRows.length > 0) {
-            // Render table
-            renderPdfTable(doc, tableRows);
-            tableRows = [];
-            inTable = false;
-          }
-          if (line.startsWith('# ')) {
-            doc.moveDown(0.5).fillColor('#5C6BC0').fontSize(14).text(line.replace(/^#+\s*/, ''));
-          } else if (line.startsWith('## ')) {
-            doc.moveDown(0.4).fillColor('#5C6BC0').fontSize(12).text(line.replace(/^#+\s*/, ''));
-          } else if (line.length > 0) {
-            doc.fillColor('#4D536B').fontSize(10).lineGap(3).text(line);
-          }
-        }
-      }
-      if (inTable && tableRows.length > 0) {
-        renderPdfTable(doc, tableRows);
-      }
-    } else {
-      const content =
-        sourceType === 'html'
-          ? stripHtmlTags(text)
-          : sourceType === 'md'
-          ? stripMarkdownSyntax(text)
-          : text;
-
-      // Document Body
-      doc.fillColor('#4D536B').fontSize(10.5).lineGap(4).text(content);
-    }
-
-    // Footer
-    const range = doc.bufferedPageRange();
-    for (let i = range.start; i < range.start + range.count; i++) {
-      doc.switchToPage(i);
-      doc.fillColor('#697089').fontSize(8.5).text(
-        `Generated with EasyConvert — Page ${i + 1} of ${range.count}`,
-        50,
-        doc.page.height - 40,
-        { align: 'center', width: doc.page.width - 100 }
-      );
-    }
-
-    doc.end();
-  });
+  const buffer = await renderPdfBlocks(blocks, { orientation: options.orientation, title });
+  return {
+    buffer,
+    mimeType: 'application/pdf',
+    filename: `${baseName}.pdf`,
+    size: buffer.length,
+  };
 }
-
-function renderPdfTable(doc: any, rows: string[][]) {
-  if (rows.length === 0) return;
-  const colCount = Math.max(...rows.map((r) => r.length));
-  const tableWidth = doc.page.width - 100;
-  const colWidth = tableWidth / Math.max(1, colCount);
-
-  doc.moveDown(0.5);
-
-  rows.forEach((row, rIdx) => {
-    const y = doc.y;
-    if (y > doc.page.height - 70) {
-      doc.addPage();
-    }
-    if (rIdx === 0) {
-      doc.rect(50, doc.y, tableWidth, 20).fill('#F0F2FE');
-      doc.fillColor('#1F2340').fontSize(9);
-    } else {
-      doc.fillColor('#4D536B').fontSize(8.5);
-    }
-
-    row.forEach((cell, cIdx) => {
-      doc.text(cell, 55 + cIdx * colWidth, y + 4, {
-        width: colWidth - 10,
-        lineBreak: false,
-      });
-    });
-    doc.y = y + 20;
-  });
-
-  doc.moveDown(0.5);
-}
-
-

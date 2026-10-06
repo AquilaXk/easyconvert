@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { redactForOutput, redactText } from '../security/redact';
 import { fetch as undiciFetch, Agent } from 'undici';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
@@ -523,11 +524,13 @@ export class WebhookDispatcher {
       return result;
     }
 
+    // Payloads are built from job state and error text: nothing secret leaves in a delivery, a
+    // signature input, or the dead-letter copy of either.
     const payload: WebhookPayload<T> = {
       id: deliveryId,
       event,
       timestamp,
-      data,
+      data: redactForOutput(data),
     };
 
     const bodyString = JSON.stringify(payload);
@@ -674,7 +677,14 @@ export class WebhookDispatcher {
     return result;
   }
 
-  public async saveToDlq(entry: WebhookDlqEntry): Promise<void> {
+  public async saveToDlq(unmasked: WebhookDlqEntry): Promise<void> {
+    // The target URL and signing secret stay as they are because a replay needs them; the payload
+    // and the error text are what a reader of the queue sees, so they are stored masked.
+    const entry: WebhookDlqEntry = {
+      ...unmasked,
+      payload: redactForOutput(unmasked.payload),
+      errorMessage: unmasked.errorMessage === undefined ? undefined : redactText(unmasked.errorMessage),
+    };
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {

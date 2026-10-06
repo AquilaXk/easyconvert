@@ -48,6 +48,9 @@ services:
       - redis
     environment:
       - NODE_ENV=production
+      # Required: workers open the sealed URLs and headers of queued jobs and refuse to start without it.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS:-}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}
@@ -106,6 +109,9 @@ services:
       - redis
     environment:
       - NODE_ENV=production
+      # Required: workers open the sealed URLs and headers of queued jobs and refuse to start without it.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS:-}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}

@@ -7,9 +7,9 @@ export const dynamic = 'force-dynamic';
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  const id = params.id;
+  const { id } = await params;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/storage/credentials/${id}`;
 
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write' });

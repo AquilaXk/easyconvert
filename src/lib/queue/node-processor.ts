@@ -279,6 +279,11 @@ export async function processNodeJob(
     await job.log(
       `[${engine.name}] Conversion completed via [${finalResult.engineUsed || engine.name}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
     );
+    if (finalResult.skippedLinks && finalResult.skippedLinks.length > 0) {
+      await job.log(
+        `[${engine.name}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
+      );
+    }
     if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
       for (const step of finalResult.fallbackChain) {
         await job.log(`[${engine.name}] Engine fallback: ${step}`);
