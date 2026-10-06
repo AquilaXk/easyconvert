@@ -1283,9 +1283,14 @@ function standardFontDataUrl(): string | undefined {
 }
 
 /** Text-layer density of one page: its characters and words without white space, against the threshold. */
+/** Non-space characters of a page's text layer: the measure the density threshold is compared with. */
+function textLayerCharCount(pageText: string): number {
+  return pageText.replace(/\s+/g, '').length;
+}
+
 function densityAnalysis(page: PdfJsPage, pageNumber: number, pageText: string, densityThreshold: number): PdfPageAnalysis {
   const view = page.view || [0, 0, 612, 792];
-  const charCount = pageText.replace(/\s+/g, '').length;
+  const charCount = textLayerCharCount(pageText);
   return {
     pageNumber,
     width: Math.abs(view[2] - view[0]),
@@ -1310,9 +1315,16 @@ function needsPage(job: PdfTextJob, explicit: Set<number> | null, pageNumber: nu
   return job.densityThreshold !== undefined || explicit?.has(pageNumber) === true || job.geometry === 'text-pages';
 }
 
-/** Whether a page that was read gets word geometry. */
+/**
+ * Whether a page that was read gets word geometry. With a density threshold, `text-pages` means the
+ * pages that keep their own text layer: a sparser page is recognized instead, so its text layer is
+ * neither needed nor allowed to fail the document.
+ */
 function wantsGeometry(job: PdfTextJob, explicit: Set<number> | null, pageNumber: number, pageText: string): boolean {
-  return explicit?.has(pageNumber) === true || (job.geometry === 'text-pages' && pageText !== '');
+  if (explicit?.has(pageNumber) === true) return true;
+  if (job.geometry !== 'text-pages' || pageText === '') return false;
+  if (job.densityThreshold === undefined) return true;
+  return textLayerCharCount(pageText) >= job.densityThreshold;
 }
 
 /** Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next. */
