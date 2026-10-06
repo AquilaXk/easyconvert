@@ -98,6 +98,30 @@ describe('an object stream cannot make the reader tokenise or allocate its whole
   });
 });
 
+describe('a document defines a bounded number of objects', () => {
+  const OBJECT_CAP = 500 * 1000;
+
+  function tinyObjects(count: number): Buffer {
+    const parts: string[] = ['%PDF-1.7\n'];
+    for (let i = 1; i <= count; i++) parts.push(`${i} 0 obj\n<< /A ${i} >>\nendobj\n`);
+    parts.push('trailer\n<< >>\n%%EOF\n');
+    return Buffer.from(parts.join(''), 'latin1');
+  }
+
+  it('refuses more objects than the cap in time linear in the file', () => {
+    const { err, ms } = timed(() => extractStructuredTextFromPdf(tinyObjects(OBJECT_CAP + 1)));
+    expect(err).toBeInstanceOf(PdfStructureError);
+    expect((err as Error).message).toMatch(/more than 500000 objects/);
+    expect(ms).toBeLessThan(FAST_MS);
+  });
+
+  it('reads a file with no root and many objects that name no type quickly', () => {
+    const { value, ms } = timed(() => extractStructuredTextFromPdf(tinyObjects(OBJECT_CAP)));
+    expect(value?.text).toBe('');
+    expect(ms).toBeLessThan(FAST_MS);
+  });
+});
+
 describe('an indirect /Length costs a constant per stream', () => {
   it('reads only the leading integer of the length object', () => {
     const lengthTarget: CraftObject = { id: 20, raw: `[${'1 '.repeat(LENGTH_TARGET_ELEMENTS)}]` };

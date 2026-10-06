@@ -28,7 +28,7 @@ export class PdfStructureError extends ConversionFailedError {
 }
 
 /** Objects one document may define, counting those packed in object streams. */
-export const MAX_PDF_OBJECTS = 1000 * 1000;
+export const MAX_PDF_OBJECTS = 500 * 1000;
 /** Pages the page tree may list. */
 export const MAX_PDF_PAGES = 50 * 1000;
 /** Nesting of the page tree (Pages nodes below the root). */
@@ -747,6 +747,9 @@ export class PdfDocument {
     const found: PdfObjectEntry[] = [];
     for (const entry of this.index.values()) {
       if (entry.stream || entry.end - entry.start > MAX_PDF_CLASSIFIED_OBJECT_BYTES) continue;
+      // Only objects that mention /Type (or hide it behind a #xx escape) can name a type, so the rest are not parsed.
+      const body = entry.source.slice(entry.start, entry.end);
+      if (!body.includes('/Type') && !body.includes('#')) continue;
       const dict = this.resolveDict({ kind: 'ref', num: entry.num });
       if (dict && isName(dict.entries.get('Type'), type)) found.push(entry);
     }
