@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is a high-performance universal file conversion platform built with Next.js 14 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
+EasyConvert is a high-performance universal file conversion platform built with Next.js 15 (App Router), TypeScript, and a signature lavender design system. It delivers deterministic conversion across **292 file formats** and **2,156 verified conversion specifications** spanning **12 distinct categories**.
 
 Powered by authentic in-memory pure-TypeScript binary engines, distributed BullMQ job queues, and S3/OCI chunked multipart storage, EasyConvert enforces a strict zero-retention, fail-closed privacy architecture for both browser and API workflows.
 
@@ -129,6 +129,10 @@ EasyConvert provides synchronous REST endpoints, an asynchronous job queue for l
   - `targetFormat`: Destination format identifier (e.g., `webp`, `docx`, `mp3`, `pdf`).
   - `options`: Optional JSON string of conversion parameters (e.g., `{"quality": 85, "width": 1920}`).
 - **Response**: Binary stream of the converted file with correct `Content-Type` and `Content-Disposition` headers.
+- **Document options** (inside `options`):
+  - `layout` (PDF to TXT): `true` keeps the physical page layout so table rows stay on one line. The default reads text in reading order, column after column.
+  - `imageDpi` (72-1200) and `jpegQuality` (1-100) (Office to PDF): opt into a compression profile. By default the embedded JPEG streams, the outline and the links pass through unchanged.
+  - `pdfa` (`{"conformance": "pdfa-1b" | "pdfa-2b" | "pdfa-3b"}`) or `pdfStandard`: request PDF/A output. A request that names no level (`{}` or `"pdfa"`) is answered at **PDF/A-2b**. Every PDF/A output is validated with veraPDF against the requested level: a missing veraPDF answers `503`, and a file that fails validation answers `422` with the failed rule IDs (`failedRules`) and the requested `profile`. PDF/A-1b requests currently fail validation on the bundled LibreOffice (rule 6.7.3-1), so ask for 2b or 3b.
 
 ### 2. Batch Conversion
 - **Endpoint**: `POST /api/convert/batch`

@@ -21,7 +21,7 @@ function maskedText(text: string | undefined): string | undefined {
 }
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {

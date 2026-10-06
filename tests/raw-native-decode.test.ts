@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError, RawDecodeError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
@@ -93,7 +93,7 @@ const REGION_MEAN_TOLERANCE = 12;
 const HALF_SIZE_FLAG = '-h';
 
 /** Per-region channel means of an image, on a grid, as 8-bit values. */
-async function regionMeans(image: sharp.Sharp, width: number, height: number): Promise<number[]> {
+async function regionMeans(image: Sharp, width: number, height: number): Promise<number[]> {
   const cellWidth = Math.floor(width / REGION_GRID);
   const cellHeight = Math.floor(height / REGION_GRID);
   const means: number[] = [];

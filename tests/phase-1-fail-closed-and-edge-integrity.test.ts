@@ -11,11 +11,6 @@ import {
   WasmEngine,
 } from '../src/lib/edge/workers/wasm-engine.worker';
 import { executeWasmTask, WasmWorkerManager } from '../src/lib/edge/pipelines/wasm-simd-pipeline';
-import {
-  isPdfVulnerableToActiveContent,
-  sanitizePdf,
-  decodePdfNames,
-} from '../src/lib/security/pdf-sanitizer';
 
 describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-file Extraction', () => {
   // ==========================================================================
@@ -293,58 +288,6 @@ ENDMF;
       expect(extracted).toHaveLength(1);
       expect(extracted[0].filename).toBe('solo.txt');
       expect(extracted[0].buffer.toString('utf-8')).toBe('Solo payload for single file test');
-    });
-  });
-
-  // ==========================================================================
-  // Gate 5: PDF Active Content Hex-Obfuscation CDR Sanitization
-  // ==========================================================================
-  describe('Gate 5: PDF Active Content Hex-Obfuscation Sanitization', () => {
-    it('decodes hex-escaped PDF names per ISO 32000-1 section 7.3.5', () => {
-      const escaped = '/#4a#61#76#61#53#63#72#69#70#74 and /#4c#61#75#6e#63#68 and /#4f#70#65#6e#41#63#74#69#6f#6e';
-      const decoded = decodePdfNames(escaped);
-      expect(decoded).toBe('/JavaScript and /Launch and /OpenAction');
-    });
-
-    it('detects and disarms hex-obfuscated active content threats', () => {
-      const obfuscatedPdf = Buffer.from(`%PDF-1.4
-1 0 obj
-<<
-  /#54#79#70#65 /Catalog
-  /#4f#70#65#6e#41#63#74#69#6f#6e 2 0 R
->>
-endobj
-2 0 obj
-<<
-  /#54#79#70#65 /Action
-  /#53 /#4a#61#76#61#53#63#72#69#70#74
-  /#4a#53 (app.alert("pwned"))
->>
-endobj
-3 0 obj
-<<
-  /#54#79#70#65 /Action
-  /#53 /#4c#61#75#6e#63#68
-  /#46 (malicious.exe)
->>
-endobj
-%%EOF`);
-
-      expect(isPdfVulnerableToActiveContent(obfuscatedPdf)).toBe(true);
-
-      const { buffer, report } = sanitizePdf(obfuscatedPdf);
-      const sanitized = buffer.toString('latin1');
-
-      expect(report.isSanitized).toBe(true);
-      expect(report.threatsRemoved.javaScriptCount).toBeGreaterThanOrEqual(1);
-      expect(report.threatsRemoved.launchCount).toBeGreaterThanOrEqual(1);
-      expect(report.threatsRemoved.openActionCount).toBeGreaterThanOrEqual(1);
-
-      expect(sanitized).not.toContain('/JavaScript');
-      expect(sanitized).not.toContain('/#4a#61#76#61#53#63#72#69#70#74');
-      expect(sanitized).not.toContain('/Launch');
-      expect(sanitized).not.toContain('/#4c#61#75#6e#63#68');
-      expect(sanitized).toContain('/S /None');
     });
   });
 

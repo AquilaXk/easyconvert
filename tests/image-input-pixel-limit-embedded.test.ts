@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { convertImage } from '../src/lib/conversions/image';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
-import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp, withBrokenIhdrCrc } from './helpers/image-bombs';
+import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp, withCorruptIhdr } from './helpers/image-bombs';
 import { ConversionFailedError } from '../src/lib/types';
 import { cbzWithImages, pptxWithPicture } from './helpers/embedded-image-docs';
 
@@ -83,9 +83,9 @@ describe('images embedded in documents are held to the input pixel limit', () =>
   });
 
   describe('a header the size check cannot read is refused, not waved through', () => {
-    const brokenBomb = (): Buffer => withBrokenIhdrCrc(bombPng(OVER_CAP_SIDE, OVER_CAP_SIDE));
+    const brokenBomb = (): Buffer => withCorruptIhdr(bombPng(OVER_CAP_SIDE, OVER_CAP_SIDE));
 
-    it('refuses a CBZ page whose PNG header has a bad checksum, which pdfkit would still decode', async () => {
+    it('refuses a CBZ page whose PNG header is corrupt, which pdfkit would still decode', async () => {
       const cbz = await cbzWithImages([{ name: '001.png', data: brokenBomb() }]);
       const run = convertFile(cbz, 'cbz', 'pdf', {}, 'comic.cbz');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
