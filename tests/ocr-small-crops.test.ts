@@ -95,9 +95,40 @@ describe('small crops', () => {
         tesseractLang: 'kor',
         image: await textImage('한글', 120, 40, 20, 'monospace'),
         imageHeight: 40,
+        textRows: 1,
       });
       expect(result.text).toBe('한글');
       expect(result.wordCount).toBe(1);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'reads a one-row label in a bitmap font as one line, without a ghost line',
+    ['tesseract'],
+    async () => {
+      requireTraineddata('kor');
+      // Read as a block, this crop came back as "한글\n글" on the reference CLI.
+      const result = await performOcr(await textImage('한글', 120, 40, 20, 'Unifont'), 'ko');
+      expect(result.text).toBe('한글');
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'reads both rows of a short two-line label',
+    ['tesseract'],
+    async () => {
+      requireTraineddata('eng');
+      const svg =
+        '<svg width="160" height="90"><g font-family="sans-serif" font-size="22" fill="black">' +
+        '<text x="10" y="32">Hello</text><text x="10" y="72">World</text></g></svg>';
+      const label = await sharp({ create: { width: 160, height: 90, channels: 3, background: '#ffffff' } })
+        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+        .png()
+        .toBuffer();
+      const result = await performOcr(label, 'eng');
+      expect(result.text.split(/\s+/)).toEqual(['Hello', 'World']);
     },
     TEST_TIMEOUT_MS
   );

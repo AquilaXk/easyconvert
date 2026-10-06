@@ -260,6 +260,8 @@ export interface CliOcrRequest {
   pageSegMode?: string;
   /** Image height in pixels; images too short for page layout analysis are read as one block. */
   imageHeight?: number;
+  /** Text rows counted in a short image; one row is read as a single line. */
+  textRows?: number;
 }
 
 function isTimeout(err: unknown): boolean {
@@ -281,7 +283,7 @@ function logCliFailure(summary: string, diagnostics: string): void {
  * carry fixed messages; the CLI's own diagnostics go to the server log.
  */
 export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResult> {
-  const imageMode = ocrSegmentationFor(request.tesseractLang, request.imageHeight).pageSegMode;
+  const imageMode = ocrSegmentationFor(request.tesseractLang, request.imageHeight, request.textRows).pageSegMode;
   if (!request.pageSegMode && imageMode !== ocrSegmentationFor(request.tesseractLang).pageSegMode) {
     return runCli({ ...request, pageSegMode: imageMode });
   }

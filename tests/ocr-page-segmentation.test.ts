@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { performOcr } from '../src/lib/conversions/ocr';
-import { ocrSegmentationFor } from '../src/lib/conversions/ocr-config';
+import { countTextRows, ocrSegmentationFor } from '../src/lib/conversions/ocr-config';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent, levenshtein, normalizeOcrText, wordRecall } from './helpers/ocr-cer';
@@ -63,6 +63,28 @@ describe('OCR segmentation parameters', () => {
   it('uses automatic page segmentation and the LSTM engine for horizontal text', () => {
     expect(ocrSegmentationFor('eng')).toEqual({ pageSegMode: '3', engineMode: 1 });
     expect(ocrSegmentationFor('chi_sim')).toEqual({ pageSegMode: '3', engineMode: 1 });
+  });
+
+  it('reads a short image with one text row as a single line', () => {
+    expect(ocrSegmentationFor('kor', 40, 1)).toEqual({ pageSegMode: '7', engineMode: 1 });
+    expect(ocrSegmentationFor('kor', 40, 0)).toEqual({ pageSegMode: '6', engineMode: 1 });
+    expect(ocrSegmentationFor('eng', 80, 2)).toEqual({ pageSegMode: '6', engineMode: 1 });
+    expect(ocrSegmentationFor('eng', 101, 1)).toEqual({ pageSegMode: '3', engineMode: 1 });
+    expect(ocrSegmentationFor('jpn_vert', 40, 1)).toEqual({ pageSegMode: '5', engineMode: 1 });
+  });
+
+  it('counts text rows as ink bands separated by blank rows, ignoring 1 px specks', () => {
+    const width = 4;
+    const page = (inkRows: number[], height: number): Uint8Array => {
+      const gray = new Uint8Array(width * height).fill(255);
+      for (const row of inkRows) gray[row * width + 1] = 0;
+      return gray;
+    };
+    expect(countTextRows(page([], 20), width, 20)).toBe(0);
+    expect(countTextRows(page([3, 4, 5, 6], 20), width, 20)).toBe(1);
+    expect(countTextRows(page([2, 3, 4, 10, 11, 12], 20), width, 20)).toBe(2);
+    expect(countTextRows(page([2, 3, 4, 15], 20), width, 20)).toBe(1);
+    expect(countTextRows(page([17, 18, 19], 20), width, 20)).toBe(1);
   });
 
   it('reads images too short for page layout analysis as one block', () => {

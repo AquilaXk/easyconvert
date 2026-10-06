@@ -26,7 +26,13 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
-import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
+import {
+  countTextRows,
+  fallbackReadsMore,
+  OCR_SMALL_CROP_MAX_HEIGHT_PX,
+  ocrFallbackPageSegMode,
+  ocrSegmentationFor,
+} from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { mapOcrResultToSource } from './ocr-geometry';
 import {
@@ -57,6 +63,13 @@ function countWords(text: string | null | undefined): number {
 
 /** Terminates pooled OCR workers; call on process shutdown. */
 export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
+
+/** Text rows in an image short enough to be read as one block or line; undefined for taller images. */
+async function countSmallCropTextRows(png: Buffer, height: number | undefined): Promise<number | undefined> {
+  if (height === undefined || height > OCR_SMALL_CROP_MAX_HEIGHT_PX) return undefined;
+  const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
+  return countTextRows(new Uint8Array(data.buffer, data.byteOffset, data.length), info.width, info.height);
+}
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -152,8 +165,10 @@ export async function performOcr(
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
   const ocrInput = prepared.image;
-  // Segmentation follows the page as submitted: an enlarged label is still a label.
+  // Segmentation follows the page as submitted: an enlarged label is still a label. Its text rows
+  // are counted on the prepared image, which scaling and binarization leave in the same number.
   const inputHeight = prepared.geometry.sourceHeight;
+  const inputTextRows = await countSmallCropTextRows(ocrInput, inputHeight);
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
@@ -167,7 +182,7 @@ export async function performOcr(
         parameters: { tessedit_pageseg_mode: pageSegMode },
       },
       async (recognize, recognizeWith) => {
-        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight).pageSegMode;
+        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
         if (imageMode !== pageSegMode) {
           return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
         }
@@ -255,6 +270,7 @@ export async function performOcr(
         tesseractLang,
         image: ocrInput,
         imageHeight: inputHeight,
+        textRows: inputTextRows,
       }),
       prepared.geometry
     );
