@@ -123,7 +123,7 @@ describe('pdfjs runtime compatibility (Node 20)', () => {
       expect(descriptor?.enumerable).toBe(false);
       expect(Object.keys(Promise)).not.toContain('withResolvers');
       expect(Promise.withResolvers.name).toBe('withResolvers');
-      expect(Promise.withResolvers.length).toBe(0);
+      expect(Promise.withResolvers).toHaveLength(0);
     });
 
     it('constructs the promise with the receiver, so subclasses get their own type', () => {

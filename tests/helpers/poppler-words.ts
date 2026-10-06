@@ -60,7 +60,7 @@ export function popplerWords(pdf: Buffer): WordBox[] {
 }
 
 /** One serialized word element: anchored, with the text matched up to the next tag, so matching is linear in the line. */
-const HOCR_WORD_LINE = /^<span class="ocrx_word" id="word_(\d+)_\d+_\d+" title="bbox (\d+) (\d+) (\d+) (\d+)[^"]*">([^<]*)<\/span>$/;
+const HOCR_WORD_LINE = /^<span class="ocrx_word" id="word_(\d+)_\d+_\d+" title="bbox (\d+) (\d+) (\d+) (\d+)(?:;[^"]*)?">([^<]*)<\/span>$/;
 
 /** Word boxes of an hOCR document, read through xmllint's serialization of the word elements. */
 export function hocrWords(hocr: string): WordBox[] {

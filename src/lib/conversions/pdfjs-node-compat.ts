@@ -43,7 +43,7 @@ function requireAttached(buffer: ArrayBuffer): void {
   sliceBuffer.call(buffer, 0, 0);
 }
 
-if (typeof (Promise as unknown as PromiseStatics).withResolvers === 'undefined') {
+if ((Promise as unknown as PromiseStatics).withResolvers === undefined) {
   const promiseWithResolvers = function withResolvers<T>(this: PromiseConstructor): PromiseWithResolvers<T> {
     if (typeof this !== 'function') throw new TypeError('Promise.withResolvers called on a non-constructor');
     let resolve!: (value: T | PromiseLike<T>) => void;
@@ -57,7 +57,7 @@ if (typeof (Promise as unknown as PromiseStatics).withResolvers === 'undefined')
   defineMethod(Promise, 'withResolvers', promiseWithResolvers);
 }
 
-if (typeof (ArrayBuffer.prototype as unknown as ArrayBufferMethods).transferToFixedLength === 'undefined') {
+if ((ArrayBuffer.prototype as unknown as ArrayBufferMethods).transferToFixedLength === undefined) {
   /** Moves the contents into a new fixed-length buffer of `newLength` bytes (zero-filled when larger) and detaches the receiver. */
   const bufferTransferToFixedLength = function transferToFixedLength(this: ArrayBuffer, newLength?: unknown): ArrayBuffer {
     const length = toIndex(newLength, receiverLength(this));

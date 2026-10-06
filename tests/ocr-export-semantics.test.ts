@@ -82,11 +82,12 @@ describe('page numbers follow document position', () => {
   );
 
   it('rejects ALTO whose PHYSICAL_IMG_NR is not a positive integer, through the conversion API', async () => {
-    for (const bad of ['-4', '0', '0.5', '1e2', '0x1', 'one', '']) {
-      await expect(convertFile(Buffer.from(ALTO_TWO_PAGES('1', bad)), 'alto', 'hocr', {}, 'in.xml'), bad).rejects.toThrow(
-        /PHYSICAL_IMG_NR/
-      );
-    }
+    const invalid = ['-4', '0', '0.5', '1e2', '0x1', 'one', ''];
+    await Promise.all(
+      invalid.map((bad) =>
+        expect(convertFile(Buffer.from(ALTO_TWO_PAGES('1', bad)), 'alto', 'hocr', {}, 'in.xml'), bad).rejects.toThrow(/PHYSICAL_IMG_NR/)
+      )
+    );
     await expect(convertFile(Buffer.from(ALTO_TWO_PAGES('-4', '1')), 'alto', 'hocr', {}, 'in.xml')).rejects.toBeInstanceOf(OcrMarkupError);
   });
 

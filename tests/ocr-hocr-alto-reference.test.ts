@@ -253,9 +253,9 @@ describe('ALTO 4.4 export validates and matches the reference hierarchy', () => 
         const alto = exportAlto(await pipeline(file), { filename: file });
         const lines = xpathAttributes(alto, "//*[local-name()='TextLine']/@BASELINE");
         const boxes = xpathAttributes(alto, "//*[local-name()='TextLine']/@HPOS");
-        expect(lines.length).toBe(boxes.length);
+        expect(lines).toHaveLength(boxes.length);
         const referenceLines = hocrLines(reference(file));
-        expect(lines.length).toBe(referenceLines.length);
+        expect(lines).toHaveLength(referenceLines.length);
         const referenceByLeft = new Map<string, ReferenceLine[]>();
         for (const line of referenceLines) {
           const left = line.bbox.split(' ')[0];

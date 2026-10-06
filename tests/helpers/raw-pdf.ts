@@ -31,16 +31,18 @@ function pageObjectNumber(index: number): number {
 export function rawPdf(pages: RawPage[], extraObjects: string[] = []): Buffer {
   const objects: string[] = [];
   const kids = pages.map((_, index) => `${pageObjectNumber(index)} 0 R`).join(' ');
-  objects.push('<< /Type /Catalog /Pages 2 0 R >>');
-  objects.push(`<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`);
-  objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  objects.push(
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
+  );
   pages.forEach((page, index) => {
     const rotate = page.rotate === undefined ? '' : ` /Rotate ${page.rotate}`;
     const resources = `<< /Font << /F1 3 0 R ${page.fonts ?? ''} >> ${page.resources ?? ''} >>`;
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}]${rotate} /Resources ${resources} /Contents ${pageObjectNumber(index) + 1} 0 R >>`
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}]${rotate} /Resources ${resources} /Contents ${pageObjectNumber(index) + 1} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(page.content, 'latin1')} >>\nstream\n${page.content}\nendstream`
     );
-    objects.push(`<< /Length ${Buffer.byteLength(page.content, 'latin1')} >>\nstream\n${page.content}\nendstream`);
   });
   objects.push(...extraObjects);
   return assemble(objects);

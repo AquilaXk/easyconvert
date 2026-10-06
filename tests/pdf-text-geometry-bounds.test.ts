@@ -183,7 +183,7 @@ describe('grouping many runs', () => {
       blocks = layoutItemRuns(runs);
     });
     expect(wordsIn(blocks)).toBe(MANY_RUNS);
-    expect(blocks.length).toBe(MANY_RUNS / 2);
+    expect(blocks).toHaveLength(MANY_RUNS / 2);
     expect(used).toBeLessThan(GROUPING_CPU_BUDGET_MS);
   });
 

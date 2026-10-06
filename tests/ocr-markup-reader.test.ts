@@ -18,7 +18,8 @@ function events(xml: string): string[] {
   const handler: MarkupHandler = {
     open: (name, attributes, depth) => {
       const attrs = Object.entries(attributes).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
-      log.push(`<${name}@${depth}${attrs.length > 0 ? ` ${attrs.join(' ')}` : ''}>`);
+      const attributeText = attrs.length > 0 ? ` ${attrs.join(' ')}` : '';
+      log.push(`<${name}@${depth}${attributeText}>`);
     },
     text: (text) => log.push(`text:${JSON.stringify(text)}`),
     close: (name, depth) => log.push(`</${name}@${depth}>`),
@@ -117,8 +118,10 @@ describe('readMarkup', () => {
     });
 
     it(`accepts ${OCR_MARKUP_MAX_ATTRIBUTES} attributes and rejects one more`, () => {
-      const element = (count: number): string =>
-        `<a ${Array.from({ length: count }, (_, i) => `k${i}="v"`).join(' ')}/>`;
+      const element = (count: number): string => {
+        const attributes = Array.from({ length: count }, (_, i) => `k${i}="v"`).join(' ');
+        return `<a ${attributes}/>`;
+      };
       expect(events(element(OCR_MARKUP_MAX_ATTRIBUTES))[0]).toContain(`k${OCR_MARKUP_MAX_ATTRIBUTES - 1}="v"`);
       expectMarkupError(element(OCR_MARKUP_MAX_ATTRIBUTES + 1), new RegExp(`more than ${OCR_MARKUP_MAX_ATTRIBUTES} attributes`));
     });

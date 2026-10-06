@@ -13,11 +13,11 @@ import { extraObjectNumber, rawPdf } from './helpers/raw-pdf';
 
 const STRICT_IOU = 0.9;
 const TEST_TIMEOUT_MS = 120_000;
-const WIN_ANSI_SUPERSCRIPT_TWO = String.fromCharCode(0xb2);
-const WIN_ANSI_TRADE_MARK = String.fromCharCode(0x99);
-const WIN_ANSI_ELLIPSIS = String.fromCharCode(0x85);
-const WIN_ANSI_ONE_HALF = String.fromCharCode(0xbd);
-const WIN_ANSI_MICRO = String.fromCharCode(0xb5);
+const WIN_ANSI_SUPERSCRIPT_TWO = String.fromCodePoint(0xb2);
+const WIN_ANSI_TRADE_MARK = String.fromCodePoint(0x99);
+const WIN_ANSI_ELLIPSIS = String.fromCodePoint(0x85);
+const WIN_ANSI_ONE_HALF = String.fromCodePoint(0xbd);
+const WIN_ANSI_MICRO = String.fromCodePoint(0xb5);
 /** Codes 1 and 2 of the second font are the ligature glyphs fi and fl. */
 const LIGATURE_FI = '\\001';
 const LIGATURE_FL = '\\002';

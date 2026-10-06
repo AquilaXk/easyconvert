@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,15 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fake = vi.hoisted(() => {
   class FakeWorker {
-    static instances: FakeWorker[] = [];
-    static construct: (() => void) | null = null;
-    static calls: unknown[][] = [];
     readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
     terminated = false;
     constructor(...args: unknown[]) {
-      FakeWorker.calls.push(args);
-      if (FakeWorker.construct) FakeWorker.construct();
-      FakeWorker.instances.push(this);
+      state.calls.push(args);
+      if (state.construct) state.construct();
+      state.instances.push(this);
     }
     once(event: string, handler: (...args: unknown[]) => void): this {
       this.handlers.set(event, [...(this.handlers.get(event) ?? []), handler]);
@@ -32,7 +28,13 @@ const fake = vi.hoisted(() => {
       return Promise.resolve(0);
     }
   }
-  return { FakeWorker };
+  /** What the threads the host started were given, and whether starting one should fail. */
+  const state = {
+    instances: [] as FakeWorker[],
+    construct: null as (() => void) | null,
+    calls: [] as unknown[][],
+  };
+  return { FakeWorker, state };
 });
 
 vi.mock('node:worker_threads', async (importOriginal) => {
@@ -51,6 +53,7 @@ const SHORT_DEADLINE_MS = 50;
 const OUT_OF_MEMORY = 'ERR_WORKER_OUT_OF_MEMORY';
 const CRASH_EXIT_CODE = 1;
 const THREAD_STARTED_POLL_MS = 5;
+const THREAD_STARTED_TIMEOUT_MS = 2_000;
 
 const pdf = (): Buffer => rawPdf([{ width: 200, height: 100, content: run('Hello world', 10, 50, 12) }]);
 
@@ -63,16 +66,19 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 
 /** The thread the host started, once it has. */
 async function startedThread(): Promise<InstanceType<typeof fake.FakeWorker>> {
-  for (let waited = 0; fake.FakeWorker.instances.length === 0 && waited < 2_000; waited += THREAD_STARTED_POLL_MS) {
-    await new Promise((resolve) => setTimeout(resolve, THREAD_STARTED_POLL_MS));
-  }
-  return fake.FakeWorker.instances[0];
+  await vi.waitFor(
+    () => {
+      if (fake.state.instances.length === 0) throw new Error('the thread has not started');
+    },
+    { timeout: THREAD_STARTED_TIMEOUT_MS, interval: THREAD_STARTED_POLL_MS }
+  );
+  return fake.state.instances[0];
 }
 
 beforeEach(() => {
-  fake.FakeWorker.instances = [];
-  fake.FakeWorker.calls = [];
-  fake.FakeWorker.construct = null;
+  fake.state.instances = [];
+  fake.state.calls = [];
+  fake.state.construct = null;
 });
 
 afterEach(() => {
@@ -82,7 +88,7 @@ afterEach(() => {
 
 describe('worker thread failures', () => {
   it('maps a thread that cannot be started to an unavailable engine', async () => {
-    fake.FakeWorker.construct = () => {
+    fake.state.construct = () => {
       throw new Error('resource exhausted');
     };
     const err = await failure(extractPdfTextLayerPages(pdf(), new Set([1])));
@@ -141,7 +147,7 @@ describe('without a worker entry', () => {
     expect(err).toBeInstanceOf(EngineUnavailableError);
     expect((err as EngineUnavailableError).engineName).toBe('pdf-text-thread');
     expect((err as Error).message).toContain('npm run build:pdf-text-worker');
-    expect(fake.FakeWorker.instances).toHaveLength(0);
+    expect(fake.state.instances).toHaveLength(0);
   });
 });
 
@@ -149,7 +155,7 @@ describe('density analysis', () => {
   it('reads the text density on the worker thread, under the same deadline', async () => {
     const pending = inspectPdfPagesTextDensity(pdf(), 15);
     const thread = await startedThread();
-    const [, options] = fake.FakeWorker.calls[0] as [unknown, { workerData: { job: unknown } }];
+    const [, options] = fake.state.calls[0] as [unknown, { workerData: { job: unknown } }];
     expect(options.workerData.job).toEqual({ densityThreshold: 15, geometry: 'none' });
     const analysis = { pageNumber: 1, width: 200, height: 100, charCount: 10, wordCount: 2, hasTextLayer: false, text: 'Hello world' };
     thread.emit('message', { ok: true, result: { analyses: [analysis], geometry: new Map() } });
@@ -157,7 +163,7 @@ describe('density analysis', () => {
   });
 
   it('does not hide an unavailable engine behind the best-effort reading of a PDF source', async () => {
-    fake.FakeWorker.construct = () => {
+    fake.state.construct = () => {
       throw new Error('resource exhausted');
     };
     const err = await failure(convertFile(pdf(), 'pdf', 'txt', {}, 'doc.pdf'));
