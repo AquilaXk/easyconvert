@@ -4,10 +4,25 @@ import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { sanitizeSvgString } from '../security/svg-sanitizer';
-import { encodeParquet, decodeParquet } from './parquet';
+import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
 import { assertNoComplexScript } from './ctl';
 
 export { encodeParquet, decodeParquet };
+
+/**
+ * A decoded Parquet table can still be too large for the JS engine to serialize into the target
+ * (string or array length limits); that is an input problem, not an internal error.
+ */
+async function guardParquetSource<T>(convert: () => Promise<T>): Promise<T> {
+  try {
+    return await convert();
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ParquetFormatError(`Unsupported Parquet file: the table is too large to convert (${error.message})`);
+    }
+    throw error;
+  }
+}
 
 export async function convertData(
   inputBuffer: Buffer,
@@ -22,86 +37,88 @@ export async function convertData(
 
   // PARQUET -> Target
   if (src === 'parquet') {
-    const records = decodeParquet(inputBuffer);
-    if (tgt === 'json') {
-      const json = JSON.stringify(records, null, 2);
-      const buffer = Buffer.from(json, 'utf-8');
-      return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-    }
-    if (tgt === 'csv' || tgt === 'tsv') {
-      const targetDelim = tgt === 'tsv' ? '\t' : ',';
-      const outputStr = Papa.unparse(records, { delimiter: targetDelim });
-      const buffer = Buffer.from(outputStr, 'utf-8');
-      return {
-        buffer,
-        mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
-        filename: `${baseName}.${tgt}`,
-        size: buffer.length,
-      };
-    }
-    if (tgt === 'yaml' || tgt === 'yml') {
-      const yamlStr = yaml.dump(records);
-      const buffer = Buffer.from(yamlStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
-    }
-    if (tgt === 'xlsx') {
-      const csvStr = Papa.unparse(records);
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvStr, 'utf-8'), 'csv', options, baseName);
-      return {
-        buffer: xlsxBuffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        filename: `${baseName}.xlsx`,
-        size: xlsxBuffer.length,
-      };
-    }
-    if (tgt === 'ods') {
-      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
-      const rows = [
-        headers,
-        ...records.map((d) => headers.map((h) => String(d[h] ?? ''))),
-      ];
-      const odsBuffer = await generateOdsFromData(rows, baseName);
-      return {
-        buffer: odsBuffer,
-        mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
-        filename: `${baseName}.ods`,
-        size: odsBuffer.length,
-      };
-    }
-    if (tgt === 'pdf') {
-      const pdfBuffer = await renderDataToPdf(records, baseName, options);
-      return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
-    }
-    if (tgt === 'txt') {
-      const buffer = Buffer.from(JSON.stringify(records, null, 2), 'utf-8');
-      return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-    }
-    if (tgt === 'xml') {
-      const xmlStr = jsonToXml(records, 'root');
-      const buffer = Buffer.from(xmlStr, 'utf-8');
-      return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
-    }
-    if (tgt === 'html') {
-      const html = generateTableHtml(records, baseName);
-      const buffer = Buffer.from(html, 'utf-8');
-      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-    }
-    if (tgt === 'ndjson') {
-      const ndjsonStr = records.map((r) => JSON.stringify(r)).join('\n');
-      const buffer = Buffer.from(ndjsonStr, 'utf-8');
-      return { buffer, mimeType: 'application/x-ndjson', filename: `${baseName}.ndjson`, size: buffer.length };
-    }
-    if (tgt === 'xls') {
-      const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
-      const rows = [headers, ...records.map((d) => headers.map((h) => String(d[h] ?? '')))];
-      const xlsXml = generateXlsXmlFromData(rows, baseName);
-      const buffer = Buffer.from(xlsXml, 'utf-8');
-      return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
-    }
-    if (tgt === 'parquet') {
-      return { buffer: inputBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: inputBuffer.length };
-    }
-    throw new Error(`Unsupported data conversion from parquet to ${targetFormat}`);
+    return guardParquetSource(async () => {
+      const records = decodeParquet(inputBuffer);
+      if (tgt === 'json') {
+        const json = JSON.stringify(records, null, 2);
+        const buffer = Buffer.from(json, 'utf-8');
+        return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+      }
+      if (tgt === 'csv' || tgt === 'tsv') {
+        const targetDelim = tgt === 'tsv' ? '\t' : ',';
+        const outputStr = Papa.unparse(records, { delimiter: targetDelim });
+        const buffer = Buffer.from(outputStr, 'utf-8');
+        return {
+          buffer,
+          mimeType: tgt === 'tsv' ? 'text/tab-separated-values' : 'text/csv',
+          filename: `${baseName}.${tgt}`,
+          size: buffer.length,
+        };
+      }
+      if (tgt === 'yaml' || tgt === 'yml') {
+        const yamlStr = yaml.dump(records);
+        const buffer = Buffer.from(yamlStr, 'utf-8');
+        return { buffer, mimeType: 'application/x-yaml', filename: `${baseName}.yaml`, size: buffer.length };
+      }
+      if (tgt === 'xlsx') {
+        const csvStr = Papa.unparse(records);
+        const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvStr, 'utf-8'), 'csv', options, baseName);
+        return {
+          buffer: xlsxBuffer,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          filename: `${baseName}.xlsx`,
+          size: xlsxBuffer.length,
+        };
+      }
+      if (tgt === 'ods') {
+        const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
+        const rows = [
+          headers,
+          ...records.map((d) => headers.map((h) => String(d[h] ?? ''))),
+        ];
+        const odsBuffer = await generateOdsFromData(rows, baseName);
+        return {
+          buffer: odsBuffer,
+          mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
+          filename: `${baseName}.ods`,
+          size: odsBuffer.length,
+        };
+      }
+      if (tgt === 'pdf') {
+        const pdfBuffer = await renderDataToPdf(records, baseName, options);
+        return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+      }
+      if (tgt === 'txt') {
+        const buffer = Buffer.from(JSON.stringify(records, null, 2), 'utf-8');
+        return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+      }
+      if (tgt === 'xml') {
+        const xmlStr = jsonToXml(records, 'root');
+        const buffer = Buffer.from(xmlStr, 'utf-8');
+        return { buffer, mimeType: 'application/xml', filename: `${baseName}.xml`, size: buffer.length };
+      }
+      if (tgt === 'html') {
+        const html = generateTableHtml(records, baseName);
+        const buffer = Buffer.from(html, 'utf-8');
+        return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+      }
+      if (tgt === 'ndjson') {
+        const ndjsonStr = records.map((r) => JSON.stringify(r)).join('\n');
+        const buffer = Buffer.from(ndjsonStr, 'utf-8');
+        return { buffer, mimeType: 'application/x-ndjson', filename: `${baseName}.ndjson`, size: buffer.length };
+      }
+      if (tgt === 'xls') {
+        const headers = Object.keys((records[0] || {}) as Record<string, unknown>);
+        const rows = [headers, ...records.map((d) => headers.map((h) => String(d[h] ?? '')))];
+        const xlsXml = generateXlsXmlFromData(rows, baseName);
+        const buffer = Buffer.from(xlsXml, 'utf-8');
+        return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
+      }
+      if (tgt === 'parquet') {
+        return { buffer: inputBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: inputBuffer.length };
+      }
+      throw new Error(`Unsupported data conversion from parquet to ${targetFormat}`);
+    });
   }
 
   const textContent = inputBuffer.toString('utf-8');
