@@ -34,3 +34,13 @@ export function classifyJobFailure(err: unknown): JobFailureInfo {
   }
   return { retryable: true };
 }
+
+/**
+ * Whether the attempt that just failed with `err` is the last one the job gets. A failure that cannot be retried
+ * is final whatever the attempt count says; the attempts are only exhausted when the retries are used up.
+ * Cleanup that must not run before a retry (removing the uploaded input, failing a graph node) is keyed on this.
+ */
+export function isFinalFailure(job: { attemptsMade: number; opts?: { attempts?: number } }, err: unknown): boolean {
+  if (!classifyJobFailure(err).retryable) return true;
+  return !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
+}
