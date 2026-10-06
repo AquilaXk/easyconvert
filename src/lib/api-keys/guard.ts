@@ -5,6 +5,13 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from './types';
 import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
+import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpConfigError,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  rateLimitKey,
+} from '@/lib/security/client-ip';
 import { RATE_LIMITED_PROBLEM_TYPE } from '../api/problem-details';
 
 export { extractClientIp };
@@ -32,6 +39,7 @@ export interface ValidateApiAccessOptions {
 }
 
 const WILDCARD_SCOPE = '*';
+const HTTP_BAD_REQUEST = 400;
 
 type BurstLimit = Required<Pick<TokenBucketOptions, 'capacity' | 'refillRate'>>;
 
@@ -53,6 +61,29 @@ export function getAnonymousBurstLimit(): BurstLimit {
 }
 
 export const ANONYMOUS_BURST_LIMIT: BurstLimit = getAnonymousBurstLimit();
+
+// The unattributed identity is every anonymous caller whose address cannot be trusted, so its bucket is sized
+// for site-wide traffic like the edge middleware's shared bucket (600 burst, 100/s), not for one client.
+const UNATTRIBUTED_BURST_CAPACITY_DEFAULT = 600;
+const UNATTRIBUTED_BURST_REFILL_RATE_DEFAULT = 100;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ClientIpConfigError(`${name} must be a positive integer, got "${raw}".`);
+  }
+  return value;
+}
+
+/** Shared anonymous burst limits for the `unattributed` identity (env: ANONYMOUS_UNATTRIBUTED_BURST_*). */
+export function getUnattributedBurstLimit(): BurstLimit {
+  return {
+    capacity: readPositiveIntEnv('ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', UNATTRIBUTED_BURST_CAPACITY_DEFAULT),
+    refillRate: readPositiveIntEnv('ANONYMOUS_UNATTRIBUTED_BURST_REFILL_RATE', UNATTRIBUTED_BURST_REFILL_RATE_DEFAULT),
+  };
+}
 
 const API_KEY_RATE_LIMIT_PREFIX = 'apikey:';
 const MIN_RETRY_AFTER_SECONDS = 1;
@@ -291,18 +322,67 @@ async function verifyKeyAccess(
   };
 }
 
+const CLIENT_IP_CONFIG_ERROR_MESSAGE = 'Server misconfiguration: client IP trust settings are invalid.';
+const CLIENT_IP_INVALID_ERROR_MESSAGE = 'Bad Request: malformed client address in forwarding headers.';
+
+/**
+ * Resolves the client identity through the shared trusted-proxy resolver. A malformed forwarding chain
+ * becomes a 400 rejection and invalid trust configuration a 503 (with Retry-After), so no request is ever attributed by guess.
+ */
+function resolveClientIpForAuth(request: Request): { clientIp: string } | { rejection: ApiAuthResult } {
+  try {
+    return { clientIp: extractClientIp(request) };
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    const malformed = error.status === HTTP_BAD_REQUEST;
+    return {
+      rejection: {
+        authorized: false,
+        error: malformed ? CLIENT_IP_INVALID_ERROR_MESSAGE : CLIENT_IP_CONFIG_ERROR_MESSAGE,
+        status: error.status,
+        ...(malformed ? {} : { retryAfterSeconds: CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS }),
+      },
+    };
+  }
+}
+
+function buildAnonymousUser(id: string): User {
+  return {
+    id,
+    email: 'anonymous@easyconvert.local',
+    name: 'Anonymous Client',
+    tier: 'free',
+    provider: 'email',
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
 async function verifyAnonymousAccess(
-  request: Request,
+  clientIp: string,
   requiredUnits: number
 ): Promise<ApiAuthResult> {
-  const clientIp = extractClientIp(request);
-  const anonIdentifier = `rate:anon:${clientIp}`;
+  // Anonymous burst and daily quota buckets: IPv6 clients share their /64.
+  const anonBucket = rateLimitKey(clientIp);
+  const anonIdentifier = `rate:anon:${anonBucket}`;
+  const unattributed = clientIp === UNATTRIBUTED_CLIENT_KEY;
 
-  // 1. Enforce IP burst rate limit
-  const burst = await redisKeyStore.checkTokenBucketRateLimit(
-    anonIdentifier,
-    getAnonymousBurstLimit()
-  );
+  // 1. Enforce IP burst rate limit (the shared unattributed identity gets site-wide sizing)
+  let burstLimit: BurstLimit;
+  try {
+    burstLimit = unattributed ? getUnattributedBurstLimit() : getAnonymousBurstLimit();
+  } catch (error) {
+    if (!(error instanceof ClientIpConfigError)) throw error;
+    // A malformed limit is a deployment fault: refuse like invalid trust configuration, without echoing the value.
+    console.error(`[guard] ${error.message}`);
+    return {
+      authorized: false,
+      error: CLIENT_IP_CONFIG_ERROR_MESSAGE,
+      status: error.status,
+      retryAfterSeconds: CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+    };
+  }
+  const burst = await redisKeyStore.checkTokenBucketRateLimit(anonIdentifier, burstLimit);
   if (!burst.allowed) {
     if (burst.serviceUnavailable) {
       return {
@@ -322,7 +402,12 @@ async function verifyAnonymousAccess(
   }
 
   // 2. Check anonymous daily quota
-  const anonUserId = `anon:${clientIp}`;
+  const anonUserId = `anon:${anonBucket}`;
+  if (clientIp === UNATTRIBUTED_CLIENT_KEY) {
+    // No daily quota for the shared identity: it would let a single client exhaust it for every caller
+    // (docs/client-ip-trust.md, item 5). Only the shared burst limiter above applies until TRUSTED_PROXIES is declared.
+    return { authorized: true, user: buildAnonymousUser(anonUserId), authMethod: 'session' };
+  }
   const quota = await checkQuotaAndReserve(anonUserId, 'anonymous', requiredUnits);
   if (!quota.allowed) {
     if (quota.serviceUnavailable) {
@@ -343,19 +428,9 @@ async function verifyAnonymousAccess(
     };
   }
 
-  const anonUser: User = {
-    id: anonUserId,
-    email: 'anonymous@easyconvert.local',
-    name: 'Anonymous Client',
-    tier: 'free',
-    provider: 'email',
-    createdAt: 0,
-    updatedAt: 0,
-  };
-
   return {
     authorized: true,
-    user: anonUser,
+    user: buildAnonymousUser(anonUserId),
     authMethod: 'session',
     reservationId: quota.reservationId,
     remaining: quota.remaining,
@@ -383,10 +458,11 @@ export async function validateApiAccess(
     allowAnonymous = Boolean(optionsOrUnits.allowAnonymous);
   }
 
-  const clientIp = extractClientIp(request);
   const apiKeySecret = extractApiKeySecret(request);
   if (apiKeySecret) {
-    return verifyKeyAccess(apiKeySecret, requiredUnits, requiredScope, clientIp);
+    const resolved = resolveClientIpForAuth(request);
+    if ('rejection' in resolved) return resolved.rejection;
+    return verifyKeyAccess(apiKeySecret, requiredUnits, requiredScope, resolved.clientIp);
   }
 
   const sessionUser = await getSessionFromRequest(request);
@@ -421,7 +497,9 @@ export async function validateApiAccess(
   }
 
   if (allowAnonymous) {
-    return verifyAnonymousAccess(request, requiredUnits);
+    const resolved = resolveClientIpForAuth(request);
+    if ('rejection' in resolved) return resolved.rejection;
+    return verifyAnonymousAccess(resolved.clientIp, requiredUnits);
   }
 
   return {

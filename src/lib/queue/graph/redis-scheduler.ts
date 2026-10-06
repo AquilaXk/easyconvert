@@ -16,7 +16,9 @@ import {
   NODE_FAILED_LUA_SCRIPT,
   CANCEL_GRAPH_LUA_SCRIPT,
 } from './lua-scripts';
-import { cancelGraphNodeJob, enqueueGraphNodeJob } from './node-jobs';
+import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
+import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { redactText } from '../../security/redact';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
@@ -76,7 +78,9 @@ export class RedisGraphScheduler implements IGraphScheduler {
 
   async initGraph(graphId: string, graph: JobGraph, meta: GraphMetadata = {}): Promise<GraphExecutionState> {
     const k = this.graphKeys(graphId);
-    const entries = Object.entries(graph.nodes);
+    // Bearer secrets are sealed before anything reaches Redis or a queue; the caller's graph is untouched.
+    const sealedGraph = sealJobGraph(graph, (nodeId) => graphNodeJobId(graphId, nodeId));
+    const entries = Object.entries(sealedGraph.nodes);
     const children = new Map<NodeId, NodeId[]>(entries.map(([id]) => [id, []]));
     for (const [id, node] of entries) {
       for (const input of getNodeInputs(node)) children.get(input)?.push(id);
@@ -98,10 +102,10 @@ export class RedisGraphScheduler implements IGraphScheduler {
       sourceStorageKey: meta.sourceStorageKey || '',
       sourceFormat: meta.sourceFormat || '',
       targetFormat: meta.targetFormat || '',
-      tasks: meta.tasks ? JSON.stringify(meta.tasks) : '',
+      tasks: meta.tasks ? JSON.stringify(maskTaskRecords(meta.tasks)) : '',
       createdAt: String(createdAt),
       totalNodes: String(entries.length),
-      graph: JSON.stringify(graph),
+      graph: JSON.stringify(sealedGraph),
     };
 
     await this.redisClient.eval(
@@ -216,7 +220,9 @@ export class RedisGraphScheduler implements IGraphScheduler {
     return { graphCompleted, graphStatus, readyNodeIds };
   }
 
-  async onNodeFailed(graphId: string, nodeId: NodeId, error: string): Promise<NodeFailureResult> {
+  async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string): Promise<NodeFailureResult> {
+    // The reason is stored, returned by the job API and sent in webhooks: it is masked once, here.
+    const error = redactText(reportedError);
     const k = this.graphKeys(graphId);
     const raw = (await this.redisClient.eval(
       NODE_FAILED_LUA_SCRIPT,

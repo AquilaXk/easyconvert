@@ -1,18 +1,18 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
-import { encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 
 export { buildOpenXpsPackage };
 
@@ -30,6 +30,8 @@ export async function convertOffice(
   const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+  // PDF and raster writers draw text with installed fonts found through the coverage index.
+  await loadFontCoverageIndex();
 
   // 1. DOCX Source
   if (src === 'docx') {
@@ -3226,80 +3228,42 @@ export function sanitizeWinAnsi(text: string): string {
   return out;
 }
 
-const CANDIDATE_UNICODE_FONT_PATHS = [
-  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-  '/Library/Fonts/Arial Unicode.ttf',
-  '/System/Library/Fonts/AppleSDGothicNeo.ttc',
-  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  'C:\\Windows\\Fonts\\malgun.ttf',
-  'C:\\Windows\\Fonts\\msyh.ttc',
-  'C:\\Windows\\Fonts\\arialuni.ttf',
-];
+/** One Unicode text writer per pdfkit document, so each embedded font is registered once. */
+const unicodeTextWriters = new WeakMap<PDFKit.PDFDocument, PdfUnicodeTextWriter>();
 
-let cachedFontPath: string | null | undefined = undefined;
-
-/**
- * Resolves an available CJK / Unicode TrueType font from system paths or custom options.
- */
-export function resolveUnicodeFallbackFont(customPath?: string): string | null {
-  if (customPath && fs.existsSync(customPath)) {
-    return customPath;
+function unicodeTextWriterFor(doc: PDFKit.PDFDocument, customPath?: string): PdfUnicodeTextWriter {
+  let writer = unicodeTextWriters.get(doc);
+  if (!writer) {
+    writer = new PdfUnicodeTextWriter(doc, customPath);
+    unicodeTextWriters.set(doc, writer);
   }
-  if (cachedFontPath !== undefined) {
-    return cachedFontPath;
-  }
-  for (const p of CANDIDATE_UNICODE_FONT_PATHS) {
-    try {
-      if (fs.existsSync(p)) {
-        cachedFontPath = p;
-        return p;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  cachedFontPath = null;
-  return null;
+  return writer;
 }
 
 /**
- * Registers and configures a Unicode fallback font in PDFKit if available.
+ * Resolves the preferred installed Unicode font, or the custom font when it exists.
+ */
+export function resolveUnicodeFallbackFont(customPath?: string): string | null {
+  return preferredUnicodeFontPath(customPath);
+}
+
+/**
+ * Selects the preferred installed Unicode font in the document. Text drawn through
+ * renderSafePdfText then picks, per run, an embedded font that covers its characters.
  */
 export function configurePdfKitFontFallback(
   doc: PDFKit.PDFDocument,
   customPath?: string
 ): { hasUnicodeFont: boolean; fontName?: string } {
-  const fontPath = resolveUnicodeFallbackFont(customPath);
-  if (fontPath) {
-    try {
-      let fontSubName: any = undefined;
-      if (fontPath.toLowerCase().endsWith('.ttc')) {
-        try {
-          const fontkit = require('fontkit');
-          const col = fontkit.openSync(fontPath);
-          if (col && col.fonts && col.fonts.length > 0) {
-            fontSubName = col.fonts[0].postscriptName;
-          }
-        } catch {
-          // ignore
-        }
-      }
-      doc.registerFont('UnicodeFallback', fontPath, fontSubName);
-      doc.font('UnicodeFallback');
-      return { hasUnicodeFont: true, fontName: 'UnicodeFallback' };
-    } catch {
-      // fallback
-    }
-  }
-  return { hasUnicodeFont: false };
+  const fontName = unicodeTextWriterFor(doc, customPath).usePrimaryFace();
+  if (!fontName) return { hasUnicodeFont: false };
+  return { hasUnicodeFont: true, fontName };
 }
 
 /**
- * Writes text into a PDFKit document safely, preventing WinAnsi encoding crashes on CJK text.
+ * Writes text into a PDFKit document with embedded fonts chosen per run by glyph coverage.
+ * Throws EngineUnavailableError when no installed font covers a character, instead of drawing
+ * empty boxes. Without any installed Unicode font, WinAnsi-only text keeps the standard font.
  */
 export function renderSafePdfText(
   doc: PDFKit.PDFDocument,
@@ -3313,42 +3277,15 @@ export function renderSafePdfText(
   if (!stringText) return doc;
   assertNoComplexScript(stringText, 'Pure-TS Office PDF rendering');
 
-  if (hasUnicodeFont) {
-    try {
-      if (x !== undefined && y !== undefined) {
-        return doc.text(stringText, x, y, options);
-      }
-      return doc.text(stringText, options);
-    } catch {
-      // fallback to dynamic configuration or verification
+  if (!hasUnicodeFont && !isNonWinAnsi(stringText)) {
+    if (x !== undefined && y !== undefined) {
+      return doc.text(stringText, x, y, options);
     }
+    return doc.text(stringText, options);
   }
 
-  // Attempt dynamic Unicode font fallback configuration
-  const fontConfig = configurePdfKitFontFallback(doc);
-  if (fontConfig.hasUnicodeFont) {
-    try {
-      if (x !== undefined && y !== undefined) {
-        return doc.text(stringText, x, y, options);
-      }
-      return doc.text(stringText, options);
-    } catch {
-      // Font failed on edge glyph
-    }
-  }
-
-  const safe = sanitizeWinAnsi(stringText);
-  // Fail-Closed: Never silently drop CJK / non-WinAnsi characters in mixed strings
-  if (safe !== stringText) {
-    throw new Error(
-      `Cannot render text with standard WinAnsi font and no suitable Unicode fallback font is available. Text contains non-WinAnsi characters: "${stringText.length > 40 ? stringText.slice(0, 40) + '...' : stringText}"`
-    );
-  }
-
-  if (x !== undefined && y !== undefined) {
-    return doc.text(safe, x, y, options);
-  }
-  return doc.text(safe, options);
+  unicodeTextWriterFor(doc).write(stringText, options ?? {}, x, y);
+  return doc;
 }
 
 
@@ -9604,7 +9541,7 @@ async function convertGenericEbookSource(
 }
 
 async function rasterizePipeline(
-  pipeline: sharp.Sharp,
+  pipeline: Sharp,
   tgt: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   switch (tgt) {
@@ -9618,7 +9555,7 @@ async function rasterizePipeline(
       return { buffer, mimeType: 'image/webp' };
     }
     case 'avif': {
-      const buffer = await pipeline.avif().toBuffer();
+      const buffer = await pipeline.avif({ tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       return { buffer, mimeType: 'image/avif' };
     }
     case 'tiff': {

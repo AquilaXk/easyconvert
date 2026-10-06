@@ -56,7 +56,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filename: 'test.mp4', totalSize: 10 * 1024 * 1024 }),
     });
-    const unauthRes = await uploadsHandler(unauthReq);
+    const unauthRes = await uploadsHandler(unauthReq, { params: Promise.resolve({}) });
     expect(unauthRes.status).toBe(401);
 
     // 2. Insufficient scope (convert:read only)
@@ -66,7 +66,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json', ...readHeaders },
       body: JSON.stringify({ filename: 'test.mp4', totalSize: 10 * 1024 * 1024 }),
     });
-    const readRes = await uploadsHandler(readReq);
+    const readRes = await uploadsHandler(readReq, { params: Promise.resolve({}) });
     expect(readRes.status).toBe(403);
   });
 
@@ -79,7 +79,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ totalSize: 1024 }),
     });
-    const noFilenameRes = await uploadsHandler(noFilenameReq);
+    const noFilenameRes = await uploadsHandler(noFilenameReq, { params: Promise.resolve({}) });
     expect(noFilenameRes.status).toBe(400);
 
     // Missing totalSize
@@ -88,7 +88,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ filename: 'video.mp4' }),
     });
-    const noSizeRes = await uploadsHandler(noSizeReq);
+    const noSizeRes = await uploadsHandler(noSizeReq, { params: Promise.resolve({}) });
     expect(noSizeRes.status).toBe(400);
 
     // Exceeding 10 GiB ceiling
@@ -97,7 +97,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ filename: 'huge.mp4', totalSize: 11 * 1024 * 1024 * 1024 }),
     });
-    const oversizeRes = await uploadsHandler(oversizeReq);
+    const oversizeRes = await uploadsHandler(oversizeReq, { params: Promise.resolve({}) });
     expect(oversizeRes.status).toBe(413);
   });
 
@@ -118,7 +118,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
         partSize: chunk1.length,
       }),
     });
-    const initRes = await uploadsHandler(initReq);
+    const initRes = await uploadsHandler(initReq, { params: Promise.resolve({}) });
     expect(initRes.status).toBe(200);
     const initJson = await initRes.json();
     expect(initJson.success).toBe(true);
@@ -143,7 +143,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
         }),
       }
     );
-    const part1Res = await uploadsHandler(part1Req);
+    const part1Res = await uploadsHandler(part1Req, { params: Promise.resolve({}) });
     expect(part1Res.status).toBe(200);
     const part1Json = await part1Res.json();
     expect(part1Json.success).toBe(true);
@@ -165,7 +165,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
         }),
       }
     );
-    const part2Res = await uploadsHandler(part2Req);
+    const part2Res = await uploadsHandler(part2Req, { params: Promise.resolve({}) });
     expect(part2Res.status).toBe(200);
     const part2Json = await part2Res.json();
     expect(part2Json.success).toBe(true);
@@ -187,7 +187,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
         expectedSize: totalSize,
       }),
     });
-    const completeRes = await uploadsHandler(completeReq);
+    const completeRes = await uploadsHandler(completeReq, { params: Promise.resolve({}) });
     expect(completeRes.status).toBe(200);
     const completeJson = await completeRes.json();
     expect(completeJson.success).toBe(true);
@@ -218,7 +218,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
         totalSize: 1024 * 1024,
       }),
     });
-    const initRes = await uploadsHandler(initReq);
+    const initRes = await uploadsHandler(initReq, { params: Promise.resolve({}) });
     const initJson = await initRes.json();
     const { uploadId, key } = initJson;
 
@@ -227,7 +227,7 @@ describe('Direct Multipart Upload API (/api/v1/uploads)', () => {
       headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify({ uploadId, key }),
     });
-    const abortRes = await uploadsHandler(abortReq);
+    const abortRes = await uploadsHandler(abortReq, { params: Promise.resolve({}) });
     expect(abortRes.status).toBe(200);
     const abortJson = await abortRes.json();
     expect(abortJson.success).toBe(true);
@@ -278,7 +278,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         'Upload-Length': '1048576',
       },
     });
-    const res = await tusPostHandler(unauthReq);
+    const res = await tusPostHandler(unauthReq, { params: Promise.resolve({}) });
     expect(res.status).toBe(401);
   });
 
@@ -292,7 +292,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         ...authHeaders,
       },
     });
-    const res = await tusPostHandler(badVersionReq);
+    const res = await tusPostHandler(badVersionReq, { params: Promise.resolve({}) });
     expect(res.status).toBe(412);
   });
 
@@ -307,7 +307,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         ...authHeaders,
       },
     });
-    const noLengthRes = await tusPostHandler(noLengthReq);
+    const noLengthRes = await tusPostHandler(noLengthReq, { params: Promise.resolve({}) });
     expect(noLengthRes.status).toBe(400);
 
     // Exceeding 5 GiB limit
@@ -319,7 +319,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         ...authHeaders,
       },
     });
-    const hugeRes = await tusPostHandler(hugeReq);
+    const hugeRes = await tusPostHandler(hugeReq, { params: Promise.resolve({}) });
     expect(hugeRes.status).toBe(413);
   });
 
@@ -345,7 +345,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location');
     expect(location).toBeDefined();
@@ -357,7 +357,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes1 = await tusHeadHandler(headReq1, { params: { id: [sessionId] } });
+    const headRes1 = await tusHeadHandler(headReq1, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes1.status).toBe(200);
     expect(headRes1.headers.get('Upload-Offset')).toBe('0');
     expect(headRes1.headers.get('Upload-Length')).toBe(String(totalLength));
@@ -380,7 +380,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         },
       }),
     });
-    const patchResA = await tusPatchHandler(patchReqA, { params: { id: [sessionId] } });
+    const patchResA = await tusPatchHandler(patchReqA, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchResA.status).toBe(204);
     expect(patchResA.headers.get('Upload-Offset')).toBe(String(chunkA.length));
 
@@ -389,7 +389,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes2 = await tusHeadHandler(headReq2, { params: { id: [sessionId] } });
+    const headRes2 = await tusHeadHandler(headReq2, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes2.status).toBe(200);
     expect(headRes2.headers.get('Upload-Offset')).toBe(String(chunkA.length));
 
@@ -409,7 +409,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         },
       }),
     });
-    const badOffsetRes = await tusPatchHandler(badOffsetReq, { params: { id: [sessionId] } });
+    const badOffsetRes = await tusPatchHandler(badOffsetReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(badOffsetRes.status).toBe(409);
     expect(badOffsetRes.headers.get('Upload-Offset')).toBe(String(chunkA.length));
 
@@ -431,11 +431,11 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         },
       }),
     });
-    const badChecksumRes = await tusPatchHandler(badChecksumReq, { params: { id: [sessionId] } });
+    const badChecksumRes = await tusPatchHandler(badChecksumReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(badChecksumRes.status).toBe(460);
 
     // Verify offset remained at chunkA.length (chunk was rolled back)
-    const headRes3 = await tusHeadHandler(headReq2, { params: { id: [sessionId] } });
+    const headRes3 = await tusHeadHandler(headReq2, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes3.headers.get('Upload-Offset')).toBe(String(chunkA.length));
 
     // 7. Resume & finish upload with valid chunk B and checksum
@@ -456,7 +456,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
         },
       }),
     });
-    const patchResB = await tusPatchHandler(patchReqB, { params: { id: [sessionId] } });
+    const patchResB = await tusPatchHandler(patchReqB, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchResB.status).toBe(204);
     expect(patchResB.headers.get('Upload-Offset')).toBe(String(totalLength));
     const storageKey = patchResB.headers.get('X-Storage-Key');
@@ -478,11 +478,11 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
       method: 'DELETE',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const delRes = await tusDeleteHandler(delReq, { params: { id: [sessionId] } });
+    const delRes = await tusDeleteHandler(delReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(delRes.status).toBe(204);
 
     // Subsequent HEAD must return 404
-    const headResAfterDel = await tusHeadHandler(headReq1, { params: { id: [sessionId] } });
+    const headResAfterDel = await tusHeadHandler(headReq1, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headResAfterDel.status).toBe(404);
   });
 });

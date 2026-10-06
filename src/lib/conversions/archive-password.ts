@@ -1,0 +1,346 @@
+import { execFileSync, type ExecFileSyncOptionsWithBufferEncoding } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  ArchiveNotEncryptedError,
+  ArchivePasswordRequiredError,
+  ConversionFailedError,
+  InvalidArchivePasswordError,
+  UnsupportedOptionError,
+} from '../types';
+
+/**
+ * Archive password delivery to 7-Zip (issue #490).
+ *
+ * The password never appears in argv, where any local user could read it from /proc/<pid>/cmdline.
+ * It is written to the child's stdin and answers 7-Zip's console prompt. Measured on p7zip 16.02
+ * and 7-Zip 21.07, 22.01 and 23.01, the prompt rules are the same on all of them but differ by mode:
+ *
+ * - Extracting or listing: leave `-p` out. 7-Zip then prompts and reads stdin when it is a pipe. A
+ *   bare `-p` is an empty password in this mode on every version, so even the correct password
+ *   fails with "Wrong password" and stdin is never read.
+ * - Creating: use a bare `-p` (SEVEN_ZIP_ASK_PASSWORD_SWITCH). 7-Zip prompts for the password and a
+ *   confirmation. Leaving `-p` out makes 7-Zip write an UNENCRYPTED archive without any warning.
+ *
+ * p7zip 16.02 reads the prompt through getpass(), which prefers the controlling terminal over a
+ * piped stdin. execFileSyncWithPasswordStdin therefore starts the child in its own session, which
+ * drops the controlling terminal (the async sandbox runner already does).
+ */
+
+/** Creating an archive: the bare switch that makes 7-Zip ask for the password on stdin. */
+export const SEVEN_ZIP_ASK_PASSWORD_SWITCH = '-p';
+
+/** Longest password accepted, in UTF-8 bytes. p7zip 16.02 loses long console input at 4096 bytes. */
+export const MAX_ARCHIVE_PASSWORD_BYTES = 1024;
+
+/** ZIP AES-256 rejects longer passwords with E_INVALIDARG (7-Zip kPasswordSizeMax). */
+export const MAX_ZIP_PASSWORD_BYTES = 99;
+
+/** A line break or NUL would end the password early or answer a later prompt. */
+const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
+
+/** A high surrogate without a low one after it, or a low surrogate without a high one before it. */
+const UNPAIRED_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+/** First printable ASCII character: 7-Zip rejects ZIP AES passwords with a code below it (E_INVALIDARG). */
+const FIRST_PRINTABLE_ASCII = 0x20;
+
+/** unrar exit status RARX_BADPWD: a RAR5 archive's password check value rejected the password. */
+export const UNRAR_BAD_PASSWORD_EXIT_STATUS = 11;
+
+/**
+ * The complaints a failed decryption prints on stderr, one pattern per message the tools use. Each is
+ * anchored to the whole line, because entry and archive names are chosen by whoever built the
+ * archive and the tools print them inside their messages ("ERROR: CRC Failed : Wrong password.txt").
+ * 7-Zip (identical on p7zip 16.02 and 7-Zip 21.07 to 23.01) puts the name after the message
+ * ("ERROR: Wrong password : a.txt", "ERROR: Data Error in encrypted file. Wrong password? : a.txt",
+ * "ERROR: CRC Failed in encrypted file. Wrong password? : a.txt")
+ * and prints a header failure either on one line behind the archive path or on a second line
+ * ("ERROR: /work/h.7z" then "Cannot open encrypted archive. Wrong password?").
+ * unrar prints "Checksum error in the encrypted file <name>. Corrupt file or wrong password." for
+ * RAR 4, and "Incorrect password for <name>" or "The specified password is incorrect." for RAR5.
+ */
+const ARCHIVE_TOOL_PASSWORD_FAILURE_LINES: readonly RegExp[] = [
+  /^ERROR: Wrong password(?: : .*)?$/,
+  /^ERROR: (?:Data Error|CRC Failed) in encrypted file\. Wrong password\?(?: : .*)?$/,
+  /^(?:ERROR: (?:(?! : ).)+ : )?Can(?: )?not open encrypted archive\. Wrong password\?$/,
+  /^Checksum error in the encrypted file .+\. Corrupt file or wrong password\.$/,
+  /^Incorrect password for .+$/,
+  /^The specified password is incorrect\.$/,
+];
+
+const STDERR_LINE_SEPARATOR = /\r?\n/;
+
+/**
+ * Validates a password from a request. `undefined`, `null` and the empty string mean "no password";
+ * anything else must be a string that survives UTF-8 encoding and stays on one stdin line.
+ */
+export function assertArchivePasswordSafe(password: unknown): void {
+  if (password === undefined || password === null || password === '') return;
+  if (typeof password !== 'string') {
+    throw new ConversionFailedError('Archive password must be a string.');
+  }
+  if (PASSWORD_FORBIDDEN_CHARACTERS.test(password)) {
+    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
+  }
+  if (UNPAIRED_SURROGATE.test(password)) {
+    throw new ConversionFailedError('Archive password contains an unpaired surrogate and cannot be encoded as UTF-8.');
+  }
+  if (Buffer.byteLength(password, 'utf-8') > MAX_ARCHIVE_PASSWORD_BYTES) {
+    throw new ConversionFailedError(`Archive password exceeds the ${MAX_ARCHIVE_PASSWORD_BYTES} byte limit.`);
+  }
+}
+
+/**
+ * 7-Zip encrypts ZIP entries with printable ASCII passwords of at most 99 bytes and fails the run
+ * otherwise: non-ASCII text, too long a password and any control character below 0x20 (tab included)
+ * all end in E_INVALIDARG.
+ */
+export function assertZipPasswordSupported(password: string | undefined): void {
+  if (!password) return;
+  // ASCII-only text has the same length in UTF-16 code units and in UTF-8 bytes.
+  const utf8Bytes = Buffer.byteLength(password, 'utf-8');
+  const hasControlCharacter = Array.from(password).some((char) => char.charCodeAt(0) < FIRST_PRINTABLE_ASCII);
+  if (utf8Bytes !== password.length || utf8Bytes > MAX_ZIP_PASSWORD_BYTES || hasControlCharacter) {
+    throw new UnsupportedOptionError(
+      `ZIP encryption supports printable ASCII passwords of at most ${MAX_ZIP_PASSWORD_BYTES} characters. Use a 7z target for other passwords.`
+    );
+  }
+}
+
+/**
+ * Stdin that answers the password prompt of an extract or list run. A request without a password
+ * answers with an empty line, not end of input: 7-Zip 21.07 and later treat end of input at the
+ * prompt as a user abort ("Break signaled") and print no password error, while an empty password
+ * produces the usual "Wrong password" report that the callers map to a typed error.
+ */
+export function sevenZipReadPasswordInput(password: string | undefined): Buffer {
+  assertArchivePasswordSafe(password);
+  return Buffer.from(`${password ?? ''}\n`, 'utf-8');
+}
+
+/** Stdin that answers the password prompt and its confirmation when creating an encrypted archive. */
+export function sevenZipCreatePasswordInput(password: string): Buffer {
+  assertArchivePasswordSafe(password);
+  const answer = `${password}\n`;
+  return Buffer.from(answer + answer, 'utf-8');
+}
+
+/**
+ * execFileSync for a child that may read a password from `options.input`.
+ *
+ * The child answers its prompt only when the archive is encrypted. Otherwise it exits without
+ * reading stdin, and in roughly 6% of runs Node reports the unread write as EPIPE even though the
+ * child succeeded (measured on 7-Zip 23.01). An EPIPE with exit status 0 is therefore a success.
+ * Any other failure, EPIPE included, is rethrown with its stderr so the caller can classify it.
+ */
+export function execFileSyncWithPasswordStdin(
+  binary: string,
+  args: readonly string[],
+  options: Omit<ExecFileSyncOptionsWithBufferEncoding, 'encoding' | 'detached'> & { input: Buffer }
+): Buffer {
+  // Node's spawnSync honors `detached` (setsid) although its typings do not list it.
+  const spawnOptions: ExecFileSyncOptionsWithBufferEncoding & { detached: boolean } = {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    ...options,
+    detached: true,
+    encoding: 'buffer',
+  };
+  try {
+    return execFileSync(binary, args, spawnOptions);
+  } catch (err) {
+    const failure = err as { code?: string; status?: number | null; stdout?: Buffer | null };
+    if (failure.code === 'EPIPE' && failure.status === 0) {
+      return failure.stdout ?? Buffer.alloc(0);
+    }
+    throw err;
+  }
+}
+
+/** True when a line of the tool's stderr is one of its password complaints (see the patterns above). */
+export function isArchivePasswordFailure(stderr: string): boolean {
+  return stderr
+    .split(STDERR_LINE_SEPARATOR)
+    .some((line) => ARCHIVE_TOOL_PASSWORD_FAILURE_LINES.some((pattern) => pattern.test(line)));
+}
+
+/**
+ * Stderr of a failed child, whichever shape the caller's runner throws. The error message and stdout
+ * are left out: the message carries the command line, and with it the caller-chosen archive path.
+ */
+export function archiveFailureStderr(err: unknown): string {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  if (stderr === undefined || stderr === null) return '';
+  return String(stderr);
+}
+
+/** Exit status of a failed child, whichever shape the caller's runner throws. */
+function archiveFailureExitStatus(err: unknown): number | null {
+  const failure = err as { status?: unknown; exitCode?: unknown } | null;
+  const status = failure?.status ?? failure?.exitCode;
+  return typeof status === 'number' ? status : null;
+}
+
+export function isArchivePasswordError(err: unknown): err is ArchivePasswordRequiredError | InvalidArchivePasswordError {
+  return err instanceof ArchivePasswordRequiredError || err instanceof InvalidArchivePasswordError;
+}
+
+/**
+ * Maps a failed 7-Zip or unrar run to a typed password error: required when the request had no
+ * password, invalid when it had one. Returns null when the failure is not about the password.
+ * `label` names the archive in the message, for example "ZIP archive" or "multi-volume archive".
+ */
+export function archivePasswordError(
+  err: unknown,
+  request: { password: string | undefined; label: string; tool?: 'unrar' }
+): ConversionFailedError | null {
+  const badPasswordStatus = request.tool === 'unrar' && archiveFailureExitStatus(err) === UNRAR_BAD_PASSWORD_EXIT_STATUS;
+  if (!badPasswordStatus && !isArchivePasswordFailure(archiveFailureStderr(err))) return null;
+  if (!request.password) {
+    const subject = request.label.charAt(0).toUpperCase() + request.label.slice(1);
+    return new ArchivePasswordRequiredError(`${subject} is password protected. A password is required to extract.`);
+  }
+  return new InvalidArchivePasswordError(`Invalid password for encrypted ${request.label}.`);
+}
+
+/** Longest a `7z l` listing may run (verification of a created archive, inspection of an uploaded one). */
+export const SEVEN_ZIP_LISTING_TIMEOUT_MS = 30_000;
+
+/** Most entries an encrypted ZIP or 7z target may hold: its verification listing has to stay readable. */
+export const MAX_ENCRYPTED_ARCHIVE_ENTRIES = 50_000;
+
+/**
+ * Room reserved per entry in the verification listing. `7z l -slt` prints about 330 bytes of fields
+ * for an entry plus its path (twice for a symlink target); 1 KiB covers paths of 255 bytes.
+ */
+export const ENCRYPTION_LISTING_BYTES_PER_ENTRY = 1024;
+
+/** Largest verification listing read; a bigger one cannot prove encryption and fails the creation. */
+export const MAX_ENCRYPTION_LISTING_BYTES = MAX_ENCRYPTED_ARCHIVE_ENTRIES * ENCRYPTION_LISTING_BYTES_PER_ENTRY;
+
+/** Bytes of fields `7z l -slt` prints per entry besides its path (about 330 measured), rounded up. */
+const ENCRYPTION_LISTING_FIELD_BYTES = 512;
+
+/**
+ * Throws before any archive is written when an encrypted target would be too big to verify: more
+ * entries than MAX_ENCRYPTED_ARCHIVE_ENTRIES, or entry paths long enough that the verification
+ * listing would pass MAX_ENCRYPTION_LISTING_BYTES. Without it the creation runs to the end and only
+ * the check afterwards fails. Stops reading `entryPaths` at the first violation.
+ */
+export function assertEncryptedArchiveInputWithinLimits(entryPaths: Iterable<string>): void {
+  let entries = 0;
+  let listingBytes = 0;
+  for (const entryPath of entryPaths) {
+    entries += 1;
+    if (entries > MAX_ENCRYPTED_ARCHIVE_ENTRIES) {
+      throw new ConversionFailedError(`Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`);
+    }
+    listingBytes += ENCRYPTION_LISTING_FIELD_BYTES + Buffer.byteLength(entryPath, 'utf-8');
+    if (listingBytes > MAX_ENCRYPTION_LISTING_BYTES) {
+      throw new ConversionFailedError(
+        `The encryption check listing would exceed ${MAX_ENCRYPTION_LISTING_BYTES} bytes. Use shorter entry paths or fewer entries.`
+      );
+    }
+  }
+}
+
+/** Paths, relative to `root`, of every file, folder and link below it. Symbolic links are not followed. */
+export function* walkArchiveTreePaths(root: string): Generator<string> {
+  const pending: string[] = [''];
+  while (pending.length > 0) {
+    const relativeDir = pending.pop() as string;
+    for (const entry of fs.readdirSync(path.join(root, relativeDir), { withFileTypes: true })) {
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+      yield relativePath;
+      if (entry.isDirectory()) pending.push(relativePath);
+    }
+  }
+}
+
+/** What `7z l -slt` said about a freshly created archive, listed with an empty password. */
+export interface EncryptionListingOutcome {
+  /** stdout of a listing that succeeded. */
+  listing?: string;
+  /** Stderr of a listing that failed. */
+  failureOutput?: string;
+}
+
+export interface EncryptionVerdict {
+  /** `header`: even the file list needs the password. `entries`: every file entry is encrypted. */
+  protection: 'header' | 'entries';
+  encryptedEntries: number;
+}
+
+const LISTING_ENTRY_SEPARATOR = /\r?\n\r?\n/;
+const LISTING_ENTRIES_START = /^-{10}\r?$/m;
+/** Method of a ZIP entry encrypted with AES-256, for example "AES-256 Store" or "AES-256 Deflate". */
+const ZIP_AES256_METHOD = /\bAES-256\b/;
+const UNVERIFIED_ENCRYPTION_MESSAGE = 'Could not verify that the archive is encrypted.';
+
+interface ParsedListing {
+  entries: Array<Map<string, string>>;
+  /** True when the listing had its entries separator and nothing but whitespace after it. */
+  isExplicitlyEmpty: boolean;
+}
+
+/**
+ * Entries of a `-slt` listing as key/value maps; the archive's own header block is dropped. Returns
+ * null when the listing has no entries separator, so it is not a listing this parser understands.
+ */
+function parseListing(listing: string): ParsedListing | null {
+  const start = LISTING_ENTRIES_START.exec(listing);
+  if (!start) return null;
+  const body = listing.slice(start.index + start[0].length);
+  const entries = body
+    .split(LISTING_ENTRY_SEPARATOR)
+    .map((block) => {
+      const fields = new Map<string, string>();
+      for (const line of block.split(/\r?\n/)) {
+        const separator = line.indexOf(' = ');
+        if (separator > 0) fields.set(line.slice(0, separator), line.slice(separator + 3));
+      }
+      return fields;
+    })
+    .filter((fields) => fields.has('Path'));
+  return { entries, isExplicitlyEmpty: body.trim() === '' };
+}
+
+/**
+ * Decides from an unauthenticated `7z l -slt` whether a password-protected target really is.
+ * A 7-Zip that ignores its password prompt writes a plain archive and still exits 0, so the
+ * creation result alone proves nothing. 7z targets are written with a header password (-mhe=on):
+ * the file list must then be unreadable, and a listing that succeeds means the names are exposed.
+ * ZIP names are never encrypted, so every file entry must report `Encrypted = +` with an AES-256
+ * `Method` instead (ZipCrypto is encrypted but not what was asked for); folders carry no data and
+ * always report `-`. A listing with no parsable entry counts only when it is explicitly empty.
+ * Anything else, including a listing that failed for another reason, is not proof of encryption
+ * and throws.
+ */
+export function assertListingShowsEncryption(
+  format: 'zip' | '7z',
+  outcome: EncryptionListingOutcome
+): EncryptionVerdict {
+  if (outcome.listing === undefined) {
+    if (outcome.failureOutput !== undefined && isArchivePasswordFailure(outcome.failureOutput)) {
+      return { protection: 'header', encryptedEntries: 0 };
+    }
+    throw new ConversionFailedError(UNVERIFIED_ENCRYPTION_MESSAGE);
+  }
+  if (format === '7z') throw new ArchiveNotEncryptedError();
+
+  const parsed = parseListing(outcome.listing);
+  if (!parsed || (parsed.entries.length === 0 && !parsed.isExplicitlyEmpty)) {
+    throw new ConversionFailedError(UNVERIFIED_ENCRYPTION_MESSAGE);
+  }
+  const files = parsed.entries.filter((entry) => entry.get('Folder') !== '+');
+  const plaintext = files.filter((entry) => entry.get('Encrypted') !== '+');
+  if (plaintext.length > 0) throw new ArchiveNotEncryptedError();
+  const weak = files.filter((entry) => !ZIP_AES256_METHOD.test(entry.get('Method') ?? ''));
+  if (weak.length > 0) throw new ArchiveNotEncryptedError('Archive entries were not encrypted with AES-256.');
+  return { protection: 'entries', encryptedEntries: files.length };
+}
+
+/** Stdin for the verification listing: an empty password, so an encrypted header reports "Wrong password". */
+export function sevenZipEncryptionCheckInput(): Buffer {
+  return sevenZipReadPasswordInput(undefined);
+}

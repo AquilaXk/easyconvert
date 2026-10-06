@@ -426,7 +426,7 @@ describe('Auth & API Key Infrastructure', () => {
         method: 'DELETE',
         headers: { Cookie: cookieHeader },
       });
-      const deleteKeyRes = await keyDeleteHandler(deleteKeyReq, { params: { id: generatedKeyId } });
+      const deleteKeyRes = await keyDeleteHandler(deleteKeyReq, { params: Promise.resolve({ id: generatedKeyId }) });
       expect(deleteKeyRes.status).toBe(200);
 
       // List again and check status is revoked
@@ -496,7 +496,7 @@ describe('Auth & API Key Infrastructure', () => {
         method: 'DELETE',
         headers: { Cookie: `easyconvert_session=${token}` },
       });
-      const deleteRes = await fileDeleteHandler(deleteFileReq, { params: { id: fileId } });
+      const deleteRes = await fileDeleteHandler(deleteFileReq, { params: Promise.resolve({ id: fileId }) });
       expect(deleteRes.status).toBe(200);
 
       const filesResAfter = await filesGetHandler(filesReq);

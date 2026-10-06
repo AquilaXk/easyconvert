@@ -60,7 +60,7 @@ export const PdfAOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdfa-options.json',
   type: 'object',
   properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
+    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
     recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
   },
 } as const;
@@ -105,6 +105,11 @@ export const ConversionOptionsSchema = {
       minimum: 72,
       maximum: 600,
       description: 'Dots per inch resolution (72-600).',
+    },
+    layout: {
+      type: 'boolean',
+      description:
+        'PDF to TXT: keep the physical page layout so table rows stay on one line. Defaults to false, which reads text in reading order (column after column).',
     },
     colorDepth: {
       type: 'integer',
@@ -386,6 +391,12 @@ export const ConversionOptionsSchema = {
       type: 'array',
       items: { type: 'string' },
       description: 'Glob patterns for selective extraction from archives.',
+    },
+    skipLinks: {
+      type: 'boolean',
+      default: false,
+      description:
+        'Extract archives that contain symbolic or hard links by leaving those entries out. By default such archives are rejected. The skipped entry names are reported in the result as skippedLinks.',
     },
     repair: {
       type: 'boolean',
@@ -717,7 +728,7 @@ export const ConversionOptionsSchema = {
     pdfStandard: {
       type: 'string',
       enum: ['pdfa', 'pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
-      description: 'PDF archival standard conformance level.',
+      description: "PDF archival standard conformance level. The bare value 'pdfa' means pdfa-2b.",
     },
     pdfVersion: {
       type: 'string',
@@ -730,6 +741,20 @@ export const ConversionOptionsSchema = {
     losslessImageCompression: {
       type: 'boolean',
       description: 'Preserve lossless pixel compression during document export.',
+    },
+    imageDpi: {
+      type: 'integer',
+      minimum: 72,
+      maximum: 1200,
+      description:
+        'Office to PDF: downsample embedded images to this resolution (72-1200). Defaults to keeping images at their source resolution.',
+    },
+    jpegQuality: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description:
+        'Office to PDF: re-encode embedded JPEG images at this quality (1-100). Defaults to keeping the source JPEG stream byte for byte.',
     },
     watermark: {
       type: 'object',
@@ -982,6 +1007,25 @@ export const ProblemDetailsSchema = {
   },
 } as const;
 
+/** Members a PDF/A validation problem (HTTP 422) adds to the problem details. */
+export const PdfaValidationProblemSchema = {
+  $id: 'https://easyconvert.local/schemas/pdfa-validation-problem.json',
+  type: 'object',
+  required: ['profile', 'failedRules'],
+  properties: {
+    profile: {
+      type: 'string',
+      enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
+      description: 'The PDF/A level the request asked for and the output was validated against.',
+    },
+    failedRules: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'veraPDF rule IDs the output failed, as `<clause>-<test number>` (for example `6.2.11.4.1-1`).',
+    },
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
@@ -1217,13 +1261,32 @@ export const UsageQueryResponseSchema = {
 export const ArchiveInspectResponseSchema = {
   $id: 'https://easyconvert.local/schemas/archive-inspect-response.json',
   type: 'object',
-  required: ['format', 'totalEntries', 'totalUncompressedBytes', 'totalCompressedBytes', 'isEncrypted', 'entries'],
+  required: [
+    'format',
+    'totalEntries',
+    'totalUncompressedBytes',
+    'totalCompressedBytes',
+    'isEncrypted',
+    'entries',
+    'extractable',
+    'unextractableReasons',
+  ],
   properties: {
     format: { type: 'string', description: 'Detected archive format standard.' },
     totalEntries: { type: 'integer', minimum: 0, description: 'Total number of items in the archive.' },
     totalUncompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of uncompressed file sizes in bytes.' },
     totalCompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of compressed storage sizes in bytes.' },
     isEncrypted: { type: 'boolean', description: 'Whether archive or its entries require a password.' },
+    extractable: {
+      type: 'boolean',
+      description:
+        'False when extraction would refuse the archive because of links, unsafe paths, special entries or duplicate paths. Inspection reports these and never follows them.',
+    },
+    unextractableReasons: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'One line per category that blocks extraction, with a count and the first offending entry.',
+    },
     entries: {
       type: 'array',
       items: {
@@ -1237,6 +1300,16 @@ export const ArchiveInspectResponseSchema = {
           isDirectory: { type: 'boolean', description: 'Whether this entry represents a directory.' },
           modifiedAt: { type: 'string', description: 'ISO 8601 modification timestamp.' },
           crc32: { type: 'string', description: 'Hex-encoded CRC32 checksum.' },
+          kind: {
+            type: 'string',
+            enum: ['symlink', 'hardlink', 'special'],
+            description: 'Present for link and device/FIFO/socket entries. Links are never resolved.',
+          },
+          unsafePath: {
+            type: 'boolean',
+            description: 'The name is absolute, traverses with `..`, or is invalid. The name is reported verbatim.',
+          },
+          duplicate: { type: 'boolean', description: 'Another entry in the archive has the same path.' },
         },
       },
     },
