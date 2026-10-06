@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
 
 // Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
 if (typeof (Promise as any).withResolvers === 'undefined') {
@@ -36,6 +37,36 @@ function unpack1bpp(packed: Uint8Array, width: number, height: number, inverse: 
   return unpacked;
 }
 
+/** Bytes around an image XObject marker that are searched for its dictionary. */
+const IMAGE_DICTIONARY_WINDOW_BYTES = 2048;
+const IMAGE_SUBTYPE_PATTERN = /\/Subtype\s*\/Image\b/g;
+const OBJECT_START_PATTERN = /\d+\s+\d+\s+obj\b/g;
+const IMAGE_WIDTH_PATTERN = /\/Width\s+(\d{1,10})\b/;
+const IMAGE_HEIGHT_PATTERN = /\/Height\s+(\d{1,10})\b/;
+
+/**
+ * Refuses a PDF whose image XObjects declare more pixels than the input limit. Image XObjects are stream
+ * objects, which a PDF never packs into an object stream, so their dictionaries are readable as plain text
+ * and the check needs no decode. pdfjs is additionally told the same limit (`maxImageSize`), which makes it
+ * skip, without decoding, any image this scan cannot see (inline images, obfuscated names).
+ */
+function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
+  const text = pdfBuffer.toString('latin1');
+  for (const marker of text.matchAll(IMAGE_SUBTYPE_PATTERN)) {
+    const at = marker.index ?? 0;
+    const windowStart = Math.max(0, at - IMAGE_DICTIONARY_WINDOW_BYTES);
+    const before = text.slice(windowStart, at);
+    let objectStart = 0;
+    for (const start of before.matchAll(OBJECT_START_PATTERN)) objectStart = start.index ?? 0;
+    const dictionary = text.slice(windowStart + objectStart, at + IMAGE_DICTIONARY_WINDOW_BYTES);
+    const streamAt = dictionary.indexOf('stream');
+    const header = streamAt === -1 ? dictionary : dictionary.slice(0, streamAt);
+    const width = IMAGE_WIDTH_PATTERN.exec(header);
+    const height = IMAGE_HEIGHT_PATTERN.exec(header);
+    if (width && height) assertInputPixels(Number(width[1]), Number(height[1]));
+  }
+}
+
 /**
  * Extracts embedded raster images from PDF pages using pdfjs-dist.
  * Safely decodes arbitrary PDF compression filters (JBIG2, Flate, DCT, JPX, CCITT Fax)
@@ -46,6 +77,7 @@ export async function extractRasterImagesFromPdf(
   targetDpi: number = 300,
   targetPageNumbers?: Set<number> | number[]
 ): Promise<ExtractedPdfImage[]> {
+  assertPdfImagesWithinLimit(pdfBuffer);
   const images: ExtractedPdfImage[] = [];
 
   try {
@@ -55,6 +87,7 @@ export async function extractRasterImagesFromPdf(
       useSystemFonts: true,
       disableFontFace: true,
       verbosity: 0,
+      maxImageSize: maxInputPixels(),
     });
 
     const doc = await loadingTask.promise;
@@ -85,6 +118,7 @@ export async function extractRasterImagesFromPdf(
 
         if (imgObj && imgObj.data && imgObj.width && imgObj.height) {
           const { width, height } = imgObj;
+          assertInputPixels(width, height);
           let rawData: Buffer;
           let channels: 1 | 3 | 4 = 3;
 
@@ -138,6 +172,7 @@ export async function extractRasterImagesFromPdf(
       }
     }
   } catch (err: any) {
+    if (err instanceof InputPixelLimitError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     const lower = msg.toLowerCase();
     if (
