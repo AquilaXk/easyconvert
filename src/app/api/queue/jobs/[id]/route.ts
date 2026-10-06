@@ -105,6 +105,8 @@ export async function GET(
     },
     returnvalue: job.returnvalue,
     failedReason: job.failedReason,
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
     logs: job.logs,
   });
 }

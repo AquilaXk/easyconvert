@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import {
   applyPdfWatermark,
@@ -17,6 +17,12 @@ import {
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
+
+/** Whether a veraPDF binary answers on PATH or VERAPDF_PATH; checked independently of the module under test. */
+function verapdfInstalled(): boolean {
+  const run = spawnSync(process.env.VERAPDF_PATH || 'verapdf', ['--version'], { encoding: 'utf-8', timeout: 60_000 });
+  return run.status === 0;
+}
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 
@@ -295,18 +301,19 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
   });
 
   describe('3. PDF/A Archival Conversion & Metadata Reporting', () => {
-    it('reports transparent validation metadata (pdfaValidated: false when veraPDF is absent)', async () => {
+    it('reports transparent validation metadata (pdfaValidated matches whether veraPDF is installed)', async () => {
       const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
 
-      // When LibreOffice is available, converts and sets pdfaValidated; when not, throws EngineUnavailableError
+      // When LibreOffice is available, converts and sets pdfaValidated; when not, throws EngineUnavailableError.
+      // PDF/A-2b: this LibreOffice build's 1b output fails veraPDF rule 6.7.3-1 (issue #582).
       const soffice = getOracleToolPath('soffice');
       if (soffice) {
-        const result = await convertToPdfA(originalPdf, { conformance: 'pdfa-1b' });
+        const result = await convertToPdfA(originalPdf, { conformance: 'pdfa-2b' });
         expect(result.buffer.length).toBeGreaterThan(0);
-        expect(result.conformanceLevel).toBe('pdfa-1b');
-        expect(result.pdfaValidated).toBe(false); // VeraPDF is absent
+        expect(result.conformanceLevel).toBe('pdfa-2b');
+        expect(result.pdfaValidated).toBe(verapdfInstalled());
       } else {
-        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-1b' })).rejects.toThrow(
+        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-2b' })).rejects.toThrow(
           EngineUnavailableError
         );
       }

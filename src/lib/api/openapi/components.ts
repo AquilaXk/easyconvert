@@ -87,6 +87,8 @@ export const components = {
         processedOn: { type: 'number' },
         finishedOn: { type: 'number' },
         failedReason: { type: 'string' },
+        failedCode: { type: 'string' },
+        failedStatus: { type: 'integer' },
       },
     },
     ApiKey: {

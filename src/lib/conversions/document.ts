@@ -41,6 +41,7 @@ import {
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
+import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
 import { renderMarkdownFragment } from './markdown';
@@ -219,7 +220,10 @@ export async function convertDocument(
           pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
         );
       } catch (err: any) {
+        // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
+        rethrowInputPixelLimit(err);
         if (options.ocrEnabled) {
+          if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
           throw new Error(`PDF OCR failed: ${cleanMsg}`);
