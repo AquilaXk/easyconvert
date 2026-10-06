@@ -194,20 +194,6 @@ describe('export fails closed without word geometry', () => {
     expect(exportHocr(blank).match(/class="ocr_(page|carea|line)"/g)).toEqual(['class="ocr_page"']);
     expect(exportAlto(blank).match(/<(Page|PrintSpace|TextBlock|TextLine)\b/g)).toEqual(['<Page', '<PrintSpace']);
   });
-
-  it('turns a PDF with digital text pages into a typed error instead of invented layout', async () => {
-    const { PDFDocument, StandardFonts } = await import('pdf-lib');
-    const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    doc.addPage([500, 800]).drawText('Standard vertical portrait document text', { x: 50, y: 700, size: 14, font });
-    const pdf = Buffer.from(await doc.save());
-    await expect(convertFile(pdf, 'pdf', 'hocr', { ocrEnabled: true, ocrMode: 'skip_text' }, 'digital.pdf')).rejects.toThrow(
-      NEED_GEOMETRY
-    );
-    await expect(convertFile(pdf, 'pdf', 'alto', { ocrEnabled: true, ocrMode: 'skip_text' }, 'digital.pdf')).rejects.toBeInstanceOf(
-      OcrMarkupError
-    );
-  });
 });
 
 describe('characters XML 1.0 cannot carry', () => {

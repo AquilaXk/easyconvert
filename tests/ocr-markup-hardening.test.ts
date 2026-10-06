@@ -16,15 +16,20 @@ import { parseAlto, parseHocr } from '../src/lib/conversions/ocr-import';
  */
 
 const NOOP: MarkupHandler = { open: () => {}, text: () => {}, close: () => {} };
-const TIME_BUDGET_MS = 2_000;
+/**
+ * CPU time, not wall time, so a busy machine running other test files does not fail the run. The
+ * quadratic reader took 13 s and 27 s of CPU on these inputs; the linear one takes about 1 s.
+ */
+const CPU_BUDGET_MS = 3_000;
 const TEST_TIMEOUT_MS = 60_000;
 const MANY_TEXT_NODES = 400_000;
 const MANY_LINES = 80_000;
 
-function elapsedMs(run: () => void): number {
-  const start = performance.now();
+function cpuMs(run: () => void): number {
+  const start = process.cpuUsage();
   run();
-  return performance.now() - start;
+  const used = process.cpuUsage(start);
+  return (used.user + used.system) / 1000;
 }
 
 function openedNames(xml: string): string[] {
@@ -46,11 +51,11 @@ function expectMarkupError(run: () => unknown, message: RegExp): void {
 
 describe('reader running time', () => {
   it(
-    `reads ${MANY_TEXT_NODES} small text nodes in under ${TIME_BUDGET_MS} ms (no scan to the end of the document per node)`,
+    `reads ${MANY_TEXT_NODES} small text nodes in under ${CPU_BUDGET_MS} ms of CPU (no scan to the end of the document per node)`,
     () => {
       const xml = `<r>${'<a>x</a>'.repeat(MANY_TEXT_NODES)}</r>`;
       let texts = 0;
-      const took = elapsedMs(() =>
+      const took = cpuMs(() =>
         readMarkup(xml, {
           open: () => {},
           text: () => {
@@ -60,13 +65,13 @@ describe('reader running time', () => {
         })
       );
       expect(texts).toBe(MANY_TEXT_NODES);
-      expect(took).toBeLessThan(TIME_BUDGET_MS);
+      expect(took).toBeLessThan(CPU_BUDGET_MS);
     },
     TEST_TIMEOUT_MS
   );
 
   it(
-    `parses an hOCR page of ${MANY_LINES} lines in under ${TIME_BUDGET_MS} ms`,
+    `parses an hOCR page of ${MANY_LINES} lines in under ${CPU_BUDGET_MS} ms of CPU`,
     () => {
       const lines: string[] = [];
       for (let i = 0; i < MANY_LINES; i++) {
@@ -77,11 +82,11 @@ describe('reader running time', () => {
       }
       const hocr = `<div class="ocr_page" title="bbox 0 0 100 2000">\n${lines.join('')}</div>`;
       let wordCount = 0;
-      const took = elapsedMs(() => {
+      const took = cpuMs(() => {
         wordCount = parseHocr(hocr).wordCount;
       });
       expect(wordCount).toBe(MANY_LINES);
-      expect(took).toBeLessThan(TIME_BUDGET_MS);
+      expect(took).toBeLessThan(CPU_BUDGET_MS);
     },
     TEST_TIMEOUT_MS
   );
