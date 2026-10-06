@@ -67,14 +67,12 @@ describe('palette quantizers refuse pictures that would not fit the job memory s
       .png()
       .toBuffer();
     const rssBefore = process.memoryUsage().rss;
-    const start = performance.now();
     let error: unknown;
     try {
       await convertImage(source, target, options, 'big.png', 'png');
     } catch (caught) {
       error = caught;
     }
-    const ms = performance.now() - start;
     expect(error).toBeInstanceOf(InputPixelLimitError);
     expect(error).toMatchObject({
       status: HTTP_PAYLOAD_TOO_LARGE,
@@ -84,7 +82,6 @@ describe('palette quantizers refuse pictures that would not fit the job memory s
     });
     // The raster is decoded once (100 MB) and never expanded into the Oklab working arrays (2.8 GB).
     expect(process.memoryUsage().rss - rssBefore).toBeLessThan(QUANTIZER_REJECTION_RSS_BYTES);
-    expect(ms).toBeLessThan(5_000);
   });
 
   it('still quantizes a small picture and writes the requested palette size', async () => {

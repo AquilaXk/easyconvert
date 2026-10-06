@@ -32,7 +32,9 @@ describe('an image watermark is held to the input pixel limit before pdf-lib dec
 
   it('refuses a base64 data URI watermark the same way', async () => {
     const uri = `data:image/png;base64,${bombPng(OVER_LIMIT_SIDE, OVER_LIMIT_SIDE).toString('base64')}`;
-    await expect(applyPdfWatermark(await onePagePdf(), { type: 'image', image: uri })).rejects.toBeInstanceOf(InputPixelLimitError);
+    const run = applyPdfWatermark(await onePagePdf(), { type: 'image', image: uri });
+    await expect(run).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(run).rejects.toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE, width: OVER_LIMIT_SIDE });
   });
 
   it('refuses a watermark PNG whose header cannot be read, which pdf-lib would still decode', async () => {

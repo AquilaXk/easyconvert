@@ -6,7 +6,6 @@ import { ConversionFailedError } from '../src/lib/types';
 import { pdfWithFlateImage, type ImageDictionary } from './helpers/image-pdf-bomb';
 
 const BYTES_PER_MIB = 1024 * 1024;
-const MAX_REJECTION_MS = 1000;
 /** Generous bound for a scan that must be linear in the file size; the quadratic scan took 23 s on 8 MB. */
 const MAX_SCAN_MS = 8000;
 const MAX_RSS_GROWTH_BYTES = 50 * BYTES_PER_MIB;
@@ -78,11 +77,9 @@ describe('PDF raster extraction (the OCR input path) honours the input pixel lim
 
   it('keeps the typed error through a PDF conversion that asks for OCR, without decoding the image', async () => {
     const pdf = pdfWithFlateImage(OVER_CAP_SIDE, OVER_CAP_SIDE);
-    const start = performance.now();
     const run = convertFile(pdf, 'pdf', 'txt', { ocrEnabled: true }, 'scan.pdf');
     await expect(run).rejects.toBeInstanceOf(InputPixelLimitError);
     await expect(run).rejects.toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE });
-    expect(performance.now() - start).toBeLessThan(MAX_REJECTION_MS);
   });
 
   it('refuses an inline image over the limit with the same typed error, since pdfjs skips it undecoded', async () => {

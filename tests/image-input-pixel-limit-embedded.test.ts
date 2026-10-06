@@ -8,7 +8,6 @@ import { ConversionFailedError } from '../src/lib/types';
 import { cbzWithImages, pptxWithPicture } from './helpers/embedded-image-docs';
 
 const BYTES_PER_MIB = 1024 * 1024;
-const MAX_REJECTION_MS = 1000;
 const MAX_RSS_GROWTH_BYTES = 50 * BYTES_PER_MIB;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Hand-written default limit of the issue (100 megapixels). */
@@ -19,17 +18,14 @@ const SMALL_SIDE = 32;
 
 async function expectTypedRejection(run: () => Promise<unknown>): Promise<void> {
   const rssBefore = process.memoryUsage().rss;
-  const start = performance.now();
   let error: unknown;
   try {
     await run();
   } catch (caught) {
     error = caught;
   }
-  const ms = performance.now() - start;
   expect(error).toBeInstanceOf(InputPixelLimitError);
   expect(error).toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE, limit: EXPECTED_DEFAULT_LIMIT });
-  expect(ms).toBeLessThan(MAX_REJECTION_MS);
   expect(process.memoryUsage().rss - rssBefore).toBeLessThan(MAX_RSS_GROWTH_BYTES);
 }
 

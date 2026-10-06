@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 
 /** Minimal one-slide PPTX (ECMA-376 PresentationML) that places `media` as a picture on its slide. */
-export async function pptxWithPicture(mediaName: string, media: Buffer, srcRect = ''): Promise<Buffer> {
+export function pptxWithPicture(mediaName: string, media: Buffer, srcRect = ''): Promise<Buffer> {
   const zip = new JSZip();
   zip.file(`ppt/media/${mediaName}`, media);
   zip.file(
@@ -61,7 +61,7 @@ export async function pptxWithPicture(mediaName: string, media: Buffer, srcRect 
 }
 
 /** Comic book zip (CBZ) holding the given images in page order. */
-export async function cbzWithImages(images: Array<{ name: string; data: Buffer }>): Promise<Buffer> {
+export function cbzWithImages(images: Array<{ name: string; data: Buffer }>): Promise<Buffer> {
   const zip = new JSZip();
   for (const image of images) zip.file(image.name, image.data);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { conversionQueue, processConversionJob } from '../src/lib/queue/conversion-queue';
+import { bombPng } from './helpers/image-bombs';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import {
   CadGeometryUnavailableError,
@@ -141,5 +142,38 @@ describe('job status responses carry the typed failure', () => {
     const res = await getQueueJobRoute(new NextRequest(`${BASE_URL}/api/queue/jobs/${jobId}`, { headers }), { params: { id: jobId } });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedCode: 'InputPixelLimitError' });
+  });
+
+  it('reports the typed failure of a worker end to end: a bomb PNG fails once and the status route says 413', async () => {
+    const user = await userStore.createUser({
+      name: 'End To End Reader',
+      email: `e2e_reader_${Date.now()}_${Math.random().toString(36).slice(2)}@queue.test`,
+      tier: 'pro',
+    });
+    const key = await redisKeyStore.generateApiKey(user.id, 'E2E key', { scopes: ['convert:read', 'convert:write'] });
+    const headers = { Authorization: `Bearer ${key.secretKey}` };
+    const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
+    const failed = new Promise<void>((resolve) => worker.on('failed', () => resolve()));
+    const job = await conversionQueue.add(
+      'convert',
+      {
+        jobId: '',
+        originalFilename: 'bomb.png',
+        sourceFormat: 'png',
+        targetFormat: 'jpg',
+        fileSize: 123,
+        options: {},
+        inputBufferBase64: bombPng(OVER_LIMIT_SIDE, OVER_LIMIT_SIDE).toString('base64'),
+        userId: user.id,
+      },
+      { attempts: ATTEMPTS, backoff: { type: 'fixed', delay: RETRY_DELAY_MS } }
+    );
+    await failed;
+    await worker.close();
+
+    const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers }), { params: { id: job.id } });
+    const body = await res.json();
+    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_PAYLOAD_TOO_LARGE, failedCode: 'InputPixelLimitError' });
+    expect(body.failedReason).toContain(`over the input limit of ${INPUT_LIMIT} pixels`);
   });
 });

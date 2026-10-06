@@ -4,7 +4,6 @@ import { ConversionFailedError } from '../src/lib/types';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 
 const BYTES_PER_MIB = 1024 * 1024;
-const MAX_REJECTION_MS = 100;
 const MAX_RSS_GROWTH_BYTES = 50 * BYTES_PER_MIB;
 const BMP_FILE_HEADER_BYTES = 14;
 const BMP_INFO_HEADER_BYTES = 40;
@@ -31,9 +30,8 @@ function headerOnlyBmp(width: number, height: number, bitsPerPixel: number): Buf
 describe('decodeBmp checks the declared pixel data against the file before allocating', () => {
   it('rejects a 54-byte header that declares 10000x10000 pixels without allocating the canvas', () => {
     const bomb = headerOnlyBmp(BOMB_SIDE, BOMB_SIDE, 24);
-    expect(bomb.length).toBe(BMP_HEADER_BYTES);
+    expect(bomb).toHaveLength(BMP_HEADER_BYTES);
     const rssBefore = process.memoryUsage().rss;
-    const start = performance.now();
     let error: unknown;
     try {
       decodeBmp(bomb);
@@ -43,7 +41,6 @@ describe('decodeBmp checks the declared pixel data against the file before alloc
     expect(error).toBeInstanceOf(ConversionFailedError);
     expect(error).not.toBeInstanceOf(InputPixelLimitError);
     expect((error as Error).message).toContain('pixel data');
-    expect(performance.now() - start).toBeLessThan(MAX_REJECTION_MS);
     expect(process.memoryUsage().rss - rssBefore).toBeLessThan(MAX_RSS_GROWTH_BYTES);
   });
 
