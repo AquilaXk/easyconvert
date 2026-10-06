@@ -29,7 +29,12 @@ import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 import { ocrSegmentationFor } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { mapOcrResultToSource } from './ocr-geometry';
-import { preprocessOcrImage, type OcrPreprocessResult } from './ocr-preprocess';
+import {
+  OCR_PREPROCESS_STEPS,
+  preprocessOcrImage,
+  type OcrPreprocessResult,
+  type OcrPreprocessSteps,
+} from './ocr-preprocess';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
@@ -53,10 +58,15 @@ export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
  * Optical Character Recognition (OCR) Engine
  * Powered by authentic WebAssembly inference (Tesseract.js) and native Tesseract CLI.
  * Strictly fail-closed without geometric fallback or fabricated glyph classification.
+ *
+ * `steps` selects the page preparation steps and is internal: callers never pass it from user
+ * options, and the default is OCR_PREPROCESS_STEPS. Tests and measurements use it to score a
+ * step against the same page without it.
  */
 export async function performOcr(
   imageBuffer: Buffer,
-  language: string = 'auto'
+  language: string = 'auto',
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
 ): Promise<OcrResult> {
   const langMap: Record<string, string> = {
     auto: 'eng',
@@ -132,7 +142,7 @@ export async function performOcr(
   // for recognition (see ocr-preprocess.ts), which both engines below then read.
   let prepared: OcrPreprocessResult;
   try {
-    prepared = await preprocessOcrImage(imageBuffer);
+    prepared = await preprocessOcrImage(imageBuffer, steps);
   } catch (err) {
     if (err instanceof OcrPreprocessError) throw err;
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');

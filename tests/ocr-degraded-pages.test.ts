@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { performOcr } from '../src/lib/conversions/ocr';
+import { OCR_PREPROCESS_STEPS, type OcrPreprocessSteps } from '../src/lib/conversions/ocr-preprocess';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
@@ -109,6 +110,118 @@ describe('degraded English pages', () => {
       PAGE_TIMEOUT_MS
     );
   }
+});
+
+type Language = 'eng' | 'kor' | 'jpn';
+
+const LANGUAGE_OF: Record<string, Language> = { en: 'eng', ko: 'kor', ja: 'jpn' };
+
+/** Character error rate of one fixture page read with the given preparation steps. */
+async function pageCer(
+  page: string,
+  variant: string,
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
+): Promise<number> {
+  const lang = LANGUAGE_OF[page.slice(0, 2)];
+  const result = await performOcr(pageImage(page, variant), lang, steps);
+  const spaced = lang === 'eng';
+  return characterErrorRatePercent(
+    spaced ? truthFor(page) : withoutWhitespace(truthFor(page)),
+    spaced ? result.text : withoutWhitespace(result.text)
+  );
+}
+
+function mean(values: number[]): number {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/**
+ * CJK pages per degradation. Bounds sit above the measured error rates with room for engine build
+ * differences. The 3 degree skew is asserted for Japanese above; Korean skew is not asserted because
+ * the WebAssembly engine's automatic page segmentation reads the same Korean page from 0% to 66%
+ * depending on small changes in the input (the native CLI reads this page exactly).
+ */
+const CJK_BOUNDS: Array<{ page: string; variant: string; maxCerPercent: number }> = [
+  { page: 'ko_a', variant: 'shade', maxCerPercent: 5 },
+  { page: 'ko_a', variant: 'dpi72', maxCerPercent: 5 },
+  { page: 'ko_a', variant: 'noise', maxCerPercent: 10 },
+  { page: 'ja_a', variant: 'shade', maxCerPercent: 2 },
+  { page: 'ja_a', variant: 'dpi72', maxCerPercent: 5 },
+  { page: 'ja_a', variant: 'noise', maxCerPercent: 2 },
+  { page: 'ja_b', variant: 'shade', maxCerPercent: 2 },
+  { page: 'ja_b', variant: 'dpi72', maxCerPercent: 5 },
+  { page: 'ja_b', variant: 'noise', maxCerPercent: 2 },
+];
+
+describe('degraded Korean and Japanese pages', () => {
+  for (const { page, variant, maxCerPercent } of CJK_BOUNDS) {
+    oracleTest(
+      `reads the ${variant} ${page} page with CER <= ${maxCerPercent}%`,
+      ['tesseract'],
+      async () => {
+        requireData(LANGUAGE_OF[page.slice(0, 2)]);
+        expect(await pageCer(page, variant)).toBeLessThanOrEqual(maxCerPercent);
+      },
+      PAGE_TIMEOUT_MS
+    );
+  }
+});
+
+const ENGLISH_VARIANTS = ['clean300', 'shade', 'dpi72', 'skew3', 'noise'] as const;
+const MAX_ENGLISH_MEAN_CER_PERCENT = 0.5;
+
+describe('English degradation set', () => {
+  oracleTest(
+    `has a mean CER of at most ${MAX_ENGLISH_MEAN_CER_PERCENT}% over ${ENGLISH_PAGES.length * ENGLISH_VARIANTS.length} pages`,
+    ['tesseract'],
+    async () => {
+      requireData('eng');
+      const rates: number[] = [];
+      for (const page of ENGLISH_PAGES) {
+        for (const variant of ENGLISH_VARIANTS) rates.push(await pageCer(page, variant));
+      }
+      expect(mean(rates)).toBeLessThanOrEqual(MAX_ENGLISH_MEAN_CER_PERCENT);
+    },
+    PAGE_TIMEOUT_MS
+  );
+});
+
+/**
+ * The gate for the preparation steps: a step stays enabled only if the pages it targets read
+ * better with it than without it, and the pages with every step beat the unprepared pages.
+ * Pages are the shaded, 72 dpi and skewed variants of two English and two Japanese pages (Korean
+ * is left out because its page segmentation is erratic, see CJK_BOUNDS).
+ */
+const GATE_PAGES = ['en_a', 'en_b', 'ja_a', 'ja_b'];
+const GATE_VARIANTS = ['shade', 'dpi72', 'skew3'];
+
+async function gateMean(steps: OcrPreprocessSteps): Promise<number> {
+  const rates: number[] = [];
+  for (const page of GATE_PAGES) {
+    for (const variant of GATE_VARIANTS) rates.push(await pageCer(page, variant, steps));
+  }
+  return mean(rates);
+}
+
+describe('preparation step gate', () => {
+  oracleTest(
+    'keeps every enabled step only if it lowers the mean CER',
+    ['tesseract'],
+    async () => {
+      requireData('eng');
+      requireData('jpn');
+      const all = OCR_PREPROCESS_STEPS;
+      const withAll = await gateMean(all);
+      const withNone = await gateMean({ rescale: false, deskew: false, binarize: false });
+      expect(withAll).toBeLessThan(withNone);
+      for (const step of ['rescale', 'deskew', 'binarize'] as const) {
+        if (!all[step]) continue;
+        const without = await gateMean({ ...all, [step]: false });
+        expect(withAll, `mean CER with all steps vs without ${step}`).toBeLessThan(without);
+      }
+    },
+    300_000
+  );
 });
 
 interface ReferenceWord {
