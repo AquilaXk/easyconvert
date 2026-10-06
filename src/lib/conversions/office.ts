@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
+import { openLimitedSharp } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -6536,7 +6537,7 @@ export async function parsePptxSlideSceneGraph(
             mimeType = 'image/jpeg';
           } else if (!lower.endsWith('.png')) {
             try {
-              imgBuffer = await sharp(imgBuffer).png().toBuffer();
+              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer();
               mimeType = 'image/png';
             } catch {}
           }
@@ -6558,7 +6559,7 @@ export async function parsePptxSlideSceneGraph(
                   const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
                   const extractW = Math.max(1, meta.width - cropLeft - cropRight);
                   const extractH = Math.max(1, meta.height - cropTop - cropBottom);
-                  imgBuffer = await sharp(imgBuffer)
+                  imgBuffer = await openLimitedSharp(imgBuffer)
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
                 }

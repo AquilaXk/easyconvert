@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
+import { assertEncodedImageWithinLimit, openLimitedSharp } from './image-input-limits';
 import {
   ConversionOptions,
   OcrLanguageUnavailableError,
@@ -144,8 +145,9 @@ export async function performOcr(
   // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG. EXIF
   // orientation is applied first, so text is recognized as displayed.
   let ocrInput: Buffer;
+  await assertEncodedImageWithinLimit(imageBuffer);
   try {
-    ocrInput = await sharp(imageBuffer).rotate().png().toBuffer();
+    ocrInput = await openLimitedSharp(imageBuffer).rotate().png().toBuffer();
   } catch {
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
@@ -280,11 +282,12 @@ const EXIF_ORIENTATION_UPRIGHT = 1;
  * image. A rotated photo is re-encoded upright so the page and its text layer line up.
  */
 async function uprightImage(imageBuffer: Buffer): Promise<Buffer> {
+  await assertEncodedImageWithinLimit(imageBuffer);
   const { orientation } = await sharp(imageBuffer).metadata();
   if (!orientation || orientation === EXIF_ORIENTATION_UPRIGHT) {
     return imageBuffer;
   }
-  return sharp(imageBuffer).rotate().png().toBuffer();
+  return openLimitedSharp(imageBuffer).rotate().png().toBuffer();
 }
 
 /**

@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
+import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels, openInputImage, openLimitedSharp } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -186,6 +187,7 @@ export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: nu
 
   const isBottomUp = height > 0;
   const absHeight = Math.abs(height);
+  assertInputPixels(width, absHeight);
   const rawRgba = Buffer.alloc(width * absHeight * 4);
 
   const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
@@ -2038,6 +2040,7 @@ export function decodeRawBayerSensor(
           );
         }
         const { width, height } = chosen;
+        assertInputPixels(width, height);
         const bpp = chosen.bitsPerSample || 8;
         const pattern = chosen.cfaPattern || 'RGGB';
         const bytesPerPixel = bpp > 8 ? 2 : 1;
@@ -2362,6 +2365,7 @@ export async function convertImage(
 
   // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
   if (fmt === 'hocr' || fmt === 'alto') {
+    await assertEncodedImageWithinLimit(inputBuffer);
     const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
     const isHocr = fmt === 'hocr';
     const xml = isHocr
@@ -2449,11 +2453,11 @@ export async function convertImage(
           raw: { width: decoded.width, height: decoded.height, channels: 4 },
         });
       } else {
-        pipeline = sharp(payload);
+        pipeline = await openInputImage(payload);
       }
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
       const payload = decodeIcns(activeBuffer);
-      pipeline = sharp(payload);
+      pipeline = await openInputImage(payload);
     } else if (
       src === 'exr' ||
       (activeBuffer.length >= 4 &&
@@ -2498,7 +2502,7 @@ export async function convertImage(
         raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
       });
     } else {
-      pipeline = sharp(activeBuffer);
+      pipeline = await openInputImage(activeBuffer);
     }
 
     if (isRawInput) {
@@ -2510,6 +2514,7 @@ export async function convertImage(
       pipeline = await preserveMetadata(pipeline);
     }
   } catch (err: unknown) {
+    if (err instanceof InputPixelLimitError) throw err;
     if (isRawInput) {
       const demosaiced = decodeRawBayerSensor(inputBuffer, src, options);
       if (demosaiced) {
@@ -2951,7 +2956,7 @@ export async function convertImage(
       let pngBuffer = inputBuffer;
       let imgMeta: sharp.Metadata | undefined;
       try {
-        const s = sharp(inputBuffer);
+        const s = openLimitedSharp(inputBuffer);
         imgMeta = await s.metadata();
         if (imgMeta.format !== 'png') {
           pngBuffer = await s.png().toBuffer();
@@ -3018,9 +3023,9 @@ async function convertImageToPdf(
       activeBuffer[3] === 0)
   ) {
     const payload = decodeIco(activeBuffer);
-    pipeline = sharp(payload);
+    pipeline = await openInputImage(payload);
   } else {
-    pipeline = sharp(activeBuffer);
+    pipeline = await openInputImage(activeBuffer);
   }
 
   const metadata = await pipeline.metadata();
