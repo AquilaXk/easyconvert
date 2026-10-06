@@ -52,6 +52,7 @@ jobs:
             imagemagick \
             tesseract-ocr \
             tesseract-ocr-kor \
+            tesseract-ocr-jpn \
             fonts-nanum \
             fonts-noto-core \
             fonts-noto-cjk \
