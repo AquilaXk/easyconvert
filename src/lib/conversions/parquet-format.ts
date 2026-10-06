@@ -27,6 +27,27 @@ export enum FieldRepetitionType {
 
 export enum ConvertedType {
   UTF8 = 0,
+  MAP = 1,
+  MAP_KEY_VALUE = 2,
+  LIST = 3,
+  ENUM = 4,
+  DECIMAL = 5,
+  DATE = 6,
+  TIME_MILLIS = 7,
+  TIME_MICROS = 8,
+  TIMESTAMP_MILLIS = 9,
+  TIMESTAMP_MICROS = 10,
+  UINT_8 = 11,
+  UINT_16 = 12,
+  UINT_32 = 13,
+  UINT_64 = 14,
+  INT_8 = 15,
+  INT_16 = 16,
+  INT_32 = 17,
+  INT_64 = 18,
+  JSON = 19,
+  BSON = 20,
+  INTERVAL = 21,
 }
 
 export enum CompressionCodec {
@@ -73,6 +94,14 @@ export class ParquetFormatError extends ConversionFailedError {
   }
 }
 
+/** The file is well formed but uses a feature this engine does not decode (v2 pages, nested columns, INT96, ...). */
+export class ParquetUnsupportedError extends ParquetFormatError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ParquetUnsupportedError';
+  }
+}
+
 /** The records handed to the writer cannot be represented as a typed Parquet table. */
 export class ParquetValueError extends ConversionFailedError {
   constructor(message: string) {
@@ -107,6 +136,18 @@ export const PARQUET_MAX_ROW_GROUPS = 100_000;
 export const PARQUET_MAX_VALUE_BYTES = 64 * MIB;
 /** Maximum uncompressed bytes of one page the reader will materialize. */
 export const PARQUET_MAX_PAGE_BYTES = 256 * MIB;
+/**
+ * Cumulative bytes the reader will decompress across every page of one file. Page headers are
+ * scanned first and charged against this budget before any page is decompressed.
+ */
+export const PARQUET_MAX_TOTAL_DECOMPRESSED_BYTES = 1024 * MIB;
+/**
+ * Cap on the in-memory size of decoded cells: 8 bytes per cell plus the UTF-8 bytes of every string
+ * reference, counted for each row that references a dictionary entry.
+ */
+export const PARQUET_MAX_DECODED_VALUE_BYTES = 512 * MIB;
+/** Bytes charged per decoded cell (null or not) against PARQUET_MAX_DECODED_VALUE_BYTES. */
+export const PARQUET_CELL_BYTES = 8;
 /** Maximum bytes of a footer the reader will parse. */
 export const PARQUET_MAX_FOOTER_BYTES = 64 * MIB;
 
