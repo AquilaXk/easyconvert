@@ -130,6 +130,31 @@ const PAR_CLASS = "//*[@class='ocr_par']";
 const AREA_CLASS = "//*[@class='ocr_carea']";
 const WORD_CLASS = "//*[@class='ocrx_word']";
 
+/** The oracle's own reader, checked against hand-worked values so a wrong reading cannot hide a wrong export. */
+describe('reading a reference hOCR line', () => {
+  it('turns bbox and baseline into the baseline heights at the left and right edges', () => {
+    // Bottom edge at y = 40, baseline 5 px below it at the left edge, falling 0.01 px per px over 100 px.
+    const line = readLine('bbox 10 20 110 40; baseline 0.01 5; x_size 12; x_descenders 3; x_ascenders 4');
+    expect(line.bbox).toBe('10 20 110 40');
+    expect(line.left).toBe(10);
+    expect(line.top).toBe(20);
+    expect(line.baselineStart).toBe(45);
+    expect(line.baselineEnd).toBeCloseTo(46, 10);
+    expect([line.xSize, line.xDescenders, line.xAscenders]).toEqual([12, 3, 4]);
+  });
+
+  it('reads negative offsets and slopes', () => {
+    const line = readLine('bbox 0 0 200 50; baseline -0.02 -6; x_size 10.5; x_descenders 2.5; x_ascenders 3.5');
+    expect(line.baselineStart).toBe(44);
+    expect(line.baselineEnd).toBeCloseTo(40, 10);
+    expect(line.xSize).toBe(10.5);
+  });
+
+  it('refuses a line title without a baseline instead of inventing one', () => {
+    expect(() => readLine('bbox 0 0 10 10; x_size 5; x_descenders 1; x_ascenders 1')).toThrow(/without bbox, baseline/);
+  });
+});
+
 describe('hOCR export matches the reference hierarchy and baselines', () => {
   for (const file of GOLDEN_PAGES) {
     oracleTest(

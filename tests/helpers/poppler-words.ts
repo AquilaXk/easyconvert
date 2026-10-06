@@ -21,7 +21,7 @@ export interface WordBox {
 }
 
 const PDFTOTEXT_TIMEOUT_MS = 60_000;
-const WORD_ELEMENT = /<word xMin="([\d.-]+)" yMin="([\d.-]+)" xMax="([\d.-]+)" yMax="([\d.-]+)">(.*)<\/word>/;
+const WORD_ELEMENT = /<word xMin="([\d.-]+)" yMin="([\d.-]+)" xMax="([\d.-]+)" yMax="([\d.-]+)">([^<]*)<\/word>/;
 const ENTITIES: ReadonlyArray<[RegExp, string]> = [
   [/&lt;/g, '<'],
   [/&gt;/g, '>'],
@@ -59,14 +59,15 @@ export function popplerWords(pdf: Buffer): WordBox[] {
   }
 }
 
-const HOCR_WORD_LINE = /<span class="ocrx_word" id="word_(\d+)_\d+_\d+" title="bbox (\d+) (\d+) (\d+) (\d+)[^"]*">(.*)<\/span>/;
+/** One serialized word element: anchored, with the text matched up to the next tag, so matching is linear in the line. */
+const HOCR_WORD_LINE = /^<span class="ocrx_word" id="word_(\d+)_\d+_\d+" title="bbox (\d+) (\d+) (\d+) (\d+)[^"]*">([^<]*)<\/span>$/;
 
 /** Word boxes of an hOCR document, read through xmllint's serialization of the word elements. */
 export function hocrWords(hocr: string): WordBox[] {
   const out = xpathText(hocr, "//*[@class='ocrx_word']");
   const words: WordBox[] = [];
   for (const line of out.split('\n')) {
-    const match = HOCR_WORD_LINE.exec(line);
+    const match = HOCR_WORD_LINE.exec(line.trim());
     if (match) {
       words.push({ page: Number(match[1]), text: decode(match[6]), x0: Number(match[2]), y0: Number(match[3]), x1: Number(match[4]), y1: Number(match[5]) });
     }
