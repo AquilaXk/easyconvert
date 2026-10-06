@@ -24,6 +24,8 @@ import {
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { BitReader } from '../src/lib/conversions/media-encoder';
+import { adtsStream, probeStream, silentRawDataBlock } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import { ConversionFailedError, OcrEngineUnavailableError } from '../src/lib/types';
 import { escapeRtf } from '../src/lib/conversions/office';
 
@@ -62,7 +64,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
   // 1. Media Codec Bitstream Packaging (ADTS AAC LC & RFC 7845 Ogg Opus)
   // ==========================================================================
   describe('1. Media Codec Bitstream Packaging (ADTS AAC LC & RFC 7845 Ogg Opus)', () => {
-    it('packages authentic ISO/IEC 13818-7 / 14496-3 AAC LC raw data blocks without raw PCM stuffing', async () => {
+    oracleTest('packages AAC LC raw data blocks in an ADTS stream that the reference parser accepts', ['ffmpeg', 'ffprobe'], async () => {
       const wav = createTestWav(44100, 2, 0.2);
       const aacResult = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'sound.wav');
 
@@ -77,48 +79,33 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       const profile = (aacResult.buffer[2] >> 6) & 0x03;
       expect(profile).toBe(1); // 1 = AAC LC
 
-      // Scan first frame payload
+      // The first frame fits inside the stream and carries a real payload
       const protectionAbsent = aacResult.buffer[1] & 1;
       const headerSize = protectionAbsent ? 7 : 9;
       const frameLength =
         ((aacResult.buffer[3] & 3) << 11) |
         (aacResult.buffer[4] << 3) |
         (aacResult.buffer[5] >> 5);
-      const payloadLength = frameLength - headerSize;
+      expect(frameLength - headerSize).toBeGreaterThan(10);
+      expect(frameLength).toBeLessThanOrEqual(aacResult.buffer.length);
 
-      expect(payloadLength).toBeGreaterThan(10);
-
-      // Inspect AAC LC syntax element: Stereo should start with ID_CPE (0x1)
-      const payloadBuf = aacResult.buffer.subarray(headerSize, headerSize + payloadLength);
-      const reader = new BitReader(payloadBuf);
-      const elementId = reader.readBits(3);
-      expect([0, 1, 6]).toContain(elementId); // ID_SCE (0), ID_CPE (1), or ID_FIL (6)
-
-      // Verify decoding and non-zero RMS
-      const decoded = decodeAdtsAac(aacResult.buffer);
-      expect(decoded.sampleRate).toBe(44100);
-      expect(decoded.channels).toBe(2);
-      expect(decoded.samples.length).toBeGreaterThan(0);
+      // Reference parser agrees on the stream parameters
+      const stream = probeStream(aacResult.buffer, 'aac', 'a');
+      expect(stream.codec_name).toBe('aac');
+      expect(Number(stream.sample_rate)).toBe(44100);
+      expect(Number(stream.channels)).toBe(2);
     });
 
-    it('packages mono AAC LC raw data blocks starting with ID_SCE (0x0)', async () => {
-      const wavMono = createTestWav(44100, 1, 0.2);
-      const aacResult = await convertMedia(wavMono, 'wav', 'aac', { audioChannels: 'mono', allowPureLossyBitstream: true }, 'mono.wav');
+    it('reads mono AAC LC raw data blocks starting with ID_SCE (0x0) from a hand-authored ADTS stream', () => {
+      const payload = silentRawDataBlock(1);
+      const adts = adtsStream([payload], 44100, 1);
 
-      const protectionAbsent = aacResult.buffer[1] & 1;
-      const headerSize = protectionAbsent ? 7 : 9;
-      const frameLength =
-        ((aacResult.buffer[3] & 3) << 11) |
-        (aacResult.buffer[4] << 3) |
-        (aacResult.buffer[5] >> 5);
+      const reader = new BitReader(adts.subarray(7));
+      expect(reader.readBits(3)).toBe(0); // ID_SCE
 
-      const payloadBuf = aacResult.buffer.subarray(headerSize, headerSize + frameLength - headerSize);
-      const reader = new BitReader(payloadBuf);
-      const elementId = reader.readBits(3);
-      expect([0, 6]).toContain(elementId); // ID_SCE (0) or ID_FIL (6)
-
-      const decoded = decodeAdtsAac(aacResult.buffer);
+      const decoded = decodeAdtsAac(adts);
       expect(decoded.channels).toBe(1);
+      expect(decoded.samples).toHaveLength(1024);
     });
 
     it('encapsulates RFC 7845 compliant OpusHead and OpusTags headers for opus target format and fails closed without authentic encoder', async () => {
