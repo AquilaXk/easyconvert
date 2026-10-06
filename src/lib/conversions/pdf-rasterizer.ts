@@ -1,4 +1,6 @@
 import sharp from 'sharp';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { ConversionFailedError } from '../types';
 import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
 
 // Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
@@ -37,34 +39,122 @@ function unpack1bpp(packed: Uint8Array, width: number, height: number, inverse: 
   return unpacked;
 }
 
-/** Bytes around an image XObject marker that are searched for its dictionary. */
-const IMAGE_DICTIONARY_WINDOW_BYTES = 2048;
-const IMAGE_SUBTYPE_PATTERN = /\/Subtype\s*\/Image\b/g;
-const OBJECT_START_PATTERN = /\d+\s+\d+\s+obj\b/g;
-const IMAGE_WIDTH_PATTERN = /\/Width\s+(\d{1,10})\b/;
-const IMAGE_HEIGHT_PATTERN = /\/Height\s+(\d{1,10})\b/;
+/** Bytes before and after an image marker that are searched for the dimensions of its dictionary. */
+const IMAGE_DICTIONARY_WINDOW_BYTES = 4096;
+/** Most image markers one PDF may hold; a document with more is refused instead of scanned. */
+export const MAX_PDF_IMAGE_MARKERS = 50_000;
+/** Longest run of white space tolerated between the tokens the scan reads. */
+const MAX_TOKEN_GAP = 16;
+
+/** Regular expression for a PDF name, accepting the `#xx` escape (ISO 32000-1 7.3.5) for any character. */
+function pdfName(word: string): string {
+  const chars = [...word].map((char) => {
+    const hex = char.charCodeAt(0).toString(16).padStart(2, '0');
+    const nibbles = [...hex].map((nibble) => `[${nibble.toLowerCase()}${nibble.toUpperCase()}]`).join('');
+    return `(?:${char}|#${nibbles})`;
+  });
+  return `/${chars.join('')}(?![A-Za-z0-9#])`;
+}
+
+const GAP = `\\s{0,${MAX_TOKEN_GAP}}`;
+const REQUIRED_GAP = `\\s{1,${MAX_TOKEN_GAP}}`;
+const IMAGE_MARKER_PATTERN = new RegExp(`${pdfName('Subtype')}${GAP}${pdfName('Image')}`, 'g');
+/** A dimension value: a number, optionally written `N G R` as a reference to another object. */
+const DIMENSION_VALUE = `([+-]?\\d{1,10}(?:\\.\\d{0,10})?)(?:${REQUIRED_GAP}(\\d{1,5})${REQUIRED_GAP}R(?![A-Za-z0-9]))?`;
+const WIDTH_PATTERN = new RegExp(`${pdfName('Width')}${GAP}${DIMENSION_VALUE}`, 'g');
+const HEIGHT_PATTERN = new RegExp(`${pdfName('Height')}${GAP}${DIMENSION_VALUE}`, 'g');
+/** `N G obj <integer> endobj`: the objects an indirect image dimension can point to. */
+const INTEGER_OBJECT_PATTERN = new RegExp(
+  `(?<![0-9])(\\d{1,10})${REQUIRED_GAP}\\d{1,5}${REQUIRED_GAP}obj${REQUIRED_GAP}(\\d{1,10})${REQUIRED_GAP}endobj`,
+  'g'
+);
+
+function unreadableDimensions(): ConversionFailedError {
+  return new ConversionFailedError('Invalid PDF: the dimensions of an embedded image could not be read, so its size cannot be checked.');
+}
+
+/** The numbers of the integer objects of `text`, found in one linear pass. */
+function integerObjects(text: string): Map<number, number> {
+  const objects = new Map<number, number>();
+  for (const match of text.matchAll(INTEGER_OBJECT_PATTERN)) objects.set(Number(match[1]), Number(match[2]));
+  return objects;
+}
+
+/** The largest value written for one dimension key within `window`; undefined when the key is absent or unreadable. */
+function declaredDimension(window: string, pattern: RegExp, resolve: () => Map<number, number>): number | undefined {
+  let largest: number | undefined;
+  for (const match of window.matchAll(pattern)) {
+    const value = match[2] === undefined ? Number(match[1]) : resolve().get(Number(match[1]));
+    if (value === undefined || !Number.isFinite(value)) return undefined;
+    largest = Math.max(largest ?? 0, value);
+  }
+  return largest;
+}
 
 /**
  * Refuses a PDF whose image XObjects declare more pixels than the input limit. Image XObjects are stream
  * objects, which a PDF never packs into an object stream, so their dictionaries are readable as plain text
- * and the check needs no decode. pdfjs is additionally told the same limit (`maxImageSize`), which makes it
- * skip, without decoding, any image this scan cannot see (inline images, obfuscated names).
+ * and the check needs no decode. Every marker is paired with the largest width and height written within a
+ * fixed window around it, so a decoy key cannot hide the real one; dimensions that are missing, point at an
+ * object that is not a plain integer, or sit outside the window cannot be checked and are refused. Every
+ * pattern has bounded repetition, so the scan is linear in the file size, and the marker count is capped.
+ * Inline images, which have no dictionary to scan, are caught by pdfjs's own limit (see
+ * `extractRasterImagesFromPdf`).
  */
 function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
   const text = pdfBuffer.toString('latin1');
-  for (const marker of text.matchAll(IMAGE_SUBTYPE_PATTERN)) {
+  let integers: Map<number, number> | undefined;
+  const resolve = (): Map<number, number> => {
+    integers ??= integerObjects(text);
+    return integers;
+  };
+  let markers = 0;
+  for (const marker of text.matchAll(IMAGE_MARKER_PATTERN)) {
+    markers++;
+    if (markers > MAX_PDF_IMAGE_MARKERS) {
+      throw new ConversionFailedError(`Invalid PDF: it holds more than ${MAX_PDF_IMAGE_MARKERS} images, which is over what a conversion accepts.`);
+    }
     const at = marker.index ?? 0;
-    const windowStart = Math.max(0, at - IMAGE_DICTIONARY_WINDOW_BYTES);
-    const before = text.slice(windowStart, at);
-    let objectStart = 0;
-    for (const start of before.matchAll(OBJECT_START_PATTERN)) objectStart = start.index ?? 0;
-    const dictionary = text.slice(windowStart + objectStart, at + IMAGE_DICTIONARY_WINDOW_BYTES);
-    const streamAt = dictionary.indexOf('stream');
-    const header = streamAt === -1 ? dictionary : dictionary.slice(0, streamAt);
-    const width = IMAGE_WIDTH_PATTERN.exec(header);
-    const height = IMAGE_HEIGHT_PATTERN.exec(header);
-    if (width && height) assertInputPixels(Number(width[1]), Number(height[1]));
+    const window = text.slice(Math.max(0, at - IMAGE_DICTIONARY_WINDOW_BYTES), at + IMAGE_DICTIONARY_WINDOW_BYTES);
+    const width = declaredDimension(window, new RegExp(WIDTH_PATTERN), resolve);
+    const height = declaredDimension(window, new RegExp(HEIGHT_PATTERN), resolve);
+    if (width === undefined || height === undefined) throw unreadableDimensions();
+    assertInputPixels(width, height);
   }
+}
+
+/** pdfjs verbosity level that reports warnings (VerbosityLevel.WARNINGS). */
+const PDFJS_WARNINGS_VERBOSITY = 1;
+const PDFJS_WARNING_PREFIX = 'Warning: ';
+const PDFJS_IMAGE_DROPPED_MESSAGE = 'Image exceeded maximum allowed size and was removed';
+
+interface PdfjsRun {
+  droppedImages: number;
+}
+
+/** The extraction that the current asynchronous call chain belongs to, so concurrent extractions are told apart. */
+const pdfjsRun = new AsyncLocalStorage<PdfjsRun>();
+let pdfjsWarningsRouted = false;
+
+/**
+ * pdfjs reports an image it skips because of `maxImageSize` only as a warning on `console.warn`. This installs,
+ * once, a pass-through wrapper that counts that warning for the extraction whose call chain raised it and
+ * swallows every other pdfjs warning of that extraction (they were silent at verbosity 0 before). Output
+ * outside an extraction is forwarded untouched.
+ */
+function routePdfjsWarnings(): void {
+  if (pdfjsWarningsRouted) return;
+  pdfjsWarningsRouted = true;
+  const forward = console.warn.bind(console);
+  console.warn = (...args: unknown[]): void => {
+    const run = pdfjsRun.getStore();
+    const message = typeof args[0] === 'string' ? args[0] : '';
+    if (run && message.startsWith(PDFJS_WARNING_PREFIX)) {
+      if (message.includes(PDFJS_IMAGE_DROPPED_MESSAGE)) run.droppedImages++;
+      return;
+    }
+    forward(...args);
+  };
 }
 
 /**
@@ -78,6 +168,19 @@ export async function extractRasterImagesFromPdf(
   targetPageNumbers?: Set<number> | number[]
 ): Promise<ExtractedPdfImage[]> {
   assertPdfImagesWithinLimit(pdfBuffer);
+  routePdfjsWarnings();
+  const run: PdfjsRun = { droppedImages: 0 };
+  const images = await pdfjsRun.run(run, () => decodePdfImages(pdfBuffer, targetDpi, targetPageNumbers));
+  // pdfjs skips an image over `maxImageSize` without decoding it; an image that is skipped is refused, not lost.
+  if (run.droppedImages > 0) throw new InputPixelLimitError(maxInputPixels());
+  return images;
+}
+
+async function decodePdfImages(
+  pdfBuffer: Buffer,
+  targetDpi: number,
+  targetPageNumbers: Set<number> | number[] | undefined
+): Promise<ExtractedPdfImage[]> {
   const images: ExtractedPdfImage[] = [];
 
   try {
@@ -86,7 +189,7 @@ export async function extractRasterImagesFromPdf(
       data: new Uint8Array(pdfBuffer),
       useSystemFonts: true,
       disableFontFace: true,
-      verbosity: 0,
+      verbosity: PDFJS_WARNINGS_VERBOSITY,
       maxImageSize: maxInputPixels(),
     });
 

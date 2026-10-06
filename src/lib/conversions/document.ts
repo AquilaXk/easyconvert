@@ -202,9 +202,10 @@ export async function convertDocument(
           pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
         );
       } catch (err: any) {
+        // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
+        rethrowInputPixelLimit(err);
         if (options.ocrEnabled) {
-          // An explicit OCR request keeps the typed pixel-limit rejection; implicit OCR of a scan stays best effort.
-          rethrowInputPixelLimit(err);
+          if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
           throw new Error(`PDF OCR failed: ${cleanMsg}`);
