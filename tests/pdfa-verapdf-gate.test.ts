@@ -9,6 +9,7 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
 import { buildDocxWithJpeg, buildTextDocx, makeNoisyJpeg } from './helpers/office-jpeg-fixtures';
 import { withMissingBinary } from './helpers/native-tools';
+import { withValidator } from './helpers/pdfa-route-harness';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertToPdfA, verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
@@ -283,6 +284,35 @@ describe('POST /api/v1/convert with a PDF/A request', () => {
       const problem = await res.json();
       expect([...problem.failedRules].sort()).toEqual([...expected.failedRules].sort());
       expect(problem.detail).toContain(expected.failedRules[0]);
+    },
+    CONVERT_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'answers 422 with the profile and the rule IDs real veraPDF reports for a known non-compliant file',
+    SOFFICE_VERAPDF_TOOLS,
+    async () => {
+      // veraPDF itself judges a fixed file that breaks three rules; the wrapper only swaps the input,
+      // so the route, the conversion and the error mapping are the real ones.
+      const negative = writePdf('route-negative.pdf', await identifiedButNonConformingPdf());
+      const expected = runVerapdf(negative, '2b');
+      expect(expected.failedRules).toContain(FONT_NOT_EMBEDDED_RULE);
+      const wrapper = path.join(workDir, 'verapdf-fixed-input.sh');
+      fs.writeFileSync(
+        wrapper,
+        `#!/bin/sh\nexec "${tool('verapdf')}" --flavour 2b --format json --maxfailuresdisplayed 1 "${negative}"\n`,
+        { mode: 0o755 }
+      );
+
+      const res = await withValidator(wrapper, () =>
+        v1ConvertPost(convertRequest(docx, 'fx.docx', 'pdf', { pdfa: { conformance: 'pdfa-2b' } }))
+      );
+
+      expect(res.status).toBe(HTTP_UNPROCESSABLE);
+      const problem = await res.json();
+      expect(problem.type).toBe('https://api.easyconvert.io/problems/pdfa-validation-failed');
+      expect(problem.profile).toBe('pdfa-2b');
+      expect([...problem.failedRules].sort()).toEqual([...expected.failedRules].sort());
     },
     CONVERT_TIMEOUT_MS
   );
