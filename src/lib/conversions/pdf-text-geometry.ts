@@ -11,7 +11,6 @@ import {
   PDF_TEXT_MAX_WORDS_PER_PAGE,
   PDF_TEXT_OPERATOR_LIST_MAX_ITEMS,
   PdfTextGeometryError,
-  type PdfGeometryPages,
   type PdfTextJob,
   type PdfTextJobResult,
 } from './pdf-text-types';
@@ -23,8 +22,8 @@ export {
   PDF_TEXT_MAX_WORDS_PER_PAGE,
   PDF_TEXT_OPERATOR_LIST_MAX_ITEMS,
   PdfTextGeometryError,
-};
-export type { PdfGeometryPages, PdfTextJob, PdfTextJobResult };
+} from './pdf-text-types';
+export type { PdfGeometryPages, PdfTextJob, PdfTextJobResult } from './pdf-text-types';
 
 /**
  * Word, line, paragraph and block geometry for PDF pages whose text comes from the PDF's own text
@@ -56,19 +55,6 @@ export type { PdfGeometryPages, PdfTextJob, PdfTextJobResult };
  * is one vertical advance long and as wide as the glyph, centred on the origin. Such lines, like text
  * drawn at an angle, are one line each, with the axis-aligned box of their words and no baseline.
  */
-
-const PAGE_TEXT_OPERATORS = [
-  'showText',
-  'showSpacedText',
-  'nextLineShowText',
-  'nextLineSetSpacingShowText',
-  'setFont',
-  'setCharSpacing',
-  'setWordSpacing',
-  'setHScale',
-  'save',
-  'restore',
-] as const;
 
 /** How far ahead in the glyph stream to look for an item's glyphs after a mismatch. */
 const GLYPH_RESYNC_WINDOW = 256;
@@ -181,6 +167,11 @@ export interface ItemRun {
   endsWithWord?: boolean;
 }
 
+/** The code point at `index` (0 past the end, which counts as white space). */
+function codeAt(text: string, index: number): number {
+  return text.codePointAt(index) ?? 0;
+}
+
 function isWordSpace(code: number): boolean {
   return (
     code <= CH_SPACE ||
@@ -220,59 +211,126 @@ interface TextState {
   scale: number;
 }
 
+/** A glyph as pdfjs lists it in the operator list. */
+interface ShownGlyph {
+  unicode: string;
+  width: number;
+  isSpace?: unknown;
+  vmetric?: unknown;
+}
+
+function isShownGlyph(entry: unknown): entry is ShownGlyph {
+  const glyph = entry as Partial<ShownGlyph> | null;
+  return typeof glyph === 'object' && glyph !== null && typeof glyph.unicode === 'string' && typeof glyph.width === 'number';
+}
+
+/** The glyph for a shown character, with its advance under the text state. */
+function glyphFor(entry: ShownGlyph, state: TextState): Glyph {
+  const em = state.fontSize * state.scale;
+  const vertical = Array.isArray(entry.vmetric) && typeof entry.vmetric[0] === 'number';
+  let advance: number;
+  if (vertical) {
+    advance = (Math.abs((entry.vmetric as number[])[0]) / GLYPH_UNITS_PER_EM) * state.fontSize;
+  } else {
+    const spacing = state.charSpacing + (entry.isSpace === true ? state.wordSpacing : 0);
+    advance = ((entry.width / GLYPH_UNITS_PER_EM) * state.fontSize + spacing) * state.scale;
+  }
+  const adjustment = (vertical ? -state.fontSize : em) / GLYPH_UNITS_PER_EM;
+  return { text: entry.unicode, folded: entry.unicode.normalize('NFKC'), advance, cross: entry.width / GLYPH_UNITS_PER_EM, em, adjustment };
+}
+
+/** The glyphs and TJ adjustments of one text-showing operator. */
+function showGlyphs(shown: unknown, state: TextState, glyphs: Glyph[]): void {
+  if (!Array.isArray(shown)) return;
+  for (const entry of shown) {
+    if (typeof entry === 'number') {
+      // A TJ adjustment moves the next glyph back by thousandths of an em; it is part of the previous advance.
+      const previous = glyphs.at(-1);
+      if (previous) previous.advance -= entry * previous.adjustment;
+    } else if (isShownGlyph(entry)) {
+      glyphs.push(glyphFor(entry, state));
+    }
+  }
+}
+
+type OperatorArguments = unknown[] | undefined;
+
+function numberAt(args: OperatorArguments, index: number): number | undefined {
+  const value = args?.[index];
+  if (typeof value === 'number') return value;
+  return undefined;
+}
+
+type StateUpdate = (state: TextState, args: OperatorArguments) => TextState;
+
+const setFontSize: StateUpdate = (state, args) => {
+  const fontSize = numberAt(args, 1);
+  if (fontSize === undefined) return state;
+  return { ...state, fontSize };
+};
+
+const setCharSpacing: StateUpdate = (state, args) => {
+  const charSpacing = numberAt(args, 0);
+  if (charSpacing === undefined) return state;
+  return { ...state, charSpacing };
+};
+
+const setWordSpacing: StateUpdate = (state, args) => {
+  const wordSpacing = numberAt(args, 0);
+  if (wordSpacing === undefined) return state;
+  return { ...state, wordSpacing };
+};
+
+const setHorizontalScale: StateUpdate = (state, args) => {
+  const percent = numberAt(args, 0);
+  if (percent === undefined) return state;
+  return { ...state, scale: percent / PERCENT_SCALE };
+};
+
+/** The `"` operator sets word and character spacing, then shows its string. */
+const setSpacingPair: StateUpdate = (state, args) => {
+  const wordSpacing = numberAt(args, 0);
+  const charSpacing = numberAt(args, 1);
+  if (wordSpacing === undefined || charSpacing === undefined) return state;
+  return { ...state, wordSpacing, charSpacing };
+};
+
+/** Which operand holds the shown string for each operator that shows text. */
+const SHOWN_OPERAND_DEFAULT = 0;
+const SHOWN_OPERAND_AFTER_SPACING = 2;
+
 /** The glyphs of every text-showing operator on the page in drawing order, with their advances. */
 function collectGlyphs(operatorList: OperatorList, ops: Record<string, number>): Glyph[] {
-  const code: Record<string, number> = {};
-  for (const name of PAGE_TEXT_OPERATORS) code[name] = ops[name];
+  const updates = new Map<number, StateUpdate>([
+    [ops.setFont, setFontSize],
+    [ops.setCharSpacing, setCharSpacing],
+    [ops.setWordSpacing, setWordSpacing],
+    [ops.setHScale, setHorizontalScale],
+    [ops.nextLineSetSpacingShowText, setSpacingPair],
+  ]);
+  const shownOperand = new Map<number, number>([
+    [ops.showText, SHOWN_OPERAND_DEFAULT],
+    [ops.showSpacedText, SHOWN_OPERAND_DEFAULT],
+    [ops.nextLineShowText, SHOWN_OPERAND_DEFAULT],
+    [ops.nextLineSetSpacingShowText, SHOWN_OPERAND_AFTER_SPACING],
+  ]);
   const glyphs: Glyph[] = [];
-  let state: TextState = { fontSize: 1, charSpacing: 0, wordSpacing: 0, scale: 1 };
   const saved: TextState[] = [];
-
-  const show = (shown: unknown): void => {
-    if (!Array.isArray(shown)) return;
-    for (const entry of shown) {
-      if (typeof entry === 'number') {
-        // A TJ adjustment moves the next glyph back by thousandths of an em; it is part of the previous advance.
-        const previous = glyphs[glyphs.length - 1];
-        if (previous) previous.advance -= entry * previous.adjustment;
-        continue;
-      }
-      const glyph = entry as { unicode?: unknown; width?: unknown; isSpace?: unknown; vmetric?: unknown } | null;
-      if (typeof glyph !== 'object' || glyph === null || typeof glyph.unicode !== 'string' || typeof glyph.width !== 'number') continue;
-      const em = state.fontSize * state.scale;
-      const vertical = Array.isArray(glyph.vmetric) && typeof glyph.vmetric[0] === 'number';
-      let advance: number;
-      if (vertical) {
-        advance = (Math.abs((glyph.vmetric as number[])[0]) / GLYPH_UNITS_PER_EM) * state.fontSize;
-      } else {
-        const spacing = state.charSpacing + (glyph.isSpace === true ? state.wordSpacing : 0);
-        advance = ((glyph.width / GLYPH_UNITS_PER_EM) * state.fontSize + spacing) * state.scale;
-      }
-      const adjustment = ((vertical ? -state.fontSize : state.fontSize * state.scale)) / GLYPH_UNITS_PER_EM;
-      glyphs.push({ text: glyph.unicode, folded: glyph.unicode.normalize('NFKC'), advance, cross: glyph.width / GLYPH_UNITS_PER_EM, em, adjustment });
-    }
-  };
+  let state: TextState = { fontSize: 1, charSpacing: 0, wordSpacing: 0, scale: 1 };
 
   operatorList.fnArray.forEach((fn, index) => {
     const args = operatorList.argsArray[index];
-    if (fn === code.save) {
+    if (fn === ops.save) {
       saved.push({ ...state });
-    } else if (fn === code.restore) {
-      state = saved.pop() ?? state;
-    } else if (fn === code.setFont) {
-      if (typeof args?.[1] === 'number') state = { ...state, fontSize: args[1] };
-    } else if (fn === code.setCharSpacing) {
-      if (typeof args?.[0] === 'number') state = { ...state, charSpacing: args[0] };
-    } else if (fn === code.setWordSpacing) {
-      if (typeof args?.[0] === 'number') state = { ...state, wordSpacing: args[0] };
-    } else if (fn === code.setHScale) {
-      if (typeof args?.[0] === 'number') state = { ...state, scale: args[0] / PERCENT_SCALE };
-    } else if (fn === code.showText || fn === code.showSpacedText || fn === code.nextLineShowText) {
-      show(args?.[0]);
-    } else if (fn === code.nextLineSetSpacingShowText) {
-      if (typeof args?.[0] === 'number' && typeof args?.[1] === 'number') state = { ...state, wordSpacing: args[0], charSpacing: args[1] };
-      show(args?.[2]);
+      return;
     }
+    if (fn === ops.restore) {
+      state = saved.pop() ?? state;
+      return;
+    }
+    state = updates.get(fn)?.(state, args) ?? state;
+    const operand = shownOperand.get(fn);
+    if (operand !== undefined) showGlyphs(args?.[operand], state, glyphs);
   });
   return glyphs;
 }
@@ -296,12 +354,33 @@ function glyphTextAt(target: string, glyph: Glyph, at: number): string | null {
   return null;
 }
 
+/** Writes the share of one matched glyph into the per-unit arrays, if they are wanted. */
+function spreadGlyph(out: MatchSpread | null, at: number, glyph: Glyph, shown: string): void {
+  if (!out) return;
+  for (let i = 0; i < shown.length; i++) {
+    out.advance[at + i] = glyph.advance / shown.length;
+    out.cross[at + i] = glyph.cross;
+  }
+}
+
+/** Writes the weight of a space pdfjs added between glyphs; it is not a glyph of its own. */
+function spreadSyntheticSpace(out: MatchSpread | null, at: number, glyph: Glyph): void {
+  if (!out) return;
+  out.advance[at] = SYNTHETIC_SPACE_EM * glyph.em;
+  out.cross[at] = SYNTHETIC_SPACE_EM;
+}
+
+interface MatchSpread {
+  advance: number[];
+  cross: number[];
+}
+
 /**
  * Walks the glyphs from `start` over `target`, writing each unit's advance and width into `out` when given.
  * Returns the index after the last glyph used, or -1 when the glyphs do not spell `target` or the budget
  * ran out. Allocates nothing, so a failed attempt costs only its steps.
  */
-function walkGlyphs(target: string, glyphs: Glyph[], start: number, budget: MatchBudget, out: { advance: number[]; cross: number[] } | null): number {
+function walkGlyphs(target: string, glyphs: Glyph[], start: number, budget: MatchBudget, out: MatchSpread | null): number {
   let at = 0;
   let index = start;
   while (at < target.length) {
@@ -311,20 +390,11 @@ function walkGlyphs(target: string, glyphs: Glyph[], start: number, budget: Matc
     if (shown === '') {
       index++;
     } else if (shown !== null) {
-      if (out) {
-        for (let i = 0; i < shown.length; i++) {
-          out.advance[at + i] = glyph.advance / shown.length;
-          out.cross[at + i] = glyph.cross;
-        }
-      }
+      spreadGlyph(out, at, glyph, shown);
       at += shown.length;
       index++;
-    } else if (isWordSpace(target.charCodeAt(at))) {
-      // A gap pdfjs turned into a space is not a glyph of its own.
-      if (out) {
-        out.advance[at] = SYNTHETIC_SPACE_EM * glyph.em;
-        out.cross[at] = SYNTHETIC_SPACE_EM;
-      }
+    } else if (isWordSpace(codeAt(target, at))) {
+      spreadSyntheticSpace(out, at, glyph);
       at++;
     } else {
       return -1;
@@ -673,7 +743,7 @@ function fontMetrics(style: FontStyle | undefined): FontMetrics {
 function shareOffsets(placement: Placement, count: number, length: number): Float64Array {
   let total = 0;
   for (let i = 0; i < count; i++) total += placement.advance[i];
-  if (!(total > 0)) {
+  if (!Number.isFinite(total) || total <= 0) {
     // Glyphs with no advance at all: share the item's width equally rather than dropping its text.
     placement.advance.fill(1);
     total = count;
@@ -688,7 +758,7 @@ function wordSpansOf(text: string, budget: WordBudget): WordSpan[] {
   const spans: WordSpan[] = [];
   let start = -1;
   for (let i = 0; i <= text.length; i++) {
-    const space = i === text.length || isWordSpace(text.charCodeAt(i));
+    const space = i === text.length || isWordSpace(codeAt(text, i));
     if (!space) {
       if (start === -1) start = i;
       continue;
@@ -732,7 +802,7 @@ function splitItem(
   const run = Math.hypot(a, b);
   const size = Math.hypot(c, d);
   const length = vertical ? item.height : item.width;
-  if (run === 0 || size === 0 || !(length > 0)) return null;
+  if (run === 0 || size === 0 || !Number.isFinite(length) || length <= 0) return null;
   const frame: TextFrame = { viewport, e, f, ux: a / run, uy: b / run, vx: c / size, vy: d / size };
   const offsets = shareOffsets(placement, item.str.length, length);
   const spans = wordSpansOf(item.str, budget);
@@ -773,8 +843,8 @@ function itemRun(item: TextItem, words: OcrWord[], box: Box, frame: TextFrame, s
     rtl: shape.rtl,
     size: shape.size,
     baselineY: first.y,
-    startsWithWord: !isWordSpace(item.str.charCodeAt(0)),
-    endsWithWord: !isWordSpace(item.str.charCodeAt(item.str.length - 1)),
+    startsWithWord: !isWordSpace(codeAt(item.str, 0)),
+    endsWithWord: !isWordSpace(codeAt(item.str, item.str.length - 1)),
   };
   if (!shape.vertical && dx > 0 && Math.abs(dy) <= dx) result.baseline = { x0: first.x, y0: first.y, x1: last.x, y1: last.y };
   return result;
@@ -872,7 +942,7 @@ function canJoin(left: Unit, right: Unit): boolean {
 function joinTouching(units: Unit[]): Unit[] {
   const joined: Unit[] = [];
   for (const unit of units) {
-    const previous = joined[joined.length - 1];
+    const previous = joined.at(-1);
     if (previous && canJoin(previous, unit)) {
       const word: OcrWord = {
         text: previous.words[0].text + unit.words[0].text,
@@ -903,23 +973,31 @@ function baselineAt(baseline: OcrBaseline, x: number): number {
   return baseline.y0 + slope * (x - baseline.x0);
 }
 
-function lineFromUnits(units: Unit[], row: number): TextLine {
-  let main = units[0].run;
-  let box = units[0].box;
-  let rightToLeftLetters = 0;
-  let leftToRightLetters = 0;
+/** How many letters of the units' words are right-to-left and how many are other letters. */
+function countLetters(units: Unit[]): { rightToLeft: number; leftToRight: number } {
+  let rightToLeft = 0;
+  let leftToRight = 0;
   for (const unit of units) {
-    if (unit.run.size > main.size) main = unit.run;
-    box = mergeBoxes(box, unit.box);
     for (const word of unit.words) {
       for (const character of word.text) {
-        if (RIGHT_TO_LEFT_LETTER.test(character)) rightToLeftLetters++;
-        else if (ANY_LETTER.test(character)) leftToRightLetters++;
+        if (RIGHT_TO_LEFT_LETTER.test(character)) rightToLeft++;
+        else if (ANY_LETTER.test(character)) leftToRight++;
       }
     }
   }
+  return { rightToLeft, leftToRight };
+}
+
+function lineFromUnits(units: Unit[], row: number): TextLine {
+  let main = units[0].run;
+  let box = units[0].box;
+  for (const unit of units) {
+    if (unit.run.size > main.size) main = unit.run;
+    box = mergeBoxes(box, unit.box);
+  }
   // Reading order follows the direction most of the line's letters have.
-  const ordered = rightToLeftLetters > leftToRightLetters && rightToLeftLetters > 0 ? units.slice().reverse() : units;
+  const letters = countLetters(units);
+  const ordered = letters.rightToLeft > letters.leftToRight && letters.rightToLeft > 0 ? units.slice().reverse() : units;
   const words = ordered.flatMap((unit) => unit.words);
   let baseline: OcrBaseline | undefined;
   if (main.baseline) {
@@ -1075,10 +1153,15 @@ export function layoutItemRuns(runs: ItemRun[]): OcrLineBlock[] {
 // Pages
 // ---------------------------------------------------------------------------------------------
 
+interface PageContent {
+  items: unknown[];
+  styles: Record<string, FontStyle>;
+}
+
 interface PdfJsPage {
   view: number[];
   getViewport(options: { scale: number }): Viewport;
-  getTextContent(): Promise<{ items: unknown[]; styles: Record<string, FontStyle> }>;
+  getTextContent(): Promise<PageContent>;
   getOperatorList(): Promise<OperatorList>;
 }
 
@@ -1099,14 +1182,8 @@ interface PdfJs {
 
 let warnedNoGlyphs = false;
 
-/** Geometry of one page from its text content (already read) and, when affordable, its operator list. */
-async function readPage(
-  pdfjs: PdfJs,
-  page: PdfJsPage,
-  content: { items: unknown[]; styles: Record<string, FontStyle> },
-  pageNumber: number
-): Promise<OcrResult> {
-  const viewport = page.getViewport({ scale: 1 });
+/** Refuses a page with more items, or more text, than the limits allow, before any glyph or per-character data is built. */
+function checkPageLimits(content: PageContent, pageNumber: number): void {
   if (content.items.length > PDF_TEXT_MAX_ITEMS_PER_PAGE) {
     throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_ITEMS_PER_PAGE} text items.`);
   }
@@ -1117,16 +1194,11 @@ async function readPage(
       throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
     }
   }
-  const wantAdvances = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
-  const glyphs = wantAdvances ? collectGlyphs(await page.getOperatorList(), pdfjs.OPS) : [];
-  const hasText = content.items.some((item) => isTextItem(item) && item.str.trim() !== '');
-  if (wantAdvances && hasText && glyphs.length === 0 && !warnedNoGlyphs) {
-    warnedNoGlyphs = true;
-    console.warn('[pdf-text] pdfjs returned no glyph advances for a page with text; word boxes use equal shares per character');
-  }
-  const cursor: Cursor = { glyphs, next: 0, failures: 0, steps: 0 };
-  const budget: WordBudget = { left: PDF_TEXT_MAX_WORDS_PER_PAGE, pageNumber };
+}
 
+/** Item runs of a page: every item consumes its glyphs, even when it is only white space, so the stream stays in step. */
+function runsOfPage(content: PageContent, cursor: Cursor, viewport: Viewport, pageNumber: number): ItemRun[] {
+  const budget: WordBudget = { left: PDF_TEXT_MAX_WORDS_PER_PAGE, pageNumber };
   const runs: ItemRun[] = [];
   for (const candidate of content.items) {
     if (!isTextItem(candidate) || candidate.str.length === 0) continue;
@@ -1135,12 +1207,26 @@ async function readPage(
     }
     const style = content.styles[candidate.fontName];
     const vertical = style?.vertical === true || candidate.dir === 'ttb';
-    // Every item consumes its glyphs, even when it is only white space, so the stream stays in step.
     const placement = placeItem(candidate, cursor, vertical, pageNumber);
     if (candidate.str.trim() === '') continue;
     const run = splitItem(candidate, style, viewport, placement, vertical, budget);
     if (run) runs.push(run);
   }
+  return runs;
+}
+
+/** Geometry of one page from its text content (already read) and, when affordable, its operator list. */
+async function readPage(pdfjs: PdfJs, page: PdfJsPage, content: PageContent, pageNumber: number): Promise<OcrResult> {
+  const viewport = page.getViewport({ scale: 1 });
+  checkPageLimits(content, pageNumber);
+  const wantAdvances = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
+  const glyphs = wantAdvances ? collectGlyphs(await page.getOperatorList(), pdfjs.OPS) : [];
+  const hasText = content.items.some((item) => isTextItem(item) && item.str.trim() !== '');
+  if (wantAdvances && hasText && glyphs.length === 0 && !warnedNoGlyphs) {
+    warnedNoGlyphs = true;
+    console.warn('[pdf-text] pdfjs returned no glyph advances for a page with text; word boxes use equal shares per character');
+  }
+  const runs = runsOfPage(content, { glyphs, next: 0, failures: 0, steps: 0 }, viewport, pageNumber);
   if (runs.length === 0 && hasText) {
     throw new PdfTextGeometryError(`PDF page ${pageNumber} has text but no usable word geometry.`);
   }
@@ -1174,6 +1260,56 @@ function standardFontDataUrl(): string | undefined {
   }
 }
 
+/** Text-layer density of one page: its characters and words without white space, against the threshold. */
+function densityAnalysis(page: PdfJsPage, pageNumber: number, pageText: string, densityThreshold: number): PdfPageAnalysis {
+  const view = page.view || [0, 0, 612, 792];
+  const charCount = pageText.replace(/\s+/g, '').length;
+  return {
+    pageNumber,
+    width: Math.abs(view[2] - view[0]),
+    height: Math.abs(view[3] - view[1]),
+    charCount,
+    wordCount: pageText.split(/\s+/).filter(Boolean).length,
+    hasTextLayer: charCount >= densityThreshold,
+    text: pageText,
+  };
+}
+
+function requirePages(explicit: Set<number> | null, pageCount: number): void {
+  for (const pageNumber of explicit ?? []) {
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > pageCount) {
+      throw new PdfTextGeometryError(`PDF page ${pageNumber} does not exist; the document has ${pageCount} pages.`);
+    }
+  }
+}
+
+/** Whether a page is read at all: for the density analysis, because it was asked for, or because geometry is wanted for every page. */
+function needsPage(job: PdfTextJob, explicit: Set<number> | null, pageNumber: number): boolean {
+  return job.densityThreshold !== undefined || explicit?.has(pageNumber) === true || job.geometry === 'text-pages';
+}
+
+/** Whether a page that was read gets word geometry. */
+function wantsGeometry(job: PdfTextJob, explicit: Set<number> | null, pageNumber: number, pageText: string): boolean {
+  return explicit?.has(pageNumber) === true || (job.geometry === 'text-pages' && pageText !== '');
+}
+
+/** Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next. */
+async function readPages(pdfjs: PdfJs, doc: PdfJsDocument, job: PdfTextJob, explicit: Set<number> | null, result: PdfTextJobResult): Promise<void> {
+  for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+    if (!needsPage(job, explicit, pageNumber)) continue;
+    const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
+    const content = await page.getTextContent(); // NOSONAR S9382 sequential
+    const pageText = content.items
+      .map((item) => (item as { str?: string }).str || '')
+      .join(' ')
+      .trim();
+    if (job.densityThreshold !== undefined) result.analyses.push(densityAnalysis(page, pageNumber, pageText, job.densityThreshold));
+    if (wantsGeometry(job, explicit, pageNumber, pageText)) {
+      result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
+    }
+  }
+}
+
 /**
  * Reads a PDF in this thread: per-page text-layer density (when `densityThreshold` is set) and word
  * geometry for the requested pages, reading each page's text content once.
@@ -1183,8 +1319,7 @@ function standardFontDataUrl(): string | undefined {
 export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, job: PdfTextJob): Promise<PdfTextJobResult> {
   const result: PdfTextJobResult = { analyses: [], geometry: new Map() };
   const explicit = Array.isArray(job.geometry) ? new Set<number>(job.geometry) : null;
-  if (job.densityThreshold === undefined && explicit?.size === 0) return result;
-  if (job.densityThreshold === undefined && job.geometry === 'none') return result;
+  if (job.densityThreshold === undefined && (explicit?.size === 0 || job.geometry === 'none')) return result;
   let task: PdfJsLoadingTask | undefined;
   try {
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
@@ -1197,36 +1332,8 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       verbosity: 0,
     });
     const doc = await task.promise;
-    for (const pageNumber of explicit ?? []) {
-      if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > doc.numPages) {
-        throw new PdfTextGeometryError(`PDF page ${pageNumber} does not exist; the document has ${doc.numPages} pages.`);
-      }
-    }
-    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
-      const wanted = explicit?.has(pageNumber) === true;
-      if (job.densityThreshold === undefined && !wanted && job.geometry !== 'text-pages') continue;
-      const page = await doc.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const strings = content.items.map((item) => (item as { str?: string }).str || '');
-      const pageText = strings.join(' ').trim();
-      if (job.densityThreshold !== undefined) {
-        const view = page.view || [0, 0, 612, 792];
-        const charCount = pageText.replace(/\s+/g, '').length;
-        const analysis: PdfPageAnalysis = {
-          pageNumber,
-          width: Math.abs(view[2] - view[0]),
-          height: Math.abs(view[3] - view[1]),
-          charCount,
-          wordCount: pageText.split(/\s+/).filter(Boolean).length,
-          hasTextLayer: charCount >= job.densityThreshold,
-          text: pageText,
-        };
-        result.analyses.push(analysis);
-      }
-      if (wanted || (job.geometry === 'text-pages' && pageText !== '')) {
-        result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber));
-      }
-    }
+    requirePages(explicit, doc.numPages);
+    await readPages(pdfjs, doc, job, explicit, result);
     return result;
   } catch (err) {
     if (err instanceof PdfTextGeometryError) throw err;
