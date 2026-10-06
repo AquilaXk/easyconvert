@@ -200,9 +200,10 @@ describe('Phase 5: B-Rep Mesh Watertightness & Astral Unicode CMap Compliance', 
 
     it('generates standard identity CMap when no mappings are provided', () => {
       const cmap = createToUnicodeCMap();
-      expect(cmap).toContain('1 beginbfrange');
-      expect(cmap).toContain('<0000> <FFFF> <0000>');
-      expect(cmap).toContain('endbfrange');
+      // ISO 32000-1 §9.10.3: only the last byte may vary inside a bfrange, so no identity range is emitted
+      expect(cmap).toContain('<0000> <FFFF>');
+      expect(cmap).not.toContain('bfrange');
+      expect(cmap).not.toContain('<0000> <FFFF> <0000>');
     });
   });
 });

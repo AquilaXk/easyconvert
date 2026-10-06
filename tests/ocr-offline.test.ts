@@ -71,13 +71,14 @@ describe('OCR Offline Language Enforcement & Zero-Egress', () => {
     // Instead, our offline gate throws OcrEngineUnavailableError fail-closed.
     let thrownError: unknown;
     try {
-      await performOcr(sampleImage, 'ja');
+      // Traditional Chinese data is not installed on the CI runner or the worker image.
+      await performOcr(sampleImage, 'zh_tra');
     } catch (err) {
       thrownError = err;
     }
 
     expect(thrownError).toBeInstanceOf(OcrLanguageUnavailableError);
     expect((thrownError as OcrLanguageUnavailableError).name).toBe('OcrLanguageUnavailableError');
-    expect((thrownError as Error).message).toBe("OCR language 'ja' (jpn.traineddata) is not available locally.");
+    expect((thrownError as Error).message).toBe("OCR language 'zh_tra' (chi_tra.traineddata) is not available locally.");
   });
 });

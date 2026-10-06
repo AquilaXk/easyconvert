@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import { convertFile, BitWriter, encodePureMp3, checkFfmpeg } from '../src/lib/conversions/index';
+import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import {
-  convertFile,
-  BitWriter,
-  generateH264Sps,
-  generateH264Pps,
-  generateH264IdrSlice,
-  encodePureMp3,
-  encodePureH264Mp4,
-  escapeH264Rbsp,
-  checkFfmpeg,
-} from '../src/lib/conversions/index';
-import { ConversionFailedError } from '../src/lib/types';
+  bestSnrDb,
+  decodeAudioWithFfmpeg,
+  probeStream,
+  sineSamples,
+  wavFromSamples,
+} from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
+
+const MIN_ROUNDTRIP_SNR_DB = 25;
 
 describe('Media Conversion Engine (Audio & Video)', () => {
   // Helper to generate a genuine RIFF WAV buffer
@@ -43,43 +43,53 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     return buffer;
   }
 
-  it('converts WAV to MP3 with valid ID3v2 and MPEG frames', async () => {
-    const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'mp3', { audioBitrate: '192k', allowPureLossyBitstream: true }, 'song.wav');
+  oracleTest('converts WAV to MP3 that the reference decoder reads back as the source tone', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sineSamples(44100, 2, 1);
+    const wav = wavFromSamples(source, 44100, 2);
+    const result = await convertFile(wav, 'wav', 'mp3', { audioBitrate: '192k' }, 'song.wav');
 
     expect(result.mimeType).toBe('audio/mpeg');
     expect(result.filename).toBe('song.mp3');
-    expect(result.size).toBeGreaterThan(100);
 
-    // Verify ID3v2 header
-    expect(result.buffer.toString('ascii', 0, 3)).toBe('ID3');
-    // Verify syncword somewhere in buffer
-    let hasMpegSync = false;
-    for (let i = 10; i < result.buffer.length - 1; i++) {
-      if (result.buffer[i] === 0xff && (result.buffer[i + 1] & 0xe0) === 0xe0) {
-        hasMpegSync = true;
-        break;
-      }
-    }
-    expect(hasMpegSync).toBe(true);
+    const stream = probeStream(result.buffer, 'mp3', 'a');
+    expect(stream.codec_name).toBe('mp3');
+    expect(Number(stream.sample_rate)).toBe(44100);
+    expect(Number(stream.channels)).toBe(2);
+    expect(bestSnrDb(source, decodeAudioWithFfmpeg(result.buffer, 'mp3', 44100, 2), 2)).toBeGreaterThanOrEqual(
+      MIN_ROUNDTRIP_SNR_DB
+    );
   });
 
-  it('converts WAV to AAC ADTS stream container', async () => {
-    const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'recording.wav');
+  oracleTest('converts WAV to an ADTS AAC stream that decodes back to the source tone', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sineSamples(44100, 2, 1);
+    const wav = wavFromSamples(source, 44100, 2);
+    const result = await convertFile(wav, 'wav', 'aac', {}, 'recording.wav');
 
     expect(result.mimeType).toBe('audio/aac');
     expect(result.filename).toBe('recording.aac');
     // ADTS syncword 0xFFF
     expect(result.buffer[0]).toBe(0xff);
-    expect((result.buffer[1] & 0xf0)).toBe(0xf0);
+    expect(result.buffer[1] & 0xf0).toBe(0xf0);
+
+    const stream = probeStream(result.buffer, 'aac', 'a');
+    expect(stream.codec_name).toBe('aac');
+    expect(Number(stream.sample_rate)).toBe(44100);
+    expect(Number(stream.channels)).toBe(2);
+    expect(bestSnrDb(source, decodeAudioWithFfmpeg(result.buffer, 'aac', 44100, 2), 2)).toBeGreaterThanOrEqual(
+      MIN_ROUNDTRIP_SNR_DB
+    );
   });
 
   it('enforces Fail-Closed when converting WAV to OGG Vorbis without native FFmpeg engine', async () => {
     const wav = createTestWavBuffer(44100, 2, 0.5);
-    await expect(
-      convertFile(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
-    ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
+    const error = await convertFile(wav, 'wav', 'ogg', { disableNativeEngine: true }, 'audio.wav').catch(
+      (err: unknown) => err
+    );
+    expect(error).toBeInstanceOf(EngineUnavailableError);
+    expect((error as EngineUnavailableError).engineName).toBe('ffmpeg');
+    expect((error as EngineUnavailableError).message).toMatch(
+      /Native FFmpeg engine is required for authentic lossy OGG compression/i
+    );
   });
 
   it('converts WAV to FLAC with fLaC magic header', async () => {
@@ -92,14 +102,20 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     expect(result.buffer.toString('ascii', 0, 4)).toBe('fLaC');
   });
 
-  it('converts audio to MP4 container with ftyp box', async () => {
-    const wav = createTestWavBuffer(44100, 2, 0.5);
-    const result = await convertFile(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'video_track.wav');
+  oracleTest('converts audio to an MP4 container whose AAC track decodes back to the source tone', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sineSamples(44100, 2, 1);
+    const wav = wavFromSamples(source, 44100, 2);
+    const result = await convertFile(wav, 'wav', 'mp4', {}, 'video_track.wav');
 
     expect(result.mimeType).toBe('video/mp4');
     expect(result.filename).toBe('video_track.mp4');
     // MP4 'ftyp' box
     expect(result.buffer.toString('ascii', 4, 8)).toBe('ftyp');
+
+    expect(probeStream(result.buffer, 'mp4', 'a').codec_name).toBe('aac');
+    expect(bestSnrDb(source, decodeAudioWithFfmpeg(result.buffer, 'mp4', 44100, 2), 2)).toBeGreaterThanOrEqual(
+      MIN_ROUNDTRIP_SNR_DB
+    );
   });
 
   it('converts audio to WebM container with EBML header when FFmpeg available or fails closed', async () => {
@@ -120,19 +136,13 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     }
   });
 
-  it('fails closed when converting MP4 video container to MP3 without decoder', async () => {
-    const wav = createTestWavBuffer(44100, 2, 0.5);
-    const mp4Result = await convertFile(wav, 'wav', 'mp4', { allowPureLossyBitstream: true }, 'movie.wav');
+  oracleTest('converts an MP4 container to MP3 through the native engine', ['ffmpeg', 'ffprobe'], async () => {
+    const wav = wavFromSamples(sineSamples(44100, 2, 1), 44100, 2);
+    const mp4Result = await convertFile(wav, 'wav', 'mp4', {}, 'movie.wav');
+    const mp3Result = await convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4');
 
-    if (checkFfmpeg()) {
-      const mp3Result = await convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4');
-      expect(mp3Result.mimeType).toBe('audio/mpeg');
-      expect(mp3Result.buffer.length).toBeGreaterThan(0);
-    } else {
-      await expect(convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4')).rejects.toThrow(
-        /decoder unavailable|Native FFmpeg engine is required/
-      );
-    }
+    expect(mp3Result.mimeType).toBe('audio/mpeg');
+    expect(probeStream(mp3Result.buffer, 'mp3', 'a').codec_name).toBe('mp3');
   });
 
   it('applies volume and sample rate parameters correctly', async () => {
@@ -169,22 +179,7 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       expect(buf[1]).toBe(0b10001100);
     });
 
-    it('generates standard H.264 SPS, PPS, and IDR slice NAL units', () => {
-      const sps = generateH264Sps(640, 480);
-      // NAL header for SPS: forbidden(0), ref_idc(3), type(7) -> 0x67
-      expect(sps[0]).toBe(0x67);
-      expect(sps[1]).toBe(66); // Baseline profile
-
-      const pps = generateH264Pps();
-      // NAL header for PPS: forbidden(0), ref_idc(3), type(8) -> 0x68
-      expect(pps[0]).toBe(0x68);
-
-      const idr = generateH264IdrSlice(640, 480);
-      // NAL header for IDR: forbidden(0), ref_idc(3), type(5) -> 0x65
-      expect(idr[0]).toBe(0x65);
-    });
-
-    it('encodes PCM samples to pure MP3 and pure H.264 MP4 container', () => {
+    it('encodes PCM samples to a pure MP3 stream with an ID3v2 header', () => {
       const samples = new Int16Array(44100 * 0.1); // 0.1s
       for (let i = 0; i < samples.length; i++) {
         samples[i] = Math.round(Math.sin((i / 44100) * 440 * 2 * Math.PI) * 16000);
@@ -193,35 +188,6 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       const mp3 = encodePureMp3(samples, 44100, 1, '128k', 'Test Pure');
       expect(mp3.toString('ascii', 0, 3)).toBe('ID3');
       expect(mp3.length).toBeGreaterThan(100);
-
-      const mp4 = encodePureH264Mp4(samples, 44100, 1, { videoFps: 30 }, 'Test Video');
-      expect(mp4.toString('ascii', 4, 8)).toBe('ftyp');
-      expect(mp4.indexOf('moov')).toBeGreaterThan(0);
-      expect(mp4.indexOf('mdat')).toBeGreaterThan(0);
-    });
-
-    it('escapes H.264 RBSP bitstreams preventing start code emulation (0x00 0x00 0x03)', () => {
-      // Test cases with 0x00 0x00 followed by 0x00, 0x01, 0x02, 0x03
-      const raw1 = Buffer.from([0x00, 0x00, 0x00]);
-      const esc1 = escapeH264Rbsp(raw1);
-      expect(Array.from(esc1)).toEqual([0x00, 0x00, 0x03, 0x00]);
-
-      const raw2 = Buffer.from([0x00, 0x00, 0x01]);
-      const esc2 = escapeH264Rbsp(raw2);
-      expect(Array.from(esc2)).toEqual([0x00, 0x00, 0x03, 0x01]);
-
-      const raw3 = Buffer.from([0x00, 0x00, 0x02]);
-      const esc3 = escapeH264Rbsp(raw3);
-      expect(Array.from(esc3)).toEqual([0x00, 0x00, 0x03, 0x02]);
-
-      const raw4 = Buffer.from([0x00, 0x00, 0x03]);
-      const esc4 = escapeH264Rbsp(raw4);
-      expect(Array.from(esc4)).toEqual([0x00, 0x00, 0x03, 0x03]);
-
-      // Non-emulation: 0x00 0x00 0x04 should not insert 0x03
-      const raw5 = Buffer.from([0x00, 0x00, 0x04]);
-      const esc5 = escapeH264Rbsp(raw5);
-      expect(Array.from(esc5)).toEqual([0x00, 0x00, 0x04]);
     });
 
     it('handles empty PCM audio sample buffers gracefully without NaN corruption', () => {
