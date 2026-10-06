@@ -17,6 +17,11 @@ import { executeSandboxedBinary, SandboxedProcessError } from '../security/proce
 import { buildFfmpegArguments, buildHlsDashArguments, usesHardwareVideoEncoder } from './media-ffmpeg-args';
 import { encodeFlacStream } from './media-encoder';
 import {
+  resampleInterleavedInt16,
+  resamplePlanarFloat,
+  type ResampleOptions,
+} from './audio-resampler';
+import {
   decodeAudioBuffer,
   decodeWav,
   decodeFlac,
@@ -970,115 +975,34 @@ function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: 
 
 
 /**
- * Bandlimited windowed Sinc audio resampler with Blackman window.
- * Eliminates high-frequency aliasing and quantization distortion.
+ * Bandlimited polyphase resampler (Kaiser-windowed sinc, cutoff scaled to the lower rate).
+ * The implementation lives in ./audio-resampler; this facade keeps the public entry point.
+ * 16-bit output is TPDF-dithered; planar float output is left untouched.
  */
 export function resampleAudioSinc(
   pcmData: Int16Array,
   srcRate: number,
   tgtRate: number,
-  channels: number
+  channels: number,
+  options?: ResampleOptions
 ): Int16Array;
 export function resampleAudioSinc(
   channels: Float32Array[],
   srcRate: number,
   tgtRate: number,
-  filterRadius?: number
+  options?: ResampleOptions
 ): Float32Array[];
 export function resampleAudioSinc(
   data: Int16Array | Float32Array[],
   srcRate: number,
   tgtRate: number,
-  param4: number = 8
-): any {
+  param4?: number | ResampleOptions,
+  param5?: ResampleOptions
+): Int16Array | Float32Array[] {
   if (Array.isArray(data)) {
-    const filterRadius = param4 > 0 ? param4 : 8;
-    const ratio = tgtRate / srcRate;
-    return data.map((ch) => {
-      if (srcRate === tgtRate || ch.length === 0) return ch;
-      const srcFrames = ch.length;
-      const tgtFrames = Math.floor(srcFrames * ratio);
-      const output = new Float32Array(tgtFrames);
-      const cutoff = Math.min(1.0, ratio);
-
-      for (let f = 0; f < tgtFrames; f++) {
-        const srcPos = f / ratio;
-        const center = Math.floor(srcPos);
-        let sum = 0;
-        let weightSum = 0;
-
-        const kMin = Math.max(0, center - filterRadius);
-        const kMax = Math.min(srcFrames - 1, center + filterRadius);
-
-        for (let k = kMin; k <= kMax; k++) {
-          const x = (srcPos - k) * cutoff;
-          let sincVal = 1.0;
-          if (Math.abs(x) > 1e-7) {
-            const pix = Math.PI * x;
-            sincVal = Math.sin(pix) / pix;
-          }
-
-          const t = (srcPos - k) / filterRadius;
-          if (Math.abs(t) <= 1.0) {
-            const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
-            const weight = sincVal * w * cutoff;
-            sum += ch[k] * weight;
-            weightSum += weight;
-          }
-        }
-
-        output[f] = weightSum > 0 ? sum / weightSum : ch[center];
-      }
-
-      return output;
-    });
+    return resamplePlanarFloat(data, srcRate, tgtRate, param4 as ResampleOptions | undefined);
   }
-
-  const channels = param4;
-  if (srcRate === tgtRate || data.length === 0) return data;
-
-  const ratio = tgtRate / srcRate;
-  const srcFrames = Math.floor(data.length / channels);
-  const tgtFrames = Math.floor(srcFrames * ratio);
-  const output = new Int16Array(tgtFrames * channels);
-
-  const filterRadius = 8;
-  const cutoff = Math.min(1.0, ratio);
-
-  for (let f = 0; f < tgtFrames; f++) {
-    const srcPos = f / ratio;
-    const center = Math.floor(srcPos);
-
-    for (let c = 0; c < channels; c++) {
-      let sum = 0;
-      let weightSum = 0;
-
-      const kMin = Math.max(0, center - filterRadius);
-      const kMax = Math.min(srcFrames - 1, center + filterRadius);
-
-      for (let k = kMin; k <= kMax; k++) {
-        const x = (srcPos - k) * cutoff;
-        let sincVal = 1.0;
-        if (Math.abs(x) > 1e-7) {
-          const pix = Math.PI * x;
-          sincVal = Math.sin(pix) / pix;
-        }
-
-        const t = (srcPos - k) / filterRadius;
-        if (Math.abs(t) <= 1.0) {
-          const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
-          const weight = sincVal * w * cutoff;
-          sum += data[k * channels + c] * weight;
-          weightSum += weight;
-        }
-      }
-
-      const sample = weightSum > 0 ? sum / weightSum : data[center * channels + c];
-      output[f * channels + c] = Math.max(-32768, Math.min(32767, Math.round(sample)));
-    }
-  }
-
-  return output;
+  return resampleInterleavedInt16(data, srcRate, tgtRate, param4 as number, param5);
 }
 
 /**
