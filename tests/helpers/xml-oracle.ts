@@ -14,7 +14,7 @@ const FIXTURE_DIR = path.join(__dirname, '..', 'fixtures', 'alto');
 const ALTO_SCHEMA = path.join(FIXTURE_DIR, 'alto-4-4.xsd');
 const XLINK_SCHEMA = path.join(FIXTURE_DIR, 'xlink.xsd');
 /** The URL alto-4-4.xsd imports the XLink schema from; it no longer resolves, so a catalog redirects it. */
-const XLINK_SCHEMA_URL = 'http://www.loc.gov/standards/xlink/xlink.xsd';
+const XLINK_SCHEMA_URL = 'http://www.loc.gov/standards/xlink/xlink.xsd'; // NOSONAR S5332: catalog key that must equal the XSD's import string; never fetched (xmllint --nonet)
 const XMLLINT_TIMEOUT_MS = 60_000;
 const XMLLINT_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 
