@@ -1,8 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
 import {
   ConversionOptions,
@@ -28,6 +25,15 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
+import {
+  countTextRows,
+  fallbackReadsMore,
+  OCR_SMALL_CROP_MAX_HEIGHT_PX,
+  ocrFallbackPageSegMode,
+  ocrSegmentationFor,
+} from './ocr-config';
+import { recognizeWithCli } from './ocr-cli';
+import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
@@ -42,6 +48,20 @@ export {
   parseAlto,
   unescapeXml,
 } from './ocr-export';
+
+function countWords(text: string | null | undefined): number {
+  return (text || '').split(/\s+/).filter(Boolean).length;
+}
+
+/** Terminates pooled OCR workers; call on process shutdown. */
+export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
+
+/** Text rows in an image short enough to be read as one block or line; undefined for taller images. */
+async function countSmallCropTextRows(png: Buffer, height: number | undefined): Promise<number | undefined> {
+  if (height === undefined || height > OCR_SMALL_CROP_MAX_HEIGHT_PX) return undefined;
+  const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
+  return countTextRows(new Uint8Array(data.buffer, data.byteOffset, data.length), info.width, info.height);
+}
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -129,24 +149,38 @@ export async function performOcr(
   } catch {
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
+  const { height: inputHeight } = await sharp(ocrInput).metadata();
+  const inputTextRows = await countSmallCropTextRows(ocrInput, inputHeight);
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
-    const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(tesseractLang, 1, {
-      langPath: localLangPath,
-      cacheMethod: 'none',
-      gzip: isGzip,
-      // Worker failures already reject the pending job; without a handler the worker also
-      // rethrows them from its message listener as an uncaught exception.
-      errorHandler: () => undefined,
-    });
-    let ret: Awaited<ReturnType<typeof worker.recognize>>;
-    try {
-      ret = await worker.recognize(ocrInput, {}, { blocks: true });
-    } finally {
-      await worker.terminate();
-    }
+    const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
+    const ret = await getSharedOcrWorkerPool().run(
+      {
+        langs: tesseractLang,
+        langPath: localLangPath,
+        gzip: isGzip,
+        engineMode,
+        parameters: { tessedit_pageseg_mode: pageSegMode },
+      },
+      async (recognize, recognizeWith) => {
+        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+        if (imageMode !== pageSegMode) {
+          return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
+        }
+        const first = await recognize(ocrInput, {}, { blocks: true });
+        const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
+        if (!fallbackMode || countWords(first.data.text) > 0) return first;
+        // Automatic segmentation finds no text block in very small images; read them as one block.
+        const retry = await recognizeWith(
+          { tessedit_pageseg_mode: fallbackMode },
+          ocrInput,
+          {},
+          { blocks: true }
+        );
+        return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
+      }
+    );
 
     if (ret && ret.data) {
       const fullText = (ret.data.text || '').trim();
@@ -209,38 +243,14 @@ export async function performOcr(
   const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
   const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
   if (tesseractCli) {
-    const tmpIn = path.join(os.tmpdir(), `ocr_cli_in_${crypto.randomUUID()}.png`);
-    const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
-    try {
-      fs.writeFileSync(tmpIn, ocrInput);
-      const cliArgs = ['--tessdata-dir', localLangPath, tmpIn, tmpOutBase, '-l', tesseractLang];
-      execFileSync(tesseractCli, cliArgs, {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout: 15000,
-      });
-      const outTxtPath = `${tmpOutBase}.txt`;
-      if (fs.existsSync(outTxtPath)) {
-        const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
-        fs.unlinkSync(outTxtPath);
-        const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
-        const lines = cliText ? cliText.split('\n').map((l) => l.trim()).filter(Boolean) : [];
-        return {
-          text: cliText,
-          confidence: null,
-          wordCount: cliText ? cliText.split(/\s+/).filter(Boolean).length : 0,
-          lines,
-          lineBlocks: [],
-          imageWidth: meta.width || 800,
-          imageHeight: meta.height || 600,
-        };
-      }
-    } catch (err: any) {
-      // CLI failed
-    } finally {
-      try {
-        if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
-      } catch {}
-    }
+    return recognizeWithCli({
+      cliPath: tesseractCli,
+      tessdataDir: localLangPath,
+      tesseractLang,
+      image: ocrInput,
+      imageHeight: inputHeight,
+      textRows: inputTextRows,
+    });
   }
 
   throw new OcrEngineUnavailableError(
