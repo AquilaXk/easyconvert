@@ -101,8 +101,8 @@ describe('secret key names by token or suffix', () => {
   });
 
   it('masks pairs in text by those names', () => {
-    expect(redactText('AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG bucket=reports')).toBe(
-      'AWS_SECRET_ACCESS_KEY=*** bucket=reports'
+    expect(redactText('AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG\nbucket=reports')).toBe(
+      'AWS_SECRET_ACCESS_KEY=***\nbucket=reports'
     );
     expect(redactText('DB_PASSWORD: hunter2')).toBe('DB_PASSWORD: ***');
     expect(redactText('X-Auth-Token: abcdef123')).toBe('X-Auth-Token: ***');
@@ -121,10 +121,10 @@ describe('secret key names by token or suffix', () => {
 });
 
 describe('secret values containing separators', () => {
-  it('masks to the end of the field when the value holds semicolons, commas or ampersands', () => {
-    expect(redactText('password=a;b;c next')).toBe('password=*** next');
-    expect(redactText('password=ab&cd next')).toBe('password=*** next');
-    expect(redactText('password=ab,cd next')).toBe('password=*** next');
+  it('masks to the end of the line when the value holds semicolons, commas or ampersands', () => {
+    expect(redactText('password=a;b;c next')).toBe('password=***');
+    expect(redactText('password=ab&cd next\nline2')).toBe('password=***\nline2');
+    expect(redactText('password=ab,cd next')).toBe('password=***');
   });
 });
 
@@ -183,10 +183,10 @@ describe('header containers', () => {
 
 describe('scrubError reach', () => {
   it('masks the errors of an AggregateError', () => {
-    const inner = new Error('agg token=zzz1 https://u:p@h/x?sig=1');
+    const inner = new Error('agg https://u:p@h/x?sig=1 token=zzz1');
     const agg = new AggregateError([inner], 'agg');
     scrubError(agg);
-    expect(inner.message).toBe('agg token=*** https://***@h/x?***');
+    expect(inner.message).toBe('agg https://***@h/x?*** token=***');
   });
 
   it('masks own enumerable properties such as an HTTP client response', () => {

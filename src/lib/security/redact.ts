@@ -20,8 +20,6 @@ const MAX_ERROR_PROPERTIES = 32;
 const MAX_TEXT_KEY_LENGTH = 64;
 /** Most backslashes the scanner accepts in front of an escaped quote (JSON nested in JSON). */
 const MAX_QUOTE_ESCAPES = 8;
-/** Longest run of blanks between a key, its separator and its value. */
-const MAX_PAIR_BLANKS = 16;
 
 /** Key names whose values are credentials, normalised: lower case, no `_`, `-`, `.` or spaces. */
 export const SECRET_KEY_NAMES: ReadonlySet<string> = new Set([
@@ -92,6 +90,18 @@ const SECRET_KEY_SUFFIXES: readonly string[] = [
   'headers',
   'connectionstring',
   'serviceaccountkeyjson',
+  // Plural nouns: `apiKeys`, `secrets`. A bare "tokens" is not here, since `maxTokens` is a limit.
+  'passwords',
+  'passphrases',
+  'secrets',
+  'apikeys',
+  'accesskeys',
+  'privatekeys',
+  'accesstokens',
+  'refreshtokens',
+  'authtokens',
+  'sessiontokens',
+  'bearertokens',
 ];
 
 /** A key containing one of these words is a credential wherever the word sits: `AWS_SECRET_ACCESS_KEY`. */
@@ -100,8 +110,7 @@ const SECRET_KEY_WORDS: ReadonlySet<string> = new Set(['password', 'passwd', 'pa
 /** Names that match the rules above but hold no credential. */
 const HARMLESS_KEY_NAMES: ReadonlySet<string> = new Set(['haswebhooksecret']);
 
-/** Keys whose unquoted text value runs to the end of the line: schemes and cookies hold spaces and commas. */
-const LINE_VALUE_KEY_SUFFIXES: readonly string[] = ['authorization', 'cookie'];
+const TRAILING_DIGITS = /\d+$/;
 
 export class RedactionLimitError extends Error {
   constructor(reason: string) {
@@ -121,41 +130,44 @@ function keyWords(key: string): string[] {
     .split(/[^a-z0-9]+/);
 }
 
+/** True for a credential's name; a trailing number (`password2`, `apiKey_3`) does not change that. */
 export function isSecretKey(key: string): boolean {
   const normalized = normalizeKeyName(key);
   if (HARMLESS_KEY_NAMES.has(normalized)) {
     return false;
   }
-  if (SECRET_KEY_NAMES.has(normalized) || SECRET_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix))) {
+  const stem = normalized.replace(TRAILING_DIGITS, '');
+  if (
+    SECRET_KEY_NAMES.has(normalized) ||
+    SECRET_KEY_NAMES.has(stem) ||
+    SECRET_KEY_SUFFIXES.some((suffix) => stem.endsWith(suffix))
+  ) {
     return true;
   }
-  return keyWords(key).some((word) => SECRET_KEY_WORDS.has(word));
+  return keyWords(key).some((word) => SECRET_KEY_WORDS.has(word.replace(TRAILING_DIGITS, '')));
 }
 
-function isLineValueKey(key: string): boolean {
-  const normalized = normalizeKeyName(key);
-  return LINE_VALUE_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
-}
-
-const URL_SCHEME_START = /\b[a-z][a-z0-9+.-]{1,31}:\/\//gi;
+// `:\/\/` is how a URL looks inside a JSON string written by an encoder that escapes slashes.
+const URL_SCHEME_START = /\b[a-z][a-z0-9+.-]{1,31}:(?:\\?\/){2}/gi;
 // A URL percent-encoded into another URL or a log field: it cannot be split reliably, so the rest of the token is masked.
 const ENCODED_URL = /\b[a-z][a-z0-9+.-]{1,31}%3A%2F%2F[^\s"'<>`]*/gi;
-const URL_WHOLE = /^([a-z][a-z0-9+.-]{1,31}:\/\/)([\s\S]*)$/i;
+const URL_WHOLE = /^([a-z][a-z0-9+.-]{1,31}:(?:\\?\/){2})([\s\S]*)$/i;
 const URL_TEXT_STOP: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '<', '>', '`', '"', "'"]);
 const AUTHORITY_STOP: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '<', '>', '/', '?', '#']);
 const QUOTE_CHARS: ReadonlySet<string> = new Set(['"', "'", '`']);
 /** Punctuation that ends a sentence rather than a URL. */
-const URL_TRAILING_PUNCTUATION: ReadonlySet<string> = new Set(['.', ',', ';', ':', '!', ')', ']', '}']);
+const URL_TRAILING_PUNCTUATION: ReadonlySet<string> = new Set(['.', ',', ';', ':', '!', ')', ']', '}', '\\']);
 const BEARER_TOKEN = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
-// Only the key and separator are matched here; the value is read separately and only for secret keys,
-// so a long unbroken value is never re-scanned from every key inside it.
-const KEY_AND_SEPARATOR = new RegExp(
-  String.raw`(?<![A-Za-z0-9_.-])(\\{0,${MAX_QUOTE_ESCAPES}}["']?)([A-Za-z][A-Za-z0-9_.-]{0,${MAX_TEXT_KEY_LENGTH - 1}})\1` +
-    String.raw`([ \t]{0,${MAX_PAIR_BLANKS}}[:=][ \t]{0,${MAX_PAIR_BLANKS}})`,
+// Only a key token is matched here; the separator and the value are read by hand and only for
+// secret keys, so a long run of blanks or a long value is never re-scanned from every key inside it.
+const KEY_TOKEN = new RegExp(
+  String.raw`(?<![A-Za-z0-9_.-])(\\{0,${MAX_QUOTE_ESCAPES}}["']?)([A-Za-z][A-Za-z0-9_.-]{0,${MAX_TEXT_KEY_LENGTH - 1}})\1`,
   'g'
 );
-/** Ends an unquoted secret value. Separators such as `,` `;` `&` stay inside it: passwords contain them. */
-const VALUE_STOP: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n', '"', "'", '}', ']']);
+const BLANKS: ReadonlySet<string> = new Set([' ', '\t']);
+const WHITESPACE: ReadonlySet<string> = new Set([' ', '\t', '\r', '\n']);
+/** Longest text, in characters, for which bracket groups are matched; longer text masks to the line end. */
+const MAX_BRACKET_INDEX_TEXT = 4 * 1024 * 1024;
 
 /**
  * Masks the parts of a URL that carry credentials. `rest` is everything after `scheme://`.
@@ -257,68 +269,93 @@ function quotedValue(text: string, start: number): { end: number; opener: string
   return null;
 }
 
+/** End of the line that holds `start`: the next CR or LF. Scans only as far as that line is long. */
 function lineEnd(text: string, start: number): number {
-  const newline = text.indexOf('\n', start);
-  return newline < 0 ? text.length : newline;
-}
-
-/** End of the balanced `{...}` or `[...]` group that starts at `start`; falls back to the end of the line. */
-function balancedEnd(text: string, start: number): number {
-  let depth = 0;
-  let quote = '';
-  for (let cursor = start; cursor < text.length; cursor++) {
-    const ch = text[cursor];
-    if (quote) {
-      if (ch === '\\') {
-        cursor++;
-      } else if (ch === quote) {
-        quote = '';
-      }
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-    } else if (ch === '{' || ch === '[') {
-      depth++;
-    } else if ((ch === '}' || ch === ']') && --depth === 0) {
-      return cursor + 1;
-    }
+  let end = start;
+  while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
+    end++;
   }
-  return lineEnd(text, start);
+  return end;
 }
 
-/** The replacement for the value of secret key `key` that starts at `start`, and where the value ends. */
-function maskedPairValue(text: string, start: number, key: string): { masked: string; end: number } | null {
+/**
+ * Where each `{` or `[` of a text closes, found in one pass for the whole text so that any number of
+ * groups costs one scan. Brackets inside double-quoted strings do not count. Unclosed groups stay -1.
+ */
+class BracketGroups {
+  private ends: Int32Array | null = null;
+
+  constructor(private readonly text: string) {}
+
+  /** End (exclusive) of the group that opens at `start`, or the end of its line when it never closes. */
+  endOf(start: number): number {
+    if (this.text.length <= MAX_BRACKET_INDEX_TEXT) {
+      this.ends ??= BracketGroups.index(this.text);
+      if (this.ends[start] > 0) {
+        return this.ends[start];
+      }
+    }
+    return lineEnd(this.text, start);
+  }
+
+  private static index(text: string): Int32Array {
+    const ends = new Int32Array(text.length).fill(-1);
+    const open: number[] = [];
+    let inString = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '\\') {
+        i++;
+      } else if (ch === '"') {
+        inString = !inString;
+      } else if (!inString && (ch === '{' || ch === '[')) {
+        open.push(i);
+      } else if (!inString && (ch === '}' || ch === ']') && open.length > 0) {
+        ends[open.pop() as number] = i + 1;
+      }
+    }
+    return ends;
+  }
+}
+
+/** The replacement for a secret value that starts at `start`, and where the value ends. */
+function maskedPairValue(text: string, start: number, groups: BracketGroups): { masked: string; end: number } | null {
   const quoted = quotedValue(text, start);
   if (quoted) {
     return { masked: `${quoted.opener}${REDACTION_MASK}${quoted.closer}`, end: quoted.end };
   }
   const first = text[start];
   if (first === '{' || first === '[') {
-    return { masked: REDACTION_MASK, end: balancedEnd(text, start) };
+    return { masked: REDACTION_MASK, end: groups.endOf(start) };
   }
-  if (isLineValueKey(key)) {
-    const end = lineEnd(text, start);
-    return end > start ? { masked: REDACTION_MASK, end } : null;
-  }
-  let end = start;
-  while (end < text.length && !VALUE_STOP.has(text[end])) {
-    end++;
-  }
+  // An unquoted value may hold spaces, quotes, commas and brackets: it ends with the line.
+  const end = lineEnd(text, start);
   return end > start ? { masked: REDACTION_MASK, end } : null;
 }
 
 /** Masks the value of every `key=value`, `key: value` and `"key":"value"` pair whose key is a secret. */
 function redactKeyValuePairs(text: string): string {
-  const keys = new RegExp(KEY_AND_SEPARATOR.source, KEY_AND_SEPARATOR.flags);
+  const keys = new RegExp(KEY_TOKEN.source, KEY_TOKEN.flags);
+  const groups = new BracketGroups(text);
   let out = '';
   let cursor = 0;
   let match = keys.exec(text);
   while (match) {
-    const valueStart = match.index + match[0].length;
-    const value = isSecretKey(match[2]) ? maskedPairValue(text, valueStart, match[2]) : null;
-    if (value) {
-      out += text.slice(cursor, valueStart) + value.masked;
-      cursor = value.end;
-      keys.lastIndex = cursor;
+    let separator = match.index + match[0].length;
+    while (separator < text.length && BLANKS.has(text[separator])) {
+      separator++;
+    }
+    if ((text[separator] === ':' || text[separator] === '=') && isSecretKey(match[2])) {
+      let valueStart = separator + 1;
+      while (valueStart < text.length && WHITESPACE.has(text[valueStart])) {
+        valueStart++;
+      }
+      const value = maskedPairValue(text, valueStart, groups);
+      if (value) {
+        out += text.slice(cursor, valueStart) + value.masked;
+        cursor = value.end;
+        keys.lastIndex = cursor;
+      }
     }
     match = keys.exec(text);
   }
@@ -364,7 +401,14 @@ function isSecretHeaderPair(value: unknown[]): boolean {
   return value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'string' && isSecretKey(value[0]);
 }
 
-function walk(value: unknown, depth: number, state: WalkState): unknown {
+/** Map keys under which an object's own keys are ids chosen by the user (`graph.nodes.token`), not field names. */
+const ID_MAP_KEYS: ReadonlySet<string> = new Set(['nodes', 'tasks']);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Error);
+}
+
+function walk(value: unknown, depth: number, state: WalkState, keysAreIds = false): unknown {
   state.nodes++;
   if (state.nodes > MAX_REDACTION_NODES) {
     return limitHit(state, `more than ${MAX_REDACTION_NODES} values`);
@@ -400,7 +444,11 @@ function walk(value: unknown, depth: number, state: WalkState): unknown {
       }
       // Absent values and flags disclose nothing, so a mask would only hide that they are absent or false.
       const discloses = item !== undefined && item !== null && typeof item !== 'boolean';
-      out[key] = isSecretKey(key) && discloses ? REDACTION_MASK : walk(item, depth + 1, state);
+      if (!keysAreIds && isSecretKey(key) && discloses) {
+        out[key] = REDACTION_MASK;
+      } else {
+        out[key] = walk(item, depth + 1, state, !keysAreIds && ID_MAP_KEYS.has(key) && isPlainRecord(item));
+      }
     }
     return out;
   } finally {

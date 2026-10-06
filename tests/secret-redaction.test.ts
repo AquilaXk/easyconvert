@@ -90,7 +90,7 @@ describe('redactText', () => {
   });
 
   it('masks key=value and JSON pairs for secret keys only', () => {
-    expect(redactText('password=hunter2 bucket=reports')).toBe('password=*** bucket=reports');
+    expect(redactText('password=hunter2\nbucket=reports')).toBe('password=***\nbucket=reports');
     expect(redactText('{"secretAccessKey":"wJalrXUtnFEMI/K7MDENG","bucket":"reports"}')).toBe(
       '{"secretAccessKey":"***","bucket":"reports"}'
     );
