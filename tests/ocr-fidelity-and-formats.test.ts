@@ -14,7 +14,8 @@ import {
 import { OcrResult, OcrLineBlock } from '../src/lib/conversions/ocr-pdf-combiner';
 import { OcrLanguageUnavailableError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
-import { hocrWords, matchedIou, popplerWords } from './helpers/poppler-words';
+import { extractPdfTextLayerPages } from '../src/lib/conversions/pdf-text-geometry';
+import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
 import { validateAlto44, xmlWellFormed, xpathAttributes } from './helpers/xml-oracle';
 
 describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vertical Models', () => {
@@ -379,8 +380,13 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         const mine = hocrWords(hocr);
         const digital = mine.filter((w) => w.page === 1);
         expect(digital).toHaveLength(reference.length);
+        // The hOCR boxes are rounded to whole pixels, which costs a two-letter word up to about 17%.
         matchedIou(reference, digital).forEach((iou, index) => {
-          expect(iou, `word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.7);
+          expect(iou, `word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.8);
+        });
+        const exactDigital = ocrWords(await extractPdfTextLayerPages(pdfBuffer, new Set([1])));
+        matchedIou(reference, exactDigital).forEach((iou, index) => {
+          expect(iou, `exact word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.9);
         });
         // Page 2 is the scanned page, read by OCR.
         expect(mine.filter((w) => w.page === 2).map((w) => w.text.toUpperCase())).toContain('SCANNED');
@@ -652,7 +658,11 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         const mine = hocrWords(hocr);
         expect(mine).toHaveLength(reference.length);
         matchedIou(reference, mine).forEach((iou, index) => {
-          expect(iou, `page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.7);
+          expect(iou, `page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.8);
+        });
+        const exact = ocrWords(await extractPdfTextLayerPages(pdfBuffer, new Set([1, 2])));
+        matchedIou(reference, exact).forEach((iou, index) => {
+          expect(iou, `exact page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.9);
         });
         // The banner on page 1 runs past the 612 pt width of a default letter page.
         expect(Math.max(...mine.filter((w) => w.page === 1).map((w) => w.x1))).toBeGreaterThan(612);

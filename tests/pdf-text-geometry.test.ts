@@ -3,7 +3,8 @@ import { PDFDocument, StandardFonts, degrees, type PDFFont, type PDFPage } from 
 import { convertFile } from '../src/lib/conversions/index';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
-import { hocrWords, matchedIou, popplerWords } from './helpers/poppler-words';
+import { extractPdfTextLayerPages } from '../src/lib/conversions/pdf-text-geometry';
+import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
 import { validateAlto44, xmlWellFormed, xpathAttributes, xpathCount } from './helpers/xml-oracle';
 
 /**
@@ -12,7 +13,10 @@ import { validateAlto44, xmlWellFormed, xpathAttributes, xpathCount } from './he
  * paragraph and block structure is worked out by hand from the baselines the PDFs are drawn with.
  */
 
-const MIN_WORD_IOU = 0.7;
+/** The exact word boxes agree with the reference extractor to well within this. */
+const MIN_WORD_IOU = 0.9;
+/** hOCR boxes are rounded to whole pixels, which costs a two-letter word up to about 17%. */
+const MIN_HOCR_WORD_IOU = 0.8;
 const TEST_TIMEOUT_MS = 120_000;
 const OCR_OPTIONS = { ocrEnabled: true, ocrMode: 'skip_text' } as const;
 const AREA = "//*[@class='ocr_carea']";
@@ -90,14 +94,19 @@ async function altoOf(pdf: Buffer): Promise<string> {
   return (await convertFile(pdf, 'pdf', 'alto', OCR_OPTIONS, 'digital.pdf')).buffer.toString('utf-8');
 }
 
-function expectWordsMatchPoppler(pdf: Buffer, hocr: string): void {
+async function expectWordsMatchPoppler(pdf: Buffer, hocr: string): Promise<void> {
   const reference = popplerWords(pdf);
-  const mine = hocrWords(hocr);
+  const pageNumbers = new Set(reference.map((word) => word.page));
+  const exact = ocrWords(await extractPdfTextLayerPages(pdf, pageNumbers));
+  const rounded = hocrWords(hocr);
   expect(reference.length).toBeGreaterThan(0);
-  expect(mine).toHaveLength(reference.length);
-  const ious = matchedIou(reference, mine);
+  expect(exact).toHaveLength(reference.length);
+  expect(rounded).toHaveLength(reference.length);
+  const exactIous = matchedIou(reference, exact);
+  const roundedIous = matchedIou(reference, rounded);
   reference.forEach((word, index) => {
-    expect(ious[index], `page ${word.page} word '${word.text}'`).toBeGreaterThanOrEqual(MIN_WORD_IOU);
+    expect(exactIous[index], `page ${word.page} word '${word.text}'`).toBeGreaterThanOrEqual(MIN_WORD_IOU);
+    expect(roundedIous[index], `hOCR page ${word.page} word '${word.text}'`).toBeGreaterThanOrEqual(MIN_HOCR_WORD_IOU);
   });
 }
 
@@ -109,7 +118,7 @@ describe('pdf to hOCR and ALTO for digital-text pages', () => {
       const pdf = await structuredPdf();
       const hocr = await hocrOf(pdf);
       expect(xmlWellFormed(hocr).stderr).toBe('');
-      expectWordsMatchPoppler(pdf, hocr);
+      await expectWordsMatchPoppler(pdf, hocr);
       expect(xpathAttributes(hocr, "//*[@class='ocr_page']/@title").map((t) => /bbox 0 0 (\d+) (\d+)/.exec(t)?.slice(1).join('x'))).toEqual([
         '595x842',
       ]);
@@ -152,7 +161,7 @@ describe('pdf to hOCR and ALTO for digital-text pages', () => {
     async () => {
       const pdf = await mixedOrientationPdf();
       const hocr = await hocrOf(pdf);
-      expectWordsMatchPoppler(pdf, hocr);
+      await expectWordsMatchPoppler(pdf, hocr);
       expect(xpathAttributes(hocr, "//*[@class='ocr_page']/@title").map((t) => /bbox 0 0 (\d+) (\d+)/.exec(t)?.slice(1).join('x'))).toEqual([
         '1000x500',
         '500x800',
@@ -170,7 +179,7 @@ describe('pdf to hOCR and ALTO for digital-text pages', () => {
     async () => {
       const pdf = await layoutPdf();
       const hocr = await hocrOf(pdf);
-      expectWordsMatchPoppler(pdf, hocr);
+      await expectWordsMatchPoppler(pdf, hocr);
       // Page 1: left and right column, each of two lines.
       expect(xpathCount(hocr, "//*[@class='ocr_page'][1]//*[@class='ocr_carea']")).toBe(2);
       expect(xpathCount(hocr, "//*[@class='ocr_page'][1]//*[@class='ocr_line']")).toBe(4);
