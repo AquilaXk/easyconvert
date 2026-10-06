@@ -653,7 +653,8 @@ function encodeColumnChunk(
     if (dictionary.pageBody.length + indexBytes >= plainValueBytes(g)) dictionary = null;
   }
 
-  const valueEncoding = dictionary ? Encoding.PLAIN_DICTIONARY : Encoding.PLAIN;
+  // Current spec: the dictionary page holds PLAIN values and data pages index it with RLE_DICTIONARY.
+  const valueEncoding = dictionary ? Encoding.RLE_DICTIONARY : Encoding.PLAIN;
   const parts: Buffer[] = [];
   let position = fileOffset;
   let totalUncompressed = 0;
@@ -662,9 +663,10 @@ function encodeColumnChunk(
 
   const pushPage = (pageType: PageType, body: Uint8Array, numValues: number, pageStats: ChunkStatistics | null) => {
     const compressed = compressPage(options.codec, body);
-    const header = pageHeaderBytes(pageType, body.length, compressed.length, numValues, valueEncoding, pageStats);
+    const encoding = pageType === PageType.DICTIONARY_PAGE ? Encoding.PLAIN : valueEncoding;
+    const header = pageHeaderBytes(pageType, body.length, compressed.length, numValues, encoding, pageStats);
     // total_uncompressed_size counts headers as they would be written without compression.
-    const uncompressedHeader = pageHeaderBytes(pageType, body.length, body.length, numValues, valueEncoding, pageStats);
+    const uncompressedHeader = pageHeaderBytes(pageType, body.length, body.length, numValues, encoding, pageStats);
     parts.push(header, compressed);
     position += header.length + compressed.length;
     totalCompressed += header.length + compressed.length;
@@ -705,7 +707,9 @@ function encodeColumnChunk(
     pushPage(PageType.DATA_PAGE, sink.toBuffer(), pageRows, pageStats);
   }
 
-  const encodings = dictionary ? [Encoding.PLAIN_DICTIONARY, Encoding.RLE] : [Encoding.PLAIN, Encoding.RLE];
+  const encodings = dictionary
+    ? [Encoding.PLAIN, Encoding.RLE, Encoding.RLE_DICTIONARY]
+    : [Encoding.PLAIN, Encoding.RLE];
   return {
     schema: plan.schema,
     parts,

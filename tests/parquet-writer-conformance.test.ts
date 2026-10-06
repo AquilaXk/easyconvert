@@ -253,7 +253,8 @@ describe('Parquet writer conformance (issue 526)', () => {
     const read = pyarrowRead(encodeParquet(rows));
     const byPath = Object.fromEntries(read.rowGroups[0].columns.map((c) => [c.path, c]));
     expect(byPath.tag.hasDictionaryPage).toBe(true);
-    expect(byPath.tag.encodings).toContain('PLAIN_DICTIONARY');
+    expect(byPath.tag.encodings).toContain('RLE_DICTIONARY');
+    expect(byPath.tag.encodings).not.toContain('PLAIN_DICTIONARY');
     expect(byPath.small.hasDictionaryPage).toBe(true);
     expect(byPath.unique.hasDictionaryPage).toBe(false);
     expect(byPath.unique.encodings).toContain('PLAIN');
@@ -649,7 +650,7 @@ describe('Parquet writer conformance (issue 526)', () => {
       ]);
     });
 
-    it('decodes a hostile footer claiming more rows than the limit as a typed error', () => {
+    it('rejects a footer cut short as a typed error', () => {
       const valid = encodeParquet([{ a: 1 }]);
       const truncated = valid.subarray(0, valid.length - 1);
       expect(() => decodeParquet(truncated)).toThrow(ParquetFormatError);
