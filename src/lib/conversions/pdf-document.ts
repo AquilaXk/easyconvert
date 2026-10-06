@@ -1,5 +1,15 @@
 import { ConversionFailedError } from '../types';
-import { InflateBudget, inflateBounded } from './bounded-inflate';
+import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
+import {
+  PREDICTOR_PNG_MAX,
+  PREDICTOR_PNG_MIN,
+  PREDICTOR_TIFF,
+  type PredictorParams,
+  decodeAscii85,
+  decodeAsciiHex,
+  predictorRowBytes,
+  undoPredictor,
+} from './pdf-filters';
 
 /**
  * Read-only structural view of a PDF (ISO 32000-1 sections 7.3 to 7.5) for the text extractor: an
@@ -38,6 +48,8 @@ export const MAX_PDF_STRUCTURE_OBJECT_BYTES = 16 * 1024 * 1024;
 
 /** Bytes one object stored in an object stream may span, whatever the offsets that follow it say. */
 export const MAX_PDF_OBJSTM_ENTRY_BYTES = 4 * 1024 * 1024;
+/** Largest object looked at when searching a file for catalog or page objects; real ones are far smaller. */
+export const MAX_PDF_CLASSIFIED_OBJECT_BYTES = 1024 * 1024;
 /** Bytes of non-stream objects the structure parser reads over a whole document, counting every parse. */
 export const MAX_PDF_STRUCTURE_PARSE_BYTES = 128 * 1024 * 1024;
 /**
@@ -47,6 +59,14 @@ export const MAX_PDF_STRUCTURE_PARSE_BYTES = 128 * 1024 * 1024;
 const OBJSTM_HEADER_BYTES_PER_ENTRY = 32;
 const OBJSTM_HEADER_SLACK_BYTES = 256;
 const MAX_LENGTH_DIGITS = 12;
+const DEFAULT_BITS_PER_COMPONENT = 8;
+/** Colour components a predictor row may carry (section 7.4.4.4 sets no bound; DeviceN allows 32). */
+const MAX_PREDICTOR_COLORS = 32;
+const PREDICTOR_BIT_DEPTHS = new Set([1, 2, 4, 8, 16]);
+const ASCII_HEX_FILTERS = new Set(['ASCIIHexDecode', 'AHx']);
+const ASCII85_FILTERS = new Set(['ASCII85Decode', 'A85']);
+const FLATE_FILTERS = new Set(['FlateDecode', 'Fl']);
+const DECODABLE_FILTERS = new Set([...ASCII_HEX_FILTERS, ...ASCII85_FILTERS, ...FLATE_FILTERS]);
 
 const MAX_OBJECT_HEADER_LOOKBACK = 40;
 const MAX_OBJECT_NUMBER_DIGITS = 10;
@@ -584,12 +604,51 @@ export class PdfDocument {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Latin-1 text of a stream: stored as is, or Flate decoded within the stream cap and the document
-   * budget. Returns null for a stream this reader cannot decode (another filter, or a predictor).
+   * Latin-1 text of a stream: stored as is, or decoded through its filter chain (ASCIIHexDecode,
+   * ASCII85Decode, FlateDecode with PNG and TIFF predictors) within the stream cap and the document
+   * budget. A stream that must be decoded for its text or structure and uses any other filter throws
+   * a PdfStructureError; with `required` false (streams read blind in a file with no page structure)
+   * it returns null instead.
    */
-  private decodeStream(entry: PdfObjectEntry, budget: InflateBudget = this.budget): string | null {
+  private decodeStream(entry: PdfObjectEntry, budget: InflateBudget = this.budget, required = true): string | null {
     const stream = entry.stream as StreamSpan;
-    const filters = this.resolve(stream.dict.entries.get('Filter'));
+    const label = `PDF stream of object ${entry.num}`;
+    const stages = this.filterChain(stream.dict);
+
+    for (const stage of stages) {
+      if (!DECODABLE_FILTERS.has(stage.name)) {
+        if (!required) return null;
+        throw new PdfStructureError(`${label} uses the ${stage.name} filter, which this reader cannot decode.`);
+      }
+    }
+    let data = this.buffer.subarray(stream.rawStart, stream.rawEnd);
+    if (stages.length === 0) {
+      budget.charge(data.length, label);
+      return data.toString('latin1');
+    }
+    for (const stage of stages) {
+      if (ASCII_HEX_FILTERS.has(stage.name)) {
+        data = decodeAsciiHex(data, label, budget);
+      } else if (ASCII85_FILTERS.has(stage.name)) {
+        data = decodeAscii85(data, label, budget);
+      } else {
+        data = inflateBounded(data, { label, format: 'zlib', budget });
+        let predictor: PredictorParams | null = null;
+        try {
+          predictor = this.predictorParams(stage.parms, label);
+        } catch (err) {
+          if (required) throw err;
+          return null;
+        }
+        if (predictor) data = undoPredictor(data, predictor, label);
+      }
+    }
+    return data.toString('latin1');
+  }
+
+  /** Filter names of a stream in decoding order, each with its /DecodeParms dictionary. */
+  private filterChain(dict: PdfDict): Array<{ name: string; parms: PdfDict | null }> {
+    const filters = this.resolve(dict.entries.get('Filter'));
     const names: string[] = [];
     if (isName(filters)) names.push(filters.value);
     if (isArray(filters)) {
@@ -598,31 +657,44 @@ export class PdfDocument {
         if (isName(name)) names.push(name.value);
       }
     }
-    const label = `PDF stream of object ${entry.num}`;
-
-    if (names.length === 0) {
-      budget.charge(stream.rawEnd - stream.rawStart, label);
-      return this.buffer.toString('latin1', stream.rawStart, stream.rawEnd);
-    }
-    if (names.length !== 1 || (names[0] !== 'FlateDecode' && names[0] !== 'Fl') || this.hasPredictor(stream.dict)) {
-      return null;
-    }
-    const inflated = inflateBounded(this.buffer.subarray(stream.rawStart, stream.rawEnd), {
-      label,
-      format: 'zlib',
-      budget,
-    });
-    return inflated.toString('latin1');
+    const parms = this.resolve(dict.entries.get('DecodeParms'));
+    return names.map((name, index) => ({
+      name,
+      parms: this.resolveDict(isArray(parms) ? parms.items[index] : index === 0 ? parms : null),
+    }));
   }
 
-  private hasPredictor(dict: PdfDict): boolean {
-    const parms = this.resolve(dict.entries.get('DecodeParms'));
-    const candidates = isArray(parms) ? parms.items : [parms];
-    return candidates.some((candidate) => {
-      const parmsDict = this.resolveDict(candidate);
-      const predictor = parmsDict?.entries.get('Predictor');
-      return typeof predictor === 'number' && predictor > 1;
-    });
+  private predictorParams(parms: PdfDict | null, label: string): PredictorParams | null {
+    if (!parms) return null;
+    const number = (key: string, fallback: number): number => {
+      const value = this.resolve(parms.entries.get(key));
+      return typeof value === 'number' && Number.isInteger(value) ? value : fallback;
+    };
+    const predictor = number('Predictor', 1);
+    if (predictor <= 1) return null;
+    const params: PredictorParams = {
+      predictor,
+      colors: number('Colors', 1),
+      bitsPerComponent: number('BitsPerComponent', DEFAULT_BITS_PER_COMPONENT),
+      columns: number('Columns', 1),
+    };
+    const isPng = predictor >= PREDICTOR_PNG_MIN && predictor <= PREDICTOR_PNG_MAX;
+    if (!isPng && predictor !== PREDICTOR_TIFF) {
+      throw new PdfStructureError(`${label} uses predictor ${predictor}, which this reader cannot decode.`);
+    }
+    if (params.colors < 1 || params.colors > MAX_PREDICTOR_COLORS) {
+      throw new PdfStructureError(`${label} has a predictor /Colors of ${params.colors}.`);
+    }
+    if (!PREDICTOR_BIT_DEPTHS.has(params.bitsPerComponent)) {
+      throw new PdfStructureError(`${label} has a predictor /BitsPerComponent of ${params.bitsPerComponent}.`);
+    }
+    if (predictor === PREDICTOR_TIFF && params.bitsPerComponent !== 8 && params.bitsPerComponent !== 16) {
+      throw new PdfStructureError(`${label} uses the TIFF predictor on ${params.bitsPerComponent}-bit samples, which this reader cannot decode.`);
+    }
+    if (params.columns < 1 || predictorRowBytes(params) > MAX_STREAM_INFLATE_BYTES) {
+      throw new PdfStructureError(`${label} has a predictor /Columns of ${params.columns}.`);
+    }
+    return params;
   }
 
   private isImage(entry: PdfObjectEntry): boolean {
@@ -648,7 +720,7 @@ export class PdfDocument {
   private objectsOfType(type: string): PdfObjectEntry[] {
     const found: PdfObjectEntry[] = [];
     for (const entry of this.index.values()) {
-      if (entry.stream) continue;
+      if (entry.stream || entry.end - entry.start > MAX_PDF_CLASSIFIED_OBJECT_BYTES) continue;
       const dict = this.resolveDict({ kind: 'ref', num: entry.num });
       if (dict && isName(dict.entries.get('Type'), type)) found.push(entry);
     }
@@ -695,19 +767,23 @@ export class PdfDocument {
     const pages: PageNode[] = [];
     const walk = (root: PdfValue) => this.collectPages(root, null, 0, pages, new Set<number>(), new Set<number>());
 
+    let hasCatalog = false;
     if (this.rootRef && this.resolveDict(this.rootRef)) {
+      hasCatalog = true;
       walk(this.catalogPages());
-      return pages;
+    } else {
+      const catalogs = this.objectsOfType('Catalog');
+      if (catalogs.length > 0) {
+        hasCatalog = true;
+        const catalog = this.resolveDict({ kind: 'ref', num: catalogs[catalogs.length - 1].num });
+        walk(catalog?.entries.get('Pages') ?? null);
+      }
     }
-    const catalogs = this.objectsOfType('Catalog');
-    if (catalogs.length > 0) {
-      const catalog = this.resolveDict({ kind: 'ref', num: catalogs[catalogs.length - 1].num });
-      walk(catalog?.entries.get('Pages') ?? null);
-      return pages;
-    }
-    const loose = this.objectsOfType('Page');
-    if (loose.length === 0) return null;
-    for (const entry of loose) walk({ kind: 'ref', num: entry.num });
+    if (pages.length > 0) return pages;
+
+    // The tree is missing or lists nothing: use the page objects the file defines, in file order.
+    for (const entry of this.objectsOfType('Page')) walk({ kind: 'ref', num: entry.num });
+    if (pages.length === 0 && !hasCatalog) return null;
     return pages;
   }
 
@@ -840,7 +916,7 @@ export class PdfDocument {
       const type = entry.stream?.dict.entries.get('Type');
       if (isName(type, 'XRef') || isName(type, 'ObjStm')) continue;
       this.countContentStream();
-      const content = this.decodeStream(entry, passBudget);
+      const content = this.decodeStream(entry, passBudget, false);
       if (content !== null) visit(content);
     }
   }
