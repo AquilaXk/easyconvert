@@ -5,6 +5,7 @@ import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
+import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
 
@@ -190,9 +191,8 @@ export function attachInputCleanupOnCompletion(
       removeJobInput(job.id, job.data.storageKey);
     }
   });
-  worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>) => {
-    const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
-    if (job.data?.storageKey && isFinalAttempt) {
+  worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => {
+    if (job.data?.storageKey && isFinalFailure(job, err)) {
       removeJobInput(job.id, job.data.storageKey);
     }
   });
