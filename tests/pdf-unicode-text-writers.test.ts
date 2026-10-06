@@ -94,6 +94,53 @@ function hasUsableInstalledFont(codePoint: number): boolean {
   });
 }
 
+/** Assigned letters and digits, which every font that covers a script includes; marks and symbols are left out. */
+const ASSIGNED_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+/** Scripts that need shaping: the in-process writer refuses them for LibreOffice before it looks at fonts. */
+const SHAPED_SCRIPT =
+  /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}\p{Script=Sinhala}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Gurmukhi}\p{Script=Gujarati}\p{Script=Oriya}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Kannada}\p{Script=Malayalam}]/u;
+/** Planes 0 to 3 hold every script a font package targets; the scan for an uncovered character stops here. */
+const UNCOVERED_SCAN_END = 0x40000;
+/** Historic-script characters tried first, so the failure names a script nobody installs a font for. */
+const HISTORIC_SCRIPT_CANDIDATES = [0x13000, 0x12000, 0x17000, 0x1b170, 0x16e40, 0x10d00, 0x11400, 0x1e900, 0x10000];
+
+/**
+ * The first assigned letter or digit no embeddable outline font covers, from one fontconfig
+ * listing. Which scripts the runner's font packages cover differs per machine, so the character is
+ * found instead of assumed; null when the installed fonts cover every character scanned.
+ */
+function firstUncoveredAssignedCodePoint(): number | null {
+  const fcList = requireOracleTool('fc-list');
+  const listing = execFileSync(fcList, ['--format', '%{fontformat}|%{color}|%{family[0]}|%{file}|%{charset}\\n'], {
+    encoding: 'utf-8',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  const covered = new Set<number>();
+  for (const line of listing.split('\n')) {
+    const [format, color, family, file, charset] = line.split('|');
+    const usable =
+      (format === 'TrueType' || format === 'CFF') &&
+      color !== 'True' &&
+      !/unifont|last\s*resort/i.test(family ?? '') &&
+      /\.(ttf|otf|ttc)$/i.test(file ?? '');
+    if (!usable) continue;
+    for (const token of (charset ?? '').trim().split(/\s+/).filter(Boolean)) {
+      const [first, last] = token.split('-');
+      const low = Number.parseInt(first, 16);
+      const high = last === undefined ? low : Number.parseInt(last, 16);
+      for (let codePoint = low; codePoint <= high; codePoint++) covered.add(codePoint);
+    }
+  }
+  const historic = HISTORIC_SCRIPT_CANDIDATES.find((codePoint) => !covered.has(codePoint));
+  if (historic !== undefined) return historic;
+  for (let codePoint = 0; codePoint < UNCOVERED_SCAN_END; codePoint++) {
+    if (covered.has(codePoint)) continue;
+    const character = String.fromCodePoint(codePoint);
+    if (ASSIGNED_LETTER_OR_DIGIT.test(character) && !SHAPED_SCRIPT.test(character)) return codePoint;
+  }
+  return null;
+}
+
 /** Skips (strict mode: fails) unless fontconfig lists an embeddable outline font for every character. */
 function requireCoveringFonts(text: string): void {
   const uncovered: string[] = [];
@@ -127,6 +174,38 @@ function failingSoffice(conversion: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'failing-soffice-'));
   const file = path.join(dir, 'soffice');
   fs.writeFileSync(file, `#!/bin/sh\ncase "$*" in *--help*) exit 0;; esac\n${conversion}\n`, { mode: 0o755 });
+  return file;
+}
+
+/** Names the pool's readiness probe gives its input and output; the stand-in answers the probe by them. */
+const PROBE_INPUT_NAME = 'probe.txt';
+const PROBE_OUTPUT_NAME = 'probe.pdf';
+const HANG_SECONDS = 600;
+
+/**
+ * Writes an executable stand-in for the LibreOffice binary that passes profile warm-up and the
+ * pool's readiness probe (a PDF header for the probe document) and then hangs on every real
+ * conversion, so only the engine's job timeout can end it.
+ */
+function hangingSoffice(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hanging-soffice-'));
+  const file = path.join(dir, 'soffice');
+  const script = [
+    '#!/bin/sh',
+    'case "$*" in *--help*) exit 0;; esac',
+    `case "$*" in *${PROBE_INPUT_NAME}*)`,
+    '  outdir=""',
+    '  while [ $# -gt 0 ]; do',
+    '    if [ "$1" = "--outdir" ]; then outdir="$2"; fi',
+    '    shift',
+    '  done',
+    `  printf '%s\\n' '%PDF-1.4' > "$outdir/${PROBE_OUTPUT_NAME}"`,
+    '  exit 0;;',
+    'esac',
+    `exec sleep ${HANG_SECONDS}`,
+    '',
+  ].join('\n');
+  fs.writeFileSync(file, script, { mode: 0o755 });
   return file;
 }
 
@@ -411,11 +490,10 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
   });
 
   oracleTest('fails with EngineUnavailableError when no installed font has a glyph for an assigned character', ['fc-list'], async () => {
-    // Assigned characters of historic scripts; the first one no installed outline font covers is used.
-    const candidates = [0x13000, 0x12000, 0x17000, 0x1b170, 0x16e40, 0x10d00, 0x11400, 0x1e900, 0x10000];
-    const uncovered = candidates.find((codePoint) => !hasUsableInstalledFont(codePoint));
-    if (uncovered === undefined) throw new OracleToolMissingError('font', 'Every candidate historic-script character has an installed font');
-    const label = `U+${uncovered.toString(16).toUpperCase()}`;
+    // An assigned character no installed outline font covers: historic scripts first, then any assigned letter or digit.
+    const uncovered = firstUncoveredAssignedCodePoint();
+    if (uncovered === null) throw new OracleToolMissingError('font', 'Installed fonts cover every assigned letter and digit scanned');
+    const label = `U+${uncovered.toString(16).toUpperCase().padStart(4, '0')}`;
     const { error } = await settle(convertFile(Buffer.from(`Latin ${String.fromCodePoint(uncovered)} text`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt'));
     expect((error as Error).name).toBe('EngineUnavailableError');
     expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
@@ -993,16 +1071,14 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
 
   oracleTest('HTML falls back to the in-process renderer when LibreOffice times out', POPPLER_TOOLS, async () => {
     const TIMEOUT_MS = 1500;
-    // A ceiling well below the 60 s the stand-in sleeps: the engine gave up at its timeout.
-    const CEILING_MS = 20_000;
-    const started = Date.now();
-    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exec sleep 60'), () =>
+    // The stand-in passes the pool's readiness probe, then sleeps far longer than any test runs, so
+    // only the engine's own job timeout can end the conversion; a missing timeout hangs until the
+    // test timeout. No wall-clock bound is asserted: the message names the timeout that fired.
+    const result = await withEnvValue('SOFFICE_PATH', hangingSoffice(), () =>
       executeWorkerConversion(Buffer.from(STRUCTURED_HTML, 'utf-8'), 'html', 'pdf', { timeoutMs: TIMEOUT_MS }, 'report.html')
     );
-    const elapsed = Date.now() - started;
     expect(result.engineUsed).toBe('internal-fallback');
-    expect(result.fallbackChain?.[0]).toMatch(/^native-soffice: /);
-    expect({ underCeiling: elapsed < CEILING_MS, elapsed }).toEqual({ underCeiling: true, elapsed });
+    expect(result.fallbackChain).toEqual([`native-soffice: Process execution timed out after ${TIMEOUT_MS}ms`]);
     expectStructuredLayout(result.buffer);
   }, 60_000);
 
