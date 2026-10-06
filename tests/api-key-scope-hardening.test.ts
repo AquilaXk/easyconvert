@@ -160,7 +160,7 @@ describe('API key scope hardening (#242)', () => {
       for (const scopes of [['convert:read'], ['convert:write']] as ApiKeyScope[][]) {
         const key = await createKey(userId, scopes);
         const res = await revokeKeyRoute(bearer(`/api/keys/${target.key.id}`, key.secretKey, 'DELETE'), {
-          params: { id: target.key.id },
+          params: Promise.resolve({ id: target.key.id }),
         });
         expect(res.status, `scopes ${scopes.join(',')}`).toBe(403);
       }
@@ -189,13 +189,13 @@ describe('API key scope hardening (#242)', () => {
 
         const deleteRes = await deleteDlqItemRoute(
           bearer('/api/webhooks/dlq/dlq_any', key.secretKey, 'DELETE'),
-          { params: { id: 'dlq_any' } }
+          { params: Promise.resolve({ id: 'dlq_any' }) }
         );
         expect(deleteRes.status, label).toBe(403);
 
         const replayRes = await replayDlqRoute(
           bearer('/api/webhooks/dlq/dlq_any/replay', key.secretKey, 'POST'),
-          { params: { id: 'dlq_any' } }
+          { params: Promise.resolve({ id: 'dlq_any' }) }
         );
         expect(replayRes.status, label).toBe(403);
       }

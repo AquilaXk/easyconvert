@@ -105,7 +105,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location');
     expect(location).toMatch(/^\/api\/v1\/uploads\/[a-zA-Z0-9_-]+$/);
@@ -128,7 +128,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patch1Res = await tusPatchHandler(patch1Req, { params: { id: [sessionId] } });
+    const patch1Res = await tusPatchHandler(patch1Req, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patch1Res.status).toBe(204);
     expect(patch1Res.headers.get('Upload-Offset')).toBe(String(chunk1.length));
 
@@ -137,7 +137,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes1 = await tusHeadHandler(headReq1, { params: { id: [sessionId] } });
+    const headRes1 = await tusHeadHandler(headReq1, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes1.status).toBe(200);
     expect(headRes1.headers.get('Upload-Offset')).toBe(String(chunk1.length));
     expect(headRes1.headers.get('Upload-Length')).toBe(String(totalLength));
@@ -160,7 +160,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patch2Res = await tusPatchHandler(patch2Req, { params: { id: [sessionId] } });
+    const patch2Res = await tusPatchHandler(patch2Req, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patch2Res.status).toBe(204);
     const offsetAfterChunk2 = chunk1.length + chunk2.length;
     expect(patch2Res.headers.get('Upload-Offset')).toBe(String(offsetAfterChunk2));
@@ -182,7 +182,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patch3Res = await tusPatchHandler(patch3Req, { params: { id: [sessionId] } });
+    const patch3Res = await tusPatchHandler(patch3Req, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patch3Res.status).toBe(204);
     expect(patch3Res.headers.get('Upload-Offset')).toBe(String(totalLength));
 
@@ -219,7 +219,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -240,7 +240,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patch1Res = await tusPatchHandler(patch1Req, { params: { id: [sessionId] } });
+    const patch1Res = await tusPatchHandler(patch1Req, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patch1Res.status).toBe(204);
     expect(patch1Res.headers.get('Upload-Offset')).toBe(String(chunkA.length));
 
@@ -249,7 +249,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    const headRes = await tusHeadHandler(headReq, { params: Promise.resolve({ id: [sessionId] }) });
     const currentOffset = Number(headRes.headers.get('Upload-Offset'));
     expect(currentOffset).toBe(chunkA.length);
 
@@ -258,11 +258,11 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'DELETE',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const delRes = await tusDeleteHandler(delReq, { params: { id: [sessionId] } });
+    const delRes = await tusDeleteHandler(delReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(delRes.status).toBe(204);
 
     // After termination, HEAD must return 404
-    const headAfterDelete = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    const headAfterDelete = await tusHeadHandler(headReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headAfterDelete.status).toBe(404);
   });
 
@@ -281,7 +281,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -302,7 +302,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    await tusPatchHandler(patch1Req, { params: { id: [sessionId] } });
+    await tusPatchHandler(patch1Req, { params: Promise.resolve({ id: [sessionId] }) });
 
     // Send second chunk with mismatched checksum
     const badHash = sha256Base64(Buffer.from('mismatched-content-hash'));
@@ -322,7 +322,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patchBadRes = await tusPatchHandler(patchBadReq, { params: { id: [sessionId] } });
+    const patchBadRes = await tusPatchHandler(patchBadReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchBadRes.status).toBe(460);
 
     // Verify disk truncation rollback: offset remains at chunkGood.length
@@ -330,7 +330,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    const headRes = await tusHeadHandler(headReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes.headers.get('Upload-Offset')).toBe(String(chunkGood.length));
 
     // Send second chunk with valid checksum, which must succeed
@@ -351,7 +351,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patchGoodRes = await tusPatchHandler(patchGoodReq, { params: { id: [sessionId] } });
+    const patchGoodRes = await tusPatchHandler(patchGoodReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchGoodRes.status).toBe(204);
     expect(patchGoodRes.headers.get('Upload-Offset')).toBe(String(totalLength));
   });
@@ -369,7 +369,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
 
@@ -389,7 +389,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const wrongOffsetRes = await tusPatchHandler(wrongOffsetReq, { params: { id: [sessionId] } });
+    const wrongOffsetRes = await tusPatchHandler(wrongOffsetReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(wrongOffsetRes.status).toBe(409);
     expect(wrongOffsetRes.headers.get('Upload-Offset')).toBe('0');
   });
@@ -403,7 +403,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         'Upload-Length': '1000',
       },
     });
-    const unauthPostRes = await tusPostHandler(unauthPost);
+    const unauthPostRes = await tusPostHandler(unauthPost, { params: Promise.resolve({}) });
     expect(unauthPostRes.status).toBe(401);
 
     // 2. User A creates session
@@ -417,7 +417,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authAHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
 
@@ -428,7 +428,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authBHeaders },
     });
-    const userBHeadRes = await tusHeadHandler(userBHead, { params: { id: [sessionId] } });
+    const userBHeadRes = await tusHeadHandler(userBHead, { params: Promise.resolve({ id: [sessionId] }) });
     expect(userBHeadRes.status).toBe(404);
 
     const userBPatch = createStreamRequest(`${BASE_URL}${location}`, {
@@ -446,14 +446,14 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const userBPatchRes = await tusPatchHandler(userBPatch, { params: { id: [sessionId] } });
+    const userBPatchRes = await tusPatchHandler(userBPatch, { params: Promise.resolve({ id: [sessionId] }) });
     expect(userBPatchRes.status).toBe(404);
 
     const userBDelete = new NextRequest(`${BASE_URL}${location}`, {
       method: 'DELETE',
       headers: { 'Tus-Resumable': '1.0.0', ...authBHeaders },
     });
-    const userBDeleteRes = await tusDeleteHandler(userBDelete, { params: { id: [sessionId] } });
+    const userBDeleteRes = await tusDeleteHandler(userBDelete, { params: Promise.resolve({ id: [sessionId] }) });
     expect(userBDeleteRes.status).toBe(404);
   });
 
@@ -480,7 +480,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       }),
     });
 
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     expect(postRes.headers.get('Upload-Offset')).toBe(String(payload.length));
     const storageKey = postRes.headers.get('EasyConvert-Storage-Key');
@@ -510,7 +510,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -532,7 +532,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       }),
     });
 
-    const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
+    const patchRes = await tusPatchHandler(patchReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchRes.status).toBe(400);
     const problem = await patchRes.json();
     expect(problem.detail || problem.message || '').toContain('spoofing rejected');
@@ -553,7 +553,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -596,8 +596,8 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     });
 
     const [res1, res2] = await Promise.all([
-      tusPatchHandler(req1, { params: { id: [sessionId] } }),
-      tusPatchHandler(req2, { params: { id: [sessionId] } }),
+      tusPatchHandler(req1, { params: Promise.resolve({ id: [sessionId] }) }),
+      tusPatchHandler(req2, { params: Promise.resolve({ id: [sessionId] }) }),
     ]);
 
     const statuses = [res1.status, res2.status].sort();
@@ -612,7 +612,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    const headRes = await tusHeadHandler(headReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes.status).toBe(200);
     expect(headRes.headers.get('Upload-Offset')).toBe('1024');
   });
@@ -629,7 +629,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -639,7 +639,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '2.0.0', ...authHeaders },
     });
-    const headBadRes = await tusHeadHandler(headBad, { params: { id: [sessionId] } });
+    const headBadRes = await tusHeadHandler(headBad, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headBadRes.status).toBe(412);
     expect(headBadRes.headers.get('Tus-Version')).toBe('1.0.0');
 
@@ -659,7 +659,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const patchBadRes = await tusPatchHandler(patchBad, { params: { id: [sessionId] } });
+    const patchBadRes = await tusPatchHandler(patchBad, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchBadRes.status).toBe(412);
     expect(patchBadRes.headers.get('Tus-Version')).toBe('1.0.0');
 
@@ -668,7 +668,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'DELETE',
       headers: { 'Tus-Resumable': '3.0.0', ...authHeaders },
     });
-    const deleteBadRes = await tusDeleteHandler(deleteBad, { params: { id: [sessionId] } });
+    const deleteBadRes = await tusDeleteHandler(deleteBad, { params: Promise.resolve({ id: [sessionId] }) });
     expect(deleteBadRes.status).toBe(412);
     expect(deleteBadRes.headers.get('Tus-Version')).toBe('1.0.0');
   });
@@ -686,7 +686,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -708,7 +708,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const badFormatRes = await tusPatchHandler(badFormatReq, { params: { id: [sessionId] } });
+    const badFormatRes = await tusPatchHandler(badFormatReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(badFormatRes.status).toBe(400);
     expect(badFormatRes.headers.get('Tus-Resumable')).toBe('1.0.0');
 
@@ -730,7 +730,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         },
       }),
     });
-    const unsupportedAlgoRes = await tusPatchHandler(unsupportedAlgoReq, { params: { id: [sessionId] } });
+    const unsupportedAlgoRes = await tusPatchHandler(unsupportedAlgoReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(unsupportedAlgoRes.status).toBe(400);
     const errPayload = await unsupportedAlgoRes.json();
     expect(errPayload.detail).toContain('Unsupported checksum algorithm "md5"');
@@ -750,7 +750,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -772,7 +772,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       }),
     });
 
-    const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
+    const patchRes = await tusPatchHandler(patchReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchRes.status).toBe(400);
     const errBody = await patchRes.json();
     expect(errBody.detail).toContain('exceed declared Upload-Length');
@@ -782,7 +782,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       method: 'HEAD',
       headers: { 'Tus-Resumable': '1.0.0', ...authHeaders },
     });
-    const headRes = await tusHeadHandler(headReq, { params: { id: [sessionId] } });
+    const headRes = await tusHeadHandler(headReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(headRes.status).toBe(200);
     expect(headRes.headers.get('Upload-Offset')).toBe('0');
   });
@@ -815,7 +815,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     const sessionId = location.split('/').pop()!;
@@ -836,7 +836,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
       }),
     });
 
-    const patchRes = await tusPatchHandler(patchReq, { params: { id: [sessionId] } });
+    const patchRes = await tusPatchHandler(patchReq, { params: Promise.resolve({ id: [sessionId] }) });
     expect(patchRes.status).toBe(204);
     expect(patchRes.headers.get('Upload-Offset')).toBe(String(validPng.length));
     const finalStorageKey = patchRes.headers.get('EasyConvert-Storage-Key');

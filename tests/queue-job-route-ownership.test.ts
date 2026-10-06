@@ -57,7 +57,7 @@ describe('Legacy /api/queue/jobs/[id] owner access (#242)', () => {
 
   it('hides an owned job from other users and anonymous callers on GET (JSON and SSE)', async () => {
     const pathName = `/api/queue/jobs/${aliceJobId}`;
-    const params = { params: { id: aliceJobId } };
+    const params = { params: Promise.resolve({ id: aliceJobId }) };
 
     expect((await getQueueJobRoute(sessionRequest(bob, pathName), params)).status).toBe(404);
     expect((await getQueueJobRoute(anonymousRequest(pathName), params)).status).toBe(404);
@@ -73,7 +73,7 @@ describe('Legacy /api/queue/jobs/[id] owner access (#242)', () => {
 
   it('serves an owned job to its owner via session and via a convert:read key', async () => {
     const pathName = `/api/queue/jobs/${aliceJobId}`;
-    const params = { params: { id: aliceJobId } };
+    const params = { params: Promise.resolve({ id: aliceJobId }) };
 
     const sessionRes = await getQueueJobRoute(sessionRequest(alice, pathName), params);
     expect(sessionRes.status).toBe(200);
@@ -92,7 +92,7 @@ describe('Legacy /api/queue/jobs/[id] owner access (#242)', () => {
 
   it('blocks cancellation of an owned job by others and lets the owner cancel it', async () => {
     const pathName = `/api/queue/jobs/${aliceJobId}`;
-    const params = { params: { id: aliceJobId } };
+    const params = { params: Promise.resolve({ id: aliceJobId }) };
 
     expect((await cancelQueueJobRoute(sessionRequest(bob, pathName, 'DELETE'), params)).status).toBe(404);
     expect((await cancelQueueJobRoute(anonymousRequest(pathName, 'DELETE'), params)).status).toBe(404);
@@ -113,7 +113,7 @@ describe('Legacy /api/queue/jobs/[id] owner access (#242)', () => {
 
   it('keeps capability-URL access for anonymous jobs', async () => {
     const pathName = `/api/queue/jobs/${anonymousJobId}`;
-    const res = await getQueueJobRoute(anonymousRequest(pathName), { params: { id: anonymousJobId } });
+    const res = await getQueueJobRoute(anonymousRequest(pathName), { params: Promise.resolve({ id: anonymousJobId }) });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.id).toBe(anonymousJobId);

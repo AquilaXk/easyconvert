@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
@@ -749,7 +749,7 @@ function jpegFrameMarker(data: Buffer): number | null {
  * Whether a JPEG can go into the PDF unchanged: upright, 8-bit sRGB or grayscale, no ICC profile,
  * and a baseline, extended or progressive frame.
  */
-function canEmbedJpegAsIs(data: Buffer, metadata: sharp.Metadata): boolean {
+function canEmbedJpegAsIs(data: Buffer, metadata: Metadata): boolean {
   const frame = jpegFrameMarker(data);
   return (
     (metadata.orientation ?? UPRIGHT_ORIENTATION) === UPRIGHT_ORIENTATION &&
@@ -774,10 +774,10 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
       `HTML embeds ${images.length} images; the in-process PDF renderer draws at most ${MAX_IMAGES_PER_DOCUMENT} per document`
     );
   }
-  const headers: sharp.Metadata[] = [];
+  const headers: Metadata[] = [];
   let totalPixels = 0;
   for (const pending of images) {
-    let metadata: sharp.Metadata;
+    let metadata: Metadata;
     try {
       // The header alone: pixel limits are checked before any pixel is decoded.
       metadata = await sharp(pending.bytes, { limitInputPixels: false }).metadata();

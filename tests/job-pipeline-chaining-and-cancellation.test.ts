@@ -123,7 +123,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
       const noAuthReq = new NextRequest('https://easyconvert.app/api/v1/jobs/job_123', {
         method: 'DELETE',
       });
-      const noAuthRes = await cancelJobHandler(noAuthReq, { params: { id: 'job_123' } });
+      const noAuthRes = await cancelJobHandler(noAuthReq, { params: Promise.resolve({ id: 'job_123' }) });
       expect(noAuthRes.status).toBe(401);
 
       // 2. Read-only key (scope: convert:read)
@@ -135,7 +135,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${readKey.secretKey}` },
       });
-      const readRes = await cancelJobHandler(readReq, { params: { id: 'job_123' } });
+      const readRes = await cancelJobHandler(readReq, { params: Promise.resolve({ id: 'job_123' }) });
       expect(readRes.status).toBe(403);
     });
 
@@ -148,7 +148,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${key.secretKey}` },
       });
-      const res = await cancelJobHandler(req, { params: { id: 'job_nonexistent' } });
+      const res = await cancelJobHandler(req, { params: Promise.resolve({ id: 'job_nonexistent' }) });
       expect(res.status).toBe(404);
       const json = await res.json();
       expect(json.detail).toContain('not found');
@@ -177,7 +177,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${userBKey.secretKey}` },
       });
-      const res = await cancelJobHandler(crossTenantReq, { params: { id: job.id } });
+      const res = await cancelJobHandler(crossTenantReq, { params: Promise.resolve({ id: job.id }) });
       expect(res.status).toBe(403);
       const json = await res.json();
       expect(json.detail).toContain('Access denied');
@@ -210,7 +210,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${key.secretKey}` },
       });
-      const res = await cancelJobHandler(cancelReq, { params: { id: job.id } });
+      const res = await cancelJobHandler(cancelReq, { params: Promise.resolve({ id: job.id }) });
       expect(res.status).toBe(200);
 
       const json = await res.json();
@@ -247,7 +247,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${key.secretKey}` },
       });
-      const res = await cancelJobHandler(req, { params: { id: job.id } });
+      const res = await cancelJobHandler(req, { params: Promise.resolve({ id: job.id }) });
       expect(res.status).toBe(409);
       const json = await res.json();
       expect(json.detail).toContain('already completed');
@@ -366,7 +366,7 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         method: 'GET',
         headers: { Authorization: `Bearer ${key.secretKey}` },
       });
-      const getRes = await getJobHandler(getReq, { params: { id: json.jobId } });
+      const getRes = await getJobHandler(getReq, { params: Promise.resolve({ id: json.jobId }) });
       expect(getRes.status).toBe(200);
       const getJson = await getRes.json();
       expect(getJson.targetFormat).toBe('yaml');

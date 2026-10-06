@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
-import { encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
@@ -9541,7 +9541,7 @@ async function convertGenericEbookSource(
 }
 
 async function rasterizePipeline(
-  pipeline: sharp.Sharp,
+  pipeline: Sharp,
   tgt: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   switch (tgt) {
@@ -9555,7 +9555,7 @@ async function rasterizePipeline(
       return { buffer, mimeType: 'image/webp' };
     }
     case 'avif': {
-      const buffer = await pipeline.avif().toBuffer();
+      const buffer = await pipeline.avif({ tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       return { buffer, mimeType: 'image/avif' };
     }
     case 'tiff': {
