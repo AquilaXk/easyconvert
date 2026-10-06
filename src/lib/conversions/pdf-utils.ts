@@ -119,12 +119,42 @@ export function decodeWithCMap(hex: string, cmap: PdfToUnicodeCMap): string {
   return decodePdfHexString(cleanHex);
 }
 
+/** Character codes one bfrange entry may map; a 2-byte code space has 0x10000. */
+export const MAX_CMAP_RANGE_CODES = 0x10000;
+/** Character mappings one CMap stream may write, counting repeated writes of the same code. */
+export const MAX_CMAP_MAPPINGS = 0x40000;
+/** Character mappings all CMaps of one document may hold together. */
+export const MAX_PDF_CMAP_MAPPINGS = 0x80000;
+
+/** Bodies between each `begin...` marker and the next `end...` marker, found without rescanning the stream. */
+function* cmapSections(content: string, begin: string, end: string): Generator<string> {
+  let from = 0;
+  while (true) {
+    const open = content.indexOf(begin, from);
+    if (open === -1) return;
+    const bodyStart = open + begin.length;
+    const close = content.indexOf(end, bodyStart);
+    if (close === -1) return;
+    yield content.slice(bodyStart, close).trim();
+    from = close + end.length;
+  }
+}
+
 /**
- * Parses a PostScript Adobe ToUnicode CMap stream per ISO 32000-1 Section 9.10
+ * Parses a PostScript Adobe ToUnicode CMap stream per ISO 32000-1 Section 9.10.
+ * A bfrange past MAX_CMAP_RANGE_CODES, or a stream writing more than MAX_CMAP_MAPPINGS mappings,
+ * throws a PayloadLimitError.
  */
 export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   const charMap = new Map<number, string>();
   let name: string | undefined;
+  let written = 0;
+  const claim = (count: number): void => {
+    written += count;
+    if (written > MAX_CMAP_MAPPINGS) {
+      throw new PayloadLimitError(`ToUnicode CMap writes more than ${MAX_CMAP_MAPPINGS} character mappings.`);
+    }
+  };
 
   const nameMatch = /\/CMapName\s*\/([^\s]+)/.exec(cmapContent);
   if (nameMatch) {
@@ -145,13 +175,12 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   };
 
   // 1. beginbfchar ... endbfchar
-  const bfCharRegex = /beginbfchar\s+([\s\S]*?)\s+endbfchar/g;
-  let bfMatch: RegExpExecArray | null;
-  while ((bfMatch = bfCharRegex.exec(cmapContent)) !== null) {
-    const lines = bfMatch[1].trim().split(/\r?\n/);
+  for (const body of cmapSections(cmapContent, 'beginbfchar', 'endbfchar')) {
+    const lines = body.split(/\r?\n/);
     for (const line of lines) {
       const tokens = line.trim().match(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/);
       if (tokens) {
+        claim(1);
         const srcCode = parseInt(tokens[1], 16);
         const dstChar = decodeDstHex(tokens[2]);
         charMap.set(srcCode, dstChar);
@@ -160,10 +189,7 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   }
 
   // 2. beginbfrange ... endbfrange
-  const bfRangeRegex = /beginbfrange\s+([\s\S]*?)\s+endbfrange/g;
-  let rangeMatch: RegExpExecArray | null;
-  while ((rangeMatch = bfRangeRegex.exec(cmapContent)) !== null) {
-    const content = rangeMatch[1].trim();
+  for (const content of cmapSections(cmapContent, 'beginbfrange', 'endbfrange')) {
     // Format 1: <start> <end> <destStart>
     const directRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g;
     let dMatch: RegExpExecArray | null;
@@ -171,35 +197,43 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
       const start = parseInt(dMatch[1], 16);
       const end = parseInt(dMatch[2], 16);
       const dstBase = parseInt(dMatch[3], 16);
+      const count = end - start + 1;
+      if (count > MAX_CMAP_RANGE_CODES) {
+        throw new PayloadLimitError(`ToUnicode bfrange spans more than ${MAX_CMAP_RANGE_CODES} codes.`);
+      }
+      if (!(count > 0)) continue;
+      claim(count);
       for (let code = start; code <= end; code++) {
         charMap.set(code, String.fromCharCode(dstBase + (code - start)));
       }
     }
 
-    // Format 2: <start> <end> [ <dst1> <dst2> ... ]
-    const arrayRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*\[([\s\S]*?)\]/g;
+    // Format 2: <start> <end> [ <dst1> <dst2> ... ]; the array decides how many codes are mapped
+    const arrayRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*\[/g;
     let aMatch: RegExpExecArray | null;
     while ((aMatch = arrayRegex.exec(content)) !== null) {
+      const close = content.indexOf(']', arrayRegex.lastIndex);
+      if (close === -1) break;
       const start = parseInt(aMatch[1], 16);
       const end = parseInt(aMatch[2], 16);
-      const elements = aMatch[3].match(/<([0-9a-fA-F]+)>/g) || [];
-      for (let code = start; code <= end; code++) {
-        const elemIdx = code - start;
-        if (elemIdx < elements.length) {
-          charMap.set(code, decodeDstHex(elements[elemIdx]));
-        }
+      const elements = content.slice(arrayRegex.lastIndex, close).match(/<([0-9a-fA-F]+)>/g) || [];
+      arrayRegex.lastIndex = close + 1;
+      const count = Math.min(end - start + 1, elements.length);
+      if (!(count > 0)) continue;
+      claim(count);
+      for (let elemIdx = 0; elemIdx < count; elemIdx++) {
+        charMap.set(start + elemIdx, decodeDstHex(elements[elemIdx]));
       }
     }
   }
 
   // 3. begincidchar ... endcidchar
-  const cidCharRegex = /begincidchar\s+([\s\S]*?)\s+endcidchar/g;
-  let cidCharMatch: RegExpExecArray | null;
-  while ((cidCharMatch = cidCharRegex.exec(cmapContent)) !== null) {
-    const lines = cidCharMatch[1].trim().split(/\r?\n/);
+  for (const body of cmapSections(cmapContent, 'begincidchar', 'endcidchar')) {
+    const lines = body.split(/\r?\n/);
     for (const line of lines) {
       const tokens = line.trim().match(/<([0-9a-fA-F]+)>\s*([0-9]+)/);
       if (tokens) {
+        claim(1);
         const srcCode = parseInt(tokens[1], 16);
         const dstChar = String.fromCharCode(parseInt(tokens[2], 10));
         charMap.set(srcCode, dstChar);
@@ -219,9 +253,14 @@ export function extractPdfFontCMaps(pdfBuffer: Buffer): Map<string, PdfToUnicode
 
 function collectFontCMaps(document: PdfDocument): Map<string, PdfToUnicodeCMap> {
   const cmaps = new Map<string, PdfToUnicodeCMap>();
+  let mappings = 0;
   document.toUnicodeStreams((content) => {
     if (content.includes('beginbfchar') || content.includes('beginbfrange') || content.includes('begincmap')) {
       const cmap = parseToUnicodeCMap(content);
+      mappings += cmap.charMap.size;
+      if (mappings > MAX_PDF_CMAP_MAPPINGS) {
+        throw new PayloadLimitError(`PDF CMaps hold more than ${MAX_PDF_CMAP_MAPPINGS} character mappings.`);
+      }
       const key = cmap.name || `cmap_${cmaps.size}`;
       cmaps.set(key, cmap);
     }
