@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
-import { AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { openInputImage } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 import { loadFontCoverageIndex } from './pdf-fonts';
@@ -428,7 +428,7 @@ async function convertSvgSource(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       mimeType = 'image/avif';
       break;
 

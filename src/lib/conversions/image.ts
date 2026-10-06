@@ -2385,6 +2385,13 @@ const SHARP_EIGHT_BIT_DEPTH = 'uchar';
 export const AVIF_TUNE = 'psnr';
 
 /**
+ * Encoder effort for AVIF. The bundled libaom 3.15 searches several times longer from the default effort 4
+ * upward (a 39-megapixel RAW took about 3 minutes against about 50 seconds with sharp 0.33), while effort 3
+ * encodes the same picture in a tenth of that time with the same PSNR (41.8 dB against 41.9 dB at quality 80).
+ */
+export const AVIF_EFFORT = 3;
+
+/**
  * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
  * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
  * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
@@ -2721,7 +2728,7 @@ export async function convertImage(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       mimeType = 'image/avif';
       break;
 

@@ -8,7 +8,7 @@ import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidShee
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
-import { AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
@@ -9555,7 +9555,7 @@ async function rasterizePipeline(
       return { buffer, mimeType: 'image/webp' };
     }
     case 'avif': {
-      const buffer = await pipeline.avif({ tune: AVIF_TUNE }).toBuffer();
+      const buffer = await pipeline.avif({ tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       return { buffer, mimeType: 'image/avif' };
     }
     case 'tiff': {

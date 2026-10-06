@@ -74,3 +74,47 @@ describe('AVIF encoder fidelity', () => {
     expect(psnrDb(rgb, await decodeRgb(result.buffer))).toBeGreaterThan(HIGH_QUALITY_MIN_PSNR_DB);
   });
 });
+
+/**
+ * Throughput. The libaom bundled with sharp 0.35 takes about eight times longer from encoder effort 4
+ * (sharp's default) than from effort 3 on a photographic raster, which pushed a 39-megapixel camera RAW
+ * past three minutes. The bound sits between the two: about 2 s of encoding at effort 3 on an idle
+ * machine, about 18 s at effort 4.
+ */
+describe('AVIF encoder throughput', () => {
+  const SIDE = 2000;
+  const NOISE_MASK = 7;
+  const LCG_MULTIPLIER = 1103515245;
+  const LCG_INCREMENT = 12345;
+  const LCG_MASK = 0x7fffffff;
+  const LCG_SHIFT = 16;
+  const MAX_ENCODE_MS = 10_000;
+  const TEST_TIMEOUT_MS = 120_000;
+
+  /** Smooth gradients with low-amplitude noise, the statistics of a camera picture. */
+  function photographicRgb(): Buffer {
+    const rgb = Buffer.alloc(SIDE * SIDE * RGB_CHANNELS);
+    let seed = LCG_INCREMENT;
+    for (let y = 0; y < SIDE; y++) {
+      for (let x = 0; x < SIDE; x++) {
+        const at = (y * SIDE + x) * RGB_CHANNELS;
+        seed = (seed * LCG_MULTIPLIER + LCG_INCREMENT) & LCG_MASK;
+        const noise = (seed >> LCG_SHIFT) & NOISE_MASK;
+        rgb[at] = ((x * BYTE_MAX) / SIDE + noise + 40 * Math.sin(y / 37)) & BYTE_MAX;
+        rgb[at + 1] = ((y * BYTE_MAX) / SIDE + noise + 30 * Math.sin(x / 53)) & BYTE_MAX;
+        rgb[at + 2] = ((x + y) / 16 + noise * 2) & BYTE_MAX;
+      }
+    }
+    return rgb;
+  }
+
+  it('encodes a 4-megapixel photographic raster within the bound', async () => {
+    const png = await sharp(photographicRgb(), { raw: { width: SIDE, height: SIDE, channels: RGB_CHANNELS } }).png().toBuffer();
+    const start = performance.now();
+    const result = await convertFile(png, 'png', 'avif', {}, 'photo.png');
+    const elapsedMs = performance.now() - start;
+    const meta = await sharp(result.buffer).metadata();
+    expect({ width: meta.width, height: meta.height, format: meta.format }).toEqual({ width: SIDE, height: SIDE, format: 'heif' });
+    expect(elapsedMs).toBeLessThan(MAX_ENCODE_MS);
+  }, TEST_TIMEOUT_MS);
+});
