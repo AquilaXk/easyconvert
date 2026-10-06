@@ -8,6 +8,15 @@ import {
   parseFontToSfnt,
   extractTrueTypeGlyphs,
 } from '../src/lib/conversions/font';
+import {
+  flattenTrueType,
+  readCmap,
+  readGlyf,
+  readSfntTables,
+  signedArea,
+  unwrapWoff,
+  unwrapWoff2,
+} from './helpers/font-oracles';
 
 describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ยง5.2.4)', () => {
   describe('1. Format 4 (16-bit BMP) Subtable Generation', () => {
@@ -171,7 +180,7 @@ describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ย
   });
 
   describe('4. End-to-End Font Conversion with Astral CJK & Emoji', () => {
-    it('converts SVG font containing Astral CJK Ext B and Emoji to genuine TTF and WOFF without mojibake', async () => {
+    it('converts SVG font containing Astral CJK Ext B and Emoji to genuine TTF and WOFF with real outlines and without mojibake', async () => {
       const svgFontContent = `<?xml version="1.0" standalone="no"?>
         <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
         <svg xmlns="http://www.w3.org/2000/svg">
@@ -194,19 +203,34 @@ describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ย
       // 1. Convert SVG to TTF
       const ttfResult = await convertFont(svgBuffer, 'svg', 'ttf', {}, 'AstralFont.svg');
       expect(ttfResult.mimeType).toBe('font/ttf');
-      expect(ttfResult.buffer.length).toBeGreaterThan(100);
 
-      // Parse resulting TTF
+      // Parse resulting TTF with the engine and with the independent readers
       const parsedTtf = parseFontToSfnt(ttfResult.buffer, 'ttf', 'AstralFont');
-      expect(parsedTtf.tables['cmap']).toBeDefined();
-
-      const cmapData = parsedTtf.tables['cmap'].data;
-      const parsedMap = parseCmapTable(cmapData);
+      const parsedMap = parseCmapTable(parsedTtf.tables['cmap'].data);
+      const ttfTables = readSfntTables(ttfResult.buffer);
+      const independentMap = readCmap(ttfTables);
 
       // Verify BMP and Astral code points exist in the generated TTF cmap table
-      expect(parsedMap.get(0x0041)).toBe(1); // 'A'
-      expect(parsedMap.get(0x20000)).toBe(2); // CJK Ext B U+20000
-      expect(parsedMap.get(0x1f600)).toBe(3); // Emoji U+1F600
+      for (const map of [parsedMap, independentMap]) {
+        expect(map.get(0x0041)).toBe(1); // 'A'
+        expect(map.get(0x20000)).toBe(2); // CJK Ext B U+20000
+        expect(map.get(0x1f600)).toBe(3); // Emoji U+1F600
+      }
+
+      // The glyphs carry the outlines of their d attributes
+      expect(readGlyf(ttfTables, 1)!.contours).toEqual([
+        [
+          { x: 30, y: 0, on: true },
+          { x: 310, y: 700, on: true },
+          { x: 370, y: 700, on: true },
+          { x: 650, y: 0, on: true },
+        ],
+      ]);
+      expect(readGlyf(ttfTables, 2)!.bbox).toEqual([100, 100, 900, 700]);
+      // Two half circles of radius 400 around (400, 400): a full circle
+      const [circle] = [readGlyf(ttfTables, 3)!.contours[0]].map((contour) => flattenTrueType(contour));
+      expect(Math.abs(signedArea(circle))).toBeGreaterThan(Math.PI * 400 * 400 * 0.995);
+      expect(Math.abs(signedArea(circle))).toBeLessThan(Math.PI * 400 * 400 * 1.005);
 
       // 2. Extract glyphs with extractTrueTypeGlyphs
       const extracted = extractTrueTypeGlyphs(parsedTtf);
@@ -220,10 +244,12 @@ describe('OpenType cmap Format 12 & Astral Unicode Embedding (ISO/IEC 14496-22 ย
       const woffResult = await convertFont(svgBuffer, 'svg', 'woff', {}, 'AstralFont.svg');
       expect(woffResult.mimeType).toBe('font/woff');
       expect(woffResult.buffer.subarray(0, 4).toString('ascii')).toBe('wOFF');
+      expect(readCmap(unwrapWoff(woffResult.buffer)).get(0x1f600)).toBe(3);
 
       const woff2Result = await convertFont(svgBuffer, 'svg', 'woff2', {}, 'AstralFont.svg');
       expect(woff2Result.mimeType).toBe('font/woff2');
       expect(woff2Result.buffer.subarray(0, 4).toString('ascii')).toBe('wOF2');
+      expect(readCmap(unwrapWoff2(woff2Result.buffer)).get(0x20000)).toBe(2);
     });
   });
 });
