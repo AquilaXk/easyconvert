@@ -246,7 +246,8 @@ export function minimalTransformedFont(overrides: Partial<TransformedGlyfSpec> =
 
 /** A plain sfnt (tables in ascending tag order, four-byte aligned) around the given tables. */
 export function sfntFromTables(version: number, tables: Map<string, Buffer>): Buffer {
-  const tags = [...tables.keys()].sort();
+  // Tags are four ASCII bytes, so code unit order is the directory's byte order.
+  const tags = [...tables.keys()].sort((a, b) => Buffer.compare(Buffer.from(a, 'latin1'), Buffer.from(b, 'latin1')));
   const directory = Buffer.alloc(12 + 16 * tags.length);
   directory.writeUInt32BE(version, 0);
   directory.writeUInt16BE(tags.length, 4);

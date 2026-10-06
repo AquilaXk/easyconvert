@@ -516,7 +516,7 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
     if (byTag.size > WOFF2_MAX_TABLES) throw new Woff2LimitError(`The font has more than ${WOFF2_MAX_TABLES} tables.`);
   }
   if (byTag.size === 0) throw new Woff2FormatError('Cannot encode WOFF2: the font has no tables.');
-  const tags = [...byTag.keys()].sort();
+  const tags = [...byTag.keys()].sort(compareTags);
 
   const glyf = byTag.get('glyf');
   const loca = byTag.get('loca');
