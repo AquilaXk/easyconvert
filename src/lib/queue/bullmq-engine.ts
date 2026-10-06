@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { classifyJobFailure } from './job-failure';
 
 export interface JobOptions {
   jobId?: string;
@@ -89,6 +90,10 @@ export class Job<T = any, R = any> {
   progress: number = 0;
   returnvalue?: R;
   failedReason?: string;
+  /** Error class name of a typed failure (for example `InputPixelLimitError`). */
+  failedCode?: string;
+  /** HTTP status the same failure answers on the synchronous API (for example 413). */
+  failedStatus?: number;
   stacktrace: string[] = [];
   timestamp: number;
   processedOn?: number;
@@ -813,12 +818,15 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : String(err);
     job.failedReason = errorMessage;
+    const failure = classifyJobFailure(err);
+    job.failedCode = failure.code;
+    job.failedStatus = failure.status;
     if (err instanceof Error && err.stack) {
       job.stacktrace.push(err.stack);
     }
 
     const maxAttempts = job.opts.attempts || 1;
-    if (job.attemptsMade < maxAttempts) {
+    if (failure.retryable && job.attemptsMade < maxAttempts) {
       const backoffCfg = job.opts.backoff || { type: 'exponential', delay: 1000 };
       const delay =
         backoffCfg.type === 'exponential'
@@ -1637,6 +1645,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (raw.processedOn) job.processedOn = Number(raw.processedOn);
     if (raw.finishedOn) job.finishedOn = Number(raw.finishedOn);
     if (raw.failedReason) job.failedReason = raw.failedReason;
+    if (raw.failedCode) job.failedCode = raw.failedCode;
+    if (raw.failedStatus) job.failedStatus = Number(raw.failedStatus);
     if (raw.returnvalue) {
       try {
         job.returnvalue = JSON.parse(raw.returnvalue);
@@ -2331,6 +2341,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           `[DistributedBullMQAdapter:${this.name}] Discarded failure of job ${job.id}: it is no longer active.`
         );
         return false;
+      }
+      if (job.failedCode && job.opts?.removeOnFail !== true) {
+        // The typed failure is stored next to the reason; a job removed on failure has no hash to write to.
+        await this.redisClient.hset(this.getJobKey(job.id), 'failedCode', job.failedCode, 'failedStatus', String(job.failedStatus ?? ''));
       }
       await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
       if (job.opts?.removeOnFail === true) {

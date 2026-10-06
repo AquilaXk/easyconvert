@@ -184,6 +184,8 @@ export async function GET(req: NextRequest) {
     durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
     returnvalue: j.returnvalue,
     failedReason: j.failedReason,
+    failedCode: j.failedCode,
+    failedStatus: j.failedStatus,
   }));
 
   return NextResponse.json({
