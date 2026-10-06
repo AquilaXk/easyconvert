@@ -70,6 +70,13 @@ jobs:
           # Pre-stage Tesseract traineddata assets for offline inference
           find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
 
+      # Format oracles (columnar readers, PDF text extraction): the tests run python3 -I, which
+      # ignores user site-packages, so the pinned packages go to the system interpreter.
+      # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall.
+      # Test-only; nothing ships.
+      - name: Install Python format oracles
+        run: sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2
+
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
 
