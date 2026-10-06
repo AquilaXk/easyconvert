@@ -7,8 +7,9 @@ Commands (JSON on stdout):
   read <file>                              pyarrow read: schema, row-group metadata, statistics, every value
   duckdb <file>                            DuckDB read: column names, types, every value
   write <rows.json> <schema.json> <out> <codec>   reference writer used for size comparison
-  snappy-compress <in> <out>               raw snappy block
+  codec-compress <codec> <in> <out>        pyarrow block compression (snappy raw block, zstd frame)
   snappy-decompress <in> <out> <size>      raw snappy block
+  make-fixtures <dir>                      regenerate tests/fixtures/parquet (see FIXTURE_ROWS below)
 
 Values are tagged so JSON keeps them exact: doubles as {"$f": <big-endian IEEE-754 hex>},
 integers beyond 2^53 as {"$i": "<decimal>"}.
@@ -138,11 +139,11 @@ def command_write(rows_path, schema_path, out_path, codec):
     json.dump({"ok": True}, sys.stdout)
 
 
-def command_snappy_compress(in_path, out_path):
+def command_codec_compress(codec, in_path, out_path):
     pa = require("pyarrow")
     with open(in_path, "rb") as fh:
         raw = fh.read()
-    packed = pa.compress(raw, codec="snappy", asbytes=True)
+    packed = pa.compress(raw, codec=codec, asbytes=True)
     with open(out_path, "wb") as fh:
         fh.write(packed)
     json.dump({"size": len(packed)}, sys.stdout)
@@ -158,11 +159,59 @@ def command_snappy_decompress(in_path, out_path, size):
     json.dump({"size": len(raw)}, sys.stdout)
 
 
+FIXTURE_ROWS = 2500
+FIXTURE_NOTE_MODULUS = 7
+
+
+def fixture_columns():
+    """Hand-authored rows: every value is a closed-form function of the row index."""
+    ids = [None if i % 11 == 5 else i * 7 - 3000 for i in range(FIXTURE_ROWS)]
+    names = [None if i % 9 == 4 else "name-%d" % (i % 13) for i in range(FIXTURE_ROWS)]
+    notes = ["" if i % FIXTURE_NOTE_MODULUS == 0 else "n\u00e9\U0001f600-%d" % (i % 3) for i in range(FIXTURE_ROWS)]
+    scores = [None if i % 5 == 1 else (i % 17) * 0.25 - 1.0 for i in range(FIXTURE_ROWS)]
+    flags = [None if i % 6 == 2 else i % 3 == 0 for i in range(FIXTURE_ROWS)]
+    return {"id": ids, "name": names, "note": notes, "score": scores, "flag": flags}
+
+
+def command_make_fixtures(out_dir):
+    pa = require("pyarrow")
+    import os
+    import pyarrow.parquet as pq
+
+    columns = fixture_columns()
+    table = pa.table(
+        {
+            "id": pa.array(columns["id"], type=pa.int64()),
+            "name": pa.array(columns["name"], type=pa.string()),
+            "note": pa.array(columns["note"], type=pa.string()),
+            "score": pa.array(columns["score"], type=pa.float64()),
+            "flag": pa.array(columns["flag"], type=pa.bool_()),
+        }
+    )
+    os.makedirs(out_dir, exist_ok=True)
+    variants = {
+        "dictionary-snappy.parquet": dict(compression="snappy", use_dictionary=True, row_group_size=1000, data_page_size=2048),
+        "plain-gzip.parquet": dict(compression="gzip", use_dictionary=False, row_group_size=2500),
+        "dictionary-zstd.parquet": dict(compression="zstd", use_dictionary=True, row_group_size=2500),
+        "plain-uncompressed.parquet": dict(compression="none", use_dictionary=False, row_group_size=2500),
+        "data-page-v2.parquet": dict(compression="snappy", data_page_version="2.0", row_group_size=2500),
+    }
+    for name, options in variants.items():
+        pq.write_table(table, os.path.join(out_dir, name), **options)
+    nested = pa.table({"point": pa.array([{"x": 1, "y": 2}, {"x": 3, "y": 4}])})
+    pq.write_table(nested, os.path.join(out_dir, "nested-struct.parquet"))
+    expected = {name: [tag(v) for v in values] for name, values in columns.items()}
+    with open(os.path.join(out_dir, "expected.json"), "w", encoding="utf-8") as fh:
+        json.dump({"numRows": FIXTURE_ROWS, "columns": expected}, fh)
+    json.dump({"ok": True}, sys.stdout)
+
+
 COMMANDS = {
+    "make-fixtures": command_make_fixtures,
     "read": command_read,
     "duckdb": command_duckdb,
     "write": command_write,
-    "snappy-compress": command_snappy_compress,
+    "codec-compress": command_codec_compress,
     "snappy-decompress": command_snappy_decompress,
 }
 

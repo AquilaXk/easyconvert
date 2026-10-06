@@ -138,11 +138,15 @@ export function pyarrowWrite(
 }
 
 export function pyarrowSnappyCompress(raw: Buffer): Buffer {
+  return pyarrowCompress('snappy', raw);
+}
+
+export function pyarrowCompress(codec: 'snappy' | 'zstd', raw: Buffer): Buffer {
   return withOracleTempDir((dir) => {
     const inFile = path.join(dir, 'raw.bin');
     const outFile = path.join(dir, 'packed.bin');
     fs.writeFileSync(inFile, raw);
-    runOracle(['snappy-compress', inFile, outFile]);
+    runOracle(['codec-compress', codec, inFile, outFile]);
     return fs.readFileSync(outFile);
   });
 }
