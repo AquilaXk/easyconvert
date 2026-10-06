@@ -76,7 +76,7 @@ describe('two-column OCR accuracy', () => {
         const text = execFileSync(
           cli,
           [path.join(FIXTURE_DIR, `twocol__${variant}.png`), 'stdout', '-l', 'eng', '--psm', '3', '--oem', '1'],
-          { encoding: 'utf-8', timeout: PAGE_TIMEOUT_MS }
+          { encoding: 'utf-8', timeout: PAGE_TIMEOUT_MS, env: { ...process.env, OMP_THREAD_LIMIT: '1' } }
         );
         expect(characterErrorRatePercent(GROUND_TRUTH, text), variant).toBeLessThanOrEqual(MAX_CER_PERCENT);
       }

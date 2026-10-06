@@ -1,8 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
 import {
   ConversionOptions,
@@ -29,6 +26,7 @@ import {
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 import { ocrSegmentationFor } from './ocr-config';
+import { recognizeWithCli } from './ocr-cli';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
@@ -210,42 +208,12 @@ export async function performOcr(
   const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
   const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
   if (tesseractCli) {
-    const tmpIn = path.join(os.tmpdir(), `ocr_cli_in_${crypto.randomUUID()}.png`);
-    const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
-    try {
-      fs.writeFileSync(tmpIn, ocrInput);
-      const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
-      const cliArgs = [
-        '--tessdata-dir', localLangPath, tmpIn, tmpOutBase,
-        '-l', tesseractLang, '--psm', pageSegMode, '--oem', String(engineMode),
-      ];
-      execFileSync(tesseractCli, cliArgs, {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout: 15000,
-      });
-      const outTxtPath = `${tmpOutBase}.txt`;
-      if (fs.existsSync(outTxtPath)) {
-        const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
-        fs.unlinkSync(outTxtPath);
-        const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
-        const lines = cliText ? cliText.split('\n').map((l) => l.trim()).filter(Boolean) : [];
-        return {
-          text: cliText,
-          confidence: null,
-          wordCount: cliText ? cliText.split(/\s+/).filter(Boolean).length : 0,
-          lines,
-          lineBlocks: [],
-          imageWidth: meta.width || 800,
-          imageHeight: meta.height || 600,
-        };
-      }
-    } catch (err: any) {
-      // CLI failed
-    } finally {
-      try {
-        if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
-      } catch {}
-    }
+    return recognizeWithCli({
+      cliPath: tesseractCli,
+      tessdataDir: localLangPath,
+      tesseractLang,
+      image: ocrInput,
+    });
   }
 
   throw new OcrEngineUnavailableError(
