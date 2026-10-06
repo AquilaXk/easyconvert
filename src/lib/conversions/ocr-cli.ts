@@ -236,14 +236,16 @@ export class CliSemaphore {
 
   constructor(
     private readonly limit: number,
-    private readonly maxQueued: number
+    private readonly maxQueued: number,
+    /** What is queued, for the saturation message. */
+    private readonly unit: string = 'native runs'
   ) {}
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     if (this.active >= this.limit) {
       if (this.waiting.length >= this.maxQueued) {
         throw new OcrEngineUnavailableError(
-          `OCR is saturated: ${this.maxQueued} native runs are already waiting.`
+          `OCR is saturated: ${this.maxQueued} ${this.unit} are already waiting.`
         );
       }
       // The slot is handed over directly, so `active` stays counted across the hand-off.
