@@ -431,6 +431,14 @@ describe('WOFF2 encoder: glyf edge cases', () => {
     expect(readGlyf(decoded, GLYPHS - 1)).toEqual(readGlyf(tablesOf(font), GLYPHS - 1));
   });
 
+  it('stores a zero-contour glyph with an all-zero box as the empty glyph it draws', () => {
+    const font = fontWithGlyphs([Buffer.alloc(0), Buffer.alloc(10)], 0);
+    const file = encodeWoff2(font);
+    const decoded = tablesOf(decodeWoff2(file, 'x'));
+    expect(assertWoff2Consistent(file).directory.find((r) => r.tag === 'glyf')!.origLength).toBe(0);
+    expect(decoded.get('loca')!.toString('hex')).toBe('000000000000');
+  });
+
   it('encodes a single empty glyph', () => {
     const font = fontWithGlyphs([Buffer.alloc(0)], 0);
     const file = encodeWoff2(font);
@@ -486,6 +494,14 @@ describe('WOFF2 encoder: glyf edge cases', () => {
       const glyph = triangle();
       glyph.writeUInt16BE(500, 12);
       return fontWithGlyphs([Buffer.alloc(0), glyph], 0);
+    });
+    fails('a zero-contour glyph that carries a bounding box', () => {
+      const zeroContours = Buffer.alloc(12); // numberOfContours 0, then a box of (5, 5, 10, 10)
+      zeroContours.writeInt16BE(5, 2);
+      zeroContours.writeInt16BE(5, 4);
+      zeroContours.writeInt16BE(10, 6);
+      zeroContours.writeInt16BE(10, 8);
+      return fontWithGlyphs([Buffer.alloc(0), zeroContours], 0);
     });
     fails('a glyph that declares an unsupported negative contour count', () => {
       const glyph = triangle();

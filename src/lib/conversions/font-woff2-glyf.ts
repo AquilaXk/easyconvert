@@ -597,7 +597,11 @@ export function transformGlyf(glyf: Uint8Array, loca: Uint8Array, numGlyphs: num
     if (end - start < GLYPH_HEADER_BYTES) throw glyphProblem(glyph, 'it is shorter than a glyph header');
     const contours = view.getInt16(start);
     if (contours === 0) {
-      // a glyph without contours draws nothing, and the transform has no room for its box
+      // a glyph without contours draws nothing; the transform stores it as the empty glyph, which has no
+      // bounding box, so a box that says otherwise cannot be kept
+      for (let at = start + BYTES_PER_UINT16; at < start + GLYPH_HEADER_BYTES; at++) {
+        if (glyf[at] !== 0) throw glyphProblem(glyph, 'it has no contours but a bounding box');
+      }
       contourStream.u16be(0);
       continue;
     }
