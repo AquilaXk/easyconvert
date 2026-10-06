@@ -1001,6 +1001,25 @@ export const ProblemDetailsSchema = {
   },
 } as const;
 
+/** Members a PDF/A validation problem (HTTP 422) adds to the problem details. */
+export const PdfaValidationProblemSchema = {
+  $id: 'https://easyconvert.local/schemas/pdfa-validation-problem.json',
+  type: 'object',
+  required: ['profile', 'failedRules'],
+  properties: {
+    profile: {
+      type: 'string',
+      enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
+      description: 'The PDF/A level the request asked for and the output was validated against.',
+    },
+    failedRules: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'veraPDF rule IDs the output failed, as `<clause>-<test number>` (for example `6.2.11.4.1-1`).',
+    },
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
