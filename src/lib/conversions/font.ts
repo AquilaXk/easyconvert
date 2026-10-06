@@ -283,13 +283,13 @@ const DEFAULT_SFNT_VERSION = 0x00010000;
 /** The whole font's uint32 sum, with checkSumAdjustment in place, must equal this (OpenType 'head'). */
 const SFNT_CHECKSUM_MAGIC = 0xb1b0afba;
 const HEAD_CHECKSUM_ADJUSTMENT_OFFSET = 8;
-const HEAD_MIN_BYTES = HEAD_CHECKSUM_ADJUSTMENT_OFFSET + 4;
+const HEAD_CHECKSUM_MIN_BYTES = HEAD_CHECKSUM_ADJUSTMENT_OFFSET + 4;
 const SFNT_DIRECTORY_HEADER_BYTES = 12;
 const SFNT_DIRECTORY_ENTRY_BYTES = 16;
 const TABLE_ALIGNMENT = 4;
 
 function isHeadTable(tbl: { tag: string; data: Buffer }): boolean {
-  return formatSfntTag(tbl.tag) === 'head' && tbl.data.length >= HEAD_MIN_BYTES;
+  return formatSfntTag(tbl.tag) === 'head' && tbl.data.length >= HEAD_CHECKSUM_MIN_BYTES;
 }
 
 /**
