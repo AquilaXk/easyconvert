@@ -19,7 +19,6 @@ const TEST_TIMEOUT_MS = 120_000;
 const ITEM_CHARS = 200_000;
 /** Steps the matching of one item may take, per character of the item; the first attempt alone needs one. */
 const STEP_BUDGET_PER_CHAR = 16;
-const MATCH_CPU_BUDGET_MS = 1_500;
 const WIDE_PAGE_PT = 2_000_000;
 const LONG_ITEM_CHARS = 1_000_000;
 const SUPERSCRIPT_TWO = '²';
@@ -34,14 +33,11 @@ describe('glyph matching work', () => {
     const text = `${'a'.repeat(ITEM_CHARS - 1)}${SUPERSCRIPT_TWO}`;
     const glyphs: Glyph[] = Array.from({ length: ITEM_CHARS + 300 }, () => glyphOf('a'));
     const cursor: Cursor = { glyphs, next: 0, failures: 0, steps: 0 };
-    const started = process.cpuUsage();
     const placement = placeItem({ str: text, dir: 'ltr' }, cursor, false, 1);
-    const used = process.cpuUsage(started);
     expect(placement.advance).toHaveLength(ITEM_CHARS);
     expect(placement.advance.every((share) => share === 1)).toBe(true);
     expect(cursor.steps).toBeGreaterThan(ITEM_CHARS - 1);
     expect(cursor.steps).toBeLessThanOrEqual(STEP_BUDGET_PER_CHAR * ITEM_CHARS);
-    expect((used.user + used.system) / 1000).toBeLessThan(MATCH_CPU_BUDGET_MS);
   });
 
   it('matches a long item in one pass over its glyphs', () => {

@@ -17,19 +17,39 @@ import { parseAlto, parseHocr } from '../src/lib/conversions/ocr-import';
 
 const NOOP: MarkupHandler = { open: () => {}, text: () => {}, close: () => {} };
 /**
- * CPU time, not wall time, so a busy machine running other test files does not fail the run. The
- * quadratic reader took 13 s and 27 s of CPU on these inputs; the linear one takes about 1 s.
+ * Running time is checked by growth, not by an absolute budget that depends on the machine: the same
+ * work at four times the size must cost well under the sixteen times a quadratic reader would. CPU time
+ * is measured, the median of a few runs is taken, and one run first warms the code up. The quadratic
+ * reader took 13 s and 27 s of CPU on the inputs below; the linear one a second or less.
  */
-const CPU_BUDGET_MS = 3_000;
-const TEST_TIMEOUT_MS = 60_000;
-const MANY_TEXT_NODES = 400_000;
-const MANY_LINES = 80_000;
+const SIZE_FACTOR = 4;
+/** Linear growth is a factor of 4; quadratic is 16. */
+const MAX_GROWTH_RATIO = 8;
+const GROWTH_RUNS = 3;
+const TEST_TIMEOUT_MS = 120_000;
+const MANY_TEXT_NODES = 200_000;
+const MANY_LINES = 20_000;
 
 function cpuMs(run: () => void): number {
   const start = process.cpuUsage();
   run();
   const used = process.cpuUsage(start);
   return (used.user + used.system) / 1000;
+}
+
+function medianCpuMs(run: () => void): number {
+  const samples = Array.from({ length: GROWTH_RUNS }, () => cpuMs(run)).sort((p, q) => p - q);
+  return samples[Math.floor(GROWTH_RUNS / 2)];
+}
+
+/** CPU time at `SIZE_FACTOR` times the size over CPU time at the base size. */
+function growthRatio(workAt: (size: number) => () => void, size: number): number {
+  const base = workAt(size);
+  const large = workAt(size * SIZE_FACTOR);
+  base();
+  const baseMs = medianCpuMs(base);
+  const largeMs = medianCpuMs(large);
+  return largeMs / Math.max(baseMs, 1);
 }
 
 function openedNames(xml: string): string[] {
@@ -51,42 +71,49 @@ function expectMarkupError(run: () => unknown, message: RegExp): void {
 
 describe('reader running time', () => {
   it(
-    `reads ${MANY_TEXT_NODES} small text nodes in under ${CPU_BUDGET_MS} ms of CPU (no scan to the end of the document per node)`,
+    `reading small text nodes grows linearly with their number, not with the document (${MANY_TEXT_NODES} against ${SIZE_FACTOR}x as many)`,
     () => {
-      const xml = `<r>${'<a>x</a>'.repeat(MANY_TEXT_NODES)}</r>`;
       let texts = 0;
-      const took = cpuMs(() =>
-        readMarkup(xml, {
-          open: () => {},
-          text: () => {
-            texts++;
-          },
-          close: () => {},
-        })
-      );
-      expect(texts).toBe(MANY_TEXT_NODES);
-      expect(took).toBeLessThan(CPU_BUDGET_MS);
+      const readNodes = (count: number) => {
+        const xml = `<r>${'<a>x</a>'.repeat(count)}</r>`;
+        return () => {
+          texts = 0;
+          readMarkup(xml, {
+            open: () => {},
+            text: () => {
+              texts++;
+            },
+            close: () => {},
+          });
+        };
+      };
+      const ratio = growthRatio(readNodes, MANY_TEXT_NODES);
+      expect(texts).toBe(MANY_TEXT_NODES * SIZE_FACTOR);
+      expect(ratio).toBeLessThan(MAX_GROWTH_RATIO);
     },
     TEST_TIMEOUT_MS
   );
 
   it(
-    `parses an hOCR page of ${MANY_LINES} lines in under ${CPU_BUDGET_MS} ms of CPU`,
+    `parsing an hOCR page grows linearly with its lines (${MANY_LINES} against ${SIZE_FACTOR}x as many)`,
     () => {
-      const lines: string[] = [];
-      for (let i = 0; i < MANY_LINES; i++) {
-        const top = (i % 900) * 2;
-        lines.push(
-          `<span class="ocr_line" title="bbox 10 ${top} 90 ${top + 1}"><span class="ocrx_word" title="bbox 10 ${top} 90 ${top + 1}; x_wconf 90">w${i}</span></span>\n`
-        );
-      }
-      const hocr = `<div class="ocr_page" title="bbox 0 0 100 2000">\n${lines.join('')}</div>`;
       let wordCount = 0;
-      const took = cpuMs(() => {
-        wordCount = parseHocr(hocr).wordCount;
-      });
-      expect(wordCount).toBe(MANY_LINES);
-      expect(took).toBeLessThan(CPU_BUDGET_MS);
+      const parseLines = (count: number) => {
+        const lines: string[] = [];
+        for (let i = 0; i < count; i++) {
+          const top = (i % 900) * 2;
+          lines.push(
+            `<span class="ocr_line" title="bbox 10 ${top} 90 ${top + 1}"><span class="ocrx_word" title="bbox 10 ${top} 90 ${top + 1}; x_wconf 90">w${i}</span></span>\n`
+          );
+        }
+        const hocr = `<div class="ocr_page" title="bbox 0 0 100 2000">\n${lines.join('')}</div>`;
+        return () => {
+          wordCount = parseHocr(hocr).wordCount;
+        };
+      };
+      const ratio = growthRatio(parseLines, MANY_LINES);
+      expect(wordCount).toBe(MANY_LINES * SIZE_FACTOR);
+      expect(ratio).toBeLessThan(MAX_GROWTH_RATIO);
     },
     TEST_TIMEOUT_MS
   );

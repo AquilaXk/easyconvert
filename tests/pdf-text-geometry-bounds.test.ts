@@ -43,6 +43,8 @@ vi.mock('pdfjs-dist/legacy/build/pdf.mjs', async (importOriginal) => {
 import {
   analyzePdfPagesInProcess,
   layoutItemRuns,
+  PARAGRAPH_CANDIDATE_LIMIT,
+  type LayoutWork,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
   PDF_TEXT_MAX_WORDS_PER_PAGE,
@@ -54,7 +56,8 @@ import {
 const TEST_TIMEOUT_MS = 120_000;
 /** pdfjs drops text beyond the page, so a very long item needs a very wide page. */
 const WIDE_PAGE_PT = 2_000_000;
-const GROUPING_CPU_BUDGET_MS = 1_000;
+/** Comparisons and look-back steps allowed per run, in units of log2(n), on top of the look-back limit. */
+const GROUPING_STEPS_PER_LOG_RUN = 6;
 const MANY_RUNS = 96_000;
 
 beforeEach(() => {
@@ -163,47 +166,46 @@ describe('grouping many runs', () => {
     };
   }
 
-  function cpuMs(work: () => void): number {
-    const start = process.cpuUsage();
-    work();
-    const used = process.cpuUsage(start);
-    return (used.user + used.system) / 1000;
+  /**
+   * Work is counted, not timed, so the bound does not depend on the machine: sorting costs about n log n
+   * comparisons and each line looks back over at most PARAGRAPH_CANDIDATE_LIMIT earlier paragraphs. A
+   * quadratic grouping would need about n squared steps, thousands of times more.
+   */
+  function expectNearLinearithmic(work: LayoutWork, runs: number): void {
+    const allowed = runs * (GROUPING_STEPS_PER_LOG_RUN * Math.log2(runs) + PARAGRAPH_CANDIDATE_LIMIT);
+    expect(work.steps).toBeGreaterThan(0);
+    expect(work.steps).toBeLessThanOrEqual(allowed);
+    expect(allowed).toBeLessThan((runs * runs) / 8);
   }
 
   const wordsIn = (blocks: ReturnType<typeof layoutItemRuns>): number => blocks.reduce((sum, block) => sum + block.words.length, 0);
 
-  it(`groups ${MANY_RUNS} runs on two rows of tens of thousands of separate lines in under ${GROUPING_CPU_BUDGET_MS} ms of CPU`, () => {
+  it(`groups ${MANY_RUNS} runs on two rows of tens of thousands of separate lines with near-linearithmic work`, () => {
     // Alternating 1 pt and 500 pt gaps: the median gap is small, so every wide gap separates two lines.
     const perRow = MANY_RUNS / 2;
     const row = (baselineY: number): ItemRun[] =>
       Array.from({ length: perRow }, (_, i) => tinyRun(Math.floor(i / 2) * 1000 + (i % 2) * 5, baselineY));
     const runs = [...row(100), ...row(114)];
-    let blocks: ReturnType<typeof layoutItemRuns> = [];
-    const used = cpuMs(() => {
-      blocks = layoutItemRuns(runs);
-    });
+    const work: LayoutWork = { steps: 0 };
+    const blocks = layoutItemRuns(runs, work);
     expect(wordsIn(blocks)).toBe(MANY_RUNS);
     expect(blocks).toHaveLength(MANY_RUNS / 2);
-    expect(used).toBeLessThan(GROUPING_CPU_BUDGET_MS);
+    expectNearLinearithmic(work, MANY_RUNS);
   });
 
   it(`groups ${MANY_RUNS} evenly spaced runs on one row into one line without exhausting the call stack`, () => {
     const runs = Array.from({ length: MANY_RUNS }, (_, i) => tinyRun(i * 5, 100));
-    let blocks: ReturnType<typeof layoutItemRuns> = [];
-    const used = cpuMs(() => {
-      blocks = layoutItemRuns(runs);
-    });
+    const work: LayoutWork = { steps: 0 };
+    const blocks = layoutItemRuns(runs, work);
     expect(blocks.map((block) => block.words.length)).toEqual([MANY_RUNS]);
-    expect(used).toBeLessThan(GROUPING_CPU_BUDGET_MS);
+    expectNearLinearithmic(work, MANY_RUNS);
   });
 
   it(`groups ${MANY_RUNS} rows one above the other without a quadratic look-back`, () => {
     const runs = Array.from({ length: MANY_RUNS }, (_, i) => tinyRun(0, 100 + i * 12));
-    let blocks: ReturnType<typeof layoutItemRuns> = [];
-    const used = cpuMs(() => {
-      blocks = layoutItemRuns(runs);
-    });
+    const work: LayoutWork = { steps: 0 };
+    const blocks = layoutItemRuns(runs, work);
     expect(wordsIn(blocks)).toBe(MANY_RUNS);
-    expect(used).toBeLessThan(GROUPING_CPU_BUDGET_MS);
+    expectNearLinearithmic(work, MANY_RUNS);
   });
 });

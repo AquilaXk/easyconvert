@@ -91,7 +91,7 @@ const BLOCK_GAP_EM = 3;
 /** Baselines closer than this many em are the same row when deciding whether a line follows another. */
 const SAME_ROW_EM = 0.35;
 /** The newest this many open paragraphs are searched for the paragraph a line continues. */
-const PARAGRAPH_CANDIDATE_LIMIT = 256;
+export const PARAGRAPH_CANDIDATE_LIMIT = 256;
 /** Ascent and descent in em for a font that reports none: a typical split of the em box. */
 const FALLBACK_ASCENT_EM = 0.8;
 const FALLBACK_DESCENT_EM = 0.2;
@@ -963,8 +963,20 @@ function joinTouching(units: Unit[]): Unit[] {
   return joined;
 }
 
-function median(values: number[]): number {
-  const sorted = values.slice().sort((p, q) => p - q);
+/** Counts the comparisons and look-back steps grouping makes, so a test can bound the work without timing it. */
+export interface LayoutWork {
+  steps: number;
+}
+
+function tick(work: LayoutWork | undefined): void {
+  if (work) work.steps++;
+}
+
+function median(values: number[], work?: LayoutWork): number {
+  const sorted = values.slice().sort((p, q) => {
+    tick(work);
+    return p - q;
+  });
   return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
@@ -1007,8 +1019,11 @@ function lineFromUnits(units: Unit[], row: number): TextLine {
 }
 
 /** Rows of horizontal runs: runs whose vertical extents overlap by at least half the smaller height. */
-function clusterRows(runs: ItemRun[]): ItemRun[][] {
-  const sorted = runs.slice().sort((p, q) => p.box.y0 - q.box.y0 || p.box.x0 - q.box.x0);
+function clusterRows(runs: ItemRun[], work?: LayoutWork): ItemRun[][] {
+  const sorted = runs.slice().sort((p, q) => {
+    tick(work);
+    return p.box.y0 - q.box.y0 || p.box.x0 - q.box.x0;
+  });
   const rows: ItemRun[][] = [];
   let current: ItemRun[] = [];
   let top = 0;
@@ -1034,15 +1049,18 @@ function clusterRows(runs: ItemRun[]): ItemRun[][] {
 }
 
 /** Splits one row into lines at gaps that are wide compared with the row's own word gaps. */
-function rowToLines(row: ItemRun[], rowIndex: number): TextLine[] {
-  const ordered = row.slice().sort((p, q) => p.box.x0 - q.box.x0);
+function rowToLines(row: ItemRun[], rowIndex: number, work?: LayoutWork): TextLine[] {
+  const ordered = row.slice().sort((p, q) => {
+    tick(work);
+    return p.box.x0 - q.box.x0;
+  });
   const units = joinTouching(ordered.flatMap(unitsOf));
   if (units.length === 0) return [];
   let largest = 0;
   for (const unit of units) largest = Math.max(largest, unit.run.size);
   const gaps: number[] = [];
   for (let i = 1; i < units.length; i++) gaps.push(Math.max(0, units[i].box.x0 - units[i - 1].box.x1));
-  const typical = gaps.length > 0 ? median(gaps) : 0;
+  const typical = gaps.length > 0 ? median(gaps, work) : 0;
   const threshold = Math.min(
     COLUMN_GAP_ALWAYS_EM * largest,
     Math.max(COLUMN_GAP_MEDIAN_FACTOR * typical, COLUMN_GAP_MIN_EM * largest)
@@ -1094,7 +1112,7 @@ function lineBlockOf(line: TextLine, block: OcrLayoutGroup, paragraph: OcrLayout
  * Runs that are not horizontal, such as rotated or vertical text, each form a line, paragraph and block
  * of their own after the horizontal text.
  */
-export function layoutItemRuns(runs: ItemRun[]): OcrLineBlock[] {
+export function layoutItemRuns(runs: ItemRun[], work?: LayoutWork): OcrLineBlock[] {
   const horizontal: ItemRun[] = [];
   const standalone: ItemRun[] = [];
   for (const run of runs) (run.horizontal ? horizontal : standalone).push(run);
@@ -1102,14 +1120,18 @@ export function layoutItemRuns(runs: ItemRun[]): OcrLineBlock[] {
   const blocks: BlockState[] = [];
   const paragraphs: ParagraphState[] = [];
   let rowStart = 0;
-  clusterRows(horizontal).forEach((row, rowIndex) => {
+  clusterRows(horizontal, work).forEach((row, rowIndex) => {
     rowStart = paragraphs.length;
-    const lines = rowToLines(row, rowIndex).sort((p, q) => p.left - q.left);
+    const lines = rowToLines(row, rowIndex, work).sort((p, q) => {
+      tick(work);
+      return p.left - q.left;
+    });
     for (const line of lines) {
       let parent: ParagraphState | undefined;
       // Only paragraphs from earlier rows can be continued, and only the newest few are searched.
       const oldest = Math.max(0, rowStart - PARAGRAPH_CANDIDATE_LIMIT);
       for (let i = rowStart - 1; i >= oldest; i--) {
+        tick(work);
         const candidate = paragraphs[i];
         const step = line.baselineY - candidate.baselineY;
         if (step > SAME_ROW_EM * line.size && step <= BLOCK_GAP_EM * line.size && horizontalOverlap(candidate.box, line.box)) {
