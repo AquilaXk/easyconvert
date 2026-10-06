@@ -572,6 +572,27 @@ export class GraphExportError extends ConversionFailedError {
   }
 }
 
+/**
+ * A compressed stream would decode past a per-stream or per-document byte limit. The routes answer
+ * it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ */
+export class DecompressionLimitError extends ConversionFailedError {
+  readonly status = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DecompressionLimitError';
+  }
+}
+
+/** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
+export class CorruptStreamError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CorruptStreamError';
+  }
+}
+
 export class InvalidPageRangeError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
