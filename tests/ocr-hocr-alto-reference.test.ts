@@ -23,6 +23,7 @@ const LINE_BOX_TOLERANCE_PX = 5;
 /** A 3 degree skew over a ~900 px line rises about 47 px; half of that proves the slope is exercised. */
 const MIN_SKEW_RISE_PX = 20;
 const LANGUAGE = 'eng';
+const NO_PREPARATION = { rescale: false, deskew: false, binarize: false } as const;
 /**
  * Pages read by the WebAssembly engine the pipeline uses first. The borderless table is left out: that
  * engine segments it differently from the native CLI build (13 blocks against 14), so the CLI cannot
@@ -73,7 +74,9 @@ const pipelineCache = new Map<string, Promise<OcrResult>>();
 function pipeline(file: string): Promise<OcrResult> {
   const cached = pipelineCache.get(file);
   if (cached) return cached;
-  const result = performOcr(fs.readFileSync(path.join(FIXTURE_DIR, file)), LANGUAGE);
+  // The reference reads the page as stored, so this engine must too: page preparation (rescale,
+  // deskew, binarize) changes what the recognizer sees, and is covered by its own suites.
+  const result = performOcr(fs.readFileSync(path.join(FIXTURE_DIR, file)), LANGUAGE, NO_PREPARATION);
   pipelineCache.set(file, result);
   return result;
 }
