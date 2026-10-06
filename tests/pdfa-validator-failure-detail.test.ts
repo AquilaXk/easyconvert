@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import { PDFDocument, PDFName } from 'pdf-lib';
 import { createValidatorScripts, withValidator, type ValidatorScripts } from './helpers/pdfa-route-harness';
 import { verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
@@ -9,7 +10,7 @@ import { EngineUnavailableError } from '../src/lib/types';
  * scripts that fail in a fixed way; the PDF is a real PDF/A-2b-identified file pdf-lib wrote.
  */
 
-const EXIT_STATUS = 2;
+const NOT_EXECUTABLE_MODE = 0o644;
 
 let validators: ValidatorScripts;
 let pdfa2b: Buffer;
@@ -36,19 +37,18 @@ afterAll(() => {
 });
 
 describe('validator failure detail', () => {
-  it('names the exit status and nothing else when the validator fails without a report', async () => {
-    const validator = validators.write('verapdf-crash', `echo "boom at $0" >&2\nexit ${EXIT_STATUS}`);
+  it('answers with fixed text, not the path, when the validator cannot be started', async () => {
+    const validator = validators.write('verapdf-not-executable', 'echo unreachable');
+    fs.chmodSync(validator, NOT_EXECUTABLE_MODE);
 
     const error = await withValidator(validator, () => verifyPdfA(pdfa2b, 'pdfa-2b')).then(
       () => {
-        throw new Error('verifyPdfA accepted a validator that failed');
+        throw new Error('verifyPdfA accepted a validator that cannot run');
       },
       (err: unknown) => err
     );
 
     expect(error).toBeInstanceOf(EngineUnavailableError);
-    expect((error as EngineUnavailableError).message).toBe(
-      `Engine 'verapdf' is unavailable: veraPDF exited with status ${EXIT_STATUS}`
-    );
+    expect((error as EngineUnavailableError).message).toBe("Engine 'verapdf' is unavailable: veraPDF could not be started");
   });
 });

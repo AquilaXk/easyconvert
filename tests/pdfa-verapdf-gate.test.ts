@@ -141,7 +141,8 @@ describe('PDF/A validation with veraPDF', () => {
       expect(validation.profile).toBe('pdfa-2b');
       expect([...validation.failedRules].sort()).toEqual([...independent.failedRules].sort());
       expect(validation.message).toContain(FONT_NOT_EMBEDDED_RULE);
-    }
+    },
+    CONVERT_TIMEOUT_MS
   );
 
   for (const level of LEVELS) {

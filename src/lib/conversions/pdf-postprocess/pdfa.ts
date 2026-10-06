@@ -15,6 +15,8 @@ import {
 import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
+  executeSandboxedBinary,
+  SandboxedProcessError,
 } from '../../security/process-sandbox';
 import { resolveBinaryPath } from './utils';
 import { buildPdfExportFilterData } from '../pdf-export-options';
@@ -147,16 +149,41 @@ export function requireVerapdf(): string {
   return verapdf;
 }
 
-/** Fixed-text reason for a validator that failed without printing a report. */
-function describeVerapdfFailure(err: { code?: unknown; status?: unknown; signal?: unknown }): string {
-  if (err.code === 'ETIMEDOUT') return 'veraPDF timed out';
-  if (typeof err.status === 'number') return `veraPDF exited with status ${err.status}`;
-  if (typeof err.signal === 'string') return `veraPDF was terminated by ${err.signal}`;
-  return 'veraPDF could not be started';
+/** Exit statuses a shell and `unshare` use for a command that is not executable or not found. */
+const SHELL_NOT_EXECUTABLE_STATUS = 126;
+const SHELL_NOT_FOUND_STATUS = 127;
+const SPAWN_FAILURE_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'ENOEXEC']);
+
+/** Whether the validator could not be started at all (a server problem, not the document's). */
+function isStartFailure(err: unknown): boolean {
+  if (err instanceof SandboxedProcessError) {
+    const notStarted = err.exitCode === SHELL_NOT_EXECUTABLE_STATUS || err.exitCode === SHELL_NOT_FOUND_STATUS;
+    return notStarted && err.signal === null && err.stdout === '';
+  }
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && SPAWN_FAILURE_CODES.has(code);
 }
 
-/** Runs veraPDF with an explicit flavour and returns its JSON report; a validator that cannot run is unavailable. */
-function runVerapdf(verapdf: string, file: string, conformance: PdfAConformance): string {
+/** Environment of the validator: sanitized, with the Java runtime location when the host sets one. */
+function verapdfEnvironment(): Record<string, string> {
+  return process.env.JAVA_HOME ? { JAVA_HOME: process.env.JAVA_HOME } : {};
+}
+
+/**
+ * Runs veraPDF with an explicit flavour, in the same sandbox as the other native engines, and
+ * returns its JSON report. veraPDF exits non-zero for a non-compliant file but still prints the
+ * report, so a failed run that printed one is not an error.
+ *
+ * A validator that cannot be started is an EngineUnavailableError (503). A run that times out,
+ * crashes or prints nothing is a PdfPostprocessError (422): the document, not the deployment,
+ * is the likely cause. Detail is logged on the server and never returned.
+ */
+async function runVerapdf(
+  verapdf: string,
+  file: string,
+  conformance: PdfAConformance,
+  timeoutMs: number
+): Promise<string> {
   const args = [
     '--flavour',
     VERAPDF_FLAVOUR[conformance],
@@ -167,18 +194,21 @@ function runVerapdf(verapdf: string, file: string, conformance: PdfAConformance)
     file,
   ];
   try {
-    return execFileSync(verapdf, args, {
-      timeout: VERAPDF_TIMEOUT_MS,
+    const result = await executeSandboxedBinary(verapdf, args, {
+      timeoutMs,
       maxBuffer: VERAPDF_MAX_REPORT_BYTES,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).toString('utf-8');
-  } catch (err: any) {
-    // veraPDF exits non-zero for a non-compliant file but still prints the report.
-    const report = err?.stdout?.toString('utf-8') ?? '';
-    if (report) return report;
-    // err.message quotes the command line and the temp path: log it, answer with fixed text.
-    console.error('[pdfa] veraPDF failed without a report:', err?.message);
-    throw new EngineUnavailableError(VERAPDF_ENGINE_NAME, describeVerapdfFailure(err));
+      cwd: path.dirname(file),
+      env: verapdfEnvironment(),
+      networkIsolated: true,
+    });
+    return result.stdout.toString('utf-8');
+  } catch (err) {
+    if (err instanceof SandboxedProcessError && err.stdout) return err.stdout;
+    console.error('[pdfa] veraPDF failed without a report:', err instanceof Error ? err.message : err);
+    if (isStartFailure(err)) {
+      throw new EngineUnavailableError(VERAPDF_ENGINE_NAME, 'veraPDF could not be started');
+    }
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
 }
 
@@ -190,7 +220,8 @@ function runVerapdf(verapdf: string, file: string, conformance: PdfAConformance)
  */
 export async function verifyPdfA(
   pdf: Buffer,
-  conformance: PdfAConformance
+  conformance: PdfAConformance,
+  limits: { timeoutMs?: number } = {}
 ): Promise<{ pdfaValidated: true; conformanceLevel: PdfAConformance }> {
   const part = PDFA_PART[conformance];
   if (!part) {
@@ -208,7 +239,7 @@ export async function verifyPdfA(
   try {
     const candidate = path.join(workDir, 'candidate.pdf');
     fs.writeFileSync(candidate, pdf);
-    const verdict = parseVerapdfVerdict(runVerapdf(verapdf, candidate, conformance));
+    const verdict = parseVerapdfVerdict(await runVerapdf(verapdf, candidate, conformance, limits.timeoutMs ?? VERAPDF_TIMEOUT_MS));
     if (!verdict.compliant) {
       throw new PdfAValidationError(conformance, verdict.failedRules);
     }
