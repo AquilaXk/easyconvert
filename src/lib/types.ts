@@ -688,6 +688,13 @@ export class ArchiveEntryCollisionError extends Error {
   }
 }
 
+export class DecompressionLimitError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DecompressionLimitError';
+  }
+}
+
 export class ArchiveEncryptedHeaderError extends Error {
   readonly status = 422;
   constructor(message?: string) {

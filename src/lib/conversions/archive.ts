@@ -16,7 +16,16 @@ import {
   ArchiveInspectResponse,
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
+  DecompressionLimitError,
+  EngineUnavailableError,
 } from '../types';
+import {
+  ARCHIVE_SECURITY_LIMITS,
+  MAX_FILES,
+  MAX_UNCOMPRESSED_SIZE,
+  MAX_RATIO,
+} from './archive-limits';
+import { readXzStream } from './xz-reader';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -357,11 +366,45 @@ export async function createZipArchive(
   };
 }
 
-export const ARCHIVE_SECURITY_LIMITS = {
-  MAX_FILES: 1000,
-  MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
-  MAX_RATIO: 100, // 100:1 compression ratio
-};
+export { ARCHIVE_SECURITY_LIMITS, MAX_FILES, MAX_UNCOMPRESSED_SIZE, MAX_RATIO };
+
+/**
+ * Asserts that an archive entry path is safe.
+ * Throws ConversionFailedError if the path contains traversal ('..'), absolute paths ('/etc'),
+ * drive letters ('C:\'), or null bytes ('\0').
+ */
+export function assertSafeArchivePath(entryPath: string): string {
+  if (typeof entryPath !== 'string') {
+    throw new ConversionFailedError('Archive entry path must be a string');
+  }
+  if (entryPath.includes('\0')) {
+    throw new ConversionFailedError(`Archive entry path contains null byte: ${JSON.stringify(entryPath)}`);
+  }
+  // Windows drive prefix (e.g., C:\, C:, or single drive letter name C)
+  if (/^[a-zA-Z]:/.test(entryPath) || /^[a-zA-Z]$/.test(entryPath)) {
+    throw new ConversionFailedError(`Archive entry path contains drive letter prefix: ${entryPath}`);
+  }
+  // Absolute path (e.g. /etc or \etc or //server/share)
+  if (entryPath.startsWith('/') || entryPath.startsWith('\\')) {
+    throw new ConversionFailedError(`Archive entry path is absolute: ${entryPath}`);
+  }
+
+  const normalized = entryPath.replace(/\\/g, '/');
+  const rawParts = normalized.split('/');
+  if (rawParts.includes('..')) {
+    throw new ConversionFailedError(`Archive entry path contains traversal component (..): ${entryPath}`);
+  }
+
+  const safeParts = rawParts.filter((part) => part !== '.' && part !== '');
+  if (safeParts.length === 0) {
+    if (normalized.endsWith('/')) {
+      return '';
+    }
+    throw new ConversionFailedError(`Archive entry path resolves to empty root: ${entryPath}`);
+  }
+
+  return safeParts.join('/');
+}
 
 const PATH_DOT_CHAR_CODE = 0x2e;
 const DRIVE_COLON_INDEX = 1;
@@ -446,7 +489,102 @@ export function isZipBufferEncrypted(buffer: Buffer): boolean {
   return false;
 }
 
-export async function extractZipArchive(
+export function validateZipCentralDirectory(zipBuffer: Buffer): void {
+  if (zipBuffer.length < 22) {
+    return;
+  }
+
+  let eocdOffset = -1;
+  const minOffset = Math.max(0, zipBuffer.length - 65557);
+  for (let i = zipBuffer.length - 22; i >= minOffset; i--) {
+    if (
+      zipBuffer[i] === 0x50 &&
+      zipBuffer[i + 1] === 0x4b &&
+      zipBuffer[i + 2] === 0x05 &&
+      zipBuffer[i + 3] === 0x06
+    ) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset === -1) {
+    return;
+  }
+
+  let cdOffset = zipBuffer.readUInt32LE(eocdOffset + 16);
+  const totalEntries = zipBuffer.readUInt16LE(eocdOffset + 10);
+
+  if (cdOffset === 0xffffffff || totalEntries === 0xffff) {
+    const locatorOffset = eocdOffset - 20;
+    if (
+      locatorOffset >= 0 &&
+      zipBuffer[locatorOffset] === 0x50 &&
+      zipBuffer[locatorOffset + 1] === 0x4b &&
+      zipBuffer[locatorOffset + 2] === 0x06 &&
+      zipBuffer[locatorOffset + 3] === 0x07
+    ) {
+      const zip64EocdOffset = Number(zipBuffer.readBigUInt64LE(locatorOffset + 8));
+      if (
+        zip64EocdOffset + 56 <= zipBuffer.length &&
+        zipBuffer[zip64EocdOffset] === 0x50 &&
+        zipBuffer[zip64EocdOffset + 1] === 0x4b &&
+        zipBuffer[zip64EocdOffset + 2] === 0x06 &&
+        zipBuffer[zip64EocdOffset + 3] === 0x06
+      ) {
+        cdOffset = Number(zipBuffer.readBigUInt64LE(zip64EocdOffset + 48));
+      }
+    }
+  }
+
+  if (cdOffset >= zipBuffer.length) {
+    throw new ConversionFailedError('Invalid ZIP archive: Central directory offset out of bounds');
+  }
+
+  const seenNames = new Set<string>();
+  let cur = cdOffset;
+  while (cur + 46 <= zipBuffer.length) {
+    if (
+      zipBuffer[cur] !== 0x50 ||
+      zipBuffer[cur + 1] !== 0x4b ||
+      zipBuffer[cur + 2] !== 0x01 ||
+      zipBuffer[cur + 3] !== 0x02
+    ) {
+      break;
+    }
+
+    const nameLen = zipBuffer.readUInt16LE(cur + 28);
+    const extraLen = zipBuffer.readUInt16LE(cur + 30);
+    const commentLen = zipBuffer.readUInt16LE(cur + 32);
+    const externalAttr = zipBuffer.readUInt32LE(cur + 38);
+
+    const nameStart = cur + 46;
+    if (nameStart + nameLen > zipBuffer.length) {
+      throw new ConversionFailedError('Truncated central directory entry file name');
+    }
+
+    const rawName = zipBuffer.toString('utf-8', nameStart, nameStart + nameLen);
+
+    if (seenNames.has(rawName)) {
+      throw new ArchiveEntryCollisionError(rawName);
+    }
+    seenNames.add(rawName);
+
+    const isSymlink =
+      ((externalAttr >>> 16) & 0xf000) === 0xa000 ||
+      (externalAttr >>> 28) === 0xa ||
+      externalAttr === 0xa0000000;
+    if (isSymlink) {
+      throw new ConversionFailedError(`Symbolic links in ZIP archive are not permitted: ${rawName}`);
+    }
+
+    assertSafeArchivePath(rawName);
+
+    cur += 46 + nameLen + extraLen + commentLen;
+  }
+}
+
+export function extractZipArchive(
   zipBuffer: Buffer,
   options: { password?: string; entries?: string[] } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
@@ -454,12 +592,16 @@ export async function extractZipArchive(
     throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
   }
 
-  const isEncrypted = isZipBufferEncrypted(zipBuffer);
-  if (isEncrypted) {
-    if (!options.password) {
-      throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
-    }
-    const p7z = get7zBinaryPath();
+  // Pre-validate ZIP central directory for collisions, symlinks, and unsafe paths
+  validateZipCentralDirectory(zipBuffer);
+
+  return (async () => {
+    const isEncrypted = isZipBufferEncrypted(zipBuffer);
+    if (isEncrypted) {
+      if (!options.password) {
+        throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
+      }
+      const p7z = get7zBinaryPath();
     if (p7z) {
       const tmpDir = os.tmpdir();
       const token = crypto.randomBytes(8).toString('hex');
@@ -626,14 +768,15 @@ export async function extractZipArchive(
 
     const buffer = Buffer.concat(chunks);
 
-    // Zip-slip defense: sanitize path and strip leading / or drive letters or ..
-    const sanitizedName = sanitizeArchivePath(filename);
+    // Zip-slip defense: assert path safety
+    const sanitizedName = assertSafeArchivePath(filename);
     if (!sanitizedName) continue;
 
     files.push({ filename: sanitizedName, buffer });
   }
 
   return files;
+  })();
 }
 
 // ---------------------------------------------------------------------------
@@ -1562,7 +1705,7 @@ class TarReader {
     }
     let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
 
-    const filename = sanitizeArchivePath(rawName);
+    const filename = assertSafeArchivePath(rawName);
     if (!filename) return;
 
     if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
@@ -1837,7 +1980,7 @@ export function extractRarArchive(
             if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
               throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
-            const sanitized = sanitizeArchivePath(relPath);
+            const sanitized = assertSafeArchivePath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
               extracted.push({ filename: sanitized, buffer: buf });
             }
@@ -1909,7 +2052,7 @@ export function extractRarArchive(
 
       if (offset + 32 + nameSize <= rarBuffer.length) {
         const filename = rarBuffer.toString('utf-8', offset + 32, offset + 32 + nameSize);
-        const sanitizedName = sanitizeArchivePath(filename);
+        const sanitizedName = assertSafeArchivePath(filename);
         const dataOffset = offset + headSize;
 
         if (dataOffset + packSize > rarBuffer.length) {
@@ -2405,104 +2548,35 @@ export function packXz(uncompressed: Buffer): Buffer {
  * Pure TypeScript Authentic XZ Container Unpacker
  */
 export function unpackXz(buf: Buffer): Buffer {
-  if (buf.length < 32) throw new Error('Invalid XZ archive: buffer too small');
-  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  if (!buf.subarray(0, 6).equals(magic)) throw new Error('Invalid XZ archive: magic number mismatch');
+  return readXzStream(buf);
+}
 
-  const streamFlags = buf.subarray(6, 8);
-  const expectedFlagsCrc = buf.readUInt32LE(8);
-  if (crc32(streamFlags) !== expectedFlagsCrc) throw new Error('Invalid XZ archive: header CRC mismatch');
-
-  const offset = 12;
-  if (offset >= buf.length) throw new Error('Invalid XZ archive: truncated block header');
-  const bhSizeEncoded = buf[offset];
-  const bhSize = (bhSizeEncoded + 1) * 4;
-  if (offset + bhSize > buf.length) throw new Error('Invalid XZ archive: truncated block header');
-  const bhNoCrc = buf.subarray(offset, offset + bhSize - 4);
-  const expectedBhCrc = buf.readUInt32LE(offset + bhSize - 4);
-  if (crc32(bhNoCrc) !== expectedBhCrc) throw new Error('Invalid XZ archive: block header CRC mismatch');
-
-  const lzma2Payload = buf.subarray(offset + bhSize);
-
-  const footerMagic = buf.subarray(buf.length - 2);
-  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new Error('Invalid XZ archive: footer magic mismatch');
-
-  const footerBeforeCrc = buf.subarray(buf.length - 8, buf.length - 2);
-  const expectedFooterCrc = buf.readUInt32LE(buf.length - 12);
-  if (crc32(footerBeforeCrc) !== expectedFooterCrc) {
-    throw new Error('Invalid XZ archive: footer CRC mismatch');
+export function extractXzArchive(
+  buf: Buffer,
+  options: { entries?: string[] } = {}
+): { filename: string; buffer: Buffer }[] {
+  const uncompressed = readXzStream(buf);
+  const result = [{ filename: 'file', buffer: uncompressed }];
+  if (options.entries && options.entries.length > 0) {
+    return result.filter((f) => matchArchiveGlob(f.filename, options.entries));
   }
-  if (footerBeforeCrc[4] !== streamFlags[0] || footerBeforeCrc[5] !== streamFlags[1]) {
-    throw new Error('Invalid XZ archive: stream flags mismatch between header and footer');
-  }
-
-  const backwardSize = buf.readUInt32LE(buf.length - 8);
-  const indexSize = (backwardSize + 1) * 4;
-  if (buf.length < 12 + indexSize + 12) throw new Error('Invalid XZ archive: invalid index size');
-  const indexOffset = buf.length - 12 - indexSize;
-  const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
-
-  const expectedIndexCrc = indexBuf.readUInt32LE(indexBuf.length - 4);
-  const indexBodyNoCrc = indexBuf.subarray(0, indexBuf.length - 4);
-  if (crc32(indexBodyNoCrc) !== expectedIndexCrc) {
-    throw new Error('Invalid XZ archive: index CRC mismatch');
-  }
-
-  let idxCur = 1;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  let uncompressedSize = 0;
-  let shift = 0;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    uncompressedSize |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) break;
-    shift += 7;
-  }
-
-  const checkCrc = buf.readUInt32LE(indexOffset - 4);
-  const props = Buffer.from([0x14]);
-  const uncompressed = decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
-  if (crc32(uncompressed) !== checkCrc) {
-    throw new Error('Invalid XZ archive: payload CRC32 mismatch');
-  }
-  return uncompressed;
+  return result;
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
   const xzBin = getXzBinaryPath();
   if (xzBin) {
-    try {
-      const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
-      return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
-        input: inputBuffer,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
-    } catch {}
+    const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
+    return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
+      input: inputBuffer,
+      maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    });
   }
   return packXz(inputBuffer);
 }
 
 export function decompressXz(inputBuffer: Buffer): Buffer {
-  if (inputBuffer.length < 32) {
-    throw new Error('Invalid XZ archive: buffer too small');
-  }
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    try {
-      return execFileSync(xzBin, ['-d', '-c', '-q'], {
-        input: inputBuffer,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
-    } catch {}
-  }
-  return unpackXz(inputBuffer);
+  return readXzStream(inputBuffer);
 }
 
 export function convertWithNative7z(
@@ -2713,6 +2787,98 @@ export function convertWithNative7z(
       throw err;
     }
     return null;
+  } finally {
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+/**
+ * Extracts a container archive format (ISO, DEB, RPM, CPIO) using native 7-Zip CLI.
+ * Fails closed with EngineUnavailableError if 7-Zip is unavailable.
+ */
+export async function extractContainerArchiveWith7z(
+  archiveBuffer: Buffer,
+  format: string,
+  options: { password?: string; entries?: string[] } = {}
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const p7zBin = get7zBinaryPath();
+  if (!p7zBin) {
+    throw new EngineUnavailableError(
+      '7-Zip',
+      `7-Zip binary is required to extract container archive (${format.toUpperCase()})`
+    );
+  }
+
+  const tmpDir = os.tmpdir();
+  const token = crypto.randomBytes(8).toString('hex');
+  const workDir = path.join(tmpDir, `easyconvert_${format}_container_${Date.now()}_${token}`);
+  fs.mkdirSync(workDir, { recursive: true });
+
+  try {
+    const inputPath = path.join(workDir, `input.${format}`);
+    fs.writeFileSync(inputPath, archiveBuffer);
+    const extractDir = path.join(workDir, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
+
+    const pwExtractArgs = options.password ? ['-p'] : [];
+    const resolved = resolveSandboxedCommand(
+      p7zBin,
+      ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath],
+      { networkIsolated: true }
+    );
+    try {
+      execFileSync(resolved.binary, resolved.args, {
+        cwd: workDir,
+        env: getSanitizedEnvironment({}, true),
+        timeout: 60000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        input: options.password ? Buffer.from(options.password + '\n') : undefined,
+      });
+    } catch (err: any) {
+      throw new ConversionFailedError(
+        `Failed to extract container archive (${format.toUpperCase()}): ${err?.message || String(err)}`
+      );
+    }
+
+    const collected: { filename: string; buffer: Buffer }[] = [];
+    let totalSize = 0;
+
+    const walk = (dir: string, relPrefix = '') => {
+      const items = fs.readdirSync(dir);
+      for (const item of items) {
+        const fullPath = path.join(dir, item);
+        const relPath = relPrefix ? `${relPrefix}/${item}` : item;
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          walk(fullPath, relPath);
+        } else if (stat.isFile()) {
+          totalSize += stat.size;
+          if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+            throw new DecompressionLimitError(
+              `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+            );
+          }
+          if (
+            archiveBuffer.length > 0 &&
+            totalSize / archiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
+          ) {
+            throw new DecompressionLimitError(
+              `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+            );
+          }
+          const safeName = assertSafeArchivePath(relPath);
+          if (options.entries && options.entries.length > 0) {
+            if (!matchArchiveGlob(safeName, options.entries)) continue;
+          }
+          collected.push({ filename: safeName, buffer: fs.readFileSync(fullPath) });
+        }
+      }
+    };
+
+    walk(extractDir);
+    return collected;
   } finally {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
@@ -3596,7 +3762,7 @@ export function extract7zArchive(
           }
         }
 
-        const sanitizedName = sanitizeArchivePath(filenames[fileIdx++]);
+        const sanitizedName = assertSafeArchivePath(filenames[fileIdx++]);
         if (sanitizedName) {
           files.push({ filename: sanitizedName, buffer: fileBuf });
         }
@@ -3606,7 +3772,7 @@ export function extract7zArchive(
         throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
       const fname = fileIdx < filenames.length ? filenames[fileIdx++] : `file_${f}`;
-      const sanitizedName = sanitizeArchivePath(fname);
+      const sanitizedName = assertSafeArchivePath(fname);
       if (sanitizedName) {
         files.push({ filename: sanitizedName, buffer: uncompressedData });
       }
@@ -4563,28 +4729,24 @@ export async function convertArchive(
       files = [{ filename: baseName, buffer: uncompressed }];
     }
   } else if (src === 'tar.xz' || src === 'txz' || src === 'xz') {
-    try {
-      const uncompressed = decompressXz(effectiveBuffer);
-      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-      if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
-          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
-      if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed, options);
-      } else {
-        files = [{ filename: baseName, buffer: uncompressed }];
-      }
-    } catch (err) {
-      throw new ConversionFailedError(
-        `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+    const uncompressed = readXzStream(effectiveBuffer);
+    if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw new DecompressionLimitError(
+        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
+    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      throw new DecompressionLimitError(
+        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+      );
+    }
+    if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+      files = extractTarArchive(uncompressed, options);
+    } else {
+      files = [{ filename: baseName, buffer: uncompressed }];
+    }
+  } else if (src === 'iso' || src === 'deb' || src === 'rpm' || src === 'cpio') {
+    files = await extractContainerArchiveWith7z(effectiveBuffer, src, options);
   }
 
   const ARCHIVE_CONTAINER_FORMATS = new Set([
@@ -4606,6 +4768,10 @@ export async function convertArchive(
     'xz',
     'txz',
     'tar.xz',
+    'iso',
+    'deb',
+    'rpm',
+    'cpio',
   ]);
   function isValidEmptyArchive(format: string, buffer: Buffer): boolean {
     if (format === 'zip') {
