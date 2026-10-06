@@ -80,18 +80,19 @@ describe('convertImage to xps', () => {
     ['metadata stripped', { stripMetadata: true }],
   ])('undecodable input with %s', (_label, options) => {
     const garbage = Buffer.from('this is not an image, it is text that no decoder can read', 'utf-8');
+    // 40 bytes end inside the first chunks, so the header itself is unreadable.
     const truncatedPng = (): Buffer => runConvert(['-size', '8x8', 'xc:red', 'png24:-']).subarray(0, 40);
 
     it('rejects text with a typed ConversionFailedError', async () => {
       const error = await captureError(() => convertImage(garbage, 'xps', options, 'bad.png', 'png'));
       expect(error.name).toBe('ConversionFailedError');
-      expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(.*unsupported image format/);
+      expect(error.message).toMatch(/^Invalid image: the header could not be decoded \(.*unsupported image format/);
     });
 
     it.skipIf(SKIP_WITHOUT_MAGICK)('rejects a truncated PNG with a typed ConversionFailedError', async () => {
       const error = await captureError(() => convertImage(truncatedPng(), 'xps', options, 'cut.png', 'png'));
       expect(error.name).toBe('ConversionFailedError');
-      expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(/);
+      expect(error.message).toMatch(/^Invalid image: the header could not be decoded \(/);
     });
   });
 });

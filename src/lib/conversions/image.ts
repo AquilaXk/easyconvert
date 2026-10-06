@@ -2507,9 +2507,12 @@ function assertRgbSamples(info: OutputInfo, target: string): void {
  * budget from its header, with the resize that will be applied, before the raster is decoded.
  */
 async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
-  const { width, height } = await pipeline.metadata();
+  const { width, height, orientation } = await pipeline.metadata();
   if (width === undefined || height === undefined) return;
-  const target = resizedDimensions(width, height, options);
+  // The picture is turned upright before it is resized, so a quarter-turn orientation swaps the sides.
+  const quarterTurn = (orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+  const upright = quarterTurn ? { width: height, height: width } : { width, height };
+  const target = resizedDimensions(upright.width, upright.height, options);
   assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
 }
 
@@ -3294,20 +3297,25 @@ async function decodePdfPages(
     sourceFormat === 'ico' ||
     (activeBuffer.length >= 4 && activeBuffer[0] === 0 && activeBuffer[1] === 0 && activeBuffer[2] === 1 && activeBuffer[3] === 0)
   ) {
-    return { pages: [await toPage(sharp(decodeIco(activeBuffer)))] };
+    return { pages: [await toPage(await openInputImage(decodeIco(activeBuffer)))] };
   }
 
   // A PDF holds several pages, so a multi-page source keeps all of them here (pdf is not a tiff target).
+  // Every page is checked from its own header before it is decoded: page 1's header says nothing of the rest.
+  await assertEncodedImageWithinLimit(activeBuffer);
   const selection = await selectFrames(activeBuffer, 'pdf', options);
   const frameFields = { sourceFrameCount: selection.sourceFrameCount, frameUsed: selection.frameUsed };
   if (selection.zipPages) {
     const pages: PdfPageImage[] = [];
     for (const page of selection.zipPages) {
-      pages.push(await toPage(sharp(activeBuffer, { page: page - 1 })));
+      const pageInput = { page: page - 1 };
+      await assertEncodedImageWithinLimit(activeBuffer, undefined, pageInput);
+      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput)));
     }
     return { pages, ...frameFields };
   }
-  return { pages: [await toPage(sharp(selection.source, selection.input))], ...frameFields };
+  await assertEncodedImageWithinLimit(selection.source, undefined, selection.input);
+  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input))], ...frameFields };
 }
 
 async function convertImageToPdf(
