@@ -152,6 +152,12 @@ export interface ConversionOptions {
   validateMagicBytes?: boolean;
   // Data & Spreadsheet options
   delimiter?: string;
+  /** WHATWG encoding label of delimited-text input; detected from BOM, NUL pattern and content when omitted. */
+  encoding?: string;
+  /** Prefix CSV/TSV output with a UTF-8 BOM; defaults to true for CSV and false for TSV. */
+  bom?: boolean;
+  /** Neutralize CSV/TSV cells that a spreadsheet would evaluate as formulas; defaults to true. */
+  escapeFormulas?: boolean;
   hasHeaders?: boolean;
   sheetMode?: 'merged' | 'split' | 'index';
   sheetIndex?: number;
@@ -192,6 +198,7 @@ export interface ConversionOptions {
   fastStart?: boolean;
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
+  /** @deprecated No-op. No in-process lossy encoder exists; such targets always require FFmpeg. */
   allowPureLossyBitstream?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
@@ -438,6 +445,14 @@ export class OcrEngineUnavailableError extends ConversionFailedError {
   }
 }
 
+/** An image handed to OCR preprocessing is malformed, inconsistent or beyond its limits. */
+export class OcrPreprocessError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrPreprocessError';
+  }
+}
+
 export class UnsupportedTargetError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -480,6 +495,54 @@ export class UnsupportedOptionError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'UnsupportedOptionError';
+  }
+}
+
+/** Input bytes that are not valid text in the detected or requested character encoding. */
+export class DataEncodingError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataEncodingError';
+  }
+}
+
+/** Where a structured-data parse error was found; all positions are 1-based. */
+export interface DataErrorLocation {
+  /** Physical line of the input text. */
+  line?: number;
+  column?: number;
+  /** Record of a delimited table, counting the header record as row 1. */
+  row?: number;
+}
+
+/** Structured-data input (CSV, JSON, NDJSON, YAML, TOML, XML) that does not parse. */
+export class DataParseError extends ConversionFailedError {
+  readonly line?: number;
+  readonly column?: number;
+  readonly row?: number;
+
+  constructor(message: string, location: DataErrorLocation = {}) {
+    super(message);
+    this.name = 'DataParseError';
+    this.line = location.line;
+    this.column = location.column;
+    this.row = location.row;
+  }
+}
+
+/** Structured-data input that exceeds a safety cap: entity or alias expansion, expanded size, nesting depth. */
+export class DataLimitExceededError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataLimitExceededError';
+  }
+}
+
+/** A parsed value that the target data format cannot represent (TOML null, JSON infinity, XML control characters). */
+export class DataRepresentationError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DataRepresentationError';
   }
 }
 
@@ -629,9 +692,11 @@ export class MissingVolumeError extends Error {
 
 export class ArchiveEntryCollisionError extends Error {
   readonly status = 422;
+  readonly entryName: string;
   constructor(entryName: string, message?: string) {
     super(message || `Archive entry name collision detected for "${entryName}".`);
     this.name = 'ArchiveEntryCollisionError';
+    this.entryName = entryName;
   }
 }
 

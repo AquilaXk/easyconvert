@@ -21,7 +21,7 @@ import {
 } from '../src/lib/security/svg-sanitizer';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { convertImage } from '../src/lib/conversions/image';
-import { convertData, simpleXmlToJson } from '../src/lib/conversions/data';
+import { convertData } from '../src/lib/conversions/data';
 import JSZip from 'jszip';
 import {
   extractZipArchive,
@@ -151,12 +151,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true })).toBe(true);
     });
 
-    it('executes TSV -> CSV delimited streaming transformer without throwing', () => {
+    it('streams TSV -> CSV with the server output rules (BOM, CRLF, quoting, formula escape)', () => {
       const transformer = resolveChunkTransformer('tsv', 'csv');
-      const sampleTsv = new TextEncoder().encode('col1\tcol2\tcol3\n1\t2\t3\n');
+      const sampleTsv = new TextEncoder().encode('col1\tcol2\tcol3\n1\tx, y\t=2+3\n');
       const transformed = transformer(sampleTsv, 0, sampleTsv.length) as Uint8Array;
-      const csvText = new TextDecoder().decode(transformed);
-      expect(csvText).toBe('col1,col2,col3\n1,2,3\n');
+      // Hand-written expected bytes: UTF-8 BOM, CRLF between records, the comma field quoted, the formula escaped.
+      expect(Buffer.from(transformed).toString('hex')).toBe(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('col1,col2,col3\r\n1,"x, y","\'=2+3"', 'utf-8')]).toString('hex')
+      );
     });
 
     it('safely routes unsupported large files (>100MB) to L4 Cloud fallback instead of crashing L3 worker', () => {
@@ -183,6 +185,13 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       });
       expect(supportedResolution.tier).toBe('L3');
       expect(supportedResolution.tierName).toBe('Edge L3 (OPFS Stream)');
+
+      // The stream decodes UTF-8 only: a file in another encoding goes to the server, which honours it.
+      const legacyEncoding = resolveConversionTier('csv', 'tsv', largeSize, { encoding: 'shift_jis' }, {
+        hasOpfsSyncAccess: true,
+      });
+      expect(legacyEncoding.tier).toBe('L4');
+      expect(legacyEncoding.isClientEdge).toBe(false);
     });
   });
 
@@ -500,16 +509,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(clean).toContain('href="#local-symbol"');
     });
 
-    it('sanitizes XML data in simpleXmlToJson and convertData', async () => {
-      const maliciousXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
-      const parsed = simpleXmlToJson(maliciousXml) as any;
-      expect(parsed.root.item.script).toBeUndefined();
-      expect(parsed.root.item.desc.onclick).toBeUndefined();
-
-      const res = await convertData(Buffer.from(maliciousXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
-      const jsonStr = res.buffer.toString('utf-8');
-      expect(jsonStr).not.toContain('alert(1)');
-      expect(jsonStr).not.toContain('onclick');
+    it('keeps script-like XML data verbatim: data XML is not an SVG to sanitize (#455)', async () => {
+      const userXml = `<root><item><name>Product</name><script>alert(1)</script><desc onclick="evil()">Desc</desc></item></root>`;
+      const res = await convertData(Buffer.from(userXml, 'utf-8'), 'xml', 'json', {}, 'test.xml');
+      expect(res.mimeType).toBe('application/json');
+      // The JSON output is inert data; dropping these elements would silently lose the user's content.
+      expect(JSON.parse(res.buffer.toString('utf-8'))).toEqual({
+        $jsonml: ['root', ['item', ['name', 'Product'], ['script', 'alert(1)'], ['desc', { onclick: 'evil()' }, 'Desc']]],
+      });
     });
 
     it('enforces SVG sanitization in vector-cad conversions', async () => {

@@ -24,6 +24,8 @@ import {
   BitWriter,
   BitReader,
 } from '../src/lib/conversions/index';
+import { probeStream } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Phase 2 SOTA Precision & Standards Testnet', () => {
   // ==========================================================================
@@ -659,18 +661,19 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       expect(nonZero).toBeGreaterThan(0);
     });
 
-    it('transcodes FLAC to MP3 and MP3 to WAV seamlessly without FFmpeg', async () => {
+    oracleTest('transcodes FLAC to MP3 and MP3 to WAV through the native engine', ['ffmpeg', 'ffprobe'], async () => {
       const wav = createTestPcmWav(44100, 2, 0.2);
 
       // 1. WAV -> FLAC
       const flacResult = await convertFile(wav, 'wav', 'flac', {}, 'song.wav');
       expect(flacResult.mimeType).toBe('audio/flac');
 
-      // 2. FLAC -> MP3 (Pure TS decoding of FLAC, then encoding to MP3)
-      const mp3Result = await convertFile(flacResult.buffer, 'flac', 'mp3', { allowPureLossyBitstream: true }, 'song.flac');
+      // 2. FLAC -> MP3 (the lossy encode is FFmpeg-only)
+      const mp3Result = await convertFile(flacResult.buffer, 'flac', 'mp3', {}, 'song.flac');
       expect(mp3Result.mimeType).toBe('audio/mpeg');
+      expect(probeStream(mp3Result.buffer, 'mp3', 'a').codec_name).toBe('mp3');
 
-      // 3. MP3 -> WAV (Pure TS decoding of MP3, then encoding to WAV)
+      // 3. MP3 -> WAV
       const wavResult = await convertFile(mp3Result.buffer, 'mp3', 'wav', {}, 'song.mp3');
       expect(wavResult.mimeType).toBe('audio/wav');
       expect(wavResult.buffer.toString('ascii', 0, 4)).toBe('RIFF');
