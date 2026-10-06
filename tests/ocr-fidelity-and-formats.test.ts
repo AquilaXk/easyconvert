@@ -13,6 +13,7 @@ import {
 } from '../src/lib/conversions/index';
 import { OcrResult, OcrLineBlock } from '../src/lib/conversions/ocr-pdf-combiner';
 import { OcrLanguageUnavailableError } from '../src/lib/types';
+import { OcrMarkupError } from '../src/lib/conversions/ocr-markup';
 
 describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vertical Models', () => {
   // -------------------------------------------------------------
@@ -358,32 +359,17 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       expect(result.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
     });
 
-    it('exports multi-page PDF to multi-page hOCR and ALTO XML documents', async () => {
+    it('rejects a PDF whose pages carry only digital text: hOCR and ALTO need word geometry, which is not invented', async () => {
       const pdfBuffer = await createTestMultiPagePdf();
-
-      // Convert to hOCR
-      const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'contract.pdf');
-
-      expect(hocrResult.mimeType).toBe('application/xhtml+xml');
-      expect(hocrResult.filename).toBe('contract.hocr');
-      const hocrText = hocrResult.buffer.toString('utf-8');
-      expect(hocrText).toContain('id="page_1"');
-      expect(hocrText).toContain('id="page_2"');
-
-      // Convert to ALTO
-      const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'contract.pdf');
-
-      expect(altoResult.mimeType).toBe('application/xml');
-      expect(altoResult.filename).toBe('contract.xml');
-      const altoText = altoResult.buffer.toString('utf-8');
-      expect(altoText).toContain('ID="PAGE_1"');
-      expect(altoText).toContain('ID="PAGE_2"');
+      for (const target of ['hocr', 'alto'] as const) {
+        const failure = await convertFile(pdfBuffer, 'pdf', target, { ocrEnabled: true, ocrMode: 'skip_text' }, 'contract.pdf').then(
+          () => null,
+          (err: unknown) => err
+        );
+        expect(failure).toBeInstanceOf(OcrMarkupError);
+        expect((failure as OcrMarkupError).message).toBe('hOCR/ALTO need word geometry: page 1 has text but no recognized lines.');
+        expect((failure as OcrMarkupError).status).toBe(400);
+      }
     });
   });
 
@@ -613,53 +599,31 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
   // 6. Mixed-Orientation Multi-Page PDF Coordinate Parity
   // -------------------------------------------------------------
   describe('Mixed-Orientation Multi-Page Viewport Parity', () => {
-    it('synthesizes line blocks spanning actual page width for landscape digital pages', async () => {
+    it('does not synthesize layout for landscape and portrait digital pages: the export fails with a typed error', async () => {
       const doc = await PDFDocument.create();
       const font = await doc.embedFont(StandardFonts.Helvetica);
 
       // Page 1: Landscape (1000 x 500)
-      const page1 = doc.addPage([1000, 500]);
-      page1.drawText('Wide landscape legal banner text with significant horizontal width across the entire layout', {
+      doc.addPage([1000, 500]).drawText('Wide landscape legal banner text with significant horizontal width across the entire layout', {
         x: 50,
         y: 400,
         size: 18,
         font,
       });
-
       // Page 2: Portrait (500 x 800)
-      const page2 = doc.addPage([500, 800]);
-      page2.drawText('Standard vertical portrait document text', {
-        x: 50,
-        y: 700,
-        size: 14,
-        font,
-      });
+      doc.addPage([500, 800]).drawText('Standard vertical portrait document text', { x: 50, y: 700, size: 14, font });
 
       const pdfBuffer = Buffer.from(await doc.save());
 
-      // Smart OCR with skip_text (both pages have native text and are skipped)
-      const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'mixed.pdf');
-
-      const hocrText = hocrResult.buffer.toString('utf-8');
-      // Page 1 should reflect 1000 x 500
-      expect(hocrText).toContain('bbox 0 0 1000 500');
-      // Page 2 should reflect 500 x 800
-      expect(hocrText).toContain('bbox 0 0 500 800');
-
-      // Synthesized blocks on page 1 should extend beyond 612 default width
-      const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'mixed.pdf');
-
-      const altoText = altoResult.buffer.toString('utf-8');
-      expect(altoText).toContain('WIDTH="1000" HEIGHT="500"');
-      expect(altoText).toContain('WIDTH="500" HEIGHT="800"');
-      // Verify that page 1 has a TextBlock spanning width greater than 612
-      expect(altoText).toMatch(/WIDTH="(?:9\d\d|1000)"/);
+      // Both pages have native text and are skipped by OCR, so there is no word geometry to write.
+      for (const target of ['hocr', 'alto'] as const) {
+        const failure = await convertFile(pdfBuffer, 'pdf', target, { ocrEnabled: true, ocrMode: 'skip_text' }, 'mixed.pdf').then(
+          () => null,
+          (err: unknown) => err
+        );
+        expect(failure).toBeInstanceOf(OcrMarkupError);
+        expect((failure as OcrMarkupError).message).toBe('hOCR/ALTO need word geometry: page 1 has text but no recognized lines.');
+      }
     });
   });
 });

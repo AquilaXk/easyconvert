@@ -636,17 +636,28 @@ describe('exporter output read by the reference XML tools', () => {
   );
 
   oracleTest(
-    'text-only and multi-page input also validate; unstructured lines each become a TextBlock directly under PrintSpace',
+    'multi-page input validates; lines without layout information each become a TextBlock directly under PrintSpace',
     ['xmllint'],
     () => {
-      const textOnly: OcrResult = { text: 'first\nsecond', confidence: 0.9, wordCount: 2, lines: ['first', 'second'] };
-      const alto = exportAlto([textOnly, groupedResult()], { filename: 'mixed.pdf' });
+      const flat = {
+        text: 'first\nsecond',
+        confidence: 0.9,
+        wordCount: 2,
+        lines: ['first', 'second'],
+        imageWidth: 100,
+        imageHeight: 100,
+        lineBlocks: [
+          { text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, words: [{ text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, confidence: 90 }] },
+          { text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, words: [{ text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, confidence: 80 }] },
+        ],
+      };
+      const alto = exportAlto([flat, groupedResult()], { filename: 'mixed.pdf' });
       expect(validateAlto44(alto).stderr.trim()).toBe('- validates');
-      // Page 1 is the two synthesized lines; page 2 has two blocks.
+      // Page 1 is the two unstructured lines; page 2 has two blocks.
       expect(xpathCount(alto, "//*[local-name()='Page'][1]//*[local-name()='TextBlock']")).toBe(2);
       expect(xpathCount(alto, "//*[local-name()='Page'][1]//*[local-name()='ComposedBlock']")).toBe(0);
       expect(xpathCount(alto, "//*[local-name()='Page'][2]//*[local-name()='ComposedBlock']")).toBe(2);
-      const hocr = exportHocr([textOnly, groupedResult()], { filename: 'mixed.pdf' });
+      const hocr = exportHocr([flat, groupedResult()], { filename: 'mixed.pdf' });
       expect(xmlWellFormed(hocr).ok).toBe(true);
       expect(xpathCount(hocr, "//*[@class='ocr_page'][1]//*[@class='ocr_carea']")).toBe(2);
       expect(xpathCount(hocr, "//*[@class='ocr_page'][2]//*[@class='ocr_carea']")).toBe(2);

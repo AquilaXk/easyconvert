@@ -20,10 +20,8 @@ export { parseHocr, parseAlto } from './ocr-import';
  * strings joined once; text is escaped in a single pass.
  */
 
-const DEFAULT_PAGE_WIDTH_PX = 612;
-const DEFAULT_PAGE_HEIGHT_PX = 792;
 const PERCENT_SCALE = 100;
-const DEFAULT_WORD_CONFIDENCE = 0.9;
+const NEED_WORD_GEOMETRY = 'hOCR/ALTO need word geometry';
 const SLOPE_DECIMALS_SCALE = 1000;
 /** Row metrics are floats; eight significant digits is the precision the recognizer's own hOCR writes. */
 const METRIC_SIGNIFICANT_DIGITS = 8;
@@ -110,6 +108,20 @@ function languageTag(language: string | undefined): string | undefined {
   return isLanguageTag(language) ? language : undefined;
 }
 
+/** Characters escapeXml dropped since the current export began; reported once when it ends. */
+let droppedCharacters = 0;
+
+function startExport(): void {
+  droppedCharacters = 0;
+}
+
+function finishExport(): void {
+  if (droppedCharacters > 0) {
+    console.debug(`[ocr-export] dropped ${droppedCharacters} characters that XML 1.0 cannot carry`);
+  }
+  droppedCharacters = 0;
+}
+
 /**
  * Escapes text for XML in one pass. Characters XML 1.0 cannot carry (control characters other than
  * tab, line feed and carriage return, unpaired surrogates, U+FFFE and U+FFFF) are dropped. In
@@ -129,12 +141,19 @@ function escapeXml(text: string, attribute = false): string {
     else if (code === CH_QUOTE) replacement = '&quot;';
     else if (code === CH_APOSTROPHE) replacement = '&apos;';
     else if (code === CH_TAB || code === CH_LF || code === CH_CR) replacement = attribute ? `&#${code};` : null;
-    else if (code < FIRST_PRINTABLE || code === NONCHARACTER_FFFE || code === NONCHARACTER_FFFF) replacement = '';
+    else if (code < FIRST_PRINTABLE || code === NONCHARACTER_FFFE || code === NONCHARACTER_FFFF) {
+      replacement = '';
+      droppedCharacters++;
+    }
     else if (code >= SURROGATE_HIGH_FIRST && code <= SURROGATE_LOW_LAST) {
       const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
       const paired = code <= SURROGATE_HIGH_LAST && next >= SURROGATE_LOW_FIRST && next <= SURROGATE_LOW_LAST;
-      if (paired) i++;
-      else replacement = '';
+      if (paired) {
+        i++;
+      } else {
+        replacement = '';
+        droppedCharacters++;
+      }
     }
     if (replacement === null) continue;
     parts ??= [];
@@ -175,24 +194,23 @@ type LooseBBox = {
 };
 
 const MIN_BOX_SIZE_PX = 1;
-const FALLBACK_BOX_SIZE_PX = 10;
 
-/** Size implied by an opposite edge, or a nominal size when the box has neither a size nor that edge. */
-function extentFrom(edge: number | undefined, start: number): number {
-  if (edge === undefined || edge === null) return FALLBACK_BOX_SIZE_PX;
-  return Math.max(MIN_BOX_SIZE_PX, edge - start);
+function requireNumber(value: number | undefined, what: string): number {
+  if (typeof value !== 'number') throw new OcrMarkupError(`Cannot export ${what}: it has no position or size.`);
+  return value;
 }
 
 /** Fills `into` with the whole-pixel box of `bbox` (at least one pixel wide and tall). */
 function fillBox(into: Box, bbox: LooseBBox | null | undefined, what: string): Box {
-  const x = bbox?.x ?? bbox?.x0 ?? 0;
-  const y = bbox?.y ?? bbox?.y0 ?? 0;
-  const width = bbox?.width ?? extentFrom(bbox?.x1, x);
-  const height = bbox?.height ?? extentFrom(bbox?.y1, y);
+  if (!bbox) throw new OcrMarkupError(`Cannot export ${what}: it has no box.`);
+  const x = requireNumber(bbox.x ?? bbox.x0, what);
+  const y = requireNumber(bbox.y ?? bbox.y0, what);
+  const width = bbox.width ?? (bbox.x1 === undefined ? undefined : bbox.x1 - x);
+  const height = bbox.height ?? (bbox.y1 === undefined ? undefined : bbox.y1 - y);
   into.x0 = wholeNumber(x, what);
   into.y0 = wholeNumber(y, what);
-  into.x1 = into.x0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(width, what));
-  into.y1 = into.y0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(height, what));
+  into.x1 = into.x0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(requireNumber(width, what), what));
+  into.y1 = into.y0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(requireNumber(height, what), what));
   return into;
 }
 
@@ -200,150 +218,67 @@ function newBox(): Box {
   return { x0: 0, y0: 0, x1: 0, y1: 0 };
 }
 
-function computeWordConfidence(wordConf?: number | null, pageConf?: number | null): number {
-  if (typeof wordConf === 'number' && !isNaN(wordConf)) {
-    return wordConf > 1 ? wordConf / PERCENT_SCALE : wordConf;
-  }
-  if (typeof pageConf === 'number' && !isNaN(pageConf)) {
-    return pageConf > 1 ? pageConf / PERCENT_SCALE : pageConf;
-  }
-  return DEFAULT_WORD_CONFIDENCE;
+/** A word's confidence on the 0..100 scale used throughout, or null when the word has none. */
+function confidencePercent(confidence: number | undefined): number | null {
+  if (typeof confidence !== 'number' || Number.isNaN(confidence)) return null;
+  return Math.max(0, Math.min(PERCENT_SCALE, confidence));
 }
 
-/** Normalizes an OcrResult or OcrResult[] into an array of page structures. */
-function normalizePages(
-  ocrInput: OcrResult | OcrResult[],
-  defaultWidth = DEFAULT_PAGE_WIDTH_PX,
-  defaultHeight = DEFAULT_PAGE_HEIGHT_PX
-): OcrPageResult[] {
-  if (Array.isArray(ocrInput)) {
-    return ocrInput.map((res, idx) => {
-      const w = (res as any).width || res.imageWidth || defaultWidth;
-      const h = (res as any).height || res.imageHeight || defaultHeight;
-      return {
-        pageNumber: idx + 1,
-        width: w,
-        height: h,
-        text: res.text || '',
-        confidence: res.confidence,
-        lineBlocks: res.lineBlocks && res.lineBlocks.length > 0 ? res.lineBlocks : synthesizeLineBlocks({ ...res, width: w, height: h }),
-        lines: res.lines,
-        language: res.language,
-      };
-    });
+/** The pages of one result: its `pages` when it has them, otherwise the result itself as one page. */
+function pagesOf(res: OcrResult): OcrPageResult[] {
+  if (res.pages && res.pages.length > 0) {
+    return res.pages.map((p) => ({
+      pageNumber: p.pageNumber,
+      width: p.width || res.imageWidth || 0,
+      height: p.height || res.imageHeight || 0,
+      text: p.text || '',
+      confidence: p.confidence ?? res.confidence,
+      lineBlocks: p.lineBlocks ?? [],
+      lines: p.lines,
+      language: p.language ?? res.language,
+    }));
   }
-
-  if (ocrInput.pages && ocrInput.pages.length > 0) {
-    return ocrInput.pages.map((p, idx) => {
-      const w = p.width || ocrInput.imageWidth || defaultWidth;
-      const h = p.height || ocrInput.imageHeight || defaultHeight;
-      return {
-        pageNumber: p.pageNumber || idx + 1,
-        width: w,
-        height: h,
-        text: p.text || '',
-        confidence: p.confidence ?? ocrInput.confidence,
-        lineBlocks: p.lineBlocks && p.lineBlocks.length > 0 ? p.lineBlocks : synthesizeLineBlocks({ ...p, width: w, height: h }),
-        lines: p.lines,
-        language: p.language ?? ocrInput.language,
-      };
-    });
-  }
-
-  const w = (ocrInput as any).width || ocrInput.imageWidth || defaultWidth;
-  const h = (ocrInput as any).height || ocrInput.imageHeight || defaultHeight;
   return [
     {
       pageNumber: 1,
-      width: w,
-      height: h,
-      text: ocrInput.text || '',
-      confidence: ocrInput.confidence,
-      lineBlocks: ocrInput.lineBlocks && ocrInput.lineBlocks.length > 0 ? ocrInput.lineBlocks : synthesizeLineBlocks({ ...ocrInput, width: w, height: h }),
-      lines: ocrInput.lines,
-      language: ocrInput.language,
+      width: res.imageWidth || 0,
+      height: res.imageHeight || 0,
+      text: res.text || '',
+      confidence: res.confidence,
+      lineBlocks: res.lineBlocks ?? [],
+      lines: res.lines,
+      language: res.language,
     },
   ];
 }
 
-/** A confidence on the 0..100 scale from a 0..1 or 0..100 value; unknown confidence reads as the default. */
-function percentOrDefault(confidence: number | null | undefined): number {
-  if (confidence === null || confidence === undefined) return DEFAULT_WORD_CONFIDENCE * PERCENT_SCALE;
-  return confidence > 1 ? confidence : confidence * PERCENT_SCALE;
-}
-
 /**
- * Synthesizes line blocks and words if only plain lines/text exist.
+ * Flattens one result or a list of results into pages numbered by position (1-based). Source page
+ * numbers are ignored: they can repeat, be zero or negative, and would make identifiers collide.
  */
-function synthesizeLineBlocks(res: { text?: string; lines?: string[]; imageWidth?: number; imageHeight?: number; width?: number; height?: number; confidence?: number | null }): OcrLineBlock[] {
-  const lines = res.lines && res.lines.length > 0 ? res.lines : (res.text || '').split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return [];
-
-  const pageWidth = (res as any).width || res.imageWidth || 612;
-  const pageHeight = (res as any).height || res.imageHeight || 792;
-  const lineHeight = Math.min(24, Math.max(12, Math.floor(pageHeight / (lines.length + 4))));
-  const startY = 40;
-
-  return lines.map((lineText, idx) => {
-    const y = startY + idx * (lineHeight + 6);
-    const wordsRaw = lineText.trim().split(/\s+/).filter(Boolean);
-    const wordWidth = wordsRaw.length > 0 ? Math.max(20, Math.floor((pageWidth - 80) / wordsRaw.length)) : 50;
-
-    const words: OcrWord[] = wordsRaw.map((w, wIdx) => ({
-      text: w,
-      confidence: percentOrDefault(res.confidence),
-      bbox: {
-        x: 40 + wIdx * wordWidth,
-        y,
-        width: Math.max(10, wordWidth - 4),
-        height: lineHeight,
-      },
-    }));
-
-    return {
-      text: lineText,
-      bbox: {
-        x: 40,
-        y,
-        width: Math.max(10, pageWidth - 80),
-        height: lineHeight,
-      },
-      words,
-    };
-  });
-}
-
-/**
- * Ensures a block has valid words. If block.words is empty, splits block.text.
- */
-function ensureWordsForBlock(block: OcrLineBlock, pageConfidence: number | null): OcrWord[] {
-  if (block.words && block.words.length > 0) {
-    return block.words;
+function normalizePages(ocrInput: OcrResult | OcrResult[]): OcrPageResult[] {
+  const results = Array.isArray(ocrInput) ? ocrInput : [ocrInput];
+  const pages: OcrPageResult[] = [];
+  for (const res of results) {
+    for (const page of pagesOf(res)) pages.push({ ...page, pageNumber: pages.length + 1 });
   }
+  return pages;
+}
 
-  const rawWords = (block.text || '').trim().split(/\s+/).filter(Boolean);
-  if (rawWords.length === 0) return [];
+/** Text without recognized lines has no geometry to write; a blank page is fine. */
+function assertWordGeometry(pages: OcrPageResult[]): void {
+  for (const page of pages) {
+    if (page.lineBlocks.length === 0 && page.text.trim() !== '') {
+      throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: page ${page.pageNumber} has text but no recognized lines.`);
+    }
+  }
+}
 
-  const b = block.bbox;
-  const totalChars = rawWords.reduce((sum, w) => sum + w.length, 0);
-  const charWidth = totalChars > 0 ? b.width / Math.max(totalChars, 1) : 10;
-  let currX = b.x;
-
-  return rawWords.map((wordText) => {
-    const wWidth = Math.max(5, Math.round(wordText.length * charWidth));
-    const word: OcrWord = {
-      text: wordText,
-      confidence: percentOrDefault(pageConfidence),
-      bbox: {
-        x: currX,
-        y: b.y,
-        width: wWidth,
-        height: b.height,
-      },
-    };
-    currX += wWidth + Math.round(charWidth * 0.5);
-    return word;
-  });
+function wordsOf(line: OcrLineBlock, pageNumber: number): OcrWord[] {
+  if (line.words.length === 0) {
+    throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: a line on page ${pageNumber} has no words.`);
+  }
+  return line.words;
 }
 
 interface Extent {
@@ -478,20 +413,26 @@ function pageDimensions(page: OcrPageResult): { width: number; height: number } 
   return { width, height };
 }
 
-function writeHocrWords(out: string[], line: OcrLineBlock, page: OcrPageResult, pageNumber: number, lineNumber: number, scratch: Box): void {
-  const words = ensureWordsForBlock(line, page.confidence);
+function writeHocrWords(out: string[], line: OcrLineBlock, pageNumber: number, lineNumber: number, scratch: Box): void {
+  const words = wordsOf(line, pageNumber);
   for (let wIdx = 0; wIdx < words.length; wIdx++) {
     const w = words[wIdx];
     const wb = fillBox(scratch, w.bbox, 'a word box');
-    const wconf = Math.max(0, Math.min(PERCENT_SCALE, Math.round(computeWordConfidence(w.confidence, page.confidence) * PERCENT_SCALE)));
+    const percent = confidencePercent(w.confidence);
+    const wconf = percent === null ? '' : `; x_wconf ${Math.round(percent)}`;
     out.push(
-      `          <span class="ocrx_word" id="word_${pageNumber}_${lineNumber}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}; x_wconf ${wconf}">${escapeXml(w.text)}</span>`
+      `          <span class="ocrx_word" id="word_${pageNumber}_${lineNumber}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}${wconf}">${escapeXml(w.text)}</span>`
     );
   }
 }
 
 /**
  * Exports OCR results to hOCR 1.2 compliant XHTML.
+ * Pages are numbered by position. Text the recognizer returned that XML 1.0 cannot carry (control
+ * characters, U+FFFE and U+FFFF, unpaired surrogates) is dropped; the number dropped is logged at
+ * debug level.
+ * @throws OcrMarkupError when a page has text but no recognized lines or a line has no words (hOCR
+ * needs word geometry and none is invented), or a coordinate is not finite.
  * Writes ocr_page, ocr_carea, ocr_par, ocr_line and ocrx_word elements; a line carries its bbox,
  * baseline and row metrics when the recognizer reported them, a word its bbox and x_wconf.
  */
@@ -499,7 +440,9 @@ export function exportHocr(
   ocrInput: OcrResult | OcrResult[],
   options: HocrExportOptions = {}
 ): string {
+  startExport();
   const pages = normalizePages(ocrInput);
+  assertWordGeometry(pages);
   const docTitle = options.documentTitle || options.filename || 'OCR Document';
   const pageTags = pages.map((page) => languageTag(page.language));
   const documentLanguage = pageTags.find((tag) => tag !== undefined) ?? UNDETERMINED_LANGUAGE;
@@ -546,7 +489,7 @@ export function exportHocr(
           lineNumber++;
           const lb = fillBox(scratch, line.bbox, 'a line box');
           out.push(`        <span class="ocr_line" id="line_${pNum}_${lineNumber}" title="${hocrLineTitle(lb, line)}">`);
-          writeHocrWords(out, line, page, pNum, lineNumber, scratch);
+          writeHocrWords(out, line, pNum, lineNumber, scratch);
           out.push('        </span>');
         }
         out.push('      </p>');
@@ -557,6 +500,7 @@ export function exportHocr(
   }
 
   out.push('</body>', '</html>', '');
+  finishExport();
   return out.join('\n');
 }
 
@@ -570,7 +514,6 @@ function altoBaselineAttribute(line: OcrLineBlock): string {
 function writeAltoLine(
   out: string[],
   line: OcrLineBlock,
-  page: OcrPageResult,
   pageNumber: number,
   lineNumber: number,
   indent: string,
@@ -581,14 +524,15 @@ function writeAltoLine(
   out.push(
     `${indent}<TextLine ID="TL_${pageNumber}_${lineNumber}" HPOS="${lb.x0}" VPOS="${lb.y0}" WIDTH="${lb.x1 - lb.x0}" HEIGHT="${lb.y1 - lb.y0}"${altoBaselineAttribute(line)}>`
   );
-  const words = ensureWordsForBlock(line, page.confidence);
+  const words = wordsOf(line, pageNumber);
   const wordIndent = `${indent}  `;
   for (let wIdx = 0; wIdx < words.length; wIdx++) {
     const w = words[wIdx];
     const wb = fillBox(scratch, w.bbox, 'a word box');
-    const wc = Math.max(0, Math.min(1.0, computeWordConfidence(w.confidence, page.confidence)));
+    const percent = confidencePercent(w.confidence);
+    const wc = percent === null ? '' : ` WC="${(percent / PERCENT_SCALE).toFixed(ALTO_CONFIDENCE_DECIMALS)}"`;
     out.push(
-      `${wordIndent}<String CONTENT="${escapeAttribute(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.x1 - wb.x0}" HEIGHT="${wb.y1 - wb.y0}" WC="${wc.toFixed(ALTO_CONFIDENCE_DECIMALS)}" />`
+      `${wordIndent}<String CONTENT="${escapeAttribute(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.x1 - wb.x0}" HEIGHT="${wb.y1 - wb.y0}"${wc} />`
     );
     // Standard <SP> whitespace delimiter between consecutive words in a line
     if (wIdx < words.length - 1) {
@@ -605,7 +549,8 @@ function altoBoxAttributes(box: Box): string {
 }
 
 /**
- * Exports OCR results to ALTO 4.4 XML (Library of Congress). A recognizer block is a ComposedBlock,
+ * Exports OCR results to ALTO 4.4 XML (Library of Congress). Pages are numbered by position, and text
+ * XML 1.0 cannot carry is dropped as for hOCR (counted in a debug log). A recognizer block is a ComposedBlock,
  * a paragraph a TextBlock, and every line a TextLine with its BASELINE polyline when known; words are
  * String elements with WC confidence between 0 and 1 separated by SP.
  * @throws OcrMarkupError when `measurementUnit` is not `pixel` (the coordinates are pixels) or a
@@ -619,7 +564,9 @@ export function exportAlto(
   if (unit !== ALTO_PIXEL_UNIT) {
     throw new OcrMarkupError(`ALTO export writes pixel coordinates; measurement unit '${unit}' is not supported.`);
   }
+  startExport();
   const pages = normalizePages(ocrInput);
+  assertWordGeometry(pages);
 
   const out: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -673,7 +620,7 @@ export function exportAlto(
         const lang = tag === undefined ? '' : ` LANG="${tag}"`;
         out.push(`${indent}<TextBlock ID="TB_${pNum}_${++textBlockNumber}" ${altoBoxAttributes(pb)}${lang}>`);
         for (const line of paragraph.lines) {
-          writeAltoLine(out, line, page, pNum, ++lineNumber, `${indent}  `, scratch, nextScratch);
+          writeAltoLine(out, line, pNum, ++lineNumber, `${indent}  `, scratch, nextScratch);
         }
         out.push(`${indent}</TextBlock>`);
       }
@@ -684,5 +631,6 @@ export function exportAlto(
   }
 
   out.push('  </Layout>', '</alto>', '');
+  finishExport();
   return out.join('\n');
 }
