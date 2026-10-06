@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
+  OCR_CLI_LOGGED_STDERR_CHARS,
+  OCR_CLI_MAX_CONCURRENCY,
   OCR_CLI_MAX_TSV_ROWS,
+  CliSemaphore,
   parseTesseractTsv,
   recognizeWithCli,
 } from '../src/lib/conversions/ocr-cli';
@@ -30,6 +33,10 @@ const TEST_TIMEOUT_MS = 120_000;
 const SHORT_CLI_TIMEOUT_MS = 400;
 const PROCESS_REAP_WAIT_MS = 200;
 const CONCURRENT_RUNS_PER_CPU = 3;
+const LOG_PREFIX_ALLOWANCE = 100;
+const PROC_STAT_PROBE = '/proc/self/stat';
+const MEMORY_HOG_BYTES = 300_000_000;
+const SMALL_MEMORY_LIMIT_MB = 100;
 
 const TESSDATA_DIRS = [
   ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
@@ -94,21 +101,48 @@ describe('parseTesseractTsv', () => {
     expect([result.imageWidth, result.imageHeight]).toEqual([50, 40]);
   });
 
-  it('rejects output without the TSV header', () => {
-    expect(() => parseTesseractTsv('Hello world\n')).toThrow(/Malformed Tesseract TSV/);
+  /** Malformed CLI output is an engine fault (503), never a client error (400). */
+  function malformedFailure(tsv: string): Error {
+    try {
+      parseTesseractTsv(tsv);
+    } catch (err) {
+      return err as Error;
+    }
+    throw new Error('parseTesseractTsv accepted malformed output');
+  }
+
+  it('rejects output without the TSV header as an engine fault', () => {
+    const failure = malformedFailure('Hello world\n');
+    expect(failure.name).toBe('OcrEngineUnavailableError');
+    expect(failure.message).toBe('Malformed Tesseract TSV output: the header row is missing.');
   });
 
   it('rejects rows with missing or non-numeric geometry', () => {
     const bad = `${TSV_HEADER}\n1\t1\t0\t0\t0\t0\t0\t0\t50\t40\t-1\t\n5\t1\t1\t1\t1\t1\tleft\t0\t5\t5\t90\tword\n`;
-    expect(() => parseTesseractTsv(bad)).toThrow(/Malformed Tesseract TSV/);
+    expect(malformedFailure(bad).message).toBe(
+      "Malformed Tesseract TSV output: row 2 has a non-integer left 'left'."
+    );
     const short = `${TSV_HEADER}\n5\t1\t1\n`;
-    expect(() => parseTesseractTsv(short)).toThrow(/Malformed Tesseract TSV/);
+    expect(malformedFailure(short).message).toBe(
+      'Malformed Tesseract TSV output: row 1 has 3 columns, expected 12.'
+    );
+    expect(malformedFailure(short)).toBeInstanceOf(OcrEngineUnavailableError);
   });
 
   it('bounds the number of rows it will parse', () => {
     const row = '5\t1\t1\t1\t1\t1\t0\t0\t5\t5\t90\tw';
     const oversized = `${TSV_HEADER}\n${Array(OCR_CLI_MAX_TSV_ROWS + 1).fill(row).join('\n')}\n`;
-    expect(() => parseTesseractTsv(oversized)).toThrow(/Malformed Tesseract TSV/);
+    const failure = malformedFailure(oversized);
+    expect(failure).toBeInstanceOf(OcrEngineUnavailableError);
+    expect(failure.message).toBe(`Malformed Tesseract TSV output: more than ${OCR_CLI_MAX_TSV_ROWS} rows.`);
+  });
+
+  it('accepts exactly the maximum number of rows', () => {
+    const row = '5\t1\t1\t1\t1\t1\t0\t0\t5\t5\t90\tw';
+    const page = '1\t1\t0\t0\t0\t0\t0\t0\t50\t40\t-1\t';
+    const rows = [page, ...Array(OCR_CLI_MAX_TSV_ROWS - 1).fill(row)];
+    const result = parseTesseractTsv(`${TSV_HEADER}\n${rows.join('\n')}\n`);
+    expect(result.wordCount).toBe(OCR_CLI_MAX_TSV_ROWS - 1);
   });
 });
 
@@ -228,7 +262,8 @@ describe('recognizeWithCli', () => {
     const image = Buffer.from('not-an-image');
     const common = { tessdataDir: '/tessdata', tesseractLang: 'eng', image };
 
-    it('kills the whole process group when the timeout expires', async () => {
+    // Zombie detection reads /proc, which only Linux provides.
+    it.skipIf(!fs.existsSync(PROC_STAT_PROBE))('kills the whole process group when the timeout expires', async () => {
       const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-pid-')), 'child.pid');
       const cliPath = writeScript(`sleep 300 &\necho $! > "${pidFile}"\nwait`);
       const started = performance.now();
@@ -242,21 +277,122 @@ describe('recognizeWithCli', () => {
       expect(isRunning(grandchild)).toBe(false);
     });
 
-    it('reports a failing exit status with the CLI diagnostics', async () => {
-      const cliPath = writeScript('echo "Error opening data file" >&2\nexit 1');
-      await expect(recognizeWithCli({ ...common, cliPath })).rejects.toThrow(/Error opening data file/);
+    it('reports a failing exit status without echoing CLI diagnostics to the client', async () => {
+      const cliPath = writeScript(
+        'echo "Error opening data file /srv/secret/tessdata/eng.traineddata" >&2\nexit 1'
+      );
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const failure = await recognizeWithCli({ ...common, cliPath }).then(
+          () => null,
+          (err: unknown) => err as Error
+        );
+        expect(failure).toBeInstanceOf(OcrEngineUnavailableError);
+        expect(failure?.message).toBe('Tesseract CLI failed with exit code 1.');
+        expect(failure?.message).not.toContain('/srv/secret');
+        // The diagnostics stay in the server log.
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0][0])).toContain('Error opening data file /srv/secret/tessdata');
+      } finally {
+        warn.mockRestore();
+      }
     });
 
-    it('rejects output beyond the size limit', async () => {
+    it('truncates and strips control characters from logged diagnostics', async () => {
+      const cliPath = writeScript(`printf 'bad\\033[31m%s' "$(head -c 5000 /dev/zero | tr '\\0' 'x')" >&2\nexit 2`);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        await expect(recognizeWithCli({ ...common, cliPath })).rejects.toThrow(
+          'Tesseract CLI failed with exit code 2.'
+        );
+        const logged = String(warn.mock.calls[0][0]);
+        expect(logged).not.toContain('\u001b');
+        expect(logged.length).toBeLessThan(OCR_CLI_LOGGED_STDERR_CHARS + LOG_PREFIX_ALLOWANCE);
+        expect(logged).toContain('bad[31mxxx');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('rejects output beyond the size limit with a fixed message', async () => {
       const cliPath = writeScript('yes "5 1 1 1 1 1 0 0 1 1 90 w"');
-      await expect(
-        recognizeWithCli({ ...common, cliPath, maxOutputBytes: 4096 })
-      ).rejects.toThrow(OcrEngineUnavailableError);
+      await expect(recognizeWithCli({ ...common, cliPath, maxOutputBytes: 4096 })).rejects.toThrow(
+        new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.')
+      );
     });
 
-    it('rejects output that is not TSV as a malformed result', async () => {
-      const cliPath = writeScript('echo "plain text, not tsv"');
-      await expect(recognizeWithCli({ ...common, cliPath })).rejects.toThrow(/Malformed Tesseract TSV/);
+    it('kills a run that exceeds its memory limit', async () => {
+      const cliPath = writeScript(
+        `x=$(head -c ${MEMORY_HOG_BYTES} /dev/zero | tr '\\0' 'a')\nsleep 30`
+      );
+      await expect(recognizeWithCli({ ...common, cliPath, memoryLimitMb: SMALL_MEMORY_LIMIT_MB })).rejects.toThrow(
+        new OcrEngineUnavailableError(`Tesseract CLI exceeded its ${SMALL_MEMORY_LIMIT_MB} MB memory limit.`)
+      );
     });
+
+    it('rejects output that is not TSV as an engine fault', async () => {
+      const cliPath = writeScript('echo "plain text, not tsv"');
+      const failure = await recognizeWithCli({ ...common, cliPath }).then(
+        () => null,
+        (err: unknown) => err as Error
+      );
+      expect(failure).toBeInstanceOf(OcrEngineUnavailableError);
+      expect(failure?.message).toBe('Malformed Tesseract TSV output: the header row is missing.');
+    });
+
+    it('never runs more processes at once than the concurrency limit', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-conc-'));
+      const cliPath = writeScript(
+        `touch "${dir}/$$"\nls "${dir}" | wc -l >> "${dir}.log"\nsleep 0.3\nrm "${dir}/$$"\n` +
+          `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n'`
+      );
+      const runs = OCR_CLI_MAX_CONCURRENCY * 3;
+      const results = await Promise.all(Array.from({ length: runs }, () => recognizeWithCli({ ...common, cliPath })));
+      expect(results).toHaveLength(runs);
+      const observed = fs
+        .readFileSync(`${dir}.log`, 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .map((n) => Number.parseInt(n.trim(), 10));
+      expect(observed).toHaveLength(runs);
+      expect(Math.max(...observed)).toBe(OCR_CLI_MAX_CONCURRENCY);
+    });
+  });
+});
+
+describe('CliSemaphore', () => {
+  it('runs at most `limit` tasks at once and releases waiting tasks in order', async () => {
+    const semaphore = new CliSemaphore(2, 10);
+    const order: number[] = [];
+    let active = 0;
+    let peak = 0;
+    const task = (id: number) =>
+      semaphore.run(async () => {
+        active++;
+        peak = Math.max(peak, active);
+        order.push(id);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active--;
+      });
+    await Promise.all([1, 2, 3, 4, 5].map(task));
+    expect(peak).toBe(2);
+    expect(order).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('rejects with the engine-unavailable error when too many tasks are queued', async () => {
+    const semaphore = new CliSemaphore(1, 1);
+    const gate = new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const first = semaphore.run(() => gate);
+    const second = semaphore.run(() => gate);
+    await expect(semaphore.run(() => gate)).rejects.toThrow(
+      new OcrEngineUnavailableError('OCR is saturated: 1 native runs are already waiting.')
+    );
+    await Promise.all([first, second]);
+  });
+
+  it('frees its slot when a task fails', async () => {
+    const semaphore = new CliSemaphore(1, 1);
+    await expect(semaphore.run(() => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+    await expect(semaphore.run(async () => 'next')).resolves.toBe('next');
   });
 });
