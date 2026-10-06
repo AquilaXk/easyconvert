@@ -15,6 +15,7 @@ import {
 } from 'pdf-lib';
 import {
   createLosslessSandwichPdfFromImage,
+  createLosslessSandwichPdfFromPdf,
   createToUnicodeCMap,
   ensureUnicodeFont,
   type OcrResult,
@@ -45,6 +46,9 @@ const MANY_CODE_POINTS_COUNT = 250;
 const MANY_CODE_POINTS_PER_WORD = 5;
 const ASTRAL_FALLBACK_PLANE_START = 0x20000;
 const MAX_CID = 0xffff;
+const LATIN1_MAX = 0xff;
+const NARROW_ADVANCE = 500;
+const WIDE_ADVANCE = 1000;
 
 const ASTRAL_IDEOGRAPH = '\u{20BB7}';
 const SIMPLE_FONT_LINE = '\u00C9\u00E9 \u00C5 \u00C5ngstr\u00F6m';
@@ -57,20 +61,20 @@ const INPUT_LINES = [
   DECOMPOSED_INPUT,
 ];
 
-function ocrResultFor(lines: string[]): OcrResult {
+function ocrResultFor(lines: string[], firstLine = 0): OcrResult {
   return {
     text: lines.join('\n'),
     confidence: 0.9,
     wordCount: lines.join(' ').split(' ').length,
     lines,
-    lineBlocks: lines.map((line, lineIdx) => ({
+    lineBlocks: lines.map((line, index) => ({
       text: line,
-      bbox: { x: LEFT_MARGIN, y: 20 + lineIdx * LINE_PITCH, width: LINE_WIDTH, height: LINE_HEIGHT },
+      bbox: { x: LEFT_MARGIN, y: 20 + (firstLine + index) * LINE_PITCH, width: LINE_WIDTH, height: LINE_HEIGHT },
       words: line.split(' ').map((word, i) => ({
         text: word,
         bbox: {
           x: LEFT_MARGIN + i * WORD_PITCH,
-          y: 20 + lineIdx * LINE_PITCH,
+          y: 20 + (firstLine + index) * LINE_PITCH,
           width: WORD_WIDTH,
           height: LINE_HEIGHT,
         },
@@ -118,7 +122,7 @@ const PYMUPDF_SCRIPT = [
   'print(json.dumps([page.get_text("text") for page in doc]))',
 ].join('\n');
 
-function pymupdfLines(pdfPath: string): string[] {
+function pymupdfLines(pdfPath: string, normalize = true): string[] {
   const python = getOracleToolPath('python3');
   if (!python) throw new OracleToolMissingError('python3');
   const probe = spawnSync(python, ['-I', '-c', 'import pymupdf'], { encoding: 'utf8' });
@@ -129,14 +133,17 @@ function pymupdfLines(pdfPath: string): string[] {
   return pages
     .join('\n')
     .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim().normalize('NFC'))
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .map((line) => (normalize ? line.normalize('NFC') : line))
     .filter(Boolean);
 }
 
+// Extraction tools may compose combining marks, so extracted text is compared after NFC.
 const EXPECTED_LINES = INPUT_LINES.map((line) => line.normalize('NFC'));
 // Pure Latin-1 lines stay on the simple Helvetica font; every other line (including the
-// decomposed one, which carries combining marks) goes through the composite font.
-const COMPOSITE_FONT_LINES = EXPECTED_LINES.filter((line) => line !== SIMPLE_FONT_LINE.normalize('NFC'));
+// decomposed one, which carries combining marks) goes through the composite font, code point
+// for code point as recognized.
+const COMPOSITE_FONT_LINES = INPUT_LINES.filter((line) => line !== SIMPLE_FONT_LINE);
 
 // --- Independent PDF structure readers (no code from the module under test) ---
 
@@ -244,7 +251,7 @@ describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
     expect(cmap).not.toMatch(/<D842> <|<DFB7> </);
   });
 
-  it('shows text with CIDs that decode back to the NFC input through the document ToUnicode', async () => {
+  it('shows text with CIDs that decode back to the input through the document ToUnicode', async () => {
     const doc = await PDFDocument.load(await sandwichPdf(INPUT_LINES));
     const { map } = parseToUnicode(doc);
     const shown = decodeShownText(pageContent(doc), type0FontEntry(doc).key, map);
@@ -262,7 +269,9 @@ describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
     expect(widths.size()).toBe(map.size);
     for (let i = 0; i < widths.size(); i++) {
       const unicode = map.get(i + 1) as string;
-      const expectedWidth = (unicode.codePointAt(0) as number) <= 0xff ? 500 : 1000;
+      let expectedWidth = (unicode.codePointAt(0) as number) <= LATIN1_MAX ? NARROW_ADVANCE : WIDE_ADVANCE;
+      // combining marks (U+0301, U+030A in the decomposed line) take no space
+      if (/\p{M}/u.test(unicode)) expectedWidth = 0;
       expect((widths.lookup(i, PDFNumber) as PDFNumber).asNumber()).toBe(expectedWidth);
     }
     expect(w.size()).toBe(2);
@@ -307,6 +316,29 @@ describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
       const extracted = pdftotextLines(pdfPath).join('');
       expect([...extracted]).toEqual([ASTRAL_IDEOGRAPH]);
       expect(extracted).not.toContain('�');
+    });
+  });
+
+  oracleTest('a second OCR pass keeps the first pass text layer readable', ['pdftotext'], async () => {
+    const firstPass = ['한글 문서', 'ABC 日本語'];
+    const secondPass = ['ZZZ 漢字'];
+    const once = await sandwichPdf(firstPass);
+    const twice = await createLosslessSandwichPdfFromPdf(
+      once,
+      new Map([[1, ocrResultFor(secondPass, firstPass.length + 1)]])
+    );
+    withTempPdf(twice, (pdfPath) => {
+      const lines = pdftotextLines(pdfPath);
+      for (const line of [...firstPass, ...secondPass]) expect(lines, line).toContain(line);
+    });
+  });
+
+  oracleTest('keeps compatibility ideographs and letterlike symbols as recognized', ['python3'], async () => {
+    // NFC would rewrite U+F900 to U+8C48 and U+2126 to U+03A9; the text layer must carry what OCR read.
+    const line = '\uF900 \u2126 \u212B';
+    const pdf = await sandwichPdf([line]);
+    withTempPdf(pdf, (pdfPath) => {
+      expect(pymupdfLines(pdfPath, false)).toEqual([line]);
     });
   });
 
@@ -364,10 +396,13 @@ describe('createToUnicodeCMap / TextLayerCidMap', () => {
     ]);
   });
 
-  it('normalizes decomposed input to NFC before allocating CIDs', () => {
+  it('keeps decomposed input as recognized: one CID per code point, no normalization', () => {
     const cids = new TextLayerCidMap();
-    expect(cids.encodeText('é')).toBe('0001');
-    expect(cids.entries()).toEqual([[1, 0xe9]]);
+    expect(cids.encodeText('e\u0301')).toBe('00010002');
+    expect(cids.entries()).toEqual([
+      [1, 0x65],
+      [2, 0x301],
+    ]);
   });
 
   it('rejects an unpaired surrogate with a typed error', () => {

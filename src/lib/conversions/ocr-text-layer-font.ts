@@ -1,5 +1,5 @@
 import { deflateSync } from 'node:zlib';
-import { PDFDict, PDFName, PDFRawStream } from 'pdf-lib';
+import { PDFContext, PDFDict, PDFName, PDFRawStream } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 
 /**
@@ -17,7 +17,9 @@ export const MAX_TEXT_LAYER_CID = 0xffff;
 /** The CMap specification limits one `beginbfchar` block to 100 entries. */
 export const TO_UNICODE_BFCHAR_BLOCK_LIMIT = 100;
 /** Glyph advance (1/1000 em) advertised for code points above U+00FF (CJK, Hangul, kana). */
-export const WIDE_GLYPH_ADVANCE = 1000;
+/** Glyph space units per em in the text layer font. */
+export const GLYPH_UNITS_PER_EM = 1000;
+export const WIDE_GLYPH_ADVANCE = GLYPH_UNITS_PER_EM;
 /** Glyph advance (1/1000 em) advertised for Latin-1 code points. */
 export const NARROW_GLYPH_ADVANCE = 500;
 const NARROW_GLYPH_MAX_CODE_POINT = 0xff;
@@ -58,7 +60,11 @@ export function codePointToUtf16BeHex(cp: number): string {
   return hex16(high) + hex16(low);
 }
 
+const COMBINING_MARK = /\p{M}/u;
+
+/** Advance for a code point: combining marks take no space, Latin-1 half an em, the rest a full em. */
 export function glyphAdvanceForCodePoint(cp: number): number {
+  if (COMBINING_MARK.test(String.fromCodePoint(cp))) return 0;
   return cp <= NARROW_GLYPH_MAX_CODE_POINT ? NARROW_GLYPH_ADVANCE : WIDE_GLYPH_ADVANCE;
 }
 
@@ -147,10 +153,14 @@ export class TextLayerCidMap {
     return cid;
   }
 
-  /** Encodes text (normalized to NFC) as Identity-H hex, four digits per character. */
+  /**
+   * Encodes text as Identity-H hex, four digits per code point. The text is not normalized: the
+   * layer carries exactly the code points OCR recognized (NFC would rewrite compatibility
+   * ideographs such as U+F900 and letterlike symbols such as U+2126).
+   */
   encodeText(text: string): string {
     let hex = '';
-    for (const char of text.normalize('NFC')) {
+    for (const char of text) {
       hex += hex16(this.cidFor(char.codePointAt(0) as number));
     }
     return hex;
@@ -203,7 +213,8 @@ export class LazyToUnicodeStream extends ExtensibleRawStream {
     return Buffer.from(this.render()).toString('latin1');
   }
 
-  override clone(): PDFRawStream {
-    return PDFRawStream.of(this.dict.clone(this.dict.context), this.render().slice());
+  /** A snapshot for another document (pdf-lib's object copier passes the destination context). */
+  override clone(context?: PDFContext): PDFRawStream {
+    return PDFRawStream.of(this.dict.clone(context ?? this.dict.context), this.render().slice());
   }
 }

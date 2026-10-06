@@ -18,10 +18,12 @@ import {
   PDFHexString,
   PDFName,
   PDFArray,
+  PDFDict,
   PDFString,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 import {
+  GLYPH_UNITS_PER_EM,
   LazyToUnicodeStream,
   TextLayerCidMap,
   WIDE_GLYPH_ADVANCE,
@@ -1225,6 +1227,31 @@ export function buildMinimalTrueTypeFont(): Buffer {
   return fontFile;
 }
 
+const TEXT_LAYER_FONT_RESOURCE_BASE = 'ECToUnicodeFont';
+
+/** Font resource names used by any page of the document. */
+function fontResourceNamesInUse(doc: PDFDocument): Set<string> {
+  const names = new Set<string>();
+  for (const page of doc.getPages()) {
+    const resources = page.node.Resources();
+    const resolved = resources ? doc.context.lookup(resources) : undefined;
+    if (!(resolved instanceof PDFDict)) continue;
+    const fonts = doc.context.lookup(resolved.get(PDFName.of('Font')));
+    if (!(fonts instanceof PDFDict)) continue;
+    for (const key of fonts.keys()) names.add(key.decodeText());
+  }
+  return names;
+}
+
+/** `base`, or `base` with the smallest numeric suffix that no page uses yet. */
+function unusedFontResourceName(doc: PDFDocument, base: string): string {
+  const inUse = fontResourceNamesInUse(doc);
+  if (!inUse.has(base)) return base;
+  let suffix = 1;
+  while (inUse.has(`${base}${suffix}`)) suffix++;
+  return `${base}${suffix}`;
+}
+
 /**
  * Ensures a Type 0 CIDFont with an embedded TrueType stream (/FontFile2)
  * and a 16-bit /ToUnicode CMap stream into the PDFDocument per ISO 32000-1.
@@ -1293,7 +1320,9 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     ToUnicode: cmapRef,
   });
   const type0FontRef = doc.context.register(type0FontDict);
-  const fontName = 'ECToUnicodeFont';
+  // A page of a loaded PDF may already use this resource name for an earlier text layer whose CIDs
+  // mean something else; overwriting it would make that layer decode through this font's map.
+  const fontName = unusedFontResourceName(doc, TEXT_LAYER_FONT_RESOURCE_BASE);
 
   const fontInfo: UnicodeFontInfo = {
     fontName,
@@ -1667,9 +1696,8 @@ export function renderLineBlockWithSpacing(
   // Estimate typography units (1000 per em): CJK = 1000, Latin = 500, space = 300
   let estUnits = 0;
   for (const w of words) {
-    for (let i = 0; i < w.text.length; i++) {
-      estUnits += w.text.charCodeAt(i) > 255 ? 1000 : 500;
-    }
+    // per code point, as the text layer font advances (an astral character is one glyph)
+    for (const ch of w.text) estUnits += glyphAdvanceForCodePoint(ch.codePointAt(0) as number);
   }
   estUnits += Math.max(0, words.length - 1) * 300;
 
@@ -1696,7 +1724,7 @@ export function renderLineBlockWithSpacing(
     originX
   );
 
-  if (activeFontName === 'ECToUnicodeFont') {
+  if (activeFontName === ensureUnicodeFont(page.doc).fontName) {
     const unicodeFont = ensureUnicodeFont(page.doc);
     registerFontOnPage(page, unicodeFont);
   }
@@ -1785,9 +1813,8 @@ export function renderTextItem(
     encodedText = PDFHexString.of(unicodeFont.encodeText(trimmed));
 
     let estimatedWidth = 0;
-    for (let i = 0; i < trimmed.length; i++) {
-      const code = trimmed.charCodeAt(i);
-      estimatedWidth += code > 255 ? fontSize : fontSize * 0.5;
+    for (const ch of trimmed) {
+      estimatedWidth += (glyphAdvanceForCodePoint(ch.codePointAt(0) as number) / GLYPH_UNITS_PER_EM) * fontSize;
     }
     const maxAvailableWidth = Math.max(10, page.getSize().width - bbox.x * scaleX - 5);
     const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
