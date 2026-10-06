@@ -194,9 +194,9 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof DecompressionLimitError) {
+    if (error instanceof DecompressionLimitError || (error as any)?.status === 413) {
       // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
-      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+      return createProblemDetailsResponse(413, (error as any).message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

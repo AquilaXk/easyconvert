@@ -38,8 +38,8 @@ export class InflateBudget {
 export interface InflateOptions {
   /** What is being decoded, for error messages (for example "PDF stream 7" or "WOFF table 'glyf'"). */
   label: string;
-  /** `zlib` for RFC 1950 streams, `raw` for bare RFC 1951 deflate. */
-  format: 'zlib' | 'raw';
+  /** `zlib` for RFC 1950 streams, `raw` for bare RFC 1951 deflate, `gzip` for RFC 1952 gzip streams. */
+  format: 'zlib' | 'raw' | 'gzip';
   /** Tighter cap than the per-stream constant, for formats whose decoded size is bounded but not declared. */
   maxOutputLength?: number;
   /**
@@ -61,12 +61,13 @@ function isTooLarge(err: unknown): boolean {
  */
 export function inflateBounded(data: Buffer, options: InflateOptions): Buffer {
   const declared = options.expectedLength;
-  if (declared !== undefined && declared > MAX_STREAM_INFLATE_BYTES) {
+  const maxAllowed = options.maxOutputLength ?? MAX_STREAM_INFLATE_BYTES;
+  if (declared !== undefined && declared > maxAllowed) {
     throw new DecompressionLimitError(
-      `${options.label} declares ${declared} decoded bytes, more than the limit of ${MAX_STREAM_INFLATE_BYTES} bytes.`
+      `${options.label} declares ${declared} decoded bytes, more than the limit of ${maxAllowed} bytes.`
     );
   }
-  const streamCap = Math.min(declared ?? options.maxOutputLength ?? MAX_STREAM_INFLATE_BYTES, MAX_STREAM_INFLATE_BYTES);
+  const streamCap = Math.min(declared ?? maxAllowed, maxAllowed);
   const budgetRemaining = options.budget ? options.budget.remaining : Number.POSITIVE_INFINITY;
   const cap = Math.min(streamCap, budgetRemaining);
 
@@ -81,10 +82,13 @@ export function inflateBounded(data: Buffer, options: InflateOptions): Buffer {
 
   let output: Buffer;
   try {
-    output =
-      options.format === 'raw'
-        ? zlib.inflateRawSync(data, { maxOutputLength: cap })
-        : zlib.inflateSync(data, { maxOutputLength: cap });
+    if (options.format === 'raw') {
+      output = zlib.inflateRawSync(data, { maxOutputLength: cap });
+    } else if (options.format === 'gzip') {
+      output = zlib.gunzipSync(data, { maxOutputLength: cap });
+    } else {
+      output = zlib.inflateSync(data, { maxOutputLength: cap });
+    }
   } catch (err) {
     if (isTooLarge(err) && declared !== undefined && budgetRemaining >= declared) {
       throw new CorruptStreamError(`${options.label} decodes to more than the ${declared} bytes it declares.`);
@@ -106,4 +110,11 @@ export function inflateBounded(data: Buffer, options: InflateOptions): Buffer {
   }
   options.budget?.charge(output.length, options.label);
   return output;
+}
+
+/**
+ * Gunzips `data` under bounds checking, throwing DecompressionLimitError (HTTP 413) or CorruptStreamError (HTTP 400).
+ */
+export function gunzipBounded(data: Buffer, options: Omit<InflateOptions, 'format'>): Buffer {
+  return inflateBounded(data, { ...options, format: 'gzip' });
 }

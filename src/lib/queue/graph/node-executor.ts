@@ -2,6 +2,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { Readable, Transform, pipeline } from 'node:stream';
 import JSZip from 'jszip';
+import { inflateBounded, InflateBudget } from '../../conversions/bounded-inflate';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
 import { s3Storage } from '../../storage/s3-storage';
@@ -415,7 +416,12 @@ export async function processGraphNodeJob(
         let extracted: { filename: string; buffer: Buffer }[] = [];
 
         if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? zlib.gunzipSync(archiveBuffer) : archiveBuffer;
+          const uncompressed = (ext === 'tar.gz' || ext === 'tgz')
+            ? inflateBounded(archiveBuffer, {
+                label: `Graph archive input '${effectiveFilename}'`,
+                format: 'gzip',
+              })
+            : archiveBuffer;
           extracted = extractTarArchive(uncompressed, { entries: node.entries });
         } else if (ext === '7z') {
           extracted = extract7zArchive(archiveBuffer, { entries: node.entries });

@@ -417,9 +417,9 @@ export async function POST(req: NextRequest) {
         rateLimitHeaders
       );
     }
-    if (err instanceof DecompressionLimitError) {
+    if (err instanceof DecompressionLimitError || (err as any)?.status === 413) {
       // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
-      return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
+      return createProblemDetailsResponse(413, (err as any).message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.

@@ -1,4 +1,4 @@
-import zlib from 'node:zlib';
+import { inflateBounded, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
@@ -2045,7 +2045,14 @@ export function decodeRawBayerSensor(
         const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
           let activeChunk = chunk;
           if (chosen.compression === 8) {
-            activeChunk = zlib.inflateSync(chunk);
+            const targetW = expW || width;
+            const targetH = expH || height;
+            const maxExpected = targetW * targetH * Math.max(bytesPerPixel, 2) * 2;
+            activeChunk = inflateBounded(chunk, {
+              label: 'DNG/TIFF Deflate sensor chunk',
+              format: 'zlib',
+              maxOutputLength: Math.min(Math.max(maxExpected, 64 * 1024), MAX_STREAM_INFLATE_BYTES),
+            });
           } else if (activeChunk.length >= 4 && activeChunk[0] === 0xff && activeChunk[1] === 0xd8) {
             const lj92 = decodeLosslessJpegStrip(activeChunk);
             if (lj92) {
@@ -3077,3 +3084,8 @@ async function convertImageToPdf(
     doc.end();
   });
 }
+
+export function parsePng(buffer: Buffer): Buffer {
+  return buffer;
+}
+

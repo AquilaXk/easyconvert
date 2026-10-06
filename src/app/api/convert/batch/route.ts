@@ -186,9 +186,9 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
-    if (error instanceof DecompressionLimitError) {
+    if (error instanceof DecompressionLimitError || (error as any)?.status === 413) {
       // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
-      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+      return createProblemDetailsResponse(413, (error as any).message, instanceUri);
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.

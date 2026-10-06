@@ -16,7 +16,10 @@ import {
   ArchiveInspectResponse,
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
+  DecompressionLimitError,
+  CorruptStreamError,
 } from '../types';
+import { inflateBounded, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -3180,7 +3183,13 @@ function decompress7zFolder(
     (id.length === 1 && id[0] === 0x04)
   ) {
     // Deflate
-    return zlib.inflateRawSync(packSlice);
+    if (unpackSize === 0) return Buffer.alloc(0);
+    return inflateBounded(packSlice, {
+      label: '7z Deflate stream',
+      format: 'raw',
+      expectedLength: unpackSize > 0 ? unpackSize : undefined,
+      maxOutputLength: MAX_STREAM_INFLATE_BYTES,
+    });
   }
   if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) {
     // LZMA
@@ -3644,7 +3653,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
           )
         );
@@ -3660,7 +3669,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3678,7 +3687,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
       ) {
         cleanup();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3689,7 +3698,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
     gunzip.on('error', (err) => {
       if (!destroyed) {
         cleanup();
-        reject(err);
+        reject(new CorruptStreamError(err instanceof Error ? err.message : String(err)));
       }
     });
 
@@ -3810,12 +3819,25 @@ export async function repairZipArchive(
               uncompressed = Buffer.from(rawChunk);
             } else if (compMethod === 8) {
               try {
-                uncompressed = zlib.inflateRawSync(rawChunk);
-              } catch {
+                uncompressed = inflateBounded(rawChunk, {
+                  label: `ZIP entry '${cleanName}'`,
+                  format: 'raw',
+                  expectedLength: uncompSize > 0 ? uncompSize : undefined,
+                  maxOutputLength: MAX_STREAM_INFLATE_BYTES,
+                });
+              } catch (err) {
+                if (err instanceof DecompressionLimitError) throw err;
                 for (let offset = rawChunk.length - 1; offset > 0 && !uncompressed; offset--) {
                   try {
-                    uncompressed = zlib.inflateRawSync(rawChunk.subarray(0, offset));
-                  } catch {}
+                    uncompressed = inflateBounded(rawChunk.subarray(0, offset), {
+                      label: `ZIP entry '${cleanName}'`,
+                      format: 'raw',
+                      expectedLength: uncompSize > 0 ? uncompSize : undefined,
+                      maxOutputLength: MAX_STREAM_INFLATE_BYTES,
+                    });
+                  } catch (offsetErr) {
+                    if (offsetErr instanceof DecompressionLimitError) throw offsetErr;
+                  }
                 }
               }
             }
@@ -3826,7 +3848,9 @@ export async function repairZipArchive(
             }
           }
         }
-      } catch {}
+      } catch (err) {
+        if (err instanceof DecompressionLimitError) throw err;
+      }
     }
     pos++;
   }
@@ -4335,9 +4359,16 @@ export async function inspectArchive(
   // 4. Compressed TAR wrappers: GZ, BZ2, ZST, XZ
   if (archiveBuffer.length >= 2 && archiveBuffer[0] === 0x1f && archiveBuffer[1] === 0x8b) {
     try {
-      const decompressed = zlib.gunzipSync(archiveBuffer);
+      const decompressed = inflateBounded(archiveBuffer, {
+        label: 'tar.gz archive',
+        format: 'gzip',
+        maxOutputLength: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      });
       return inspectTarBuffer(decompressed, 'tar.gz');
-    } catch {
+    } catch (err) {
+      if (err instanceof DecompressionLimitError || err instanceof CorruptStreamError) {
+        throw err;
+      }
       throw new ConversionFailedError('Failed to decompress gzip archive.');
     }
   }
@@ -4473,6 +4504,9 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (err instanceof DecompressionLimitError || err instanceof CorruptStreamError) {
+        throw err;
+      }
       throw new ConversionFailedError(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4777,3 +4811,8 @@ export async function convertToArchive(
     `${baseName}.zip`
   );
 }
+
+export const extract7z = extract7zArchive;
+export const extractZip = extractZipArchive;
+export const extractTar = extractTarArchive;
+
