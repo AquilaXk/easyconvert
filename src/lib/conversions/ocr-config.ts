@@ -22,6 +22,15 @@ export const OCR_PSM_SINGLE_BLOCK = '6';
  * Korean label read as "00 [기" under PSM 3 on one engine build), so they are read as one block.
  */
 export const OCR_SMALL_CROP_MAX_HEIGHT_PX = 100;
+/**
+ * PSM 7: a single text line. A one-row crop read as a block (PSM 6) can gain a ghost line, for
+ * example "한글" read as "한글\n글" from a bitmap font, which line mode does not produce.
+ */
+export const OCR_PSM_SINGLE_LINE = '7';
+/** Gray levels below this count as ink when counting text rows. */
+const TEXT_ROW_INK_THRESHOLD = 128;
+/** Ink bands thinner than this many rows are specks, not text rows. */
+const TEXT_ROW_MIN_HEIGHT_PX = 2;
 /** The single-block retry replaces an empty automatic reading when it recognizes at least this many more words. */
 export const OCR_FALLBACK_MIN_WORD_GAIN = 1;
 /** PSM 5: a single uniform block of vertically aligned text, for `_vert` traineddata. */
@@ -45,14 +54,38 @@ function isVerticalData(tesseractLang: string): boolean {
  * Picks page segmentation and engine mode for a Tesseract language set such as `eng` or `jpn_vert`,
  * and for the image height in pixels when it is known.
  */
-export function ocrSegmentationFor(tesseractLang: string, imageHeight?: number): OcrSegmentation {
+export function ocrSegmentationFor(tesseractLang: string, imageHeight?: number, textRows?: number): OcrSegmentation {
   let pageSegMode = OCR_PSM_AUTO;
   if (isVerticalData(tesseractLang)) {
     pageSegMode = OCR_PSM_VERTICAL_BLOCK;
   } else if (imageHeight !== undefined && imageHeight <= OCR_SMALL_CROP_MAX_HEIGHT_PX) {
-    pageSegMode = OCR_PSM_SINGLE_BLOCK;
+    pageSegMode = textRows === 1 ? OCR_PSM_SINGLE_LINE : OCR_PSM_SINGLE_BLOCK;
   }
   return { pageSegMode, engineMode: OCR_OEM_LSTM_ONLY };
+}
+
+/**
+ * Counts horizontal ink bands in an 8-bit gray image (one byte per pixel): runs of rows holding
+ * at least one dark pixel, separated by blank rows. Bands thinner than TEXT_ROW_MIN_HEIGHT_PX are
+ * ignored as specks.
+ */
+export function countTextRows(gray: Uint8Array, width: number, height: number): number {
+  let rows = 0;
+  let run = 0;
+  for (let y = 0; y <= height; y++) {
+    let ink = false;
+    if (y < height) {
+      const start = y * width;
+      for (let x = 0; x < width && !ink; x++) ink = gray[start + x] < TEXT_ROW_INK_THRESHOLD;
+    }
+    if (ink) {
+      run++;
+      continue;
+    }
+    if (run >= TEXT_ROW_MIN_HEIGHT_PX) rows++;
+    run = 0;
+  }
+  return rows;
 }
 
 /**
