@@ -296,10 +296,12 @@ function median3x3(
       const m2 = colMid[x + 1];
       const lowMid = m0 < m1 ? m0 : m1;
       const highMid = m0 < m1 ? m1 : m0;
-      const mid = highMid < m2 ? highMid : lowMid > m2 ? lowMid : m2;
+      const midCapped = highMid < m2 ? highMid : m2;
+      const mid = lowMid > midCapped ? lowMid : midCapped;
       const lowest = low < mid ? low : mid;
       const highest = low < mid ? mid : low;
-      const key = highest < high ? highest : lowest > high ? lowest : high;
+      const keyCapped = highest < high ? highest : high;
+      const key = lowest > keyCapped ? lowest : keyCapped;
       dk[row + x] = key ^ ((key >> SIGN_BIT_SHIFT) & MAGNITUDE_MASK);
     }
   }
