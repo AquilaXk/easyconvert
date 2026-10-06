@@ -6,10 +6,13 @@ import { resampleAudioSinc } from '../src/lib/conversions/media';
  * Throughput regression checks that do not depend on how busy the runner is.
  *
  * Absolute samples/s varies by 2x or more on shared CI, so the floor is derived in the same
- * process: a fixed scalar multiply-accumulate loop is timed first, and the resampler must reach a
- * fraction K of what that loop predicts for the filter's multiplies per output sample. Load slows
- * the calibration and the resampler alike, so the ratio is stable. A coarse absolute floor and a
- * speed-up over a naive per-tap sin/cos resampler (timed in the same process) back it up.
+ * process: a fixed scalar multiply-accumulate loop is timed, and the resampler must reach a
+ * fraction K of what that loop predicts for the filter's multiplies per output sample. A coarse
+ * absolute floor and a speed-up over a naive per-tap sin/cos resampler back it up.
+ *
+ * Every comparison interleaves its two sides pass by pass and keeps the best pass of each, so a
+ * burst of load from other test files lands on both sides instead of only one: timing one side
+ * fully before the other let a single burst halve one rate and fail the ratio.
  *
  * Measured on the development VM (stereo 16-bit, default 96 dB filter), measured / predicted:
  *   44.1 -> 48 kHz 7.8 M samples/s (calibration 0.83 GMAC/s, 124 MAC/sample) 1.16;  48 -> 44.1 1.29;
@@ -21,7 +24,8 @@ import { resampleAudioSinc } from '../src/lib/conversions/media';
 const CHANNELS = 2;
 const SECONDS = 3;
 const WARMUP_PASSES = 2;
-const TIMED_PASSES = 3;
+/** Interleaved passes per comparison; the best pass of each side is kept. */
+const INTERLEAVED_PASSES = 5;
 const MS_PER_SECOND = 1000;
 const LCG_MULTIPLIER = 1664525;
 const LCG_INCREMENT = 1013904223;
@@ -37,37 +41,53 @@ const MIN_SPEEDUP_OVER_NAIVE = 3;
 
 const CALIBRATION_ARRAY = 2048;
 const CALIBRATION_MIN_MS = 40;
-const CALIBRATION_TRIALS = 3;
 
-/** Multiply-accumulates per second of a plain 4-accumulator loop over typed arrays. */
-function calibrateMacsPerSecond(): number {
-  const a = new Float64Array(CALIBRATION_ARRAY).map((_, i) => Math.sin(i));
-  const b = new Float64Array(CALIBRATION_ARRAY).map((_, i) => Math.cos(i));
-  let best = 0;
+const CALIBRATION_A = new Float64Array(CALIBRATION_ARRAY).map((_, i) => Math.sin(i));
+const CALIBRATION_B = new Float64Array(CALIBRATION_ARRAY).map((_, i) => Math.cos(i));
+
+/** Multiply-accumulates per second of one timed run of a plain 4-accumulator loop over typed arrays. */
+function calibrateMacsPerSecondOnce(): number {
+  const a = CALIBRATION_A;
+  const b = CALIBRATION_B;
   let sink = 0;
-  for (let trial = 0; trial < CALIBRATION_TRIALS; trial++) {
-    let macs = 0;
-    const start = performance.now();
-    let elapsed = 0;
-    while (elapsed < CALIBRATION_MIN_MS) {
-      let s0 = 0;
-      let s1 = 0;
-      let s2 = 0;
-      let s3 = 0;
-      for (let i = 0; i < CALIBRATION_ARRAY; i += 4) {
-        s0 += a[i] * b[i];
-        s1 += a[i + 1] * b[i + 1];
-        s2 += a[i + 2] * b[i + 2];
-        s3 += a[i + 3] * b[i + 3];
-      }
-      sink += s0 + s1 + s2 + s3;
-      macs += CALIBRATION_ARRAY;
-      elapsed = performance.now() - start;
+  let macs = 0;
+  const start = performance.now();
+  let elapsed = 0;
+  while (elapsed < CALIBRATION_MIN_MS) {
+    let s0 = 0;
+    let s1 = 0;
+    let s2 = 0;
+    let s3 = 0;
+    for (let i = 0; i < CALIBRATION_ARRAY; i += 4) {
+      s0 += a[i] * b[i];
+      s1 += a[i + 1] * b[i + 1];
+      s2 += a[i + 2] * b[i + 2];
+      s3 += a[i + 3] * b[i + 3];
     }
-    best = Math.max(best, (macs / elapsed) * MS_PER_SECOND);
+    sink += s0 + s1 + s2 + s3;
+    macs += CALIBRATION_ARRAY;
+    elapsed = performance.now() - start;
   }
   expect(Number.isFinite(sink)).toBe(true);
-  return best;
+  return (macs / elapsed) * MS_PER_SECOND;
+}
+
+/** Output samples per second of one call. */
+function samplesPerSecond(run: () => Int16Array): number {
+  const start = performance.now();
+  const out = run();
+  return out.length / ((performance.now() - start) / MS_PER_SECOND);
+}
+
+/** Times two runs alternately and returns the best rate of each. */
+function bestInterleaved(first: () => number, second: () => number): [number, number] {
+  let bestFirst = 0;
+  let bestSecond = 0;
+  for (let pass = 0; pass < INTERLEAVED_PASSES; pass++) {
+    bestFirst = Math.max(bestFirst, first());
+    bestSecond = Math.max(bestSecond, second());
+  }
+  return [bestFirst, bestSecond];
 }
 
 /** Multiplies per output sample of the planned pipeline (folding ignored: an upper bound on work). */
@@ -93,17 +113,6 @@ function makePcm(rate: number): Int16Array {
     pcm[i] = Math.round((state / UINT32_RANGE - 0.5) * SIGNAL_SPAN);
   }
   return pcm;
-}
-
-function bestSamplesPerSecond(pcm: Int16Array, inRate: number, outRate: number): number {
-  for (let pass = 0; pass < WARMUP_PASSES; pass++) resampleAudioSinc(pcm, inRate, outRate, CHANNELS);
-  let best = 0;
-  for (let pass = 0; pass < TIMED_PASSES; pass++) {
-    const start = performance.now();
-    const out = resampleAudioSinc(pcm, inRate, outRate, CHANNELS);
-    best = Math.max(best, out.length / ((performance.now() - start) / MS_PER_SECOND));
-  }
-  return best;
 }
 
 /** The original per-tap design: radius-8 windowed sinc with sin and cos evaluated for every tap. */
@@ -155,10 +164,13 @@ describe('audio resampler throughput', () => {
   it.each(CASES)(
     'reaches the calibrated fraction of the multiply-accumulate rate: $inRate -> $outRate ($path)',
     ({ inRate, outRate }) => {
-      const calibration = calibrateMacsPerSecond();
+      const pcm = makePcm(inRate);
+      for (let pass = 0; pass < WARMUP_PASSES; pass++) resampleAudioSinc(pcm, inRate, outRate, CHANNELS);
+      const [calibration, measured] = bestInterleaved(calibrateMacsPerSecondOnce, () =>
+        samplesPerSecond(() => resampleAudioSinc(pcm, inRate, outRate, CHANNELS))
+      );
       const macs = macsPerOutputSample(inRate, outRate);
       const predicted = calibration / macs;
-      const measured = bestSamplesPerSecond(makePcm(inRate), inRate, outRate);
       const context = `measured ${(measured / 1e6).toFixed(2)} M samples/s, calibration ${(calibration / 1e9).toFixed(2)} GMAC/s, ${macs.toFixed(0)} MAC/sample, ratio ${(measured / predicted).toFixed(2)}`;
       expect(measured, context).toBeGreaterThanOrEqual(CALIBRATED_FRACTION * predicted);
       expect(measured, context).toBeGreaterThanOrEqual(ABSOLUTE_FLOOR_SAMPLES_PER_SECOND);
@@ -167,18 +179,12 @@ describe('audio resampler throughput', () => {
 
   it('is at least 3x faster than the naive per-tap resampler on 44.1 -> 48 kHz', () => {
     const pcm = makePcm(44100).subarray(0, 44100 * CHANNELS);
-    const speed = (fn: () => Int16Array): number => {
-      let best = 0;
-      for (let pass = 0; pass < TIMED_PASSES; pass++) {
-        const start = performance.now();
-        const out = fn();
-        best = Math.max(best, out.length / ((performance.now() - start) / MS_PER_SECOND));
-      }
-      return best;
-    };
     resampleAudioSinc(pcm, 44100, 48000, CHANNELS);
-    const fast = speed(() => resampleAudioSinc(pcm, 44100, 48000, CHANNELS));
-    const naive = speed(() => naiveSincResample(pcm, 44100, 48000, CHANNELS));
+    naiveSincResample(pcm, 44100, 48000, CHANNELS);
+    const [fast, naive] = bestInterleaved(
+      () => samplesPerSecond(() => resampleAudioSinc(pcm, 44100, 48000, CHANNELS)),
+      () => samplesPerSecond(() => naiveSincResample(pcm, 44100, 48000, CHANNELS))
+    );
     expect(fast / naive, `fast ${(fast / 1e6).toFixed(2)} M/s, naive ${(naive / 1e6).toFixed(2)} M/s`).toBeGreaterThanOrEqual(
       MIN_SPEEDUP_OVER_NAIVE
     );
