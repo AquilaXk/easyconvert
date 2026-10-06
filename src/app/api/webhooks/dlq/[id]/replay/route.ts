@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionFromRequest } from '@/lib/auth/session';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
+import { redactUrl } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
   return NextResponse.json({
     success: result.success,
     deliveryId: result.id,
-    url: result.url,
+    url: redactUrl(result.url),
     event: result.event,
     statusCode: result.finalStatusCode,
     attempts: result.totalAttempts,

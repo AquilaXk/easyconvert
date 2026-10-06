@@ -1,4 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  clientIpKey,
+  isClientIpTrustDeclared,
+  loadClientIpConfig,
+  rateLimitKey,
+  resolveClientIp,
+  type ResolvedClientIp,
+} from '@/lib/security/client-ip';
 
 /**
  * Next.js Edge-compatible Centralized Middleware
@@ -9,6 +20,16 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
+const HTTP_BAD_REQUEST = 400;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const PROBLEM_BAD_REQUEST = 'https://api.easyconvert.io/problems/bad-request';
+const PROBLEM_SERVICE_UNAVAILABLE = 'https://api.easyconvert.io/problems/service-unavailable';
+const PROBLEM_TRUST_UNCONFIGURED = 'https://api.easyconvert.io/problems/client-ip-trust-unconfigured';
+
+// Liveness endpoint: stays reachable in degraded (unattributed or undeclared) trust modes.
+const HEALTH_PATH = '/api/health';
+const HEALTH_METHODS = new Set(['GET', 'HEAD']);
+
 // Fast Edge-compatible in-memory rate limiter per Edge worker instance
 interface EdgeRateBucket {
   tokens: number;
@@ -17,6 +38,19 @@ interface EdgeRateBucket {
 const edgeIpBuckets = new Map<string, EdgeRateBucket>();
 const EDGE_BUCKET_CAPACITY = 60;
 const EDGE_REFILL_RATE = 10; // 10 tokens per second
+
+// Degraded mode: when no client can be attributed every request shares ONE bucket, so it is sized for the
+// whole site's traffic rather than for a single client. It still bounds a flood, but it is not per-client
+// fairness; declare TRUSTED_PROXIES to get that back.
+const EDGE_SHARED_BUCKET_CAPACITY = 600;
+const EDGE_SHARED_REFILL_RATE = 100; // tokens per second
+
+interface EdgeBucketLimits {
+  capacity: number;
+  refillRate: number;
+}
+const PER_CLIENT_LIMITS: EdgeBucketLimits = { capacity: EDGE_BUCKET_CAPACITY, refillRate: EDGE_REFILL_RATE };
+const SHARED_LIMITS: EdgeBucketLimits = { capacity: EDGE_SHARED_BUCKET_CAPACITY, refillRate: EDGE_SHARED_REFILL_RATE };
 
 function cleanExpiredEdgeBuckets() {
   const now = Date.now();
@@ -32,16 +66,17 @@ function cleanExpiredEdgeBuckets() {
 function checkEdgeIpRateLimit(clientIp: string): { allowed: boolean; retryAfterSec: number } {
   cleanExpiredEdgeBuckets();
   const now = Date.now();
+  const limits = clientIp === UNATTRIBUTED_CLIENT_KEY ? SHARED_LIMITS : PER_CLIENT_LIMITS;
   let bucket = edgeIpBuckets.get(clientIp);
 
   if (!bucket) {
-    bucket = { tokens: EDGE_BUCKET_CAPACITY - 1, lastRefill: now };
+    bucket = { tokens: limits.capacity - 1, lastRefill: now };
     edgeIpBuckets.set(clientIp, bucket);
     return { allowed: true, retryAfterSec: 0 };
   }
 
   const elapsedSec = (now - bucket.lastRefill) / 1000;
-  bucket.tokens = Math.min(EDGE_BUCKET_CAPACITY, bucket.tokens + elapsedSec * EDGE_REFILL_RATE);
+  bucket.tokens = Math.min(limits.capacity, bucket.tokens + elapsedSec * limits.refillRate);
   bucket.lastRefill = now;
 
   if (bucket.tokens >= 1) {
@@ -50,8 +85,44 @@ function checkEdgeIpRateLimit(clientIp: string): { allowed: boolean; retryAfterS
   }
 
   const needed = 1 - bucket.tokens;
-  const retryAfterSec = Math.max(1, Math.ceil(needed / EDGE_REFILL_RATE));
+  const retryAfterSec = Math.max(1, Math.ceil(needed / limits.refillRate));
   return { allowed: false, retryAfterSec };
+}
+
+function problemResponse(
+  status: number,
+  type: string,
+  title: string,
+  detail: string,
+  instance: string,
+  extraHeaders: Record<string, string> = {}
+): NextResponse {
+  return new NextResponse(JSON.stringify({ type, title, status, detail, instance }), {
+    status,
+    headers: { 'Content-Type': 'application/problem+json', ...extraHeaders },
+  });
+}
+
+let warnedTrustUnconfigured = false;
+
+function warnTrustUnconfiguredOnce(): void {
+  if (warnedTrustUnconfigured) return;
+  warnedTrustUnconfigured = true;
+  console.error(
+    '[edge] TRUSTED_PROXIES is not set in production: refusing /api requests (503). Set it to the CIDR list of ' +
+      'the proxy hops in front of this server, or to "none" if the server is directly exposed.'
+  );
+}
+
+let warnedUnattributed = false;
+
+function warnUnattributedOnce(): void {
+  if (warnedUnattributed) return;
+  warnedUnattributed = true;
+  console.warn(
+    '[edge] Client IP cannot be attributed: set TRUSTED_PROXIES (and/or TRUSTED_CDN) to declare the proxy in ' +
+      'front of this server. Until then every request shares one (degraded) rate-limit bucket.'
+  );
 }
 
 function isOriginAllowed(incomingOrigin: string, request: NextRequest): boolean {
@@ -103,11 +174,57 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Extract client IP for Edge barrier
-  const cfIp = request.headers.get('cf-connecting-ip');
-  const realIp = request.headers.get('x-real-ip');
-  const forwardedFor = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  const clientIp = cfIp || realIp || forwardedFor || '127.0.0.1';
+  const isHealthProbe = pathname === HEALTH_PATH && HEALTH_METHODS.has(request.method.toUpperCase());
+
+  // Edge barrier identity. The middleware cannot see the socket peer, so attribution follows the deployment
+  // contract in src/lib/security/client-ip.ts: forwarding headers count only behind a declared proxy, and an
+  // unattributed request shares one conservative bucket instead of a header-chosen key.
+  let resolved: ResolvedClientIp;
+  try {
+    const config = loadClientIpConfig();
+    // Production must choose a trust mode explicitly (TRUSTED_PROXIES=<CIDRs>|none, or TRUSTED_CDN). Refusing
+    // to serve is louder than silently throttling every client as one.
+    if (process.env.NODE_ENV === 'production' && !isClientIpTrustDeclared(config)) {
+      if (isHealthProbe) return NextResponse.next();
+      warnTrustUnconfiguredOnce();
+      return problemResponse(
+        HTTP_SERVICE_UNAVAILABLE,
+        PROBLEM_TRUST_UNCONFIGURED,
+        'Service Unavailable',
+        'Client IP trust mode is not configured. Set TRUSTED_PROXIES to the proxy CIDR list, or to "none" when this server is exposed directly. ' +
+          'Note that TRUSTED_PROXIES=none means all clients share one rate-limit bucket.',
+        pathname,
+        { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) }
+      );
+    }
+    resolved = resolveClientIp(request, { config });
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    if (error.status === HTTP_BAD_REQUEST) {
+      return problemResponse(
+        error.status,
+        PROBLEM_BAD_REQUEST,
+        'Bad Request',
+        'Malformed client address in forwarding headers.',
+        pathname
+      );
+    }
+    console.error(`[edge] ${error.message}`);
+    return problemResponse(
+      error.status,
+      PROBLEM_SERVICE_UNAVAILABLE,
+      'Service Unavailable',
+      'Client IP trust configuration is invalid.',
+      pathname,
+      { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) }
+    );
+  }
+  if (resolved.source === 'unattributed') {
+    warnUnattributedOnce();
+    // Liveness probes must not drain (or be starved by) the bucket every unattributed client shares.
+    if (isHealthProbe) return NextResponse.next();
+  }
+  const clientIp = rateLimitKey(clientIpKey(resolved));
 
   // 1. Edge-level IP Rate Limiter
   const edgeRate = checkEdgeIpRateLimit(clientIp);

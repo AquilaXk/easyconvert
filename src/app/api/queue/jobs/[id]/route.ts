@@ -6,6 +6,7 @@ import {
   TERMINAL_TELEMETRY_EVENTS,
 } from '@/lib/queue/bullmq-engine';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
+import { redactText } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,7 +53,7 @@ export async function GET(
           state: job.state,
           progress: job.progress,
           result: job.returnvalue,
-          error: job.failedReason,
+          error: job.failedReason === undefined ? undefined : redactText(job.failedReason),
         });
         controller.enqueue(encoder.encode(`event: initial\ndata: ${initialPayload}\n\n`));
 
@@ -110,10 +111,10 @@ export async function GET(
       targetFormat: job.data.targetFormat,
     },
     returnvalue: job.returnvalue,
-    failedReason: job.failedReason,
+    failedReason: job.failedReason === undefined ? undefined : redactText(job.failedReason),
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,
-    logs: job.logs,
+    logs: job.logs.map(redactText),
   });
 }
 

@@ -14,7 +14,7 @@
     "fixtures:raw": "node scripts/fetch-raw-fixtures.mjs",
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
-    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
+    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/byos-secret-sealing-redis.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
     "bench:zstd": "PERF_BENCH=1 vitest run tests/zstd-streaming-dict.test.ts",
     "worker": "tsx src/worker/index.ts",
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && npm run build:raw-worker && npm run build:pdf-text-worker",
