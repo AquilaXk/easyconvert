@@ -147,6 +147,14 @@ export function requireVerapdf(): string {
   return verapdf;
 }
 
+/** Fixed-text reason for a validator that failed without printing a report. */
+function describeVerapdfFailure(err: { code?: unknown; status?: unknown; signal?: unknown }): string {
+  if (err.code === 'ETIMEDOUT') return 'veraPDF timed out';
+  if (typeof err.status === 'number') return `veraPDF exited with status ${err.status}`;
+  if (typeof err.signal === 'string') return `veraPDF was terminated by ${err.signal}`;
+  return 'veraPDF could not be started';
+}
+
 /** Runs veraPDF with an explicit flavour and returns its JSON report; a validator that cannot run is unavailable. */
 function runVerapdf(verapdf: string, file: string, conformance: PdfAConformance): string {
   const args = [
@@ -168,10 +176,9 @@ function runVerapdf(verapdf: string, file: string, conformance: PdfAConformance)
     // veraPDF exits non-zero for a non-compliant file but still prints the report.
     const report = err?.stdout?.toString('utf-8') ?? '';
     if (report) return report;
-    throw new EngineUnavailableError(
-      VERAPDF_ENGINE_NAME,
-      `veraPDF could not validate the output: ${err?.code ?? err?.signal ?? err?.message}`
-    );
+    // err.message quotes the command line and the temp path: log it, answer with fixed text.
+    console.error('[pdfa] veraPDF failed without a report:', err?.message);
+    throw new EngineUnavailableError(VERAPDF_ENGINE_NAME, describeVerapdfFailure(err));
   }
 }
 
