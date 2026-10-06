@@ -2401,7 +2401,7 @@ async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
  * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
  * budget from its header, with the resize that will be applied, before the raster is decoded.
  */
-async function assertFloatBudgetBeforeDecode(pipeline: sharp.Sharp, options: ConversionOptions): Promise<void> {
+async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
   const { width, height } = await pipeline.metadata();
   if (width === undefined || height === undefined) return;
   const target = resizedDimensions(width, height, options);
