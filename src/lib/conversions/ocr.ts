@@ -29,6 +29,7 @@ import {
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 import { ocrSegmentationFor } from './ocr-config';
+import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
@@ -43,6 +44,9 @@ export {
   parseAlto,
   unescapeXml,
 } from './ocr-export';
+
+/** Terminates pooled OCR workers; call on process shutdown. */
+export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
 
 /**
  * Optical Character Recognition (OCR) Engine
@@ -133,23 +137,17 @@ export async function performOcr(
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
-    const Tesseract = await import('tesseract.js');
-    const segmentation = ocrSegmentationFor(tesseractLang);
-    const worker = await Tesseract.createWorker(tesseractLang, segmentation.engineMode, {
-      langPath: localLangPath,
-      cacheMethod: 'none',
-      gzip: isGzip,
-      // Worker failures already reject the pending job; without a handler the worker also
-      // rethrows them from its message listener as an uncaught exception.
-      errorHandler: () => undefined,
-    });
-    let ret: Awaited<ReturnType<typeof worker.recognize>>;
-    try {
-      await worker.setParameters({ tessedit_pageseg_mode: segmentation.pageSegMode as any });
-      ret = await worker.recognize(ocrInput, {}, { blocks: true });
-    } finally {
-      await worker.terminate();
-    }
+    const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
+    const ret = await getSharedOcrWorkerPool().run(
+      {
+        langs: tesseractLang,
+        langPath: localLangPath,
+        gzip: isGzip,
+        engineMode,
+        parameters: { tessedit_pageseg_mode: pageSegMode },
+      },
+      (recognize) => recognize(ocrInput, {}, { blocks: true })
+    );
 
     if (ret && ret.data) {
       const fullText = (ret.data.text || '').trim();
