@@ -20,6 +20,9 @@ export interface FormatOptionsSchema {
   fit?: boolean;
   stripMetadata?: boolean;
   dpi?: boolean;
+  imageDpi?: boolean;
+  jpegQuality?: boolean;
+  layout?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
   hasHeaders?: boolean;
@@ -86,6 +89,8 @@ export interface ConversionOptions {
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
   stripMetadata?: boolean;
   dpi?: number;
+  /** pdf -> txt: keep physical layout so table rows stay on one line (default: reading order). */
+  layout?: boolean;
   colorDepth?: number;
   colors?: number;
   palette?: boolean;
@@ -210,6 +215,10 @@ export interface ConversionOptions {
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+  /** Office to PDF: downsample embedded images to this resolution (72-1200). Default: keep them. */
+  imageDpi?: number;
+  /** Office to PDF: re-encode embedded JPEGs at this quality (1-100). Default: keep the stream. */
+  jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
@@ -348,6 +357,8 @@ export interface ConversionResult {
   parts?: { filename: string; buffer: Buffer }[];
   /** Link entries left out of an extraction because `skipLinks` was set. */
   skippedLinks?: string[];
+  /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
+  metadata?: Record<string, unknown>;
 }
 
 // S3 Chunked Upload Types
@@ -778,6 +789,21 @@ export class PdfPostprocessError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PdfPostprocessError';
+  }
+}
+
+/**
+ * veraPDF validated a PDF/A output and it failed. `failedRules` lists the rule IDs
+ * (`<clause>-<test number>`, for example `6.2.11.4.1-1`) in the order veraPDF reports them.
+ */
+export class PdfAValidationError extends PdfPostprocessError {
+  constructor(
+    readonly profile: PdfAConformance,
+    readonly failedRules: readonly string[]
+  ) {
+    const rules = failedRules.length > 0 ? ` Failed rules: ${failedRules.join(', ')}.` : '';
+    super(`PDF/A validation failed: the output is not PDF/A compliant (${profile}).${rules}`);
+    this.name = 'PdfAValidationError';
   }
 }
 

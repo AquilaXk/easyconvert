@@ -27,6 +27,7 @@ import {
   type FfmpegEnvironmentInfo,
   checkFfmpeg,
 } from './media';
+import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -670,7 +671,8 @@ export async function convertFile(
  * converting so an incompatible request fails without spending conversion work.
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
-  if (options.pdfa && options.protect) {
+  assertPdfExportOptions(options);
+  if (resolvePdfAConformance(options) && options.protect) {
     // ISO 19005 forbids encryption in PDF/A files.
     throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
   }
@@ -680,18 +682,25 @@ export function assertPdfPostProcessOptions(options: ConversionOptions): void {
  * PDF post-processing shared by every conversion route: watermark, PDF/A, then protection.
  * Updates `result.buffer` and `result.size` in place; a result without a buffer is left untouched.
  */
-export async function applyPdfPostProcessing(result: ConversionResult, options: ConversionOptions): Promise<void> {
+export async function applyPdfPostProcessing(
+  result: ConversionResult,
+  options: ConversionOptions,
+  /** `pdfaExported`: the PDF is already a PDF/A export of the requested level, so it is not converted again. */
+  state: { pdfaExported?: boolean } = {}
+): Promise<void> {
   if (!Buffer.isBuffer(result.buffer)) return;
   assertPdfPostProcessOptions(options);
-  if (!options.watermark && !options.pdfa && !options.protect) return;
+  const pdfaLevel = state.pdfaExported ? null : resolvePdfAConformance(options);
+  if (!options.watermark && !pdfaLevel && !options.protect) return;
   let pdf = result.buffer;
   // Watermark first: any edit after the PDF/A conversion would break conformance.
   if (options.watermark) {
     pdf = await applyPdfWatermark(pdf, options.watermark);
   }
-  if (options.pdfa) {
-    const pdfaRes = await convertToPdfA(pdf, options.pdfa);
+  if (pdfaLevel) {
+    const pdfaRes = await convertToPdfA(pdf, { ...options.pdfa, conformance: pdfaLevel });
     pdf = pdfaRes.buffer;
+    result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }
   if (options.protect) {
     pdf = await protectPdf(pdf, options.protect);
