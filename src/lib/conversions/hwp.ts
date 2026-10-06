@@ -1,7 +1,8 @@
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import sharp from 'sharp';
-import { ConversionOptions, ConversionResult } from '../types';
+import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
+import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
 import { assertNoComplexScript } from './ctl';
@@ -308,18 +309,19 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
 }
 
 /**
- * Decompresses stream payload using deflate (raw or wrapped)
+ * Decompresses a compressed HWP stream. HWP 5.0 stores bare deflate and the format declares no
+ * decoded size, so the output is bounded by the per-stream cap and, through `budget`, the decoded-byte
+ * budget of the whole document. A zlib-wrapped stream is accepted too. Data that is neither throws a
+ * CorruptStreamError, and one that decodes past a bound throws a DecompressionLimitError.
  */
-export function decompressHwpStream(buf: Buffer): Buffer {
+export function decompressHwpStream(buf: Buffer, budget?: InflateBudget, streamName = 'stream'): Buffer {
+  const label = `HWP ${streamName}`;
   try {
-    return zlib.inflateRawSync(buf);
-  } catch {
-    try {
-      return zlib.inflateSync(buf);
-    } catch {
-      return buf;
-    }
+    return inflateBounded(buf, { label, format: 'raw', budget });
+  } catch (err) {
+    if (!(err instanceof CorruptStreamError)) throw err;
   }
+  return inflateBounded(buf, { label, format: 'zlib', budget });
 }
 
 /**
@@ -661,9 +663,10 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
 
   // 2. BodyText Section streams (Section0, Section1, ...)
   const sectionBuffers: Buffer[] = [];
+  const inflateBudget = new InflateBudget();
   for (const [name, stream] of cfbf.streams.entries()) {
     if (/section\d+/i.test(name)) {
-      sectionBuffers.push(isCompressed ? decompressHwpStream(stream) : stream);
+      sectionBuffers.push(isCompressed ? decompressHwpStream(stream, inflateBudget, name) : stream);
     }
   }
 
@@ -671,7 +674,7 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
   if (sectionBuffers.length === 0) {
     for (const [name, stream] of cfbf.streams.entries()) {
       if (name !== 'FileHeader' && name !== 'DocInfo') {
-        sectionBuffers.push(isCompressed ? decompressHwpStream(stream) : stream);
+        sectionBuffers.push(isCompressed ? decompressHwpStream(stream, inflateBudget, name) : stream);
       }
     }
   }
