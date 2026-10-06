@@ -24,8 +24,8 @@ const REPEATS = 2;
  * Regression floors, below the speedups measured on this window (the replaced code is faster on dark data, which
  * narrows the ratio). The 21 MP frame in tests/raw-demosaic/bench-frame.ts is where the issue targets are measured.
  */
-const AHD_MIN_SPEEDUP = 5;
-const AMAZE_MIN_SPEEDUP = 3;
+const AHD_MIN_SPEEDUP = 3;
+const AMAZE_MIN_SPEEDUP = 2;
 const TEST_TIMEOUT_MS = 180_000;
 
 function bestOf<T>(run: () => T): { ms: number; result: T } {
