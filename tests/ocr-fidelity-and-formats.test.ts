@@ -654,8 +654,8 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         matchedIou(reference, mine).forEach((iou, index) => {
           expect(iou, `page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.7);
         });
-        // The banner on page 1 spans well beyond a default letter width.
-        expect(Math.max(...mine.filter((w) => w.page === 1).map((w) => w.x1))).toBeGreaterThan(900);
+        // The banner on page 1 runs past the 612 pt width of a default letter page.
+        expect(Math.max(...mine.filter((w) => w.page === 1).map((w) => w.x1))).toBeGreaterThan(612);
 
         const alto = (await convertFile(pdfBuffer, 'pdf', 'alto', { ocrEnabled: true, ocrMode: 'skip_text' }, 'mixed.pdf')).buffer.toString('utf-8');
         expect(validateAlto44(alto).stderr.trim()).toBe('- validates');

@@ -40,6 +40,7 @@ import {
   type XyCutOptions,
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
+import { extractPdfTextLayerPages } from './pdf-text-geometry';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
 import { renderMarkdownFragment } from './markdown';
@@ -469,8 +470,13 @@ export async function convertDocument(
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
+      // Pages whose text is the PDF's own text layer (skipped by OCR) get their word boxes from it.
+      const textLayerPages = new Set(
+        pageAnalyses.filter((pa) => !pageOcrResults.has(pa.pageNumber) && pa.text.trim() !== '').map((pa) => pa.pageNumber)
+      );
+      const textLayerResults = await extractPdfTextLayerPages(inputBuffer, textLayerPages);
       const combinedResult = assembleCombinedOcrResult(
-        pageOcrResults,
+        new Map([...pageOcrResults, ...textLayerResults]),
         pageAnalyses,
         extractedText,
         ocrInfo.confidence
