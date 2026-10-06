@@ -152,6 +152,8 @@ export async function performOcr(
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
   const ocrInput = prepared.image;
+  // Segmentation follows the page as submitted: an enlarged label is still a label.
+  const inputHeight = prepared.geometry.sourceHeight;
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
@@ -165,6 +167,10 @@ export async function performOcr(
         parameters: { tessedit_pageseg_mode: pageSegMode },
       },
       async (recognize, recognizeWith) => {
+        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight).pageSegMode;
+        if (imageMode !== pageSegMode) {
+          return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
+        }
         const first = await recognize(ocrInput, {}, { blocks: true });
         const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
         if (!fallbackMode || countWords(first.data.text) > 0) return first;
@@ -248,6 +254,7 @@ export async function performOcr(
         tessdataDir: localLangPath,
         tesseractLang,
         image: ocrInput,
+        imageHeight: inputHeight,
       }),
       prepared.geometry
     );
