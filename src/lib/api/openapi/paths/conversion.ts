@@ -7,6 +7,7 @@ import {
   PDFA_ENGINE_NOTE,
   PDFA_PROBLEM_DESCRIPTION,
   createPdfaProblemResponse,
+  INPUT_PIXEL_LIMIT_DESCRIPTION,
   createProblemResponse,
   multipartBody,
   requireScope,
@@ -118,6 +119,7 @@ export const conversionPaths = {
         '422': createPdfaProblemResponse(
           `An idempotency key was reused with a different request payload or parameters. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
+        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),

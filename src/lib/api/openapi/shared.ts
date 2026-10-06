@@ -1,5 +1,10 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
+import {
+  DEFAULT_MAX_INPUT_PIXELS,
+  MAX_INPUT_PIXELS_CEILING,
+  MAX_INPUT_PIXELS_ENV,
+} from '@/lib/conversions/image-input-limit-config';
 
 /** Assignable API key scopes, including the admin wildcard. */
 export const API_KEY_SCOPES = [...ALL_API_KEY_SCOPES, '*'];
@@ -34,6 +39,12 @@ export const createPdfaProblemResponse = (description: string) => ({
     'application/json': { schema: PDFA_PROBLEM_SCHEMA },
   },
 });
+const PIXELS_PER_MEGAPIXEL = 1_000_000;
+
+/** Description of the 413 answer for a picture that declares more pixels than the input limit. */
+export const INPUT_PIXEL_LIMIT_DESCRIPTION = `Payload Too Large: an image (or an image inside the document) declares more than ${
+  DEFAULT_MAX_INPUT_PIXELS / PIXELS_PER_MEGAPIXEL
+} megapixels by default, or a lower limit of a conversion path that holds the whole picture in memory. The detail states the limit. Operators can change the default with ${MAX_INPUT_PIXELS_ENV} (at most ${MAX_INPUT_PIXELS_CEILING} pixels).`;
 
 /** Plain `{ success: false, error }` response used by routes that predate problem details. */
 export const createErrorResponse = (description: string) => ({

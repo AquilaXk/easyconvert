@@ -197,6 +197,7 @@ npm install
 ### Configuration
 
 - `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production, and note that rotating it invalidates every key created or rehashed under the previous value.
+- `EASYCONVERT_MAX_INPUT_PIXELS`: most pixels a still image (or an image inside a document) may declare before conversion; larger pictures are refused with HTTP 413 from the container header, before any pixel is decoded. Default 100000000 (100 megapixels), a plain decimal number, lowered to 268402689 (16383 x 16383) when larger; a malformed value is reported once in the log and ignored. Tighter built-in budgets apply to in-process per-pixel paths (Oklab and Riemersma palette quantization, camera RAW sensors, Ultra HDR).
 
 ### Development Server
 
