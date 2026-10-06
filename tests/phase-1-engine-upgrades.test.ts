@@ -6,11 +6,12 @@ import {
   getExcelColumnName,
   extractTextFromDoc,
 } from '../src/lib/conversions/office';
-import { encodePureH264Mp4 } from '../src/lib/conversions/media-encoder';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { convertDocument } from '../src/lib/conversions/document';
 import { UnsupportedTargetError } from '../src/lib/types';
 import PDFDocument from 'pdfkit';
+import { countVideoPackets, ffmpegTestVideoMp4, toArrayBuffer } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
   describe('1. Spreadsheet Sparse Cell & Inline String Parsing', () => {
@@ -92,47 +93,30 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
   });
 
   describe('3. Dynamic Media Duration & ISO BMFF MP4 Demuxing', () => {
-    it('dynamically calculates totalFrames in encodePureH264Mp4 from audio duration', () => {
-      const sampleRate = 44100;
-      const channels = 1;
-      // 2 seconds of audio at 44100Hz = 88200 samples
-      const pcmSamples = new Int16Array(sampleRate * 2);
-      for (let i = 0; i < pcmSamples.length; i++) {
-        pcmSamples[i] = Math.round(Math.sin((i / sampleRate) * 440 * 2 * Math.PI) * 10000);
-      }
+    for (const faststart of [true, false]) {
+      oracleTest(
+        `demuxes the sample table of a reference-authored H.264 MP4 (faststart=${faststart})`,
+        ['ffmpeg', 'ffprobe'],
+        () => {
+          const mp4 = ffmpegTestVideoMp4({ width: 320, height: 240, fps: 30, seconds: 2, gop: 15, faststart });
+          const referencePackets = countVideoPackets(mp4, 'mp4');
+          expect(referencePackets).toBe(60);
 
-      const mp4Buffer = encodePureH264Mp4(pcmSamples, sampleRate, channels, { videoFps: 30 }, 'Test Dynamic');
-      expect(mp4Buffer.toString('ascii', 4, 8)).toBe('ftyp');
+          const demuxed = demuxMp4(toArrayBuffer(mp4));
 
-      const arrayBuffer = mp4Buffer.buffer.slice(
-        mp4Buffer.byteOffset,
-        mp4Buffer.byteOffset + mp4Buffer.byteLength
+          expect(demuxed).not.toBeNull();
+          expect(demuxed?.type).toBe('video');
+          expect(demuxed?.codec).toBe('avc1');
+          expect(demuxed?.width).toBe(320);
+          expect(demuxed?.height).toBe(240);
+          expect(demuxed?.samples.length).toBe(referencePackets);
+          expect(demuxed?.samples[0].timestampMicros).toBe(0);
+          // Keyframes sit at 0 and every 15 frames, none elsewhere
+          const keyframeIndices = demuxed!.samples.flatMap((sample, index) => (sample.isKeyFrame ? [index] : []));
+          expect(keyframeIndices).toEqual([0, 15, 30, 45]);
+        }
       );
-      const demuxed = demuxMp4(arrayBuffer);
-
-      expect(demuxed).not.toBeNull();
-      expect(demuxed?.type).toBe('video');
-      // At 30 fps for 2 seconds, totalFrames should be ~60 frames, NOT hardcoded 15!
-      expect(demuxed?.samples.length).toBe(60);
-      expect(demuxed?.samples[0].timestampMicros).toBe(0);
-      // Keyframe at 0 and every 15 frames
-      expect(demuxed?.samples[0].isKeyFrame).toBe(true);
-      expect(demuxed?.samples[15].isKeyFrame).toBe(true);
-      expect(demuxed?.samples[1].isKeyFrame).toBe(false);
-    });
-
-    it('demuxes standard stbl box extracting exact sample boundaries and timescale', () => {
-      const pcmSamples = new Int16Array(44100); // 1 second
-      const mp4 = encodePureH264Mp4(pcmSamples, 44100, 1, { videoFps: 25 }, '1-Sec MP4');
-      const ab = mp4.buffer.slice(mp4.byteOffset, mp4.byteOffset + mp4.byteLength);
-
-      const track = demuxMp4(ab);
-      expect(track).toBeDefined();
-      expect(track?.samples.length).toBe(25); // 25 fps * 1s
-      expect(track?.width).toBe(320);
-      expect(track?.height).toBe(240);
-      expect(track?.codec).toBe('avc1');
-    });
+    }
   });
 
   describe('4. Fail-Closed PDF Vector Export Without Synthesized Text Frames', () => {

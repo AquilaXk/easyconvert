@@ -1,10 +1,13 @@
 import zlib from 'node:zlib';
-import { ConversionFailedError, ConversionOptions, ConversionResult } from '../types';
+import { ConversionFailedError, ConversionOptions, ConversionResult, UnsupportedOptionError } from '../types';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
+
+export { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 };
 
 /**
  * Universal Font Conversion Engine
@@ -103,6 +106,14 @@ export async function convertFont(
     throw new Error('Font conversion payload is empty (0 bytes).');
   }
 
+  // Every target holds one font; a collection would silently lose all but its first face
+  if (looksLikeWoff2(inputBuffer, src)) {
+    const faces = countWoff2Fonts(inputBuffer);
+    if (faces > 1) {
+      throw new UnsupportedOptionError(`The WOFF2 file is a collection of ${faces} fonts, but ${tgt} holds a single font. Extract one font first.`);
+    }
+  }
+
   // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation
   const parsedFont = parseFontToSfnt(inputBuffer, src, baseName);
 
@@ -158,6 +169,13 @@ export async function convertFont(
   };
 }
 
+/** True for a WOFF2 file: declared as such, or carrying the 'wOF2' signature (Mac containers are chosen by declared format first). */
+function looksLikeWoff2(buffer: Buffer, format: string): boolean {
+  if (format === 'dfont' || format === 'bin') return false;
+  if (format === 'woff' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOFF')) return false;
+  return format === 'woff2' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOF2');
+}
+
 /**
  * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font, DFONT, MacBinary) into canonical SFNT structure
  */
@@ -177,7 +195,7 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
   }
 
   // Check WOFF2 signature ('wOF2' = 0x774F4632)
-  if (format === 'woff2' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOF2')) {
+  if (looksLikeWoff2(buffer, format)) {
     return decodeWoff2(buffer, defaultName);
   }
 
@@ -258,44 +276,91 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
 }
 
 /**
+ * Orders table records as the OpenType and WOFF specifications require: ascending by the four tag
+ * bytes as written ('OS/2' before 'cmap'), not by locale collation.
+ */
+function compareSfntTags(a: { tag: string }, b: { tag: string }): number {
+  return Buffer.compare(Buffer.from(formatSfntTag(a.tag), 'latin1'), Buffer.from(formatSfntTag(b.tag), 'latin1'));
+}
+
+/**
  * Encodes canonical ParsedFont into standard SFNT (TTF / OTF) binary stream
  */
 export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
-  const tableEntries = Object.values(font.tables).sort((a, b) => a.tag.localeCompare(b.tag));
+  const version = overrideVersion || font.sfntVersion || DEFAULT_SFNT_VERSION;
+  return assembleSfnt(prepareSfntTables(font, version), version);
+}
+
+interface PreparedTable {
+  tag: string;
+  data: Buffer;
+  checkSum: number;
+}
+
+const DEFAULT_SFNT_VERSION = 0x00010000;
+/** The whole font's uint32 sum, with checkSumAdjustment in place, must equal this (OpenType 'head'). */
+const SFNT_CHECKSUM_MAGIC = 0xb1b0afba;
+const HEAD_CHECKSUM_ADJUSTMENT_OFFSET = 8;
+const HEAD_CHECKSUM_MIN_BYTES = HEAD_CHECKSUM_ADJUSTMENT_OFFSET + 4;
+const SFNT_DIRECTORY_HEADER_BYTES = 12;
+const SFNT_DIRECTORY_ENTRY_BYTES = 16;
+const TABLE_ALIGNMENT = 4;
+
+function isHeadTable(tbl: { tag: string; data: Buffer }): boolean {
+  return formatSfntTag(tbl.tag) === 'head' && tbl.data.length >= HEAD_CHECKSUM_MIN_BYTES;
+}
+
+/**
+ * Sorts the tables, recomputes every table checksum from its data, and fills the 'head' table's
+ * checkSumAdjustment for the SFNT layout these tables produce. The 'head' checksum is taken with the
+ * adjustment set to zero, as the OpenType specification requires.
+ */
+function prepareSfntTables(font: ParsedFont, version: number): PreparedTable[] {
+  const prepared = Object.values(font.tables)
+    .sort(compareSfntTags)
+    .map((tbl) => {
+      const head = isHeadTable(tbl);
+      const data = head ? Buffer.from(tbl.data) : tbl.data;
+      if (head) data.writeUInt32BE(0, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
+      return { tag: tbl.tag, data, checkSum: calculateTableChecksum(data) };
+    });
+  const head = prepared.find(isHeadTable);
+  if (head) {
+    const adjustment = (SFNT_CHECKSUM_MAGIC - calculateTableChecksum(assembleSfnt(prepared, version))) >>> 0;
+    head.data.writeUInt32BE(adjustment, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
+  }
+  return prepared;
+}
+
+function assembleSfnt(tableEntries: PreparedTable[], version: number): Buffer {
   const numTables = tableEntries.length;
 
-  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * 16 : 0;
+  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * SFNT_DIRECTORY_ENTRY_BYTES : 0;
   const entrySelector = numTables > 0 ? Math.floor(Math.log2(numTables)) : 0;
-  const rangeShift = numTables > 0 ? numTables * 16 - searchRange : 0;
+  const rangeShift = numTables > 0 ? numTables * SFNT_DIRECTORY_ENTRY_BYTES - searchRange : 0;
 
-  const headerSize = 12 + numTables * 16;
+  const headerSize = SFNT_DIRECTORY_HEADER_BYTES + numTables * SFNT_DIRECTORY_ENTRY_BYTES;
   const chunks: Buffer[] = [];
   let currentOffset = headerSize;
 
-  const directory = Buffer.alloc(12 + numTables * 16);
-  directory.writeUInt32BE(overrideVersion || font.sfntVersion || 0x00010000, 0);
+  const directory = Buffer.alloc(headerSize);
+  directory.writeUInt32BE(version, 0);
   directory.writeUInt16BE(numTables, 4);
   directory.writeUInt16BE(searchRange, 6);
   directory.writeUInt16BE(entrySelector, 8);
   directory.writeUInt16BE(rangeShift, 10);
 
   tableEntries.forEach((tbl, idx) => {
-    const entryOffset = 12 + idx * 16;
+    const entryOffset = SFNT_DIRECTORY_HEADER_BYTES + idx * SFNT_DIRECTORY_ENTRY_BYTES;
     directory.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
-    directory.writeUInt32BE(tbl.checkSum || calculateTableChecksum(tbl.data), entryOffset + 4);
+    directory.writeUInt32BE(tbl.checkSum, entryOffset + 4);
     directory.writeUInt32BE(currentOffset, entryOffset + 8);
     directory.writeUInt32BE(tbl.data.length, entryOffset + 12);
 
     chunks.push(tbl.data);
-
-    // 4-byte alignment padding
-    const pad = (4 - (tbl.data.length % 4)) % 4;
-    if (pad > 0) {
-      chunks.push(Buffer.alloc(pad));
-      currentOffset += tbl.data.length + pad;
-    } else {
-      currentOffset += tbl.data.length;
-    }
+    const pad = (TABLE_ALIGNMENT - (tbl.data.length % TABLE_ALIGNMENT)) % TABLE_ALIGNMENT;
+    if (pad > 0) chunks.push(Buffer.alloc(pad));
+    currentOffset += tbl.data.length + pad;
   });
 
   return Buffer.concat([directory, ...chunks]);
@@ -306,7 +371,8 @@ export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
  * Tables are deflated using zlib and encapsulated with 44-byte WOFF header.
  */
 export function encodeWoff(font: ParsedFont): Buffer {
-  const tableEntries = Object.values(font.tables).sort((a, b) => a.tag.localeCompare(b.tag));
+  const flavor = font.sfntVersion || DEFAULT_SFNT_VERSION;
+  const tableEntries = prepareSfntTables(font, flavor);
   const numTables = tableEntries.length;
 
   const woffHeaderSize = 44;
@@ -329,11 +395,11 @@ export function encodeWoff(font: ParsedFont): Buffer {
     const compLength = compData.length;
 
     const entryOffset = idx * 20;
-    dirBuf.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
+    dirBuf.write(tbl.tag, entryOffset, 4, 'ascii');
     dirBuf.writeUInt32BE(currentOffset, entryOffset + 4);
     dirBuf.writeUInt32BE(compLength, entryOffset + 8);
     dirBuf.writeUInt32BE(origLength, entryOffset + 12);
-    dirBuf.writeUInt32BE(tbl.checkSum || calculateTableChecksum(tbl.data), entryOffset + 16);
+    dirBuf.writeUInt32BE(tbl.checkSum, entryOffset + 16);
 
     tableDataChunks.push(compData);
 
@@ -350,7 +416,7 @@ export function encodeWoff(font: ParsedFont): Buffer {
 
   const header = Buffer.alloc(44);
   header.write('wOFF', 0, 4, 'ascii'); // Signature
-  header.writeUInt32BE(font.sfntVersion || 0x00010000, 4); // Flavor
+  header.writeUInt32BE(flavor, 4); // Flavor
   header.writeUInt32BE(totalWoffLength, 8); // Total WOFF Length
   header.writeUInt16BE(numTables, 12); // Num Tables
   header.writeUInt16BE(0, 14); // Reserved
@@ -427,187 +493,43 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
   };
 }
 
-export const WOFF2_KNOWN_TAGS: string[] = [
-  'cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm',
-  'glyf', 'loca', 'prep', 'CFF ', 'VORG', 'EBDT', 'EBLC', 'gasp', 'hdmx', 'kern',
-  'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE', 'GDEF', 'GPOS', 'GSUB', 'JSTF',
-  'MATH', 'CBDT', 'CBLC', 'COLR', 'CPAL', 'SVG ', 'sbix', 'acnt', 'avar', 'bdat',
-  'bloc', 'bhed', 'bsln', 'cvar', 'fdsc', 'feat', 'fmtx', 'fvar', 'gvar', 'hsty',
-  'just', 'lcar', 'mort', 'morx', 'opbd', 'prop', 'trak', 'Zapf', 'Silf', 'Glat',
-  'Gloc', 'Feat', 'Sill',
-];
-
-export function encodeUIntBase128(value: number): number[] {
-  let val = value >>> 0;
-  const result: number[] = [];
-  while (true) {
-    let byte = val & 0x7f;
-    val >>>= 7;
-    if (result.length > 0) {
-      byte |= 0x80;
-    }
-    result.unshift(byte);
-    if (val === 0) break;
-  }
-  return result;
-}
-
-export function decodeUIntBase128(buffer: Buffer, cursor: { offset: number }): number {
-  let accum = 0;
-  for (let i = 0; i < 5; i++) {
-    if (cursor.offset >= buffer.length) {
-      throw new Error('Unexpected EOF reading UIntBase128 in WOFF2');
-    }
-    const byte = buffer[cursor.offset++];
-    accum = accum * 128 + (byte & 0x7f);
-    if ((byte & 0x80) === 0) {
-      return accum >>> 0;
-    }
-  }
-  throw new Error('UIntBase128 overflow in WOFF2');
-}
-
-const WOFF2_NULL_TRANSFORM = 3;
-const WOFF2_TRANSFORM_SHIFT = 6;
-
 /**
- * Encodes ParsedFont into W3C compliant WOFF2 format container with Table Directory.
+ * Encodes ParsedFont into the W3C WOFF2 format: glyf and loca (and hmtx where it applies) in their
+ * transformed form, Brotli compressed. Fonts the transforms cannot represent throw a Woff2FormatError.
  */
 export function encodeWoff2(font: ParsedFont): Buffer {
-  const tableKeys = Object.keys(font.tables);
-  const sfntBuf = encodeSfnt(font);
+  const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
+  return encodeWoff2Container(font.sfntVersion || 0x00010000, tables);
+}
 
-  // 1. Build Table Directory entries and assemble concatenated table data stream
-  const dirBytes: number[] = [];
-  const tableDataList: Buffer[] = [];
-
-  for (const tag of tableKeys) {
-    const table = font.tables[tag];
-    const knownIdx = WOFF2_KNOWN_TAGS.indexOf(tag);
-    if (knownIdx >= 0 && knownIdx < 63) {
-      // glyf and loca are stored as they are, which WOFF2 spells as the null transform (version 3);
-      // version 0 would announce the transformed glyph stream that this encoder does not write.
-      const nullTransform = tag === 'glyf' || tag === 'loca' ? WOFF2_NULL_TRANSFORM << WOFF2_TRANSFORM_SHIFT : 0;
-      dirBytes.push((knownIdx & 0x3f) | nullTransform);
-    } else {
-      dirBytes.push(63);
-      for (let i = 0; i < 4; i++) {
-        dirBytes.push(tag.charCodeAt(i) || 0x20);
-      }
-    }
-
-    const lenBytes = encodeUIntBase128(table.data.length);
-    dirBytes.push(...lenBytes);
-    tableDataList.push(table.data);
+/** Builds the canonical font model from a font that decodeWoff2Fonts reconstructed. */
+function parsedFontFromWoff2(decoded: Woff2DecodedFont, defaultName: string): ParsedFont {
+  const tables: Record<string, SfntTable> = {};
+  for (const table of decoded.tables) {
+    tables[table.tag] = { tag: table.tag, checkSum: table.checkSum, offset: 0, length: table.data.length, data: table.data };
   }
-
-  const tableDirBuf = Buffer.from(dirBytes);
-  const uncompressedStream = Buffer.concat(tableDataList);
-  const compressedStream = zlib.brotliCompressSync(uncompressedStream);
-
-  // 2. Build 48-byte WOFF2 Header
-  const totalLength = 48 + tableDirBuf.length + compressedStream.length;
-  const header = Buffer.alloc(48);
-  header.write('wOF2', 0, 4, 'ascii'); // Signature
-  header.writeUInt32BE(font.sfntVersion || 0x00010000, 4); // Flavor
-  header.writeUInt32BE(totalLength, 8); // Length
-  header.writeUInt16BE(tableKeys.length, 12); // Num Tables
-  header.writeUInt16BE(0, 14); // Reserved
-  header.writeUInt32BE(sfntBuf.length, 16); // Total SFNT Size
-  header.writeUInt32BE(compressedStream.length, 20); // Total Compressed Size
-  header.writeUInt16BE(1, 24); // Major Version
-  header.writeUInt16BE(0, 26); // Minor Version
-  header.writeUInt32BE(0, 28); // Meta Offset
-  header.writeUInt32BE(0, 32); // Meta Length
-  header.writeUInt32BE(0, 36); // Meta Orig Length
-  header.writeUInt32BE(0, 40); // Priv Offset
-  header.writeUInt32BE(0, 44); // Priv Length
-
-  return Buffer.concat([header, tableDirBuf, compressedStream]);
+  const fontFamily = tables['name'] ? extractFontFamilyFromNameTable(tables['name'].data) || defaultName : defaultName;
+  return {
+    sfntVersion: decoded.flavor,
+    flavor: decoded.flavor === 0x4f54544f ? 'OTTO' : 'TrueType',
+    numTables: decoded.tables.length,
+    tables,
+    fontFamily,
+  };
 }
 
 /**
- * Decodes W3C WOFF2 container format into ParsedFont
+ * Decodes W3C WOFF2 container format into ParsedFont. The glyf, loca and hmtx transforms are reversed
+ * and the font is checksummed like any sfnt. Only Brotli compressed WOFF2 is accepted; malformed input
+ * throws a Woff2FormatError. A collection yields its first font; decodeWoff2Collection returns all.
  */
 export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
-  if (buffer.length < 48 || buffer.toString('ascii', 0, 4) !== 'wOF2') {
-    throw new Error('Invalid WOFF2 font: missing wOF2 magic signature.');
-  }
+  return parsedFontFromWoff2(decodeWoff2Fonts(buffer, { firstFontOnly: true })[0], defaultName);
+}
 
-  const flavor = buffer.readUInt32BE(4);
-  const numTables = buffer.readUInt16BE(12);
-
-  const cursor = { offset: 48 };
-  const tableEntries: Array<{ tag: string; origLength: number }> = [];
-
-  for (let i = 0; i < numTables && cursor.offset < buffer.length; i++) {
-    const flags = buffer[cursor.offset++];
-    const tagIdx = flags & 0x3f;
-    let tag = '';
-    if (tagIdx === 63) {
-      tag = buffer.toString('ascii', cursor.offset, cursor.offset + 4);
-      cursor.offset += 4;
-    } else {
-      tag = WOFF2_KNOWN_TAGS[tagIdx] || `tab${i}`;
-    }
-    const origLength = decodeUIntBase128(buffer, cursor);
-    tableEntries.push({ tag, origLength });
-  }
-
-  const compressedStream = buffer.subarray(cursor.offset);
-
-  try {
-    const decompressed = zlib.brotliDecompressSync(compressedStream);
-
-    // If decompressed stream is already full SFNT (e.g. from legacy or direct encoding)
-    if (decompressed.length >= 12 && (decompressed.readUInt32BE(0) === 0x00010000 || decompressed.readUInt32BE(0) === 0x4f54544f)) {
-      return decodeSfnt(decompressed, defaultName);
-    }
-
-    // Split decompressed stream into tables according to table directory
-    if (tableEntries.length > 0) {
-      let streamOff = 0;
-      const tables: Record<string, SfntTable> = {};
-      for (const entry of tableEntries) {
-        const tableEnd = Math.min(decompressed.length, streamOff + entry.origLength);
-        const data = decompressed.subarray(streamOff, tableEnd);
-        streamOff += entry.origLength;
-        tables[entry.tag] = {
-          tag: entry.tag,
-          checkSum: calculateTableChecksum(data),
-          offset: 0,
-          length: entry.origLength,
-          data: Buffer.from(data),
-        };
-      }
-
-      let fontFamily = defaultName;
-      if (tables['name']) {
-        fontFamily = extractFontFamilyFromNameTable(tables['name'].data) || defaultName;
-      }
-
-      return {
-        sfntVersion: flavor,
-        flavor: flavor === 0x4f54544f ? 'OTTO' : 'TrueType',
-        numTables: tableEntries.length,
-        tables,
-        fontFamily,
-      };
-    }
-  } catch (brotliErr: any) {
-    // If Brotli fails, try zlib inflate fallback
-    try {
-      const inflated = zlib.inflateSync(compressedStream);
-      if (inflated.length >= 12) {
-        return decodeSfnt(inflated, defaultName);
-      }
-    } catch {
-      // Ignored
-    }
-    throw new Error(`Failed to decode WOFF2: compressed table stream is corrupted or invalid: ${brotliErr.message}`);
-  }
-
-  throw new Error('Failed to decode WOFF2: no valid table entries found.');
+/** Decodes every font of a WOFF2 file (several for a collection, one otherwise). */
+export function decodeWoff2Collection(buffer: Buffer, defaultName: string): ParsedFont[] {
+  return decodeWoff2Fonts(buffer).map((font) => parsedFontFromWoff2(font, defaultName));
 }
 
 /**
