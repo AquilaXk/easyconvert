@@ -18,6 +18,9 @@ const PAGE_TIMEOUT_MS = 120_000;
 const ENGLISH_PAGES = ['en_a', 'en_b', 'en_c'] as const;
 const MAX_SHADED_CER_PERCENT = 1;
 const MAX_LOW_RESOLUTION_CER_PERCENT = 1;
+const MAX_SKEWED_CER_PERCENT = 1;
+const MAX_SKEWED_CJK_CER_PERCENT = 3;
+const JAPANESE_PAGES = ['ja_a', 'ja_b'] as const;
 
 const TESSDATA_DIRS = [
   ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
@@ -42,6 +45,43 @@ function truthFor(page: string): string {
 function pageImage(page: string, variant: string): Buffer {
   return fs.readFileSync(path.join(FIXTURE_DIR, `${page}__${variant}.png`));
 }
+
+/** CJK text has no spaces, and the recognizer may add some between glyphs, so compare without whitespace. */
+function withoutWhitespace(text: string): string {
+  return text.replace(/\s+/g, '');
+}
+
+describe('3 degree skew', () => {
+  for (const page of ENGLISH_PAGES) {
+    oracleTest(
+      `reads the skewed ${page} page with CER <= ${MAX_SKEWED_CER_PERCENT}%`,
+      ['tesseract'],
+      async () => {
+        requireData('eng');
+        const result = await performOcr(pageImage(page, 'skew3'), 'eng');
+        expect(characterErrorRatePercent(truthFor(page), result.text)).toBeLessThanOrEqual(MAX_SKEWED_CER_PERCENT);
+      },
+      PAGE_TIMEOUT_MS
+    );
+  }
+
+  // Without levelling, the WebAssembly engine's page layout analysis cuts Japanese lines apart
+  // (character error rate 58% and 90% on these pages).
+  for (const page of JAPANESE_PAGES) {
+    oracleTest(
+      `reads the skewed ${page} Japanese page with CER <= ${MAX_SKEWED_CJK_CER_PERCENT}%`,
+      ['tesseract'],
+      async () => {
+        requireData('jpn');
+        const result = await performOcr(pageImage(page, 'skew3'), 'jpn');
+        expect(
+          characterErrorRatePercent(withoutWhitespace(truthFor(page)), withoutWhitespace(result.text))
+        ).toBeLessThanOrEqual(MAX_SKEWED_CJK_CER_PERCENT);
+      },
+      PAGE_TIMEOUT_MS
+    );
+  }
+});
 
 describe('degraded English pages', () => {
   for (const page of ENGLISH_PAGES) {
@@ -87,20 +127,18 @@ const TSV_TEXT = 11;
 const TSV_WORD_LEVEL = '5';
 const RENDER_DPI = 300;
 const LOW_DPI = 72;
-/** Word centres of the enlarged page, mapped back, may differ from the 300 dpi reading by this much at 72 dpi. */
-const MAX_CENTRE_ERROR_PX = 4;
 const MIN_MATCHED_WORD_SHARE = 0.9;
+const MIN_WORDS = 40;
 
-/** Word boxes the reference CLI reads off the 300 dpi render, scaled to 72 dpi pixels. */
-function referenceWordsAt72Dpi(page: string): ReferenceWord[] {
+/** Words (text and centre) the reference CLI reads off an image, with coordinates multiplied by `scale`. */
+function referenceWords(imagePath: string, scale: number): ReferenceWord[] {
   const cli = getOracleToolPath('tesseract');
   if (!cli) throw new OracleToolMissingError('tesseract', 'tesseract is not installed');
   const tsv = execFileSync(
     cli,
-    [path.join(FIXTURE_DIR, `${page}__clean300.png`), 'stdout', '-l', 'eng', '--psm', '3', '--oem', '1', '-c', 'tessedit_create_tsv=1'],
+    [imagePath, 'stdout', '-l', 'eng', '--psm', '3', '--oem', '1', '-c', 'tessedit_create_tsv=1'],
     { encoding: 'utf-8', timeout: PAGE_TIMEOUT_MS, env: { ...process.env, OMP_THREAD_LIMIT: '1' } }
   );
-  const scale = LOW_DPI / RENDER_DPI;
   const words: ReferenceWord[] = [];
   for (const row of tsv.split('\n').slice(1)) {
     const fields = row.split('\t');
@@ -114,34 +152,57 @@ function referenceWordsAt72Dpi(page: string): ReferenceWord[] {
   return words;
 }
 
-describe('boxes of an enlarged page', () => {
+/** Share of recognized words whose box centre is within `maxCentreErrorPx` of a reference word with the same text. */
+async function matchedWordShare(
+  source: Buffer,
+  reference: ReferenceWord[],
+  maxCentreErrorPx: number
+): Promise<number> {
+  const result = await performOcr(source, 'eng');
+  const { width, height } = await sharp(source).metadata();
+  expect([result.imageWidth, result.imageHeight]).toEqual([width, height]);
+  const words = (result.lineBlocks ?? []).flatMap((block) => block.words);
+  expect(words.length).toBeGreaterThan(MIN_WORDS);
+  let matched = 0;
+  for (const word of words) {
+    expect(word.bbox.x + word.bbox.width).toBeLessThanOrEqual(width as number);
+    expect(word.bbox.y + word.bbox.height).toBeLessThanOrEqual(height as number);
+    const centerX = word.bbox.x + word.bbox.width / 2;
+    const centerY = word.bbox.y + word.bbox.height / 2;
+    const near = reference.some(
+      (ref) => ref.text === word.text && Math.hypot(ref.centerX - centerX, ref.centerY - centerY) <= maxCentreErrorPx
+    );
+    if (near) matched++;
+  }
+  return matched / words.length;
+}
+
+describe('boxes of a prepared page', () => {
+  // Word centres of the enlarged page, mapped back, may differ from the 300 dpi reading by this much at 72 dpi.
+  const MAX_CENTRE_ERROR_72_DPI_PX = 4;
+  // A turned page's boxes come from the levelled text, whose words the engine delimits slightly differently.
+  const MAX_CENTRE_ERROR_SKEWED_PX = 10;
+
   oracleTest(
-    'land on the words of the original 72 dpi image, as the 300 dpi reading places them',
+    'of the enlarged 72 dpi page land on the words of the original image, as the 300 dpi reading places them',
     ['tesseract'],
     async () => {
       requireData('eng');
-      const reference = referenceWordsAt72Dpi('en_a');
-      const source = pageImage('en_a', 'dpi72');
-      const result = await performOcr(source, 'eng');
-      const { width, height } = await sharp(source).metadata();
-      expect([result.imageWidth, result.imageHeight]).toEqual([width, height]);
+      const reference = referenceWords(path.join(FIXTURE_DIR, 'en_a__clean300.png'), LOW_DPI / RENDER_DPI);
+      const share = await matchedWordShare(pageImage('en_a', 'dpi72'), reference, MAX_CENTRE_ERROR_72_DPI_PX);
+      expect(share).toBeGreaterThanOrEqual(MIN_MATCHED_WORD_SHARE);
+    },
+    PAGE_TIMEOUT_MS
+  );
 
-      const words = (result.lineBlocks ?? []).flatMap((block) => block.words);
-      expect(words.length).toBeGreaterThan(40);
-      let matched = 0;
-      for (const word of words) {
-        const centerX = word.bbox.x + word.bbox.width / 2;
-        const centerY = word.bbox.y + word.bbox.height / 2;
-        expect(word.bbox.x + word.bbox.width).toBeLessThanOrEqual(width as number);
-        expect(word.bbox.y + word.bbox.height).toBeLessThanOrEqual(height as number);
-        const near = reference.some(
-          (ref) =>
-            ref.text === word.text &&
-            Math.hypot(ref.centerX - centerX, ref.centerY - centerY) <= MAX_CENTRE_ERROR_PX
-        );
-        if (near) matched++;
-      }
-      expect(matched / words.length).toBeGreaterThanOrEqual(MIN_MATCHED_WORD_SHARE);
+  oracleTest(
+    'of the levelled 3 degree skewed page land on the words of the skewed image, as the reference reads them there',
+    ['tesseract'],
+    async () => {
+      requireData('eng');
+      const reference = referenceWords(path.join(FIXTURE_DIR, 'en_a__skew3.png'), 1);
+      const share = await matchedWordShare(pageImage('en_a', 'skew3'), reference, MAX_CENTRE_ERROR_SKEWED_PX);
+      expect(share).toBeGreaterThanOrEqual(MIN_MATCHED_WORD_SHARE);
     },
     PAGE_TIMEOUT_MS
   );

@@ -12,7 +12,12 @@ import {
   SAUVOLA_MIN_WINDOW,
   SAUVOLA_PAPER,
 } from '../src/lib/conversions/ocr-sauvola';
-import { estimateLineHeight } from '../src/lib/conversions/ocr-text-metrics';
+import {
+  estimateLineHeight,
+  estimateSkew,
+  lineHeightFromProfile,
+  OCR_DESKEW_MAX_DEGREES,
+} from '../src/lib/conversions/ocr-text-metrics';
 import { OCR_MAX_UPSCALE, OCR_PREPROCESS_MAX_PIXELS, planRescale, preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
 import { identityGeometry, mapBoxToSource, mapOcrResultToSource } from '../src/lib/conversions/ocr-geometry';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
@@ -215,6 +220,73 @@ describe('line height measurement', () => {
   });
 });
 
+/** A text-like page turned by sharp (an independent rotation) and thresholded back to ink and paper. */
+async function rotatedBandPage(
+  angleClockwise: number
+): Promise<{ binary: Uint8Array; width: number; height: number }> {
+  const width = 700;
+  const height = 420;
+  const page = bandPage(width, height, 8, 14, 46);
+  const { data, info } = await sharp(Buffer.from(page), { raw: { width, height, channels: 1 } })
+    .rotate(angleClockwise, { background: '#ffffff' })
+    .toColourspace('b-w')
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const binary = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) binary[i] = data[i] < 128 ? SAUVOLA_INK : SAUVOLA_PAPER;
+  return { binary, width: info.width, height: info.height };
+}
+
+const SKEW_TOLERANCE_DEGREES = 0.15;
+
+describe('skew estimation', () => {
+  // Text turned clockwise by A needs a clockwise correction of -A, so the estimate is -A.
+  for (const angle of [-7, -3, -0.4, 0.4, 2, 6.5, 9.5]) {
+    it(`finds a page turned ${angle} degrees clockwise`, async () => {
+      const { binary, width, height } = await rotatedBandPage(angle);
+      const { degrees } = await estimateSkew(binary, width, height);
+      expect(Math.abs(degrees - -angle)).toBeLessThanOrEqual(SKEW_TOLERANCE_DEGREES);
+    });
+  }
+
+  it('reports no skew for straight text', async () => {
+    const page = bandPage(700, 420, 8, 14, 46);
+    const { degrees } = await estimateSkew(page, 700, 420);
+    expect(Math.abs(degrees)).toBeLessThanOrEqual(0.05);
+  });
+
+  it('never reports more than the search range', async () => {
+    const { binary, width, height } = await rotatedBandPage(18);
+    const { degrees } = await estimateSkew(binary, width, height);
+    expect(Math.abs(degrees)).toBeLessThanOrEqual(OCR_DESKEW_MAX_DEGREES);
+  });
+
+  it('reports no skew, and no gain, for a blank page', async () => {
+    const result = await estimateSkew(new Uint8Array(200 * 100).fill(SAUVOLA_PAPER), 200, 100);
+    expect(result.degrees).toBe(0);
+    expect(result.improvement).toBe(1);
+  });
+
+  it('measures the line height along the detected direction of a skewed page', async () => {
+    const { binary, width, height } = await rotatedBandPage(4);
+    // Straight along the page the 4 degree lines run into each other.
+    expect(estimateLineHeight(binary, width, height) as number).toBeGreaterThan(30);
+    const { profile } = await estimateSkew(binary, width, height);
+    const measured = lineHeightFromProfile(profile) as number;
+    expect(measured).toBeGreaterThanOrEqual(12);
+    expect(measured).toBeLessThanOrEqual(16);
+  });
+
+  it('stays bounded on a page that is all ink', async () => {
+    const result = await estimateSkew(new Uint8Array(1500 * 1500).fill(SAUVOLA_INK), 1500, 1500);
+    expect(Math.abs(result.degrees)).toBeLessThanOrEqual(OCR_DESKEW_MAX_DEGREES);
+  });
+
+  it('rejects a buffer whose length does not match the size', async () => {
+    await expect(estimateSkew(new Uint8Array(10), 4, 4)).rejects.toThrow(OcrPreprocessError);
+  });
+});
+
 describe('rescale planning', () => {
   it('aims 10 px lines at 35 px (a factor of 3.5)', () => {
     expect(planRescale(10, 480, 117)).toBeCloseTo(3.5, 10);
@@ -244,7 +316,15 @@ describe('rescale planning', () => {
 });
 
 describe('mapping boxes back to the source image', () => {
-  const doubled = { sourceWidth: 100, sourceHeight: 50, outputWidth: 200, outputHeight: 100 };
+  const doubled = {
+    sourceWidth: 100,
+    sourceHeight: 50,
+    scaledWidth: 200,
+    scaledHeight: 100,
+    outputWidth: 200,
+    outputHeight: 100,
+    rotationDegrees: 0,
+  };
 
   it('divides a box of the enlarged image by the scale', () => {
     expect(mapBoxToSource({ x: 20, y: 10, width: 40, height: 20 }, doubled)).toEqual({
@@ -294,6 +374,75 @@ describe('mapping boxes back to the source image', () => {
     expect(result.lineBlocks?.[0].bbox).toEqual({ x: 20, y: 10, width: 100, height: 20 });
   });
 
+  describe('through the turned image', () => {
+    const MARKER = { x: 100, y: 250, width: 40, height: 30 };
+    const SOURCE = { width: 600, height: 400 };
+    const MAX_CENTRE_ERROR_PX = 1.5;
+
+    /** A page with one black marker, scaled and turned by sharp, and the marker's box in the result. */
+    async function turnedMarker(scale: number, angleClockwise: number) {
+      const raw = Buffer.alloc(SOURCE.width * SOURCE.height, 255);
+      for (let y = MARKER.y; y < MARKER.y + MARKER.height; y++) {
+        for (let x = MARKER.x; x < MARKER.x + MARKER.width; x++) raw[y * SOURCE.width + x] = 0;
+      }
+      const scaledWidth = Math.round(SOURCE.width * scale);
+      const scaledHeight = Math.round(SOURCE.height * scale);
+      const { data, info } = await sharp(raw, { raw: { width: SOURCE.width, height: SOURCE.height, channels: 1 } })
+        .resize({ width: scaledWidth, height: scaledHeight, fit: 'fill' })
+        .rotate(angleClockwise, { background: '#ffffff' })
+        .toColourspace('b-w')
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      let x0 = info.width;
+      let y0 = info.height;
+      let x1 = -1;
+      let y1 = -1;
+      for (let y = 0; y < info.height; y++) {
+        for (let x = 0; x < info.width; x++) {
+          if (data[y * info.width + x] >= 128) continue;
+          x0 = Math.min(x0, x);
+          y0 = Math.min(y0, y);
+          x1 = Math.max(x1, x + 1);
+          y1 = Math.max(y1, y + 1);
+        }
+      }
+      return {
+        box: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
+        geometry: {
+          sourceWidth: SOURCE.width,
+          sourceHeight: SOURCE.height,
+          scaledWidth,
+          scaledHeight,
+          outputWidth: info.width,
+          outputHeight: info.height,
+          rotationDegrees: angleClockwise,
+        },
+      };
+    }
+
+    for (const [scale, angle] of [
+      [1, 3],
+      [1, -4.5],
+      [1, 9],
+      [2, 3],
+      [3.5, -7],
+    ]) {
+      it(`maps a marker back from scale ${scale} and a ${angle} degree clockwise turn`, async () => {
+        const { box, geometry } = await turnedMarker(scale, angle);
+        const mapped = mapBoxToSource(box, geometry);
+        const centreX = mapped.x + mapped.width / 2;
+        const centreY = mapped.y + mapped.height / 2;
+        expect(Math.abs(centreX - (MARKER.x + MARKER.width / 2))).toBeLessThanOrEqual(MAX_CENTRE_ERROR_PX);
+        expect(Math.abs(centreY - (MARKER.y + MARKER.height / 2))).toBeLessThanOrEqual(MAX_CENTRE_ERROR_PX);
+        // The box of a turned box covers the marker.
+        expect(mapped.x).toBeLessThanOrEqual(MARKER.x + 1);
+        expect(mapped.y).toBeLessThanOrEqual(MARKER.y + 1);
+        expect(mapped.x + mapped.width).toBeGreaterThanOrEqual(MARKER.x + MARKER.width - 1);
+        expect(mapped.y + mapped.height).toBeGreaterThanOrEqual(MARKER.y + MARKER.height - 1);
+      });
+    }
+  });
+
   it('is the identity when the image was not resized', () => {
     const box = { x: 3, y: 4, width: 5, height: 6 };
     expect(mapBoxToSource(box, identityGeometry(100, 50))).toEqual(box);
@@ -311,7 +460,15 @@ describe('preprocessOcrImage', () => {
   it('binarizes the shaded 300 dpi page to pure ink and paper at the source size', async () => {
     const result = await preprocessOcrImage(fixture('en_a__shade'));
     expect(result.applied.binarize).toBe(true);
-    expect(result.geometry).toEqual({ sourceWidth: 2000, sourceHeight: 490, outputWidth: 2000, outputHeight: 490 });
+    expect(result.geometry).toEqual({
+      sourceWidth: 2000,
+      sourceHeight: 490,
+      scaledWidth: 2000,
+      scaledHeight: 490,
+      outputWidth: 2000,
+      outputHeight: 490,
+      rotationDegrees: 0,
+    });
     const { data, width, height } = await grayPixels(result.image);
     expect([width, height]).toEqual([2000, 490]);
     expect(new Set(data)).toEqual(new Set([SAUVOLA_INK, SAUVOLA_PAPER]));
@@ -335,13 +492,13 @@ describe('preprocessOcrImage', () => {
 
   it('does not rescale a 300 dpi page whose lines are already tall enough', async () => {
     const result = await preprocessOcrImage(fixture('en_a__clean300'));
-    expect(result.applied).toEqual({ rescale: false, binarize: true });
+    expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: true });
     expect(result.geometry.outputWidth).toBe(result.geometry.sourceWidth);
   });
 
   it('enlarges a 72 dpi page (about 10 px lines) until its lines are 30 to 40 px, then binarizes', async () => {
     const result = await preprocessOcrImage(fixture('en_a__dpi72'));
-    expect(result.applied).toEqual({ rescale: true, binarize: true });
+    expect(result.applied).toEqual({ rescale: true, deskew: false, binarize: true });
     expect(result.lineHeightPx).toBeGreaterThan(8);
     expect(result.lineHeightPx).toBeLessThan(13);
     const { sourceWidth, sourceHeight, outputWidth, outputHeight } = result.geometry;
@@ -357,16 +514,66 @@ describe('preprocessOcrImage', () => {
   });
 
   it('enlarges without binarizing when only the rescale step is on', async () => {
-    const result = await preprocessOcrImage(fixture('en_a__dpi72'), { rescale: true, binarize: false });
-    expect(result.applied).toEqual({ rescale: true, binarize: false });
+    const result = await preprocessOcrImage(fixture('en_a__dpi72'), { rescale: true, deskew: false, binarize: false });
+    expect(result.applied).toEqual({ rescale: true, deskew: false, binarize: false });
     const { data } = await grayPixels(result.image);
     expect(new Set(data).size).toBeGreaterThan(2);
   });
 
+  it('straightens the page rendered with a 3 degree skew (the generator rotated it by 3)', async () => {
+    const result = await preprocessOcrImage(fixture('en_a__skew3'));
+    expect(result.applied.deskew).toBe(true);
+    expect(Math.abs(result.geometry.rotationDegrees - 3)).toBeLessThanOrEqual(0.2);
+    // The line height is measured along the text, not along the page: 5 lines of about 42 px.
+    expect(result.lineHeightPx).toBeGreaterThan(36);
+    expect(result.lineHeightPx).toBeLessThan(48);
+    // The page grows to hold the turned image, and the source size is kept for mapping boxes back.
+    expect([result.geometry.sourceWidth, result.geometry.sourceHeight]).toEqual([2024, 596]);
+    expect(result.geometry.outputWidth).toBeGreaterThan(2024);
+    expect(result.geometry.outputHeight).toBeGreaterThan(596);
+  });
+
+  it('does not turn a page whose text is already straight', async () => {
+    const result = await preprocessOcrImage(fixture('en_a__clean300'));
+    expect(result.applied.deskew).toBe(false);
+    expect(result.geometry.rotationDegrees).toBe(0);
+  });
+
+  it('keeps a skewed page as it is when the deskew step is off', async () => {
+    const result = await preprocessOcrImage(fixture('en_a__skew3'), { rescale: false, deskew: false, binarize: true });
+    expect(result.applied.deskew).toBe(false);
+    expect(result.geometry.rotationDegrees).toBe(0);
+    expect([result.geometry.outputWidth, result.geometry.outputHeight]).toEqual([2024, 596]);
+  });
+
+  it('does not turn a page when the turned image would exceed the pixel budget', async () => {
+    // 16000 x 2900 is 46 million pixels, inside the budget, but turned by 5 degrees it needs
+    // about 16190 x 4283 = 69 million, which is not.
+    const width = 16_000;
+    const height = 2_900;
+    const slope = Math.tan((5 * Math.PI) / 180);
+    const page = new Uint8Array(width * height).fill(SAUVOLA_PAPER);
+    for (let line = 0; line < 3; line++) {
+      for (let x = 10; x < width - 10; x++) {
+        if (x % 80 >= 60) continue;
+        const top = 40 + line * 500 + Math.round(x * slope);
+        for (let y = top; y < top + 100 && y < height; y++) page[y * width + x] = SAUVOLA_INK;
+      }
+    }
+    const skewed = await sharp(Buffer.from(page), { raw: { width, height, channels: 1 } })
+      .png({ compressionLevel: 1 })
+      .toBuffer();
+    expect(width * height).toBeLessThan(OCR_PREPROCESS_MAX_PIXELS);
+    const result = await preprocessOcrImage(skewed, { rescale: false, deskew: true, binarize: false });
+    expect(result.applied.deskew).toBe(false);
+    expect(Math.abs(result.skewDegrees + 5)).toBeLessThanOrEqual(0.3);
+    expect(result.geometry.rotationDegrees).toBe(0);
+  }, 60_000);
+
   it('does not touch the page when every step is switched off', async () => {
     const source = fixture('en_a__shade');
-    const result = await preprocessOcrImage(source, { rescale: false, binarize: false });
-    expect(result.applied).toEqual({ rescale: false, binarize: false });
+    const result = await preprocessOcrImage(source, { rescale: false, deskew: false, binarize: false });
+    expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: false });
     const expected = await sharp(source).rotate().png().toBuffer();
     expect(result.image.equals(expected)).toBe(true);
   });

@@ -1,36 +1,77 @@
 import type { OcrBBox, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 
 /**
- * Preprocessing can resize the page, so the recognizer reports boxes in the prepared image's
- * pixels. Callers (searchable PDF text layers, HOCR and ALTO export) place them on the original
- * image, so every box is mapped back before a result leaves `performOcr`.
+ * Preprocessing can resize and turn the page, so the recognizer reports boxes in the prepared
+ * image's pixels. Callers (searchable PDF text layers, HOCR and ALTO export) place them on the
+ * original image, so every box is mapped back before a result leaves `performOcr`.
  */
 
-/** Where the prepared image sits relative to the upright source image. */
+/** How the prepared image was made from the upright source image: resized, then turned. */
 export interface OcrGeometry {
   sourceWidth: number;
   sourceHeight: number;
-  /** Size of the image the recognizer reads. */
+  /** Size after the rescale step, before the turn. */
+  scaledWidth: number;
+  scaledHeight: number;
+  /** Size of the image the recognizer reads (the turned image's bounding box). */
   outputWidth: number;
   outputHeight: number;
+  /** Clockwise turn about the image centre applied after scaling; 0 when the page was not turned. */
+  rotationDegrees: number;
 }
 
+const DEGREES_TO_RADIANS = Math.PI / 180;
+
 export function identityGeometry(width: number, height: number): OcrGeometry {
-  return { sourceWidth: width, sourceHeight: height, outputWidth: width, outputHeight: height };
+  return {
+    sourceWidth: width,
+    sourceHeight: height,
+    scaledWidth: width,
+    scaledHeight: height,
+    outputWidth: width,
+    outputHeight: height,
+    rotationDegrees: 0,
+  };
 }
 
 function isIdentity(g: OcrGeometry): boolean {
-  return g.sourceWidth === g.outputWidth && g.sourceHeight === g.outputHeight;
+  return g.rotationDegrees === 0 && g.sourceWidth === g.outputWidth && g.sourceHeight === g.outputHeight;
 }
 
-/** Maps a box from prepared-image pixels to source-image pixels; it stays inside the source and is at least 1 px. */
+/**
+ * Maps a box from prepared-image pixels to source-image pixels. A turned box is not a box, so the
+ * result is the bounding box of its four corners; it stays inside the source and is at least 1 px.
+ */
 export function mapBoxToSource(box: OcrBBox, g: OcrGeometry): OcrBBox {
-  const scaleX = g.outputWidth / g.sourceWidth;
-  const scaleY = g.outputHeight / g.sourceHeight;
-  const x0 = Math.min(g.sourceWidth - 1, Math.max(0, Math.round(box.x / scaleX)));
-  const y0 = Math.min(g.sourceHeight - 1, Math.max(0, Math.round(box.y / scaleY)));
-  const x1 = Math.min(g.sourceWidth, Math.max(x0 + 1, Math.round((box.x + box.width) / scaleX)));
-  const y1 = Math.min(g.sourceHeight, Math.max(y0 + 1, Math.round((box.y + box.height) / scaleY)));
+  const scaleX = g.scaledWidth / g.sourceWidth;
+  const scaleY = g.scaledHeight / g.sourceHeight;
+  const radians = g.rotationDegrees * DEGREES_TO_RADIANS;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const [cornerX, cornerY] of [
+    [box.x, box.y],
+    [box.x + box.width, box.y],
+    [box.x, box.y + box.height],
+    [box.x + box.width, box.y + box.height],
+  ]) {
+    // Undo the clockwise turn (rows grow downwards) about the centre, then the scale.
+    const dx = cornerX - g.outputWidth / 2;
+    const dy = cornerY - g.outputHeight / 2;
+    const scaledX = dx * cos + dy * sin + g.scaledWidth / 2;
+    const scaledY = -dx * sin + dy * cos + g.scaledHeight / 2;
+    left = Math.min(left, scaledX / scaleX);
+    right = Math.max(right, scaledX / scaleX);
+    top = Math.min(top, scaledY / scaleY);
+    bottom = Math.max(bottom, scaledY / scaleY);
+  }
+  const x0 = Math.min(g.sourceWidth - 1, Math.max(0, Math.round(left)));
+  const y0 = Math.min(g.sourceHeight - 1, Math.max(0, Math.round(top)));
+  const x1 = Math.min(g.sourceWidth, Math.max(x0 + 1, Math.round(right)));
+  const y1 = Math.min(g.sourceHeight, Math.max(y0 + 1, Math.round(bottom)));
   return { ...box, x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }
 
