@@ -233,7 +233,10 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(StorageConfigError);
-    expect((thrown as StorageConfigError).message).toContain('OCI_NAMESPACE');
+    expect((thrown as StorageConfigError).missing).toEqual(['OCI_NAMESPACE']);
+    expect((thrown as StorageConfigError).message).toBe(
+      'Storage driver "oci" is missing required configuration: OCI_NAMESPACE.'
+    );
   });
 
   it('keeps the public development secret out of production', () => {
