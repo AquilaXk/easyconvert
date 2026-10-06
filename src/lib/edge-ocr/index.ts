@@ -66,10 +66,11 @@ async function recognizeImage(
   options: ConversionOptions,
   onProgress?: (percent: number) => void
 ): Promise<OcrResult> {
+  const language = resolveTesseractLanguage(options.ocrLanguage);
   let data: { text?: string; confidence?: number; blocks?: unknown[] | null };
   try {
     const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(resolveTesseractLanguage(options.ocrLanguage), 1, {
+    const worker = await Tesseract.createWorker(language, 1, {
       // Failures already reject the pending job; without a handler the worker also rethrows
       // them from its message listener as an uncaught exception.
       errorHandler: () => undefined,
@@ -96,7 +97,7 @@ async function recognizeImage(
   if (typeof data.confidence !== 'number' || !Number.isFinite(data.confidence)) {
     throw new EdgeOcrError('Edge OCR engine reported no recognition confidence');
   }
-  const { lines, lineBlocks } = parseTesseractBlocks(data.blocks as any[] | null | undefined);
+  const { lines, lineBlocks } = parseTesseractBlocks(data.blocks as any[] | null | undefined, undefined, undefined, language);
   if (lineBlocks.length === 0) {
     throw new EdgeOcrError('Edge OCR returned text without line geometry, so no text layer can be placed');
   }
@@ -107,6 +108,7 @@ async function recognizeImage(
     wordCount: text.split(/\s+/).length,
     lines,
     lineBlocks,
+    language,
   };
 }
 
