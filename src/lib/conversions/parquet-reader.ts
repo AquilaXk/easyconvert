@@ -816,7 +816,7 @@ function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
     throw new ParquetFormatError(`Corrupted Parquet metadata: footer of ${metaLength} bytes exceeds ${PARQUET_MAX_FOOTER_BYTES}.`);
   }
 
-  const meta = readFooter(buffer, metaOffset);
+  const meta = readFooter(buffer.subarray(0, metaOffset + metaLength), metaOffset);
   if (meta.numRows === 0) return [];
   if (meta.numRows > PARQUET_MAX_ROWS) {
     throw new ParquetFormatError(`Unsupported Parquet file: ${meta.numRows} rows exceed the limit of ${PARQUET_MAX_ROWS}.`);

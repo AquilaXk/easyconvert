@@ -25,6 +25,32 @@ const SNAPPY_SHORT_LITERAL_BYTES = 16;
 const SNAPPY_COPY1_MAX_LEN = 11;
 const SNAPPY_COPY1_MAX_OFFSET = 2048;
 const SNAPPY_MAX_VARINT_SHIFT = 35;
+const BYTE_BITS = 8;
+const BYTE_MASK = 0xff;
+const VARINT_PAYLOAD_MASK = 0x7f;
+const VARINT_CONTINUATION = 0x80;
+const VARINT_PAYLOAD_BITS = 7;
+/** Element tag layout: low two bits select literal or copy form, the rest carries a length. */
+const TAG_TYPE_MASK = 0x03;
+const TAG_LENGTH_SHIFT = 2;
+const COPY1_LENGTH_MASK = 0x07;
+const COPY1_OFFSET_HIGH_MASK = 0xe0;
+const COPY1_OFFSET_DECODE_SHIFT = 3;
+const COPY1_OFFSET_ENCODE_SHIFT = 5;
+const COPY1_OFFSET_BYTES = 1;
+const COPY2_OFFSET_BYTES = 2;
+const COPY4_OFFSET_BYTES = 4;
+const LITERAL_LENGTH_PREFIX_BASE = 59;
+/** Worst-case output is 32 bytes plus the input plus one sixth of it. */
+const WORST_CASE_SLACK_BYTES = 32;
+const WORST_CASE_DIVISOR = 6;
+const VARINT_RESERVE_BYTES = 5;
+/** Framing format: a stream identifier chunk (type 0xff, 6 payload bytes "sNaPpY"), then chunks. */
+const FRAME_IDENTIFIER_TYPE = 0xff;
+const FRAME_IDENTIFIER_LENGTH = 6;
+const FRAME_CHUNK_HEADER_BYTES = 4;
+const FRAME_CHUNK_LENGTH_BYTES = 3;
+const FRAME_IDENTIFIER_NAME = 'sNaPpY';
 const SNAPPY_LITERAL_INLINE_MAX = 60;
 const SNAPPY_TAG_LITERAL = 0;
 const SNAPPY_TAG_COPY1 = 1;
@@ -39,14 +65,14 @@ const SNAPPY_MAX_DECLARED_BYTES = 0xffff_ffff;
 
 /** Worst-case compressed size of `n` input bytes (matches the reference bound). */
 export function maxCompressedSnappyLength(n: number): number {
-  return 32 + n + Math.floor(n / 6);
+  return WORST_CASE_SLACK_BYTES + n + Math.floor(n / WORST_CASE_DIVISOR);
 }
 
 function writeVarint32(out: Uint8Array, pos: number, value: number): number {
   let v = value;
-  while (v >= 0x80) {
-    out[pos++] = (v & 0x7f) | 0x80;
-    v >>>= 7;
+  while (v >= VARINT_CONTINUATION) {
+    out[pos++] = (v & VARINT_PAYLOAD_MASK) | VARINT_CONTINUATION;
+    v >>>= VARINT_PAYLOAD_BITS;
   }
   out[pos++] = v;
   return pos;
@@ -56,17 +82,17 @@ function emitLiteral(out: Uint8Array, opStart: number, src: Uint8Array, start: n
   let op = opStart;
   const n = len - 1;
   if (n < SNAPPY_LITERAL_INLINE_MAX) {
-    out[op++] = n << 2;
+    out[op++] = n << TAG_LENGTH_SHIFT;
   } else {
     let extraBytes = 1;
-    let rest = n >>> 8;
+    let rest = n >>> BYTE_BITS;
     while (rest > 0) {
       extraBytes++;
-      rest >>>= 8;
+      rest >>>= BYTE_BITS;
     }
-    out[op++] = (SNAPPY_LITERAL_INLINE_MAX - 1 + extraBytes) << 2;
+    out[op++] = (LITERAL_LENGTH_PREFIX_BASE + extraBytes) << TAG_LENGTH_SHIFT;
     for (let i = 0; i < extraBytes; i++) {
-      out[op++] = (n >>> (8 * i)) & 0xff;
+      out[op++] = (n >>> (BYTE_BITS * i)) & BYTE_MASK;
     }
   }
   if (len <= SNAPPY_SHORT_LITERAL_BYTES) {
@@ -80,12 +106,15 @@ function emitLiteral(out: Uint8Array, opStart: number, src: Uint8Array, start: n
 function emitCopyAtMost64(out: Uint8Array, opStart: number, offset: number, len: number): number {
   let op = opStart;
   if (len <= SNAPPY_COPY1_MAX_LEN && offset < SNAPPY_COPY1_MAX_OFFSET) {
-    out[op++] = SNAPPY_TAG_COPY1 | ((len - SNAPPY_MIN_MATCH_BYTES) << 2) | ((offset >>> 8) << 5);
-    out[op++] = offset & 0xff;
+    out[op++] =
+      SNAPPY_TAG_COPY1 |
+      ((len - SNAPPY_MIN_MATCH_BYTES) << TAG_LENGTH_SHIFT) |
+      ((offset >>> BYTE_BITS) << COPY1_OFFSET_ENCODE_SHIFT);
+    out[op++] = offset & BYTE_MASK;
   } else {
-    out[op++] = SNAPPY_TAG_COPY2 | ((len - 1) << 2);
-    out[op++] = offset & 0xff;
-    out[op++] = (offset >>> 8) & 0xff;
+    out[op++] = SNAPPY_TAG_COPY2 | ((len - 1) << TAG_LENGTH_SHIFT);
+    out[op++] = offset & BYTE_MASK;
+    out[op++] = (offset >>> BYTE_BITS) & BYTE_MASK;
   }
   return op;
 }
@@ -106,7 +135,7 @@ function emitCopy(out: Uint8Array, opStart: number, offset: number, lenStart: nu
 }
 
 function load32(a: Uint8Array, i: number): number {
-  return (a[i] | (a[i + 1] << 8) | (a[i + 2] << 16) | (a[i + 3] << 24)) >>> 0;
+  return (a[i] | (a[i + 1] << BYTE_BITS) | (a[i + 2] << (2 * BYTE_BITS)) | (a[i + 3] << (3 * BYTE_BITS))) >>> 0;
 }
 
 function matchLength(a: Uint8Array, s1: number, s2: number, limit: number): number {
@@ -188,7 +217,7 @@ function compressFragment(
  * Encodes a buffer into a raw Snappy block (varint length, then literal and copy elements).
  */
 export function compressSnappy(input: Uint8Array): Buffer {
-  const out = Buffer.allocUnsafe(maxCompressedSnappyLength(input.length) + 5);
+  const out = Buffer.allocUnsafe(maxCompressedSnappyLength(input.length) + VARINT_RESERVE_BYTES);
   let op = writeVarint32(out, 0, input.length);
   const table = new Int32Array(1 << SNAPPY_MAX_HASH_TABLE_BITS);
   for (let offset = 0; offset < input.length; offset += SNAPPY_FRAGMENT_BYTES) {
@@ -210,9 +239,9 @@ export function decompressRawSnappyBlock(buf: Uint8Array, maxOutputBytes = SNAPP
   for (;;) {
     if (offset >= buf.length) throw new ParquetFormatError('Corrupted Snappy block: truncated length prefix');
     const b = buf[offset++];
-    uncompressedLen += (b & 0x7f) * 2 ** shift;
-    if ((b & 0x80) === 0) break;
-    shift += 7;
+    uncompressedLen += (b & VARINT_PAYLOAD_MASK) * 2 ** shift;
+    if ((b & VARINT_CONTINUATION) === 0) break;
+    shift += VARINT_PAYLOAD_BITS;
     if (shift > SNAPPY_MAX_VARINT_SHIFT) throw new ParquetFormatError('Corrupted Snappy varint uncompressed length');
   }
   if (uncompressedLen > SNAPPY_MAX_DECLARED_BYTES || uncompressedLen > maxOutputBytes) {
@@ -226,15 +255,15 @@ export function decompressRawSnappyBlock(buf: Uint8Array, maxOutputBytes = SNAPP
 
   while (offset < buf.length && outPos < uncompressedLen) {
     const tag = buf[offset++];
-    const elemType = tag & 0x03;
+    const elemType = tag & TAG_TYPE_MASK;
 
     if (elemType === SNAPPY_TAG_LITERAL) {
-      let len = tag >> 2;
+      let len = tag >> TAG_LENGTH_SHIFT;
       if (len >= SNAPPY_LITERAL_INLINE_MAX) {
         const extraBytes = len - SNAPPY_LITERAL_INLINE_MAX + 1;
         if (offset + extraBytes > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated literal length');
         len = 0;
-        for (let i = 0; i < extraBytes; i++) len += buf[offset + i] * 2 ** (8 * i);
+        for (let i = 0; i < extraBytes; i++) len += buf[offset + i] * 2 ** (BYTE_BITS * i);
         offset += extraBytes;
       }
       len += 1;
@@ -248,19 +277,19 @@ export function decompressRawSnappyBlock(buf: Uint8Array, maxOutputBytes = SNAPP
       let copyLen = 0;
       let copyOffset = 0;
       if (elemType === SNAPPY_TAG_COPY1) {
-        if (offset + 1 > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = ((tag >> 2) & 0x07) + SNAPPY_MIN_MATCH_BYTES;
-        copyOffset = ((tag & 0xe0) << 3) | buf[offset++];
+        if (offset + COPY1_OFFSET_BYTES > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
+        copyLen = ((tag >> TAG_LENGTH_SHIFT) & COPY1_LENGTH_MASK) + SNAPPY_MIN_MATCH_BYTES;
+        copyOffset = ((tag & COPY1_OFFSET_HIGH_MASK) << COPY1_OFFSET_DECODE_SHIFT) | buf[offset++];
       } else if (elemType === SNAPPY_TAG_COPY2) {
-        if (offset + 2 > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = (tag >> 2) + 1;
-        copyOffset = buf[offset] | (buf[offset + 1] << 8);
-        offset += 2;
+        if (offset + COPY2_OFFSET_BYTES > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
+        copyLen = (tag >> TAG_LENGTH_SHIFT) + 1;
+        copyOffset = buf[offset] | (buf[offset + 1] << BYTE_BITS);
+        offset += COPY2_OFFSET_BYTES;
       } else if (elemType === SNAPPY_TAG_COPY4) {
-        if (offset + 4 > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = (tag >> 2) + 1;
+        if (offset + COPY4_OFFSET_BYTES > buf.length) throw new ParquetFormatError('Snappy decompression error: truncated copy');
+        copyLen = (tag >> TAG_LENGTH_SHIFT) + 1;
         copyOffset = load32(buf, offset);
-        offset += 4;
+        offset += COPY4_OFFSET_BYTES;
       }
 
       if (copyOffset <= 0 || copyOffset > outPos) {
@@ -289,20 +318,18 @@ export function decompressRawSnappyBlock(buf: Uint8Array, maxOutputBytes = SNAPP
 export function decompressSnappy(buf: Buffer, maxOutputBytes = SNAPPY_MAX_DECLARED_BYTES): Buffer {
   const isFramed =
     buf.length >= SNAPPY_FRAME_HEADER_BYTES &&
-    buf[0] === 0xff &&
-    buf[1] === 0x06 &&
-    buf[2] === 0x00 &&
-    buf[3] === 0x00 &&
-    buf.subarray(4, SNAPPY_FRAME_HEADER_BYTES).toString('ascii') === 'sNaPpY';
+    buf[0] === FRAME_IDENTIFIER_TYPE &&
+    buf.readUIntLE(1, FRAME_CHUNK_LENGTH_BYTES) === FRAME_IDENTIFIER_LENGTH &&
+    buf.subarray(FRAME_CHUNK_HEADER_BYTES, SNAPPY_FRAME_HEADER_BYTES).toString('ascii') === FRAME_IDENTIFIER_NAME;
   if (!isFramed) return decompressRawSnappyBlock(buf, maxOutputBytes);
 
   let offset = SNAPPY_FRAME_HEADER_BYTES;
   let total = 0;
   const chunks: Buffer[] = [];
-  while (offset + 4 <= buf.length) {
+  while (offset + FRAME_CHUNK_HEADER_BYTES <= buf.length) {
     const chunkType = buf[offset++];
-    const chunkLen = buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16);
-    offset += 3;
+    const chunkLen = buf.readUIntLE(offset, FRAME_CHUNK_LENGTH_BYTES);
+    offset += FRAME_CHUNK_LENGTH_BYTES;
     if (offset + chunkLen > buf.length) break;
     if (chunkType === SNAPPY_FRAME_CHUNK_COMPRESSED || chunkType === SNAPPY_FRAME_CHUNK_UNCOMPRESSED) {
       const body = buf.subarray(offset + SNAPPY_FRAME_CRC_BYTES, offset + chunkLen);

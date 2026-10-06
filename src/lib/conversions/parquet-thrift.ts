@@ -25,7 +25,24 @@ export const ThriftType = {
 const MAX_THRIFT_SKIP_DEPTH = 32;
 const MAX_FIELD_DELTA = 15;
 const SHORT_LIST_LIMIT = 15;
-const THRIFT_VARINT_MAX_SHIFT = 70n;
+/** A 64-bit varint is at most ten bytes of seven payload bits. */
+const VARINT_MAX_BYTES = 10;
+const VARINT_PAYLOAD_MASK = 0x7f;
+const VARINT_PAYLOAD_MASK_BIG = 0x7fn;
+const VARINT_CONTINUATION = 0x80;
+const VARINT_CONTINUATION_BIG = 0x80n;
+const VARINT_PAYLOAD_BITS = 7;
+const VARINT_PAYLOAD_BITS_BIG = 7n;
+const NIBBLE_BITS = 4;
+const NIBBLE_MASK = 0x0f;
+/** List header high nibble 0xf means the size follows as a varint; the long form sets that nibble. */
+const LIST_LONG_FORM_HEADER = 0xf0;
+const INT32_SIGN_SHIFT = 31;
+const INT64_SIGN_SHIFT = 63n;
+const FIELD_STOP = 0;
+/** Bytes a boolean takes as a list element (as a struct field its value rides in the field header). */
+const LIST_BOOLEAN_ELEMENT_BYTES = 1;
+const DOUBLE_BYTES = 8;
 
 export class CompactProtocolWriter {
   private chunks: Buffer[] = [];
@@ -35,7 +52,7 @@ export class CompactProtocolWriter {
     const lastId = this.lastFieldIdStack[this.lastFieldIdStack.length - 1];
     const delta = fieldId - lastId;
     if (delta > 0 && delta <= MAX_FIELD_DELTA) {
-      this.chunks.push(Buffer.from([(delta << 4) | type]));
+      this.chunks.push(Buffer.from([(delta << NIBBLE_BITS) | type]));
     } else {
       this.chunks.push(Buffer.from([type]));
       this.writeI16(fieldId);
@@ -44,7 +61,7 @@ export class CompactProtocolWriter {
   }
 
   writeFieldStop() {
-    this.chunks.push(Buffer.from([0]));
+    this.chunks.push(Buffer.from([FIELD_STOP]));
   }
 
   writeStructBegin() {
@@ -58,21 +75,21 @@ export class CompactProtocolWriter {
   writeVarint(n: number | bigint) {
     let val = typeof n === 'bigint' ? n : BigInt(n);
     const parts: number[] = [];
-    while (val >= 0x80n) {
-      parts.push(Number(val & 0x7fn) | 0x80);
-      val >>= 7n;
+    while (val >= VARINT_CONTINUATION_BIG) {
+      parts.push(Number(val & VARINT_PAYLOAD_MASK_BIG) | VARINT_CONTINUATION);
+      val >>= VARINT_PAYLOAD_BITS_BIG;
     }
-    parts.push(Number(val & 0x7fn));
+    parts.push(Number(val & VARINT_PAYLOAD_MASK_BIG));
     this.chunks.push(Buffer.from(parts));
   }
 
   writeZigzag(n: number) {
-    const zz = (n << 1) ^ (n >> 31);
+    const zz = (n << 1) ^ (n >> INT32_SIGN_SHIFT);
     this.writeVarint(zz >>> 0);
   }
 
   writeZigzag64(n: bigint) {
-    const zz = (n << 1n) ^ (n >> 63n);
+    const zz = (n << 1n) ^ (n >> INT64_SIGN_SHIFT);
     this.writeVarint(zz);
   }
 
@@ -99,9 +116,9 @@ export class CompactProtocolWriter {
 
   writeListBegin(elemType: number, size: number) {
     if (size < SHORT_LIST_LIMIT) {
-      this.chunks.push(Buffer.from([(size << 4) | elemType]));
+      this.chunks.push(Buffer.from([(size << NIBBLE_BITS) | elemType]));
     } else {
-      this.chunks.push(Buffer.from([0xf0 | elemType]));
+      this.chunks.push(Buffer.from([LIST_LONG_FORM_HEADER | elemType]));
       this.writeVarint(size);
     }
   }
@@ -129,21 +146,18 @@ export class CompactProtocolReader {
   readVarint(): bigint {
     let result = 0n;
     let shift = 0n;
-    while (true) {
+    for (let byteCount = 0; byteCount < VARINT_MAX_BYTES; byteCount++) {
       if (this.offset >= this.buf.length) {
         throw new ParquetFormatError(`Truncated Thrift payload: unexpected EOF reading varint at offset ${this.offset}`);
       }
       const b = this.buf[this.offset++];
-      result |= BigInt(b & 0x7f) << shift;
-      if ((b & 0x80) === 0) break;
-      shift += 7n;
-      if (shift > THRIFT_VARINT_MAX_SHIFT) {
-        throw new ParquetFormatError(
-          `Corrupted Thrift payload: varint exceeds 10 bytes / 64-bit limit at offset ${this.offset}`
-        );
-      }
+      result |= BigInt(b & VARINT_PAYLOAD_MASK) << shift;
+      if ((b & VARINT_CONTINUATION) === 0) return result;
+      shift += VARINT_PAYLOAD_BITS_BIG;
     }
-    return result;
+    throw new ParquetFormatError(
+      `Corrupted Thrift payload: varint exceeds 10 bytes / 64-bit limit at offset ${this.offset}`
+    );
   }
 
   readZigzag32(): number {
@@ -178,14 +192,14 @@ export class CompactProtocolReader {
 
   readFieldBegin(): { fieldId: number; type: number; isStop: boolean } {
     if (this.offset >= this.buf.length) {
-      return { fieldId: 0, type: 0, isStop: true };
+      throw new ParquetFormatError(`Truncated Thrift payload: unexpected EOF inside a struct at offset ${this.offset}`);
     }
     const b = this.buf[this.offset++];
-    if (b === 0) {
+    if (b === FIELD_STOP) {
       return { fieldId: 0, type: 0, isStop: true };
     }
-    const type = b & 0x0f;
-    const modifier = (b >> 4) & 0x0f;
+    const type = b & NIBBLE_MASK;
+    const modifier = (b >> NIBBLE_BITS) & NIBBLE_MASK;
     let fieldId = 0;
     const lastId = this.lastFieldIdStack[this.lastFieldIdStack.length - 1];
     if (modifier === 0) {
@@ -210,10 +224,10 @@ export class CompactProtocolReader {
       throw new ParquetFormatError(`Truncated Thrift payload: unexpected EOF reading list header`);
     }
     const b = this.buf[this.offset++];
-    const sizeHigh = (b >> 4) & 0x0f;
-    const elemType = b & 0x0f;
+    const sizeHigh = (b >> NIBBLE_BITS) & NIBBLE_MASK;
+    const elemType = b & NIBBLE_MASK;
     let size = sizeHigh;
-    if (sizeHigh === 0x0f) {
+    if (sizeHigh === NIBBLE_MASK) {
       size = Number(this.readVarint());
     }
     const remainingBytes = this.buf.length - this.offset;
@@ -232,6 +246,12 @@ export class CompactProtocolReader {
     this.offset += count;
   }
 
+  private skipMapEntry(type: number, depth: number) {
+    const isBoolean = type === ThriftType.BOOL_TRUE || type === ThriftType.BOOL_FALSE;
+    if (isBoolean) this.skipBytes(LIST_BOOLEAN_ELEMENT_BYTES);
+    else this.skip(type, depth + 1);
+  }
+
   skip(type: number, depth = 0) {
     if (depth > MAX_THRIFT_SKIP_DEPTH) {
       throw new ParquetFormatError(`Corrupted Thrift payload: nesting deeper than ${MAX_THRIFT_SKIP_DEPTH} levels`);
@@ -243,12 +263,16 @@ export class CompactProtocolReader {
     } else if (type === ThriftType.I16 || type === ThriftType.I32 || type === ThriftType.I64) {
       this.readVarint();
     } else if (type === ThriftType.DOUBLE) {
-      this.skipBytes(8);
+      this.skipBytes(DOUBLE_BYTES);
     } else if (type === ThriftType.BINARY) {
       this.skipBytes(Number(this.readVarint()));
     } else if (type === ThriftType.LIST || type === ThriftType.SET) {
       const { elemType, size } = this.readListBegin();
-      for (let i = 0; i < size; i++) this.skip(elemType, depth + 1);
+      const isBoolean = elemType === ThriftType.BOOL_TRUE || elemType === ThriftType.BOOL_FALSE;
+      for (let i = 0; i < size; i++) {
+        if (isBoolean) this.skipBytes(LIST_BOOLEAN_ELEMENT_BYTES);
+        else this.skip(elemType, depth + 1);
+      }
     } else if (type === ThriftType.MAP) {
       const size = Number(this.readVarint());
       if (size > this.buf.length - this.offset) {
@@ -256,11 +280,11 @@ export class CompactProtocolReader {
       }
       if (size > 0) {
         const header = this.readByte();
-        const ktype = (header >> 4) & 0x0f;
-        const vtype = header & 0x0f;
+        const ktype = (header >> NIBBLE_BITS) & NIBBLE_MASK;
+        const vtype = header & NIBBLE_MASK;
         for (let i = 0; i < size; i++) {
-          this.skip(ktype, depth + 1);
-          this.skip(vtype, depth + 1);
+          this.skipMapEntry(ktype, depth);
+          this.skipMapEntry(vtype, depth);
         }
       }
     } else if (type === ThriftType.STRUCT) {

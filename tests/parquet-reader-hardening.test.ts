@@ -1,6 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { oracleTest } from './helpers/oracle-test';
-import { pyarrowCompress } from './helpers/parquet-oracle';
+import { pyarrowCompress, pyarrowRead } from './helpers/parquet-oracle';
 import {
   buildHostileParquet,
   CODEC_SNAPPY,
@@ -268,5 +270,117 @@ describe('Parquet reader output amplification', () => {
       expect(failure).toBeInstanceOf(ConversionFailedError);
       expect((failure as Error).message).toMatch(/decoded values exceed/);
     }
+  });
+});
+
+describe('Parquet reader hostile structures', () => {
+  const HOSTILE_ROWS = 10_000_001;
+
+  function dictionaryFile(indexBitWidth: number, indexRun: Buffer, entries = 2): Buffer {
+    const parts: Buffer[] = [];
+    for (let i = 0; i < entries; i++) parts.push(u32(1), Buffer.from(String.fromCharCode(0x61 + i)));
+    const dictBody = Buffer.concat(parts);
+    const dictHeader = pageHeader({ type: PAGE_DICTIONARY, uncompressed: dictBody.length, compressed: dictBody.length, numValues: entries, encoding: ENC_PLAIN });
+    const dataBody = Buffer.concat([Buffer.from([indexBitWidth]), indexRun]);
+    const dataHeader = pageHeader({ type: PAGE_DATA, uncompressed: dataBody.length, compressed: dataBody.length, numValues: 1, encoding: ENC_RLE_DICTIONARY });
+    const body = Buffer.concat([dictHeader, dictBody, dataHeader, dataBody]);
+    return buildHostileParquet({
+      body,
+      leaves: [{ name: 's', physicalType: PHYSICAL_BYTE_ARRAY, repetition: REPETITION_REQUIRED }],
+      rowGroups: [
+        {
+          numRows: 1,
+          chunks: [
+            {
+              name: 's',
+              physicalType: PHYSICAL_BYTE_ARRAY,
+              codec: CODEC_UNCOMPRESSED,
+              numValues: 1,
+              dictionaryPageOffset: FILE_START,
+              dataPageOffset: FILE_START + dictHeader.length + dictBody.length,
+              totalCompressedSize: body.length,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  it('reads a well-formed dictionary file (the builder is sound)', () => {
+    // RLE run of one value: header 1<<1, value 1 -> second entry
+    expect(decodeParquet(dictionaryFile(1, Buffer.from([0x02, 0x01]))).map((r) => r.s)).toEqual(['b']);
+  });
+
+  it('rejects a dictionary index past the end of the dictionary', () => {
+    const file = dictionaryFile(2, Buffer.from([0x02, 0x03]));
+    expect(() => decodeParquet(file)).toThrow(ParquetFormatError);
+    expect(() => decodeParquet(file)).toThrow(/dictionary index 3 out of range \(2 entries\)/);
+  });
+
+  it('rejects a dictionary index bit width above 32', () => {
+    expect(() => decodeParquet(dictionaryFile(33, Buffer.from([0x02, 0x01])))).toThrow(/bit width 33/);
+  });
+
+  it('rejects a dictionary-encoded page whose dictionary page is missing', () => {
+    const dataBody = Buffer.from([1, 0x02, 0x00]);
+    const dataHeader = pageHeader({ type: PAGE_DATA, uncompressed: dataBody.length, compressed: dataBody.length, numValues: 1, encoding: ENC_RLE_DICTIONARY });
+    const body = Buffer.concat([dataHeader, dataBody]);
+    const file = buildHostileParquet({
+      body,
+      leaves: [{ name: 's', physicalType: PHYSICAL_BYTE_ARRAY, repetition: REPETITION_REQUIRED }],
+      rowGroups: [
+        {
+          numRows: 1,
+          chunks: [{ name: 's', physicalType: PHYSICAL_BYTE_ARRAY, codec: CODEC_UNCOMPRESSED, numValues: 1, dataPageOffset: FILE_START, totalCompressedSize: body.length }],
+        },
+      ],
+    });
+    expect(() => decodeParquet(file)).toThrow(/without a dictionary/);
+  });
+
+  it('rejects a footer declaring more rows than the engine limit', () => {
+    const file = buildHostileParquet({ body: Buffer.alloc(0), leaves: int64Leaves(1), rowGroups: [], numRows: HOSTILE_ROWS });
+    expect(() => decodeParquet(file)).toThrow(ParquetFormatError);
+    expect(() => decodeParquet(file)).toThrow(/10000001 rows exceed the limit/);
+  });
+
+  function withFooter(footer: Buffer): Buffer {
+    const length = u32(footer.length);
+    return Buffer.concat([Buffer.from('PAR1'), footer, length, Buffer.from('PAR1')]);
+  }
+
+  it('rejects a footer list that claims a hundred million schema elements', () => {
+    // field 2 (list, delta 2), list header: size >= 15 with struct elements, varint 100,000,000
+    const footer = Buffer.concat([Buffer.from([0x29, 0xfc]), varint(100_000_000), Buffer.from([0x00])]);
+    expect(() => decodeParquet(withFooter(footer))).toThrow(/list size 100000000 exceeds remaining buffer bytes/);
+  });
+
+  it('rejects a footer whose unknown field nests structs beyond the depth limit', () => {
+    // field 5 (struct, delta 5) followed by 40 nested structs (field delta 1, struct)
+    const footer = Buffer.concat([Buffer.from([0x5c]), Buffer.alloc(40, 0x1c), Buffer.alloc(41, 0x00)]);
+    expect(() => decodeParquet(withFooter(footer))).toThrow(/nesting deeper than 32 levels/);
+  });
+
+  it('rejects a footer that ends in the middle of a struct', () => {
+    const footer = Buffer.from([0x15, 0x02]);
+    expect(() => decodeParquet(withFooter(footer))).toThrow(/unexpected EOF/);
+  });
+});
+
+describe('Parquet files written by earlier easyconvert versions', () => {
+  const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'parquet');
+  const legacy = fs.readFileSync(path.join(FIXTURE_DIR, 'legacy-writer.parquet'));
+
+  it('still decode to the rows they were written from', () => {
+    expect(decodeParquet(legacy)).toEqual([
+      { id: 1, name: 'alpha', score: 1.5, ok: true },
+      { id: 2, name: 'beta', score: 2.25, ok: false },
+      { id: 3, name: 'gamma', score: -0.5, ok: true },
+      { id: 4, name: 'caf\u00e9 \u{1f600}', score: 1000000.125, ok: false },
+    ]);
+  });
+
+  oracleTest('are the invalid layout that issue 526 describes (the reference reader rejects them)', ['python3'], () => {
+    expect(() => pyarrowRead(legacy)).toThrow(/Unknown encoding type for levels/);
   });
 });

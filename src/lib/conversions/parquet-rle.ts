@@ -26,6 +26,12 @@ const INITIAL_SINK_BYTES = 256;
 /** Buffers (and Parquet page sizes, an i32 on the wire) never grow past 2 GiB - 1. */
 const SINK_MAX_BYTES = 0x7fff_ffff;
 const UINT32_RANGE = 2 ** 32;
+const BYTE_MASK = 0xff;
+const VARINT_PAYLOAD_MASK = 0x7f;
+const BYTE_SHIFT_MASK = 7;
+const BIT_PACKED_FLAG = 1;
+const BYTE_INDEX_SHIFT = 3;
+const RUN_LENGTH_SHIFT = 1;
 
 /** Smallest bit width that represents `maxValue` (0 needs 0 bits). */
 export function bitWidthFor(maxValue: number): number {
@@ -105,7 +111,7 @@ export class ByteSink {
   writeVarint(value: number): void {
     let v = value;
     while (v >= VARINT_CONTINUATION) {
-      this.writeByte((v & 0x7f) | VARINT_CONTINUATION);
+      this.writeByte((v & VARINT_PAYLOAD_MASK) | VARINT_CONTINUATION);
       v >>>= VARINT_DATA_BITS;
     }
     this.writeByte(v);
@@ -135,7 +141,7 @@ function packGroups(sink: ByteSink, values: ArrayLike<number>, start: number, gr
     acc |= values[i] << accBits;
     accBits += bitWidth;
     while (accBits >= BITS_PER_BYTE) {
-      sink.writeByte(acc & 0xff);
+      sink.writeByte(acc & BYTE_MASK);
       acc >>>= BITS_PER_BYTE;
       accBits -= BITS_PER_BYTE;
     }
@@ -150,7 +156,7 @@ function emitBitPackedRun(
   bitWidth: number
 ): void {
   const groups = Math.ceil(count / RLE_GROUP_VALUES);
-  sink.writeVarint((groups << 1) | 1);
+  sink.writeVarint((groups << RUN_LENGTH_SHIFT) | BIT_PACKED_FLAG);
   const fullGroups = Math.floor(count / RLE_GROUP_VALUES);
   packGroups(sink, values, start, fullGroups, bitWidth);
   const tail = count - fullGroups * RLE_GROUP_VALUES;
@@ -163,7 +169,7 @@ function emitBitPackedRun(
       acc |= v << accBits;
       accBits += bitWidth;
       while (accBits >= BITS_PER_BYTE) {
-        sink.writeByte(acc & 0xff);
+        sink.writeByte(acc & BYTE_MASK);
         acc >>>= BITS_PER_BYTE;
         accBits -= BITS_PER_BYTE;
       }
@@ -172,10 +178,10 @@ function emitBitPackedRun(
 }
 
 function emitRleRun(sink: ByteSink, value: number, runLength: number, bitWidth: number): void {
-  sink.writeVarint(runLength << 1);
+  sink.writeVarint(runLength << RUN_LENGTH_SHIFT);
   const valueBytes = Math.ceil(bitWidth / BITS_PER_BYTE);
   for (let b = 0; b < valueBytes; b++) {
-    sink.writeByte((value >>> (b * BITS_PER_BYTE)) & 0xff);
+    sink.writeByte((value >>> (b * BITS_PER_BYTE)) & BYTE_MASK);
   }
 }
 
@@ -221,7 +227,7 @@ function readVarint32(buf: Uint8Array, pos: number, end: number): { value: numbe
   for (let n = 0; n < RLE_MAX_VARINT_BYTES; n++) {
     if (p >= end) throw new ParquetFormatError('Corrupted Parquet RLE run: truncated header');
     const b = buf[p++];
-    value += (b & 0x7f) * 2 ** shift;
+    value += (b & VARINT_PAYLOAD_MASK) * 2 ** shift;
     if ((b & VARINT_CONTINUATION) === 0) return { value, next: p };
     shift += VARINT_DATA_BITS;
   }
@@ -230,18 +236,20 @@ function readVarint32(buf: Uint8Array, pos: number, end: number): { value: numbe
 
 /** Reads `width` bits starting at bit `bitPos` (width <= 32, LSB first). */
 function readBits(buf: Uint8Array, bitPos: number, width: number): number {
-  const byte = bitPos >>> 3;
-  const shift = bitPos & 7;
+  const byte = bitPos >>> BYTE_INDEX_SHIFT;
+  const shift = bitPos & BYTE_SHIFT_MASK;
   if (width <= RLE_MAX_NARROW_READ_WIDTH) {
-    const window = (buf[byte] | (buf[byte + 1] << 8) | (buf[byte + 2] << 16) | (buf[byte + 3] << 24)) >>> shift;
+    const window =
+      (buf[byte] | (buf[byte + 1] << BITS_PER_BYTE) | (buf[byte + 2] << (2 * BITS_PER_BYTE)) | (buf[byte + 3] << (3 * BITS_PER_BYTE))) >>>
+      shift;
     return (window & ((1 << width) - 1)) >>> 0;
   }
   const wide =
     buf[byte] +
-    buf[byte + 1] * 2 ** 8 +
-    buf[byte + 2] * 2 ** 16 +
-    buf[byte + 3] * 2 ** 24 +
-    buf[byte + 4] * 2 ** 32;
+    buf[byte + 1] * 2 ** BITS_PER_BYTE +
+    buf[byte + 2] * 2 ** (2 * BITS_PER_BYTE) +
+    buf[byte + 3] * 2 ** (3 * BITS_PER_BYTE) +
+    buf[byte + 4] * UINT32_RANGE;
   return Math.floor(wide / 2 ** shift) % 2 ** width;
 }
 
@@ -267,7 +275,7 @@ export function decodeRleHybrid(
   while (produced < count) {
     const header = readVarint32(buf, pos, end);
     pos = header.next;
-    if ((header.value & 1) === 1) {
+    if ((header.value & BIT_PACKED_FLAG) === BIT_PACKED_FLAG) {
       const groups = Math.floor(header.value / 2);
       const runValues = groups * RLE_GROUP_VALUES;
       const runBytes = groups * bitWidth;
@@ -294,9 +302,9 @@ export function decodeRleHybrid(
 
 /** readBits with a guard for the 4-5 byte look-ahead window at the tail of the buffer. */
 function readBitsSafe(buf: Uint8Array, bitPos: number, width: number, end: number): number {
-  const lastByte = (bitPos + width - 1) >>> 3;
+  const lastByte = (bitPos + width - 1) >>> BYTE_INDEX_SHIFT;
   if (lastByte >= end) throw new ParquetFormatError('Corrupted Parquet RLE stream: truncated bit-packed values');
-  const byte = bitPos >>> 3;
+  const byte = bitPos >>> BYTE_INDEX_SHIFT;
   // Bytes past `end` read as zero via a bounded window copy.
   if (byte + RLE_MAX_VARINT_BYTES <= end) return readBits(buf, bitPos, width);
   const window = new Uint8Array(RLE_MAX_VARINT_BYTES);
