@@ -8,6 +8,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
+  PayloadLimitError,
   PdfPostprocessError,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
@@ -194,7 +195,8 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
-    if (error instanceof InputPixelLimitError) {
+    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     if (error instanceof ConversionFailedError) {
