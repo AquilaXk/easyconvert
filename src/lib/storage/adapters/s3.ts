@@ -94,6 +94,25 @@ const XML_ENTITIES: ReadonlyMap<string, string> = new Map([
   ['&quot;', '"'],
   ['&apos;', "'"],
 ]);
+/**
+ * One predefined entity (group 1), a hexadecimal (group 2) or a decimal (group 3) character
+ * reference. The digit runs are matched whole and bounded afterwards, so an over-long reference is
+ * refused instead of being left in the text.
+ */
+const XML_REFERENCE_PATTERN = /&(?:(amp|lt|gt|quot|apos)|#x([0-9A-Fa-f]+)|#([0-9]+));/g;
+const HEX_RADIX = 16;
+const DECIMAL_RADIX = 10;
+/** The most digits a reference to any legal code point needs: U+10FFFF is `10FFFF` / `1114111`. */
+const MAX_HEX_REFERENCE_DIGITS = 6;
+const MAX_DECIMAL_REFERENCE_DIGITS = 7;
+const XML_TAB = 0x09;
+const XML_LINE_FEED = 0x0a;
+const XML_CARRIAGE_RETURN = 0x0d;
+const XML_CHAR_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x20, 0xd7ff],
+  [0xe000, 0xfffd],
+  [0x10000, 0x10ffff],
+];
 const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['&', '&amp;'],
   ['<', '&lt;'],
@@ -129,8 +148,41 @@ export interface S3ErrorDocument {
   requestId?: string;
 }
 
+/** XML 1.0 production `Char`: the code points a document, and so a character reference, may name. */
+function isXmlChar(codePoint: number): boolean {
+  if (codePoint === XML_TAB || codePoint === XML_LINE_FEED || codePoint === XML_CARRIAGE_RETURN) {
+    return true;
+  }
+  return XML_CHAR_RANGES.some(([first, last]) => codePoint >= first && codePoint <= last);
+}
+
+function decodeCharacterReference(digits: string, radix: number, maxDigits: number): string {
+  const codePoint = digits.length <= maxDigits ? Number.parseInt(digits, radix) : Number.NaN;
+  if (!isXmlChar(codePoint)) {
+    throw new StorageServiceError('S3 response has an invalid XML character reference', PROVIDER, {
+      code: MALFORMED_XML_CODE,
+      retryable: false,
+    });
+  }
+  return String.fromCodePoint(codePoint);
+}
+
+/**
+ * Decodes the five predefined entities and numeric character references in one pass (a decoded
+ * `&` never starts another reference). Servers differ in how they write a quote: AWS S3 sends
+ * `&quot;`, MinIO sends `&#34;` (XML 1.0 section 4.1 allows both). A reference to a code point
+ * XML forbids, such as `&#0;` or a surrogate, throws a MalformedXML StorageServiceError.
+ */
 export function decodeXmlText(text: string): string {
-  return text.replace(/&(?:amp|lt|gt|quot|apos);/g, (entity) => XML_ENTITIES.get(entity) ?? entity);
+  return text.replace(XML_REFERENCE_PATTERN, (reference, named?: string, hex?: string, decimal?: string) => {
+    if (named !== undefined) {
+      return XML_ENTITIES.get(reference) ?? reference;
+    }
+    if (hex !== undefined) {
+      return decodeCharacterReference(hex, HEX_RADIX, MAX_HEX_REFERENCE_DIGITS);
+    }
+    return decodeCharacterReference(decimal as string, DECIMAL_RADIX, MAX_DECIMAL_REFERENCE_DIGITS);
+  });
 }
 
 export function escapeXmlText(text: string): string {
@@ -180,18 +232,26 @@ export function declaresDtd(xml: string): boolean {
 
 /**
  * Extracts Code, Message, and RequestId from an S3 `<Error>` document. Elements are read as
- * plain text: only the five predefined entities are decoded, and a document that declares a DTD
- * or entity yields nothing, so the HTTP status alone decides the error.
+ * plain text: only the predefined entities and numeric character references are decoded, and a
+ * document that declares a DTD or entity, or holds an illegal character reference, yields
+ * nothing, so the HTTP status alone decides the error.
  */
 export function parseS3ErrorXml(xml: string): S3ErrorDocument {
   if (declaresDtd(xml)) {
     return {};
   }
-  return {
-    code: readXmlElement(xml, 'Code'),
-    message: readXmlElement(xml, 'Message'),
-    requestId: readXmlElement(xml, 'RequestId'),
-  };
+  try {
+    return {
+      code: readXmlElement(xml, 'Code'),
+      message: readXmlElement(xml, 'Message'),
+      requestId: readXmlElement(xml, 'RequestId'),
+    };
+  } catch (error) {
+    if (error instanceof StorageServiceError && error.code === MALFORMED_XML_CODE) {
+      return {};
+    }
+    throw error;
+  }
 }
 
 const DEVELOPMENT_ENV = 'development';

@@ -102,6 +102,25 @@ function xmlEscape(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Escaping as Go's encoding/xml EscapeText writes it, which MinIO and other Go servers send:
+ * numeric character references for quotes and whitespace controls instead of `&quot;`/`&apos;`.
+ */
+const GO_XML_ESCAPES: ReadonlyMap<string, string> = new Map([
+  ['&', '&amp;'],
+  ['<', '&lt;'],
+  ['>', '&gt;'],
+  ['"', '&#34;'],
+  ["'", '&#39;'],
+  ['\t', '&#x9;'],
+  ['\n', '&#xA;'],
+  ['\r', '&#xD;'],
+]);
+
+function goXmlEscape(text: string): string {
+  return text.replace(/[&<>"'\t\n\r]/g, (ch) => GO_XML_ESCAPES.get(ch) ?? ch);
+}
+
 function metadataFrom(headers: http.IncomingHttpHeaders): Record<string, string> {
   const metadata: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
@@ -117,7 +136,15 @@ export async function startS3StubServer(options: {
   credentials: Record<string, string>;
   /** Clock for presigned-URL validity; defaults to the real time. */
   now?: () => Date;
+  /**
+   * How response XML text is escaped: `named` writes `&quot;` for a quote (AWS S3), `numeric` writes
+   * Go-style numeric character references such as `&#34;` (MinIO). Defaults to `named`.
+   */
+  xmlStyle?: 'named' | 'numeric';
 }): Promise<S3StubServer> {
+  const escapeText = options.xmlStyle === 'numeric' ? goXmlEscape : xmlEscape;
+  /** An ETag as element text; the quotes around the hash are escaped like any other text. */
+  const etagText = (etag: string): string => etag.replace(/"/g, options.xmlStyle === 'numeric' ? '&#34;' : '&quot;');
   const objects = new Map<string, StoredStubObject>();
   const uploads = new Map<string, Map<number, Buffer>>();
   /** Content-Type and `x-amz-meta-*` given at CreateMultipartUpload, which S3 applies to the assembled object. */
@@ -261,12 +288,12 @@ export async function startS3StubServer(options: {
         const truncated = remaining.length > page.length;
         const entries = page.map((n) => {
           const part = parts.get(n) as Buffer;
-          return `<Part><PartNumber>${n}</PartNumber><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${md5Etag(part).replace(/"/g, '&quot;')}</ETag><Size>${part.length}</Size></Part>`;
+          return `<Part><PartNumber>${n}</PartNumber><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${etagText(md5Etag(part))}</ETag><Size>${part.length}</Size></Part>`;
         });
         send(
           res,
           200,
-          `<ListPartsResult><Bucket>${bucket}</Bucket><Key>${xmlEscape(record.key)}</Key><UploadId>${uploadId}</UploadId>` +
+          `<ListPartsResult><Bucket>${bucket}</Bucket><Key>${escapeText(record.key)}</Key><UploadId>${uploadId}</UploadId>` +
             `<PartNumberMarker>${marker}</PartNumberMarker>` +
             `<NextPartNumberMarker>${page.length > 0 ? page[page.length - 1] : marker}</NextPartNumberMarker>` +
             `<MaxParts>${maxParts}</MaxParts><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListPartsResult>`
@@ -332,7 +359,7 @@ export async function startS3StubServer(options: {
       send(res, status, errorXml(code, 'Injected failure after completion'));
       return;
     }
-    const resultXml = `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${key}</Key><ETag>${etag.replace(/"/g, '&quot;')}</ETag></CompleteMultipartUploadResult>`;
+    const resultXml = `<CompleteMultipartUploadResult><Bucket>${bucket}</Bucket><Key>${escapeText(key)}</Key><ETag>${etagText(etag)}</ETag></CompleteMultipartUploadResult>`;
     if (complete.keepalive) {
       sendWithKeepalive(res, resultXml, complete.keepalive);
       return;
@@ -457,12 +484,12 @@ export async function startS3StubServer(options: {
     const next = truncated ? Buffer.from(page[page.length - 1], 'utf-8').toString('base64url') : '';
     const entries = page.map((key) => {
       const object = objects.get(key) as StoredStubObject;
-      return `<Contents><Key>${xmlEscape(key)}</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${object.etag.replace(/"/g, '&quot;')}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
+      return `<Contents><Key>${escapeText(key)}</Key><LastModified>2026-10-01T10:00:00.000Z</LastModified><ETag>${etagText(object.etag)}</ETag><Size>${object.body.length}</Size><StorageClass>STANDARD</StorageClass></Contents>`;
     });
     send(
       res,
       200,
-      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${bucket}</Name><Prefix>${xmlEscape(prefix)}</Prefix>` +
+      `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>${bucket}</Name><Prefix>${escapeText(prefix)}</Prefix>` +
         (truncated ? `<NextContinuationToken>${next}</NextContinuationToken>` : '') +
         `<KeyCount>${page.length}</KeyCount><MaxKeys>${maxKeys}</MaxKeys><IsTruncated>${truncated}</IsTruncated>${entries.join('')}</ListBucketResult>`
     );

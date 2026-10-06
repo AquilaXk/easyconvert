@@ -40,7 +40,6 @@ import {
   UNCONFIRMED_COMPLETION_CODE,
   XML_WHITESPACE_BYTES,
   declaresDtd,
-  decodeXmlText,
   escapeXmlText,
   expectedMultipartEtag,
   isAbortError,
@@ -1286,7 +1285,8 @@ export class S3ObjectClient {
         { code: UNCONFIRMED_COMPLETION_CODE, retryable: false }
       );
     }
-    return { etag: decodeXmlText(etag).replace(/"/g, '') };
+    // readXmlElement has decoded the text already; decoding twice would turn `&amp;quot;` into a quote.
+    return { etag: etag.replace(/"/g, '') };
   }
 
   async abortMultipartUpload(key: string, uploadId: string): Promise<void> {
