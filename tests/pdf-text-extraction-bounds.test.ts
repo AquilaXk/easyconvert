@@ -125,6 +125,7 @@ describe('a document yields a bounded number of text blocks', () => {
     }
     const err = timed(() => extractStructuredTextFromPdf(buildPdf(objects, 1).buffer)).err;
     expect(err).toBeInstanceOf(PayloadLimitError);
+    expect((err as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
   });
 
   it('keeps a page of ordinary size', () => {

@@ -18,6 +18,7 @@ import { type CraftObject, buildPdf, flate, textContent } from './helpers/pdf-cr
 
 const MIB = 1024 * 1024;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const ROW_BYTES = 16;
 const ASCII85_ZERO_RUN = 20 * MIB;
 const ASCII85_BASE = 85;
@@ -232,6 +233,7 @@ describe('filter chains', () => {
     const zeros = Buffer.alloc(ASCII85_ZERO_RUN, 'z');
     const err = caught(() => extractTextFromPdf(pdfWithContent(Buffer.concat([zeros, Buffer.from('~>')]), '/Filter /ASCII85Decode')));
     expect(err).toBeInstanceOf(DecompressionLimitError);
+    expect((err as DecompressionLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
   });
 });
 
