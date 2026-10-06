@@ -372,10 +372,17 @@ function matchFromCursor(target: string, cursor: Cursor): Match | null {
 // Bidirectional order
 // ---------------------------------------------------------------------------------------------
 
-const RIGHT_TO_LEFT_LETTER = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
+/** Scripts written right to left; the lookahead keeps their digits and marks out of the letter tests. */
+const RIGHT_TO_LEFT_SCRIPT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
+const RIGHT_TO_LEFT_LETTER = /(?=\p{L})[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
+/** Scripts whose letters are Arabic letters (bidirectional class AL): a number after one is an Arabic number. */
+const ARABIC_SCRIPT = /[\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}]/u;
 const ANY_LETTER = /\p{L}/u;
 const COMBINING_MARK = /\p{M}/u;
-const DIGIT = /[0-9\u0660-\u0669\u06f0-\u06f9]/;
+/** Arabic-Indic digits and the Arabic decimal and thousands separators (class AN). */
+const ARABIC_NUMBER = /[\u0660-\u0669\u066b\u066c]/;
+/** Digits of the European and extended Arabic-Indic sets (class EN). */
+const EUROPEAN_NUMBER = /[0-9\u06f0-\u06f9]/;
 /** Separators that stay part of a number between two digits: , . / : and the no-break space. */
 const COMMON_SEPARATORS = new Set([',', '.', '/', ':', '\u00a0']);
 /** Signs that stay part of a number between two digits. */
@@ -383,12 +390,15 @@ const NUMBER_SIGNS = new Set(['+', '-']);
 /** Currency, percent and similar symbols that cling to an adjacent number. */
 const NUMBER_TERMINATORS = /[\p{Sc}%#\u00b0\u00b1\u2030\u2032\u2033]/u;
 
-type BidiType = 'L' | 'R' | 'EN' | 'N' | 'M' | 'CS' | 'ES' | 'ET';
+/** Bidirectional classes of Unicode Annex 9 that matter here; N stands for every neutral. */
+type BidiType = 'L' | 'R' | 'AL' | 'EN' | 'AN' | 'ES' | 'ET' | 'CS' | 'N' | 'M';
 
 function bidiType(unit: string): BidiType {
-  if (RIGHT_TO_LEFT_LETTER.test(unit)) return COMBINING_MARK.test(unit) ? 'M' : 'R';
+  if (ARABIC_NUMBER.test(unit)) return 'AN';
+  if (EUROPEAN_NUMBER.test(unit)) return 'EN';
   if (COMBINING_MARK.test(unit)) return 'M';
-  if (DIGIT.test(unit)) return 'EN';
+  if (ARABIC_SCRIPT.test(unit)) return 'AL';
+  if (RIGHT_TO_LEFT_SCRIPT.test(unit)) return 'R';
   if (ANY_LETTER.test(unit)) return 'L';
   if (COMMON_SEPARATORS.has(unit)) return 'CS';
   if (NUMBER_SIGNS.has(unit)) return 'ES';
@@ -396,31 +406,82 @@ function bidiType(unit: string): BidiType {
   return 'N';
 }
 
-/** Weak types: separators and signs between digits, and terminators next to digits, join the number; a number after left-to-right text is left-to-right. */
-function resolveWeakTypes(types: BidiType[], base: BidiType): void {
-  const length = types.length;
-  for (let i = 1; i < length - 1; i++) {
-    if ((types[i] === 'CS' || types[i] === 'ES') && types[i - 1] === 'EN' && types[i + 1] === 'EN') types[i] = 'EN';
+function isNumberType(type: BidiType): boolean {
+  return type === 'EN' || type === 'AN';
+}
+
+/** W2 and W3: a European number after an Arabic letter is an Arabic number; Arabic letters then count as right-to-left. */
+function resolveArabicContext(types: BidiType[], base: BidiType): void {
+  let lastStrong: BidiType = base;
+  for (let i = 0; i < types.length; i++) {
+    const type = types[i];
+    if (type === 'L' || type === 'R' || type === 'AL') lastStrong = type;
+    if (type === 'EN' && lastStrong === 'AL') types[i] = 'AN';
   }
-  for (let i = 0; i < length; ) {
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'AL') types[i] = 'R';
+  }
+}
+
+/** W4: a single separator between two numbers of its kind joins them. */
+function resolveSeparators(types: BidiType[]): void {
+  for (let i = 1; i < types.length - 1; i++) {
+    const before = types[i - 1];
+    const type = types[i];
+    if (before !== types[i + 1]) continue;
+    if (before === 'EN' && (type === 'CS' || type === 'ES')) types[i] = 'EN';
+    else if (before === 'AN' && type === 'CS') types[i] = 'AN';
+  }
+}
+
+/** W5: a run of terminators next to a European number is part of it. */
+function resolveTerminators(types: BidiType[]): void {
+  for (let i = 0; i < types.length; ) {
     if (types[i] !== 'ET') {
       i++;
       continue;
     }
     let end = i;
-    while (end < length && types[end] === 'ET') end++;
-    if ((i > 0 && types[i - 1] === 'EN') || (end < length && types[end] === 'EN')) {
-      for (let k = i; k < end; k++) types[k] = 'EN';
-    }
+    while (end < types.length && types[end] === 'ET') end++;
+    const touchesNumber = (i > 0 && types[i - 1] === 'EN') || (end < types.length && types[end] === 'EN');
+    if (touchesNumber) types.fill('EN', i, end);
     i = end;
   }
+}
+
+/** W6 and W7: leftover separators and terminators are neutral, and a European number after left-to-right text is left-to-right. */
+function resolveRemainingWeak(types: BidiType[], base: BidiType): void {
   let lastStrong: BidiType = base;
-  for (let i = 0; i < length; i++) {
+  for (let i = 0; i < types.length; i++) {
     const type = types[i];
     if (type === 'L' || type === 'R') lastStrong = type;
     else if (type === 'EN' && lastStrong === 'L') types[i] = 'L';
     else if (type === 'CS' || type === 'ES' || type === 'ET') types[i] = 'N';
   }
+}
+
+/** The direction a neighbour counts as for neutrals: numbers count as right-to-left (N1). */
+function strongDirection(type: BidiType): BidiType {
+  if (isNumberType(type)) return 'R';
+  return type;
+}
+
+/** N1 and N2: a run of neutrals takes the direction of the strong types on both sides when they agree, otherwise the paragraph's. */
+function resolveNeutrals(types: BidiType[], base: BidiType): BidiType[] {
+  const resolved = types.slice();
+  for (let i = 0; i < types.length; ) {
+    if (types[i] !== 'N') {
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < types.length && types[end] === 'N') end++;
+    const before = i > 0 ? strongDirection(types[i - 1]) : base;
+    const after = end < types.length ? strongDirection(types[end]) : base;
+    resolved.fill(before === after ? before : base, i, end);
+    i = end;
+  }
+  return resolved;
 }
 
 /** Embedding levels: even levels run left to right, odd ones right to left; a number or left-to-right text inside right-to-left text sits one level higher. */
@@ -431,7 +492,7 @@ const LEVEL_NUMBER = 2;
 /** The level of a resolved strong or number type in a paragraph of the given direction (rules I1 and I2). */
 function levelOf(type: BidiType, baseRightToLeft: boolean): number {
   if (type === 'R') return LEVEL_RTL;
-  if (type === 'EN') return LEVEL_NUMBER;
+  if (isNumberType(type)) return LEVEL_NUMBER;
   if (baseRightToLeft) return LEVEL_NUMBER;
   return LEVEL_LTR;
 }
@@ -443,6 +504,24 @@ function lowestReversedLevel(baseRightToLeft: boolean, lowestOdd: number, highes
   return highest + 1;
 }
 
+/** Reverses, from the highest level down to `floor`, every run of units at that level or above. */
+function reverseByLevels(levels: number[], floor: number, highest: number): number[] {
+  const order = Array.from({ length: levels.length }, (_, i) => i);
+  for (let level = highest; level >= floor; level--) {
+    for (let i = 0; i < order.length; ) {
+      if (levels[order[i]] < level) {
+        i++;
+        continue;
+      }
+      let end = i;
+      while (end < order.length && levels[order[end]] >= level) end++;
+      for (let a = i, b = end - 1; a < b; a++, b--) [order[a], order[b]] = [order[b], order[a]];
+      i = end;
+    }
+  }
+  return order;
+}
+
 interface VisualOrder {
   /** Logical unit index of each visual position. */
   order: number[];
@@ -450,63 +529,40 @@ interface VisualOrder {
   hasLeft: boolean;
 }
 
-/**
- * Visual order of `text` by a compact Unicode bidirectional algorithm: marks follow the letter before
- * them, neutrals take the direction of the strong types around them (numbers count as right-to-left
- * there) or the base direction, then levels are assigned and runs reversed from the highest level down.
- */
-function visualOrder(text: string, baseRightToLeft: boolean): VisualOrder {
-  const length = text.length;
-  const types: BidiType[] = new Array<BidiType>(length);
-  let hasRight = false;
-  let hasLeft = false;
-  let previous: BidiType = baseRightToLeft ? 'R' : 'L';
-  for (let i = 0; i < length; i++) {
+/** W1 and the initial classes: a mark takes the class of the unit before it. */
+function initialTypes(text: string, base: BidiType): BidiType[] {
+  const types: BidiType[] = new Array<BidiType>(text.length);
+  let previous: BidiType = base;
+  for (let i = 0; i < text.length; i++) {
     let type = bidiType(text[i]);
-    if (type === 'M') type = previous === 'N' ? 'N' : previous;
+    if (type === 'M') type = previous;
     types[i] = type;
-    if (type === 'R') hasRight = true;
-    if (type === 'L') hasLeft = true;
     previous = type;
   }
+  return types;
+}
+
+/**
+ * Visual order of `text` by a compact form of the Unicode bidirectional algorithm (Annex 9, one paragraph,
+ * no embeddings or isolates): weak types (W1 to W7), neutrals (N1, N2), levels (I1, I2) and reversal (L2).
+ */
+function visualOrder(text: string, baseRightToLeft: boolean): VisualOrder {
   const base: BidiType = baseRightToLeft ? 'R' : 'L';
-  resolveWeakTypes(types, base);
-  const strong = (type: BidiType): BidiType => (type === 'EN' ? 'R' : type);
-  const resolved: BidiType[] = types.slice();
-  for (let i = 0; i < length; ) {
-    if (types[i] !== 'N') {
-      i++;
-      continue;
-    }
-    let end = i;
-    while (end < length && types[end] === 'N') end++;
-    const before = i > 0 ? strong(types[i - 1]) : base;
-    const after = end < length ? strong(types[end]) : base;
-    const direction = before === after ? before : base;
-    for (let k = i; k < end; k++) resolved[k] = direction;
-    i = end;
-  }
-  const levels = resolved.map((type) => levelOf(type, baseRightToLeft));
-  const order = Array.from({ length }, (_, i) => i);
+  const types = initialTypes(text, base);
+  const hasRight = types.some((type) => type === 'R' || type === 'AL');
+  const hasLeft = types.includes('L');
+  resolveArabicContext(types, base);
+  resolveSeparators(types);
+  resolveTerminators(types);
+  resolveRemainingWeak(types, base);
+  const levels = resolveNeutrals(types, base).map((type) => levelOf(type, baseRightToLeft));
   let highest = LEVEL_LTR;
   let lowestOdd = Number.POSITIVE_INFINITY;
   for (const level of levels) {
     highest = Math.max(highest, level);
     if (level % 2 === 1) lowestOdd = Math.min(lowestOdd, level);
   }
-  const floor = lowestReversedLevel(baseRightToLeft, lowestOdd, highest);
-  for (let level = highest; level >= floor; level--) {
-    for (let i = 0; i < length; ) {
-      if (levels[order[i]] < level) {
-        i++;
-        continue;
-      }
-      let end = i;
-      while (end < length && levels[order[end]] >= level) end++;
-      for (let a = i, b = end - 1; a < b; a++, b--) [order[a], order[b]] = [order[b], order[a]];
-      i = end;
-    }
-  }
+  const order = reverseByLevels(levels, lowestReversedLevel(baseRightToLeft, lowestOdd, highest), highest);
   return { order, hasRight, hasLeft };
 }
 
