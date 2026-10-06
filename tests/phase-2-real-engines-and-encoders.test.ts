@@ -337,28 +337,31 @@ describe('Phase 2 Real Engines & Encoders Verification Testnet', () => {
   // ==========================================================================
   describe('Sinc Audio Resampler & WebM EBML Container (Component 2.4)', () => {
     it('resamples audio using windowed Sinc filter with bandlimited cutoff', () => {
-      // 100 samples at 44100 Hz resampled to 22050 Hz (2:1 downsampling)
+      // 0.2 s at 44100 Hz resampled to 22050 Hz (2:1 downsampling)
       const inRate = 44100;
       const outRate = 22050;
-      const inLen = 100;
+      const inLen = 8820;
+      const toneHz = 440;
       const ch0 = new Float32Array(inLen);
       const ch1 = new Float32Array(inLen);
 
       // Generate a 440Hz test sine tone
       for (let i = 0; i < inLen; i++) {
-        ch0[i] = Math.sin((2 * Math.PI * 440 * i) / inRate);
+        ch0[i] = Math.sin((2 * Math.PI * toneHz * i) / inRate);
         ch1[i] = ch0[i];
       }
 
-      const resampled = resampleAudioSinc([ch0, ch1], inRate, outRate, 8);
+      const resampled = resampleAudioSinc([ch0, ch1], inRate, outRate);
       expect(resampled.length).toBe(2);
-      expect(resampled[0].length).toBe(50);
-      expect(resampled[1].length).toBe(50);
+      expect(resampled[0].length).toBe(inLen / 2);
+      expect(resampled[1].length).toBe(inLen / 2);
 
-      // Ensure no NaN or infinite values were produced
-      for (let i = 0; i < resampled[0].length; i++) {
-        expect(Number.isFinite(resampled[0][i])).toBe(true);
-        expect(Number.isFinite(resampled[1][i])).toBe(true);
+      // Away from the edge transients every output sample is the analytic tone at the new rate.
+      const edgeGuard = 200;
+      for (let i = edgeGuard; i < resampled[0].length - edgeGuard; i++) {
+        const expected = Math.sin((2 * Math.PI * toneHz * i) / outRate);
+        expect(Math.abs(resampled[0][i] - expected)).toBeLessThan(1e-4);
+        expect(resampled[1][i]).toBe(resampled[0][i]);
       }
     });
 
