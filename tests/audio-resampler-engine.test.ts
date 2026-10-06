@@ -81,15 +81,15 @@ describe('filter design (Kaiser 1974 formulas)', () => {
       expect(plan.halfBandPairs).toHaveLength(c.stages);
       expect(plan.upFactor).toBe(c.polyUp);
       expect(plan.downFactor).toBe(c.polyDown);
-      // Odd-tap pairs follow the Kaiser estimate for a transition of 0.5 - lowerRate / stageRate
-      // cycles per sample (A + 1 dB), rounded up to a multiple of four pairs.
+      // The Kaiser estimate for a transition of 0.5 - lowerRate / stageRate cycles per sample
+      // (A + 1 dB) is a lower bound: the planner grows the filter until its measured stopband
+      // meets -A (tests/audio-resampler-halfband.test.ts checks the responses themselves).
       const stageRate = c.src > c.tgt ? c.src : c.tgt;
       const transition = 0.5 - Math.min(c.src, c.tgt) / stageRate;
       const length = (attenuationDb + 1 - 8) / (2.285 * 2 * Math.PI * transition);
       const pairs = plan.halfBandPairs[0];
       expect(pairs % 4).toBe(0);
       expect(pairs).toBeGreaterThanOrEqual((length + 1) / 4);
-      expect(pairs).toBeLessThan((length + 1) / 4 + 4);
     });
 
     it('does not cascade where a half-band transition would have no width or cost more', () => {

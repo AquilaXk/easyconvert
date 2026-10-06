@@ -28,7 +28,19 @@ export interface HalfBandFilter {
   oddDoubled: Float64Array;
 }
 
-/** Odd-pair count needed for a stopband attenuation (dB) and a transition width (cycles/sample). */
+/** Pairs added per growth step while verifying a design (keeps the pair count unroll-aligned). */
+export const HALF_BAND_GROWTH_STEP = HALF_BAND_PAIR_UNROLL;
+/** Growth steps tried after the Kaiser estimate before a design is declared infeasible. */
+export const HALF_BAND_MAX_GROWTH_STEPS = 64;
+/** Largest half-band stage considered; a longer one never beats the direct polyphase filter. */
+export const HALF_BAND_MAX_PAIRS = 1024;
+/** Grid points per tap-length unit used when scanning the stopband for its largest peak. */
+const VERIFY_POINTS_PER_TAP = 8;
+const VERIFY_MIN_POINTS = 512;
+const VERIFY_MAX_POINTS = 16384;
+const DECIBELS_PER_DECADE = 20;
+
+/** Starting pair count from the Kaiser estimate, rounded up to the unroll size. */
 export function halfBandPairsFor(attenuationDb: number, transitionCyclesPerSample: number): number {
   const length = kaiserLengthEstimate(attenuationDb, transitionCyclesPerSample);
   // 2 x reach + 1 ~ length, with reach = 2 x pairs - 1.
@@ -36,9 +48,8 @@ export function halfBandPairsFor(attenuationDb: number, transitionCyclesPerSampl
   return Math.ceil(pairs / HALF_BAND_PAIR_UNROLL) * HALF_BAND_PAIR_UNROLL;
 }
 
-/** Kaiser-windowed half-band; the window spans the padded reach so padding adds attenuation. */
-export function designHalfBand(attenuationDb: number, transitionCyclesPerSample: number): HalfBandFilter {
-  const pairs = halfBandPairsFor(attenuationDb, transitionCyclesPerSample);
+/** Kaiser-windowed half-band with a given pair count; the window spans the full reach. */
+export function buildHalfBand(attenuationDb: number, pairs: number): HalfBandFilter {
   const reach = 2 * pairs - 1;
   const beta = kaiserBeta(attenuationDb);
   const windowNorm = 1 / besselI0(beta);
@@ -53,6 +64,58 @@ export function designHalfBand(attenuationDb: number, transitionCyclesPerSample:
     oddDoubled[p] = 2 * odd[p];
   }
   return { reach, pairs, odd, oddDoubled };
+}
+
+/**
+ * Largest |H(f)| over the stopband [0.5 - passEdge, 0.5] (f in cycles per sample), with
+ * H(f) = 1/2 + 2 sum_p h(2p + 1) cos(2 pi f (2p + 1)). Because the centre tap is exactly 1/2 and
+ * the even taps are zero, H(f) + H(1/2 - f) = 1: the passband deviation 1 - H(f) on
+ * [0, passEdge] is the mirror image of this value, so one scan bounds both.
+ */
+export function halfBandStopbandPeak(filter: HalfBandFilter, passEdge: number): number {
+  const points = Math.min(
+    VERIFY_MAX_POINTS,
+    Math.max(VERIFY_MIN_POINTS, VERIFY_POINTS_PER_TAP * (2 * filter.reach + 1))
+  );
+  const { odd, pairs } = filter;
+  let peak = 0;
+  for (let i = 0; i <= points; i++) {
+    const f = 0.5 - passEdge + (passEdge * i) / points;
+    // cos((2p + 1) theta) by rotation: c' = c cos(2 theta) - s sin(2 theta), s' = s cos(2 theta) + c sin(2 theta).
+    const theta = 2 * Math.PI * f;
+    const rotC = Math.cos(2 * theta);
+    const rotS = Math.sin(2 * theta);
+    let c = Math.cos(theta);
+    let s = Math.sin(theta);
+    let sum = HALF_BAND_CENTER_TAP;
+    for (let p = 0; p < pairs; p++) {
+      sum += 2 * odd[p] * c;
+      const next = c * rotC - s * rotS;
+      s = s * rotC + c * rotS;
+      c = next;
+    }
+    peak = Math.max(peak, Math.abs(sum));
+  }
+  return peak;
+}
+
+/**
+ * Smallest half-band (in steps of HALF_BAND_GROWTH_STEP pairs, starting from the Kaiser estimate)
+ * whose measured stopband peak is at most -attenuationDb. The estimate is optimistic for wide
+ * transition bands, hence the verification. `null` when no filter within the pair limit works.
+ * `passEdge` is the passband edge in cycles per sample (the transition spans passEdge .. 0.5 - passEdge).
+ */
+export function designVerifiedHalfBand(attenuationDb: number, passEdge: number): HalfBandFilter | null {
+  const limit = 10 ** (-attenuationDb / DECIBELS_PER_DECADE);
+  const transition = 0.5 - 2 * passEdge;
+  if (transition <= 0) return null;
+  let pairs = halfBandPairsFor(attenuationDb, transition);
+  for (let step = 0; step <= HALF_BAND_MAX_GROWTH_STEPS && pairs <= HALF_BAND_MAX_PAIRS; step++) {
+    const filter = buildHalfBand(attenuationDb, pairs);
+    if (halfBandStopbandPeak(filter, passEdge) <= limit) return filter;
+    pairs += HALF_BAND_GROWTH_STEP;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------------------------

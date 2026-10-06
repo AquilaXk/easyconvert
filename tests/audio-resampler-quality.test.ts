@@ -134,6 +134,65 @@ describe('audio resampler quality (independent FFT)', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// Wide-transition cascades: the Kaiser length estimate alone is optimistic when a half-band
+// stage's transition band is wide, so these ratios used to alias at about -78 dB.
+// ---------------------------------------------------------------------------------------------
+
+const WIDE_IMAGE_PASSBAND_FRACTION = 0.9;
+/** Number of input tones swept from the target Nyquist up to the input Nyquist. */
+const WIDE_SWEEP_TONES = 48;
+const NEAR_INPUT_NYQUIST = 0.999;
+
+/** Tones from 1 x the target Nyquist to the input Nyquist: the first half-band stage's stopband is near the top. */
+function wideStopTones(c: RateCase): number[] {
+  const low = c.outRate / 2;
+  const high = NEAR_INPUT_NYQUIST * (c.inRate / 2);
+  const tones: number[] = [];
+  for (let i = 0; i < WIDE_SWEEP_TONES; i++) tones.push(low + ((high - low) * i) / (WIDE_SWEEP_TONES - 1));
+  return tones;
+}
+
+describe('wide-transition half-band cascades (independent FFT)', () => {
+  it.each([
+    { inRate: 192000, outRate: 16000 },
+    { inRate: 96000, outRate: 8000 },
+    { inRate: 48000, outRate: 4000 },
+  ])('leaves no alias above -90 dB for input tones from the target to the input Nyquist: $inRate -> $outRate', (c) => {
+    for (const freq of wideStopTones(c)) {
+      const { spectrum } = resampleTone(c, freq);
+      const aliasDb = maxSpurDb(spectrum, [], 0) - toDb(TONE_AMPLITUDE);
+      expect(aliasDb, `${label(c)} alias of ${freq.toFixed(0)} Hz: ${aliasDb.toFixed(1)} dB`).toBeLessThanOrEqual(
+        STOPBAND_MAX_DB
+      );
+    }
+  });
+
+  it.each([
+    { inRate: 16000, outRate: 192000 },
+    { inRate: 8000, outRate: 96000 },
+  ])('leaves no image above -90 dB: $inRate -> $outRate', (c) => {
+    const { spectrum, toneBin } = resampleTone(c, WIDE_IMAGE_PASSBAND_FRACTION * (c.inRate / 2));
+    const imageDb = maxSpurDb(spectrum, [toneBin], 1) - toDb(TONE_AMPLITUDE);
+    expect(imageDb, `${label(c)} image: ${imageDb.toFixed(1)} dB`).toBeLessThanOrEqual(STOPBAND_MAX_DB);
+  });
+
+  it('keeps the high preset below -130 dB for 44100 -> 16000 and 8000 -> 44100', () => {
+    const c = { inRate: 44100, outRate: 16000 };
+    for (const freq of wideStopTones(c)) {
+      const { spectrum } = resampleTone(c, freq, 'high');
+      const aliasDb = maxSpurDb(spectrum, [], 0) - toDb(TONE_AMPLITUDE);
+      expect(aliasDb, `high ${label(c)} alias of ${freq.toFixed(0)} Hz: ${aliasDb.toFixed(1)} dB`).toBeLessThanOrEqual(
+        HIGH_STOPBAND_MAX_DB
+      );
+    }
+    const up = { inRate: 8000, outRate: 44100 };
+    const { spectrum, toneBin } = resampleTone(up, WIDE_IMAGE_PASSBAND_FRACTION * (up.inRate / 2), 'high');
+    const imageDb = maxSpurDb(spectrum, [toneBin], 1) - toDb(TONE_AMPLITUDE);
+    expect(imageDb, `high ${label(up)} image: ${imageDb.toFixed(1)} dB`).toBeLessThanOrEqual(HIGH_STOPBAND_MAX_DB);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // SNR against the oracle on tones and a multi-tone signal
 // ---------------------------------------------------------------------------------------------
 

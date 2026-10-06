@@ -28,12 +28,11 @@ import { ConversionFailedError } from '../types';
 import { besselI0, kaiserBeta, kaiserLengthEstimate } from './audio-kaiser';
 import {
   type HalfBandFilter,
-  designHalfBand,
+  designVerifiedHalfBand,
   halfBandDecimateBlock,
   halfBandDecimateSpan,
   halfBandInterpolateBlock,
   halfBandInterpolateMaxSpan,
-  halfBandPairsFor,
 } from './audio-halfband';
 
 export class AudioResampleError extends ConversionFailedError {
@@ -72,6 +71,8 @@ export interface ResamplerPlanInfo {
   halfBandStages: number;
   /** Odd-tap pairs of each half-band stage, in processing order. */
   halfBandPairs: number[];
+  /** h(2p + 1) of each half-band stage (the centre tap is 1/2, even taps are 0), copies. */
+  halfBandTaps: Float64Array[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -292,70 +293,72 @@ function buildPolyPlan(srcRate: number, tgtRate: number, quality: ResampleQualit
   };
 }
 
-/** Transition width of a half-band stage running at `stageRate`, in cycles per sample of that rate. */
-function halfBandTransition(stageRate: number, lowerRate: number): number {
-  return 0.5 - lowerRate / stageRate;
+/** Passband edge of a half-band stage running at `stageRate`, in cycles per sample of that rate. */
+function halfBandPassEdge(stageRate: number, lowerRate: number): number {
+  return lowerRate / (2 * stageRate);
 }
 
 function halfBandAttenuation(quality: ResampleQuality): number {
   return FILTER_PRESETS[quality].attenuationDb + HALF_BAND_EXTRA_ATTENUATION_DB;
 }
 
+interface CascadeChoice {
+  stages: number;
+  /** Half-band filters in processing order. */
+  filters: HalfBandFilter[];
+}
+
 /**
- * Number of half-band stages with the lowest estimated multiply count. A decimating cascade
- * runs stage j at src / 2^j; its transition band is 0.5 - tgt / rate wide and starts at the
- * target Nyquist, so it must stay positive. An interpolating cascade mirrors that.
+ * Half-band stage count with the lowest estimated multiply count, using verified filter lengths.
+ * Level l of the cascade runs at higherRate / 2^l (source side when decimating, target side
+ * when interpolating) and its transition starts at the lower Nyquist, so it must stay positive.
+ * The same level has the same filter for every stage count, so each level is designed once.
  */
-function chooseHalfBandStages(srcRate: number, tgtRate: number, quality: ResampleQuality): number {
+function chooseHalfBandStages(srcRate: number, tgtRate: number, quality: ResampleQuality): CascadeChoice {
   const decimating = srcRate > tgtRate;
   const lowerRate = Math.min(srcRate, tgtRate);
   const higherRate = Math.max(srcRate, tgtRate);
   const attenuation = halfBandAttenuation(quality);
-  let bestStages = 0;
+  const levels: HalfBandFilter[] = [];
+  let best: CascadeChoice = { stages: 0, filters: [] };
   let bestCost = Number.POSITIVE_INFINITY;
+  let levelCost = 0;
   for (let k = 0; k <= MAX_HALF_BAND_STAGES; k++) {
-    // The slowest half-band stage input/output rate is higherRate / 2^k and must exceed lowerRate.
-    if (k > 0 && higherRate / 2 ** k <= lowerRate) break;
+    if (k > 0) {
+      const level = k - 1;
+      const stageRate = higherRate / 2 ** level;
+      // The slowest stage rate is higherRate / 2^(k-1) and its output/input must exceed lowerRate.
+      if (higherRate / 2 ** k <= lowerRate) break;
+      const filter = designVerifiedHalfBand(attenuation, halfBandPassEdge(stageRate, lowerRate));
+      if (filter === null) break;
+      levels.push(filter);
+      levelCost += decimating
+        ? (filter.pairs + 1 + STAGE_OVERHEAD_MULTIPLIES) * (stageRate / 2)
+        : (filter.pairs / 2 + STAGE_OVERHEAD_MULTIPLIES) * stageRate;
+    }
     const poly = decimating
       ? polyGeometry(srcRate, tgtRate * 2 ** k, quality)
       : polyGeometry(srcRate * 2 ** k, tgtRate, quality);
     const polyOutputRate = decimating ? tgtRate : tgtRate / 2 ** k;
-    let cost = poly.taps * polyOutputRate;
-    for (let j = 0; j < k; j++) {
-      if (decimating) {
-        const stageRate = srcRate / 2 ** j;
-        const pairs = halfBandPairsFor(attenuation, halfBandTransition(stageRate, lowerRate));
-        cost += (pairs + 1 + STAGE_OVERHEAD_MULTIPLIES) * (stageRate / 2);
-      } else {
-        const stageRate = tgtRate / 2 ** (k - 1 - j);
-        const pairs = halfBandPairsFor(attenuation, halfBandTransition(stageRate, lowerRate));
-        cost += (pairs / 2 + STAGE_OVERHEAD_MULTIPLIES) * stageRate;
-      }
-    }
+    const cost = poly.taps * polyOutputRate + levelCost;
     if (cost < bestCost) {
       bestCost = cost;
-      bestStages = k;
+      best = { stages: k, filters: decimating ? levels.slice(0, k) : levels.slice(0, k).reverse() };
     }
   }
-  return bestStages;
+  return best;
 }
 
 function designPlan(srcRate: number, tgtRate: number, quality: ResampleQuality): ResamplerPlan {
   const divisor = gcd(srcRate, tgtRate);
   const decimating = srcRate > tgtRate;
-  const lowerRate = Math.min(srcRate, tgtRate);
-  const stages = chooseHalfBandStages(srcRate, tgtRate, quality);
+  const { stages, filters } = chooseHalfBandStages(srcRate, tgtRate, quality);
   const poly = decimating
     ? buildPolyPlan(srcRate, tgtRate * 2 ** stages, quality)
     : buildPolyPlan(srcRate * 2 ** stages, tgtRate, quality);
-  const halfBands: HalfBandFilter[] = [];
-  for (let j = 0; j < stages; j++) {
-    const stageRate = decimating ? srcRate / 2 ** j : tgtRate / 2 ** (stages - 1 - j);
-    halfBands.push(designHalfBand(halfBandAttenuation(quality), halfBandTransition(stageRate, lowerRate)));
-  }
   return {
     poly,
-    halfBands,
+    halfBands: filters,
     halfBandsFirst: decimating,
     totalUp: tgtRate / divisor,
     totalDown: srcRate / divisor,
@@ -408,6 +411,7 @@ export function describeResamplerPlan(
     beta: poly.beta,
     halfBandStages: halfBands.length,
     halfBandPairs: halfBands.map((h) => h.pairs),
+    halfBandTaps: halfBands.map((h) => Float64Array.from(h.odd)),
   };
 }
 
