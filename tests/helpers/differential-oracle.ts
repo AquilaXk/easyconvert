@@ -20,6 +20,8 @@ export type ExternalOracleTool =
   | 'pdffonts'
   | 'ffmpeg'
   | 'ffprobe'
+  | 'flac'
+  | 'metaflac'
   | 'soffice'
   | 'tesseract'
   | '7z'
