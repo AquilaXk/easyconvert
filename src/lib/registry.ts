@@ -1046,7 +1046,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/json',
     category: 'data',
     description: 'JavaScript Object Notation universal lightweight data interchange format.',
-    targetFormats: ['csv', 'tsv', 'parquet', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip'],
+    targetFormats: ['csv', 'tsv', 'parquet', 'yaml', 'xml', 'xlsx', 'txt', 'pdf', 'ods', 'xls', 'zip', 'toml'],
     optionsSchema: { delimiter: true },
   },
   yaml: {
@@ -1056,7 +1056,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'Human-friendly data serialization standard.',
-    targetFormats: ['json', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip', 'toml'],
   },
   yml: {
     id: 'yml',
@@ -1065,7 +1065,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-yaml',
     category: 'data',
     description: 'YAML configuration and data format short extension.',
-    targetFormats: ['json', 'txt', 'zip'],
+    targetFormats: ['json', 'txt', 'zip', 'toml'],
   },
   xml: {
     id: 'xml',
@@ -1075,6 +1075,15 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'data',
     description: 'Extensible Markup Language hierarchical structured document.',
     targetFormats: ['json', 'yaml', 'txt', 'csv', 'zip'],
+  },
+  toml: {
+    id: 'toml',
+    name: 'TOML Configuration',
+    extension: 'toml',
+    mimeType: 'application/toml',
+    category: 'data',
+    description: 'TOML v1.0.0 configuration format with typed tables, arrays and datetimes.',
+    targetFormats: ['json', 'yaml', 'xml', 'txt', 'zip'],
   },
   xlsx: {
     id: 'xlsx',
@@ -3394,7 +3403,7 @@ export function isFormatCompatibleWithMagicBytes(
   // Text-based format attempting to pass binary magic bytes is incompatible
   const textFormats = new Set([
     'csv', 'tsv', 'txt', 'text', 'json', 'jsonl', 'ndjson', 'md', 'markdown',
-    'xml', 'html', 'htm', 'yaml', 'yml', 'sql', 'rtf', 'tab'
+    'xml', 'html', 'htm', 'yaml', 'yml', 'sql', 'rtf', 'tab', 'toml'
   ]);
   if (textFormats.has(cleanExt)) {
     if (!sniffed.startsWith('text/') && sniffed !== 'application/json' && sniffed !== 'application/xml') {

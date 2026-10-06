@@ -52,8 +52,16 @@ jobs:
             imagemagick \
             tesseract-ocr \
             tesseract-ocr-kor \
+            tesseract-ocr-jpn \
             fonts-nanum \
             fonts-noto-core \
+            fonts-noto-cjk \
+            libxml2-utils \
+            flac \
+            woff2 \
+            python3-fonttools \
+            python3-brotli \
+            python3-fitz \
             fonts-noto-ui-core \
             fonts-noto-color-emoji \
             unrar \
@@ -61,6 +69,13 @@ jobs:
             libraw-bin
           # Pre-stage Tesseract traineddata assets for offline inference
           find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
+
+      # Format oracles (columnar readers, PDF text extraction): the tests run python3 -I, which
+      # ignores user site-packages, so the pinned packages go to the system interpreter.
+      # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall.
+      # Test-only; nothing ships.
+      - name: Install Python format oracles
+        run: sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat

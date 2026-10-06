@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import * as zlib from 'node:zlib';
-import { PDFDocument, StandardFonts, PDFHexString, PDFNumber } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFHexString, PDFNumber, PDFName, PDFDict, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import {
   computeAffineTransformationMatrix,
   buildTJArrayWithKerning,
   renderLineBlockWithSpacing,
   createLosslessSandwichPdfFromPdf,
   injectInvisibleTextLayer,
+  ensureUnicodeFont,
   OcrBBox,
   OcrLineBlock,
   OcrWord,
@@ -215,15 +216,22 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(wordSpacing).toBe(0);
       expect(activeFontName).toBe('ECToUnicodeFont');
 
-      // TJ array must contain explicit 0020 space glyphs and exact kerning offsets
+      // TJ array must contain explicit space glyphs and exact kerning offsets
       const items = tjArray.asArray();
       expect(items.length).toBeGreaterThanOrEqual(5);
 
       const hexTexts = items
         .filter((it: any) => it instanceof PDFHexString)
         .map((h: any) => (h as PDFHexString).asString());
-      // Space glyph in 4-character hex (<0020>)
-      expect(hexTexts).toContain('0020');
+
+      // CIDs are dense, so the space glyph is whichever CID the font's ToUnicode maps to U+0020.
+      const type0: PDFDict = pdfDoc.context.lookup(ensureUnicodeFont(pdfDoc).fontRef, PDFDict);
+      const cmapStream = pdfDoc.context.lookup(type0.get(PDFName.of('ToUnicode'))) as PDFRawStream;
+      const cmap = Buffer.from(decodePDFRawStream(cmapStream).decode()).toString('latin1');
+      const spaceCid = /<([0-9A-F]{4})> <0020>/.exec(cmap)?.[1];
+      expect(spaceCid).toBeDefined();
+      expect(hexTexts.filter((h: string) => h === spaceCid)).toHaveLength(words.length - 1);
+      expect(hexTexts.filter((h: string) => !/^(?:[0-9A-F]{4})+$/.test(h))).toEqual([]);
     });
   });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
+import { parseUltraHdrStructure, readHdrgmAttribute } from './helpers/ultrahdr-builder';
 import {
   decodeRawBayerSensor,
   demosaicAmazeBayerCfa,
@@ -1060,7 +1061,14 @@ describe('Phase 4-F: Float32 Linear Color Pipeline, RCD Demosaicing & Ultra HDR/
       // 3. Verify ISO 21496-1 XMP metadata presence
       expect(decoded.xmp).toContain('xmlns:hdrgm="http://iso.org/iso-21496/-1"');
       expect(decoded.xmp).toContain('hdrgm:Version="1.0"');
-      expect(decoded.xmp).toContain('hdrgm:GainMapMax="3.000000"');
+      expect(decoded.xmp).toContain('<Item:Semantic>GainMap</Item:Semantic>');
+      expect(decoded.xmp).toContain(`<Item:Length>${decoded.secondaryJpeg.length}</Item:Length>`);
+      // The gain map parameters live in the gain map image's own XMP, read here by the independent parser.
+      const independent = parseUltraHdrStructure(ultraHdrBuf);
+      expect(independent.gainMapJpeg.equals(decoded.secondaryJpeg)).toBe(true);
+      expect(readHdrgmAttribute(independent.gainMapXmp, 'GainMapMax')).toBe('3.000000');
+      expect(readHdrgmAttribute(independent.gainMapXmp, 'Version')).toBe('1.0');
+      expect(readHdrgmAttribute(independent.primaryXmp, 'GainMapMax')).toBeNull();
 
       // 4. Verify secondary Gain Map JPEG is a valid image decodable by Sharp
       const gmMeta = await sharp(decoded.secondaryJpeg).metadata();
