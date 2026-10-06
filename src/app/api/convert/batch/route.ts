@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
 import {
   ConversionOptions,
@@ -186,8 +187,8 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
-    if (error instanceof PayloadLimitError) {
-      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
+    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     if (error instanceof ConversionFailedError) {

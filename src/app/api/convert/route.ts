@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
   ConversionOptions,
@@ -194,8 +195,8 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof PayloadLimitError) {
-      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
+    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
