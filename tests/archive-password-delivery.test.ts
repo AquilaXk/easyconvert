@@ -995,6 +995,26 @@ describe('archive password delivery to the real 7z binary', () => {
       }
     }
 
+    oracleTest('the synchronous contained pipeline answers the prompt from its own session', ['7z'], async () => {
+      // execFileSyncWithPasswordStdin runs 7-Zip detached (setsid) and tolerates EPIPE when 7-Zip exits without
+      // reading stdin; plain execFileSync does neither. The shim refuses a read run in the caller's session.
+      const real = get7zBinaryPath();
+      if (!real) throw new Error('7z binary missing');
+      const callerSession = execFileSync('ps', ['-o', 'sid=', '-p', String(process.pid)]).toString().trim();
+      await withTempDirAsync(async (dir) => {
+        const shim = path.join(dir, '7z-session-check.sh');
+        writeFileSync(
+          shim,
+          `#!/bin/sh\ncase "$1" in l|x) if [ "$(ps -o sid= -p $$ | tr -d ' ')" = '${callerSession}' ]; then echo 'not in its own session' >&2; exit 2; fi;; esac\nexec '${real}' "$@"\n`
+        );
+        chmodSync(shim, 0o755);
+        process.env.P7ZIP_PATH = shim;
+        const zip = buildFixture('zip-aes256', PASSWORD);
+        const converted = convertWithNative7z(zip, 'zip', 'zip', { password: PASSWORD }, 'in.zip');
+        expect(converted).not.toBeNull();
+      });
+    });
+
     oracleTest('extraction and listing never carry the password or a -p switch', ['7z'], async () => {
       const zip = buildFixture('zip-aes256', PASSWORD);
       const sevenZ = buildFixture('7z-encrypted-header', PASSWORD);

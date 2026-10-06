@@ -82,6 +82,7 @@ import {
   sevenZipCreatePasswordInput,
   sevenZipEncryptionCheckInput,
   sevenZipReadPasswordInput,
+  isArchivePasswordFailure,
 } from './archive-password';
 import {
   compressWithZstdDict,
@@ -4129,14 +4130,8 @@ async function inspectArchiveVia7zCli(
           `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
         );
       }
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
-      if (
-        errMsg.includes('Enter password') ||
-        errMsg.includes('Can not open encrypted') ||
-        errMsg.includes('Cannot open encrypted') ||
-        errMsg.includes('Data Error in encrypted archive') ||
-        errMsg.includes('Wrong password')
-      ) {
+      // Only 7-Zip's own stderr lines decide: stdout carries the prompt and entry names on every listing.
+      if (isArchivePasswordFailure(archiveFailureStderr(err))) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
       throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
@@ -4144,11 +4139,12 @@ async function inspectArchiveVia7zCli(
 
     // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,
     // which protect this service from an unbounded listing, still refuse.
-    const listed = parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdoutStr));
+    const listingText = stripSevenZipPasswordPrompt(stdoutStr);
+    const listed = parse7zTechnicalListing(listingText);
     assertListingResourceCaps(listed, buffer.length, ARCHIVE_SECURITY_LIMITS);
 
     const entries: ArchiveEntryMetadata[] = [];
-    const blocks = stdoutStr.split(/\r?\n\r?\n/);
+    const blocks = listingText.split(/\r?\n\r?\n/);
     let isArchiveEncrypted = false;
 
     for (const block of blocks) {

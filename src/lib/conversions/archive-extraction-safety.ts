@@ -19,6 +19,7 @@ import {
 import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
+  execFileSyncWithPasswordStdin,
   isArchivePasswordFailure,
   sevenZipReadPasswordInput,
 } from './archive-password';
@@ -109,7 +110,6 @@ export class UnreadableArchiveError extends ConversionFailedError {
     this.name = 'UnreadableArchiveError';
   }
 }
-
 
 /**
  * 7-Zip extraction cannot keep two entries that share a path, so the 'rename' policy (the default)
@@ -717,7 +717,6 @@ export interface ContainedExtractionRequest {
   signal?: AbortSignal;
 }
 
-
 /** The password travels on 7z's stdin (never argv); `assertArchivePasswordSafe` refuses anything that could answer a further prompt. */
 function passwordArgs(request: ContainedExtractionRequest): { args: string[]; stdin: Buffer | undefined } {
   assertArchivePasswordSafe(request.password);
@@ -828,9 +827,7 @@ function toArchiveFailure(
   }
   // Only the tool's own stderr lines decide: an entry name or the command line may contain the same words.
   const stderr = archiveFailureStderr(err);
-  const stdout = String((err as { stdout?: unknown } | null)?.stdout ?? '');
-  const passwordFailure =
-    isArchivePasswordFailure(stderr) || (!hasPassword && PASSWORD_PROMPT_ABORT_PATTERN.test(`${stderr}\n${stdout}`));
+  const passwordFailure = isArchivePasswordFailure(stderr) || (!hasPassword && PASSWORD_PROMPT_ABORT_PATTERN.test(stderr));
   if (passwordFailure) {
     return hasPassword
       ? new InvalidArchivePasswordError(`Invalid password for encrypted ${label}.`)
@@ -896,16 +893,30 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
   return parse7zTechnicalListing(stripSevenZipPasswordPrompt(result.stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
 }
 
+/**
+ * Runs a synchronous 7-Zip step. With a password answer, the run goes through `execFileSyncWithPasswordStdin`:
+ * detached (setsid), so p7zip's prompt reads the pipe rather than a controlling terminal, and tolerant of the
+ * EPIPE Node reports when 7-Zip exits successfully without reading stdin (nothing encrypted at that step).
+ */
+function runSevenZipSync(
+  binary: string,
+  args: readonly string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number; input: Buffer | undefined }
+): Buffer {
+  const { input, ...rest } = options;
+  if (input) return execFileSyncWithPasswordStdin(binary, args, { ...rest, input });
+  return execFileSync(binary, args, { ...rest, stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
 function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ListedArchiveEntry[] {
   const { args, stdin } = listArgs(request, target, exclude);
   const resolved = resolveSandboxedCommand(request.p7zBin, args, { networkIsolated: true });
-  const stdout = execFileSync(resolved.binary, resolved.args, {
+  const stdout = runSevenZipSync(resolved.binary, resolved.args, {
     cwd: request.cwd,
     env: getSanitizedEnvironment({}, true),
     timeout: request.timeoutMs,
     maxBuffer: listingBufferLimit(request.limits),
     input: stdin,
-    stdio: ['pipe', 'pipe', 'pipe'],
   });
   return parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
 }
@@ -1037,13 +1048,12 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
       networkIsolated: true,
       maxFileSize: request.limits.MAX_UNCOMPRESSED_SIZE,
     });
-    execFileSync(resolved.binary, resolved.args, {
+    runSevenZipSync(resolved.binary, resolved.args, {
       cwd: request.cwd,
       env: getSanitizedEnvironment({}, true),
       timeout: request.timeoutMs,
       maxBuffer: request.maxBuffer,
       input: stdin,
-      stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (err) {
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
-import { extractArchiveContained } from '../src/lib/conversions/archive-extraction-safety';
+import { extractArchiveContained, parse7zTechnicalListing } from '../src/lib/conversions/archive-extraction-safety';
 import { convertWithNative7z } from '../src/worker/engines';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -375,4 +375,28 @@ describe('7z listing key whitelist on every native archive source', () => {
       );
     }
   }
+});
+
+describe('RAR5 listing keys', () => {
+  // 7-Zip prints `Copy Link` (the RAR5 file-copy reference) for every RAR5 entry; written by hand from a 23.01 listing.
+  const RAR5_BLOCK = [
+    'Path = a.txt',
+    'Folder = -',
+    'Size = 11',
+    'Packed Size = 16',
+    'Encrypted = +',
+    'Host OS = Unix',
+    'Method = m0:17 AES:15:1',
+    'Symbolic Link = ',
+    'Hard Link = ',
+    'Copy Link = ',
+    '',
+  ].join('\n');
+
+  it('accepts the Copy Link field and still reads the entry', () => {
+    const [entry] = parse7zTechnicalListing(RAR5_BLOCK);
+    expect(entry.path).toBe('a.txt');
+    expect(entry.sizeBytes).toBe(11);
+    expect(entry.linkKind).toBeNull();
+  });
 });
