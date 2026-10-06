@@ -25,9 +25,10 @@ const NOOP: MarkupHandler = { open: () => {}, text: () => {}, close: () => {} };
 const SIZE_FACTOR = 4;
 /** Linear growth is a factor of 4; quadratic is 16. */
 const MAX_GROWTH_RATIO = 8;
-const GROWTH_RUNS = 3;
+const GROWTH_RUNS = 5;
 const TEST_TIMEOUT_MS = 120_000;
-const MANY_TEXT_NODES = 200_000;
+// Large enough that the base run costs well over 100 ms of CPU, so scheduler noise cannot dominate the ratio.
+const MANY_TEXT_NODES = 800_000;
 const MANY_LINES = 20_000;
 
 function cpuMs(run: () => void): number {
