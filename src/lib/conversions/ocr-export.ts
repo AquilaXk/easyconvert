@@ -1,761 +1,670 @@
-import { OcrResult, OcrLineBlock, OcrWord, OcrPageResult } from './ocr-pdf-combiner';
+import type {
+  OcrLayoutGroup,
+  OcrLineBlock,
+  OcrPageResult,
+  OcrResult,
+  OcrWord,
+} from './ocr-pdf-combiner';
 import { HocrExportOptions, AltoExportOptions } from '../types';
+import { OcrMarkupError } from './ocr-markup';
+
+export { unescapeXml } from './ocr-markup';
+export { parseHocr, parseAlto } from './ocr-import';
 
 /**
- * Escapes characters for XML / XHTML output.
+ * hOCR 1.2 and ALTO 4.4 writers.
+ *
+ * Both keep the recognizer's block, paragraph and line structure (a block is `ocr_carea` in hOCR and
+ * a ComposedBlock in ALTO, a paragraph is `ocr_par` and a TextBlock). Lines that carry no structure
+ * (text-only input) each become their own block and paragraph. Output is assembled as an array of
+ * strings joined once; text is escaped in a single pass.
  */
-function escapeXml(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+
+const PERCENT_SCALE = 100;
+const NEED_WORD_GEOMETRY = 'hOCR/ALTO need word geometry';
+const SLOPE_DECIMALS_SCALE = 1000;
+/** Row metrics are floats; eight significant digits is the precision the recognizer's own hOCR writes. */
+const METRIC_SIGNIFICANT_DIGITS = 8;
+const ALTO_CONFIDENCE_DECIMALS = 2;
+const ALTO_SCHEMA_VERSION = '4.4';
+const ALTO_PIXEL_UNIT = 'pixel';
+const OCR_SYSTEM_NAME = 'easyconvert-ocr';
+const OCR_SOFTWARE_NAME = 'EasyConvert OCR';
+const HOCR_CAPABILITIES = 'ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf';
+const UNDETERMINED_LANGUAGE = 'und';
+const MAX_LANGUAGE_TAG_CHARS = 35;
+const MAX_LANGUAGE_SUBTAG_CHARS = 8;
+
+/**
+ * BCP 47 tags for the recognition language codes the pipeline accepts (see ocr.ts). The `_vert`
+ * (vertical writing) models keep the plain language tag: hOCR and ALTO tag the language, and the
+ * writing direction is not carried over.
+ */
+const ENGINE_LANGUAGE_TAGS: ReadonlyMap<string, string> = new Map([
+  ['eng', 'en'],
+  ['kor', 'ko'],
+  ['deu', 'de'],
+  ['fra', 'fr'],
+  ['spa', 'es'],
+  ['jpn', 'ja'],
+  ['jpn_vert', 'ja'],
+  ['chi_sim', 'zh-Hans'],
+  ['chi_sim_vert', 'zh-Hans'],
+  ['chi_tra', 'zh-Hant'],
+  ['chi_tra_vert', 'zh-Hant'],
+]);
+
+const CH_TAB = 0x09;
+const CH_LF = 0x0a;
+const CH_CR = 0x0d;
+const CH_AMPERSAND = 0x26;
+const CH_APOSTROPHE = 0x27;
+const CH_QUOTE = 0x22;
+const CH_LT = 0x3c;
+const CH_GT = 0x3e;
+const CH_HYPHEN = 0x2d;
+const CH_UPPER_A = 0x41;
+const CH_UPPER_Z = 0x5a;
+const CH_LOWER_A = 0x61;
+const CH_LOWER_Z = 0x7a;
+const CH_DIGIT_0 = 0x30;
+const CH_DIGIT_9 = 0x39;
+const SURROGATE_HIGH_FIRST = 0xd800;
+const SURROGATE_HIGH_LAST = 0xdbff;
+const SURROGATE_LOW_FIRST = 0xdc00;
+const SURROGATE_LOW_LAST = 0xdfff;
+const NONCHARACTER_FFFE = 0xfffe;
+const NONCHARACTER_FFFF = 0xffff;
+const FIRST_PRINTABLE = 0x20;
+const FIRST_ASTRAL = 0x10000;
+
+function isAsciiLetter(code: number): boolean {
+  return (code >= CH_UPPER_A && code <= CH_UPPER_Z) || (code >= CH_LOWER_A && code <= CH_LOWER_Z);
 }
 
+function isAsciiDigit(code: number): boolean {
+  return code >= CH_DIGIT_0 && code <= CH_DIGIT_9;
+}
 
-interface RoundedBBox {
+/** Whether `tag` matches the xsd:language pattern `[a-zA-Z]{1,8}(-[a-zA-Z0-9]{1,8})*`. */
+function isLanguageTag(tag: string): boolean {
+  if (tag.length === 0 || tag.length > MAX_LANGUAGE_TAG_CHARS) return false;
+  let subtagLength = 0;
+  let firstSubtag = true;
+  for (let i = 0; i < tag.length; i++) {
+    const code = tag.codePointAt(i) ?? 0;
+    if (code === CH_HYPHEN) {
+      if (subtagLength === 0) return false;
+      subtagLength = 0;
+      firstSubtag = false;
+      continue;
+    }
+    const allowed = firstSubtag ? isAsciiLetter(code) : isAsciiLetter(code) || isAsciiDigit(code);
+    if (!allowed || ++subtagLength > MAX_LANGUAGE_SUBTAG_CHARS) return false;
+  }
+  return subtagLength > 0;
+}
+
+/** BCP 47 tag for an engine language code or tag, or undefined when it is neither. */
+function languageTag(language: string | undefined): string | undefined {
+  if (!language) return undefined;
+  const mapped = ENGINE_LANGUAGE_TAGS.get(language);
+  if (mapped) return mapped;
+  return isLanguageTag(language) ? language : undefined;
+}
+
+/** Characters escapeXml dropped since the current export began; reported once when it ends. */
+let droppedCharacters = 0;
+
+function startExport(): void {
+  droppedCharacters = 0;
+}
+
+function finishExport(): void {
+  if (droppedCharacters > 0) {
+    console.debug(`[ocr-export] dropped ${droppedCharacters} characters that XML 1.0 cannot carry`);
+  }
+  droppedCharacters = 0;
+}
+
+const XML_ESCAPES: ReadonlyMap<number, string> = new Map([
+  [CH_AMPERSAND, '&amp;'],
+  [CH_LT, '&lt;'],
+  [CH_GT, '&gt;'],
+  [CH_QUOTE, '&quot;'],
+  [CH_APOSTROPHE, '&apos;'],
+]);
+
+/** Whether XML 1.0 cannot carry the code unit: controls (other than tab, line feed, carriage return), lone surrogates, U+FFFE and U+FFFF. */
+function isDroppedCode(code: number): boolean {
+  if (code < FIRST_PRINTABLE || code === NONCHARACTER_FFFE || code === NONCHARACTER_FFFF) return true;
+  return code >= SURROGATE_HIGH_FIRST && code <= SURROGATE_LOW_LAST;
+}
+
+/** What replaces the character `code` in escaped text, or null when it is kept as it is. */
+function replacementFor(code: number, attribute: boolean): string | null {
+  const escaped = XML_ESCAPES.get(code);
+  if (escaped !== undefined) return escaped;
+  if (code === CH_TAB || code === CH_LF || code === CH_CR) return attribute ? `&#${code};` : null;
+  if (!isDroppedCode(code)) return null;
+  droppedCharacters++;
+  return '';
+}
+
+/**
+ * Escapes text for XML in one pass. Characters XML 1.0 cannot carry (control characters other than
+ * tab, line feed and carriage return, unpaired surrogates, U+FFFE and U+FFFF) are dropped. In
+ * attribute values tab, line feed and carriage return become character references so they survive
+ * attribute-value normalization.
+ */
+function escapeXml(text: string, attribute = false): string {
+  if (!text) return '';
+  let parts: string[] | null = null;
+  let copied = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.codePointAt(i) ?? 0;
+    // A surrogate pair reads as one astral code point, which XML carries; a lone surrogate reads as itself.
+    if (code >= FIRST_ASTRAL) {
+      i++;
+      continue;
+    }
+    const replacement = replacementFor(code, attribute);
+    if (replacement === null) continue;
+    parts ??= [];
+    parts.push(text.slice(copied, i), replacement);
+    copied = i + 1;
+  }
+  if (parts === null) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+function escapeAttribute(text: string): string {
+  return escapeXml(text, true);
+}
+
+/** Rounds a coordinate, rejecting values that cannot be written as XML numbers. */
+function wholeNumber(value: number, what: string): number {
+  if (!Number.isFinite(value)) throw new OcrMarkupError(`Cannot export ${what}: ${value} is not a finite number.`);
+  return Math.round(value);
+}
+
+interface Box {
   x0: number;
   y0: number;
   x1: number;
   y1: number;
-  w: number;
-  h: number;
 }
 
-function roundBBox(
-  bbox?: { x?: number; y?: number; width?: number; height?: number; x0?: number; y0?: number; x1?: number; y1?: number } | null
-): RoundedBBox {
-  const x = bbox?.x ?? bbox?.x0 ?? 0;
-  const y = bbox?.y ?? bbox?.y0 ?? 0;
-  const w = bbox?.width ?? (bbox?.x1 != null ? Math.max(1, bbox.x1 - x) : 10);
-  const h = bbox?.height ?? (bbox?.y1 != null ? Math.max(1, bbox.y1 - y) : 10);
-  const x0 = Math.round(x);
-  const y0 = Math.round(y);
-  const rw = Math.max(1, Math.round(w));
-  const rh = Math.max(1, Math.round(h));
-  return { x0, y0, x1: x0 + rw, y1: y0 + rh, w: rw, h: rh };
+type LooseBBox = {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  x0?: number;
+  y0?: number;
+  x1?: number;
+  y1?: number;
+};
+
+const MIN_BOX_SIZE_PX = 1;
+
+function requireNumber(value: number | undefined, what: string): number {
+  if (typeof value !== 'number') throw new OcrMarkupError(`Cannot export ${what}: it has no position or size.`);
+  return value;
 }
 
-function computeWordConfidence(
-  wordConf?: number | null,
-  pageConf?: number | null
-): number {
-  if (typeof wordConf === 'number' && !isNaN(wordConf)) {
-    return wordConf > 1 ? wordConf / 100 : wordConf;
-  }
-  if (typeof pageConf === 'number' && !isNaN(pageConf)) {
-    return pageConf > 1 ? pageConf / 100 : pageConf;
-  }
-  return 0.9;
+/** Fills `into` with the whole-pixel box of `bbox` (at least one pixel wide and tall). */
+function fillBox(into: Box, bbox: LooseBBox | null | undefined, what: string): Box {
+  if (!bbox) throw new OcrMarkupError(`Cannot export ${what}: it has no box.`);
+  const x = requireNumber(bbox.x ?? bbox.x0, what);
+  const y = requireNumber(bbox.y ?? bbox.y0, what);
+  const width = bbox.width ?? (bbox.x1 === undefined ? undefined : bbox.x1 - x);
+  const height = bbox.height ?? (bbox.y1 === undefined ? undefined : bbox.y1 - y);
+  into.x0 = wholeNumber(x, what);
+  into.y0 = wholeNumber(y, what);
+  into.x1 = into.x0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(requireNumber(width, what), what));
+  into.y1 = into.y0 + Math.max(MIN_BOX_SIZE_PX, wholeNumber(requireNumber(height, what), what));
+  return into;
 }
 
-/**
- * Normalizes an OcrResult or OcrResult[] into an array of page structures.
- */
-function normalizePages(
-  ocrInput: OcrResult | OcrResult[],
-  defaultWidth = 612,
-  defaultHeight = 792
-): OcrPageResult[] {
-  if (Array.isArray(ocrInput)) {
-    return ocrInput.map((res, idx) => {
-      const w = (res as any).width || res.imageWidth || defaultWidth;
-      const h = (res as any).height || res.imageHeight || defaultHeight;
-      return {
-        pageNumber: idx + 1,
-        width: w,
-        height: h,
-        text: res.text || '',
-        confidence: res.confidence,
-        lineBlocks: res.lineBlocks && res.lineBlocks.length > 0 ? res.lineBlocks : synthesizeLineBlocks({ ...res, width: w, height: h }),
-        lines: res.lines,
-      };
-    });
-  }
+function newBox(): Box {
+  return { x0: 0, y0: 0, x1: 0, y1: 0 };
+}
 
-  if (ocrInput.pages && ocrInput.pages.length > 0) {
-    return ocrInput.pages.map((p, idx) => {
-      const w = p.width || ocrInput.imageWidth || defaultWidth;
-      const h = p.height || ocrInput.imageHeight || defaultHeight;
-      return {
-        pageNumber: p.pageNumber || idx + 1,
-        width: w,
-        height: h,
-        text: p.text || '',
-        confidence: p.confidence ?? ocrInput.confidence,
-        lineBlocks: p.lineBlocks && p.lineBlocks.length > 0 ? p.lineBlocks : synthesizeLineBlocks({ ...p, width: w, height: h }),
-        lines: p.lines,
-      };
-    });
-  }
+/** A word's confidence on the 0..100 scale used throughout, or null when the word has none. */
+function confidencePercent(confidence: number | undefined): number | null {
+  if (typeof confidence !== 'number' || Number.isNaN(confidence)) return null;
+  return Math.max(0, Math.min(PERCENT_SCALE, confidence));
+}
 
-  const w = (ocrInput as any).width || ocrInput.imageWidth || defaultWidth;
-  const h = (ocrInput as any).height || ocrInput.imageHeight || defaultHeight;
+/** The pages of one result: its `pages` when it has them, otherwise the result itself as one page. */
+function pagesOf(res: OcrResult): OcrPageResult[] {
+  if (res.pages && res.pages.length > 0) {
+    return res.pages.map((p) => ({
+      pageNumber: p.pageNumber,
+      width: p.width || res.imageWidth || 0,
+      height: p.height || res.imageHeight || 0,
+      text: p.text || '',
+      confidence: p.confidence ?? res.confidence,
+      lineBlocks: p.lineBlocks ?? [],
+      lines: p.lines,
+      language: p.language ?? res.language,
+    }));
+  }
   return [
     {
       pageNumber: 1,
-      width: w,
-      height: h,
-      text: ocrInput.text || '',
-      confidence: ocrInput.confidence,
-      lineBlocks: ocrInput.lineBlocks && ocrInput.lineBlocks.length > 0 ? ocrInput.lineBlocks : synthesizeLineBlocks({ ...ocrInput, width: w, height: h }),
-      lines: ocrInput.lines,
+      width: res.imageWidth || 0,
+      height: res.imageHeight || 0,
+      text: res.text || '',
+      confidence: res.confidence,
+      lineBlocks: res.lineBlocks ?? [],
+      lines: res.lines,
+      language: res.language,
     },
   ];
 }
 
 /**
- * Synthesizes line blocks and words if only plain lines/text exist.
+ * Flattens one result or a list of results into pages numbered by position (1-based). Source page
+ * numbers are ignored: they can repeat, be zero or negative, and would make identifiers collide.
  */
-function synthesizeLineBlocks(res: { text?: string; lines?: string[]; imageWidth?: number; imageHeight?: number; width?: number; height?: number; confidence?: number | null }): OcrLineBlock[] {
-  const lines = res.lines && res.lines.length > 0 ? res.lines : (res.text || '').split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length === 0) return [];
-
-  const pageWidth = (res as any).width || res.imageWidth || 612;
-  const pageHeight = (res as any).height || res.imageHeight || 792;
-  const lineHeight = Math.min(24, Math.max(12, Math.floor(pageHeight / (lines.length + 4))));
-  const startY = 40;
-
-  return lines.map((lineText, idx) => {
-    const y = startY + idx * (lineHeight + 6);
-    const wordsRaw = lineText.trim().split(/\s+/).filter(Boolean);
-    const wordWidth = wordsRaw.length > 0 ? Math.max(20, Math.floor((pageWidth - 80) / wordsRaw.length)) : 50;
-
-    const words: OcrWord[] = wordsRaw.map((w, wIdx) => ({
-      text: w,
-      confidence: res.confidence !== null && res.confidence !== undefined ? (res.confidence > 1 ? res.confidence : res.confidence * 100) : 90,
-      bbox: {
-        x: 40 + wIdx * wordWidth,
-        y,
-        width: Math.max(10, wordWidth - 4),
-        height: lineHeight,
-      },
-    }));
-
-    return {
-      text: lineText,
-      bbox: {
-        x: 40,
-        y,
-        width: Math.max(10, pageWidth - 80),
-        height: lineHeight,
-      },
-      words,
-    };
-  });
-}
-
-/**
- * Ensures a block has valid words. If block.words is empty, splits block.text.
- */
-function ensureWordsForBlock(block: OcrLineBlock, pageConfidence: number | null): OcrWord[] {
-  if (block.words && block.words.length > 0) {
-    return block.words;
+function normalizePages(ocrInput: OcrResult | OcrResult[]): OcrPageResult[] {
+  const results = Array.isArray(ocrInput) ? ocrInput : [ocrInput];
+  const pages: OcrPageResult[] = [];
+  for (const res of results) {
+    for (const page of pagesOf(res)) pages.push({ ...page, pageNumber: pages.length + 1 });
   }
+  return pages;
+}
 
-  const rawWords = (block.text || '').trim().split(/\s+/).filter(Boolean);
-  if (rawWords.length === 0) return [];
+/** Text without recognized lines has no geometry to write; a blank page is fine. */
+function assertWordGeometry(pages: OcrPageResult[]): void {
+  for (const page of pages) {
+    if (page.lineBlocks.length === 0 && page.text.trim() !== '') {
+      throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: page ${page.pageNumber} has text but no recognized lines.`);
+    }
+  }
+}
 
-  const b = block.bbox;
-  const totalChars = rawWords.reduce((sum, w) => sum + w.length, 0);
-  const charWidth = totalChars > 0 ? b.width / Math.max(totalChars, 1) : 10;
-  let currX = b.x;
+function wordsOf(line: OcrLineBlock, pageNumber: number): OcrWord[] {
+  if (line.words.length === 0) {
+    throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: a line on page ${pageNumber} has no words.`);
+  }
+  return line.words;
+}
 
-  return rawWords.map((wordText) => {
-    const wWidth = Math.max(5, Math.round(wordText.length * charWidth));
-    const word: OcrWord = {
-      text: wordText,
-      confidence: pageConfidence !== null && pageConfidence !== undefined ? (pageConfidence > 1 ? pageConfidence : pageConfidence * 100) : 90,
-      bbox: {
-        x: currX,
-        y: b.y,
-        width: wWidth,
-        height: b.height,
-      },
-    };
-    currX += wWidth + Math.round(charWidth * 0.5);
-    return word;
-  });
+interface Extent {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+interface ParagraphPlan {
+  group: OcrLayoutGroup | undefined;
+  extent: Extent;
+  lines: OcrLineBlock[];
+}
+
+interface BlockPlan {
+  group: OcrLayoutGroup | undefined;
+  /** False for a line that came without block or paragraph information. */
+  structured: boolean;
+  extent: Extent;
+  paragraphs: ParagraphPlan[];
+}
+
+function growExtent(extent: Extent, box: Box): void {
+  if (box.x0 < extent.x0) extent.x0 = box.x0;
+  if (box.y0 < extent.y0) extent.y0 = box.y0;
+  if (box.x1 > extent.x1) extent.x1 = box.x1;
+  if (box.y1 > extent.y1) extent.y1 = box.y1;
+}
+
+function extentOf(box: Box): Extent {
+  return { x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 };
 }
 
 /**
- * Exports OCR results to hOCR 1.2 compliant XHTML standard format.
- * Embeds standard semantic HTML/XML classes (ocr_page, ocr_carea, ocr_par, ocr_line, ocrx_word)
- * with bounding box title attributes (bbox x0 y0 x1 y1; x_wconf ...).
+ * Groups lines into blocks and paragraphs by the layout groups they share, in order of first
+ * appearance. A line with neither group is its own block and paragraph.
+ */
+function planLayout(lines: OcrLineBlock[], scratch: Box): BlockPlan[] {
+  const blocks: BlockPlan[] = [];
+  const blockByGroup = new Map<OcrLayoutGroup, BlockPlan>();
+  const paragraphByGroup = new Map<OcrLayoutGroup, ParagraphPlan>();
+  for (const line of lines) {
+    const box = fillBox(scratch, line.bbox, 'a line box');
+    const blockGroup = line.block ?? line.paragraph;
+    if (blockGroup === undefined) {
+      blocks.push({
+        group: undefined,
+        structured: false,
+        extent: extentOf(box),
+        paragraphs: [{ group: undefined, extent: extentOf(box), lines: [line] }],
+      });
+      continue;
+    }
+    let block = blockByGroup.get(blockGroup);
+    if (block === undefined) {
+      block = { group: blockGroup, structured: true, extent: extentOf(box), paragraphs: [] };
+      blockByGroup.set(blockGroup, block);
+      blocks.push(block);
+    } else {
+      growExtent(block.extent, box);
+    }
+    const paragraphGroup = line.paragraph ?? line.block;
+    let paragraph = paragraphGroup === undefined ? undefined : paragraphByGroup.get(paragraphGroup);
+    if (paragraph === undefined) {
+      paragraph = { group: line.paragraph, extent: extentOf(box), lines: [] };
+      block.paragraphs.push(paragraph);
+      if (paragraphGroup !== undefined) paragraphByGroup.set(paragraphGroup, paragraph);
+    } else {
+      growExtent(paragraph.extent, box);
+    }
+    paragraph.lines.push(line);
+  }
+  return blocks;
+}
+
+/** The group's own box when it has one, otherwise the union of its lines. */
+function groupBox(into: Box, group: OcrLayoutGroup | undefined, extent: Extent): Box {
+  if (group?.bbox) return fillBox(into, group.bbox, 'a layout box');
+  into.x0 = extent.x0;
+  into.y0 = extent.y0;
+  into.x1 = extent.x1;
+  into.y1 = extent.y1;
+  return into;
+}
+
+function finiteOrThrow(value: number, what: string): number {
+  if (!Number.isFinite(value)) throw new OcrMarkupError(`Cannot export ${what}: ${value} is not a finite number.`);
+  return value;
+}
+
+function roundedSlope(value: number): string {
+  return String(Math.round(finiteOrThrow(value, 'a baseline') * SLOPE_DECIMALS_SCALE) / SLOPE_DECIMALS_SCALE);
+}
+
+function metric(value: number, what: string): string {
+  return String(Number(finiteOrThrow(value, what).toPrecision(METRIC_SIGNIFICANT_DIGITS)));
+}
+
+/**
+ * hOCR line properties after the box: `baseline slope offset` (offset measured from the bottom of the
+ * line box, y pointing down) and the row metrics. Absent values are left out.
+ */
+function hocrLineTitle(box: Box, line: OcrLineBlock): string {
+  const parts: string[] = [`bbox ${box.x0} ${box.y0} ${box.x1} ${box.y1}`];
+  const baseline = line.baseline;
+  if (baseline && baseline.x1 > baseline.x0) {
+    const slope = (baseline.y1 - baseline.y0) / (baseline.x1 - baseline.x0);
+    const offset = baseline.y0 + slope * (box.x0 - baseline.x0) - box.y1;
+    parts.push(`baseline ${roundedSlope(slope)} ${wholeNumber(offset, 'a baseline')}`);
+  }
+  if (line.rowHeight !== undefined) parts.push(`x_size ${metric(line.rowHeight, 'x_size')}`);
+  if (line.descenders !== undefined) {
+    parts.push(`x_descenders ${metric(line.descenders, 'x_descenders')}`);
+  }
+  if (line.ascenders !== undefined) {
+    parts.push(`x_ascenders ${metric(line.ascenders, 'x_ascenders')}`);
+  }
+  return parts.join('; ');
+}
+
+function pageImageName(options: HocrExportOptions, pageNumber: number, pageCount: number): string {
+  const cleanBase = options.filename ? options.filename.replace(/\.[^/.]+$/, '') : 'page';
+  if (pageCount > 1) return `${cleanBase}_page_${pageNumber}.png`;
+  return options.filename || `page_${pageNumber}.png`;
+}
+
+function pageDimensions(page: OcrPageResult): { width: number; height: number } {
+  const width = wholeNumber(page.width, 'a page width');
+  const height = wholeNumber(page.height, 'a page height');
+  if (width < 1 || height < 1) throw new OcrMarkupError(`Cannot export a page of ${width}x${height} pixels.`);
+  return { width, height };
+}
+
+function writeHocrWords(out: string[], line: OcrLineBlock, pageNumber: number, lineNumber: number, scratch: Box): void {
+  const words = wordsOf(line, pageNumber);
+  for (let wIdx = 0; wIdx < words.length; wIdx++) {
+    const w = words[wIdx];
+    const wb = fillBox(scratch, w.bbox, 'a word box');
+    const percent = confidencePercent(w.confidence);
+    const wconf = percent === null ? '' : `; x_wconf ${Math.round(percent)}`;
+    out.push(
+      `          <span class="ocrx_word" id="word_${pageNumber}_${lineNumber}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}${wconf}">${escapeXml(w.text)}</span>`
+    );
+  }
+}
+
+/**
+ * Exports OCR results to hOCR 1.2 compliant XHTML.
+ * Pages are numbered by position. Text the recognizer returned that XML 1.0 cannot carry (control
+ * characters, U+FFFE and U+FFFF, unpaired surrogates) is dropped; the number dropped is logged at
+ * debug level.
+ * @throws OcrMarkupError when a page has text but no recognized lines or a line has no words (hOCR
+ * needs word geometry and none is invented), or a coordinate is not finite.
+ * Writes ocr_page, ocr_carea, ocr_par, ocr_line and ocrx_word elements; a line carries its bbox,
+ * baseline and row metrics when the recognizer reported them, a word its bbox and x_wconf.
  */
 export function exportHocr(
   ocrInput: OcrResult | OcrResult[],
   options: HocrExportOptions = {}
 ): string {
+  startExport();
   const pages = normalizePages(ocrInput);
+  assertWordGeometry(pages);
   const docTitle = options.documentTitle || options.filename || 'OCR Document';
+  const pageTags = pages.map((page) => languageTag(page.language));
+  const documentLanguage = pageTags.find((tag) => tag !== undefined) ?? UNDETERMINED_LANGUAGE;
+  const usedLanguages = [...new Set(pageTags.filter((tag): tag is string => tag !== undefined))];
 
-  const lines: string[] = [
+  const out: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">',
-    '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">',
+    `<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${documentLanguage}" lang="${documentLanguage}">`,
     '<head>',
     `  <title>${escapeXml(docTitle)}</title>`,
     '  <meta http-equiv="Content-Type" content="text/html;charset=utf-8" />',
-    '  <meta name="ocr-system" content="easyconvert-ocr" />',
-    '  <meta name="ocr-capabilities" content="ocr_page ocr_carea ocr_par ocr_line ocrx_word" />',
-    '</head>',
-    '<body>',
+    `  <meta name="ocr-system" content="${OCR_SYSTEM_NAME}" />`,
+    `  <meta name="ocr-capabilities" content="${HOCR_CAPABILITIES}" />`,
+    `  <meta name="ocr-number-of-pages" content="${pages.length}" />`,
   ];
+  if (usedLanguages.length > 0) out.push(`  <meta name="ocr-langs" content="${usedLanguages.join(' ')}" />`);
+  out.push('</head>', '<body>');
 
+  const scratch = newBox();
+  const groupScratch = newBox();
   for (const page of pages) {
     const pNum = page.pageNumber;
-    const pWidth = Math.round(page.width);
-    const pHeight = Math.round(page.height);
-    const cleanBase = options.filename ? options.filename.replace(/\.[^/.]+$/, '') : 'page';
-    const imageName =
-      pages.length > 1
-        ? `${cleanBase}_page_${pNum}.png`
-        : options.filename || `page_${pNum}.png`;
-
-    lines.push(
-      `  <div class="ocr_page" id="page_${pNum}" title="image &apos;${escapeXml(imageName)}&apos;; bbox 0 0 ${pWidth} ${pHeight}; ppageno ${pNum}">`
+    const { width, height } = pageDimensions(page);
+    const imageName = pageImageName(options, pNum, pages.length);
+    const pageTag = languageTag(page.language);
+    // hOCR counts physical pages from zero.
+    out.push(
+      `  <div class="ocr_page" id="page_${pNum}" title="image &quot;${escapeAttribute(imageName)}&quot;; bbox 0 0 ${width} ${height}; ppageno ${pNum - 1}">`
     );
 
-    const blocks = page.lineBlocks || [];
-    if (blocks.length > 0) {
-      blocks.forEach((block, bIdx) => {
-        const bb = roundBBox(block.bbox);
-        lines.push(
-          `    <div class="ocr_carea" id="block_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}">`
-        );
-        lines.push(
-          `      <p class="ocr_par" id="par_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}">`
-        );
-
-        lines.push(
-          `        <span class="ocr_line" id="line_${pNum}_${bIdx + 1}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}; baseline 0 0">`
-        );
-
-        const words = ensureWordsForBlock(block, page.confidence);
-        for (let wIdx = 0; wIdx < words.length; wIdx++) {
-          const w = words[wIdx];
-          const wb = roundBBox(w.bbox);
-          const wconf = Math.max(0, Math.min(100, Math.round(computeWordConfidence(w.confidence, page.confidence) * 100)));
-
-          lines.push(
-            `          <span class="ocrx_word" id="word_${pNum}_${bIdx + 1}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}; x_wconf ${wconf}">${escapeXml(w.text)}</span>`
-          );
+    let blockNumber = 0;
+    let parNumber = 0;
+    let lineNumber = 0;
+    for (const block of planLayout(page.lineBlocks || [], scratch)) {
+      const bb = groupBox(groupScratch, block.group, block.extent);
+      out.push(`    <div class="ocr_carea" id="block_${pNum}_${++blockNumber}" title="bbox ${bb.x0} ${bb.y0} ${bb.x1} ${bb.y1}">`);
+      for (const paragraph of block.paragraphs) {
+        const pb = groupBox(groupScratch, paragraph.group, paragraph.extent);
+        const parTag = languageTag(paragraph.group?.language) ?? pageTag;
+        const lang = parTag === undefined ? '' : ` lang="${parTag}"`;
+        out.push(`      <p class="ocr_par" id="par_${pNum}_${++parNumber}"${lang} title="bbox ${pb.x0} ${pb.y0} ${pb.x1} ${pb.y1}">`);
+        for (const line of paragraph.lines) {
+          lineNumber++;
+          const lb = fillBox(scratch, line.bbox, 'a line box');
+          out.push(`        <span class="ocr_line" id="line_${pNum}_${lineNumber}" title="${hocrLineTitle(lb, line)}">`);
+          writeHocrWords(out, line, pNum, lineNumber, scratch);
+          out.push('        </span>');
         }
-
-        lines.push('        </span>');
-        lines.push('      </p>');
-        lines.push('    </div>');
-      });
+        out.push('      </p>');
+      }
+      out.push('    </div>');
     }
-
-    lines.push('  </div>');
+    out.push('  </div>');
   }
 
-  lines.push('</body>');
-  lines.push('</html>');
-  lines.push('');
+  out.push('</body>', '</html>', '');
+  finishExport();
+  return out.join('\n');
+}
 
-  return lines.join('\n');
+function altoBaselineAttribute(line: OcrLineBlock): string {
+  const baseline = line.baseline;
+  if (!baseline || baseline.x1 <= baseline.x0) return '';
+  const points = [baseline.x0, baseline.y0, baseline.x1, baseline.y1].map((v) => wholeNumber(v, 'a baseline'));
+  return ` BASELINE="${points[0]},${points[1]} ${points[2]},${points[3]}"`;
+}
+
+function writeAltoLine(
+  out: string[],
+  line: OcrLineBlock,
+  pageNumber: number,
+  lineNumber: number,
+  indent: string,
+  scratch: Box,
+  nextScratch: Box
+): void {
+  const lb = fillBox(scratch, line.bbox, 'a line box');
+  out.push(
+    `${indent}<TextLine ID="TL_${pageNumber}_${lineNumber}" HPOS="${lb.x0}" VPOS="${lb.y0}" WIDTH="${lb.x1 - lb.x0}" HEIGHT="${lb.y1 - lb.y0}"${altoBaselineAttribute(line)}>`
+  );
+  const words = wordsOf(line, pageNumber);
+  const wordIndent = `${indent}  `;
+  for (let wIdx = 0; wIdx < words.length; wIdx++) {
+    const w = words[wIdx];
+    const wb = fillBox(scratch, w.bbox, 'a word box');
+    const percent = confidencePercent(w.confidence);
+    const wc = percent === null ? '' : ` WC="${(percent / PERCENT_SCALE).toFixed(ALTO_CONFIDENCE_DECIMALS)}"`;
+    out.push(
+      `${wordIndent}<String CONTENT="${escapeAttribute(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.x1 - wb.x0}" HEIGHT="${wb.y1 - wb.y0}"${wc} />`
+    );
+    // Standard <SP> whitespace delimiter between consecutive words in a line
+    if (wIdx < words.length - 1) {
+      const spX = wb.x1;
+      const spW = Math.max(1, fillBox(nextScratch, words[wIdx + 1].bbox, 'a word box').x0 - spX);
+      out.push(`${wordIndent}<SP HPOS="${spX}" VPOS="${wb.y0}" WIDTH="${spW}" />`);
+    }
+  }
+  out.push(`${indent}</TextLine>`);
+}
+
+function altoBoxAttributes(box: Box): string {
+  return `HPOS="${box.x0}" VPOS="${box.y0}" WIDTH="${box.x1 - box.x0}" HEIGHT="${box.y1 - box.y0}"`;
+}
+
+/** Boxes reused across lines so a large page allocates none per line. */
+interface AltoScratch {
+  line: Box;
+  nextLine: Box;
+  group: Box;
+}
+
+function altoHeader(unit: string, options: AltoExportOptions): string[] {
+  const out: string[] = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"',
+    '      xmlns:xlink="http://www.w3.org/1999/xlink"',
+    '      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+    `      xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-4.xsd"`,
+    `      SCHEMAVERSION="${ALTO_SCHEMA_VERSION}">`,
+    '  <Description>',
+    `    <MeasurementUnit>${unit}</MeasurementUnit>`,
+  ];
+  if (options.filename) {
+    out.push(
+      '    <sourceImageInformation>',
+      `      <fileName>${escapeXml(options.filename)}</fileName>`,
+      '    </sourceImageInformation>'
+    );
+  }
+  out.push(
+    '    <Processing ID="PROC_1">',
+    '      <processingCategory>contentGeneration</processingCategory>',
+    '      <processingSoftware>',
+    `        <softwareName>${OCR_SOFTWARE_NAME}</softwareName>`,
+    '      </processingSoftware>',
+    '    </Processing>',
+    '  </Description>',
+    '  <Layout>'
+  );
+  return out;
+}
+
+/** Running numbers of the blocks and lines of one page. */
+interface AltoCounters {
+  composedBlock: number;
+  textBlock: number;
+  line: number;
+}
+
+function writeAltoBlock(out: string[], block: BlockPlan, page: OcrPageResult, counters: AltoCounters, scratch: AltoScratch): void {
+  const pNum = page.pageNumber;
+  const indent = block.structured ? '          ' : '        ';
+  if (block.structured) {
+    const cb = groupBox(scratch.group, block.group, block.extent);
+    out.push(`        <ComposedBlock ID="CB_${pNum}_${++counters.composedBlock}" ${altoBoxAttributes(cb)}>`);
+  }
+  for (const paragraph of block.paragraphs) {
+    const pb = groupBox(scratch.group, paragraph.group, paragraph.extent);
+    const tag = languageTag(paragraph.group?.language) ?? languageTag(page.language);
+    const lang = tag === undefined ? '' : ` LANG="${tag}"`;
+    out.push(`${indent}<TextBlock ID="TB_${pNum}_${++counters.textBlock}" ${altoBoxAttributes(pb)}${lang}>`);
+    for (const line of paragraph.lines) {
+      writeAltoLine(out, line, pNum, ++counters.line, `${indent}  `, scratch.line, scratch.nextLine);
+    }
+    out.push(`${indent}</TextBlock>`);
+  }
+  if (block.structured) out.push('        </ComposedBlock>');
+}
+
+function writeAltoPage(out: string[], page: OcrPageResult, scratch: AltoScratch): void {
+  const pNum = page.pageNumber;
+  const { width, height } = pageDimensions(page);
+  out.push(
+    `    <Page ID="PAGE_${pNum}" PHYSICAL_IMG_NR="${pNum}" WIDTH="${width}" HEIGHT="${height}">`,
+    `      <PrintSpace HPOS="0" VPOS="0" WIDTH="${width}" HEIGHT="${height}">`
+  );
+  const counters: AltoCounters = { composedBlock: 0, textBlock: 0, line: 0 };
+  for (const block of planLayout(page.lineBlocks || [], scratch.line)) {
+    writeAltoBlock(out, block, page, counters, scratch);
+  }
+  out.push('      </PrintSpace>', '    </Page>');
 }
 
 /**
- * Exports OCR results to ALTO 4.x XML (Library of Congress standard) format.
- * Generates valid <alto>, <Description>, <Layout>, <Page>, <PrintSpace>, <TextBlock>,
- * <TextLine>, and <String> tags with HPOS, VPOS, WIDTH, HEIGHT, and WC attributes.
+ * Exports OCR results to ALTO 4.4 XML (Library of Congress). Pages are numbered by position, and text
+ * XML 1.0 cannot carry is dropped as for hOCR (counted in a debug log). A recognizer block is a ComposedBlock,
+ * a paragraph a TextBlock, and every line a TextLine with its BASELINE polyline when known; words are
+ * String elements with WC confidence between 0 and 1 separated by SP.
+ * @throws OcrMarkupError when `measurementUnit` is not `pixel` (the coordinates are pixels) or a
+ * coordinate is not finite.
  */
 export function exportAlto(
   ocrInput: OcrResult | OcrResult[],
   options: AltoExportOptions = {}
 ): string {
+  const unit = options.measurementUnit || ALTO_PIXEL_UNIT;
+  if (unit !== ALTO_PIXEL_UNIT) {
+    throw new OcrMarkupError(`ALTO export writes pixel coordinates; measurement unit '${unit}' is not supported.`);
+  }
+  startExport();
   const pages = normalizePages(ocrInput);
-  const fileName = options.filename || 'document.pdf';
-  const unit = options.measurementUnit || 'pixel';
+  assertWordGeometry(pages);
 
-  const lines: string[] = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"',
-    '      xmlns:xlink="http://www.w3.org/1999/xlink"',
-    '      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
-    '      xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-2.xsd">',
-    '  <Description>',
-    `    <MeasurementUnit>${escapeXml(unit)}</MeasurementUnit>`,
-    '    <sourceImageInformation>',
-    `      <fileName>${escapeXml(fileName)}</fileName>`,
-    '    </sourceImageInformation>',
-    '    <OCRProcessing ID="OCR_0">',
-    '      <ocrProcessingStep>',
-    '        <processingSoftware>',
-    '          <softwareName>easyconvert</softwareName>',
-    '          <softwareVersion>0.1.0</softwareVersion>',
-    '        </processingSoftware>',
-    '      </ocrProcessingStep>',
-    '    </OCRProcessing>',
-    '  </Description>',
-    '  <Layout>',
-  ];
-
-  for (const page of pages) {
-    const pNum = page.pageNumber;
-    const pWidth = Math.round(page.width);
-    const pHeight = Math.round(page.height);
-
-    lines.push(
-      `    <Page ID="PAGE_${pNum}" PHYSICAL_IMG_NR="${pNum}" WIDTH="${pWidth}" HEIGHT="${pHeight}">`
-    );
-    lines.push(
-      `      <PrintSpace HPOS="0" VPOS="0" WIDTH="${pWidth}" HEIGHT="${pHeight}">`
-    );
-
-    const blocks = page.lineBlocks || [];
-    blocks.forEach((block, bIdx) => {
-      const bb = roundBBox(block.bbox);
-
-      lines.push(
-        `        <TextBlock ID="TB_${pNum}_${bIdx + 1}" HPOS="${bb.x0}" VPOS="${bb.y0}" WIDTH="${bb.w}" HEIGHT="${bb.h}">`
-      );
-      lines.push(
-        `          <TextLine ID="TL_${pNum}_${bIdx + 1}" HPOS="${bb.x0}" VPOS="${bb.y0}" WIDTH="${bb.w}" HEIGHT="${bb.h}">`
-      );
-
-      const words = ensureWordsForBlock(block, page.confidence);
-      for (let wIdx = 0; wIdx < words.length; wIdx++) {
-        const w = words[wIdx];
-        const wb = roundBBox(w.bbox);
-        const wc = Math.max(0, Math.min(1.0, computeWordConfidence(w.confidence, page.confidence)));
-
-        lines.push(
-          `            <String CONTENT="${escapeXml(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.w}" HEIGHT="${wb.h}" WC="${wc.toFixed(2)}" />`
-        );
-
-        // Add standard <SP> whitespace delimiter between consecutive words in a line
-        if (wIdx < words.length - 1) {
-          const nextW = words[wIdx + 1];
-          const spX = wb.x1;
-          const spW = Math.max(1, Math.round(nextW.bbox.x - spX));
-          lines.push(
-            `            <SP HPOS="${spX}" VPOS="${wb.y0}" WIDTH="${spW}" />`
-          );
-        }
-      }
-
-      lines.push('          </TextLine>');
-      lines.push('        </TextBlock>');
-    });
-
-    lines.push('      </PrintSpace>');
-    lines.push('    </Page>');
-  }
-
-  lines.push('  </Layout>');
-  lines.push('</alto>');
-  lines.push('');
-
-  return lines.join('\n');
+  const out = altoHeader(unit, options);
+  const scratch: AltoScratch = { line: newBox(), nextLine: newBox(), group: newBox() };
+  for (const page of pages) writeAltoPage(out, page, scratch);
+  out.push('  </Layout>', '</alto>', '');
+  finishExport();
+  return out.join('\n');
 }
-
-/**
- * Unescapes XML / XHTML entities and numeric character references.
- */
-export function unescapeXml(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)));
-}
-
-/**
- * Robustly extracts an attribute value regardless of whether double or single quotes are used.
- */
-function extractAttribute(tagAttrs: string, attrName: string): string {
-  const regex = new RegExp(`${attrName}=(?:"([^"]*)"|'([^']*)')`, 'i');
-  const match = tagAttrs.match(regex);
-  return match ? (match[1] ?? match[2] ?? '') : '';
-}
-
-function buildOcrPage(
-  pageNumber: number,
-  width: number,
-  height: number,
-  lineBlocks: OcrLineBlock[]
-): OcrPageResult {
-  const pageLines = lineBlocks.map((b) => b.text).filter(Boolean);
-  const pageText = pageLines.join('\n');
-  let pageWordConfSum = 0;
-  let pageWordCount = 0;
-  for (const b of lineBlocks) {
-    for (const w of b.words) {
-      if (typeof w.confidence === 'number') {
-        pageWordConfSum += w.confidence;
-        pageWordCount++;
-      }
-    }
-  }
-
-  return {
-    pageNumber,
-    width,
-    height,
-    text: pageText,
-    confidence: pageWordCount > 0 ? pageWordConfSum / pageWordCount / 100 : null,
-    lineBlocks,
-    lines: pageLines,
-  };
-}
-
-function assembleParsedOcrResult(pages: OcrPageResult[]): OcrResult {
-  const allTexts = pages.map((p) => p.text).filter(Boolean);
-  const allLines = pages.flatMap((p) => p.lines || []);
-  let totalWordConf = 0;
-  let totalWordCount = 0;
-  for (const p of pages) {
-    for (const b of p.lineBlocks) {
-      for (const w of b.words) {
-        if (typeof w.confidence === 'number') {
-          totalWordConf += w.confidence;
-          totalWordCount++;
-        }
-      }
-    }
-  }
-
-  const firstPage = pages[0];
-  return {
-    text: allTexts.join('\n\n').trim(),
-    confidence: totalWordCount > 0 ? totalWordConf / totalWordCount / 100 : (firstPage?.confidence ?? null),
-    wordCount: totalWordCount,
-    lines: allLines,
-    lineBlocks: pages.flatMap((p) => p.lineBlocks),
-    imageWidth: firstPage?.width || 612,
-    imageHeight: firstPage?.height || 792,
-    pages,
-  };
-}
-
-function buildFallbackOcrResult(cleanText: string, words: string[]): OcrResult {
-  const lines = cleanText.split('\n').filter(Boolean);
-  const wordCount = words.length > 0 ? words.length : cleanText.split(/\s+/).filter(Boolean).length;
-  return {
-    text: cleanText,
-    confidence: 0.9,
-    wordCount,
-    lines,
-    lineBlocks: [],
-    imageWidth: 612,
-    imageHeight: 792,
-    pages: [
-      {
-        pageNumber: 1,
-        width: 612,
-        height: 792,
-        text: cleanText,
-        confidence: 0.9,
-        lineBlocks: [],
-        lines,
-      },
-    ],
-  };
-}
-
-function parseHocrWord(wordMatch: RegExpExecArray, lx0: number, ly0: number): OcrWord | null {
-  const wordAttrs = wordMatch[1] || '';
-  const wordTitle = extractAttribute(wordAttrs, 'title');
-  const rawWordText = unescapeXml((wordMatch[2] || '').replace(/<[^>]+>/g, '')).trim();
-  if (!rawWordText) return null;
-
-  const wBboxMatch = wordTitle.match(/bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
-  const wx0 = wBboxMatch ? Number.parseInt(wBboxMatch[1], 10) : lx0;
-  const wy0 = wBboxMatch ? Number.parseInt(wBboxMatch[2], 10) : ly0;
-  const wx1 = wBboxMatch ? Number.parseInt(wBboxMatch[3], 10) : wx0 + 40;
-  const wy1 = wBboxMatch ? Number.parseInt(wBboxMatch[4], 10) : wy0 + 20;
-
-  const wconfMatch = wordTitle.match(/x_wconf\s+(\d+)/i);
-  const wconf = wconfMatch ? Number.parseInt(wconfMatch[1], 10) : 90;
-
-  return {
-    text: rawWordText,
-    confidence: wconf,
-    bbox: {
-      x: wx0,
-      y: wy0,
-      width: Math.max(1, wx1 - wx0),
-      height: Math.max(1, wy1 - wy0),
-    },
-  };
-}
-
-function parseHocrLine(
-  curLine: { attrs: string; start: number; contentStart: number },
-  nextLineStart: number,
-  pageBody: string
-): OcrLineBlock | null {
-  const lineAttrs = curLine.attrs;
-  const lineContent = pageBody.substring(curLine.contentStart, nextLineStart);
-  const lineTitle = extractAttribute(lineAttrs, 'title');
-
-  const lBboxMatch = lineTitle.match(/bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
-  const lx0 = lBboxMatch ? Number.parseInt(lBboxMatch[1], 10) : 40;
-  const ly0 = lBboxMatch ? Number.parseInt(lBboxMatch[2], 10) : 40;
-  const lx1 = lBboxMatch ? Number.parseInt(lBboxMatch[3], 10) : lx0 + 100;
-  const ly1 = lBboxMatch ? Number.parseInt(lBboxMatch[4], 10) : ly0 + 20;
-
-  const words: OcrWord[] = [];
-  const wordRegex = /<span\b([^>]*\bclass=["'][^"']*ocrx_word[^"']*["'][^>]*)>(.*?)<\/span>/gis;
-  let wordMatch: RegExpExecArray | null;
-
-  while ((wordMatch = wordRegex.exec(lineContent)) !== null) {
-    const word = parseHocrWord(wordMatch, lx0, ly0);
-    if (word) words.push(word);
-  }
-
-  const lineText = words.map((w) => w.text).join(' ');
-  if (!lineText && words.length === 0) return null;
-
-  return {
-    text: lineText,
-    bbox: {
-      x: lx0,
-      y: ly0,
-      width: Math.max(1, lx1 - lx0),
-      height: Math.max(1, ly1 - ly0),
-    },
-    words,
-  };
-}
-
-function parseHocrPage(
-  cur: { attrs: string; start: number; contentStart: number },
-  nextStart: number,
-  hocrContent: string,
-  pageIdx: number
-): OcrPageResult {
-  const pageAttrs = cur.attrs;
-  const pageBody = hocrContent.substring(cur.contentStart, nextStart);
-  const pageTitle = extractAttribute(pageAttrs, 'title');
-
-  const pBboxMatch = pageTitle.match(/bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
-  const pWidth = pBboxMatch ? Math.max(1, Number.parseInt(pBboxMatch[3], 10) - Number.parseInt(pBboxMatch[1], 10)) : 612;
-  const pHeight = pBboxMatch ? Math.max(1, Number.parseInt(pBboxMatch[4], 10) - Number.parseInt(pBboxMatch[2], 10)) : 792;
-  const pNumMatch = pageTitle.match(/ppageno\s+(\d+)/i);
-  const pageNumber = pNumMatch ? Number.parseInt(pNumMatch[1], 10) : pageIdx + 1;
-
-  const lineBlocks: OcrLineBlock[] = [];
-  const lineOpenRegex = /<span\b([^>]*\bclass=["'][^"']*ocr_line[^"']*["'][^>]*)>/gi;
-  const lineMatches: { attrs: string; start: number; contentStart: number }[] = [];
-  let lm: RegExpExecArray | null;
-
-  while ((lm = lineOpenRegex.exec(pageBody)) !== null) {
-    lineMatches.push({
-      attrs: lm[1],
-      start: lm.index,
-      contentStart: lm.index + lm[0].length,
-    });
-  }
-
-  for (let lIdx = 0; lIdx < lineMatches.length; lIdx++) {
-    const nextLineStart = lIdx + 1 < lineMatches.length ? lineMatches[lIdx + 1].start : pageBody.length;
-    const block = parseHocrLine(lineMatches[lIdx], nextLineStart, pageBody);
-    if (block) lineBlocks.push(block);
-  }
-
-  return buildOcrPage(pageNumber, pWidth, pHeight, lineBlocks);
-}
-
-/**
- * Parses an hOCR 1.2 XHTML document into a structured OcrResult.
- */
-export function parseHocr(hocrContent: string): OcrResult {
-  if (!hocrContent || typeof hocrContent !== 'string') {
-    return {
-      text: '',
-      confidence: null,
-      wordCount: 0,
-      lines: [],
-      lineBlocks: [],
-      imageWidth: 612,
-      imageHeight: 792,
-      pages: [],
-    };
-  }
-
-  const pages: OcrPageResult[] = [];
-  const pageOpenRegex = /<div\b([^>]*\bclass=["'][^"']*ocr_page[^"']*["'][^>]*)>/gi;
-  const pageMatches: { attrs: string; start: number; contentStart: number }[] = [];
-  let m: RegExpExecArray | null;
-
-  while ((m = pageOpenRegex.exec(hocrContent)) !== null) {
-    pageMatches.push({
-      attrs: m[1],
-      start: m.index,
-      contentStart: m.index + m[0].length,
-    });
-  }
-
-  for (let pageIdx = 0; pageIdx < pageMatches.length; pageIdx++) {
-    const cur = pageMatches[pageIdx];
-    const nextStart = pageIdx + 1 < pageMatches.length ? pageMatches[pageIdx + 1].start : hocrContent.length;
-    pages.push(parseHocrPage(cur, nextStart, hocrContent, pageIdx));
-  }
-
-  if (pages.length === 0) {
-    const wordRegex = /<span\b[^>]*class=["'][^"']*ocrx_word[^"']*["'][^>]*>(.*?)<\/span>/gis;
-    const words: string[] = [];
-    let wm: RegExpExecArray | null;
-    while ((wm = wordRegex.exec(hocrContent)) !== null) {
-      const t = unescapeXml((wm[1] || '').replace(/<[^>]+>/g, '')).trim();
-      if (t) words.push(t);
-    }
-    const cleanText =
-      words.length > 0
-        ? words.join(' ')
-        : unescapeXml(hocrContent.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
-    if (cleanText) {
-      return buildFallbackOcrResult(cleanText, words);
-    }
-  }
-
-  return assembleParsedOcrResult(pages);
-}
-
-function parseAltoString(strAttrs: string, lx: number, ly: number, lh: number): OcrWord | null {
-  const rawContent = unescapeXml(extractAttribute(strAttrs, 'CONTENT')).trim();
-  if (!rawContent) return null;
-
-  const shpos = extractAttribute(strAttrs, 'HPOS');
-  const svpos = extractAttribute(strAttrs, 'VPOS');
-  const swidth = extractAttribute(strAttrs, 'WIDTH');
-  const sheight = extractAttribute(strAttrs, 'HEIGHT');
-  const wcMatch = extractAttribute(strAttrs, 'WC');
-
-  const sx = shpos ? Number.parseFloat(shpos) : lx;
-  const sy = svpos ? Number.parseFloat(svpos) : ly;
-  const sw = swidth ? Number.parseFloat(swidth) : 40;
-  const sh = sheight ? Number.parseFloat(sheight) : lh;
-  const wcVal = wcMatch ? Number.parseFloat(wcMatch) : 0.9;
-  const confidence = wcVal > 1.0 ? wcVal : wcVal * 100;
-
-  return {
-    text: rawContent,
-    confidence,
-    bbox: {
-      x: sx,
-      y: sy,
-      width: Math.max(1, sw),
-      height: Math.max(1, sh),
-    },
-  };
-}
-
-function parseAltoLine(lineMatch: RegExpExecArray): OcrLineBlock | null {
-  const lineAttrs = lineMatch[1] || '';
-  const lineBody = lineMatch[2] || '';
-
-  const lhpos = lineAttrs.match(/HPOS=["']?(\d+(?:\.\d+)?)["']?/i);
-  const lvpos = lineAttrs.match(/VPOS=["']?(\d+(?:\.\d+)?)["']?/i);
-  const lwidth = lineAttrs.match(/WIDTH=["']?(\d+(?:\.\d+)?)["']?/i);
-  const lheight = lineAttrs.match(/HEIGHT=["']?(\d+(?:\.\d+)?)["']?/i);
-
-  const lx = lhpos ? Number.parseFloat(lhpos[1]) : 40;
-  const ly = lvpos ? Number.parseFloat(lvpos[1]) : 40;
-  const lw = lwidth ? Number.parseFloat(lwidth[1]) : 200;
-  const lh = lheight ? Number.parseFloat(lheight[1]) : 20;
-
-  const words: OcrWord[] = [];
-  const stringRegex = /<String\b([^>]*)\/?>/gis;
-  let strMatch: RegExpExecArray | null;
-
-  while ((strMatch = stringRegex.exec(lineBody)) !== null) {
-    const word = parseAltoString(strMatch[1] || '', lx, ly, lh);
-    if (word) words.push(word);
-  }
-
-  const lineText = words.map((w) => w.text).join(' ');
-  if (!lineText && words.length === 0) return null;
-
-  return {
-    text: lineText,
-    bbox: {
-      x: lx,
-      y: ly,
-      width: Math.max(1, lw),
-      height: Math.max(1, lh),
-    },
-    words,
-  };
-}
-
-function parseAltoPage(pageMatch: RegExpExecArray, pageIdx: number): OcrPageResult {
-  const pageAttrs = pageMatch[1] || '';
-  const pageBody = pageMatch[2] || '';
-
-  const widthMatch = pageAttrs.match(/WIDTH=["']?(\d+(?:\.\d+)?)["']?/i);
-  const heightMatch = pageAttrs.match(/HEIGHT=["']?(\d+(?:\.\d+)?)["']?/i);
-  const nrMatch = pageAttrs.match(/PHYSICAL_IMG_NR=["']?(\d+)["']?/i);
-
-  const pWidth = widthMatch ? Math.round(Number.parseFloat(widthMatch[1])) : 612;
-  const pHeight = heightMatch ? Math.round(Number.parseFloat(heightMatch[1])) : 792;
-  const pageNumber = nrMatch ? Number.parseInt(nrMatch[1], 10) : pageIdx;
-
-  const lineBlocks: OcrLineBlock[] = [];
-  const lineRegex = /<TextLine\b([^>]*)>(.*?)<\/TextLine>/gis;
-  let lineMatch: RegExpExecArray | null;
-
-  while ((lineMatch = lineRegex.exec(pageBody)) !== null) {
-    const block = parseAltoLine(lineMatch);
-    if (block) lineBlocks.push(block);
-  }
-
-  return buildOcrPage(pageNumber, pWidth, pHeight, lineBlocks);
-}
-
-/**
- * Parses an ALTO 4.x XML (Library of Congress) document into a structured OcrResult.
- */
-export function parseAlto(altoXml: string): OcrResult {
-  if (!altoXml || typeof altoXml !== 'string') {
-    return {
-      text: '',
-      confidence: null,
-      wordCount: 0,
-      lines: [],
-      lineBlocks: [],
-      imageWidth: 612,
-      imageHeight: 792,
-      pages: [],
-    };
-  }
-
-  const pages: OcrPageResult[] = [];
-  const pageRegex = /<Page\b([^>]*)>(.*?)<\/Page>/gis;
-  let pageMatch: RegExpExecArray | null;
-  let pageIdx = 0;
-
-  while ((pageMatch = pageRegex.exec(altoXml)) !== null) {
-    pageIdx++;
-    pages.push(parseAltoPage(pageMatch, pageIdx));
-  }
-
-  if (pages.length === 0) {
-    const stringRegex = /<String\b[^>]*CONTENT=["']([^"']*)["'][^>]*\/?>/gis;
-    const words: string[] = [];
-    let sm: RegExpExecArray | null;
-    while ((sm = stringRegex.exec(altoXml)) !== null) {
-      const t = unescapeXml(sm[1]).trim();
-      if (t) words.push(t);
-    }
-    const cleanText = words.join(' ');
-    if (cleanText) {
-      return buildFallbackOcrResult(cleanText, words);
-    }
-  }
-
-  return assembleParsedOcrResult(pages);
-}
-
