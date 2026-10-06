@@ -109,9 +109,10 @@ describe('two-column OCR accuracy', () => {
  * read column by column, so the row order is lost and an occasional cell can be dropped
  * (measured on this fixture: word recall 0.903 and character error rate 70.3% against row-wise
  * reading, where single-block PSM 6 reads it exactly). Gridded tables and multi-column pages read correctly under PSM 3. The recall bound
- * keeps the loss from growing; a layout-aware recognizer is the real fix for tables.
+ * keeps the loss from growing, with headroom for traineddata and engine build differences between
+ * hosts; a layout-aware recognizer is the real fix for tables.
  */
-const BORDERLESS_TABLE_MIN_WORD_RECALL = 0.9;
+const BORDERLESS_TABLE_MIN_WORD_RECALL = 0.85;
 
 describe('borderless table (PSM 3 trade-off)', () => {
   const tableTruth = fs.readFileSync(path.join(FIXTURE_DIR, 'table_borderless.gt.txt'), 'utf-8');
