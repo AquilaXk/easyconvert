@@ -37,7 +37,9 @@ describe('PDF/A validation problem', () => {
   });
 
   it.each(CONVERT_PATHS)('names veraPDF in the 503 of %s', (route) => {
-    expect(spec.paths[route].post.responses['503'].description).toContain('veraPDF');
+    expect(spec.paths[route].post.responses['503'].description).toMatch(
+      / A PDF\/A request also needs veraPDF, which validates every PDF\/A output\.$/
+    );
   });
 });
 
