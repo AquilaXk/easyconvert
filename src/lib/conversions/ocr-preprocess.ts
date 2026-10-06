@@ -112,8 +112,9 @@ async function analysisCopy(page: GrayPage): Promise<GrayPage> {
   if (longest <= OCR_ANALYSIS_MAX_SIDE_PX) return page;
   return toGrayPage(
     fromGray(page).resize({
-      width: Math.round((page.width * OCR_ANALYSIS_MAX_SIDE_PX) / longest),
-      height: Math.round((page.height * OCR_ANALYSIS_MAX_SIDE_PX) / longest),
+      // A side far shorter than the other would round to 0; keep at least one pixel.
+      width: Math.max(1, Math.round((page.width * OCR_ANALYSIS_MAX_SIDE_PX) / longest)),
+      height: Math.max(1, Math.round((page.height * OCR_ANALYSIS_MAX_SIDE_PX) / longest)),
       fit: 'fill',
     })
   );

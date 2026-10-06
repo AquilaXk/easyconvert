@@ -191,9 +191,11 @@ describe('English degradation set', () => {
 /**
  * The gate for the preparation steps: a step stays enabled only if the pages it targets read
  * better with it than without it, and the pages with every step beat the unprepared pages.
- * Pages are the shaded, 72 dpi and skewed variants of two English, one Korean and two Japanese pages.
+ * Pages are the shaded, 72 dpi and skewed variants of two English and two Japanese pages. The Korean
+ * page is left out: its reading swings between 0 and 100% CER on small input changes (see above), so
+ * it would decide the comparison by chance; its own CER bounds still apply.
  */
-const GATE_PAGES = ['en_a', 'en_b', 'ko_a', 'ja_a', 'ja_b'];
+const GATE_PAGES = ['en_a', 'en_b', 'ja_a', 'ja_b'];
 const GATE_VARIANTS = ['shade', 'dpi72', 'skew3'];
 
 async function gateMean(steps: OcrPreprocessSteps): Promise<number> {

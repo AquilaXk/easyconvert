@@ -34,6 +34,10 @@ const PAPER_LEVEL = 235;
 /** Line heights the recognizer reads best, from the issue. */
 const MIN_LINE_HEIGHT_PX = 30;
 const MAX_LINE_HEIGHT_PX = 40;
+/** tests/fixtures/ocr/generate_golden.py: FONT_PT 11 at RENDER_DPI 300 gives round(11 * 300 / 72) px. */
+const GENERATOR_EM_PX_AT_300_DPI = 46;
+const GENERATOR_RENDER_DPI = 300;
+const GENERATOR_LOW_DPI = 72;
 
 /** Deterministic generator so every run sees the same pixels. */
 function mulberry32(seed: number): () => number {
@@ -555,10 +559,40 @@ describe('preprocessOcrImage', () => {
     const { data, width, height } = await grayPixels(result.image);
     expect([width, height]).toEqual([outputWidth, outputHeight]);
     expect(new Set(data)).toEqual(new Set([SAUVOLA_INK, SAUVOLA_PAPER]));
+    // Independent of the estimator: the generator draws 11 pt text at 300 dpi (46 px em) and the
+    // 72 dpi variant scales it by 72/300, so the em size after the rescale is known.
+    const emAt72Dpi = (GENERATOR_EM_PX_AT_300_DPI * GENERATOR_LOW_DPI) / GENERATOR_RENDER_DPI;
+    const emAfterRescale = emAt72Dpi * (outputHeight / sourceHeight);
+    expect(emAfterRescale).toBeGreaterThanOrEqual(MIN_LINE_HEIGHT_PX);
+    expect(emAfterRescale).toBeLessThanOrEqual(MAX_LINE_HEIGHT_PX);
     const outputLine = estimateLineHeight(new Uint8Array(data), width, height) as number;
     expect(outputLine).toBeGreaterThanOrEqual(MIN_LINE_HEIGHT_PX);
     expect(outputLine).toBeLessThanOrEqual(MAX_LINE_HEIGHT_PX);
   });
+
+  it('prepares images far thinner than the analysis copy can shrink to (5000x1 and 1x5000)', async () => {
+    for (const [width, height] of [[5000, 1], [1, 5000]]) {
+      const thin = await sharp({ create: { width, height, channels: 3, background: '#ffffff' } }).png().toBuffer();
+      const result = await preprocessOcrImage(thin);
+      expect([result.geometry.sourceWidth, result.geometry.sourceHeight]).toEqual([width, height]);
+      const meta = await sharp(result.image).metadata();
+      expect([meta.width, meta.height]).toEqual([result.geometry.outputWidth, result.geometry.outputHeight]);
+    }
+  });
+
+  it('only re-encodes a page above the pixel bound, with identity geometry', async () => {
+    const width = 10_000;
+    const height = Math.floor(OCR_PREPROCESS_MAX_PIXELS / width) + 1;
+    expect(width * height).toBeGreaterThan(OCR_PREPROCESS_MAX_PIXELS);
+    const page = await sharp({ create: { width, height, channels: 3, background: '#ffffff' } })
+      .png({ compressionLevel: 1 })
+      .toBuffer();
+    const result = await preprocessOcrImage(page);
+    expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: false });
+    expect(result.geometry).toEqual(identityGeometry(width, height));
+    const reencoded = await sharp(page).rotate().png().toBuffer();
+    expect(Buffer.compare(result.image, reencoded)).toBe(0);
+  }, 60_000);
 
   it('records no resolution in the prepared image: a 300 dpi hint made the Korean pages read worse', async () => {
     for (const name of ['en_a__dpi72', 'en_a__shade', 'en_a__skew3']) {
