@@ -14,6 +14,7 @@ import { storageProvider as ociStorage } from '../lib/storage';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { probeNativeEngines } from './engines';
+import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 
 export interface WorkerLifecycleConfig {
@@ -169,6 +170,10 @@ export function resolveSubscribedQueues(): IQueueEngine<ConversionJobData, Conve
     ? selected
     : (allConversionQueues as IQueueEngine<ConversionJobData, ConversionJobResult>[]);
 }
+
+// Fail closed before any job is popped: without a sealing key the worker could not open the
+// secrets of the jobs it would take, so it refuses to start (SealingKeyConfigError).
+assertSealingKeyConfigured();
 
 const config = getWorkerLifecycleConfig();
 const subscribedQueues = resolveSubscribedQueues();

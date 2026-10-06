@@ -107,7 +107,7 @@ export function middleware(request: NextRequest) {
   const cfIp = request.headers.get('cf-connecting-ip');
   const realIp = request.headers.get('x-real-ip');
   const forwardedFor = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-  const clientIp = cfIp || realIp || forwardedFor || request.ip || '127.0.0.1';
+  const clientIp = cfIp || realIp || forwardedFor || '127.0.0.1';
 
   // 1. Edge-level IP Rate Limiter
   const edgeRate = checkEdgeIpRateLimit(clientIp);

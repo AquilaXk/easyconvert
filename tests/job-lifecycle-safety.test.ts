@@ -373,7 +373,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
 
       const res = await getLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       const events = await readSseEvents(res);
       expect(events).toHaveLength(1);
@@ -544,7 +544,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
           method: 'DELETE',
           headers: { Cookie: `easyconvert_session=${createSessionToken(redisUserStore.sanitizeUser(user))}` },
         }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -583,7 +583,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
 
       const res = await deleteLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -595,7 +595,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
     it('returns 404 for an unknown job id', async () => {
       const res = await deleteLegacyJob(
         new NextRequest('https://easyconvert.app/api/queue/jobs/job_unknown', { method: 'DELETE' }),
-        { params: { id: 'job_unknown' } }
+        { params: Promise.resolve({ id: 'job_unknown' }) }
       );
       expect(res.status).toBe(404);
     });
@@ -604,13 +604,13 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       const job = await conversionQueue.add('convert', csvJobData());
       const res = await getLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       const eventsPromise = readSseEvents(res);
 
       const cancelRes = await deleteLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(cancelRes.status).toBe(200);
 

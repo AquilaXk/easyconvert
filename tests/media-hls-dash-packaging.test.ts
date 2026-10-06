@@ -19,6 +19,9 @@ import {
 import { InvalidMediaOptionError, ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 
+/** Real x264/AAC encodes of the ladder: about 3.5 s of ffmpeg time on an idle machine, over two thirds of the 5 s default. */
+const ENCODE_TIMEOUT_MS = 120_000;
+
 describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.package)', () => {
   describe('1. Packaging Options Validation & Fail-Closed Gate', () => {
     it('fails closed when packaging options or format is missing', () => {
@@ -410,7 +413,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       } finally {
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
       }
-    });
+    }, ENCODE_TIMEOUT_MS);
 
     oracleTest('packages authentic video into MPEG-DASH multi-bitrate ZIP bundle and verifies XML MPD manifest & init/media chunks', ['ffmpeg', 'ffprobe'], async () => {
       const ffmpeg = getFfmpegPath() || 'ffmpeg';
@@ -487,6 +490,6 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       } finally {
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
       }
-    });
+    }, ENCODE_TIMEOUT_MS);
   });
 });

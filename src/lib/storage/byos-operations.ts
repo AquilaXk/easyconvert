@@ -12,6 +12,7 @@ import {
   type IStorageAdapter,
 } from './adapters/adapter-interface';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
+import { redactUrl } from '../security/redact';
 import type { ObjectReadStream, StoredObjectMetadata } from './object-storage';
 
 export type ImportOperationType =
@@ -285,7 +286,7 @@ async function uploadToUrl(
   }
 
   return {
-    destination: destination.url,
+    destination: redactUrl(destination.url),
     size: source.metadata.size,
     success: true,
   };

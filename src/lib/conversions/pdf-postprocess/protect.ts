@@ -99,8 +99,9 @@ export async function protectPdf(
         timeout: 30000,
       });
     } catch (err: any) {
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '');
-      throw new PdfPostprocessError(`PDF protection via qpdf failed: ${errMsg}`);
+      // The command line and stderr hold sandbox paths: log them here, keep them out of the response.
+      console.error('[protect] qpdf failed:', (err?.message || '') + (err?.stderr?.toString() || ''));
+      throw new PdfPostprocessError('PDF protection failed: qpdf could not encrypt the document.');
     }
 
     if (!fs.existsSync(outputPdf)) {
