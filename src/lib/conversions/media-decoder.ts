@@ -18,14 +18,27 @@
  */
 
 import { decodeAacLcFramePayload } from './media-encoder';
+import { ConversionFailedError } from '../types';
 
 export interface DecodedAudio {
   samples: Int16Array;
   sampleRate: number;
   channels: number;
+  /** Depth of `samples` (always 16). The source depth is `sourceBitsPerSample`. */
   bitsPerSample: number;
   duration: number;
+  /**
+   * Sample depth of the source stream when the decoder had to reduce it to 16-bit integers
+   * (lossless PCM and FLAC only). Absent for lossy sources, which decode to 16-bit natively.
+   */
+  sourceBitsPerSample?: number;
+  /** Sample representation of the source stream; set together with `sourceBitsPerSample`. */
+  sourceSampleFormat?: 'int' | 'float';
 }
+
+const UNSUPPORTED_AUDIO_MESSAGE = 'Unsupported audio format: decoder unavailable';
+const WAVE_FORMAT_PCM = 1;
+const WAVE_FORMAT_IEEE_FLOAT = 3;
 
 // ============================================================================
 // BitReader Helper for FLAC and MP3 Bitstream Parsing
@@ -139,7 +152,7 @@ function readExtendedFloat(buf: Buffer, offset: number): number {
  */
 export function decodeWav(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 12) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const magic = buffer.toString('ascii', 0, 4);
@@ -148,7 +161,7 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
   if (magic === 'FORM') {
     const formType = buffer.toString('ascii', 8, 12);
     if (formType !== 'AIFF' && formType !== 'AIFC') {
-      throw new Error('Unsupported audio format: decoder unavailable');
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
 
     let channels = 2;
@@ -176,12 +189,20 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
     }
 
     if (dataOffset < 0) {
-      throw new Error('Unsupported audio format: decoder unavailable');
+      throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
     }
 
-    const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, true, 1);
+    const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, true, WAVE_FORMAT_PCM);
     const duration = samples.length / (channels * sampleRate);
-    return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+    return {
+      samples,
+      sampleRate,
+      channels,
+      bitsPerSample: 16,
+      duration,
+      sourceBitsPerSample: bitsPerSample,
+      sourceSampleFormat: 'int',
+    };
   }
 
   // 2. Handle RIFF / RIFX WAV
@@ -189,12 +210,12 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
   const isRifx = magic === 'RIFX';
 
   if (!isRiff && !isRifx) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const waveType = buffer.toString('ascii', 8, 12);
   if (waveType !== 'WAVE') {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   let channels = 2;
@@ -232,12 +253,20 @@ export function decodeWav(buffer: Buffer): DecodedAudio {
   }
 
   if (dataOffset < 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const samples = decodePcmBytes(buffer, dataOffset, dataSize, bitsPerSample, isRifx, audioFormat);
   const duration = samples.length / (channels * sampleRate);
-  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+  return {
+    samples,
+    sampleRate,
+    channels,
+    bitsPerSample: 16,
+    duration,
+    sourceBitsPerSample: bitsPerSample,
+    sourceSampleFormat: audioFormat === WAVE_FORMAT_IEEE_FLOAT ? 'float' : 'int',
+  };
 }
 
 /**
@@ -251,6 +280,15 @@ function decodePcmBytes(
   isBigEndian: boolean,
   audioFormat: number
 ): Int16Array {
+  // A-law, mu-law, ADPCM and other tagged encodings are not linear PCM; reading them as such is noise.
+  const isFloat = audioFormat === WAVE_FORMAT_IEEE_FLOAT;
+  if (audioFormat !== WAVE_FORMAT_PCM && !isFloat) {
+    throw new ConversionFailedError(`Unsupported WAV format tag ${audioFormat}: only linear PCM and IEEE float decode.`);
+  }
+  if (isFloat && bitsPerSample !== 32 && bitsPerSample !== 64) {
+    throw new ConversionFailedError(`Unsupported IEEE float sample width: ${bitsPerSample}-bit.`);
+  }
+
   if (bitsPerSample === 8) {
     const count = length;
     const samples = new Int16Array(count);
@@ -304,7 +342,7 @@ function decodePcmBytes(
   if (bitsPerSample === 32) {
     const count = Math.floor(length / 4);
     const samples = new Int16Array(count);
-    if (audioFormat === 3) {
+    if (audioFormat === WAVE_FORMAT_IEEE_FLOAT) {
       // 32-bit IEEE float
       for (let i = 0; i < count; i++) {
         const pos = offset + i * 4;
@@ -322,13 +360,19 @@ function decodePcmBytes(
     return samples;
   }
 
-  // Fallback to 16-bit
-  const count = Math.floor(length / 2);
-  const samples = new Int16Array(count);
-  for (let i = 0; i < count; i++) {
-    samples[i] = buffer.readInt16LE(offset + i * 2);
+  if (bitsPerSample === 64 && audioFormat === WAVE_FORMAT_IEEE_FLOAT) {
+    const count = Math.floor(length / 8);
+    const samples = new Int16Array(count);
+    for (let i = 0; i < count; i++) {
+      const pos = offset + i * 8;
+      const f = isBigEndian ? buffer.readDoubleBE(pos) : buffer.readDoubleLE(pos);
+      samples[i] = Math.max(-32768, Math.min(32767, Math.round(f * 32767)));
+    }
+    return samples;
   }
-  return samples;
+
+  // Any other depth would be read as garbage; refuse rather than guess a layout.
+  throw new ConversionFailedError(`Unsupported PCM sample layout: ${bitsPerSample}-bit (format tag ${audioFormat}).`);
 }
 
 // ============================================================================
@@ -340,7 +384,7 @@ function decodePcmBytes(
  */
 export function decodeFlac(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 42 || buffer.toString('ascii', 0, 4) !== 'fLaC') {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   let offset = 4;
@@ -609,12 +653,20 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
   }
 
   if (outSamples.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const samples = new Int16Array(outSamples);
   const duration = samples.length / (channels * sampleRate);
-  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+  return {
+    samples,
+    sampleRate,
+    channels,
+    bitsPerSample: 16,
+    duration,
+    sourceBitsPerSample: bitsPerSample,
+    sourceSampleFormat: 'int',
+  };
 }
 
 // ============================================================================
@@ -654,7 +706,7 @@ function computeImdct576(mdct: Float64Array): Float64Array {
  */
 export function decodeMp3(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 32) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   let offset = 0;
@@ -750,7 +802,7 @@ export function decodeMp3(buffer: Buffer): DecodedAudio {
   }
 
   if (frameCount === 0 || outSamples.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const samples = new Int16Array(outSamples);
@@ -771,7 +823,7 @@ const AAC_SAMPLE_RATES = [
  */
 export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 7) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   let offset = 0;
@@ -856,7 +908,7 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
   }
 
   if (frameCount === 0 || outSamples.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const samples = new Int16Array(outSamples);
@@ -873,7 +925,7 @@ export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
  */
 export function decodeOgg(buffer: Buffer): DecodedAudio {
   if (!buffer || buffer.length < 28 || buffer.toString('ascii', 0, 4) !== 'OggS') {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   // Parse Ogg pages and reassemble packets
@@ -919,7 +971,7 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
   }
 
   if (packets.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   // Check codec in packet 0
@@ -938,7 +990,7 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
     channels = p0[9] || 2;
     sampleRate = p0.readUInt32LE(12) || 48000;
   } else {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   if (isOpus || isVorbis) {
@@ -972,7 +1024,7 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
   }
 
   if (outSamples.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const samples = new Int16Array(outSamples);
@@ -991,7 +1043,7 @@ export function decodeOgg(buffer: Buffer): DecodedAudio {
  */
 export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedAudio {
   if (!buffer || buffer.length === 0) {
-    throw new Error('Unsupported audio format: decoder unavailable');
+    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
   }
 
   const hint = (formatHint || '').toLowerCase().trim();
@@ -1083,5 +1135,5 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
   }
 
   // Unsupported formats (video containers like MP4, MKV, WebM or unknown codecs)
-  throw new Error('Unsupported audio format: decoder unavailable');
+  throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
 }

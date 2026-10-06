@@ -1,12 +1,5 @@
 [
   {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/archive.ts",
-    "symbol": "createTarArchive",
-    "reason": "Hardcoded numeric truncation \"file.filename.slice(0, 100)\" inside generator/converter function \"createTarArchive\".",
-    "owningWP": "WP-45"
-  },
-  {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/advanced-conversions-boost.test.ts",
     "symbol": "converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup",

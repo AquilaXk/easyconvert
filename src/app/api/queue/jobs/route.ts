@@ -7,6 +7,7 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,11 +53,16 @@ export async function POST(req: NextRequest) {
       storageKey = (formData.get('storageKey') as string) || undefined;
 
       if (optionsRaw) {
+        let parsed: unknown;
         try {
-          options = JSON.parse(optionsRaw);
+          parsed = JSON.parse(optionsRaw);
         } catch {
-          // ignore
+          return await failWithRollback(400, 'Invalid JSON format for "options" parameter.');
         }
+        if (!isConversionOptionsObject(parsed)) {
+          return await failWithRollback(400, 'The "options" field must be a JSON object.');
+        }
+        options = parsed;
       }
 
       if (file) {
@@ -74,7 +80,10 @@ export async function POST(req: NextRequest) {
       const body = await req.json();
       originalFilename = body.filename || '';
       targetFormat = body.targetFormat || '';
-      options = body.options || {};
+      if (body.options !== undefined && !isConversionOptionsObject(body.options)) {
+        return await failWithRollback(400, 'The "options" field must be a JSON object.');
+      }
+      options = body.options ?? {};
       storageKey = body.storageKey;
       inputBufferBase64 = body.inputBufferBase64;
       fileSize = body.fileSize || 0;

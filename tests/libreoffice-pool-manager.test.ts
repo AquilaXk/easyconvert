@@ -13,6 +13,9 @@ import {
   libreOfficePool,
 } from '../src/worker/engines';
 
+// A real soffice run includes the pool readiness probe, which takes several seconds on a loaded host.
+const REAL_SOFFICE_TIMEOUT_MS = 60_000;
+
 describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
   const activePools: LibreOfficePoolManager[] = [];
 
@@ -349,7 +352,7 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
       } else {
         expect(['native-soffice', 'native-soffice-pool']).toContain(res.engineUsed);
       }
-    });
+    }, REAL_SOFFICE_TIMEOUT_MS);
 
     it('resolves compliant LibreOffice PDF export filter specifications according to document domain and options', () => {
       // 1. Default clean format without redundant filter options

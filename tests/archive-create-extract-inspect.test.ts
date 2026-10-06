@@ -84,6 +84,25 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
       expect(resolved[4].buffer.toString('utf-8')).toBe('Second spec');
     });
 
+    it('reports the colliding entry name and an exact message under collisionPolicy "error"', () => {
+      const duplicates = [
+        { filename: 'a.txt', buffer: Buffer.from('1') },
+        { filename: 'a.txt', buffer: Buffer.from('2') },
+      ];
+      let caught: unknown;
+      try {
+        resolveArchiveEntryCollisions(duplicates, 'error');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(ArchiveEntryCollisionError);
+      const collision = caught as ArchiveEntryCollisionError;
+      expect(collision.entryName).toBe('a.txt');
+      expect(collision.message).toBe(
+        "Archive entry collision detected for 'a.txt' under collision policy 'error'."
+      );
+    });
+
     it('throws ArchiveEntryCollisionError under collisionPolicy "error"', () => {
       expect(() => resolveArchiveEntryCollisions(collidingFiles, 'error')).toThrow(
         ArchiveEntryCollisionError

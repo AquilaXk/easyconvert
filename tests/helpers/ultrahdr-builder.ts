@@ -75,11 +75,31 @@ export interface UltraHdrBuildInput {
   mirrorGainMapMaxInPrimary?: boolean;
   /** Rewrites the gain map XMP text before it is packed, to build malformed or alternative metadata forms. */
   editGainMapXmp?: (xmp: string) => string;
+  /**
+   * Insert an EXIF APP1 segment into the primary image whose payload carries an embedded thumbnail JPEG
+   * immediately followed by a second JPEG (an EOI directly followed by an SOI inside the segment), the
+   * way cameras pack a thumbnail next to a preview. A scan for "EOI then SOI" would split the file there.
+   */
+  exifThumbnailTrap?: boolean;
+  /**
+   * Place a depth-map-like grayscale JPEG without any hdrgm XMP between the primary image and the gain map,
+   * in both the file and the MPF table, as phones that store several auxiliary images do.
+   */
+  depthMapBeforeGainMap?: boolean;
+  /** Raw bytes of one more image stored after the gain map and listed last in the MPF table. */
+  trailingImage?: Buffer;
 }
+
+/** MP Entry index of the gain map when `depthMapBeforeGainMap` places a depth map ahead of it. */
+export const GAIN_MAP_ENTRY_INDEX_WITH_DEPTH_MAP = 2;
+/** MP Entry index of the gain map in a plain two-image file. */
+export const GAIN_MAP_ENTRY_INDEX_PLAIN = 1;
 
 export interface UltraHdrParts {
   primaryJpeg: Buffer;
   gainMapJpeg: Buffer;
+  /** Present when `depthMapBeforeGainMap` was requested. */
+  depthJpeg?: Buffer;
   file: Buffer;
 }
 
@@ -132,6 +152,64 @@ function appSegment(marker: number, payload: Buffer): Buffer {
   return Buffer.concat([header, payload]);
 }
 
+const EXIF_IDENTIFIER = 'Exif\0\0';
+const EXIF_TAG_JPEG_INTERCHANGE_FORMAT = 0x0201;
+const EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH = 0x0202;
+const THUMBNAIL_EDGE = 8;
+const THUMBNAIL_QUALITY = 70;
+const THUMBNAIL_GREY = 90;
+const PREVIEW_GREY = 200;
+
+function tinyJpeg(grey: number): Promise<Buffer> {
+  return sharp({ create: { width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE, channels: 3, background: { r: grey, g: grey, b: grey } } })
+    .jpeg({ quality: THUMBNAIL_QUALITY })
+    .toBuffer();
+}
+
+/**
+ * EXIF APP1 payload (little-endian TIFF, empty IFD0, IFD1 pointing at a thumbnail JPEG) whose thumbnail
+ * is directly followed by another complete JPEG, so the bytes FF D9 FF D8 occur inside the segment.
+ */
+async function exifThumbnailPayload(): Promise<Buffer> {
+  const thumbnail = await tinyJpeg(THUMBNAIL_GREY);
+  const preview = await tinyJpeg(PREVIEW_GREY);
+  const ifd0Offset = TIFF_HEADER_BYTES;
+  const ifd1Offset = ifd0Offset + UINT16_BYTES + UINT32_BYTES;
+  const ifd1Entries = 2;
+  const thumbnailOffset = ifd1Offset + UINT16_BYTES + ifd1Entries * IFD_ENTRY_BYTES + UINT32_BYTES;
+  const tiff = Buffer.alloc(thumbnailOffset);
+  tiff.write('II', 0, 'ascii');
+  tiff.writeUInt16LE(TIFF_MAGIC, 2);
+  tiff.writeUInt32LE(ifd0Offset, 4);
+  tiff.writeUInt16LE(0, ifd0Offset); // IFD0 carries no entries
+  tiff.writeUInt32LE(ifd1Offset, ifd0Offset + UINT16_BYTES);
+  let pos = ifd1Offset;
+  tiff.writeUInt16LE(ifd1Entries, pos);
+  pos += UINT16_BYTES;
+  tiff.writeUInt16LE(EXIF_TAG_JPEG_INTERCHANGE_FORMAT, pos);
+  tiff.writeUInt16LE(TIFF_TYPE_LONG, pos + 2);
+  tiff.writeUInt32LE(1, pos + 4);
+  tiff.writeUInt32LE(thumbnailOffset, pos + 8);
+  pos += IFD_ENTRY_BYTES;
+  tiff.writeUInt16LE(EXIF_TAG_JPEG_INTERCHANGE_FORMAT_LENGTH, pos);
+  tiff.writeUInt16LE(TIFF_TYPE_LONG, pos + 2);
+  tiff.writeUInt32LE(1, pos + 4);
+  tiff.writeUInt32LE(thumbnail.length, pos + 8);
+  return Buffer.concat([Buffer.from(EXIF_IDENTIFIER, 'binary'), tiff, thumbnail, preview]);
+}
+
+const DEPTH_MAP_QUALITY = 85;
+const DEPTH_MAP_LEVELS = 256;
+
+/** A horizontal ramp, grayscale JPEG with no XMP: stands in for a depth map next to the gain map. */
+function depthMapJpeg(width: number, height: number): Promise<Buffer> {
+  const ramp = Buffer.alloc(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) ramp[y * width + x] = Math.floor((x * (DEPTH_MAP_LEVELS - 1)) / Math.max(1, width - 1));
+  }
+  return sharp(ramp, { raw: { width, height, channels: 1 } }).toColourspace('b-w').jpeg({ quality: DEPTH_MAP_QUALITY }).toBuffer();
+}
+
 /** Offset just after SOI and an optional leading JFIF APP0 segment: where extra APPn data goes. */
 function insertionOffset(jpeg: Buffer): number {
   if (jpeg[0] !== MARKER_PREFIX || jpeg[1] !== SOI) throw new Error('not a JPEG stream');
@@ -148,9 +226,10 @@ function insertSegments(jpeg: Buffer, segments: readonly Buffer[]): Buffer {
 }
 
 /** MPF APP2 payload ("MPF\0" + TIFF structure). Offsets in entries are relative to the TIFF header. */
-function mpfPayload(primarySize: number, gainMapSize: number, gainMapOffsetFromTiff: number): Buffer {
+function mpfPayload(primarySize: number, secondaries: ReadonlyArray<{ size: number; offsetFromTiff: number }>): Buffer {
+  const imageCount = 1 + secondaries.length;
   const entriesOffset = TIFF_HEADER_BYTES + UINT16_BYTES + MPF_IFD_ENTRY_COUNT * IFD_ENTRY_BYTES + UINT32_BYTES;
-  const tiff = Buffer.alloc(entriesOffset + 2 * MP_ENTRY_BYTES);
+  const tiff = Buffer.alloc(entriesOffset + imageCount * MP_ENTRY_BYTES);
   tiff.write('MM', 0, 'ascii'); // big-endian, as written by phone cameras
   tiff.writeUInt16BE(TIFF_MAGIC, 2);
   tiff.writeUInt32BE(TIFF_HEADER_BYTES, 4);
@@ -167,12 +246,12 @@ function mpfPayload(primarySize: number, gainMapSize: number, gainMapOffsetFromT
   tiff.writeUInt16BE(MPF_TAG_NUMBER_OF_IMAGES, pos);
   tiff.writeUInt16BE(TIFF_TYPE_LONG, pos + 2);
   tiff.writeUInt32BE(1, pos + 4);
-  tiff.writeUInt32BE(2, pos + 8);
+  tiff.writeUInt32BE(imageCount, pos + 8);
   pos += IFD_ENTRY_BYTES;
 
   tiff.writeUInt16BE(MPF_TAG_ENTRIES, pos);
   tiff.writeUInt16BE(TIFF_TYPE_UNDEFINED, pos + 2);
-  tiff.writeUInt32BE(2 * MP_ENTRY_BYTES, pos + 4);
+  tiff.writeUInt32BE(imageCount * MP_ENTRY_BYTES, pos + 4);
   tiff.writeUInt32BE(entriesOffset, pos + 8);
   pos += IFD_ENTRY_BYTES;
 
@@ -184,9 +263,12 @@ function mpfPayload(primarySize: number, gainMapSize: number, gainMapOffsetFromT
   tiff.writeUInt32BE(0, pos + 8); // the primary image offset is always 0
   pos += MP_ENTRY_BYTES;
 
-  tiff.writeUInt32BE(MP_ATTRIBUTE_SECONDARY, pos);
-  tiff.writeUInt32BE(gainMapSize, pos + 4);
-  tiff.writeUInt32BE(gainMapOffsetFromTiff, pos + 8);
+  for (const secondary of secondaries) {
+    tiff.writeUInt32BE(MP_ATTRIBUTE_SECONDARY, pos);
+    tiff.writeUInt32BE(secondary.size, pos + 4);
+    tiff.writeUInt32BE(secondary.offsetFromTiff, pos + 8);
+    pos += MP_ENTRY_BYTES;
+  }
   return Buffer.concat([Buffer.from(MPF_IDENTIFIER, 'ascii'), tiff]);
 }
 
@@ -203,21 +285,34 @@ export async function buildUltraHdrJpeg(input: UltraHdrBuildInput): Promise<Ultr
     .toBuffer();
   const gainMapJpeg = insertSegments(gainMapBase, [app1Segment(gainMapXmp(input.metadata, input.editGainMapXmp))]);
 
+  const depthJpeg = input.depthMapBeforeGainMap === true ? await depthMapJpeg(width, height) : undefined;
+
   const primaryBase = await sharp(input.sdrRgb, { raw: { width, height, channels: 3 } })
     .jpeg({ quality: PRIMARY_JPEG_QUALITY })
     .toBuffer();
   const xmpSegment = app1Segment(primaryXmp(gainMapJpeg.length, input.metadata, input.mirrorGainMapMaxInPrimary === true));
+  const exifSegments = input.exifThumbnailTrap === true ? [app1Segment(await exifThumbnailPayload())] : [];
+  const leadingLength = [...exifSegments, xmpSegment].reduce((sum, segment) => sum + segment.length, 0);
   // The MPF segment has a fixed size, so the final primary size is known before it is written.
-  const mpfLength = MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + mpfPayload(0, 0, 0).length;
-  const primarySize = primaryBase.length + xmpSegment.length + mpfLength;
-  const mpfSegmentStart = insertionOffset(primaryBase) + xmpSegment.length;
+  const stored = [...(depthJpeg ? [depthJpeg] : []), gainMapJpeg, ...(input.trailingImage ? [input.trailingImage] : [])];
+  const secondarySizes = stored.map((image) => image.length);
+  const mpfLength = MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + mpfPayload(0, secondarySizes.map((size) => ({ size, offsetFromTiff: 0 }))).length;
+  const primarySize = primaryBase.length + leadingLength + mpfLength;
+  const mpfSegmentStart = insertionOffset(primaryBase) + leadingLength;
   const tiffStart = mpfSegmentStart + MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + MPF_IDENTIFIER_BYTES;
-  const mpfSegment = appSegment(APP2, mpfPayload(primarySize, gainMapJpeg.length, primarySize - tiffStart));
+  let nextOffset = primarySize - tiffStart;
+  const secondaries = secondarySizes.map((size) => {
+    const entry = { size, offsetFromTiff: nextOffset };
+    nextOffset += size;
+    return entry;
+  });
+  const mpfSegment = appSegment(APP2, mpfPayload(primarySize, secondaries));
   if (mpfSegment.length !== mpfLength) throw new Error('MPF segment size changed between passes');
 
-  const primaryJpeg = insertSegments(primaryBase, [xmpSegment, mpfSegment]);
+  const primaryJpeg = insertSegments(primaryBase, [...exifSegments, xmpSegment, mpfSegment]);
   if (primaryJpeg.length !== primarySize) throw new Error('primary size mismatch');
-  return { primaryJpeg, gainMapJpeg, file: Buffer.concat([primaryJpeg, gainMapJpeg]) };
+  const file = Buffer.concat([primaryJpeg, ...stored]);
+  return { primaryJpeg, gainMapJpeg, depthJpeg, file };
 }
 
 // ----------------------------------------------------------------------------
@@ -353,9 +448,10 @@ function xmpOf(buf: Buffer, stream: JpegStream): string {
 
 /**
  * Independent parse of an Ultra HDR file: walks both JPEG streams marker by marker, resolves the MPF
- * entries to absolute offsets and checks they land on the SOI of each image.
+ * entries to absolute offsets and checks they land on the SOI of each image. `gainMapEntryIndex` is the
+ * MP Entry the fixture wrote as the gain map.
  */
-export function parseUltraHdrStructure(file: Buffer): UltraHdrStructure {
+export function parseUltraHdrStructure(file: Buffer, gainMapEntryIndex = GAIN_MAP_ENTRY_INDEX_PLAIN): UltraHdrStructure {
   const primary = walkJpeg(file, 0);
   const mpfSegment = primary.segments.find(
     (s) => s.marker === APP2 && s.payload.toString('ascii', 0, MPF_IDENTIFIER_BYTES) === MPF_IDENTIFIER
@@ -364,8 +460,9 @@ export function parseUltraHdrStructure(file: Buffer): UltraHdrStructure {
   const tiffAbsolute = mpfSegment.offset + MARKER_LENGTH_BYTES + MARKER_LENGTH_BYTES + MPF_IDENTIFIER_BYTES;
   const mpf = parseMpf(mpfSegment.payload, tiffAbsolute);
   if (mpf.entries.length < 2) throw new Error('MPF index lists fewer than two images');
-  const secondaryEntry = mpf.entries[1];
-  const secondary = walkJpeg(file, secondaryEntry.absoluteOffset);
+  if (gainMapEntryIndex < 1 || gainMapEntryIndex >= mpf.entries.length) throw new Error('gain map entry index is not in the MPF table');
+  // The caller knows which entry its fixture wrote as the gain map; no selection rule is re-derived here.
+  const secondary = walkJpeg(file, mpf.entries[gainMapEntryIndex].absoluteOffset);
   return {
     primary,
     secondary,
