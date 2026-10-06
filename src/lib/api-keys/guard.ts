@@ -7,6 +7,7 @@ import { webhookDispatcher } from './webhook-dispatcher';
 import { extractClientIp } from './ip-utils';
 import {
   CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpConfigError,
   ClientIpError,
   UNATTRIBUTED_CLIENT_KEY,
   rateLimitKey,
@@ -71,7 +72,7 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   if (raw === undefined || raw === '') return fallback;
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive integer, got "${raw}".`);
+    throw new ClientIpConfigError(`${name} must be a positive integer, got "${raw}".`);
   }
   return value;
 }
@@ -367,10 +368,21 @@ async function verifyAnonymousAccess(
   const unattributed = clientIp === UNATTRIBUTED_CLIENT_KEY;
 
   // 1. Enforce IP burst rate limit (the shared unattributed identity gets site-wide sizing)
-  const burst = await redisKeyStore.checkTokenBucketRateLimit(
-    anonIdentifier,
-    unattributed ? getUnattributedBurstLimit() : getAnonymousBurstLimit()
-  );
+  let burstLimit: BurstLimit;
+  try {
+    burstLimit = unattributed ? getUnattributedBurstLimit() : getAnonymousBurstLimit();
+  } catch (error) {
+    if (!(error instanceof ClientIpConfigError)) throw error;
+    // A malformed limit is a deployment fault: refuse like invalid trust configuration, without echoing the value.
+    console.error(`[guard] ${error.message}`);
+    return {
+      authorized: false,
+      error: CLIENT_IP_CONFIG_ERROR_MESSAGE,
+      status: error.status,
+      retryAfterSeconds: CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+    };
+  }
+  const burst = await redisKeyStore.checkTokenBucketRateLimit(anonIdentifier, burstLimit);
   if (!burst.allowed) {
     if (burst.serviceUnavailable) {
       return {
