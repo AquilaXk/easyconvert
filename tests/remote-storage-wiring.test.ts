@@ -198,7 +198,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const { DELETE } = await import('../src/app/api/v1/uploads/direct/[id]/route');
       const res = await DELETE(
         new NextRequest(`${BASE_URL}/api/v1/uploads/direct/${init.uploadId}`, { method: 'DELETE', headers: cookie }),
-        { params: { id: init.uploadId } }
+        { params: Promise.resolve({ id: init.uploadId }) }
       );
       expect(res.status).toBe(204);
       expect(server.uploads.size).toBe(0);
@@ -220,7 +220,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
             'Upload-Metadata': serializeTusMetadata({ filename: 'pic.png', filetype: 'image/png' }),
             ...cookie,
           },
-        })
+        }),
+        { params: Promise.resolve({}) }
       );
       expect(created.status).toBe(201);
       const sessionId = created.headers.get('Location')!.split('/').pop()!;
@@ -237,7 +238,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
           body: PNG,
           duplex: 'half',
         } as never),
-        { params: { id: [sessionId] } }
+        { params: Promise.resolve({ id: [sessionId] }) }
       );
       expect(patched.status).toBe(204);
       const key = patched.headers.get('EasyConvert-Storage-Key') as string;
@@ -257,7 +258,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const { GET } = await import('../src/app/api/storage/file/[...key]/route');
       const download = await GET(
         new NextRequest(`${BASE_URL}/api/storage/file/${encodeURIComponent(key)}`, { headers: cookie }),
-        { params: { key: key.split('/') } }
+        { params: Promise.resolve({ key: key.split('/') }) }
       );
       expect(download.status).toBe(HTTP_OK);
       expect(download.headers.get('Content-Type')).toBe('image/png');
@@ -265,7 +266,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
 
       const ranged = await GET(
         new NextRequest(`${BASE_URL}/api/storage/file/${encodeURIComponent(key)}`, { headers: { ...cookie, Range: 'bytes=0-7' } }),
-        { params: { key: key.split('/') } }
+        { params: Promise.resolve({ key: key.split('/') }) }
       );
       expect(ranged.status).toBe(206);
       expect(ranged.headers.get('Content-Range')).toBe(`bytes 0-7/${PNG.length}`);
@@ -285,7 +286,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
             'Upload-Metadata': serializeTusMetadata({ filename: 'retry.png', filetype: 'image/png' }),
             ...cookie,
           },
-        })
+        }),
+        { params: Promise.resolve({}) }
       );
       const sessionId = created.headers.get('Location')!.split('/').pop()!;
       const patch = () =>
@@ -296,7 +298,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
             body: PNG,
             duplex: 'half',
           } as never),
-          { params: { id: [sessionId] } }
+          { params: Promise.resolve({ id: [sessionId] }) }
         );
 
       server.faults.push({ match: (req) => req.method === 'PUT', status: 503, code: 'SlowDown', times: Infinity });
@@ -308,7 +310,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
 
       const head = await HEAD(
         new NextRequest(`${BASE_URL}/api/v1/uploads/${sessionId}`, { method: 'HEAD', headers: { 'Tus-Resumable': '1.0.0', ...cookie } }),
-        { params: { id: [sessionId] } }
+        { params: Promise.resolve({ id: [sessionId] }) }
       );
       expect(head.headers.get('Upload-Offset')).toBe('0');
 
@@ -331,7 +333,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
             'Upload-Metadata': serializeTusMetadata({ filename: 'no-extension' }),
             ...cookie,
           },
-        })
+        }),
+        { params: Promise.resolve({}) }
       );
       const sessionId = created.headers.get('Location')!.split('/').pop()!;
       const patched = await PATCH(
@@ -341,7 +344,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
           body: PDF,
           duplex: 'half',
         } as never),
-        { params: { id: [sessionId] } }
+        { params: Promise.resolve({ id: [sessionId] }) }
       );
       expect(patched.status).toBe(400);
       expect([...server.objects.keys()]).toEqual([]);
@@ -357,7 +360,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...cookie },
           body: JSON.stringify({ filename: 'report.pdf', mimeType: 'application/pdf', totalSize: PDF.length }),
-        })
+        }),
+        { params: Promise.resolve({}) }
       );
       expect(initRes.status).toBe(HTTP_OK);
       const init = await initRes.json();
@@ -375,7 +379,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
             parts: [{ partNumber: 1, etag: put.headers.get('etag') }],
             expectedSize: PDF.length,
           }),
-        })
+        }),
+        { params: Promise.resolve({}) }
       );
       expect(completeRes.status).toBe(HTTP_OK);
       expect(server.objects.get(init.key)?.body.equals(PDF)).toBe(true);
@@ -386,7 +391,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
           headers: cookie,
           body: PDF,
           duplex: 'half',
-        } as never)
+        } as never),
+        { params: Promise.resolve({}) }
       );
       expect(partRes.status).toBe(404);
     });

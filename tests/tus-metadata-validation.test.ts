@@ -52,7 +52,8 @@ describe('tus session creation validates the declared content type', () => {
           'Upload-Metadata': serializeTusMetadata(metadata),
           Cookie: `easyconvert_session=${createSessionToken(user)}`,
         },
-      })
+      }),
+      { params: Promise.resolve({}) }
     );
   }
 

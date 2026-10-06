@@ -80,7 +80,8 @@ describe('Unknown upload format is a typed 400 (#483)', () => {
           'Upload-Metadata': serializeTusMetadata({ filename: 'no-extension-here' }),
           ...cookie(),
         },
-      })
+      }),
+      { params: Promise.resolve({}) }
     );
     expect(createRes.status).toBe(201);
     const sessionId = createRes.headers.get('Location')!.split('/').pop()!;

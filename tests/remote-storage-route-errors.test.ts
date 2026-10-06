@@ -104,7 +104,7 @@ describe('STORAGE_DRIVER=oci answers storage failures with typed problem documen
       failStore((req) => req.method === 'HEAD', 503, 'SlowDown');
       const { GET } = await import('../src/app/api/storage/file/[...key]/route');
       const res = await GET(new NextRequest(`${BASE_URL}/api/storage/file/${encodeURIComponent(key)}`, { headers: cookie }), {
-        params: { key: [key] },
+        params: Promise.resolve({ key: [key] }),
       });
       await expectUnavailable(res);
     });
@@ -240,7 +240,8 @@ describe('STORAGE_DRIVER=oci answers storage failures with typed problem documen
           },
           body,
           duplex: 'half',
-        } as never)
+        } as never),
+        { params: Promise.resolve({}) }
       );
     }
 
@@ -257,7 +258,7 @@ describe('STORAGE_DRIVER=oci answers storage failures with typed problem documen
           body: PNG,
           duplex: 'half',
         } as never),
-        { params: { id: [sessionId] } }
+        { params: Promise.resolve({ id: [sessionId] }) }
       );
       await expectUnavailable(res);
       expect(res.headers.get('Tus-Resumable')).toBe('1.0.0');

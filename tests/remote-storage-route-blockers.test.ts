@@ -170,7 +170,7 @@ describe('object-store routes after the final review', () => {
       const { DELETE } = await import('../src/app/api/v1/uploads/direct/[id]/route');
       const res = await DELETE(
         new NextRequest(`${BASE_URL}/api/v1/uploads/direct/${init.uploadId}`, { method: 'DELETE', headers: cookie }),
-        { params: { id: init.uploadId } }
+        { params: Promise.resolve({ id: init.uploadId }) }
       );
       await expectUnavailable(res);
     });
@@ -339,7 +339,8 @@ describe('object-store routes after the final review', () => {
       const { init, part } = await ownerlessSession();
       const { POST } = await import('../src/app/api/v1/uploads/[[...id]]/route');
       const res = await POST(
-        jsonPost('/api/v1/uploads?action=complete', cookie, { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: part.etag }] })
+        jsonPost('/api/v1/uploads?action=complete', cookie, { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: part.etag }] }),
+        { params: Promise.resolve({}) }
       );
       expect(res.status).toBe(HTTP_NOT_FOUND);
       expect(server.objects.size).toBe(0);
@@ -351,7 +352,7 @@ describe('object-store routes after the final review', () => {
       const { DELETE } = await import('../src/app/api/v1/uploads/direct/[id]/route');
       const res = await DELETE(
         new NextRequest(`${BASE_URL}/api/v1/uploads/direct/${init.uploadId}`, { method: 'DELETE', headers: cookie }),
-        { params: { id: init.uploadId } }
+        { params: Promise.resolve({ id: init.uploadId }) }
       );
       expect(res.status).toBe(HTTP_NOT_FOUND);
       expect(server.uploads.size).toBe(1);

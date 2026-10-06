@@ -74,7 +74,8 @@ describe('/api/v1/uploads multipart actions bind a session to its declared size'
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...cookie },
         body: JSON.stringify(body),
-      })
+      }),
+      { params: Promise.resolve({}) }
     );
   }
 
