@@ -22,6 +22,27 @@ const PDFA_CONFORMANCE_BY_NAME: ReadonlyMap<string, PdfAConformance> = new Map([
 ]);
 const PDFA_CONFORMANCE_LEVELS: ReadonlySet<string> = new Set(PDFA_CONFORMANCE_BY_NAME.values());
 
+/** A value that starts like a PDF/A name: it must be a supported level, or it is an error. */
+const PDFA_LOOKING_NAME = /^pdf\/?-?a/;
+
+/**
+ * The PDF/A level one string field names, or null when it names no PDF/A (for example a plain
+ * PDF version such as `1.7`). A PDF/A-looking value that is not a supported level is a client
+ * error: ignoring it would return a file that is not the PDF/A the request asked for.
+ */
+function namedPdfALevel(field: 'pdfVersion' | 'pdfStandard', value: unknown): PdfAConformance | null {
+  if (value === undefined || value === '') return null;
+  if (typeof value !== 'string') {
+    throw new UnsupportedOptionError(`The ${field} option must be a string.`);
+  }
+  const level = PDFA_CONFORMANCE_BY_NAME.get(value.toLowerCase());
+  if (level) return level;
+  if (PDFA_LOOKING_NAME.test(value.toLowerCase())) {
+    throw new UnsupportedOptionError(`Unsupported PDF/A level in ${field}: ${value}`);
+  }
+  return null;
+}
+
 function assertIntegerInRange(name: string, value: unknown, min: number, max: number): void {
   if (value === undefined) return;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
@@ -43,8 +64,10 @@ export function resolvePdfAConformance(options: ConversionOptions): PdfAConforma
     }
     requested.add(level);
   }
-  const named = PDFA_CONFORMANCE_BY_NAME.get((options.pdfVersion || options.pdfStandard || '').toLowerCase());
-  if (named) requested.add(named);
+  for (const field of ['pdfVersion', 'pdfStandard'] as const) {
+    const named = namedPdfALevel(field, options[field]);
+    if (named) requested.add(named);
+  }
   if (requested.size > 1) {
     throw new UnsupportedOptionError(
       `Conflicting PDF/A levels requested: ${[...requested].join(', ')}. Request one level.`
