@@ -132,7 +132,23 @@ function completeValue(frame: Frame | undefined, value: DictionaryValue): void {
  * values, so a key of a nested dictionary is never read as a key of the enclosing one.
  */
 export function readEnclosingDictionary(text: string, start: number, markerAt: number, end: number): EnclosingDictionary {
-  const stack: Frame[] = [];
+  return scanDictionaries(text, start, markerAt, end, false);
+}
+
+/**
+ * The top-level entries of whatever dictionary the window `[start, end)` lies in, when the start of that
+ * dictionary is not in view. Keys of dictionaries that open inside the window are not entries of it, so a nested
+ * decoy is never read as the size; a `>>` that closes a dictionary opened before the window is ignored. The last
+ * of a repeated key wins. Strings, hex strings and comments are skipped as in `readEnclosingDictionary`.
+ */
+export function readWindowEntries(text: string, start: number, end: number): Map<string, DictionaryValue> {
+  const found = scanDictionaries(text, start, -1, end, true);
+  return found.status === 'found' ? found.entries : new Map();
+}
+
+function scanDictionaries(text: string, start: number, markerAt: number, end: number, windowMode: boolean): EnclosingDictionary {
+  const root = newFrame();
+  const stack: Frame[] = windowMode ? [root] : [];
   let target: Frame | undefined;
   let pos = start;
   while (pos < end) {
@@ -146,7 +162,7 @@ export function readEnclosingDictionary(text: string, start: number, markerAt: n
       pos = close;
     } else if (code === OPEN_PAREN) {
       const close = stringEnd(text, pos, end);
-      if (close < 0) return { status: 'undelimited' };
+      if (close < 0) return windowMode ? { status: 'found', entries: root.entries } : { status: 'undelimited' };
       if (markerAt > pos && markerAt < close) return { status: 'inert' };
       completeValue(top, { kind: 'other' });
       pos = close;
@@ -155,11 +171,16 @@ export function readEnclosingDictionary(text: string, start: number, markerAt: n
       pos += 2;
     } else if (code === LESS_THAN) {
       const close = hexStringEnd(text, pos, end);
-      if (close < 0) return { status: 'undelimited' };
+      if (close < 0) return windowMode ? { status: 'found', entries: root.entries } : { status: 'undelimited' };
       if (markerAt > pos && markerAt < close) return { status: 'inert' };
       completeValue(top, { kind: 'other' });
       pos = close;
     } else if (code === GREATER_THAN && text.charCodeAt(pos + 1) === GREATER_THAN) {
+      if (windowMode && stack.length === 1) {
+        // Closes a dictionary that opened before the window.
+        pos += 2;
+        continue;
+      }
       const closed = stack.pop();
       if (closed !== undefined && closed === target) return { status: 'found', entries: closed.entries };
       completeValue(stack[stack.length - 1], { kind: 'other' });
@@ -180,10 +201,11 @@ export function readEnclosingDictionary(text: string, start: number, markerAt: n
       const token = text.slice(pos, close);
       if (token === 'stream' || token === 'endstream') {
         // The dictionary of an object ends where its stream starts: a position after it is stream data.
+        if (windowMode) return { status: 'found', entries: root.entries };
         return target === undefined ? { status: 'inert' } : { status: 'undelimited' };
       }
       if (token === 'obj' || token === 'endobj') {
-        stack.length = 0;
+        stack.length = windowMode ? 1 : 0;
         pos = close;
       } else {
         pos = readScalar(top, token, text, close);
@@ -192,6 +214,7 @@ export function readEnclosingDictionary(text: string, start: number, markerAt: n
       pos++;
     }
   }
+  if (windowMode) return { status: 'found', entries: root.entries };
   return target === undefined ? { status: 'inert' } : { status: 'undelimited' };
 }
 

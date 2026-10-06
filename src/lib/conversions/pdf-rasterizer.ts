@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConversionFailedError } from '../types';
 import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
-import { readEnclosingDictionary, type DictionaryValue, type EnclosingDictionary } from './pdf-image-dictionary';
+import { readEnclosingDictionary, readWindowEntries, type DictionaryValue, type EnclosingDictionary } from './pdf-image-dictionary';
 
 // Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
 if (typeof (Promise as any).withResolvers === 'undefined') {
@@ -60,10 +60,6 @@ function pdfName(word: string): string {
 const GAP = `\\s{0,${MAX_TOKEN_GAP}}`;
 const REQUIRED_GAP = `\\s{1,${MAX_TOKEN_GAP}}`;
 const IMAGE_MARKER_PATTERN = new RegExp(`${pdfName('Subtype')}${GAP}${pdfName('Image')}`, 'g');
-/** A dimension value: a number, optionally written `N G R` as a reference to another object. */
-const DIMENSION_VALUE = `([+-]?\\d{1,10}(?:\\.\\d{0,10})?)(?:${REQUIRED_GAP}(\\d{1,5})${REQUIRED_GAP}R(?![A-Za-z0-9]))?`;
-const WIDTH_PATTERN = new RegExp(`${pdfName('Width')}${GAP}${DIMENSION_VALUE}`, 'g');
-const HEIGHT_PATTERN = new RegExp(`${pdfName('Height')}${GAP}${DIMENSION_VALUE}`, 'g');
 /** `N G obj <integer> endobj`: the objects an indirect image dimension can point to. */
 const INTEGER_OBJECT_PATTERN = new RegExp(
   `(?<![0-9])(\\d{1,10})${REQUIRED_GAP}\\d{1,5}${REQUIRED_GAP}obj${REQUIRED_GAP}(\\d{1,10})${REQUIRED_GAP}endobj`,
@@ -81,17 +77,6 @@ function integerObjects(text: string): Map<number, number> {
   return objects;
 }
 
-/** The largest value written for one dimension key within `window`; undefined when the key is absent or unreadable. */
-function declaredDimension(window: string, pattern: RegExp, resolve: () => Map<number, number>): number | undefined {
-  let largest: number | undefined;
-  for (const match of window.matchAll(pattern)) {
-    const value = match[2] === undefined ? Number(match[1]) : resolve().get(Number(match[1]));
-    if (value === undefined || !Number.isFinite(value)) return undefined;
-    largest = Math.max(largest ?? 0, value);
-  }
-  return largest;
-}
-
 /** One dimension of an image dictionary entry: a number, or a reference to an integer object. */
 function entryDimension(entry: DictionaryValue | undefined, resolve: () => Map<number, number>): number {
   if (entry?.kind === 'number') return entry.value;
@@ -106,8 +91,9 @@ function entryDimension(entry: DictionaryValue | undefined, resolve: () => Map<n
  * and the check needs no decode. The size is read from the dictionary that holds the `/Subtype /Image`: its
  * own top-level `/Width` and `/Height` (the last of a repeated key, as a PDF reader takes it), never those of
  * a nested dictionary or of a neighbouring image. A marker that is not a key of any dictionary here (inside a
- * string or comment, in stream data) is checked against the largest width and height of its window instead,
- * which can only refuse more. A dictionary that cannot be delimited within the window, or whose dimensions are
+ * string or comment, in stream data, or without the start of its object in view) is checked against the top-level
+ * Width and Height of its window; a window with none of its own, as when only a nested decoy is in view, is
+ * refused as unreadable. A dictionary that cannot be delimited within the window, or whose dimensions are
  * missing or not plain integers, cannot be checked and is refused. Every scan is bounded by the window, and the
  * marker count is capped. Inline images, which have no dictionary to scan, are caught by pdfjs's own limit (see
  * `extractRasterImagesFromPdf`).
@@ -137,11 +123,10 @@ function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
       assertInputPixels(entryDimension(dictionary.entries.get('Width'), resolve), entryDimension(dictionary.entries.get('Height'), resolve));
       continue;
     }
-    const window = text.slice(windowStart, windowEnd);
-    const width = declaredDimension(window, new RegExp(WIDTH_PATTERN), resolve);
-    const height = declaredDimension(window, new RegExp(HEIGHT_PATTERN), resolve);
-    if (width === undefined || height === undefined) throw unreadableDimensions();
-    assertInputPixels(width, height);
+    // The start of the dictionary is out of view: only keys that are the window's own count, not those of the
+    // dictionaries nested in it, and a window without its own Width and Height cannot be checked.
+    const own = readWindowEntries(text, windowStart, windowEnd);
+    assertInputPixels(entryDimension(own.get('Width'), resolve), entryDimension(own.get('Height'), resolve));
   }
 }
 

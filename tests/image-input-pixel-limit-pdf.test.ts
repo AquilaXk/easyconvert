@@ -229,4 +229,33 @@ describe('the size of an image is read from its own dictionary, not from its nei
     const run = extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body: dictionary }]));
     await expect(run).rejects.toThrow(/dimensions of an embedded image could not be read/);
   });
+
+  describe('when the start of the dictionary is out of the window', () => {
+    const FAR = 4300;
+
+    it.each([
+      ['a long run of white space', `/Type /XObject /Width 12000 /Height 12000 ${' '.repeat(FAR)} /Foo << /Width 10 /Height 10 >> /Subtype /Image ${COMMON}`],
+      ['a long comment', `/Type /XObject /Width 12000 /Height 12000 %${'x'.repeat(FAR)}\n /Foo << /Width 10 /Height 10 >> /Subtype /Image ${COMMON}`],
+    ])('refuses as unreadable an image whose real size lies behind %s and only a nested decoy is in view', async (_label, body) => {
+      const pdf = pdfWithImages([{ width: 12_000, height: 12_000, body }]);
+      const rssBefore = process.memoryUsage().rss;
+      const run = extractRasterImagesFromPdf(pdf);
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.not.toBeInstanceOf(InputPixelLimitError);
+      await expect(run).rejects.toThrow(/dimensions of an embedded image could not be read/);
+      expect(process.memoryUsage().rss - rssBefore).toBeLessThan(MAX_RSS_GROWTH_BYTES);
+    });
+
+    it('still reads the size of an image whose own Width and Height sit beside its marker, far from the object start', async () => {
+      const body = `/Type /XObject /Pad [ ${'0 '.repeat(FAR / 2)}] /Subtype /Image /Width ${SMALL_SIDE} /Height ${SMALL_SIDE} /Nested << /Width ${OVER_CAP_SIDE} >> ${COMMON}`;
+      const images = await extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body }]));
+      expect(images.map((image) => [image.width, image.height])).toEqual([[SMALL_SIDE, SMALL_SIDE]]);
+    });
+
+    it('refuses a far image whose own top-level size in view is over the limit', async () => {
+      const body = `/Type /XObject /Pad [ ${'0 '.repeat(FAR / 2)}] /Subtype /Image /Width ${OVER_CAP_SIDE} /Height ${OVER_CAP_SIDE} ${COMMON}`;
+      const run = extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body }]));
+      await expect(run).rejects.toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE, width: OVER_CAP_SIDE });
+    });
+  });
 });
