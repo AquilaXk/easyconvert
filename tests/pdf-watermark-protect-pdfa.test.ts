@@ -54,6 +54,9 @@ function createSamplePng(): Buffer {
   );
 }
 
+/** LibreOffice conversion plus a veraPDF (JVM) validation: about 3.6 s on an idle machine, most of the 5 s default. */
+const PDFA_CONVERSION_TIMEOUT_MS = 120_000;
+
 describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', () => {
   describe('1. PDF Watermarking Engine', () => {
     oracleTest('applies text watermark and verifies text presence via pdftotext differential oracle', ['pdftotext'], async () => {
@@ -317,7 +320,7 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
           EngineUnavailableError
         );
       }
-    });
+    }, PDFA_CONVERSION_TIMEOUT_MS);
 
     it('fails closed when input buffer is empty', async () => {
       await expect(convertToPdfA(Buffer.alloc(0))).rejects.toThrow(PdfPostprocessError);
