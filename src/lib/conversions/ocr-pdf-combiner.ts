@@ -21,6 +21,16 @@ import {
   PDFString,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
+import {
+  LazyToUnicodeStream,
+  TextLayerCidMap,
+  WIDE_GLYPH_ADVANCE,
+  buildToUnicodeCMapFromCids,
+  glyphAdvanceForCodePoint,
+} from './ocr-text-layer-font';
+
+/** The first allocated CID; CID 0 is reserved for .notdef. */
+const FIRST_TEXT_LAYER_CID = 1;
 
 export interface OcrTableCellInfo {
   rowIndex: number;
@@ -930,109 +940,15 @@ export function parseTesseractBlocks(
 }
 
 /**
- * Creates an ISO 32000-1 compliant ToUnicode CMap stream.
- * Maps 16-bit character codes (Identity-H) directly to UCS-2 / UTF-16 Unicode values,
- * ensuring that text copied or searched in PDF viewers (Adobe Acrobat, Chrome, Preview, pdftotext)
- * matches the original CJK and Unicode glyphs without garbling.
+ * Creates an ISO 32000-1 compliant ToUnicode CMap stream for the 16-bit (Identity-H) text-layer
+ * font. Each `[cid, codePoint]` pair becomes one `bfchar` entry with a UTF-16BE destination
+ * (a surrogate pair for astral code points). No `bfrange` is emitted: §9.10.3 only lets the last
+ * byte of a code vary inside a range, which a 2-byte CID to code point table cannot satisfy.
  */
 export function createToUnicodeCMap(
-  mappings?: Array<number | [number, number]> | Map<number, number>
+  mappings: Array<[number, number]> | Map<number, number> = []
 ): string {
-  if (
-    !mappings ||
-    (Array.isArray(mappings) && mappings.length === 0) ||
-    (mappings instanceof Map && mappings.size === 0)
-  ) {
-    return `/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CIDSystemInfo <<
-  /Registry (Adobe)
-  /Ordering (UCS)
-  /Supplement 0
->> def
-/CMapName /Custom-ToUnicode def
-/CMapType 2 def
-1 begincodespacerange
-<0000> <FFFF>
-endcodespacerange
-1 beginbfrange
-<0000> <FFFF> <0000>
-endbfrange
-endcmap
-CMapName currentdict /CMap defineresource pop
-end
-end`;
-  }
-
-  const toHex16 = (cp: number): string => (cp & 0xffff).toString(16).padStart(4, '0').toUpperCase();
-  const toHex = (cp: number): string => {
-    if (cp <= 0xffff) {
-      return cp.toString(16).padStart(4, '0').toUpperCase();
-    }
-    const high = Math.floor((cp - 0x10000) / 0x400) + 0xd800;
-    const low = ((cp - 0x10000) % 0x400) + 0xdc00;
-    return (
-      high.toString(16).padStart(4, '0').toUpperCase() +
-      low.toString(16).padStart(4, '0').toUpperCase()
-    );
-  };
-
-  const entries: string[] = [];
-  const pushCMapEntry = (src: number, dst: number): void => {
-    // In ISO 32000-1 Section 9.10.3 (CMap Type 2), the source CID is always a 2-byte hex (<0000> to <FFFF>).
-    // The target is a UTF-16BE hex sequence: 2 bytes (<XXXX>) for BMP or 4 bytes (<D8xxDCxx>) for Astral (> 0xFFFF).
-    const cidHex = toHex16(src <= 0xffff ? src : src & 0xffff);
-    entries.push(`<${cidHex}> <${toHex(dst)}>`);
-  };
-
-  if (Array.isArray(mappings)) {
-    for (const m of mappings) {
-      if (typeof m === 'number') {
-        if (m <= 0xffff) {
-          entries.push(`<${toHex16(m)}> <${toHex16(m)}>`);
-        } else {
-          // Decompose bare astral code point into surrogate CID pairs for identity mapping
-          const high = Math.floor((m - 0x10000) / 0x400) + 0xd800;
-          const low = ((m - 0x10000) % 0x400) + 0xdc00;
-          entries.push(`<${toHex16(high)}> <${toHex16(high)}>`);
-          entries.push(`<${toHex16(low)}> <${toHex16(low)}>`);
-        }
-      } else {
-        pushCMapEntry(m[0], m[1]);
-      }
-    }
-  } else if (mappings instanceof Map) {
-    for (const [src, dst] of mappings.entries()) {
-      pushCMapEntry(src, dst);
-    }
-  }
-
-  const bfcharBlocks: string[] = [];
-  const CHUNK_SIZE = 100;
-  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
-    const chunk = entries.slice(i, i + CHUNK_SIZE);
-    bfcharBlocks.push(`${chunk.length} beginbfchar\n${chunk.join('\n')}\nendbfchar`);
-  }
-
-  return `/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CIDSystemInfo <<
-  /Registry (Adobe)
-  /Ordering (UCS)
-  /Supplement 0
->> def
-/CMapName /Custom-ToUnicode def
-/CMapType 2 def
-1 begincodespacerange
-<0000> <FFFF>
-endcodespacerange
-${bfcharBlocks.join('\n')}
-endcmap
-CMapName currentdict /CMap defineresource pop
-end
-end`;
+  return buildToUnicodeCMapFromCids([...mappings]);
 }
 
 /**
@@ -1064,6 +980,11 @@ end`;
 export interface UnicodeFontInfo {
   fontName: string;
   fontRef: any;
+  /**
+   * Encodes text (normalized to NFC) as Identity-H hex, allocating one dense CID per distinct
+   * code point. The font's ToUnicode CMap and /W array are kept in step with the allocations.
+   */
+  encodeText: (text: string) => string;
 }
 
 /**
@@ -1313,8 +1234,18 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     return (doc as any)._unicodeFontInfo;
   }
 
-  const cmap = createToUnicodeCMap();
-  const cmapStream = doc.context.flateStream(cmap);
+  // CIDs are allocated while text is laid out; the ToUnicode content is generated at save time and
+  // the /W array grows with each new CID, so both always describe exactly the CIDs in use.
+  const widths = PDFArray.withContext(doc.context);
+  const firstCidWidths = PDFArray.withContext(doc.context);
+  const cids = new TextLayerCidMap((cid, codePoint) => {
+    if (cid === FIRST_TEXT_LAYER_CID) {
+      widths.push(PDFNumber.of(FIRST_TEXT_LAYER_CID));
+      widths.push(firstCidWidths);
+    }
+    firstCidWidths.push(PDFNumber.of(glyphAdvanceForCodePoint(codePoint)));
+  });
+  const cmapStream = new LazyToUnicodeStream(doc.context.obj({}), cids);
   const cmapRef = doc.context.register(cmapStream);
 
   const ttfBuffer = buildMinimalTrueTypeFont();
@@ -1347,8 +1278,9 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
       Supplement: 0,
     },
     FontDescriptor: fontDescRef,
-    DW: 1000,
-    W: [0, 255, 500],
+    DW: WIDE_GLYPH_ADVANCE,
+    // ISO 32000-1 §9.7.4.3: `c [w1 w2 ...]` lists consecutive CIDs starting at c.
+    W: widths,
   });
   const cidFontRef = doc.context.register(cidFontDict);
 
@@ -1363,7 +1295,11 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
   const type0FontRef = doc.context.register(type0FontDict);
   const fontName = 'ECToUnicodeFont';
 
-  const fontInfo = { fontName, fontRef: type0FontRef };
+  const fontInfo: UnicodeFontInfo = {
+    fontName,
+    fontRef: type0FontRef,
+    encodeText: (text: string) => cids.encodeText(text),
+  };
   (doc as any)._unicodeFontInfo = fontInfo;
   return fontInfo;
 }
@@ -1562,8 +1498,9 @@ export function buildTJArrayWithKerning(
     if (hasNonWinAnsi) break;
   }
 
+  let unicodeFont: UnicodeFontInfo | null = null;
   if (hasNonWinAnsi) {
-    const unicodeFont = ensureUnicodeFont(doc);
+    unicodeFont = ensureUnicodeFont(doc);
     activeFontName = unicodeFont.fontName;
   } else {
     ensureStandardFontToUnicode(doc, font);
@@ -1614,8 +1551,8 @@ export function buildTJArrayWithKerning(
     }
 
     // Word text encoded
-    if (hasNonWinAnsi) {
-      tjArray.push(PDFHexString.of(encodeUnicodeTo4CharHex(trimmed)));
+    if (unicodeFont) {
+      tjArray.push(PDFHexString.of(unicodeFont.encodeText(trimmed)));
     } else {
       const enc = safeEncodeText(font, trimmed);
       if (enc) tjArray.push(enc);
@@ -1624,8 +1561,8 @@ export function buildTJArrayWithKerning(
     // Gap to next word
     if (i < words.length - 1) {
       // Push explicit space glyph to ensure PDF viewers copy text with spaces
-      if (hasNonWinAnsi) {
-        tjArray.push(PDFHexString.of('0020'));
+      if (unicodeFont) {
+        tjArray.push(PDFHexString.of(unicodeFont.encodeText(' ')));
       } else {
         const spaceEnc = safeEncodeText(font, ' ');
         if (spaceEnc) tjArray.push(spaceEnc);
@@ -1845,7 +1782,7 @@ export function renderTextItem(
     const unicodeFont = ensureUnicodeFont(page.doc);
     registerFontOnPage(page, unicodeFont);
     activeFontName = unicodeFont.fontName;
-    encodedText = PDFHexString.of(encodeUnicodeTo4CharHex(trimmed));
+    encodedText = PDFHexString.of(unicodeFont.encodeText(trimmed));
 
     let estimatedWidth = 0;
     for (let i = 0; i < trimmed.length; i++) {
