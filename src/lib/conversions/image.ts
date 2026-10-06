@@ -171,9 +171,12 @@ export function encodeBmp(raw: Buffer, width: number, height: number, channels: 
   return buf;
 }
 
+/** Bit depths a BMP can declare (Microsoft BITMAPINFOHEADER). */
+const BMP_BITS_PER_PIXEL = new Set([1, 4, 8, 16, 24, 32]);
+
 export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: number; channels: 4 } {
   if (buf.length < 54 || buf.toString('ascii', 0, 2) !== 'BM') {
-    throw new Error('Invalid BMP file: missing BM header signature.');
+    throw new ConversionFailedError('Invalid BMP file: missing BM header signature.');
   }
 
   const pixelOffset = buf.readUInt32LE(10);
@@ -182,15 +185,24 @@ export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: nu
   const bpp = buf.readUInt16LE(28);
 
   if (width <= 0 || height === 0) {
-    throw new Error(`Invalid BMP dimensions: ${width}x${height}`);
+    throw new ConversionFailedError(`Invalid BMP dimensions: ${width}x${height}`);
+  }
+  if (!BMP_BITS_PER_PIXEL.has(bpp)) {
+    throw new ConversionFailedError(`Invalid BMP: ${bpp} bits per pixel is not a BMP bit depth.`);
   }
 
   const isBottomUp = height > 0;
   const absHeight = Math.abs(height);
   assertInputPixels(width, absHeight);
-  const rawRgba = Buffer.alloc(width * absHeight * 4);
 
   const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
+  // The declared canvas must be backed by the file: a header cannot make the decoder allocate it for nothing.
+  if (pixelOffset + rowSize * absHeight > buf.length) {
+    throw new ConversionFailedError(
+      `Invalid BMP: the header declares ${width}x${absHeight} pixels at ${bpp} bits (${rowSize * absHeight} bytes of pixel data from offset ${pixelOffset}), but the file ends at byte ${buf.length}.`
+    );
+  }
+  const rawRgba = Buffer.alloc(width * absHeight * 4);
 
   for (let y = 0; y < absHeight; y++) {
     const srcY = isBottomUp ? absHeight - 1 - y : y;

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import sharp from 'sharp';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { POST as legacyConvertPost } from '../src/app/api/convert/route';
-import { convertImage } from '../src/lib/conversions/image';
+import { convertImage, encodeBmp } from '../src/lib/conversions/image';
 import {
   InputPixelLimitError,
   MAX_INPUT_PIXELS_ENV,
@@ -201,7 +201,8 @@ describe('images at and below the limit still convert', () => {
     await expect(convertImage(bombBmp(SMALL_LIMIT_SIDE + 1, SMALL_LIMIT_SIDE), 'png', {}, 'over.bmp', 'bmp')).rejects.toBeInstanceOf(
       InputPixelLimitError
     );
-    const ok = await convertImage(bombBmp(SMALL_LIMIT_SIDE, SMALL_LIMIT_SIDE), 'png', {}, 'at.bmp', 'bmp');
+    const whole = encodeBmp(Buffer.alloc(SMALL_LIMIT * 3, 9), SMALL_LIMIT_SIDE, SMALL_LIMIT_SIDE, 3);
+    const ok = await convertImage(whole, 'png', {}, 'at.bmp', 'bmp');
     expect(ok.buffer.readUInt32BE(PNG_IHDR_WIDTH_OFFSET)).toBe(SMALL_LIMIT_SIDE);
   });
 });
