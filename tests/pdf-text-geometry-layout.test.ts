@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
-import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
+import { analyzePdfPagesInProcess, extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { oracleTest } from './helpers/oracle-test';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
@@ -178,5 +178,27 @@ describe('invisible text', () => {
     const pdf = rawPdf([{ width: 300, height: 200, content: '' }]);
     const page = (await extractPdfTextLayerPages(pdf, new Set([1]))).get(1);
     expect([page?.text, page?.lineBlocks]).toEqual(['', []]);
+  });
+});
+
+describe('pages below the text density threshold', () => {
+  const DENSITY_THRESHOLD = 15;
+
+  it('reads no word geometry for a sparse page that will be recognized instead', async () => {
+    // Six characters of zero-scale text: below the threshold, so the page is OCR'd, and its text
+    // layer yields no geometry. The page must not abort the document.
+    const sparse = run('stamp!', 20, 100, 12, '0 Tz');
+    const dense = run('a page with enough visible text to keep its own layer', 20, 100, 12);
+    const pdf = rawPdf([
+      { width: 400, height: 200, content: sparse },
+      { width: 400, height: 200, content: dense },
+    ]);
+    const result = await analyzePdfPagesInProcess(pdf, { densityThreshold: DENSITY_THRESHOLD, geometry: 'text-pages' });
+    expect(result.analyses.map((page) => [page.pageNumber, page.hasTextLayer])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect([...result.geometry.keys()]).toEqual([2]);
+    expect(result.geometry.get(2)?.lines).toEqual(['a page with enough visible text to keep its own layer']);
   });
 });
