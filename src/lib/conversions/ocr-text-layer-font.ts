@@ -1,4 +1,3 @@
-import { deflateSync } from 'node:zlib';
 import { PDFContext, PDFDict, PDFName, PDFRawStream } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 
@@ -191,7 +190,8 @@ export class LazyToUnicodeStream extends ExtensibleRawStream {
   private render(): Uint8Array {
     if (this.cachedSize !== this.cids.size) {
       const cmap = buildToUnicodeCMapFromCids(this.cids.entries());
-      this.cachedBytes = new Uint8Array(deflateSync(Buffer.from(cmap, 'latin1')));
+      // pdf-lib's own Flate encoder: this module is also bundled for the browser OCR path.
+      this.cachedBytes = this.dict.context.flateStream(cmap).getContents();
       this.cachedSize = this.cids.size;
     }
     return this.cachedBytes;
@@ -210,7 +210,9 @@ export class LazyToUnicodeStream extends ExtensibleRawStream {
   }
 
   override getContentsString(): string {
-    return Buffer.from(this.render()).toString('latin1');
+    let text = '';
+    for (const byte of this.render()) text += String.fromCodePoint(byte);
+    return text;
   }
 
   /** A snapshot for another document (pdf-lib's object copier passes the destination context). */
