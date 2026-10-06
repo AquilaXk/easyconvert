@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
-import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -2053,6 +2053,7 @@ export function decodeRawBayerSensor(
         }
         const { width, height } = chosen;
         assertInputPixels(width, height);
+        assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
         const bpp = chosen.bitsPerSample || 8;
         const pattern = chosen.cfaPattern || 'RGGB';
         const bytesPerPixel = bpp > 8 ? 2 : 1;
@@ -2630,6 +2631,7 @@ export async function convertImage(
             }
             rgbaBuffer = reconstructed;
           } else {
+            assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
             const oklabRes = applyOklabQuantizationAndDither(
               { data, width: info.width, height: info.height },
               colours,
@@ -2800,6 +2802,7 @@ export async function convertImage(
           }
           rgbaBuffer = reconstructed;
         } else {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const oklabRes = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
@@ -2843,6 +2846,7 @@ export async function convertImage(
           });
           outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
         } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const res = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
@@ -2904,6 +2908,7 @@ export async function convertImage(
           }
           rgbaBuffer = reconstructed;
         } else {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const oklabRes = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,

@@ -32,22 +32,55 @@ export const INPUT_PIXEL_LIMIT_HTTP_STATUS = 413;
 /** Message sharp (libvips) raises when its own `limitInputPixels` check fails. */
 const NATIVE_PIXEL_LIMIT_MESSAGE = 'Input image exceeds pixel limit';
 
-/** An image that declares more pixels than the input limit; the API answers HTTP 413 and states the limit. */
+/**
+ * An image that declares more pixels than the input limit, or than the budget of the conversion path it
+ * needs (`scope` names that path); the API answers HTTP 413 and states the limit.
+ */
 export class InputPixelLimitError extends ConversionFailedError {
   readonly status = INPUT_PIXEL_LIMIT_HTTP_STATUS;
   readonly limit: number;
   readonly width?: number;
   readonly height?: number;
 
-  constructor(limit: number, width?: number, height?: number) {
+  constructor(limit: number, width?: number, height?: number, scope?: string) {
     const declared = width === undefined || height === undefined ? 'more pixels than the limit' : `${width}x${height} pixels (${width * height} pixels)`;
-    super(`The input image declares ${declared}, over the input limit of ${limit} pixels`);
+    const bound = scope === undefined ? `the input limit of ${limit} pixels` : `the limit of ${limit} pixels for ${scope}`;
+    super(`The input image declares ${declared}, over ${bound}`);
     this.name = 'InputPixelLimitError';
     this.limit = limit;
     this.width = width;
     this.height = height;
   }
 }
+
+/** A pixel budget for a conversion path that holds the whole picture in process memory, several times over. */
+export interface PixelBudget {
+  readonly maxPixels: number;
+  /** What the budget protects, for the error message. */
+  readonly scope: string;
+}
+
+/**
+ * Per-pixel JavaScript palette quantizers (Oklab, Riemersma) hold the raster plus Oklab and error-diffusion
+ * working arrays. Peak RSS added, measured per path in its own process: 1.27 GB at 4000 x 4000 (83 B/pixel),
+ * 2.85 GB at 5000 x 5000, 3.9 GB at 6000 x 6000, 5.2 GB at 8000 x 8000. 16 megapixels keeps one job at about
+ * 1.3 GB of the 3.3 GB share that docker-compose.yml gives each of 3 concurrent jobs.
+ */
+export const QUANTIZER_PIXEL_BUDGET: PixelBudget = { maxPixels: 16_000_000, scope: 'Oklab and Riemersma palette quantization' };
+
+/**
+ * Camera RAW sensors are demosaiced and colour-processed as float arrays in process. Peak RSS added by a
+ * 16-bit DNG converted to JPEG: 629 MB at 16 MP, 2.4 GB at 62.4 MP (about 40 B/pixel, 40 s). 64 megapixels
+ * admits the 61 MP full-frame sensors at about 2.6 GB per job, and nothing larger.
+ */
+export const RAW_SENSOR_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scope: 'camera RAW sensor decoding' };
+
+/**
+ * Ultra HDR reconstruction decodes the SDR base and the gain map and expands them to a float radiance array.
+ * Peak RSS added: 235 MB at 16 MP for PNG output (15 B/pixel), 446 MB for EXR output (29 B/pixel). 64
+ * megapixels keeps the worst target near 1.9 GB per job.
+ */
+export const HDR_FLOAT_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scope: 'Ultra HDR float reconstruction' };
 
 /**
  * The input pixel limit in force: the default, or `EASYCONVERT_MAX_INPUT_PIXELS` when set to a whole number
@@ -72,6 +105,14 @@ export function assertInputPixels(width: number, height: number): void {
   }
 }
 
+/** Throws `InputPixelLimitError` when `width` x `height` pixels exceed `budget` (or a lower input limit). */
+export function assertPixelBudget(width: number, height: number, budget: PixelBudget): void {
+  const limit = Math.min(budget.maxPixels, maxInputPixels());
+  if (!(width * height <= limit)) {
+    throw new InputPixelLimitError(limit, width, height, budget.scope);
+  }
+}
+
 /**
  * Opens an image for decoding with sharp's own pixel check set from the same limit, so the native decoder
  * enforces it even where the header could not be read in advance.
@@ -85,7 +126,7 @@ export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}
  * `InputPixelLimitError` when they exceed the input limit. A header sharp cannot read is left to the decode
  * that follows, which reports it as malformed input.
  */
-export async function assertEncodedImageWithinLimit(input: Buffer): Promise<void> {
+export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget): Promise<void> {
   let width: number | undefined;
   let height: number | undefined;
   try {
@@ -96,6 +137,7 @@ export async function assertEncodedImageWithinLimit(input: Buffer): Promise<void
   }
   if (width !== undefined && height !== undefined) {
     assertInputPixels(width, height);
+    if (budget) assertPixelBudget(width, height, budget);
   }
 }
 
