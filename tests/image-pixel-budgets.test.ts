@@ -29,6 +29,9 @@ const HDR_SIDE_OVER_BUDGET = 9_000;
 const HDR_SIDE_OVER_INPUT_LIMIT = 15_000;
 const HDR_SOURCE_SIDE = 32;
 const QUANTIZER_REJECTION_RSS_BYTES = 400 * BYTES_PER_MIB;
+const HDR_REJECTION_RSS_BYTES = 500 * BYTES_PER_MIB;
+/** OpenEXR file magic number 20000630 (0x762f3101), as written on disk. */
+const OPENEXR_MAGIC = [0x76, 0x2f, 0x31, 0x01];
 
 const SOF0_MARKER = Buffer.from([0xff, 0xc0]);
 const SOF_HEIGHT_OFFSET = 5;
@@ -149,5 +152,37 @@ describe('Ultra HDR reconstruction is bounded before the float arrays are built'
     const result = await convertImage(built.file, 'png', {}, 'photo.jpg', 'ultrahdr');
     const meta = await sharp(result.buffer).metadata();
     expect([meta.width, meta.height]).toEqual([HDR_SOURCE_SIDE, HDR_SOURCE_SIDE]);
+  });
+});
+
+describe('EXR and Ultra HDR output hold float arrays, so they share the HDR budget', () => {
+  /** 9000 x 9000 = 81 MP: over the 64 MP HDR budget, under the 100 MP input limit. */
+  async function solid(format: 'png' | 'jpeg', side: number): Promise<Buffer> {
+    const base = sharp({ create: { width: side, height: side, channels: 3, background: { r: 90, g: 140, b: 30 } } });
+    return format === 'png' ? base.png().toBuffer() : base.jpeg().toBuffer();
+  }
+
+  it.each([
+    ['exr', 'png'],
+    ['exr', 'jpeg'],
+    ['ultrahdr', 'png'],
+  ] as const)('refuses an 81 MP %s output from a %s source before the float array is built', async (target, format) => {
+    const source = await solid(format, HDR_SIDE_OVER_BUDGET);
+    const rssBefore = process.memoryUsage().rss;
+    const run = convertImage(source, target, {}, `big.${format}`, format === 'png' ? 'png' : 'jpg');
+    await expect(run).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(run).rejects.toMatchObject({
+      status: HTTP_PAYLOAD_TOO_LARGE,
+      limit: EXPECTED_SENSOR_LIMIT,
+      width: HDR_SIDE_OVER_BUDGET,
+      height: HDR_SIDE_OVER_BUDGET,
+    });
+    // The 243 MB RGB raster is decoded once; the 972 MB float array and its EXR/gain-map copies never exist.
+    expect(process.memoryUsage().rss - rssBefore).toBeLessThan(HDR_REJECTION_RSS_BYTES);
+  });
+
+  it('still writes a small EXR, starting with the OpenEXR magic number', async () => {
+    const result = await convertImage(await solid('png', HDR_SOURCE_SIDE), 'exr', {}, 'small.png', 'png');
+    expect([...result.buffer.subarray(0, 4)]).toEqual(OPENEXR_MAGIC);
   });
 });

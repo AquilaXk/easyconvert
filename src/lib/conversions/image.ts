@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
-import { InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -2750,8 +2750,9 @@ export async function convertImage(
             hdrFloat = uHdr.rgbFloat;
             imgW = uHdr.width;
             imgH = uHdr.height;
-          } catch {
-            // Standard non-UltraHDR image
+          } catch (err) {
+            // Standard non-UltraHDR image; an image over the pixel limit is never tolerated.
+            rethrowInputPixelLimit(err);
           }
         }
 
@@ -2762,6 +2763,7 @@ export async function convertImage(
             .removeAlpha()
             .raw()
             .toBuffer({ resolveWithObject: true });
+          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
           const floatPix = new Float32Array(info.width * info.height * 3);
           for (let i = 0; i < data.length; i++) {
             floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
@@ -2787,6 +2789,7 @@ export async function convertImage(
           .removeAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
+        assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
         const floatPix = new Float32Array(info.width * info.height * 3);
         for (let i = 0; i < data.length; i++) {
           floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
