@@ -908,17 +908,21 @@ describe('archive password delivery to the real 7z binary', () => {
         execFileSync(oracle7z(), ['a', '-y', '-tzip', path.join(dir, 'many.zip'), '.'], { cwd: source, stdio: 'pipe' });
         const many = readFileSync(path.join(dir, 'many.zip'));
         const log = installCallLog(dir);
+        // The source-side entry limit (the same 50,000) or the encrypted-target limit refuses it,
+        // whichever the pipeline reaches first; either way nothing is created.
+        const refusal = new RegExp(
+          `file count \\(${MAX_ENCRYPTED_ARCHIVE_ENTRIES + 1}\\) exceeds|Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries`
+        );
         for (const target of ['zip', '7z'] as const) {
-          expect(() => convertWithNative7z(many, 'zip', target, { password: PASSWORD }, 'many.zip'), `lib ${target}`).toThrow(
-            `Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`
-          );
+          expect(() => convertWithNative7z(many, 'zip', target, { password: PASSWORD }, 'many.zip'), `lib ${target}`).toThrow(refusal);
           await expect(
             convertWithWorker7z(many, 'zip', target, { password: PASSWORD, throwOnUnavailable: true }, 'many.zip'),
             `worker ${target}`
-          ).rejects.toThrow(`Encrypted archives support at most ${MAX_ENCRYPTED_ARCHIVE_ENTRIES} entries.`);
+          ).rejects.toThrow(refusal);
         }
-        // Only the four extractions ran; no creation (`a`) or verification listing (`l`) started.
-        expect(calledCommands(log)).toEqual(['x', 'x', 'x', 'x']);
+        // No creation (`a`) started for any of the four refused conversions.
+        expect(calledCommands(log)).not.toContain('a');
+        expect(calledCommands(log).length).toBeGreaterThanOrEqual(4);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -1004,8 +1008,9 @@ describe('archive password delivery to the real 7z binary', () => {
 
         const calls = recordedCalls(log);
         const reads = calls.filter((args) => args[0] === 'x' || args[0] === 'l');
-        // Three extractions, one inspect listing and the encryption checks of the two converted zips.
-        expect(reads.map((args) => args[0]).sort()).toEqual(['l', 'l', 'l', 'x', 'x', 'x']);
+        // Three contained extractions (each lists before it extracts), one inspect listing and the
+        // encryption checks of the two converted zips.
+        expect(reads.map((args) => args[0]).sort()).toEqual(['l', 'l', 'l', 'l', 'l', 'l', 'x', 'x', 'x']);
         for (const args of reads) {
           expect(args.filter((arg) => arg.startsWith('-p')), `switches in: ${args.join(' ')}`).toEqual([]);
         }

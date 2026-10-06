@@ -3,8 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   ArchiveEntryCollisionError,
+  ArchivePasswordRequiredError,
   ConversionFailedError,
   EngineUnavailableError,
+  InvalidArchivePasswordError,
   type ArchiveCollisionPolicy,
 } from '../types';
 import {
@@ -14,6 +16,14 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
+import {
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  isArchivePasswordFailure,
+  sevenZipReadPasswordInput,
+} from './archive-password';
+
+export { assertArchivePasswordSafe };
 
 /**
  * Contained extraction of untrusted archives through the 7-Zip CLI.
@@ -100,13 +110,6 @@ export class UnreadableArchiveError extends ConversionFailedError {
   }
 }
 
-/** The archive is encrypted and no password was supplied. */
-export class ArchivePasswordRequiredError extends ConversionFailedError {
-  constructor(label: string) {
-    super(`The ${label} is password protected. A password is required to extract.`);
-    this.name = 'ArchivePasswordRequiredError';
-  }
-}
 
 /**
  * 7-Zip extraction cannot keep two entries that share a path, so the 'rename' policy (the default)
@@ -146,16 +149,20 @@ const WINDOWS_ATTRIBUTE_LETTERS = /^[RHS8DAdNTsLCOIEV]+$/;
 /** Unix mode in the high 16 bits, printed as hex when 7-Zip cannot render it as `rwx`. */
 const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
 const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
-const PASSWORD_FAILURE_PATTERN = /Wrong password|Can not open encrypted/i;
-/** Also what a wrong password looks like once an encrypted stream is being decoded; only meaningful when a password was given. */
-const DECODE_ERROR_PATTERN = /Data Error/i;
 /** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
-const PASSWORD_PROMPT_PATTERN = /Break signaled|Enter password/i;
+const PASSWORD_PROMPT_ABORT_PATTERN = /^(?:Break signaled|Enter password.*)$/m;
+/** The prompt 7-Zip prints on stdout before reading a password from stdin; it is not part of a listing. */
+const SEVEN_ZIP_PASSWORD_PROMPT = /^Enter password \(will not be echoed\):/gm;
+
+/** Removes 7-Zip's password prompt from a listing, which it prints whenever it reads the answer from stdin. */
+export function stripSevenZipPasswordPrompt(stdout: string): string {
+  return stdout.replace(SEVEN_ZIP_PASSWORD_PROMPT, '');
+}
 
 /**
  * Every `-slt` key 7-Zip 16.02, 21.07, 22.01 and 23.01 print for the archives in the test corpus and for the
  * real source containers in tests/fixtures/archive-sources (ISO, UDF, CAB, ARJ, LZH, RPM, DEB, CPIO, WIM, DMG,
- * HFS+, ext4, FAT, VHD, CHM, SquashFS, MSI, NSIS, Z, LZMA; 'Metadata Changed' comes from UDF and HFS+), plus
+ * HFS+, ext4, FAT, VHD, CHM, SquashFS, MSI, NSIS, Z, LZMA; 'Metadata Changed' comes from UDF and HFS+, 'Copy Link' from RAR5), plus
  * the remaining per-item property names 7-Zip defines. A key outside this set can only come from a forged value
  * (p7zip 16.02 prints raw line breaks), so the listing is rejected.
  */
@@ -163,7 +170,7 @@ const KNOWN_LISTING_KEYS = new Set([
   'Path', 'Name', 'Extension', 'Folder', 'Size', 'Packed Size', 'Modified', 'Created', 'Accessed', 'Attributes',
   'Encrypted', 'Comment', 'CRC', 'Method', 'Block', 'Solid', 'Anti', 'Characteristics', 'Host OS', 'Version',
   'Volume Index', 'Offset', 'Position', 'Split Before', 'Split After', 'Dictionary Size', 'File System',
-  'Link', 'Hard Link', 'Symbolic Link', 'Links', 'iNode', 'Mode', 'User', 'Group', 'User ID', 'Group ID',
+  'Link', 'Hard Link', 'Symbolic Link', 'Copy Link', 'Links', 'iNode', 'Mode', 'User', 'Group', 'User ID', 'Group ID',
   'Device Major', 'Device Minor', 'Dev Major', 'Dev Minor', 'Short Name', 'Alternate Stream', 'Alternate Streams',
   'NT Security', 'Stream ID', 'Checksum', 'SHA-1', 'SHA-256', 'BLAKE2sp', 'MD5', 'XXH64', 'Commented', 'Deleted',
   'Path Prefix', 'Local Name', 'Provider', 'Aux', 'Tree', 'Type', 'Metadata Changed',
@@ -710,21 +717,15 @@ export interface ContainedExtractionRequest {
   signal?: AbortSignal;
 }
 
-const PASSWORD_FORBIDDEN_CHARACTERS = /[\r\n\0]/;
 
-/** The password travels on 7z's stdin, so a line break or NUL could answer further prompts. */
-export function assertArchivePasswordSafe(password: string | undefined): void {
-  if (password && PASSWORD_FORBIDDEN_CHARACTERS.test(password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
-}
-
+/** The password travels on 7z's stdin (never argv); `assertArchivePasswordSafe` refuses anything that could answer a further prompt. */
 function passwordArgs(request: ContainedExtractionRequest): { args: string[]; stdin: Buffer | undefined } {
   assertArchivePasswordSafe(request.password);
   if (!request.password) {
     return { args: [], stdin: undefined };
   }
-  return { args: ['-p'], stdin: Buffer.from(`${request.password}\n`) };
+  // No switch on reads: 7-Zip prompts on its own when an entry or header is encrypted and reads the answer here.
+  return { args: [], stdin: sevenZipReadPasswordInput(request.password) };
 }
 
 /**
@@ -825,14 +826,15 @@ function toArchiveFailure(
   if (failure.kind === 'buffer') {
     return phase === 'list' ? entryCountError(null, limits) : sizeError(limits);
   }
+  // Only the tool's own stderr lines decide: an entry name or the command line may contain the same words.
+  const stderr = archiveFailureStderr(err);
+  const stdout = String((err as { stdout?: unknown } | null)?.stdout ?? '');
   const passwordFailure =
-    PASSWORD_FAILURE_PATTERN.test(failure.text) ||
-    (hasPassword && DECODE_ERROR_PATTERN.test(failure.text)) ||
-    (!hasPassword && PASSWORD_PROMPT_PATTERN.test(failure.text));
+    isArchivePasswordFailure(stderr) || (!hasPassword && PASSWORD_PROMPT_ABORT_PATTERN.test(`${stderr}\n${stdout}`));
   if (passwordFailure) {
     return hasPassword
-      ? new ConversionFailedError(`Invalid password for encrypted ${label}.`)
-      : new ArchivePasswordRequiredError(label);
+      ? new InvalidArchivePasswordError(`Invalid password for encrypted ${label}.`)
+      : new ArchivePasswordRequiredError(`The ${label} is password protected. A password is required to extract.`);
   }
   return new UnreadableArchiveError(
     `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
@@ -891,7 +893,7 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
     stdin,
     signal: request.signal,
   });
-  return parse7zTechnicalListing(result.stdout.toString('utf-8'), { payloadName: wrapperPayloadName(target.archivePath) });
+  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(result.stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
 }
 
 function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ListedArchiveEntry[] {
@@ -905,7 +907,7 @@ function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget
     input: stdin,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  return parse7zTechnicalListing(stdout.toString('utf-8'), { payloadName: wrapperPayloadName(target.archivePath) });
+  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
 }
 
 function excludeArgsFor(skippedLinks: string[]): string[] {
