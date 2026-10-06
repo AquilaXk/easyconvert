@@ -26,6 +26,17 @@ const HEADER_SAMPLE_RATE_CODES: ReadonlyArray<readonly [number, number]> = [
   [48000, 10],
   [96000, 11],
 ];
+/**
+ * RFC 9639 section 9.1.2: rates without a table entry are written after the header as kHz
+ * (code 12), Hz (13) or tens of Hz (14); a rate none of them can hold uses code 0 and lives
+ * only in STREAMINFO, which is outside the streamable subset.
+ */
+const TRAILING_SAMPLE_RATE_CODES: ReadonlyArray<readonly [number, number]> = [
+  [12000, 12],
+  [11025, 13],
+  [100010, 14],
+  [700001, 0],
+];
 const SAMPLES_PER_FRAME = 4096;
 /** Frame numbers of 2048 and above need a 3-byte UTF-8 coded number. */
 const FRAMES_BEYOND_TWO_BYTE_NUMBERS = 2100;
@@ -51,6 +62,21 @@ describe('FLAC frame headers follow RFC 9639', () => {
       expect(parsed.streamInfo.sampleRate).toBe(rate);
     }
   );
+
+  it.each(TRAILING_SAMPLE_RATE_CODES)('writes sample rate code %i Hz -> %i', (rate, expectedCode) => {
+    const stream = encodeFlacStream(ramp(1000, 1), rate, 1);
+    const parsed = parseFlacStructure(stream);
+    expect(parsed.frames[0].sampleRateCode).toBe(expectedCode);
+    expect(parsed.frames[0].headerCrcOk).toBe(true);
+    expect(parsed.streamInfo.sampleRate).toBe(rate);
+  });
+
+  oracleTest('every sample rate code passes the reference decoder', ['flac'], () => {
+    for (const [rate] of [...HEADER_SAMPLE_RATE_CODES, ...TRAILING_SAMPLE_RATE_CODES]) {
+      const tested = flacCliTest(encodeFlacStream(ramp(5000, 1), rate, 1));
+      expect(tested.ok, `${rate} Hz: ${tested.stderr.slice(0, 200)}`).toBe(true);
+    }
+  });
 
   it('codes frame numbers past 2047 as multi-byte UTF-8 numbers', () => {
     const frames = FRAMES_BEYOND_TWO_BYTE_NUMBERS * SAMPLES_PER_FRAME + 10;

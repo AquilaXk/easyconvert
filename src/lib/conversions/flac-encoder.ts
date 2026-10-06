@@ -1,10 +1,12 @@
 /**
  * Pure TypeScript FLAC encoder (RFC 9639).
  *
- * Per frame and channel the encoder picks the cheapest of constant, verbatim and fixed
- * (orders 0-4) subframes, removes wasted low bits, and codes residuals with partitioned
- * Rice codes (partition order 0-8, an exact parameter per partition, escape partitions
- * when raw residuals are cheaper).
+ * Per frame the encoder picks the cheapest stereo mode (independent, left/side, side/right
+ * or mid/side). Per channel it picks the cheapest of constant, verbatim, fixed (orders 0-4)
+ * and LPC (orders up to 12, Tukey-windowed autocorrelation, Levinson-Durbin, quantized
+ * coefficients with a precision search) subframes, removes wasted low bits, and codes
+ * residuals with partitioned Rice codes (partition order 0-8, an exact parameter per
+ * partition, escape partitions when raw residuals are cheaper).
  *
  * Hot paths work on preallocated Int32Array/Uint32Array/Float64Array buffers and a single
  * fixed-capacity bit writer with a 32-bit accumulator; nothing is allocated per sample.
@@ -1203,7 +1205,6 @@ function planLpc(
 function planChannel(ws: EncoderWorkspace, slot: ChannelSlot, n: number, channelBps: number): void {
   const x = slot.samples;
   const best = slot.best;
-  const trial = ws.trial;
 
   let allEqual = true;
   let orAll = 0;

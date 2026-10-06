@@ -128,6 +128,35 @@ describe('FLAC sample sizes', () => {
     }
   }
 
+  /**
+   * Full-scale 24-bit material: the side channel needs 25 bits, and prediction on it must
+   * leave the 32-bit fast path for the exact one without changing a sample.
+   */
+  oracleTest('24-bit full-scale square, noise and antiphase stereo decode bit-exactly', ['flac'], () => {
+    const bits = 24;
+    const peak = 2 ** (bits - 1) - 1;
+    const frames = 2 * BLOCK + 77;
+    const next = mulberry32(2024);
+    const makers: ReadonlyArray<readonly [string, (i: number, c: number) => number]> = [
+      ['square', (i) => ((i >> 5) & 1 ? peak : -peak - 1)],
+      ['noise', () => Math.round((next() * 2 - 1) * peak)],
+      ['antiphase', (i, c) => {
+        const v = i % 64 < 32 ? peak : -peak - 1;
+        return c === 0 ? v : -1 - v;
+      }],
+    ];
+    for (const [name, make] of makers) {
+      const pcm = new Int32Array(frames * 2);
+      for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < 2; c++) pcm[i * 2 + c] = make(i, c);
+      }
+      const stream = encodeFlacStream(pcm, RATE, 2, { bitsPerSample: bits });
+      const tested = flacCliTest(stream);
+      expect(tested.ok, `${name}: ${tested.stderr.slice(0, 300)}`).toBe(true);
+      expect(sha256Hex(flacCliDecodeRaw(stream)), name).toBe(sha256Hex(pcmLittleEndianBytes(pcm, 3)));
+    }
+  });
+
   it('rejects samples outside the declared sample size', () => {
     const tooLoud = new Int32Array([0, 200, -3]);
     expect(() => encodeFlacStream(tooLoud, RATE, 1, { bitsPerSample: 8 })).toThrow(/range/);
