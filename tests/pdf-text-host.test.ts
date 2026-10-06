@@ -102,7 +102,7 @@ describe('worker thread failures', () => {
     (await startedThread()).emit('error', Object.assign(new Error('segmentation fault'), { code: 'ERR_WORKER_UNSERIALIZABLE_ERROR' }));
     const err = await pending;
     expect(err).toBeInstanceOf(EngineUnavailableError);
-    expect((err as Error).message).toContain('segmentation fault');
+    expect((err as Error).message).toBe("Engine 'pdf-text-thread' is unavailable: the thread failed: segmentation fault");
   });
 
   it('maps a thread that exits without a reply to an unavailable engine', async () => {
@@ -168,6 +168,8 @@ describe('density analysis', () => {
     };
     const err = await failure(convertFile(pdf(), 'pdf', 'txt', {}, 'doc.pdf'));
     expect(err).toBeInstanceOf(EngineUnavailableError);
+    expect((err as EngineUnavailableError).engineName).toBe('pdf-text-thread');
+    expect((err as Error).message).toBe("Engine 'pdf-text-thread' is unavailable: the thread could not be started: resource exhausted");
   });
 
   it('still converts a PDF whose text layer the reader rejects, as a scanned document', async () => {

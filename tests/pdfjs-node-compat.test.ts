@@ -126,10 +126,13 @@ describe('pdfjs runtime compatibility (Node 20)', () => {
       expect(Promise.withResolvers).toHaveLength(0);
     });
 
-    it('constructs the promise with the receiver, so subclasses get their own type', () => {
+    it('constructs the promise with the receiver, so subclasses get their own type', async () => {
       class Tracked extends Promise<number> {}
-      const { promise } = Tracked.withResolvers<number>();
+      const { promise, resolve } = Tracked.withResolvers<number>();
       expect(promise).toBeInstanceOf(Tracked);
+      expect(promise.constructor).toBe(Tracked);
+      resolve(7);
+      await expect(promise).resolves.toBe(7);
     });
 
     it('throws a TypeError when the receiver is not a constructor', () => {
