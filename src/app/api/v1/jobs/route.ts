@@ -20,6 +20,9 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
+import { redactForOutput, redactText } from '@/lib/security/redact';
+import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
+import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { describeStorageError } from '@/lib/api/storage-error-response';
@@ -104,12 +107,13 @@ export async function POST(req: NextRequest) {
     status: number,
     message: string,
     title: string = 'Bad Request',
+    invalidParams?: Array<{ name: string; reason: string }>,
     headers?: Record<string, string>
   ) => {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    return reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers));
+    return reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, headers, invalidParams));
   };
 
   try {
@@ -328,6 +332,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 1b'. Refuse what could not be sealed or masked later, before any job exists or is charged.
+    const limitProblems = checkSubmissionLimits({ graph, tasks });
+    if (limitProblems.length > 0) {
+      return await failWithRollback(
+        400,
+        'The graph or tasks exceed the limits for storing job credentials securely.',
+        'Bad Request',
+        limitProblems.map((p) => ({ name: p.name, reason: p.reason }))
+      );
+    }
+
     // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
     if (graph) {
       const graphValidation = validateJobGraph(graph, {
@@ -535,7 +550,7 @@ export async function POST(req: NextRequest) {
       }
       const storageProblem = describeStorageError(err);
       if (storageProblem) {
-        return await failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, storageProblem.headers);
+        return await failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
       }
       console.error(`Storage file verification error: ${err instanceof Error ? err.message : String(err)}`);
       return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
@@ -630,7 +645,7 @@ export async function POST(req: NextRequest) {
             sourceFormat: sourceDef.id,
             targetFormat: targetDef.id,
             originalFilename,
-            graph: graphState.graph,
+            graph: redactForOutput(graphState.graph),
             nodes: nodesResponse,
           },
           { status: 202 }
@@ -682,9 +697,21 @@ export async function POST(req: NextRequest) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
     }
+    if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
+      return failWithRollback(400, 'A URL or header is too large to store securely.');
+    }
+    if (error instanceof SealingKeyConfigError) {
+      // The detail names server configuration, so it stays in the server log.
+      console.error('[Jobs] Job secret sealing is not configured:', error.message);
+      return failWithRollback(
+        503,
+        'Job credentials cannot be stored securely right now. Try again later.',
+        'Service Unavailable'
+      );
+    }
     const storageProblem = describeStorageError(error);
     if (storageProblem) {
-      return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, storageProblem.headers);
+      return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
@@ -738,7 +765,7 @@ export async function GET(req: NextRequest) {
       createdAt: j.timestamp,
       processedOn: j.processedOn,
       finishedOn: j.finishedOn,
-      failedReason: j.failedReason,
+      failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
       failedCode: j.failedCode,
       failedStatus: j.failedStatus,
       result: j.returnvalue,

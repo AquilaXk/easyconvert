@@ -7,6 +7,7 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
@@ -195,7 +196,7 @@ export async function GET(req: NextRequest) {
     timestamp: j.timestamp,
     durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
     returnvalue: j.returnvalue,
-    failedReason: j.failedReason,
+    failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
     failedCode: j.failedCode,
     failedStatus: j.failedStatus,
   }));

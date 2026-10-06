@@ -13,11 +13,15 @@
 #                                S3_SECRET_ACCESS_KEY
 #                           local: objects stay on the shared volume (single node)
 #   STORAGE_SIGNING_SECRET  random secret of at least 32 bytes that signs upload and download URLs
+#   JOB_SECRET_KEK          random secret of at least 32 bytes that seals URLs and headers in queued jobs
+#                           (JOB_SECRET_KEK_PREVIOUS: the old key during a rotation)
 
 x-production-environment: &production-environment
   - NODE_ENV=production
   - STORAGE_DRIVER=${STORAGE_DRIVER:?set STORAGE_DRIVER to oci, s3 or local}
   - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS:-}
   # Public origin of the application (https://...); the local driver needs it to build upload URLs.
   - APP_URL=${APP_URL:-}
   - OCI_NAMESPACE=${OCI_NAMESPACE:-}

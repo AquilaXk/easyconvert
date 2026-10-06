@@ -2,6 +2,7 @@ import type { GraphMetadata } from './scheduler-types';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
 import { resolveNodeResourceClass } from '../resource-class';
+import { sealGraphNode } from './sealed-nodes';
 
 /** Attempts per graph node job; the node fails the graph only after the last one. */
 export const GRAPH_NODE_JOB_ATTEMPTS = 3;
@@ -38,7 +39,8 @@ export async function enqueueGraphNodeJob(
       reservationId: meta.reservationId,
       graphId,
       graphNodeId: nodeId,
-      graphNode: node,
+      // Fail closed: whatever path got a node here, its secrets are sealed before the queue sees it.
+      graphNode: sealGraphNode(node, jobId),
       inputArtifacts,
       resourceClass,
     },

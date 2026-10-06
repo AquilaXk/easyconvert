@@ -10,8 +10,6 @@ import { createSsrfSafeAgent, validateUrlForSsrf } from './ssrf';
 export const MAX_SAFE_REDIRECTS = 3;
 const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
 const BODYLESS_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
-/** Request headers that carry credentials for the original origin and must not follow a cross-origin redirect. */
-const CROSS_ORIGIN_STRIPPED_HEADERS: readonly string[] = ['authorization', 'cookie', 'proxy-authorization'];
 const REDIRECT_MIN_STATUS = 300;
 const REDIRECT_MAX_STATUS = 399;
 const UNPARSEABLE_TARGET = '(invalid URL)';
@@ -59,7 +57,7 @@ async function assertPublicHttpUrl(url: URL): Promise<void> {
  * Fetches a user-supplied URL without reaching internal networks. Every hop is validated before
  * it is requested and pinned again at connect time. GET and HEAD follow at most
  * `maxRedirects` redirects; any other method fails on a redirect instead of resending its body.
- * Credential headers are dropped once a redirect leaves the original origin.
+ * Every caller-supplied header is dropped once a redirect leaves the original origin.
  */
 export async function safeFetch(
   input: string,
@@ -113,7 +111,9 @@ export async function safeFetch(
       throw new OutboundRequestBlockedError(describeTarget(current), 'redirect Location is not a valid URL');
     }
     if (next.origin !== current.origin) {
-      for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) {
+      // Which header carries a credential is the caller's secret (X-Api-Key, X-Amz-Security-Token, ...),
+      // so nothing the caller supplied follows a redirect to another origin.
+      for (const name of [...headers.keys()]) {
         headers.delete(name);
       }
     }

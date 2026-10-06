@@ -169,6 +169,7 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
   const ociShell = (secret: string): Environment => ({
     STORAGE_DRIVER: 'oci',
     STORAGE_SIGNING_SECRET: secret,
+    JOB_SECRET_KEK: randomSecret(),
     OCI_NAMESPACE: 'examplens',
     OCI_REGION: 'ap-seoul-1',
     OCI_BUCKET: 'example-bucket',
@@ -176,9 +177,9 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
     OCI_SECRET_ACCESS_KEY: 'example-secret-access-key',
   });
 
-  it.each(WORKER_SERVICES)('%s refuses to start without a storage driver and a signing secret', (service) => {
+  it.each(WORKER_SERVICES)('%s refuses to start without a storage driver, a signing secret and a job sealing key', (service) => {
     const { missing } = resolveServiceEnvironment(files, service, {});
-    expect([...missing].sort()).toEqual(['STORAGE_DRIVER', 'STORAGE_SIGNING_SECRET']);
+    expect([...missing].sort()).toEqual(['JOB_SECRET_KEK', 'STORAGE_DRIVER', 'STORAGE_SIGNING_SECRET']);
   });
 
   it.each(WORKER_SERVICES)('%s runs in production and resolves the OCI driver from the variables it forwards', (service) => {
@@ -205,6 +206,7 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
     const { env, missing } = resolveServiceEnvironment(files, 'worker', {
       STORAGE_DRIVER: 's3',
       STORAGE_SIGNING_SECRET: randomSecret(),
+      JOB_SECRET_KEK: randomSecret(),
       S3_ENDPOINT: 'https://s3.example.test',
       S3_REGION: 'eu-west-1',
       S3_BUCKET: 'example-bucket',

@@ -4,7 +4,8 @@ version: '3.8'
 # volume (STORAGE_DRIVER=local, NODE_ENV=development). It asks for no cloud setting and no secret.
 #
 # Production: add the overlay, which switches the workers to NODE_ENV=production and refuses to
-# start without a storage driver and a signing secret (>= 32 bytes, `openssl rand -hex 32`):
+# start without a storage driver, a signing secret and a job sealing key (each secret >= 32 bytes,
+# `openssl rand -hex 32`):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # See docker-compose.prod.yml for the OCI_* / S3_* variables each driver needs.
 
@@ -58,6 +59,10 @@ services:
       # Local mode: no cloud account and no secret are needed. Production values live in
       # docker-compose.prod.yml (see the note at the top of this file).
       - NODE_ENV=development
+      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
+      # unset), required by docker-compose.prod.yml.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - STORAGE_DRIVER=local
@@ -112,6 +117,10 @@ services:
       # Local mode: no cloud account and no secret are needed. Production values live in
       # docker-compose.prod.yml (see the note at the top of this file).
       - NODE_ENV=development
+      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
+      # unset), required by docker-compose.prod.yml.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - STORAGE_DRIVER=local
