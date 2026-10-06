@@ -50,19 +50,19 @@ const MAX_TOKEN_GAP = 16;
 /** Regular expression for a PDF name, accepting the `#xx` escape (ISO 32000-1 7.3.5) for any character. */
 function pdfName(word: string): string {
   const chars = [...word].map((char) => {
-    const hex = char.charCodeAt(0).toString(16).padStart(2, '0');
+    const hex = (char.codePointAt(0) ?? 0).toString(16).padStart(2, '0');
     const nibbles = [...hex].map((nibble) => `[${nibble.toLowerCase()}${nibble.toUpperCase()}]`).join('');
     return `(?:${char}|#${nibbles})`;
   });
   return `/${chars.join('')}(?![A-Za-z0-9#])`;
 }
 
-const GAP = `\\s{0,${MAX_TOKEN_GAP}}`;
-const REQUIRED_GAP = `\\s{1,${MAX_TOKEN_GAP}}`;
+const GAP = String.raw`\s{0,${MAX_TOKEN_GAP}}`;
+const REQUIRED_GAP = String.raw`\s{1,${MAX_TOKEN_GAP}}`;
 const IMAGE_MARKER_PATTERN = new RegExp(`${pdfName('Subtype')}${GAP}${pdfName('Image')}`, 'g');
 /** `N G obj <integer> endobj`: the objects an indirect image dimension can point to. */
 const INTEGER_OBJECT_PATTERN = new RegExp(
-  `(?<![0-9])(\\d{1,10})${REQUIRED_GAP}\\d{1,5}${REQUIRED_GAP}obj${REQUIRED_GAP}(\\d{1,10})${REQUIRED_GAP}endobj`,
+  String.raw`(?<![0-9])(\d{1,10})${REQUIRED_GAP}\d{1,5}${REQUIRED_GAP}obj${REQUIRED_GAP}(\d{1,10})${REQUIRED_GAP}endobj`,
   'g'
 );
 
@@ -183,6 +183,77 @@ export async function extractRasterImagesFromPdf(
   return images;
 }
 
+/** Wait for pdfjs to hand over an image object it is still decoding; a stuck decode yields null. */
+const PDFJS_IMAGE_WAIT_MS = 5000;
+
+/** The decoded image object the operator at `index` paints, or null when it paints none. */
+async function paintedImageObject(pdfjs: any, page: any, opList: any, index: number): Promise<any> {
+  const fn = opList.fnArray[index];
+  if (fn === pdfjs.OPS.paintImageXObject) {
+    const imgName = opList.argsArray[index][0];
+    return Promise.race([
+      new Promise<any>((resolve) => page.objs.get(imgName, resolve)),
+      new Promise<any>((resolve) => setTimeout(() => resolve(null), PDFJS_IMAGE_WAIT_MS)),
+    ]);
+  }
+  if (fn === pdfjs.OPS.paintInlineImageXObject) {
+    return opList.argsArray[index][0];
+  }
+  return null;
+}
+
+/** pdfjs image kinds (ImageKind): 1 is 1-bit gray, 2 is RGB, 3 is RGBA. */
+const IMAGE_KIND_GRAYSCALE_1BPP = 1;
+const IMAGE_KIND_RGB_24BPP = 2;
+const IMAGE_KIND_RGBA_32BPP = 3;
+
+/** The raw samples of a decoded pdfjs image object and how many channels each pixel has. */
+function rawSamplesOf(imgObj: any, width: number, height: number): { rawData: Buffer; channels: 1 | 3 | 4 } {
+  const bytes = (): Buffer => Buffer.from(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
+  if (imgObj.kind === IMAGE_KIND_GRAYSCALE_1BPP) {
+    // 1 bit per pixel: CCITT / JBIG2 bilevel
+    const packed = new Uint8Array(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
+    const unpacked = unpack1bpp(packed, width, height);
+    return { rawData: Buffer.from(unpacked.buffer, unpacked.byteOffset, unpacked.byteLength), channels: 1 };
+  }
+  if (imgObj.kind === IMAGE_KIND_RGB_24BPP) return { rawData: bytes(), channels: 3 };
+  if (imgObj.kind === IMAGE_KIND_RGBA_32BPP) return { rawData: bytes(), channels: 4 };
+  // Infer the channels from the byte length
+  const totalPixels = width * height;
+  const byteLength = imgObj.data.byteLength;
+  if (byteLength === totalPixels) return { rawData: bytes(), channels: 1 };
+  if (byteLength === totalPixels * 4) return { rawData: bytes(), channels: 4 };
+  return { rawData: bytes(), channels: 3 };
+}
+
+/** Extracts one decoded image object as a PNG at the target density, or undefined when the object holds no pixels. */
+async function imageObjectToPng(imgObj: any, pageNumber: number, targetDpi: number): Promise<ExtractedPdfImage | undefined> {
+  if (!imgObj?.data || !imgObj.width || !imgObj.height) return undefined;
+  const { width, height } = imgObj;
+  assertInputPixels(width, height);
+  const { rawData, channels } = rawSamplesOf(imgObj, width, height);
+  // Normalize density to target DPI (e.g. 300 DPI) for OCR fidelity
+  const buffer = await sharp(rawData, { raw: { width, height, channels } })
+    .withMetadata({ density: targetDpi })
+    .png()
+    .toBuffer();
+  return { pageNumber, buffer, width, height };
+}
+
+/** The error the OCR caller sees for a failure of pdfjs, classified by what its message says went wrong. */
+function ocrFailureOf(err: any): Error {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  if (err?.name === 'PasswordException' || lower.includes('password') || lower.includes('encrypt')) {
+    return new Error(`PDF OCR failed: Document is password-protected or encrypted: ${msg}`);
+  }
+  const damaged = ['filter', 'corrupt', 'invalid', 'stream', 'format', 'syntax'];
+  if (damaged.some((word) => lower.includes(word))) {
+    return new Error(`PDF OCR failed: Unsupported compression filter or invalid PDF stream: ${msg}`);
+  }
+  return new Error(`PDF OCR failed: Unable to decode PDF raster images: ${msg}`);
+}
+
 async function decodePdfImages(
   pdfBuffer: Buffer,
   targetDpi: number,
@@ -213,96 +284,14 @@ async function decodePdfImages(
       const opList = await page.getOperatorList();
 
       for (let i = 0; i < opList.fnArray.length; i++) {
-        const fn = opList.fnArray[i];
-        let imgObj: any = null;
-
-        if (fn === pdfjs.OPS.paintImageXObject) {
-          const imgName = opList.argsArray[i][0];
-          imgObj = await Promise.race([
-            new Promise<any>((resolve) => page.objs.get(imgName, resolve)),
-            new Promise<any>((resolve) => setTimeout(() => resolve(null), 5000)),
-          ]);
-        } else if (fn === pdfjs.OPS.paintInlineImageXObject) {
-          imgObj = opList.argsArray[i][0];
-        }
-
-        if (imgObj && imgObj.data && imgObj.width && imgObj.height) {
-          const { width, height } = imgObj;
-          assertInputPixels(width, height);
-          let rawData: Buffer;
-          let channels: 1 | 3 | 4 = 3;
-
-          if (imgObj.kind === 1) {
-            // GRAYSCALE_1BPP (1 bit per pixel: CCITT / JBIG2 bilevel)
-            const srcBytes = new Uint8Array(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-            const unpacked = unpack1bpp(srcBytes, width, height);
-            rawData = Buffer.from(unpacked.buffer, unpacked.byteOffset, unpacked.byteLength);
-            channels = 1;
-          } else if (imgObj.kind === 2) {
-            // RGB_24BPP
-            rawData = Buffer.from(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-            channels = 3;
-          } else if (imgObj.kind === 3) {
-            // RGBA_32BPP
-            rawData = Buffer.from(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-            channels = 4;
-          } else {
-            // Infer channels from byte length
-            const totalPixels = width * height;
-            const byteLen = imgObj.data.byteLength;
-            if (byteLen === totalPixels) {
-              channels = 1;
-            } else if (byteLen === totalPixels * 4) {
-              channels = 4;
-            } else {
-              channels = 3;
-            }
-            rawData = Buffer.from(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-          }
-
-          // Normalize density to target DPI (e.g. 300 DPI) for OCR fidelity
-          const pngBuf = await sharp(rawData, {
-            raw: {
-              width,
-              height,
-              channels,
-            },
-          })
-            .withMetadata({ density: targetDpi })
-            .png()
-            .toBuffer();
-
-          images.push({
-            pageNumber: pageNum,
-            buffer: pngBuf,
-            width,
-            height,
-          });
-        }
+        const imgObj = await paintedImageObject(pdfjs, page, opList, i);
+        const extracted = await imageObjectToPng(imgObj, pageNum, targetDpi);
+        if (extracted) images.push(extracted);
       }
     }
   } catch (err: any) {
     if (err instanceof InputPixelLimitError) throw err;
-    const msg = err instanceof Error ? err.message : String(err);
-    const lower = msg.toLowerCase();
-    if (
-      err?.name === 'PasswordException' ||
-      lower.includes('password') ||
-      lower.includes('encrypt')
-    ) {
-      throw new Error(`PDF OCR failed: Document is password-protected or encrypted: ${msg}`);
-    }
-    if (
-      lower.includes('filter') ||
-      lower.includes('corrupt') ||
-      lower.includes('invalid') ||
-      lower.includes('stream') ||
-      lower.includes('format') ||
-      lower.includes('syntax')
-    ) {
-      throw new Error(`PDF OCR failed: Unsupported compression filter or invalid PDF stream: ${msg}`);
-    }
-    throw new Error(`PDF OCR failed: Unable to decode PDF raster images: ${msg}`);
+    throw ocrFailureOf(err);
   }
 
   return images;

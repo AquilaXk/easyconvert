@@ -1570,6 +1570,17 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
 /**
  * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
  */
+/** Refuses a lossless JPEG frame over the input limit, the RAW sensor budget, or the strip or tile that holds it. */
+function assertLosslessFrameFits(width: number, height: number, expected?: { width: number; height: number }): void {
+  assertInputPixels(width, height);
+  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
+  if (expected && (width > expected.width || height > expected.height)) {
+    throw new InvalidRawSensorError(
+      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
+    );
+  }
+}
+
 /**
  * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
  * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
@@ -1644,13 +1655,7 @@ export function decodeLosslessJpegStrip(
   if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
     return null;
   }
-  assertInputPixels(width, height);
-  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
-  if (expected && (width > expected.width || height > expected.height)) {
-    throw new InvalidRawSensorError(
-      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
-    );
-  }
+  assertLosslessFrameFits(width, height, expected);
 
   // Build canonical Huffman decoding tree
   interface HuffmanNode {

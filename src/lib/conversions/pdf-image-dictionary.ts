@@ -70,6 +70,11 @@ function newFrame(): Frame {
   return { entries: new Map(), arrayDepth: 0 };
 }
 
+/** The code point at `pos` of latin1 text (identical to its char code), or -1 past the end. */
+function codeAt(text: string, pos: number): number {
+  return text.codePointAt(pos) ?? -1;
+}
+
 function isRegular(code: number): boolean {
   return !WHITESPACE_CODES.has(code) && !DELIMITER_CODES.has(code);
 }
@@ -78,7 +83,7 @@ function isRegular(code: number): boolean {
 function regularEnd(text: string, from: number, end: number): number {
   const limit = Math.min(end, from + MAX_TOKEN_CHARS);
   let pos = from;
-  while (pos < limit && isRegular(text.charCodeAt(pos))) pos++;
+  while (pos < limit && isRegular(codeAt(text, pos))) pos++;
   return pos;
 }
 
@@ -86,7 +91,7 @@ function regularEnd(text: string, from: number, end: number): number {
 function stringEnd(text: string, open: number, end: number): number {
   let depth = 0;
   for (let pos = open; pos < end; pos++) {
-    const code = text.charCodeAt(pos);
+    const code = codeAt(text, pos);
     if (code === BACKSLASH) pos++;
     else if (code === OPEN_PAREN) depth++;
     else if (code === CLOSE_PAREN && --depth === 0) return pos + 1;
@@ -97,7 +102,7 @@ function stringEnd(text: string, open: number, end: number): number {
 /** Index just past the hex string that opens at `open`; -1 when it does not close before `end`. */
 function hexStringEnd(text: string, open: number, end: number): number {
   for (let pos = open + 1; pos < end; pos++) {
-    if (text.charCodeAt(pos) === GREATER_THAN) return pos + 1;
+    if (codeAt(text, pos) === GREATER_THAN) return pos + 1;
   }
   return -1;
 }
@@ -105,12 +110,12 @@ function hexStringEnd(text: string, open: number, end: number): number {
 /** Index of the end of the comment line that starts at `from`. */
 function commentEnd(text: string, from: number, end: number): number {
   let pos = from;
-  while (pos < end && text.charCodeAt(pos) !== LINE_FEED && text.charCodeAt(pos) !== CARRIAGE_RETURN) pos++;
+  while (pos < end && codeAt(text, pos) !== LINE_FEED && codeAt(text, pos) !== CARRIAGE_RETURN) pos++;
   return pos;
 }
 
 function decodeName(raw: string): string {
-  return raw.indexOf('#') === -1 ? raw : raw.replace(NAME_ESCAPE, (_escape, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  return raw.includes('#') ? raw.replace(NAME_ESCAPE, (_escape, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16))) : raw;
 }
 
 /** True when the character may start a number: a digit, a sign or a point. */
@@ -125,6 +130,173 @@ function completeValue(frame: Frame | undefined, value: DictionaryValue): void {
   frame.key = undefined;
 }
 
+const INERT: EnclosingDictionary = { status: 'inert' };
+const UNDELIMITED: EnclosingDictionary = { status: 'undelimited' };
+
+function foundIn(frame: Frame): EnclosingDictionary {
+  return { status: 'found', entries: frame.entries };
+}
+
+/** The verdict of one scanning step: undefined to go on, or the result of the whole scan. */
+type Verdict = EnclosingDictionary | undefined;
+
+/**
+ * One pass over a window of PDF text. In `enclosing` mode it looks for the dictionary that holds the name token
+ * at `markerAt`; in `window` mode (`markerAt` is -1) it collects the entries that are top-level for the window.
+ */
+class DictionaryScanner {
+  private readonly root = newFrame();
+  private readonly stack: Frame[];
+  private target: Frame | undefined;
+  private pos: number;
+
+  constructor(
+    private readonly text: string,
+    start: number,
+    private readonly end: number,
+    private readonly markerAt: number,
+    private readonly windowMode: boolean
+  ) {
+    this.stack = windowMode ? [this.root] : [];
+    this.pos = start;
+  }
+
+  scan(): EnclosingDictionary {
+    while (this.pos < this.end) {
+      const verdict = this.step();
+      if (verdict) return verdict;
+    }
+    return this.windowMode ? foundIn(this.root) : this.unsettled();
+  }
+
+  private get top(): Frame | undefined {
+    return this.stack.at(-1);
+  }
+
+  /** The verdict when the text ends, or a token that ends a dictionary arrives, before the target is closed. */
+  private unsettled(): EnclosingDictionary {
+    if (this.windowMode) return foundIn(this.root);
+    return this.target === undefined ? INERT : UNDELIMITED;
+  }
+
+  /** A string, hex string or comment that does not end in the window: unknown, so no more keys are read. */
+  private unterminated(): EnclosingDictionary {
+    return this.windowMode ? foundIn(this.root) : UNDELIMITED;
+  }
+
+  private insideMarker(from: number, to: number): boolean {
+    return this.markerAt > from && this.markerAt < to;
+  }
+
+  private step(): Verdict {
+    const code = codeAt(this.text, this.pos);
+    if (WHITESPACE_CODES.has(code)) {
+      this.pos++;
+      return undefined;
+    }
+    switch (code) {
+      case PERCENT:
+        return this.comment();
+      case OPEN_PAREN:
+        return this.literalString();
+      case LESS_THAN:
+        return this.openAngle();
+      case GREATER_THAN:
+        return this.closeAngle();
+      case OPEN_BRACKET:
+      case CLOSE_BRACKET:
+        return this.bracket(code);
+      case SLASH:
+        return this.name();
+      default:
+        return isRegular(code) ? this.word() : this.skip();
+    }
+  }
+
+  private skip(): Verdict {
+    this.pos++;
+    return undefined;
+  }
+
+  private comment(): Verdict {
+    const close = commentEnd(this.text, this.pos, this.end);
+    if (this.markerAt >= this.pos && this.markerAt < close) return INERT;
+    this.pos = close;
+    return undefined;
+  }
+
+  private literalString(): Verdict {
+    const close = stringEnd(this.text, this.pos, this.end);
+    if (close < 0) return this.unterminated();
+    if (this.insideMarker(this.pos, close)) return INERT;
+    completeValue(this.top, { kind: 'other' });
+    this.pos = close;
+    return undefined;
+  }
+
+  /** `<<` opens a dictionary; a lone `<` opens a hex string. */
+  private openAngle(): Verdict {
+    if (codeAt(this.text, this.pos + 1) === LESS_THAN) {
+      this.stack.push(newFrame());
+      this.pos += 2;
+      return undefined;
+    }
+    const close = hexStringEnd(this.text, this.pos, this.end);
+    if (close < 0) return this.unterminated();
+    if (this.insideMarker(this.pos, close)) return INERT;
+    completeValue(this.top, { kind: 'other' });
+    this.pos = close;
+    return undefined;
+  }
+
+  /** `>>` closes a dictionary; the target's close ends the scan. */
+  private closeAngle(): Verdict {
+    if (codeAt(this.text, this.pos + 1) !== GREATER_THAN) return this.skip();
+    this.pos += 2;
+    // In window mode the bottom frame stands for a dictionary opened before the window, which is never closed here.
+    if (this.windowMode && this.stack.length === 1) return undefined;
+    const closed = this.stack.pop();
+    if (closed !== undefined && closed === this.target) return foundIn(closed);
+    completeValue(this.top, { kind: 'other' });
+    return undefined;
+  }
+
+  private bracket(code: number): Verdict {
+    const top = this.top;
+    if (top) {
+      if (code === OPEN_BRACKET) top.arrayDepth++;
+      else if (top.arrayDepth > 0 && --top.arrayDepth === 0) completeValue(top, { kind: 'other' });
+    }
+    this.pos++;
+    return undefined;
+  }
+
+  private name(): Verdict {
+    const close = regularEnd(this.text, this.pos + 1, this.end);
+    if (this.pos === this.markerAt && this.top) this.target = this.top;
+    readName(this.top, decodeName(this.text.slice(this.pos + 1, close)));
+    this.pos = close;
+    return undefined;
+  }
+
+  /** A keyword, number or reference. */
+  private word(): Verdict {
+    const close = regularEnd(this.text, this.pos, this.end);
+    const token = this.text.slice(this.pos, close);
+    if (token === 'stream' || token === 'endstream') {
+      // The dictionary of an object ends where its stream starts: a position after it is stream data.
+      return this.unsettled();
+    }
+    if (token === 'obj' || token === 'endobj') {
+      this.stack.length = this.windowMode ? 1 : 0;
+      this.pos = close;
+    } else {
+      this.pos = readScalar(this.top, token, this.text, close);
+    }
+    return undefined;
+  }
+}
+
 /**
  * Finds the dictionary whose own key starts at `markerAt` (the `/` of a name token) and returns its top-level
  * entries. Scanning starts at `start`, which should be the beginning of the enclosing indirect object, and
@@ -132,7 +304,7 @@ function completeValue(frame: Frame | undefined, value: DictionaryValue): void {
  * values, so a key of a nested dictionary is never read as a key of the enclosing one.
  */
 export function readEnclosingDictionary(text: string, start: number, markerAt: number, end: number): EnclosingDictionary {
-  return scanDictionaries(text, start, markerAt, end, false);
+  return new DictionaryScanner(text, start, end, markerAt, false).scan();
 }
 
 /**
@@ -142,80 +314,8 @@ export function readEnclosingDictionary(text: string, start: number, markerAt: n
  * of a repeated key wins. Strings, hex strings and comments are skipped as in `readEnclosingDictionary`.
  */
 export function readWindowEntries(text: string, start: number, end: number): Map<string, DictionaryValue> {
-  const found = scanDictionaries(text, start, -1, end, true);
+  const found = new DictionaryScanner(text, start, end, -1, true).scan();
   return found.status === 'found' ? found.entries : new Map();
-}
-
-function scanDictionaries(text: string, start: number, markerAt: number, end: number, windowMode: boolean): EnclosingDictionary {
-  const root = newFrame();
-  const stack: Frame[] = windowMode ? [root] : [];
-  let target: Frame | undefined;
-  let pos = start;
-  while (pos < end) {
-    const code = text.charCodeAt(pos);
-    const top = stack[stack.length - 1];
-    if (WHITESPACE_CODES.has(code)) {
-      pos++;
-    } else if (code === PERCENT) {
-      const close = commentEnd(text, pos, end);
-      if (markerAt >= pos && markerAt < close) return { status: 'inert' };
-      pos = close;
-    } else if (code === OPEN_PAREN) {
-      const close = stringEnd(text, pos, end);
-      if (close < 0) return windowMode ? { status: 'found', entries: root.entries } : { status: 'undelimited' };
-      if (markerAt > pos && markerAt < close) return { status: 'inert' };
-      completeValue(top, { kind: 'other' });
-      pos = close;
-    } else if (code === LESS_THAN && text.charCodeAt(pos + 1) === LESS_THAN) {
-      stack.push(newFrame());
-      pos += 2;
-    } else if (code === LESS_THAN) {
-      const close = hexStringEnd(text, pos, end);
-      if (close < 0) return windowMode ? { status: 'found', entries: root.entries } : { status: 'undelimited' };
-      if (markerAt > pos && markerAt < close) return { status: 'inert' };
-      completeValue(top, { kind: 'other' });
-      pos = close;
-    } else if (code === GREATER_THAN && text.charCodeAt(pos + 1) === GREATER_THAN) {
-      if (windowMode && stack.length === 1) {
-        // Closes a dictionary that opened before the window.
-        pos += 2;
-        continue;
-      }
-      const closed = stack.pop();
-      if (closed !== undefined && closed === target) return { status: 'found', entries: closed.entries };
-      completeValue(stack[stack.length - 1], { kind: 'other' });
-      pos += 2;
-    } else if (code === OPEN_BRACKET && top) {
-      top.arrayDepth++;
-      pos++;
-    } else if (code === CLOSE_BRACKET && top) {
-      if (top.arrayDepth > 0 && --top.arrayDepth === 0) completeValue(top, { kind: 'other' });
-      pos++;
-    } else if (code === SLASH) {
-      const close = regularEnd(text, pos + 1, end);
-      if (pos === markerAt && top) target = top;
-      readName(top, decodeName(text.slice(pos + 1, close)));
-      pos = close;
-    } else if (isRegular(code)) {
-      const close = regularEnd(text, pos, end);
-      const token = text.slice(pos, close);
-      if (token === 'stream' || token === 'endstream') {
-        // The dictionary of an object ends where its stream starts: a position after it is stream data.
-        if (windowMode) return { status: 'found', entries: root.entries };
-        return target === undefined ? { status: 'inert' } : { status: 'undelimited' };
-      }
-      if (token === 'obj' || token === 'endobj') {
-        stack.length = windowMode ? 1 : 0;
-        pos = close;
-      } else {
-        pos = readScalar(top, token, text, close);
-      }
-    } else {
-      pos++;
-    }
-  }
-  if (windowMode) return { status: 'found', entries: root.entries };
-  return target === undefined ? { status: 'inert' } : { status: 'undelimited' };
 }
 
 /** A name is the key when the frame expects one, otherwise the value of the pending key. */
@@ -225,13 +325,18 @@ function readName(frame: Frame | undefined, name: string): void {
   else completeValue(frame, { kind: 'other' });
 }
 
+/** Whether `token` is an integer that may start an `N G R` reference for the frame's pending key. */
+function mayStartReference(frame: Frame | undefined, token: string, text: string, close: number): boolean {
+  return frame?.arrayDepth === 0 && frame.key !== undefined && WHITESPACE_CODES.has(codeAt(text, close)) && INTEGER_TOKEN.test(token);
+}
+
 /** Reads a number, an `N G R` reference or a keyword value; returns the position after what was read. */
 function readScalar(frame: Frame | undefined, token: string, text: string, close: number): number {
-  if (!startsNumber(token.charCodeAt(0)) || !NUMBER_TOKEN.test(token)) {
+  if (!startsNumber(codeAt(token, 0)) || !NUMBER_TOKEN.test(token)) {
     completeValue(frame, { kind: 'other' });
     return close;
   }
-  if (frame && frame.arrayDepth === 0 && frame.key !== undefined && WHITESPACE_CODES.has(text.charCodeAt(close)) && INTEGER_TOKEN.test(token)) {
+  if (mayStartReference(frame, token, text, close)) {
     REFERENCE_TAIL.lastIndex = close;
     const reference = REFERENCE_TAIL.exec(text);
     if (reference) {
