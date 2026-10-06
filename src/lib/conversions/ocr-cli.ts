@@ -8,7 +8,7 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { parseTesseractBlocks, type OcrResult } from './ocr-pdf-combiner';
-import { ocrSegmentationFor } from './ocr-config';
+import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
 
 /** Wall-clock limit for one native Tesseract run. */
 export const OCR_CLI_TIMEOUT_MS = 15_000;
@@ -256,6 +256,8 @@ export interface CliOcrRequest {
   timeoutMs?: number;
   maxOutputBytes?: number;
   memoryLimitMb?: number;
+  /** Replaces the page segmentation chosen for the language; used for the single-block retry. */
+  pageSegMode?: string;
 }
 
 function isTimeout(err: unknown): boolean {
@@ -277,9 +279,20 @@ function logCliFailure(summary: string, diagnostics: string): void {
  * carry fixed messages; the CLI's own diagnostics go to the server log.
  */
 export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResult> {
+  const first = await runCli(request);
+  const fallbackMode = ocrFallbackPageSegMode(request.tesseractLang);
+  if (!fallbackMode || first.wordCount > 0 || request.pageSegMode) return first;
+  // Automatic segmentation finds no text block in very small images; read them as one block.
+  const retry = await runCli({ ...request, pageSegMode: fallbackMode });
+  return fallbackReadsMore(first.wordCount, retry.wordCount) ? retry : first;
+}
+
+async function runCli(request: CliOcrRequest): Promise<OcrResult> {
   const timeoutMs = request.timeoutMs ?? OCR_CLI_TIMEOUT_MS;
   const memoryLimitMb = request.memoryLimitMb ?? OCR_CLI_MEMORY_LIMIT_MB;
-  const { pageSegMode, engineMode } = ocrSegmentationFor(request.tesseractLang);
+  const segmentation = ocrSegmentationFor(request.tesseractLang);
+  const pageSegMode = request.pageSegMode ?? segmentation.pageSegMode;
+  const { engineMode } = segmentation;
   const args = [
     '--tessdata-dir', request.tessdataDir,
     'stdin', 'stdout',

@@ -14,6 +14,10 @@
  * different PSM, is the fix for borderless tables.
  */
 export const OCR_PSM_AUTO = '3';
+/** PSM 6: one uniform block of text; reads small crops and single lines that PSM 3 finds nothing in. */
+export const OCR_PSM_SINGLE_BLOCK = '6';
+/** The single-block retry replaces an empty automatic reading when it recognizes at least this many more words. */
+export const OCR_FALLBACK_MIN_WORD_GAIN = 1;
 /** PSM 5: a single uniform block of vertically aligned text, for `_vert` traineddata. */
 export const OCR_PSM_VERTICAL_BLOCK = '5';
 /** OEM 1: LSTM neural-network engine only. */
@@ -34,4 +38,17 @@ export function ocrSegmentationFor(tesseractLang: string): OcrSegmentation {
     pageSegMode: vertical ? OCR_PSM_VERTICAL_BLOCK : OCR_PSM_AUTO,
     engineMode: OCR_OEM_LSTM_ONLY,
   };
+}
+
+/**
+ * Segmentation for a second attempt when automatic segmentation recognized no words, or null when
+ * there is none. Vertical data is already single-block, and PSM 6 would read it sideways.
+ */
+export function ocrFallbackPageSegMode(tesseractLang: string): string | null {
+  return ocrSegmentationFor(tesseractLang).pageSegMode === OCR_PSM_AUTO ? OCR_PSM_SINGLE_BLOCK : null;
+}
+
+/** Whether a retry found enough more words than the first reading to replace it. */
+export function fallbackReadsMore(firstWordCount: number, retryWordCount: number): boolean {
+  return retryWordCount - firstWordCount >= OCR_FALLBACK_MIN_WORD_GAIN;
 }

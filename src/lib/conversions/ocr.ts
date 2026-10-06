@@ -26,7 +26,7 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
-import { ocrSegmentationFor } from './ocr-config';
+import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { mapOcrResultToSource } from './ocr-geometry';
 import {
@@ -50,6 +50,10 @@ export {
   parseAlto,
   unescapeXml,
 } from './ocr-export';
+
+function countWords(text: string | null | undefined): number {
+  return (text || '').split(/\s+/).filter(Boolean).length;
+}
 
 /** Terminates pooled OCR workers; call on process shutdown. */
 export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
@@ -160,7 +164,19 @@ export async function performOcr(
         engineMode,
         parameters: { tessedit_pageseg_mode: pageSegMode },
       },
-      (recognize) => recognize(ocrInput, {}, { blocks: true })
+      async (recognize, recognizeWith) => {
+        const first = await recognize(ocrInput, {}, { blocks: true });
+        const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
+        if (!fallbackMode || countWords(first.data.text) > 0) return first;
+        // Automatic segmentation finds no text block in very small images; read them as one block.
+        const retry = await recognizeWith(
+          { tessedit_pageseg_mode: fallbackMode },
+          ocrInput,
+          {},
+          { blocks: true }
+        );
+        return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
+      }
     );
 
     if (ret && ret.data) {

@@ -181,6 +181,39 @@ describe('OcrWorkerPool', () => {
     ]);
   });
 
+  it('restores the job parameters after a recognition with temporary overrides', async () => {
+    const pool = makePool();
+    await pool.run(baseSpec, async (recognize, recognizeWith) => {
+      await recognize(Buffer.alloc(0), {}, { text: true });
+      await recognizeWith({ tessedit_pageseg_mode: '6' }, Buffer.alloc(0), {}, { text: true });
+    });
+    await recognizeOnce(pool);
+    expect(pool.created).toHaveLength(1);
+    expect(pool.created[0].calls).toEqual([
+      'params:{"tessedit_pageseg_mode":"3"}',
+      'recognize',
+      'params:{"tessedit_pageseg_mode":"6"}',
+      'recognize',
+      'params:{"tessedit_pageseg_mode":"3"}',
+      'params:{"tessedit_pageseg_mode":"3"}',
+      'recognize',
+    ]);
+  });
+
+  it('restores the job parameters even when the overridden recognition fails', async () => {
+    const pool = makePool();
+    const failure = new Error('recognizer crashed');
+    await expect(
+      pool.run(baseSpec, async (_recognize, recognizeWith) => {
+        const worker = pool.created[0];
+        worker.recognize = async () => Promise.reject(failure);
+        return recognizeWith({ tessedit_pageseg_mode: '6' }, Buffer.alloc(0), {}, { text: true });
+      })
+    ).rejects.toBe(failure);
+    expect(pool.created[0].calls.slice(-1)).toEqual(['params:{"tessedit_pageseg_mode":"3"}']);
+    expect(pool.created[0].terminated).toBe(true);
+  });
+
   it('never runs a job on a worker that was configured with other parameters', async () => {
     const pool = makePool();
     await recognizeOnce(pool, { ...baseSpec, parameters: { tessedit_pageseg_mode: '3' } });
