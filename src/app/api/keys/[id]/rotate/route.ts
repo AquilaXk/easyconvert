@@ -7,7 +7,7 @@ import { toPublicApiKey } from '@/lib/api-keys/public-views';
 export const dynamic = 'force-dynamic';
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
 }
 
 const MAX_GRACE_PERIOD_SECONDS = 7 * 24 * 3600; // 7 days

@@ -24,6 +24,8 @@ import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 const INTERNAL = { 'x-internal': true };
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
+const PAYLOAD_LIMIT_DESCRIPTION =
+  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -219,7 +221,7 @@ export const internalPaths = {
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
           },
         },
-        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
@@ -250,7 +252,7 @@ export const internalPaths = {
         },
         '401': createProblemResponse('Authentication required.'),
         '422': createPdfaProblemResponse(PDFA_PROBLEM_DESCRIPTION),
-        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),

@@ -85,7 +85,16 @@ function createTusHeaders(extra: Record<string, string> = {}): Headers {
   return headers;
 }
 
-function resolveSessionId(params?: { id?: string[] }): string | null {
+// Next.js 15 passes route params as a promise.
+interface UploadRouteParams {
+  id?: string[];
+}
+
+interface UploadRouteContext {
+  params: Promise<UploadRouteParams>;
+}
+
+function resolveSessionId(params?: UploadRouteParams): string | null {
   if (!params?.id || !Array.isArray(params.id) || params.id.length === 0) {
     return null;
   }
@@ -328,17 +337,18 @@ export function OPTIONS() {
 
 export async function POST(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct') {
-    if (context.params.id[1] === 'complete') {
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct') {
+    if (params.id[1] === 'complete') {
       return directCompletePostHandler(req);
     }
     return directPostHandler(req);
   }
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   // If a session ID is provided in POST, reject as invalid TUS method
   if (sessionId) {
@@ -509,13 +519,14 @@ export async function POST(
 
 export async function HEAD(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
+  const params = await context.params;
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
@@ -567,13 +578,14 @@ export async function HEAD(
 
 export async function PATCH(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
+  const params = await context.params;
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
@@ -684,9 +696,10 @@ export async function PATCH(
 
 export async function PUT(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct' && context.params.id[1] === 'part') {
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct' && params.id[1] === 'part') {
     return directPartPutHandler(req);
   }
   return new NextResponse('Method Not Allowed', { status: 405 });
@@ -694,17 +707,18 @@ export async function PUT(
 
 export async function DELETE(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct' && context.params.id[1]) {
-    return directDeleteHandler(req, { params: { id: context.params.id[1] } });
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct' && params.id[1]) {
+    return directDeleteHandler(req, { params: Promise.resolve({ id: params.id[1] }) });
   }
 
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {

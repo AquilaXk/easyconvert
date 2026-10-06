@@ -844,7 +844,7 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
       });
 
       const crossDeleteRes = await directDeleteHandler(crossDeleteReq, {
-        params: { id: uploadId },
+        params: Promise.resolve({ id: uploadId }),
       });
       expect(crossDeleteRes.status).toBe(404);
 
@@ -855,13 +855,13 @@ describe('Presigned Direct Multipart Upload (WP-22)', () => {
       });
 
       const validDeleteRes = await directDeleteHandler(validDeleteReq, {
-        params: { id: uploadId },
+        params: Promise.resolve({ id: uploadId }),
       });
       expect(validDeleteRes.status).toBe(204);
 
       // Subsequent abort of deleted session returns 404
       const retryDeleteRes = await directDeleteHandler(validDeleteReq, {
-        params: { id: uploadId },
+        params: Promise.resolve({ id: uploadId }),
       });
       expect(retryDeleteRes.status).toBe(404);
     });

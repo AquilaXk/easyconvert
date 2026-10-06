@@ -59,7 +59,7 @@ function jobData(userId?: string): ConversionJobData {
 function download(key: string, headers: Record<string, string> = {}): Promise<Response> {
   const encodedKey = encodeURIComponent(key);
   const req = new NextRequest(`${BASE_URL}/api/storage/file/${encodedKey}`, { headers });
-  return downloadRoute(req, { params: { key: [encodedKey] } });
+  return downloadRoute(req, { params: Promise.resolve({ key: [encodedKey] }) });
 }
 
 function sessionHeaders(user: User): Record<string, string> {
@@ -327,7 +327,7 @@ describe('/api/storage/file key decoding (#249)', () => {
   /** Next.js decodes each catch-all segment before the handler runs, so params carry the decoded key. */
   function downloadAsNextRoutes(key: string, headers: Record<string, string> = {}): Promise<Response> {
     const req = new NextRequest(`${BASE_URL}/api/storage/file/${encodeURIComponent(key)}`, { headers });
-    return downloadRoute(req, { params: { key: key.split('/') } });
+    return downloadRoute(req, { params: Promise.resolve({ key: key.split('/') }) });
   }
 
   it('serves an owned file whose key contains a literal percent sign', async () => {
@@ -343,7 +343,7 @@ describe('/api/storage/file key decoding (#249)', () => {
     const malformedKey = '%E0%A4%A';
     const req = new NextRequest(`${BASE_URL}/api/storage/file/${malformedKey}`);
 
-    const res = await downloadRoute(req, { params: { key: [malformedKey] } });
+    const res = await downloadRoute(req, { params: Promise.resolve({ key: [malformedKey] }) });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual(notFoundBody(malformedKey));
     expect(res.headers.get('cache-control')).toBe('private, no-store');

@@ -15,6 +15,8 @@ import {
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
+const PAYLOAD_LIMIT_DESCRIPTION =
+  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows (quota reservation rolled back).';
 
 /** Conversion, archive inspection, job, and format catalog operations. */
 export const conversionPaths = {
@@ -119,7 +121,7 @@ export const conversionPaths = {
         '422': createPdfaProblemResponse(
           `An idempotency key was reused with a different request payload or parameters. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
-        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),

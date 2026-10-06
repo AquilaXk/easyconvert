@@ -179,6 +179,11 @@ export interface ConversionOptions {
   solid?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   entries?: string[];
+  /**
+   * Opt in to extracting archives that contain symbolic or hard links by leaving those entries out.
+   * Without it such archives are rejected. Skipped names are reported in `ConversionResult.skippedLinks`.
+   */
+  skipLinks?: boolean;
   repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
@@ -350,6 +355,8 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Link entries left out of an extraction because `skipLinks` was set. */
+  skippedLinks?: string[];
   /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
   metadata?: Record<string, unknown>;
 }
@@ -595,6 +602,36 @@ export class GraphExportError extends ConversionFailedError {
   }
 }
 
+/**
+ * An input asks for more work or memory than the engine allows: a stream that would decode past a
+ * size limit, or a document that would produce more text blocks or character mappings than the caps.
+ * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ */
+export class PayloadLimitError extends ConversionFailedError {
+  readonly status = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PayloadLimitError';
+  }
+}
+
+/** A compressed stream would decode past a per-stream or per-document byte limit. */
+export class DecompressionLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DecompressionLimitError';
+  }
+}
+
+/** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
+export class CorruptStreamError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CorruptStreamError';
+  }
+}
+
 export class InvalidPageRangeError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -670,6 +707,12 @@ export interface ArchiveEntryMetadata {
   isDirectory: boolean;
   modifiedAt?: string;
   crc32?: string;
+  /** Set for entries that are not plain files or directories. Links are reported, never resolved. */
+  kind?: 'symlink' | 'hardlink' | 'special';
+  /** The name is absolute, climbs out with `..`, or is otherwise invalid. `name` is kept verbatim. */
+  unsafePath?: boolean;
+  /** Another entry in the archive has the same path. */
+  duplicate?: boolean;
 }
 
 export interface ArchiveInspectResponse {
@@ -679,6 +722,10 @@ export interface ArchiveInspectResponse {
   totalCompressedBytes: number;
   isEncrypted: boolean;
   entries: ArchiveEntryMetadata[];
+  /** False when extraction would refuse the archive: links, unsafe paths, special entries or duplicates. */
+  extractable: boolean;
+  /** One line per blocking category, with a count and the first offending entry; empty when extractable. */
+  unextractableReasons: string[];
 }
 
 export class MissingVolumeError extends Error {
@@ -689,7 +736,7 @@ export class MissingVolumeError extends Error {
   }
 }
 
-export class ArchiveEntryCollisionError extends Error {
+export class ArchiveEntryCollisionError extends ConversionFailedError {
   readonly status = 422;
   readonly entryName: string;
   constructor(entryName: string, message?: string) {

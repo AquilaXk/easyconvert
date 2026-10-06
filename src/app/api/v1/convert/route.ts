@@ -16,7 +16,13 @@ import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-er
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError, PdfPostprocessError } from '@/lib/types';
+import {
+  ArchiveEntryCollisionError,
+  ConversionFailedError,
+  PayloadLimitError,
+  EngineUnavailableError,
+  PdfPostprocessError,
+} from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -437,7 +443,8 @@ export async function POST(req: NextRequest) {
         rateLimitHeaders
       );
     }
-    if (err instanceof InputPixelLimitError) {
+    if (err instanceof PayloadLimitError || err instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof ConversionFailedError) {
