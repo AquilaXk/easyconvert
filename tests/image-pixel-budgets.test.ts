@@ -7,6 +7,7 @@ import {
   QUANTIZER_PIXEL_BUDGET,
   RAW_SENSOR_PIXEL_BUDGET,
   assertPixelBudget,
+  resizedDimensions,
 } from '../src/lib/conversions/image-input-limits';
 import { bombTiff } from './helpers/image-bombs';
 import { buildUltraHdrJpeg } from './helpers/ultrahdr-builder';
@@ -29,7 +30,11 @@ const HDR_SIDE_OVER_BUDGET = 9_000;
 const HDR_SIDE_OVER_INPUT_LIMIT = 15_000;
 const HDR_SOURCE_SIDE = 32;
 const QUANTIZER_REJECTION_RSS_BYTES = 400 * BYTES_PER_MIB;
-const HDR_REJECTION_RSS_BYTES = 500 * BYTES_PER_MIB;
+/** Well under the 243 MB RGB raster of an 81 MP picture, so a decode before the refusal would fail the bound. */
+const HDR_REJECTION_RSS_BYTES = 150 * BYTES_PER_MIB;
+/** 10000 x 10000 = 100 MP: what a 5000 x 5000 picture becomes when scaled to twice its sides. */
+const SCALED_UP_SIDE = 10_000;
+const SCALED_DOWN_SIDE = 500;
 /** OpenEXR file magic number 20000630 (0x762f3101), as written on disk. */
 const OPENEXR_MAGIC = [0x76, 0x2f, 0x31, 0x01];
 
@@ -174,12 +179,44 @@ describe('EXR and Ultra HDR output hold float arrays, so they share the HDR budg
       width: HDR_SIDE_OVER_BUDGET,
       height: HDR_SIDE_OVER_BUDGET,
     });
-    // The 243 MB RGB raster is decoded once; the 972 MB float array and its EXR/gain-map copies never exist.
+    // The decision comes from the header: the 243 MB RGB raster of this picture is never decoded either.
     expect(process.memoryUsage().rss - rssBefore).toBeLessThan(HDR_REJECTION_RSS_BYTES);
+  });
+
+  it.each(['exr', 'ultrahdr'])('judges %s output by the resize target: a 25 MP picture scaled up to 100 MP is refused undecoded', async (target) => {
+    const source = await solid('png', QUANTIZER_BOMB_SIDE);
+    const rssBefore = process.memoryUsage().rss;
+    const run = convertImage(source, target, { width: SCALED_UP_SIDE, height: SCALED_UP_SIDE, fit: 'fill' }, 'up.png', 'png');
+    await expect(run).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(run).rejects.toMatchObject({ limit: EXPECTED_SENSOR_LIMIT, width: SCALED_UP_SIDE, height: SCALED_UP_SIDE });
+    expect(process.memoryUsage().rss - rssBefore).toBeLessThan(HDR_REJECTION_RSS_BYTES);
+  });
+
+  it('lets an 81 MP picture through when it is scaled down to a size within the budget', async () => {
+    const source = await solid('png', HDR_SIDE_OVER_BUDGET);
+    const result = await convertImage(source, 'exr', { width: SCALED_DOWN_SIDE }, 'down.png', 'png');
+    expect([...result.buffer.subarray(0, 4)]).toEqual(OPENEXR_MAGIC);
   });
 
   it('still writes a small EXR, starting with the OpenEXR magic number', async () => {
     const result = await convertImage(await solid('png', HDR_SOURCE_SIDE), 'exr', {}, 'small.png', 'png');
     expect([...result.buffer.subarray(0, 4)]).toEqual(OPENEXR_MAGIC);
+  });
+});
+
+describe('the size a resize leaves, which the budgets are judged by before decoding', () => {
+  // Worked by hand for a 4000 x 2000 picture and a 1000 x 1000 box.
+  it.each([
+    ['no request', {}, 4000, 2000],
+    ['fill', { width: 1000, height: 1000, fit: 'fill' }, 1000, 1000],
+    ['contain', { width: 1000, height: 1000, fit: 'contain' }, 1000, 1000],
+    ['cover', { width: 1000, height: 1000, fit: 'cover' }, 1000, 1000],
+    ['inside keeps the aspect ratio within the box', { width: 1000, height: 1000, fit: 'inside' }, 1000, 500],
+    ['outside keeps the aspect ratio around the box', { width: 1000, height: 1000, fit: 'outside' }, 2000, 1000],
+    ['a width alone scales the height', { width: 500 }, 500, 250],
+    ['a height alone scales the width', { height: 500 }, 1000, 500],
+    ['numeric strings from a form', { width: '500' }, 500, 250],
+  ])('%s', (_label, request, width, height) => {
+    expect(resizedDimensions(4000, 2000, request)).toEqual({ width, height });
   });
 });

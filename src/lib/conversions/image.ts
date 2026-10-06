@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
-import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -2385,6 +2385,17 @@ async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
 }
 
+/**
+ * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
+ * budget from its header, with the resize that will be applied, before the raster is decoded.
+ */
+async function assertFloatBudgetBeforeDecode(pipeline: sharp.Sharp, options: ConversionOptions): Promise<void> {
+  const { width, height } = await pipeline.metadata();
+  if (width === undefined || height === undefined) return;
+  const target = resizedDimensions(width, height, options);
+  assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2759,6 +2770,7 @@ export async function convertImage(
         if (hdrFloat && imgW > 0 && imgH > 0) {
           outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
         } else {
+          await assertFloatBudgetBeforeDecode(pipeline, options);
           const { data, info } = await pipeline
             .removeAlpha()
             .raw()
@@ -2785,6 +2797,7 @@ export async function convertImage(
           { quality }
         );
       } else {
+        await assertFloatBudgetBeforeDecode(pipeline, options);
         const { data, info } = await pipeline
           .removeAlpha()
           .raw()

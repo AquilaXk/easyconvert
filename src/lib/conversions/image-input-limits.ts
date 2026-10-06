@@ -114,6 +114,31 @@ export function assertInputPixels(width: number, height: number): void {
   }
 }
 
+/** The resize request of a conversion: the requested sides and how the picture is fitted to them. */
+export interface ResizeRequest {
+  width?: number | string;
+  height?: number | string;
+  fit?: string;
+}
+
+/**
+ * The size a `width` x `height` picture has after the resize `request` (sharp's rules for `fit`: `fill`, `cover`
+ * and `contain` give the requested box, `inside` and `outside` keep the aspect ratio inside or outside it, and
+ * a single side scales the other). Lets a budget be checked from the header before the picture is decoded.
+ */
+export function resizedDimensions(width: number, height: number, request: ResizeRequest): { width: number; height: number } {
+  const wanted = { width: Number(request.width) || undefined, height: Number(request.height) || undefined };
+  if (wanted.width === undefined && wanted.height === undefined) return { width, height };
+  if (wanted.width !== undefined && wanted.height !== undefined) {
+    if (request.fit !== 'inside' && request.fit !== 'outside') return { width: wanted.width, height: wanted.height };
+    const choose = request.fit === 'inside' ? Math.min : Math.max;
+    const scale = choose(wanted.width / width, wanted.height / height);
+    return { width: Math.round(width * scale), height: Math.round(height * scale) };
+  }
+  const scale = wanted.width !== undefined ? wanted.width / width : (wanted.height as number) / height;
+  return { width: Math.round(width * scale), height: Math.round(height * scale) };
+}
+
 /** Throws `InputPixelLimitError` when `width` x `height` pixels exceed `budget` (or a lower input limit). */
 export function assertPixelBudget(width: number, height: number, budget: PixelBudget): void {
   const limit = Math.min(budget.maxPixels, maxInputPixels());
