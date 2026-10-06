@@ -24,7 +24,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
-import { encodeParquet, decodeParquet } from './parquet';
+import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
 import { assertNoComplexScript } from './ctl';
 import {
   MAX_DATA_NESTING_DEPTH,
@@ -925,6 +925,21 @@ function textResult(text: string, mimeType: string, baseName: string, extension:
   return { buffer, mimeType, filename: `${baseName}.${extension}`, size: buffer.length };
 }
 
+/**
+ * A decoded Parquet table can still be too large for the JS engine to serialize into the target
+ * (string or array length limits); that is an input problem, not an internal error.
+ */
+async function guardParquetSource<T>(convert: () => Promise<T>): Promise<T> {
+  try {
+    return await convert();
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ParquetFormatError(`Unsupported Parquet file: the table is too large to convert (${error.message})`);
+    }
+    throw error;
+  }
+}
+
 export async function convertData(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -943,6 +958,19 @@ export async function convertData(
     throw new UnsupportedTargetError('Parquet to Parquet is not a supported conversion.');
   }
 
+  if (src === 'parquet') {
+    return guardParquetSource(() => convertStructured(inputBuffer, src, tgt, options, baseName));
+  }
+  return convertStructured(inputBuffer, src, tgt, options, baseName);
+}
+
+async function convertStructured(
+  inputBuffer: Buffer,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
   const source = readStructuredSource(inputBuffer, src, tgt, options);
 
   switch (tgt) {
@@ -969,7 +997,7 @@ export async function convertData(
   }
 
   if (!TABLE_TARGETS.has(tgt)) {
-    throw new Error(`Unsupported data conversion from ${sourceFormat} to ${targetFormat}`);
+    throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
   }
   const table = tabulate(source.records(), source.fields);
   assertTableUnicode(table, tgt);

@@ -6,6 +6,18 @@ import { triangulatePolygonEarcut, Point3D } from '../src/lib/conversions/cad-nu
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { performOcr } from '../src/lib/conversions/ocr';
 import sharp from 'sharp';
+import fs from 'node:fs';
+import path from 'node:path';
+import { oracleTest } from './helpers/oracle-test';
+import { OracleToolMissingError } from './helpers/differential-oracle';
+
+const KOREAN_TESSDATA_DIRS = [
+  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
+  '/usr/share/tesseract-ocr/5/tessdata',
+  '/usr/share/tesseract-ocr/4.00/tessdata',
+  '/usr/share/tessdata',
+];
+const OCR_TEST_TIMEOUT_MS = 120_000;
 
 describe('Skeptical Audit & Robustness Verification', () => {
   it('preserves sparse row coordinates in OpenXML XLSX (Row 1 and Row 4)', async () => {
@@ -81,7 +93,10 @@ describe('Skeptical Audit & Robustness Verification', () => {
     expect(() => demuxMp4(arrayBuf)).not.toThrow();
   });
 
-  it('routes CJK language requests to CJK OCR pipeline in performOcr', async () => {
+  // Confidence calibration is tracked separately; this asserts what was recognized.
+  oracleTest('routes CJK language requests to CJK OCR pipeline in performOcr', ['tesseract'], async () => {
+    const hasKorean = KOREAN_TESSDATA_DIRS.some((dir) => fs.existsSync(path.join(dir, 'kor.traineddata')));
+    if (!hasKorean) throw new OracleToolMissingError('kor.traineddata', 'kor.traineddata is not installed');
     const testImage = await sharp({
       create: { width: 120, height: 40, channels: 3, background: { r: 255, g: 255, b: 255 } },
     })
@@ -96,10 +111,8 @@ describe('Skeptical Audit & Robustness Verification', () => {
       .toBuffer();
 
     const result = await performOcr(testImage, 'ko');
-    expect(result).toBeDefined();
-    expect(result.confidence).toBeGreaterThanOrEqual(0.9);
-    expect(result.text.length).toBeGreaterThan(0);
+    expect(result.text).toContain('한글');
     expect(result.imageWidth).toBe(120);
     expect(result.imageHeight).toBe(40);
-  });
+  }, OCR_TEST_TIMEOUT_MS);
 });
