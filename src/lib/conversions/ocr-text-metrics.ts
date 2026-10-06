@@ -33,6 +33,8 @@ const SCAN_YIELD_PIXELS = 1 << 19;
 /** Fewer ink pixels than this carry no line structure; the page is reported as straight. */
 const DESKEW_MIN_POINTS = 50;
 const DEGREES_TO_RADIANS = Math.PI / 180;
+/** Candidate angles are rounded to 1e-4 degree so that repeated additions of a step do not drift. */
+const DEGREE_PRECISION = 1e4;
 
 function assertBinary(binary: Uint8Array, width: number, height: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
@@ -213,7 +215,7 @@ export async function estimateSkew(binary: Uint8Array, width: number, height: nu
     const steps = Math.round(stage.spanDegrees / stage.stepDegrees);
     // The first stage covers the whole range around 0; later stages refine around the best so far.
     for (let k = -steps; k <= steps; k++) {
-      const degrees = Math.round((centre + k * stage.stepDegrees) * 1e4) / 1e4;
+      const degrees = Math.round((centre + k * stage.stepDegrees) * DEGREE_PRECISION) / DEGREE_PRECISION;
       if (Math.abs(degrees) > OCR_DESKEW_MAX_DEGREES || degrees === bestDegrees) continue;
       const score = projectionScore(points, degrees, counts);
       if (score > bestScore) {

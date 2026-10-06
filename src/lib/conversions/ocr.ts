@@ -144,7 +144,7 @@ export async function performOcr(
   try {
     prepared = await preprocessOcrImage(imageBuffer, steps);
   } catch (err) {
-    if (err instanceof OcrPreprocessError) throw err;
+    if (err instanceof OcrPreprocessError || err instanceof OcrEngineUnavailableError) throw err;
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
   const ocrInput = prepared.image;

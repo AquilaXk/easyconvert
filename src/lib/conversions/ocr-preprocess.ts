@@ -3,6 +3,7 @@ import { OcrPreprocessError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
 import { identityGeometry, type OcrGeometry } from './ocr-geometry';
+import { CliSemaphore } from './ocr-cli';
 
 /**
  * Prepares a page image for recognition: lines of text are levelled (deskew), scaled up to a size
@@ -23,6 +24,10 @@ export const OCR_PREPROCESS_STEPS: OcrPreprocessSteps = {
   binarize: true,
 };
 
+/** Pages prepared at once; each holds a few page-sized buffers (up to about 200 MB at the pixel limit). */
+export const OCR_PREPROCESS_MAX_CONCURRENCY = 2;
+/** Pages allowed to wait for a slot before further requests are rejected. */
+export const OCR_PREPROCESS_MAX_QUEUED = 64;
 /** Pages with more pixels than this are passed on unchanged: the steps hold several page-sized buffers. */
 export const OCR_PREPROCESS_MAX_PIXELS = 50_000_000;
 /** Text lines shorter than this are scaled up; the recognizer reads 30 to 40 px lines best. */
@@ -157,14 +162,22 @@ async function encodePng(pixels: Uint8Array, width: number, height: number): Pro
     .toBuffer();
 }
 
+const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PREPROCESS_MAX_QUEUED, 'page preparations');
+
 /**
  * Decodes the page, measures its text and applies the enabled steps. The page is decoded upright
- * (EXIF orientation applied). A page above OCR_PREPROCESS_MAX_PIXELS is only re-encoded.
+ * (EXIF orientation applied). A page above OCR_PREPROCESS_MAX_PIXELS is only re-encoded. At most
+ * OCR_PREPROCESS_MAX_CONCURRENCY pages are prepared at once; beyond OCR_PREPROCESS_MAX_QUEUED
+ * waiting pages a request is rejected with OcrEngineUnavailableError (503).
  */
-export async function preprocessOcrImage(
+export function preprocessOcrImage(
   source: Buffer,
   steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
 ): Promise<OcrPreprocessResult> {
+  return preparationSlots.run(() => prepare(source, steps));
+}
+
+async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPreprocessResult> {
   const meta = await sharp(source).metadata();
   const swapped = meta.orientation !== undefined && meta.orientation >= 5;
   const width = (swapped ? meta.height : meta.width) ?? 0;
@@ -205,7 +218,8 @@ export async function preprocessOcrImage(
     steps.deskew && trusted && turnedPixelCount(scaledWidth, scaledHeight, skew.degrees) <= OCR_PREPROCESS_MAX_PIXELS;
   if (turned) held.page = await turn(held.page, skew.degrees, paper);
 
-  const binarizeWindow = steps.binarize ? sauvolaWindowFor(lineHeightPx === null ? null : lineHeightPx * scale) : null;
+  const scaledLineHeight = lineHeightPx === null ? null : lineHeightPx * scale;
+  const binarizeWindow = steps.binarize ? sauvolaWindowFor(scaledLineHeight) : null;
   if (scale === 1 && !turned && binarizeWindow === null) return unchanged(lineHeightPx, skew.degrees);
 
   const pixels =

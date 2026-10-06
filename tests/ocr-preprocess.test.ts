@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { OcrPreprocessError } from '../src/lib/types';
+import { OcrEngineUnavailableError, OcrPreprocessError } from '../src/lib/types';
 import {
   oddWindow,
   sauvolaBinarize,
@@ -18,7 +18,14 @@ import {
   lineHeightFromProfile,
   OCR_DESKEW_MAX_DEGREES,
 } from '../src/lib/conversions/ocr-text-metrics';
-import { OCR_MAX_UPSCALE, OCR_PREPROCESS_MAX_PIXELS, planRescale, preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
+import {
+  OCR_MAX_UPSCALE,
+  OCR_PREPROCESS_MAX_CONCURRENCY,
+  OCR_PREPROCESS_MAX_PIXELS,
+  OCR_PREPROCESS_MAX_QUEUED,
+  planRescale,
+  preprocessOcrImage,
+} from '../src/lib/conversions/ocr-preprocess';
 import { identityGeometry, mapBoxToSource, mapOcrResultToSource } from '../src/lib/conversions/ocr-geometry';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 
@@ -652,6 +659,26 @@ describe('preprocessOcrImage', () => {
     expect([result.geometry.sourceWidth, result.geometry.sourceHeight]).toEqual([width, height]);
     const { data } = await grayPixels(result.image);
     expect(data.length).toBe(result.geometry.outputWidth * result.geometry.outputHeight);
+  });
+
+  it('prepares at most OCR_PREPROCESS_MAX_CONCURRENCY pages at once and rejects beyond the queue', async () => {
+    const blank = await sharp({ create: { width: 64, height: 32, channels: 3, background: '#ffffff' } })
+      .png()
+      .toBuffer();
+    const extra = 3;
+    const total = OCR_PREPROCESS_MAX_CONCURRENCY + OCR_PREPROCESS_MAX_QUEUED + extra;
+    // All requests start in the same tick, so the first fill the slots, the next fill the queue
+    // and the remaining ones are refused at once.
+    const settled = await Promise.allSettled(Array.from({ length: total }, () => preprocessOcrImage(blank)));
+    const refused = settled.filter((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+    expect(refused).toHaveLength(extra);
+    for (const entry of refused) {
+      expect(entry.reason).toBeInstanceOf(OcrEngineUnavailableError);
+      expect((entry.reason as Error).message).toBe(
+        `OCR is saturated: ${OCR_PREPROCESS_MAX_QUEUED} page preparations are already waiting.`
+      );
+    }
+    expect(settled.filter((entry) => entry.status === 'fulfilled')).toHaveLength(total - extra);
   });
 
   it('rejects bytes that are not an image', async () => {
