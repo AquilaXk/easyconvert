@@ -193,6 +193,8 @@ npm install
 ### Configuration
 
 - `KEY_HASH_PEPPER`: server-side secret used to store API key hashes as HMAC-SHA256 instead of plain SHA-256; set it to a long random value (at least 32 bytes) in production, and note that rotating it invalidates every key created or rehashed under the previous value.
+- `JOB_SECRET_KEK`: dedicated secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for both the web app and every worker: use a random value of at least 32 bytes, for example `openssl rand -hex 32`; the JWT, vault and encryption secrets are never reused for this. `docker compose up` refuses to start the workers until it is set. Outside production a development key is used when it is unset.
+- `JOB_SECRET_KEK_PREVIOUS`: optional; during a rotation, set it to the old `JOB_SECRET_KEK` value so jobs queued before the change can still be opened. Remove it once those jobs have finished. A job sealed under a key that is neither configured fails with an unknown-key error.
 
 ### Development Server
 
