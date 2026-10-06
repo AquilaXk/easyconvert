@@ -47,18 +47,22 @@ export class SandboxedProcessError extends Error {
   public exitCode: number | null;
   public stderr: string;
   public signal: NodeJS.Signals | null;
+  /** What the process printed before it failed; some tools print a report and exit non-zero. */
+  public stdout: string;
 
   constructor(
     message: string,
     exitCode: number | null,
     stderr: string,
-    signal: NodeJS.Signals | null = null
+    signal: NodeJS.Signals | null = null,
+    stdout = ''
   ) {
     super(message);
     this.name = 'SandboxedProcessError';
     this.exitCode = exitCode;
     this.stderr = stderr;
     this.signal = signal;
+    this.stdout = stdout;
   }
 }
 
@@ -809,7 +813,7 @@ export async function executeSandboxedBinary(
           } else {
             errorSummary = stderrText || `Process exited with code ${code}`;
           }
-          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal));
+          reject(new SandboxedProcessError(errorSummary, code, stderr.toString('utf-8'), signal, stdout.toString('utf-8')));
           return;
         }
 

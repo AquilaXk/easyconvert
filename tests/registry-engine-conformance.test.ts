@@ -274,6 +274,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   woff2: () => wrapFontSeed('woff2'),
   eot: () => wrapFontSeed('eot'),
   rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
+  // LHA is LZH under its other name. The ISO, CAB, ARJ, RPM, DEB, CPIO, DMG, IMG, LZMA and Z sources are
+  // seeded by the same-extension files in fixtures/archive-sources, all written by tools other than 7-Zip.
+  lha: () => readFileSync(path.join(FIXTURE_ROOT, 'archive-sources', 'probe.lzh')),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
