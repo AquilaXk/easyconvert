@@ -27,6 +27,7 @@ import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasComplexTextScript } from '../lib/conversions/ctl';
+import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
@@ -1534,6 +1535,7 @@ export async function executeWorkerConversion(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
+  assertConversionOptionsObject(options);
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
