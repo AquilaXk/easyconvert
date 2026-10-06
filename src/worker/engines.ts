@@ -944,6 +944,17 @@ function buildPdftoppmArgs(
   return args;
 }
 
+/**
+ * pdftotext flags for a text export. The default is poppler's reading-order mode, which follows
+ * the page's own text flow and reads columns one after another. `layout: true` keeps physical
+ * layout (`-layout`) so table rows stay on one line. Any other `layout` value is a client error.
+ */
+function buildPdftotextArgs(options: WorkerEngineOptions): string[] {
+  if (options.layout === undefined || options.layout === false) return [];
+  if (options.layout === true) return ['-layout'];
+  throw new UnsupportedOptionError('The layout option must be a boolean.');
+}
+
 async function convertPdfToTextWithPoppler(
   input: Buffer | WorkerVfsPayload,
   options: WorkerEngineOptions,
@@ -952,6 +963,7 @@ async function convertPdfToTextWithPoppler(
   timeout: number,
   maxBuffer: number
 ): Promise<WorkerConversionResult | null> {
+  const pdftotextArgs = buildPdftotextArgs(options);
   const pdftotextBin = resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH);
   if (!pdftotextBin) {
     if (options.throwOnUnavailable) {
@@ -970,7 +982,7 @@ async function convertPdfToTextWithPoppler(
         { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
         async (readablePath) => {
           try {
-            await executeSandboxedBinary(pdftotextBin, ['-layout', readablePath, tempOutputPath], {
+            await executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
               cwd: tempDir,
               timeoutMs: timeout,
               maxBuffer,

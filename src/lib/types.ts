@@ -20,6 +20,7 @@ export interface FormatOptionsSchema {
   fit?: boolean;
   stripMetadata?: boolean;
   dpi?: boolean;
+  layout?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
   hasHeaders?: boolean;
@@ -86,6 +87,8 @@ export interface ConversionOptions {
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
   stripMetadata?: boolean;
   dpi?: number;
+  /** pdf -> txt: keep physical layout so table rows stay on one line (default: reading order). */
+  layout?: boolean;
   colorDepth?: number;
   colors?: number;
   palette?: boolean;

@@ -106,6 +106,11 @@ export const ConversionOptionsSchema = {
       maximum: 600,
       description: 'Dots per inch resolution (72-600).',
     },
+    layout: {
+      type: 'boolean',
+      description:
+        'PDF to TXT: keep the physical page layout so table rows stay on one line. Defaults to false, which reads text in reading order (column after column).',
+    },
     colorDepth: {
       type: 'integer',
       minimum: 1,
