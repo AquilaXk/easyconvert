@@ -85,13 +85,13 @@ describe('convertImage to xps', () => {
     it('rejects text with a typed ConversionFailedError', async () => {
       const error = await captureError(() => convertImage(garbage, 'xps', options, 'bad.png', 'png'));
       expect(error.name).toBe('ConversionFailedError');
-      expect(error.message).toMatch(/^Invalid image: it could not be decoded \(.*unsupported image format/);
+      expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(.*unsupported image format/);
     });
 
     it.skipIf(SKIP_WITHOUT_MAGICK)('rejects a truncated PNG with a typed ConversionFailedError', async () => {
       const error = await captureError(() => convertImage(truncatedPng(), 'xps', options, 'cut.png', 'png'));
       expect(error.name).toBe('ConversionFailedError');
-      expect(error.message).toMatch(/^Invalid image: it could not be decoded \(/);
+      expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(/);
     });
   });
 });

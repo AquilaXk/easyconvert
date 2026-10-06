@@ -53,14 +53,14 @@ describe('decode and encode failures are told apart', () => {
     for (const options of [{}, { stripMetadata: true }]) {
       const error = await captureError(() => convertImage(garbage, 'png', options, 'bad.png', 'png'));
       expect(error.name).toBe('ConversionFailedError');
-      expect(error.message).toMatch(/^Invalid image: it could not be decoded \(/);
+      expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(/);
     }
   });
 
   it('a truncated source is a decode error even though libvips reads it lazily', async () => {
     const truncated = SOLID.subarray(0, SOLID.length - 20);
     const error = await captureError(() => convertImage(truncated, 'png', { stripMetadata: true }, 'cut.png', 'png'));
-    expect(error.message).toMatch(/^Invalid image: it could not be decoded \(/);
+    expect(error.message).toMatch(/^Invalid image: (it|the header) could not be decoded \(/);
   });
 
   it('an output the encoder cannot write is an encode error, not a decode error', async () => {

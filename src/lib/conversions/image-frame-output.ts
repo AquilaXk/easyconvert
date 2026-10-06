@@ -1,39 +1,19 @@
 import JSZip from 'jszip';
-import sharp from 'sharp';
+import sharp, { type ResizeOptions } from 'sharp';
 import { assembleAnimation, type AnimationEncodeOptions, type FrameSource, type RawFrame } from './image-animation';
 import type { DecodedAnimation } from './image-frames';
 import { assertAnimationBudget, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './image-limits';
 import { joinTiffPages } from './image-tiff-merge';
 import { pageEntryName } from './page-range';
 import type { ConversionResult } from '../types';
+import { resizedDimensions } from './image-input-limits';
 
 /** Output assembly for multi-frame sources: decoded animations, per-page ZIP packages and multi-page TIFFs. */
 
 const ZIP_COMPRESSION_LEVEL = 6;
 const FIRST_FRAME_INDEX = 0;
 
-/**
- * Upper bound for the size of a resized frame, from the same rules `sharp.resize` follows. Used to check the
- * output budget before any frame is processed.
- */
-export function resizedDimensions(
-  sourceWidth: number,
-  sourceHeight: number,
-  resize: { width?: number; height?: number; fit?: string } | null
-): { width: number; height: number } {
-  if (!resize || (resize.width === undefined && resize.height === undefined)) {
-    return { width: sourceWidth, height: sourceHeight };
-  }
-  const width = resize.width ?? Math.round(((resize.height as number) * sourceWidth) / sourceHeight);
-  const height = resize.height ?? Math.round((width * sourceHeight) / sourceWidth);
-  if (resize.fit === 'outside') {
-    const scale = Math.max(width / sourceWidth, height / sourceHeight);
-    return { width: Math.round(sourceWidth * scale), height: Math.round(sourceHeight * scale) };
-  }
-  return { width, height };
-}
-
-async function resizeFrame(frame: RawFrame, resize: sharp.ResizeOptions): Promise<RawFrame> {
+async function resizeFrame(frame: RawFrame, resize: ResizeOptions): Promise<RawFrame> {
   const { data, info } = await sharp(frame.data, {
     raw: { width: frame.width, height: frame.height, channels: RGBA_BYTES_PER_PIXEL },
   })
@@ -52,10 +32,10 @@ async function resizeFrame(frame: RawFrame, resize: sharp.ResizeOptions): Promis
 export async function encodeDecodedAnimation(
   animation: DecodedAnimation,
   target: 'gif' | 'webp',
-  resize: sharp.ResizeOptions | null,
+  resize: ResizeOptions | null,
   encode: AnimationEncodeOptions
 ): Promise<Buffer> {
-  const bound = resizedDimensions(animation.width, animation.height, resize);
+  const bound = resizedDimensions(animation.width, animation.height, resize ?? {});
   assertAnimationBudget(bound.width, bound.height, animation.frameCount, 'The resized animation', COMPOSED_MEMORY);
   const transform = async (frame: RawFrame) => (resize ? resizeFrame(frame, resize) : frame);
   const first = await transform(await animation.frame(FIRST_FRAME_INDEX));

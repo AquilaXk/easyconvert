@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Metadata, type ResizeOptions, type SharpOptions } from 'sharp';
 import { ConversionFailedError, InvalidPageRangeError } from '../types';
 import { ApngCompositor, parseApng, type ApngAnimation } from './image-apng';
 import type { AnimationMetadata, FrameSource, RawFrame } from './image-animation';
@@ -11,7 +11,7 @@ import {
   orientedMemory,
   RGBA_BYTES_PER_PIXEL,
 } from './image-limits';
-import { resizedDimensions } from './image-frame-output';
+import { maxInputPixels, resizedDimensions } from './image-input-limits';
 import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
@@ -51,7 +51,7 @@ const FIRST_QUARTER_TURN_ORIENTATION = 5;
 export interface PageResize {
   width?: number;
   height?: number;
-  fit?: sharp.ResizeOptions['fit'];
+  fit?: ResizeOptions['fit'];
 }
 
 /** Selection-relevant options. */
@@ -70,7 +70,7 @@ export interface DecodedAnimation extends FrameSource {
 export interface FrameSelection {
   /** What sharp decodes: the source itself, or one composed APNG frame as raw RGBA. */
   source: Buffer;
-  input: sharp.SharpOptions;
+  input: SharpOptions;
   /** sharp's own animated pipeline keeps every frame (gif/webp source to gif/webp target). */
   keepsAnimation: boolean;
   /** Frames the caller decodes and assembles itself (oriented animations, APNG). */
@@ -101,7 +101,7 @@ export function resolveRequestedPages(options: FrameOptions, count: number): num
 
 function singleSource(
   source: Buffer,
-  input: sharp.SharpOptions,
+  input: SharpOptions,
   sourceFrameCount: number,
   frameUsed: number | undefined
 ): FrameSelection {
@@ -180,7 +180,7 @@ async function selectApng(
  * pixel limit) and oriented frame by frame from the raw pixels. The size is checked against the decoded
  * animation budget before anything is decoded.
  */
-function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number, orientation: number, options: FrameOptions): DecodedAnimation {
+function orientedAnimation(buffer: Buffer, meta: Metadata, frames: number, orientation: number, options: FrameOptions): DecodedAnimation {
   const storedWidth = meta.width ?? 0;
   const storedHeight = meta.height ?? 0;
   const swaps = orientation >= FIRST_QUARTER_TURN_ORIENTATION;
@@ -205,7 +205,7 @@ function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number,
     async frame(index): Promise<RawFrame> {
       if (!stack) {
         // A kept ICC profile means the pixels stay in the profile space; without it libvips converts to sRGB.
-        const decoder = sharp(buffer, { animated: true });
+        const decoder = sharp(buffer, { animated: true, limitInputPixels: maxInputPixels() });
         const decoded = await (options.stripMetadata === true ? decoder : decoder.keepIccProfile())
           .ensureAlpha()
           .raw()
@@ -225,7 +225,7 @@ function orientedAnimation(buffer: Buffer, meta: sharp.Metadata, frames: number,
 
 function selectAnimationFrames(
   buffer: Buffer,
-  meta: sharp.Metadata,
+  meta: Metadata,
   frames: number,
   targetFormat: string,
   options: FrameOptions
@@ -281,10 +281,10 @@ async function selectDocumentPages(
   // Every page is decoded at its source size and encoded at its resized size: charge the larger of the two.
   let pixels = 0;
   for (const page of pages) {
-    const pageMeta = await sharp(buffer, { page: page - 1 }).metadata();
+    const pageMeta = await sharp(buffer, { page: page - 1, limitInputPixels: maxInputPixels() }).metadata();
     const sourceWidth = pageMeta.width ?? 0;
     const sourceHeight = pageMeta.height ?? 0;
-    const resized = sourceWidth > 0 && sourceHeight > 0 ? resizedDimensions(sourceWidth, sourceHeight, resize) : { width: 0, height: 0 };
+    const resized = sourceWidth > 0 && sourceHeight > 0 ? resizedDimensions(sourceWidth, sourceHeight, resize ?? {}) : { width: 0, height: 0 };
     if (resize) assertOutputPixels(resized.width, resized.height);
     pixels += Math.max(sourceWidth * sourceHeight, resized.width * resized.height);
   }
@@ -310,7 +310,7 @@ export async function selectFrames(
   const apng = parseApng(buffer);
   if (apng) return selectApng(buffer, apng, targetFormat, options);
 
-  const meta = await sharp(buffer).metadata();
+  const meta = await sharp(buffer, { limitInputPixels: maxInputPixels() }).metadata();
   const frames = meta.pages ?? SINGLE_FRAME;
   if (frames <= SINGLE_FRAME || meta.format === undefined) return untouched;
   if (ANIMATION_SOURCE_FORMATS.has(meta.format)) {

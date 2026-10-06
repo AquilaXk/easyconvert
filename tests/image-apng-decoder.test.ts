@@ -353,12 +353,15 @@ describe('malformed APNG input fails closed with a typed error', () => {
     ['a frame without image data', (c) => c.splice(c.indexOf(ofType(c, 'fdAT', 1)), 1)],
   ];
 
-  it.skipIf(SKIP_WITHOUT_MAGICK).each(MUTATIONS)('rejects %s', async (_label, mutate) => {
+  // An IHDR too short to hold the canvas size fails the input-limit header check before the APNG parser runs.
+  const HEADER_UNREADABLE = /^Invalid image: the header could not be decoded \(/;
+  it.skipIf(SKIP_WITHOUT_MAGICK).each(MUTATIONS)('rejects %s', async (label, mutate) => {
     const apng = buildApngFile(baseSpec(), mutate);
+    const expected = label === 'a truncated IHDR' ? HEADER_UNREADABLE : MALFORMED;
     for (const [target, options] of [['gif', {}], ['png', { page: 2 }], ['png', {}]] as const) {
       const error = await captureError(() => convertImage(apng, target, { ...options }, 'anim.png', 'png'));
       expect(error.name, `${target} ${JSON.stringify(options)}`).toBe('ConversionFailedError');
-      expect(error.message).toMatch(MALFORMED);
+      expect(error.message).toMatch(expected);
     }
   });
 
@@ -379,7 +382,8 @@ describe('malformed APNG input fails closed with a typed error', () => {
 
 describe('APNG budgets', () => {
   it.skipIf(SKIP_WITHOUT_MAGICK)('refuses an animation whose canvas times frames exceeds the decoded animation budget', async () => {
-    const CANVAS = 20000;
+    // Under the 100 Mpx input limit per frame (81 Mpx), over the 512 MiB decoded budget for two RGBA frames.
+    const CANVAS = 9000;
     const tiny = solid(1, 1, [9, 9, 9, 255]);
     const spec: ApngSpec = {
       width: CANVAS,

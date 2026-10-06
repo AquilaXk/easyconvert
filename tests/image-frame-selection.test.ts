@@ -9,6 +9,8 @@ import { POST as convertPost } from '../src/app/api/convert/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { buildBilevelTiff } from './helpers/tiff-builder';
+import { bombGif } from './helpers/image-bombs';
+import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { captureError } from './helpers/capture-error';
 import { readGifLoopCount } from './helpers/animation-containers';
 import {
@@ -47,8 +49,9 @@ const HTTP_BAD_REQUEST = 400;
 const FREE_TIER_PAGES = 50;
 const OVER_FREE_TIER_PAGES = 51;
 const TINY_PAGE = 8;
-const HUGE_PAGE_SIDE = 14000;
-const HUGE_PAGES = 3;
+// Each page stays under the 100 Mpx input limit (81 Mpx); five of them exceed the 400 Mpx aggregate budget.
+const HUGE_PAGE_SIDE = 9000;
+const HUGE_PAGES = 5;
 
 function rgb([r, g, b]: Rgb): string {
   return `rgb(${r},${g},${b})`;
@@ -210,6 +213,18 @@ describe('page limits', () => {
       expect(error.name).toBe('ConversionFailedError');
       expect(error.message).toContain(`The ${HUGE_PAGES} selected pages hold ${HUGE_PAGES * HUGE_PAGE_SIDE * HUGE_PAGE_SIDE} pixels in total`);
     }
+  });
+});
+
+describe('the input pixel limit holds on the multi-frame path', () => {
+  // 20000 x 20000 = 400 Mpx declared in the GIF header, four times the 100 Mpx default input limit.
+  const OVERSIZED_SIDE = 20000;
+
+  it.each(['gif', 'webp'])('refuses an oversized GIF before decoding any frame for an animated %s target', async (target) => {
+    const error = await captureError(() => convertImage(bombGif(OVERSIZED_SIDE, OVERSIZED_SIDE), target, {}, 'big.gif', 'gif'));
+    expect(error).toBeInstanceOf(InputPixelLimitError);
+    expect((error as InputPixelLimitError).status).toBe(413);
+    expect(error.message).toContain(`${OVERSIZED_SIDE}x${OVERSIZED_SIDE} pixels`);
   });
 });
 

@@ -1,4 +1,3 @@
-import type sharp from 'sharp';
 import { UnsupportedOptionError } from '../types';
 
 /**
@@ -50,8 +49,13 @@ export function flattenColour(background: RgbColour | undefined): RgbColour {
   return background ?? WHITE;
 }
 
+/** An RGB colour with an alpha channel in 0..1, as sharp takes for a background. */
+export interface RgbaColour extends RgbColour {
+  alpha: number;
+}
+
 /** Fill colour for `fit: 'contain'` bars: opaque for the requested or opaque-target case, else transparent. */
-export function letterboxColour(background: RgbColour | undefined, isOpaqueTarget: boolean): sharp.RGBA {
+export function letterboxColour(background: RgbColour | undefined, isOpaqueTarget: boolean): RgbaColour {
   if (background) return { ...background, alpha: OPAQUE_ALPHA };
   if (isOpaqueTarget) return { ...WHITE, alpha: OPAQUE_ALPHA };
   return { ...WHITE, alpha: TRANSPARENT_ALPHA };

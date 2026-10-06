@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { MAX_OUTPUT_PIXELS } from '../src/lib/conversions/image-limits';
+import { ConversionFailedError } from '../src/lib/types';
 import { captureError } from './helpers/capture-error';
 import { decodeRgba, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 
@@ -61,16 +62,17 @@ describe('SVG output size limits', () => {
   });
 
   it.each(['png', 'pdf'])('refuses a density that renders the drawing over the pixel limit as %s', async (target) => {
-    // 100 x 50 user units at 12000 dpi are 16667 x 8333 pixels (139 Mpx); the renderer itself accepts that.
+    // 100 x 50 user units at 12000 dpi are 16667 x 8333 pixels (139 Mpx): over the input pixel limit (413).
     const error = await captureError(() => convertSvg(target, { dpi: 12000 }));
-    expect(error.name).toBe('ConversionFailedError');
-    expect(error.message).toMatch(/over the limit of 100000000 pixels/);
+    expect(error.name).toBe('InputPixelLimitError');
+    expect(error.message).toMatch(/16667x8333 pixels .* over the input limit of 100000000 pixels/);
   });
 
   it.each(['png', 'pdf'])('reports a density the renderer rejects as a conversion failure for %s', async (target) => {
+    // Either the declared size at that density is over the input limit (413) or the renderer refuses it (400).
     const error = await captureError(() => convertSvg(target, { dpi: 100000 }));
-    expect(error.name).toBe('ConversionFailedError');
-    expect(error.message).toMatch(/The SVG drawing cannot be rendered at 100000 dpi/);
+    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect(error.message).toMatch(/over the input limit of 100000000 pixels|The SVG drawing cannot be rendered at 100000 dpi/);
   });
 
   it.skipIf(SKIP_WITHOUT_MAGICK)('still resizes a normal drawing to the requested size', async () => {
