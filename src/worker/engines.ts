@@ -33,6 +33,7 @@ import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import { parseHwpDocument } from '../lib/conversions/hwp';
+import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
@@ -44,6 +45,7 @@ import {
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
+import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -864,6 +866,10 @@ export async function convertWithNative7z(
  */
 const POPPLER_IMAGE_FORMATS = new Set(['png', 'jpg', 'jpeg', 'tiff', 'tif', 'ppm']);
 
+/**
+ * Counts the pages of a PDF. A password never reaches the pdfinfo command line: the document is
+ * decrypted into a private copy under `tempDir` first (see `withDecryptedPdf`).
+ */
 export async function getPdfPageCount(
   inputPath: string,
   tempDir: string,
@@ -872,11 +878,23 @@ export async function getPdfPageCount(
   inputBuffer?: Buffer,
   password?: string
 ): Promise<number> {
+  return withDecryptedPdf({ inputPath, tempDir, password, timeoutMs, signal }, (readablePath) =>
+    countPagesOfReadablePdf(readablePath, tempDir, timeoutMs, signal, password ? undefined : inputBuffer)
+  );
+}
+
+/** Page count of a PDF that Poppler can open without a password. */
+async function countPagesOfReadablePdf(
+  inputPath: string,
+  tempDir: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  inputBuffer?: Buffer
+): Promise<number> {
   const pdfinfoBin = resolveBinary(BINARY_PATHS.pdfinfo, process.env.PDFINFO_PATH);
   if (pdfinfoBin) {
     try {
-      const pwArgs = password ? ['-upw', password] : [];
-      const res = await executeSandboxedBinary(pdfinfoBin, [...pwArgs, inputPath], {
+      const res = await executeSandboxedBinary(pdfinfoBin, [inputPath], {
         cwd: tempDir,
         timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
@@ -888,7 +906,11 @@ export async function getPdfPageCount(
         const pages = Number.parseInt(match[1], 10);
         if (pages > 0) return pages;
       }
-    } catch {
+    } catch (err) {
+      const passwordError = toPopplerPasswordError(err);
+      if (passwordError) {
+        throw passwordError;
+      }
       // Fall back to pdf-lib parsing if pdfinfo fails
     }
   }
@@ -924,10 +946,6 @@ function buildPdftoppmArgs(
     args.push('-tiff');
   }
 
-  if (options.password) {
-    args.push('-upw', options.password);
-  }
-
   args.push('-f', String(startPage), '-l', String(endPage), inputPath, prefix);
   return args;
 }
@@ -954,15 +972,20 @@ async function convertPdfToTextWithPoppler(
       const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
       const tempOutputPath = path.join(tempDir, 'output.txt');
 
-      await executeSandboxedBinary(
-        pdftotextBin,
-        ['-layout', inputPath, tempOutputPath],
-        {
-          cwd: tempDir,
-          timeoutMs: timeout,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
+      await withDecryptedPdf(
+        { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
+        async (readablePath) => {
+          try {
+            await executeSandboxedBinary(pdftotextBin, ['-layout', readablePath, tempOutputPath], {
+              cwd: tempDir,
+              timeoutMs: timeout,
+              maxBuffer,
+              networkIsolated: true,
+              signal: options.signal,
+            });
+          } catch (err) {
+            throw toPopplerPasswordError(err) ?? err;
+          }
         }
       );
 
@@ -1121,6 +1144,16 @@ interface PopplerRenderParams {
   renderPages: (tempDir: string, inputPath: string, requestedPages: number[]) => Promise<void>;
 }
 
+function loadPdfInputBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+  if (input.inputBuffer) {
+    return input.inputBuffer;
+  }
+  return input.inputPath ? fs.readFileSync(input.inputPath) : undefined;
+}
+
 async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
   const {
     sandboxPrefix,
@@ -1139,37 +1172,35 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
   try {
     return await withSandboxDir(sandboxPrefix, async (tempDir) => {
       const { inputPath } = resolveInputContext(input, 'pdf', tempDir);
-      const inputBuffer = Buffer.isBuffer(input)
-        ? input
-        : (input.inputBuffer ?? (input.inputPath ? fs.readFileSync(input.inputPath) : undefined));
-      const pageCount = await getPdfPageCount(
-        inputPath,
-        tempDir,
-        timeout,
-        options.signal,
-        inputBuffer,
-        options.password
+      // Poppler only ever sees a PDF it can open without a password; the credential stays in qpdf's private file.
+      return withDecryptedPdf(
+        { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
+        async (readablePath) => {
+          // With a password the fallback parser must read the decrypted copy, not the encrypted input.
+          const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
+          const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
+
+          const requestedPages = resolveRequestedPages(options, pageCount);
+          await renderPages(tempDir, readablePath, requestedPages);
+
+          const files = fs.readdirSync(tempDir).filter(filterOutputFile);
+          if (files.length === 0) {
+            throw new Error(missingOutputError);
+          }
+
+          const resolvedFiles = matchOutputPageFiles(files, requestedPages);
+          return finalizeMultiPageOutput({
+            tempDir,
+            resolvedFiles,
+            requestedPages,
+            tgt,
+            baseName,
+            options,
+            input,
+            startTime,
+          });
+        }
       );
-
-      const requestedPages = resolveRequestedPages(options, pageCount);
-      await renderPages(tempDir, inputPath, requestedPages);
-
-      const files = fs.readdirSync(tempDir).filter(filterOutputFile);
-      if (files.length === 0) {
-        throw new Error(missingOutputError);
-      }
-
-      const resolvedFiles = matchOutputPageFiles(files, requestedPages);
-      return finalizeMultiPageOutput({
-        tempDir,
-        resolvedFiles,
-        requestedPages,
-        tgt,
-        baseName,
-        options,
-        input,
-        startTime,
-      });
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
@@ -1258,11 +1289,7 @@ async function renderPdfToSvgWithPoppler(
       for (const p of requestedPages) {
         step = step.then(() => {
           const pageSvgPath = path.join(tempDir, `page-${p}.svg`);
-          const args = ['-svg', '-f', String(p), '-l', String(p)];
-          if (options.password) {
-            args.push('-upw', options.password);
-          }
-          args.push(inputPath, pageSvgPath);
+          const args = ['-svg', '-f', String(p), '-l', String(p), inputPath, pageSvgPath];
           return executeSandboxedBinary(pdftocairoBin, args, {
             cwd: tempDir,
             timeoutMs: timeout,
@@ -1655,6 +1682,7 @@ export async function executeWorkerConversion(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
+  assertConversionOptionsObject(options);
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
@@ -1747,6 +1775,9 @@ export async function executeWorkerConversion(
         }
       }
     } catch (err) {
+      if (isPasswordHandlingUnavailable(err, options.password)) {
+        throw err;
+      }
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`office-poppler-chain: ${err.message}`);
         fallbackReason = err.message;
@@ -1841,6 +1872,12 @@ export async function executeWorkerConversion(
       if (popplerRes && isPdfTextTarget && options.inProcessFallback !== false && !hasNonWhitespaceText(popplerRes.buffer)) {
         // No text layer: scanned pages need the in-process engine's OCR. Drop the empty output first.
         discardPersistedOutput(popplerRes.filePath, input, options);
+        if (options.password) {
+          // The in-process engine would receive the still-encrypted original and cannot honour the password.
+          throw new UnsupportedOptionError(
+            'OCR of a password-protected PDF is not supported: the PDF has no text layer and the in-process OCR engine cannot decrypt it.'
+          );
+        }
         fallbackChain.push('native-poppler: pdftotext found no text layer');
       } else if (popplerRes) {
         return {
@@ -1849,6 +1886,10 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      if (isPasswordHandlingUnavailable(err, options.password)) {
+        // Only qpdf can open the document; falling back would convert an unreadable file.
+        throw err;
+      }
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-poppler: ${err.message}`);
         fallbackReason = err.message;
@@ -1886,6 +1927,10 @@ export async function executeWorkerConversion(
       throw lastUnavailable;
     }
     throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
+  }
+  if (src === 'pdf' && options.password && lastUnavailable) {
+    // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.
+    throw lastUnavailable;
   }
   if (options.pdfStandard) {
     throw new UnsupportedOptionError(

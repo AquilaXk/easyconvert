@@ -10,8 +10,8 @@
  */
 
 import { ConversionOptions } from '../types';
-import { isPureDataConvertible } from './pure/pure-data';
 import { isPureCadConvertible } from './pure/pure-cad';
+import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 
@@ -301,6 +301,10 @@ export function isOpfsStreamingSupported(
   const tgt = targetFormat.toLowerCase();
   if (options?.allowPassThrough && src === tgt) {
     return true;
+  }
+  // The streaming CSV/TSV path decodes UTF-8 only; another input encoding is converted on the server.
+  if (isStreamableDelimitedPair(src, tgt) && !isStreamableEncoding(options?.encoding)) {
+    return false;
   }
   return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
 }
@@ -593,16 +597,10 @@ export function resolveConversionTier(
     (isWebGpuRequested || (isWasmFilterRequested && options.quantizer === 'oklab')) &&
     hasWebGpu;
 
-  // 4. Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, instant execution)
-  if (isPureDataConvertible(src, tgt)) {
-    return {
-      tier: 'L0',
-      tierName: 'Edge L0 (Instant)',
-      isClientEdge: true,
-      reason: 'Pure isomorphic structured data conversion (CSV/TSV/JSON/YAML)',
-    };
-  }
-
+  // 4. Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, instant execution).
+  // Structured data (CSV/TSV/JSON/NDJSON/YAML/XML/TOML) is not offered here: the server data
+  // engine detects encodings and delimiters, escapes formulas, keeps big integers exact and caps
+  // YAML/XML expansion, so those conversions fall through to the cloud tier.
   if (isPureCadConvertible(src, tgt)) {
     return {
       tier: 'L0',

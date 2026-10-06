@@ -3,6 +3,8 @@ import { ociStorage, OciObjectStorageService } from '../src/lib/storage/oci-stor
 import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engines';
 import { Queue, Job } from '../src/lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { probeStream } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', () => {
   describe('1. OCI Object Storage Configuration & Presigned URLs', () => {
@@ -74,7 +76,7 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
     });
 
-    it('successfully executes audio conversion through worker orchestrator', async () => {
+    oracleTest('successfully executes audio conversion through worker orchestrator', ['ffmpeg', 'ffprobe'], async () => {
       // 0.1s 44100Hz stereo WAV
       const sampleRate = 44100;
       const channels = 2;
@@ -99,13 +101,16 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
         wav,
         'wav',
         'mp3',
-        { allowPureLossyBitstream: true },
+        {},
         'audio.wav'
       );
 
-      expect(result).toBeDefined();
-      expect(result.size).toBeGreaterThan(0);
-      expect(['native-ffmpeg', 'internal-fallback']).toContain(result.engineUsed);
+      expect(result.size).toBe(result.buffer.length);
+      expect(result.engineUsed).toBe('native-ffmpeg');
+      const stream = probeStream(result.buffer, 'mp3', 'a');
+      expect(stream.codec_name).toBe('mp3');
+      expect(Number(stream.sample_rate)).toBe(sampleRate);
+      expect(Number(stream.channels)).toBe(channels);
     });
   });
 
