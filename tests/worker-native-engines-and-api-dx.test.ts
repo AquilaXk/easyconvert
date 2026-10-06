@@ -37,16 +37,16 @@ async function createUniqueTestUser(tier: 'free' | 'starter' | 'pro' | 'enterpri
 
 describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
   describe('1. Dockerfile.worker Engine Completeness', () => {
-    it('verifies tesseract-ocr, tesseract-ocr-kor, tesseract-ocr-eng, and p7zip-rar are installed', () => {
+    it('verifies tesseract-ocr, tesseract-ocr-kor, tesseract-ocr-eng, and the pinned 7-Zip build are installed', () => {
       const dockerfilePath = path.join(process.cwd(), 'Dockerfile.worker');
       expect(fs.existsSync(dockerfilePath)).toBe(true);
 
       const dockerfileContent = fs.readFileSync(dockerfilePath, 'utf-8');
-      expect(dockerfileContent).toContain('p7zip-rar');
+      // 7-Zip is the pinned upstream build (see worker-seven-zip-packaging.test.ts), not apt's p7zip.
+      expect(dockerfileContent).toContain('COPY --from=sevenzip /seven-zip/7zzs /usr/local/bin/7zz');
       expect(dockerfileContent).toContain('tesseract-ocr');
       expect(dockerfileContent).toContain('tesseract-ocr-eng');
       expect(dockerfileContent).toContain('tesseract-ocr-kor');
-      expect(dockerfileContent).toContain('p7zip-full');
       expect(dockerfileContent).toContain('poppler-utils');
       expect(dockerfileContent).toContain('libreoffice-writer');
     });

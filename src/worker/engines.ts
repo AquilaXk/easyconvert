@@ -48,7 +48,7 @@ import {
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z } from '../lib/conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
   assertArchivePasswordSafe,
   cleanupDirectoryTree,
@@ -106,12 +106,11 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/ffmpeg',
     '/opt/homebrew/bin/ffmpeg',
   ],
+  // Same names and order as the library (7zz first, then the p7zip names). 7zr reads 7z only, and
+  // the worker also needs zip, tar and rar, so it is not a candidate here.
   p7zip: [
     ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
-    '/usr/bin/7z',
-    '/usr/bin/7za',
-    '/usr/local/bin/7z',
-    '/opt/homebrew/bin/7z',
+    ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr')),
   ],
   pdfinfo: [
     ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),

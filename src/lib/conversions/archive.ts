@@ -2305,6 +2305,25 @@ export function getXzBinaryPath(): string | null {
   return null;
 }
 
+/**
+ * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip and Homebrew install; Debian and
+ * Ubuntu's `7zip` package installs `7z`, `7za` and `7zr` (`7zr` reads and writes 7z only). `7zz` is
+ * preferred because the worker image ships only the pinned upstream build, and a modern `7zz` also
+ * wins over a legacy `7z` that may sit on the same host.
+ */
+export const SEVEN_ZIP_BINARY_NAMES = ['7zz', '7z', '7za', '7zr'] as const;
+const SEVEN_ZIP_BINARY_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const;
+
+/** Fixed install locations of every 7-Zip name, best name first. */
+export const SEVEN_ZIP_BINARY_CANDIDATES: readonly string[] = SEVEN_ZIP_BINARY_NAMES.flatMap((name) =>
+  SEVEN_ZIP_BINARY_DIRECTORIES.map((directory) => `${directory}/${name}`)
+);
+
+/** First 7-Zip executable among SEVEN_ZIP_BINARY_CANDIDATES, or null. */
+export function findSevenZipBinary(exists: (candidate: string) => boolean = fs.existsSync): string | null {
+  return SEVEN_ZIP_BINARY_CANDIDATES.find((candidate) => exists(candidate)) ?? null;
+}
+
 let resolved7zPath: string | null = null;
 export function get7zBinaryPath(): string | null {
   const envOverride = process.env.P7ZIP_PATH ?? process.env.P7Z_PATH;
@@ -2315,27 +2334,15 @@ export function get7zBinaryPath(): string | null {
     return null;
   }
   if (resolved7zPath !== null) return resolved7zPath || null;
-  const fixedLocations = [
-    '/usr/bin/7z',
-    '/usr/local/bin/7z',
-    '/opt/homebrew/bin/7z',
-    '/usr/bin/7za',
-    '/usr/local/bin/7za',
-    '/opt/homebrew/bin/7za',
-    '/usr/bin/7zr',
-    '/usr/local/bin/7zr',
-    '/opt/homebrew/bin/7zr',
-  ];
-  for (const loc of fixedLocations) {
-    if (fs.existsSync(loc)) {
-      resolved7zPath = loc;
-      return loc;
-    }
+  const fixedLocation = findSevenZipBinary();
+  if (fixedLocation) {
+    resolved7zPath = fixedLocation;
+    return fixedLocation;
   }
   const whichBins = ['/usr/bin/which', '/bin/which'];
   for (const whichBin of whichBins) {
     if (fs.existsSync(whichBin)) {
-      for (const cmd of ['7z', '7za', '7zr']) {
+      for (const cmd of SEVEN_ZIP_BINARY_NAMES) {
         try {
           const out = execFileSync(whichBin, [cmd], { stdio: 'pipe' }).toString().trim();
           if (out && fs.existsSync(out)) {
