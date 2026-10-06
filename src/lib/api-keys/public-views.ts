@@ -1,4 +1,4 @@
-import { redactSecrets, redactText, redactUrl } from '../security/redact';
+import { redactForOutput, redactText, redactUrl } from '../security/redact';
 import type { ApiKey, WebhookDlqEntry } from './types';
 
 /** API key as returned by the API: no stored hash and no webhook signing secret. */
@@ -19,7 +19,7 @@ export function toPublicDlqEntry(entry: WebhookDlqEntry): PublicWebhookDlqEntry 
   return {
     ...rest,
     targetUrl: redactUrl(rest.targetUrl),
-    payload: redactSecrets(rest.payload),
+    payload: redactForOutput(rest.payload),
     errorMessage: rest.errorMessage === undefined ? undefined : redactText(rest.errorMessage),
   };
 }

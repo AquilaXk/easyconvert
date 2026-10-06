@@ -1,12 +1,24 @@
-import { redactSecrets } from '../../security/redact';
-import { SecretSealError, sealJobSecret, unsealJobSecret } from '../../security/job-secret-seal';
+import { redactForOutput } from '../../security/redact';
+import {
+  MAX_SEALED_PLAINTEXT_BYTES,
+  SecretSealError,
+  sealJobSecret,
+  unsealJobSecret,
+} from '../../security/job-secret-seal';
 import { ConversionFailedError } from '../../types';
 import type { GraphNode, JobGraph, NodeId } from './types';
 
 /** Operations whose `url` and `headers` are bearer secrets of customer storage. */
 const SECRET_URL_OPERATIONS: ReadonlySet<string> = new Set(['import.url', 'export.url']);
+/** Longest URL a sealed node may carry, in characters. */
+export const MAX_SEALED_URL_CHARS = 8192;
 /** Most request headers a sealed node may carry. */
-const MAX_SEALED_HEADERS = 64;
+export const MAX_SEALED_HEADERS = 64;
+/** Longest header name and header value a sealed node may carry, in characters. */
+export const MAX_SEALED_HEADER_NAME_CHARS = 256;
+export const MAX_SEALED_HEADER_VALUE_CHARS = 8192;
+/** Longest header name echoed in a problem path. */
+const MAX_REPORTED_HEADER_NAME_CHARS = 48;
 
 export interface UrlNodeSecrets {
   url: string;
@@ -46,7 +58,7 @@ export function sealJobGraph(graph: JobGraph, jobIdOf: (nodeId: NodeId) => strin
  * nothing needs their plaintext.
  */
 export function maskTaskRecords(tasks: unknown[] | undefined): unknown[] | undefined {
-  return tasks === undefined ? undefined : redactSecrets(tasks);
+  return tasks === undefined ? undefined : redactForOutput(tasks);
 }
 
 function malformedPayload(): SecretSealError {
@@ -91,4 +103,67 @@ export function openUrlNodeSecrets(node: object, jobId: string): UrlNodeSecrets 
     throw malformedPayload();
   }
   return { url, headers: parseHeaders(headers) };
+}
+
+export interface SealedSecretProblem {
+  /** Where the problem is, relative to the node: `url`, `headers`, `headers.<name>`, or empty for the whole node. */
+  path: string;
+  /** What is wrong, without repeating any secret. */
+  reason: string;
+}
+
+/**
+ * The reasons a node's URL and headers cannot be sealed, found before anything is stored: a URL or
+ * header beyond its limit, too many headers, values that are not strings, or a combined payload
+ * beyond what one sealed blob holds. Nodes without secrets have no problems.
+ */
+export function findSealedSecretProblems(node: unknown): SealedSecretProblem[] {
+  if (typeof node !== 'object' || node === null) {
+    return [];
+  }
+  const fields = node as { op?: unknown; operation?: unknown; url?: unknown; headers?: unknown };
+  const operation = typeof fields.op === 'string' ? fields.op : fields.operation;
+  if (typeof operation !== 'string' || !SECRET_URL_OPERATIONS.has(operation.replace('/', '.'))) {
+    return [];
+  }
+  const problems: SealedSecretProblem[] = [];
+  if (fields.url !== undefined) {
+    if (typeof fields.url !== 'string') {
+      problems.push({ path: 'url', reason: 'url must be a string' });
+    } else if (fields.url.length > MAX_SEALED_URL_CHARS) {
+      problems.push({ path: 'url', reason: `url is longer than ${MAX_SEALED_URL_CHARS} characters` });
+    }
+  }
+  if (fields.headers !== undefined) {
+    problems.push(...headerProblems(fields.headers));
+  }
+  if (problems.length === 0 && fields.url !== undefined) {
+    const payloadBytes = Buffer.byteLength(JSON.stringify({ url: fields.url, headers: fields.headers }), 'utf8');
+    if (payloadBytes > MAX_SEALED_PLAINTEXT_BYTES) {
+      problems.push({ path: '', reason: `url and headers together are larger than ${MAX_SEALED_PLAINTEXT_BYTES} bytes` });
+    }
+  }
+  return problems;
+}
+
+function headerProblems(headers: unknown): SealedSecretProblem[] {
+  if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+    return [{ path: 'headers', reason: 'headers must be an object of strings' }];
+  }
+  const entries = Object.entries(headers);
+  if (entries.length > MAX_SEALED_HEADERS) {
+    return [{ path: 'headers', reason: `more than ${MAX_SEALED_HEADERS} headers` }];
+  }
+  const problems: SealedSecretProblem[] = [];
+  for (const [name, value] of entries) {
+    const path = `headers.${name.slice(0, MAX_REPORTED_HEADER_NAME_CHARS)}`;
+    if (name.length > MAX_SEALED_HEADER_NAME_CHARS) {
+      problems.push({ path, reason: `header name is longer than ${MAX_SEALED_HEADER_NAME_CHARS} characters` });
+    } else if (typeof value !== 'string') {
+      problems.push({ path, reason: 'header value must be a string' });
+    } else if (value.length > MAX_SEALED_HEADER_VALUE_CHARS) {
+      problems.push({ path, reason: `header value is longer than ${MAX_SEALED_HEADER_VALUE_CHARS} characters` });
+    }
+  }
+  return problems;
 }

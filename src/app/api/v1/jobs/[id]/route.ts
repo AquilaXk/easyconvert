@@ -3,7 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { redactSecrets, redactText } from '@/lib/security/redact';
+import { redactForOutput, redactText } from '@/lib/security/redact';
 
 export const dynamic = 'force-dynamic';
 
@@ -95,8 +95,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
       createdAt: state.createdAt,
       finishedOn: state.finishedAt,
       failedReason: maskedText(state.failedReason),
-      tasks: redactSecrets(state.tasks),
-      graph: redactSecrets(state.graph),
+      tasks: redactForOutput(state.tasks),
+      graph: redactForOutput(state.graph),
       nodes: nodesResponse,
     });
   }
@@ -116,8 +116,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
     attemptsMade: job.attemptsMade,
     failedReason: maskedText(graphState?.failedReason || job.failedReason),
     result: job.returnvalue,
-    tasks: redactSecrets(job.data?.tasks),
-    graph: redactSecrets(graphState?.graph || job.data?.graph),
+    tasks: redactForOutput(job.data?.tasks),
+    graph: redactForOutput(graphState?.graph || job.data?.graph),
     nodes: nodesResponse,
     logs: job.logs?.map(redactText),
   });

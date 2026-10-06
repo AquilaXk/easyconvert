@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { redactSecrets, redactText, scrubError } from '../security/redact';
+import { redactForOutput, redactText, scrubError } from '../security/redact';
 
 export interface JobOptions {
   jobId?: string;
@@ -266,20 +266,14 @@ export interface IQueueWorker<T = any, R = any> extends EventEmitter {
 
 /**
  * Dead-letter record of a failed job. Everything in it is masked: the reason and stack traces may
- * quote a request, and the job data may hold credentials. Data that cannot be masked within the
- * redaction limits is left out rather than stored as it is.
+ * quote a request, and the job data may hold credentials. A part of the data beyond the redaction
+ * limits is replaced by the mask rather than stored as it is.
  */
 function buildDlqEntry<T, R>(job: Job<T, R>, reason: string): DlqEntry<T> {
-  let data: T | undefined;
-  try {
-    data = redactSecrets(job.data);
-  } catch {
-    data = undefined;
-  }
   return {
     jobId: job.id,
     name: job.name,
-    data: data as T,
+    data: redactForOutput(job.data),
     failedReason: redactText(reason),
     attemptsMade: job.attemptsMade,
     timestamp: Date.now(),

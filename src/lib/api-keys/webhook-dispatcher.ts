@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { redactSecrets, redactText } from '../security/redact';
+import { redactForOutput, redactText } from '../security/redact';
 import { fetch as undiciFetch, Agent } from 'undici';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
@@ -530,7 +530,7 @@ export class WebhookDispatcher {
       id: deliveryId,
       event,
       timestamp,
-      data: redactSecrets(data),
+      data: redactForOutput(data),
     };
 
     const bodyString = JSON.stringify(payload);
@@ -682,7 +682,7 @@ export class WebhookDispatcher {
     // and the error text are what a reader of the queue sees, so they are stored masked.
     const entry: WebhookDlqEntry = {
       ...unmasked,
-      payload: redactSecrets(unmasked.payload),
+      payload: redactForOutput(unmasked.payload),
       errorMessage: unmasked.errorMessage === undefined ? undefined : redactText(unmasked.errorMessage),
     };
     const client = redisKeyStore.getRedisClient();

@@ -19,8 +19,9 @@ import {
   JobGraphValidationError,
 } from '@/lib/jobs';
 import { graphScheduler } from '@/lib/queue/graph';
-import { redactSecrets, redactText } from '@/lib/security/redact';
-import { SealingKeyConfigError } from '@/lib/security/job-secret-seal';
+import { redactForOutput, redactText } from '@/lib/security/redact';
+import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secret-seal';
+import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -100,11 +101,16 @@ export async function POST(req: NextRequest) {
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
 
-  const failWithRollback = async (status: number, message: string, title: string = 'Bad Request') => {
+  const failWithRollback = async (
+    status: number,
+    message: string,
+    title: string = 'Bad Request',
+    invalidParams?: Array<{ name: string; reason: string }>
+  ) => {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
-    return reply(createProblemDetailsResponse(status, message, instanceUri, title));
+    return reply(createProblemDetailsResponse(status, message, instanceUri, title, undefined, undefined, invalidParams));
   };
 
   try {
@@ -321,6 +327,17 @@ export async function POST(req: NextRequest) {
       } else {
         return await failWithRollback(404, `Upload session "${uploadId}" not found or expired.`, 'Not Found');
       }
+    }
+
+    // 1b'. Refuse what could not be sealed or masked later, before any job exists or is charged.
+    const limitProblems = checkSubmissionLimits({ graph, tasks });
+    if (limitProblems.length > 0) {
+      return await failWithRollback(
+        400,
+        'The graph or tasks exceed the limits for storing job credentials securely.',
+        'Bad Request',
+        limitProblems.map((p) => ({ name: p.name, reason: p.reason }))
+      );
     }
 
     // 1c. Validate JobGraph or adapt legacy tasks into JobGraph
@@ -608,7 +625,7 @@ export async function POST(req: NextRequest) {
             sourceFormat: sourceDef.id,
             targetFormat: targetDef.id,
             originalFilename,
-            graph: redactSecrets(graphState.graph),
+            graph: redactForOutput(graphState.graph),
             nodes: nodesResponse,
           },
           { status: 202 }
@@ -659,6 +676,9 @@ export async function POST(req: NextRequest) {
   } catch (error: unknown) {
     if (idempotencyCtx) {
       await idempotencyCtx.abort();
+    }
+    if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
+      return failWithRollback(400, 'A URL or header is too large to store securely.');
     }
     if (error instanceof SealingKeyConfigError) {
       // The detail names server configuration, so it stays in the server log.
