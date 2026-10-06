@@ -43,6 +43,17 @@ export function hasComplexTextScript(text: string): boolean {
   return COMPLEX_SCRIPT_REGEX.test(text);
 }
 
+/** Han, Hangul, Kana and Bopomofo: the scripts of Chinese, Japanese and Korean text. */
+export const CJK_SCRIPT_REGEX = /[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Bopomofo}]/u;
+
+/**
+ * Returns true if the text contains Chinese, Japanese or Korean characters.
+ */
+export function hasCjkScript(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  return CJK_SCRIPT_REGEX.test(text);
+}
+
 /**
  * Returns the names of all complex scripts found in the input text.
  */
