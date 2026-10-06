@@ -96,6 +96,7 @@ export const ENC_RLE_DICTIONARY = 8;
 export const CODEC_UNCOMPRESSED = 0;
 export const CODEC_SNAPPY = 1;
 export const CODEC_ZSTD = 6;
+export const PHYSICAL_INT32 = 1;
 export const PHYSICAL_INT64 = 2;
 export const PHYSICAL_BYTE_ARRAY = 6;
 export const REPETITION_REQUIRED = 0;
@@ -144,6 +145,10 @@ export interface LeafSpec {
   name: string;
   physicalType: number;
   repetition: number;
+  convertedType?: number;
+  scale?: number;
+  precision?: number;
+  typeLength?: number;
 }
 
 export interface HostileFileSpec {
@@ -167,8 +172,12 @@ export function buildHostileParquet(spec: HostileFileSpec): Buffer {
   for (const leaf of spec.leaves) {
     t.begin();
     t.i32(1, leaf.physicalType);
+    if (leaf.typeLength !== undefined) t.i32(2, leaf.typeLength);
     t.i32(3, leaf.repetition);
     t.text(4, leaf.name);
+    if (leaf.convertedType !== undefined) t.i32(6, leaf.convertedType);
+    if (leaf.scale !== undefined) t.i32(7, leaf.scale);
+    if (leaf.precision !== undefined) t.i32(8, leaf.precision);
     t.end();
   }
   const total = spec.numRows ?? spec.rowGroups.reduce((sum, g) => sum + g.numRows, 0);

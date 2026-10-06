@@ -74,6 +74,25 @@ function gunzip(data: Buffer, expectedBytes: number): Buffer {
   }
 }
 
+/**
+ * Pure TypeScript zstd decoding, used where node:zlib has no zstd (Node 20). The page's declared size
+ * is the output bound (the generic archive ratio guard does not apply), and the result must match it.
+ */
+export function decodeZstdFallback(data: Buffer, expectedBytes: number): Buffer {
+  let out: Buffer;
+  try {
+    out = decompressZstd(data, { maxOutputBytes: expectedBytes });
+  } catch (zstdError) {
+    throw new ParquetFormatError(
+      `Corrupted Parquet page: ZSTD data is not valid (${zstdError instanceof Error ? zstdError.message : 'decode failed'})`
+    );
+  }
+  if (out.length !== expectedBytes) {
+    throw new ParquetFormatError(`Corrupted Parquet page: ZSTD page decoded to ${out.length} bytes, header declares ${expectedBytes}`);
+  }
+  return out;
+}
+
 function zstdDecode(data: Buffer, expectedBytes: number): Buffer {
   const native = nativeZstd();
   if (native) {
@@ -85,13 +104,7 @@ function zstdDecode(data: Buffer, expectedBytes: number): Buffer {
       throw new ParquetFormatError(`Corrupted Parquet page: ZSTD data ${reason}`);
     }
   }
-  try {
-    return decompressZstd(data);
-  } catch (zstdError) {
-    throw new ParquetFormatError(
-      `Corrupted Parquet page: ZSTD data is not valid (${zstdError instanceof Error ? zstdError.message : 'decode failed'})`
-    );
-  }
+  return decodeZstdFallback(data, expectedBytes);
 }
 
 /**

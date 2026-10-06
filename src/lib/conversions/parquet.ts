@@ -20,6 +20,7 @@ export {
   PARQUET_MAGIC,
   ParquetCodecUnavailableError,
   ParquetFormatError,
+  ParquetUnsupportedError,
   ParquetType,
   ParquetValueError,
 } from './parquet-format';
