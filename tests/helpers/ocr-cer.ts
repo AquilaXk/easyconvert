@@ -34,3 +34,24 @@ export function characterErrorRatePercent(reference: string, hypothesis: string)
   }
   return (levenshtein(ref, hyp) / ref.length) * 100;
 }
+
+/** Share of reference words (as a multiset, ignoring order) that appear in the hypothesis, in 0..1. */
+export function wordRecall(reference: string, hypothesis: string): number {
+  const refWords = normalizeOcrText(reference).split(' ').filter(Boolean);
+  if (refWords.length === 0) {
+    throw new Error('Word recall needs a non-empty reference text');
+  }
+  const available = new Map<string, number>();
+  for (const word of normalizeOcrText(hypothesis).split(' ').filter(Boolean)) {
+    available.set(word, (available.get(word) ?? 0) + 1);
+  }
+  let found = 0;
+  for (const word of refWords) {
+    const left = available.get(word) ?? 0;
+    if (left > 0) {
+      found++;
+      available.set(word, left - 1);
+    }
+  }
+  return found / refWords.length;
+}

@@ -128,6 +128,9 @@ function assertTraineddataIntact(spec: OcrWorkerSpec): void {
  * are part of the worker key and are re-applied before every job, so a job never runs with
  * parameters other than the ones it asked for. A worker that fails, times out or hangs is
  * terminated and replaced lazily.
+ *
+ * Latency: reuse only helps warm workers. A page that has to start a worker pays the full start
+ * (about the same as before pooling, 1.0-1.08x); later pages on that worker are roughly 0.75x.
  */
 export class OcrWorkerPool {
   readonly limits: Required<OcrWorkerPoolOptions>;

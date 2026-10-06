@@ -1,0 +1,6 @@
+Item Qty Unit price Total
+Copper pipe 120 4.50 540.00
+Valve DN50 16 38.20 611.20
+Pump seal kit 8 72.00 576.00
+Gasket set 40 6.75 270.00
+Sensor probe 12 91.30 1095.60

@@ -25,6 +25,11 @@ NOISE_SIGMA = 28
 NOISE_BLUR_RADIUS = 1.2
 SALT_PEPPER_RATE = 0.004
 DPI_150 = 150
+TABLE_FONT_PATH = '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'
+TABLE_FONT_PT = 12
+TABLE_PAGE_W, TABLE_PAGE_H = 2550, 1200
+TABLE_COLUMN_WIDTHS = [700, 300, 500, 500]
+TABLE_ROW_HEIGHT = 130
 
 LEFT_COLUMN = [
     "The committee reviewed the quarterly report on March 14, 2025, and approved a budget of "
@@ -41,6 +46,16 @@ RIGHT_COLUMN = [
     "produced. The Calvin cycle then fixes carbon dioxide using the enzyme RuBisCO.",
     "Field measurements at 22 sites showed a mean assimilation rate of 18.6 micromoles per "
     "square metre per second, with the highest readings recorded near the river delta in July.",
+]
+
+
+TABLE_ROWS = [
+    ["Item", "Qty", "Unit price", "Total"],
+    ["Copper pipe", "120", "4.50", "540.00"],
+    ["Valve DN50", "16", "38.20", "611.20"],
+    ["Pump seal kit", "8", "72.00", "576.00"],
+    ["Gasket set", "40", "6.75", "270.00"],
+    ["Sensor probe", "12", "91.30", "1095.60"],
 ]
 
 
@@ -78,6 +93,19 @@ def render_two_columns():
     return img
 
 
+def render_borderless_table():
+    """A table without ruling lines: columns are only separated by white space."""
+    img = Image.new('L', (TABLE_PAGE_W, TABLE_PAGE_H), 255)
+    draw = ImageDraw.Draw(img)
+    f = ImageFont.truetype(TABLE_FONT_PATH, int(round(TABLE_FONT_PT * RENDER_DPI / 72)))
+    for r, row in enumerate(TABLE_ROWS):
+        x = MARGIN
+        for c, cell in enumerate(row):
+            draw.text((x, MARGIN + r * TABLE_ROW_HEIGHT), cell, font=f, fill=0)
+            x += TABLE_COLUMN_WIDTHS[c]
+    return img
+
+
 def add_noise(img):
     a = np.array(img).astype('float32')
     a += np.random.default_rng(1).normal(0, NOISE_SIGMA, a.shape)
@@ -103,6 +131,9 @@ def main():
     }
     for name, (img, dpi) in variants.items():
         img.save(os.path.join(out, f'twocol__{name}.png'), dpi=(dpi, dpi), optimize=True)
+    render_borderless_table().save(os.path.join(out, 'table_borderless.png'), dpi=(RENDER_DPI, RENDER_DPI), optimize=True)
+    with open(os.path.join(out, 'table_borderless.gt.txt'), 'w') as fh:
+        fh.write('\n'.join(' '.join(row) for row in TABLE_ROWS) + '\n')
 
 
 if __name__ == '__main__':

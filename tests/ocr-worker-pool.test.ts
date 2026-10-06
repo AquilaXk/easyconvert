@@ -270,6 +270,8 @@ const hasEnglishData = [
   '/usr/share/tessdata',
 ].some((dir) => fs.existsSync(path.join(dir, 'eng.traineddata')) || fs.existsSync(path.join(dir, 'eng.traineddata.gz')));
 
+// Reuse only speeds up warm workers: the first page still pays for starting one, so the tests
+// assert how many workers are created rather than a latency ratio.
 describe('performOcr worker reuse', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
