@@ -40,6 +40,8 @@ import {
   type XyCutOptions,
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
+import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
+import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
 import { renderMarkdownFragment } from './markdown';
@@ -73,6 +75,16 @@ export function extractTextFromTex(tex: string): string {
     .replace(/[{}]/g, '')
     .replace(/\n\s*\n/g, '\n\n')
     .trim();
+}
+
+/**
+ * Reading a text layer is best effort for conversions that do not export its geometry: a document whose
+ * text layer cannot be read is handled as a scanned one. An engine that cannot run at all is the service's
+ * failure and is reported, not hidden behind that fallback.
+ */
+function treatUnreadableTextLayerAsScanned(error: unknown): PdfPageAnalysis[] {
+  if (error instanceof EngineUnavailableError) throw error;
+  return [];
 }
 
 export async function convertDocument(
@@ -180,12 +192,19 @@ export async function convertDocument(
     const pageOcrResults = new Map<number, OcrResult>();
 
     // Inspect each page for existing text layer density to enable Smart Multi-Page OCR
-    const pageAnalyses = await inspectPdfPagesTextDensity(
-      inputBuffer,
-      options.ocrDensityThreshold || 15
-    ).catch(() => []);
-
     const ocrMode = options.ocrMode || 'skip_text';
+    const densityThreshold = options.ocrDensityThreshold || 15;
+    let pageAnalyses: PdfPageAnalysis[];
+    // Word geometry of pages that keep their own text layer, read in the same pass as the density analysis.
+    let textLayerResults = new Map<number, OcrResult>();
+    if ((tgt === 'hocr' || tgt === 'alto') && ocrMode !== 'force' && ocrMode !== 'redo') {
+      const read = await analyzePdfPagesWithGeometry(inputBuffer, densityThreshold);
+      pageAnalyses = read.analyses;
+      textLayerResults = read.geometry;
+    } else {
+      pageAnalyses = await inspectPdfPagesTextDensity(inputBuffer, densityThreshold).catch(treatUnreadableTextLayerAsScanned);
+    }
+
     const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
 
     // If scanned document or OCR is requested or target is hocr/alto
@@ -201,7 +220,10 @@ export async function convertDocument(
           pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
         );
       } catch (err: any) {
+        // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
+        rethrowInputPixelLimit(err);
         if (options.ocrEnabled) {
+          if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
           throw new Error(`PDF OCR failed: ${cleanMsg}`);
@@ -469,8 +491,9 @@ export async function convertDocument(
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
+      // Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer.
       const combinedResult = assembleCombinedOcrResult(
-        pageOcrResults,
+        new Map([...textLayerResults, ...pageOcrResults]),
         pageAnalyses,
         extractedText,
         ocrInfo.confidence
