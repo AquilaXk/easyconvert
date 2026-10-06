@@ -17,21 +17,24 @@ describe('Shewchuk Exact Robust Geometric Predicates', () => {
       const a = 1.0;
       const b = 1e-16;
       const [sum, sumErr] = twoSum(a, b);
-      expect(sum + sumErr).toBe(a + b);
-      expect(sumErr).not.toBe(0);
+      // Falsifiability: Compare with ground-truth constant values instead of `a + b` tautology
+      expect(sum).toBe(1.0);
+      expect(sumErr).toBe(1e-16);
 
       const [diff, diffErr] = twoDiff(a, b);
-      expect(diff + diffErr).toBe(a - b);
+      expect(diff).toBe(0.9999999999999999);
+      expect(diffErr).toBe(1.1022302462515656e-17);
     });
 
     it('computes exact twoProduct using Veltkamp-Dekker splitting', () => {
       const a = 1e8 + 0.123456789;
       const b = 1e8 - 0.987654321;
       const [prod, prodErr] = twoProduct(a, b);
-      expect(Number.isFinite(prod)).toBe(true);
-      expect(Number.isFinite(prodErr)).toBe(true);
+      expect(prod).toBe(9999999913580246);
+      expect(prodErr).toBeCloseTo(0.14777027733931725, 14); // Avoid floating comparison issue if slightly off
       const [hi, lo] = split(a);
-      expect(hi + lo).toBe(a);
+      expect(hi).toBe(100000000);
+      expect(lo).toBeCloseTo(0.12345679104328156, 14);
     });
   });
 

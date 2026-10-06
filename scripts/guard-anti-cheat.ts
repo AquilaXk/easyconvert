@@ -157,8 +157,8 @@ function checkCircularMocking(targetDir?: string): Violation[] {
           }
           ts.forEachChild(node, collectCalls);
 
-          const hasEncode = callsInTest.some((c) => /^encode[A-Z0-9]/.test(c));
-          const hasParse = callsInTest.some((c) => /^(?:parse|decode)[A-Z0-9]/.test(c));
+          const hasEncode = callsInTest.some((c) => /^(?:encode|serialize|create)[A-Z0-9]/.test(c));
+          const hasParse = callsInTest.some((c) => /^(?:parse|decode|deserialize|extract)[A-Z0-9]/.test(c));
           const hasCompress = callsInTest.some((c) => /^compress[A-Z0-9]/.test(c));
           const hasDecompress = callsInTest.some((c) => /^decompress[A-Z0-9]/.test(c));
 
