@@ -9,6 +9,7 @@ import {
   ConversionResult,
   ConversionFailedError,
   ArchiveEncryptionUnavailableError,
+  ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
   InvalidPageRangeError,
@@ -55,11 +56,25 @@ import {
 } from './raw-decoded-tiff';
 import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
-  assertArchivePasswordSafe,
   cleanupDirectoryTree,
   extractArchiveContained,
   sanitizeLeafFilename,
 } from '../lib/conversions/archive-extraction-safety';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
+  assertZipPasswordSupported,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
+  sevenZipReadPasswordInput,
+  walkArchiveTreePaths,
+} from '../lib/conversions/archive-password';
 import {
   LIBREOFFICE_POOL_ENGINE_NAME,
   LibreOfficePoolManager,
@@ -667,6 +682,34 @@ interface Package7zArchiveParams {
   options?: WorkerEngineOptions;
 }
 
+/**
+ * Lists the password-protected archive just written, without its password, and throws
+ * ArchiveNotEncryptedError unless it is encrypted: a 7-Zip that ignores its prompt exits 0 with
+ * a plaintext archive.
+ */
+async function assertCreatedArchiveEncrypted(
+  p7zBin: string,
+  archivePath: string,
+  format: 'zip' | '7z',
+  limits: { cwd: string; timeoutMs: number; signal?: AbortSignal }
+): Promise<void> {
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
+      cwd: limits.cwd,
+      timeoutMs: limits.timeoutMs,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      networkIsolated: true,
+      stdin: sevenZipEncryptionCheckInput(),
+      signal: limits.signal,
+    });
+    outcome = { listing: result.stdout.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureStderr(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
   const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
@@ -704,17 +747,20 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+  }
   const pwArgs: string[] = [];
   if (options?.password) {
     if (tgt === '7z') {
-      pwArgs.push('-mhe=on', '-p');
+      pwArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     } else if (tgt === 'zip') {
-      pwArgs.push('-mem=AES256', '-p');
+      pwArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     }
   }
   const pwInput =
     options?.password && (tgt === 'zip' || tgt === '7z')
-      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
   await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
@@ -725,6 +771,13 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     stdin: pwInput,
     signal: options?.signal,
   });
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    await assertCreatedArchiveEncrypted(p7zBin, tempOutputPath, tgt, {
+      cwd: tempDir,
+      timeoutMs: timeout,
+      signal: options.signal,
+    });
+  }
   return true;
 }
 
@@ -818,9 +871,11 @@ export async function convertWithNative7z(
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  assertArchivePasswordSafe(options.password);
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
   if (!p7zBin) {
