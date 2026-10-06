@@ -22,6 +22,7 @@ export type ExternalOracleTool =
   | 'ffprobe'
   | 'soffice'
   | 'tesseract'
+  | 'xmllint'
   | '7z'
   | 'tar'
   | 'zstd'
