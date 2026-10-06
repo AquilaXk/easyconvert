@@ -13,6 +13,10 @@ import {
 } from '../src/lib/conversions/index';
 import { OcrResult, OcrLineBlock } from '../src/lib/conversions/ocr-pdf-combiner';
 import { OcrLanguageUnavailableError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+import { extractPdfTextLayerPages } from '../src/lib/conversions/pdf-text-geometry';
+import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
+import { validateAlto44, xmlWellFormed, xpathAttributes } from './helpers/xml-oracle';
 
 describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vertical Models', () => {
   // -------------------------------------------------------------
@@ -64,13 +68,14 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       expect(hocr).toContain('<title>Invoice Verification</title>');
       expect(hocr).toContain('<meta name="ocr-system" content="easyconvert-ocr" />');
       expect(hocr).toContain(
-        '<meta name="ocr-capabilities" content="ocr_page ocr_carea ocr_par ocr_line ocrx_word" />'
+        '<meta name="ocr-capabilities" content="ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf" />'
       );
 
       // Hierarchical OCR structure
       expect(hocr).toContain('class="ocr_page"');
       expect(hocr).toContain('id="page_1"');
-      expect(hocr).toContain('bbox 0 0 600 800; ppageno 1');
+      // hOCR counts physical pages from zero, and the image name is a double-quoted string.
+      expect(hocr).toContain('title="image &quot;invoice.png&quot;; bbox 0 0 600 800; ppageno 0"');
 
       expect(hocr).toContain('class="ocr_carea"');
       expect(hocr).toContain('id="block_1_1"');
@@ -164,13 +169,13 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       // XML declaration & root namespace
       expect(altoXml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
       expect(altoXml).toContain('<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"');
-      expect(altoXml).toContain('xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-2.xsd"');
+      expect(altoXml).toContain('xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-4.xsd"');
 
       // Description metadata
       expect(altoXml).toContain('<Description>');
       expect(altoXml).toContain('<MeasurementUnit>pixel</MeasurementUnit>');
       expect(altoXml).toContain('<fileName>preservation_sample.pdf</fileName>');
-      expect(altoXml).toContain('<softwareName>easyconvert</softwareName>');
+      expect(altoXml).toContain('<softwareName>EasyConvert OCR</softwareName>');
 
       // Layout hierarchy
       expect(altoXml).toContain('<Layout>');
@@ -357,33 +362,44 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       expect(result.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
     });
 
-    it('exports multi-page PDF to multi-page hOCR and ALTO XML documents', async () => {
-      const pdfBuffer = await createTestMultiPagePdf();
+    oracleTest(
+      'exports a digital page plus a scanned page to multi-page hOCR and ALTO, with word boxes from the PDF text layer',
+      ['pdftotext', 'xmllint', 'tesseract'],
+      async () => {
+        const pdfBuffer = await createTestMultiPagePdf();
 
-      // Convert to hOCR
-      const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'contract.pdf');
+        const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', { ocrEnabled: true, ocrMode: 'skip_text' }, 'contract.pdf');
+        expect(hocrResult.mimeType).toBe('application/xhtml+xml');
+        expect(hocrResult.filename).toBe('contract.hocr');
+        const hocr = hocrResult.buffer.toString('utf-8');
+        expect(xmlWellFormed(hocr).stderr).toBe('');
+        expect(xpathAttributes(hocr, "//*[@class='ocr_page']/@id")).toEqual(['page_1', 'page_2']);
 
-      expect(hocrResult.mimeType).toBe('application/xhtml+xml');
-      expect(hocrResult.filename).toBe('contract.hocr');
-      const hocrText = hocrResult.buffer.toString('utf-8');
-      expect(hocrText).toContain('id="page_1"');
-      expect(hocrText).toContain('id="page_2"');
+        // Page 1 is the digital page: its words must sit where the reference extractor puts them.
+        const reference = popplerWords(pdfBuffer).filter((w) => w.page === 1);
+        const mine = hocrWords(hocr);
+        const digital = mine.filter((w) => w.page === 1);
+        expect(digital).toHaveLength(reference.length);
+        // The hOCR boxes are rounded to whole pixels, which costs a two-letter word up to about 17%.
+        matchedIou(reference, digital).forEach((iou, index) => {
+          expect(iou, `word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.8);
+        });
+        const exactDigital = ocrWords(await extractPdfTextLayerPages(pdfBuffer, new Set([1])));
+        matchedIou(reference, exactDigital).forEach((iou, index) => {
+          expect(iou, `exact word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.9);
+        });
+        // Page 2 is the scanned page, read by OCR.
+        expect(mine.filter((w) => w.page === 2).map((w) => w.text.toUpperCase())).toContain('SCANNED');
 
-      // Convert to ALTO
-      const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'contract.pdf');
-
-      expect(altoResult.mimeType).toBe('application/xml');
-      expect(altoResult.filename).toBe('contract.xml');
-      const altoText = altoResult.buffer.toString('utf-8');
-      expect(altoText).toContain('ID="PAGE_1"');
-      expect(altoText).toContain('ID="PAGE_2"');
-    });
+        const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', { ocrEnabled: true, ocrMode: 'skip_text' }, 'contract.pdf');
+        expect(altoResult.mimeType).toBe('application/xml');
+        expect(altoResult.filename).toBe('contract.xml');
+        const alto = altoResult.buffer.toString('utf-8');
+        expect(validateAlto44(alto).stderr.trim()).toBe('- validates');
+        expect(xpathAttributes(alto, "//*[local-name()='Page']/@ID")).toEqual(['PAGE_1', 'PAGE_2']);
+      },
+      120_000
+    );
   });
 
   // -------------------------------------------------------------
@@ -612,54 +628,52 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
   // 6. Mixed-Orientation Multi-Page PDF Coordinate Parity
   // -------------------------------------------------------------
   describe('Mixed-Orientation Multi-Page Viewport Parity', () => {
-    it('synthesizes line blocks spanning actual page width for landscape digital pages', async () => {
-      const doc = await PDFDocument.create();
-      const font = await doc.embedFont(StandardFonts.Helvetica);
+    oracleTest(
+      'exports landscape and portrait digital pages with their own sizes and word boxes from the text layer',
+      ['pdftotext', 'xmllint'],
+      async () => {
+        const doc = await PDFDocument.create();
+        const font = await doc.embedFont(StandardFonts.Helvetica);
 
-      // Page 1: Landscape (1000 x 500)
-      const page1 = doc.addPage([1000, 500]);
-      page1.drawText('Wide landscape legal banner text with significant horizontal width across the entire layout', {
-        x: 50,
-        y: 400,
-        size: 18,
-        font,
-      });
+        // Page 1: Landscape (1000 x 500)
+        doc.addPage([1000, 500]).drawText('Wide landscape legal banner text with significant horizontal width across the entire layout', {
+          x: 50,
+          y: 400,
+          size: 18,
+          font,
+        });
+        // Page 2: Portrait (500 x 800)
+        doc.addPage([500, 800]).drawText('Standard vertical portrait document text', { x: 50, y: 700, size: 14, font });
 
-      // Page 2: Portrait (500 x 800)
-      const page2 = doc.addPage([500, 800]);
-      page2.drawText('Standard vertical portrait document text', {
-        x: 50,
-        y: 700,
-        size: 14,
-        font,
-      });
+        const pdfBuffer = Buffer.from(await doc.save());
 
-      const pdfBuffer = Buffer.from(await doc.save());
+        // Both pages have native text and are skipped by OCR.
+        const hocr = (await convertFile(pdfBuffer, 'pdf', 'hocr', { ocrEnabled: true, ocrMode: 'skip_text' }, 'mixed.pdf')).buffer.toString('utf-8');
+        expect(xmlWellFormed(hocr).stderr).toBe('');
+        expect(xpathAttributes(hocr, "//*[@class='ocr_page']/@title").map((t) => /bbox (0 0 \d+ \d+)/.exec(t)?.[1])).toEqual([
+          '0 0 1000 500',
+          '0 0 500 800',
+        ]);
+        const reference = popplerWords(pdfBuffer);
+        const mine = hocrWords(hocr);
+        expect(mine).toHaveLength(reference.length);
+        matchedIou(reference, mine).forEach((iou, index) => {
+          expect(iou, `page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.8);
+        });
+        const exact = ocrWords(await extractPdfTextLayerPages(pdfBuffer, new Set([1, 2])));
+        matchedIou(reference, exact).forEach((iou, index) => {
+          expect(iou, `exact page ${reference[index].page} word '${reference[index].text}'`).toBeGreaterThanOrEqual(0.9);
+        });
+        // The banner on page 1 runs past the 612 pt width of a default letter page.
+        expect(Math.max(...mine.filter((w) => w.page === 1).map((w) => w.x1))).toBeGreaterThan(612);
 
-      // Smart OCR with skip_text (both pages have native text and are skipped)
-      const hocrResult = await convertFile(pdfBuffer, 'pdf', 'hocr', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'mixed.pdf');
-
-      const hocrText = hocrResult.buffer.toString('utf-8');
-      // Page 1 should reflect 1000 x 500
-      expect(hocrText).toContain('bbox 0 0 1000 500');
-      // Page 2 should reflect 500 x 800
-      expect(hocrText).toContain('bbox 0 0 500 800');
-
-      // Synthesized blocks on page 1 should extend beyond 612 default width
-      const altoResult = await convertFile(pdfBuffer, 'pdf', 'alto', {
-        ocrEnabled: true,
-        ocrMode: 'skip_text',
-      }, 'mixed.pdf');
-
-      const altoText = altoResult.buffer.toString('utf-8');
-      expect(altoText).toContain('WIDTH="1000" HEIGHT="500"');
-      expect(altoText).toContain('WIDTH="500" HEIGHT="800"');
-      // Verify that page 1 has a TextBlock spanning width greater than 612
-      expect(altoText).toMatch(/WIDTH="(?:9\d\d|1000)"/);
-    });
+        const alto = (await convertFile(pdfBuffer, 'pdf', 'alto', { ocrEnabled: true, ocrMode: 'skip_text' }, 'mixed.pdf')).buffer.toString('utf-8');
+        expect(validateAlto44(alto).stderr.trim()).toBe('- validates');
+        expect(xpathAttributes(alto, "//*[local-name()='Page']/@WIDTH")).toEqual(['1000', '500']);
+        expect(xpathAttributes(alto, "//*[local-name()='Page']/@HEIGHT")).toEqual(['500', '800']);
+      },
+      120_000
+    );
   });
 });
 

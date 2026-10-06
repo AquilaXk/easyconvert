@@ -3,6 +3,7 @@ import sharp, { type Metadata, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -170,9 +171,12 @@ export function encodeBmp(raw: Buffer, width: number, height: number, channels: 
   return buf;
 }
 
+/** Bit depths a BMP can declare (Microsoft BITMAPINFOHEADER). */
+const BMP_BITS_PER_PIXEL = new Set([1, 4, 8, 16, 24, 32]);
+
 export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: number; channels: 4 } {
   if (buf.length < 54 || buf.toString('ascii', 0, 2) !== 'BM') {
-    throw new Error('Invalid BMP file: missing BM header signature.');
+    throw new ConversionFailedError('Invalid BMP file: missing BM header signature.');
   }
 
   const pixelOffset = buf.readUInt32LE(10);
@@ -181,14 +185,24 @@ export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: nu
   const bpp = buf.readUInt16LE(28);
 
   if (width <= 0 || height === 0) {
-    throw new Error(`Invalid BMP dimensions: ${width}x${height}`);
+    throw new ConversionFailedError(`Invalid BMP dimensions: ${width}x${height}`);
+  }
+  if (!BMP_BITS_PER_PIXEL.has(bpp)) {
+    throw new ConversionFailedError(`Invalid BMP: ${bpp} bits per pixel is not a BMP bit depth.`);
   }
 
   const isBottomUp = height > 0;
   const absHeight = Math.abs(height);
-  const rawRgba = Buffer.alloc(width * absHeight * 4);
+  assertInputPixels(width, absHeight);
 
   const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
+  // The declared canvas must be backed by the file: a header cannot make the decoder allocate it for nothing.
+  if (pixelOffset + rowSize * absHeight > buf.length) {
+    throw new ConversionFailedError(
+      `Invalid BMP: the header declares ${width}x${absHeight} pixels at ${bpp} bits (${rowSize * absHeight} bytes of pixel data from offset ${pixelOffset}), but the file ends at byte ${buf.length}.`
+    );
+  }
+  const rawRgba = Buffer.alloc(width * absHeight * 4);
 
   for (let y = 0; y < absHeight; y++) {
     const srcY = isBottomUp ? absHeight - 1 - y : y;
@@ -1556,7 +1570,26 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
 /**
  * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
  */
-export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
+/** Refuses a lossless JPEG frame over the input limit, the RAW sensor budget, or the strip or tile that holds it. */
+function assertLosslessFrameFits(width: number, height: number, expected?: { width: number; height: number }): void {
+  assertInputPixels(width, height);
+  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
+  if (expected && (width > expected.width || height > expected.height)) {
+    throw new InvalidRawSensorError(
+      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
+    );
+  }
+}
+
+/**
+ * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
+ * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
+ * strip or tile is (`expected`), against that size, before any sample is allocated.
+ */
+export function decodeLosslessJpegStrip(
+  strip: Buffer | Uint8Array,
+  expected?: { width: number; height: number }
+): {
   width: number;
   height: number;
   data: Uint16Array;
@@ -1622,6 +1655,7 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
   if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
     return null;
   }
+  assertLosslessFrameFits(width, height, expected);
 
   // Build canonical Huffman decoding tree
   interface HuffmanNode {
@@ -1729,6 +1763,21 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
   }
 
   return { width, height, data: outputData, bpp };
+}
+
+/** Slack, in bytes, allowed above the sensor size when a deflate strip is inflated (predictor rows, padding). */
+const SENSOR_INFLATE_SLACK_BYTES = 1024 * 1024;
+
+/** Inflates a deflate-compressed sensor strip, refusing one that expands to much more than `expectedBytes`. */
+function inflateSensorChunk(chunk: Buffer, expectedBytes: number): Buffer {
+  try {
+    return zlib.inflateSync(chunk, { maxOutputLength: expectedBytes + SENSOR_INFLATE_SLACK_BYTES });
+  } catch (err) {
+    if (err instanceof RangeError) {
+      throw new InvalidRawSensorError(`Deflate sensor strip inflates to more than the ${expectedBytes} bytes its dimensions allow.`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -2038,6 +2087,8 @@ export function decodeRawBayerSensor(
           );
         }
         const { width, height } = chosen;
+        assertInputPixels(width, height);
+        assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
         const bpp = chosen.bitsPerSample || 8;
         const pattern = chosen.cfaPattern || 'RGGB';
         const bytesPerPixel = bpp > 8 ? 2 : 1;
@@ -2045,9 +2096,9 @@ export function decodeRawBayerSensor(
         const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
           let activeChunk = chunk;
           if (chosen.compression === 8) {
-            activeChunk = zlib.inflateSync(chunk);
+            activeChunk = inflateSensorChunk(chunk, (expW || width) * (expH || height) * Math.ceil(bpp / 8));
           } else if (activeChunk.length >= 4 && activeChunk[0] === 0xff && activeChunk[1] === 0xd8) {
-            const lj92 = decodeLosslessJpegStrip(activeChunk);
+            const lj92 = decodeLosslessJpegStrip(activeChunk, { width: expW || width, height: expH || height });
             if (lj92) {
               return { data: lj92.data, width: lj92.width, height: lj92.height, bpp: lj92.bpp };
             }
@@ -2346,6 +2397,17 @@ async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
 }
 
+/**
+ * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
+ * budget from its header, with the resize that will be applied, before the raster is decoded.
+ */
+async function assertFloatBudgetBeforeDecode(pipeline: sharp.Sharp, options: ConversionOptions): Promise<void> {
+  const { width, height } = await pipeline.metadata();
+  if (width === undefined || height === undefined) return;
+  const target = resizedDimensions(width, height, options);
+  assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2369,6 +2431,7 @@ export async function convertImage(
 
   // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
   if (fmt === 'hocr' || fmt === 'alto') {
+    await assertEncodedImageWithinLimit(inputBuffer);
     const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
     const isHocr = fmt === 'hocr';
     const xml = isHocr
@@ -2456,11 +2519,11 @@ export async function convertImage(
           raw: { width: decoded.width, height: decoded.height, channels: 4 },
         });
       } else {
-        pipeline = sharp(payload);
+        pipeline = await openInputImage(payload);
       }
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
       const payload = decodeIcns(activeBuffer);
-      pipeline = sharp(payload);
+      pipeline = await openInputImage(payload);
     } else if (
       src === 'exr' ||
       (activeBuffer.length >= 4 &&
@@ -2505,7 +2568,7 @@ export async function convertImage(
         raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
       });
     } else {
-      pipeline = sharp(activeBuffer);
+      pipeline = await openInputImage(activeBuffer);
     }
 
     if (isRawInput) {
@@ -2517,6 +2580,7 @@ export async function convertImage(
       pipeline = await preserveMetadata(pipeline);
     }
   } catch (err: unknown) {
+    if (err instanceof InputPixelLimitError) throw err;
     if (isRawInput) {
       const demosaiced = decodeRawBayerSensor(inputBuffer, src, options);
       if (demosaiced) {
@@ -2620,6 +2684,7 @@ export async function convertImage(
             }
             rgbaBuffer = reconstructed;
           } else {
+            assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
             const oklabRes = applyOklabQuantizationAndDither(
               { data, width: info.width, height: info.height },
               colours,
@@ -2708,18 +2773,21 @@ export async function convertImage(
             hdrFloat = uHdr.rgbFloat;
             imgW = uHdr.width;
             imgH = uHdr.height;
-          } catch {
-            // Standard non-UltraHDR image
+          } catch (err) {
+            // Standard non-UltraHDR image; an image over the pixel limit is never tolerated.
+            rethrowInputPixelLimit(err);
           }
         }
 
         if (hdrFloat && imgW > 0 && imgH > 0) {
           outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
         } else {
+          await assertFloatBudgetBeforeDecode(pipeline, options);
           const { data, info } = await pipeline
             .removeAlpha()
             .raw()
             .toBuffer({ resolveWithObject: true });
+          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
           const floatPix = new Float32Array(info.width * info.height * 3);
           for (let i = 0; i < data.length; i++) {
             floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
@@ -2741,10 +2809,12 @@ export async function convertImage(
           { quality }
         );
       } else {
+        await assertFloatBudgetBeforeDecode(pipeline, options);
         const { data, info } = await pipeline
           .removeAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
+        assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
         const floatPix = new Float32Array(info.width * info.height * 3);
         for (let i = 0; i < data.length; i++) {
           floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
@@ -2790,6 +2860,7 @@ export async function convertImage(
           }
           rgbaBuffer = reconstructed;
         } else {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const oklabRes = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
@@ -2833,6 +2904,7 @@ export async function convertImage(
           });
           outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
         } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const res = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
@@ -2894,6 +2966,7 @@ export async function convertImage(
           }
           rgbaBuffer = reconstructed;
         } else {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
           const oklabRes = applyOklabQuantizationAndDither(
             { data, width: info.width, height: info.height },
             colours,
@@ -2958,13 +3031,14 @@ export async function convertImage(
       let pngBuffer = inputBuffer;
       let imgMeta: Metadata | undefined;
       try {
-        const s = sharp(inputBuffer);
+        const s = openLimitedSharp(inputBuffer);
         imgMeta = await s.metadata();
         if (imgMeta.format !== 'png') {
           pngBuffer = await s.png().toBuffer();
         }
-      } catch {
-        // If sharp cannot decode directly, fallback to inputBuffer
+      } catch (err) {
+        // If sharp cannot decode directly, fallback to inputBuffer; an oversized canvas is never tolerated.
+        rethrowInputPixelLimit(err);
       }
       outputBuffer = await buildOpenXpsPackage(
         [
@@ -3025,9 +3099,9 @@ async function convertImageToPdf(
       activeBuffer[3] === 0)
   ) {
     const payload = decodeIco(activeBuffer);
-    pipeline = sharp(payload);
+    pipeline = await openInputImage(payload);
   } else {
-    pipeline = sharp(activeBuffer);
+    pipeline = await openInputImage(activeBuffer);
   }
 
   const metadata = await pipeline.metadata();
