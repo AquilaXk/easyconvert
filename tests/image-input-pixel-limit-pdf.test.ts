@@ -3,7 +3,7 @@ import { convertFile } from '../src/lib/conversions';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { MAX_PDF_IMAGE_MARKERS, extractRasterImagesFromPdf } from '../src/lib/conversions/pdf-rasterizer';
 import { ConversionFailedError } from '../src/lib/types';
-import { pdfWithFlateImage, type ImageDictionary } from './helpers/image-pdf-bomb';
+import { pdfWithFlateImage, pdfWithImages, type ImageDictionary } from './helpers/image-pdf-bomb';
 
 const BYTES_PER_MIB = 1024 * 1024;
 /** Generous bound for a scan that must be linear in the file size; the quadratic scan took 23 s on 8 MB. */
@@ -140,6 +140,18 @@ describe('the PDF image scan stays linear on hostile files', () => {
     expect(performance.now() - start).toBeLessThan(MAX_SCAN_MS);
   });
 
+  it('stays bounded when every marker sits in a nested dictionary far behind the start of its object', async () => {
+    // Objects of about 4 KB, each holding hundreds of closed nested dictionaries with a marker: the worst shape
+    // for a scan that starts at the object and reads up to the marker.
+    const nested = '/N << /Subtype /Image /Width 1 /Height 1 >> ';
+    const perObject = Math.floor(3500 / nested.length);
+    const objects = Math.ceil((MAX_PDF_IMAGE_MARKERS - 1) / perObject);
+    const body = Array.from({ length: objects }, (_unused, index) => `${index + 1} 0 obj << ${nested.repeat(perObject)}>> endobj\n`).join('');
+    const start = performance.now();
+    await extractRasterImagesFromPdf(Buffer.from(`%PDF-1.4\n${body}`, 'latin1')).catch(() => undefined);
+    expect(performance.now() - start).toBeLessThan(MAX_SCAN_MS);
+  });
+
   it('refuses a document with more image markers than the cap, without reading further', async () => {
     const pdf = Buffer.from(`%PDF-1.4\n${'/Subtype /Image /Width 1 /Height 1 '.repeat(MAX_PDF_IMAGE_MARKERS + 1)}`, 'latin1');
     const run = extractRasterImagesFromPdf(pdf);
@@ -165,5 +177,56 @@ describe('implicit OCR of a scanned PDF', () => {
     const run = convertFile(pdf, 'pdf', 'txt', { ocrEnabled: true }, 'scan.pdf');
     await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
     await expect(run).rejects.toThrow(/could not be read/);
+  });
+});
+
+describe('the size of an image is read from its own dictionary, not from its neighbours', () => {
+  const BANNER = { width: 12_000, height: 100 };
+  const STRIP = { width: 100, height: 12_000 };
+
+  it('accepts a wide banner next to a tall strip, which a window maximum would read as 144 MP', async () => {
+    const pdf = pdfWithImages([BANNER, STRIP]);
+    const images = await extractRasterImagesFromPdf(pdf);
+    expect(images.map((image) => [image.width, image.height])).toEqual([
+      [BANNER.width, BANNER.height],
+      [STRIP.width, STRIP.height],
+    ]);
+  });
+
+  it('does not let a nested dictionary lower the width: only the top-level keys count', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /DecodeParms << /Width 1 /Height 1 >> /Width ${OVER_CAP_SIDE} /Height ${OVER_CAP_SIDE} ${COMMON}`;
+    const run = extractRasterImagesFromPdf(pdfWithFlateImage(OVER_CAP_SIDE, OVER_CAP_SIDE, false, { body: dictionary }));
+    await expect(run).rejects.toBeInstanceOf(InputPixelLimitError);
+    await expect(run).rejects.toMatchObject({ width: OVER_CAP_SIDE, height: OVER_CAP_SIDE });
+  });
+
+  it('does not take the width of a nested dictionary that comes after the real keys either', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /Width ${SMALL_SIDE} /Height ${SMALL_SIDE} /DecodeParms << /Width ${OVER_CAP_SIDE} /Height ${OVER_CAP_SIDE} >> ${COMMON}`;
+    const images = await extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body: dictionary }]));
+    expect(images.map((image) => [image.width, image.height])).toEqual([[SMALL_SIDE, SMALL_SIDE]]);
+  });
+
+  it('skips strings, hex strings and comments that contain dictionary syntax', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /Note (>> /Width 1 /Height 1 \\) <<) /Hex <3c3c 2f57> % >> /Width 2\n/Width ${OVER_CAP_SIDE} /Height ${OVER_CAP_SIDE} ${COMMON}`;
+    const run = extractRasterImagesFromPdf(pdfWithFlateImage(OVER_CAP_SIDE, OVER_CAP_SIDE, false, { body: dictionary }));
+    await expect(run).rejects.toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE, width: OVER_CAP_SIDE });
+  });
+
+  it('takes the last of a repeated top-level key, as a PDF reader does: a later Width of 15000 refuses the image', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /Width 10 /Width ${OVER_CAP_SIDE} /Height ${OVER_CAP_SIDE} ${COMMON}`;
+    const run = extractRasterImagesFromPdf(pdfWithFlateImage(OVER_CAP_SIDE, OVER_CAP_SIDE, false, { body: dictionary }));
+    await expect(run).rejects.toMatchObject({ status: HTTP_PAYLOAD_TOO_LARGE, width: OVER_CAP_SIDE });
+  });
+
+  it('and a later small Width wins over an earlier huge one, which is also what pdfjs decodes', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /Width ${OVER_CAP_SIDE} /Width ${SMALL_SIDE} /Height ${OVER_CAP_SIDE} /Height ${SMALL_SIDE} ${COMMON}`;
+    const images = await extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body: dictionary }]));
+    expect(images.map((image) => [image.width, image.height])).toEqual([[SMALL_SIDE, SMALL_SIDE]]);
+  });
+
+  it('refuses as unreadable an image dictionary that never closes within the window', async () => {
+    const dictionary = `/Type /XObject /Subtype /Image /Width ${SMALL_SIDE} /Height ${SMALL_SIDE} /Open << /Deep ${'x '.repeat(4000)}`;
+    const run = extractRasterImagesFromPdf(pdfWithImages([{ width: SMALL_SIDE, height: SMALL_SIDE, body: dictionary }]));
+    await expect(run).rejects.toThrow(/dimensions of an embedded image could not be read/);
   });
 });

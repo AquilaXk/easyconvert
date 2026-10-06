@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConversionFailedError } from '../types';
 import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
+import { readEnclosingDictionary, type DictionaryValue, type EnclosingDictionary } from './pdf-image-dictionary';
 
 // Polyfill Promise.withResolvers for Node.js < 22 / 20.13 environments required by pdfjs-dist
 if (typeof (Promise as any).withResolvers === 'undefined') {
@@ -42,7 +43,7 @@ function unpack1bpp(packed: Uint8Array, width: number, height: number, inverse: 
 /** Bytes before and after an image marker that are searched for the dimensions of its dictionary. */
 const IMAGE_DICTIONARY_WINDOW_BYTES = 4096;
 /** Most image markers one PDF may hold; a document with more is refused instead of scanned. */
-export const MAX_PDF_IMAGE_MARKERS = 50_000;
+export const MAX_PDF_IMAGE_MARKERS = 20_000;
 /** Longest run of white space tolerated between the tokens the scan reads. */
 const MAX_TOKEN_GAP = 16;
 
@@ -91,14 +92,24 @@ function declaredDimension(window: string, pattern: RegExp, resolve: () => Map<n
   return largest;
 }
 
+/** One dimension of an image dictionary entry: a number, or a reference to an integer object. */
+function entryDimension(entry: DictionaryValue | undefined, resolve: () => Map<number, number>): number {
+  if (entry?.kind === 'number') return entry.value;
+  const referenced = entry?.kind === 'reference' ? resolve().get(entry.objectNumber) : undefined;
+  if (referenced === undefined) throw unreadableDimensions();
+  return referenced;
+}
+
 /**
  * Refuses a PDF whose image XObjects declare more pixels than the input limit. Image XObjects are stream
  * objects, which a PDF never packs into an object stream, so their dictionaries are readable as plain text
- * and the check needs no decode. Every marker is paired with the largest width and height written within a
- * fixed window around it, so a decoy key cannot hide the real one; dimensions that are missing, point at an
- * object that is not a plain integer, or sit outside the window cannot be checked and are refused. Every
- * pattern has bounded repetition, so the scan is linear in the file size, and the marker count is capped.
- * Inline images, which have no dictionary to scan, are caught by pdfjs's own limit (see
+ * and the check needs no decode. The size is read from the dictionary that holds the `/Subtype /Image`: its
+ * own top-level `/Width` and `/Height` (the last of a repeated key, as a PDF reader takes it), never those of
+ * a nested dictionary or of a neighbouring image. A marker that is not a key of any dictionary here (inside a
+ * string or comment, in stream data) is checked against the largest width and height of its window instead,
+ * which can only refuse more. A dictionary that cannot be delimited within the window, or whose dimensions are
+ * missing or not plain integers, cannot be checked and is refused. Every scan is bounded by the window, and the
+ * marker count is capped. Inline images, which have no dictionary to scan, are caught by pdfjs's own limit (see
  * `extractRasterImagesFromPdf`).
  */
 function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
@@ -115,7 +126,18 @@ function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
       throw new ConversionFailedError(`Invalid PDF: it holds more than ${MAX_PDF_IMAGE_MARKERS} images, which is over what a conversion accepts.`);
     }
     const at = marker.index ?? 0;
-    const window = text.slice(Math.max(0, at - IMAGE_DICTIONARY_WINDOW_BYTES), at + IMAGE_DICTIONARY_WINDOW_BYTES);
+    const windowStart = Math.max(0, at - IMAGE_DICTIONARY_WINDOW_BYTES);
+    const windowEnd = Math.min(text.length, at + IMAGE_DICTIONARY_WINDOW_BYTES);
+    const objectAt = text.slice(windowStart, at).lastIndexOf('obj');
+    // Without the start of its object in the window the dictionary cannot be delimited; the window maximum applies.
+    const dictionary: EnclosingDictionary =
+      objectAt === -1 ? { status: 'inert' } : readEnclosingDictionary(text, windowStart + objectAt + 'obj'.length, at, windowEnd);
+    if (dictionary.status === 'undelimited') throw unreadableDimensions();
+    if (dictionary.status === 'found') {
+      assertInputPixels(entryDimension(dictionary.entries.get('Width'), resolve), entryDimension(dictionary.entries.get('Height'), resolve));
+      continue;
+    }
+    const window = text.slice(windowStart, windowEnd);
     const width = declaredDimension(window, new RegExp(WIDTH_PATTERN), resolve);
     const height = declaredDimension(window, new RegExp(HEIGHT_PATTERN), resolve);
     if (width === undefined || height === undefined) throw unreadableDimensions();

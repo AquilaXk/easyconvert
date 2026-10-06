@@ -73,3 +73,32 @@ export function pdfWithFlateImage(width: number, height: number, inline = false,
   }
   return assemblePdf(objects);
 }
+
+/** One image XObject of `pdfWithImages`: its pixel size, and optionally the text of its dictionary. */
+export interface PdfImageSpec {
+  width: number;
+  height: number;
+  /** The dictionary between `<<` and `>>`, with `{length}` for the stream length; default is a plain 1-bit gray image. */
+  body?: string;
+}
+
+/**
+ * One-page PDF 1.4 that paints several 1-bit DeviceGray image XObjects next to each other, so a test can put
+ * images of different shapes in one file. The image streams are the Flate-compressed zeros of each spec's size.
+ */
+export function pdfWithImages(images: PdfImageSpec[]): Buffer {
+  const names = images.map((_image, index) => `/Im${index}`);
+  const content = Buffer.from(names.map((name) => `q 100 0 0 100 20 20 cm ${name} Do Q`).join('\n'));
+  const xobjects = names.map((name, index) => `${name} ${IMAGE_OBJECT_NUMBER + index} 0 R`).join(' ');
+  const objects = pageObjects(content, `<< /XObject << ${xobjects} >> >>`);
+  for (const image of images) {
+    const stream = deflateSync(Buffer.alloc(Math.ceil(image.width / BITS_PER_BYTE) * image.height), { level: 9 });
+    const body =
+      image.body ??
+      `/Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode /Length {length}`;
+    objects.push(
+      Buffer.concat([Buffer.from(`<< ${body.replace('{length}', String(stream.length))} >>\nstream\n`), stream, Buffer.from('\nendstream')])
+    );
+  }
+  return assemblePdf(objects);
+}
