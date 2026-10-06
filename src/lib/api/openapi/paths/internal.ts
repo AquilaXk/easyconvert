@@ -1,5 +1,9 @@
 import {
   CONVERT_FORM_PROPERTIES,
+  CONVERT_OPTIONS_DESCRIPTION,
+  PDFA_ENGINE_NOTE,
+  PDFA_PROBLEM_DESCRIPTION,
+  createPdfaProblemResponse,
   INPUT_PIXEL_LIMIT_DESCRIPTION,
   PUBLIC_ACCESS,
   SESSION_ONLY,
@@ -19,7 +23,7 @@ import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const INTERNAL = { 'x-internal': true };
 
-const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).`;
+const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -208,8 +212,14 @@ export const internalPaths = {
         '200': binaryResponse('Converted file.'),
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
+        '422': {
+          description: `Page count exceeds the tier limit, or: ${PDFA_PROBLEM_DESCRIPTION}`,
+          content: {
+            ...createErrorResponse('').content,
+            'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
+          },
+        },
         '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
-        '422': createErrorResponse('Page count exceeds the tier limit.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
@@ -226,7 +236,7 @@ export const internalPaths = {
       requestBody: multipartBody({
         files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
-        options: { type: 'string', description: 'JSON-serialized conversion options.' },
+        options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
       }, ['files']),
       responses: {
         '200': binaryResponse('ZIP archive of converted files.', 'application/zip'),
@@ -239,6 +249,7 @@ export const internalPaths = {
           },
         },
         '401': createProblemResponse('Authentication required.'),
+        '422': createPdfaProblemResponse(PDFA_PROBLEM_DESCRIPTION),
         '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
