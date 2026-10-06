@@ -33,7 +33,9 @@ export type ExternalOracleTool =
   | 'qpdf'
   | 'python3'
   | 'raw-identify'
-  | 'dcraw_emu';
+  | 'dcraw_emu'
+  | 'woff2_decompress'
+  | 'woff2_info';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;
