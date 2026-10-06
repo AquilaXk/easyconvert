@@ -75,7 +75,7 @@ describe('TUS Zero-Heap Memory Profiling (512 MiB Streaming Upload)', () => {
         ...authHeaders,
       },
     });
-    const postRes = await tusPostHandler(postReq);
+    const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location')!;
     createdSessionId = location.split('/').pop()!;
@@ -114,7 +114,7 @@ describe('TUS Zero-Heap Memory Profiling (512 MiB Streaming Upload)', () => {
       duplex: 'half',
     } as any);
 
-    const patchRes = await tusPatchHandler(patchReq, { params: { id: [createdSessionId] } });
+    const patchRes = await tusPatchHandler(patchReq, { params: Promise.resolve({ id: [createdSessionId] }) });
     expect(patchRes.status).toBe(204);
     expect(patchRes.headers.get('Upload-Offset')).toBe(String(TOTAL_512_MIB));
 

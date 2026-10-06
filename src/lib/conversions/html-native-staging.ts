@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import { scanCss } from './css-references';
 import {
@@ -311,7 +311,7 @@ async function verifyEmbeddedImages(urls: ReadonlySet<string>): Promise<void> {
   const images = Array.from(urls, imageData);
   let totalPixels = 0;
   for (const { bytes, format } of images) {
-    let metadata: sharp.Metadata;
+    let metadata: Metadata;
     try {
       metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
     } catch (err) {
