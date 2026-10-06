@@ -7,6 +7,8 @@ export const PDF_TEXT_MAX_ITEMS_PER_PAGE = 100_000;
 export const PDF_TEXT_MAX_WORDS_PER_PAGE = 200_000;
 /** Longest text item, in UTF-16 units; checked before any per-character array is allocated. */
 export const PDF_TEXT_MAX_ITEM_CHARS = 1_048_576;
+/** Text a page may hold in all its items, in UTF-16 units; checked before any glyph or per-character data is built. */
+export const PDF_TEXT_MAX_CHARS_PER_PAGE = 2_097_152;
 /**
  * Pages with more text items than this are laid out without reading the operator list (equal shares
  * per character). The operator list cannot be sized before it is read, so graphics-heavy pages are

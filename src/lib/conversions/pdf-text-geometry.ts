@@ -5,6 +5,7 @@ import type { PdfPageAnalysis } from '../types';
 import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import { runPdfTextJobInThread } from './pdf-text-host';
 import {
+  PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
   PDF_TEXT_MAX_WORDS_PER_PAGE,
@@ -16,6 +17,7 @@ import {
 } from './pdf-text-types';
 
 export {
+  PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
   PDF_TEXT_MAX_WORDS_PER_PAGE,
@@ -72,6 +74,12 @@ const PAGE_TEXT_OPERATORS = [
 const GLYPH_RESYNC_WINDOW = 256;
 /** After this many items in a row whose glyphs cannot be matched, matching stops for the rest of the page. */
 const MAX_CONSECUTIVE_MISMATCHES = 16;
+/** Glyph comparisons one item's matching may make per character of the item, resync attempts included ... */
+const MATCH_STEPS_PER_CHAR = 8;
+/** ... but at least this many, so short items can still search their whole resync window. */
+const MATCH_STEPS_MIN = 4096;
+/** Glyph comparisons all the matching of one page may make; beyond it items get equal shares. */
+const MATCH_STEPS_PER_PAGE = 50_000_000;
 /** PDF glyph widths are in thousandths of an em. */
 const GLYPH_UNITS_PER_EM = 1000;
 /** Weight of a gap pdfjs turned into a space, in em. */
@@ -142,9 +150,12 @@ interface FontStyle {
   vertical?: boolean;
 }
 
-/** One shown glyph: its text (NFKC) and its advance in text-space units, plus its width in em for vertical text. */
+/** One shown glyph: its text as the font maps it and in compatibility form, its advance in text-space units, and its width in em for vertical text. */
 export interface Glyph {
+  /** The glyph's text as the font reports it (a ligature stays one character). */
   text: string;
+  /** The same text after NFKC normalisation, which is how pdfjs reports some characters in the item text. */
+  folded: string;
   advance: number;
   cross: number;
   /** One em in text-space units (font size times horizontal scaling), used to weigh a synthetic space. */
@@ -238,7 +249,7 @@ function collectGlyphs(operatorList: OperatorList, ops: Record<string, number>):
         advance = ((glyph.width / GLYPH_UNITS_PER_EM) * state.fontSize + spacing) * state.scale;
       }
       const adjustment = ((vertical ? -state.fontSize : state.fontSize * state.scale)) / GLYPH_UNITS_PER_EM;
-      glyphs.push({ text: glyph.unicode.normalize('NFKC'), advance, cross: glyph.width / GLYPH_UNITS_PER_EM, em, adjustment });
+      glyphs.push({ text: glyph.unicode, folded: glyph.unicode.normalize('NFKC'), advance, cross: glyph.width / GLYPH_UNITS_PER_EM, em, adjustment });
     }
   };
 
@@ -274,54 +285,86 @@ interface Match {
   next: number;
 }
 
-/** Spreads the glyphs from `start` over `target`, or null when they do not spell it. */
-function matchGlyphs(target: string, glyphs: Glyph[], start: number): Match | null {
-  const advance = new Array<number>(target.length).fill(0);
-  const cross = new Array<number>(target.length).fill(0);
+interface MatchBudget {
+  left: number;
+}
+
+/** The text of `glyph` that `target` has at `at`: as the font reports it, else in compatibility form, else null. */
+function glyphTextAt(target: string, glyph: Glyph, at: number): string | null {
+  if (target.startsWith(glyph.text, at)) return glyph.text;
+  if (glyph.folded !== glyph.text && target.startsWith(glyph.folded, at)) return glyph.folded;
+  return null;
+}
+
+/**
+ * Walks the glyphs from `start` over `target`, writing each unit's advance and width into `out` when given.
+ * Returns the index after the last glyph used, or -1 when the glyphs do not spell `target` or the budget
+ * ran out. Allocates nothing, so a failed attempt costs only its steps.
+ */
+function walkGlyphs(target: string, glyphs: Glyph[], start: number, budget: MatchBudget, out: { advance: number[]; cross: number[] } | null): number {
   let at = 0;
   let index = start;
   while (at < target.length) {
-    if (index >= glyphs.length) return null;
+    if (index >= glyphs.length || budget.left-- <= 0) return -1;
     const glyph = glyphs[index];
-    if (glyph.text === '') {
+    const shown = glyphTextAt(target, glyph, at);
+    if (shown === '') {
       index++;
-    } else if (target.startsWith(glyph.text, at)) {
-      for (let i = 0; i < glyph.text.length; i++) {
-        advance[at + i] = glyph.advance / glyph.text.length;
-        cross[at + i] = glyph.cross;
+    } else if (shown !== null) {
+      if (out) {
+        for (let i = 0; i < shown.length; i++) {
+          out.advance[at + i] = glyph.advance / shown.length;
+          out.cross[at + i] = glyph.cross;
+        }
       }
-      at += glyph.text.length;
+      at += shown.length;
       index++;
     } else if (isWordSpace(target.charCodeAt(at))) {
       // A gap pdfjs turned into a space is not a glyph of its own.
-      advance[at] = SYNTHETIC_SPACE_EM * glyph.em;
-      cross[at] = SYNTHETIC_SPACE_EM;
+      if (out) {
+        out.advance[at] = SYNTHETIC_SPACE_EM * glyph.em;
+        out.cross[at] = SYNTHETIC_SPACE_EM;
+      }
       at++;
     } else {
-      return null;
+      return -1;
     }
   }
-  return { advance, cross, next: index };
+  return index;
 }
 
 export interface Cursor {
   glyphs: Glyph[];
   next: number;
   failures: number;
+  /** Glyph comparisons made so far on this page. */
+  steps: number;
 }
 
+/** Spreads the glyphs from the cursor over `target` (searching ahead after a mismatch), or null when they do not spell it. */
 function matchFromCursor(target: string, cursor: Cursor): Match | null {
   if (cursor.glyphs.length === 0 || cursor.failures >= MAX_CONSECUTIVE_MISMATCHES) return null;
-  let matched = matchGlyphs(target, cursor.glyphs, cursor.next);
-  for (let offset = 1; matched === null && offset <= GLYPH_RESYNC_WINDOW; offset++) {
-    matched = matchGlyphs(target, cursor.glyphs, cursor.next + offset);
+  const budget: MatchBudget = {
+    left: Math.min(Math.max(MATCH_STEPS_MIN, MATCH_STEPS_PER_CHAR * target.length), MATCH_STEPS_PER_PAGE - cursor.steps),
+  };
+  const allowed = budget.left;
+  let found = -1;
+  let from = cursor.next;
+  for (let offset = 0; offset <= GLYPH_RESYNC_WINDOW && budget.left > 0; offset++) {
+    from = cursor.next + offset;
+    found = walkGlyphs(target, cursor.glyphs, from, budget, null);
+    if (found >= 0) break;
   }
-  if (matched === null) {
+  cursor.steps += allowed - Math.max(budget.left, 0);
+  if (found < 0) {
     cursor.failures++;
     return null;
   }
+  const matched: Match = { advance: new Array<number>(target.length).fill(0), cross: new Array<number>(target.length).fill(0), next: found };
+  walkGlyphs(target, cursor.glyphs, from, { left: Number.POSITIVE_INFINITY }, matched);
+  cursor.steps += target.length;
   cursor.failures = 0;
-  cursor.next = matched.next;
+  cursor.next = found;
   return matched;
 }
 
@@ -380,6 +423,26 @@ function resolveWeakTypes(types: BidiType[], base: BidiType): void {
   }
 }
 
+/** Embedding levels: even levels run left to right, odd ones right to left; a number or left-to-right text inside right-to-left text sits one level higher. */
+const LEVEL_LTR = 0;
+const LEVEL_RTL = 1;
+const LEVEL_NUMBER = 2;
+
+/** The level of a resolved strong or number type in a paragraph of the given direction (rules I1 and I2). */
+function levelOf(type: BidiType, baseRightToLeft: boolean): number {
+  if (type === 'R') return LEVEL_RTL;
+  if (type === 'EN') return LEVEL_NUMBER;
+  if (baseRightToLeft) return LEVEL_NUMBER;
+  return LEVEL_LTR;
+}
+
+/** The lowest level whose runs are reversed (rule L2): the lowest odd level, or none when there is no odd level. */
+function lowestReversedLevel(baseRightToLeft: boolean, lowestOdd: number, highest: number): number {
+  if (baseRightToLeft) return LEVEL_RTL;
+  if (Number.isFinite(lowestOdd)) return lowestOdd;
+  return highest + 1;
+}
+
 interface VisualOrder {
   /** Logical unit index of each visual position. */
   order: number[];
@@ -423,19 +486,15 @@ function visualOrder(text: string, baseRightToLeft: boolean): VisualOrder {
     for (let k = i; k < end; k++) resolved[k] = direction;
     i = end;
   }
-  const levels = resolved.map((type) => {
-    if (type === 'R') return 1;
-    if (type === 'EN') return 2;
-    return baseRightToLeft ? 2 : 0;
-  });
+  const levels = resolved.map((type) => levelOf(type, baseRightToLeft));
   const order = Array.from({ length }, (_, i) => i);
-  let highest = 0;
+  let highest = LEVEL_LTR;
   let lowestOdd = Number.POSITIVE_INFINITY;
   for (const level of levels) {
     highest = Math.max(highest, level);
     if (level % 2 === 1) lowestOdd = Math.min(lowestOdd, level);
   }
-  const floor = baseRightToLeft ? 1 : Number.isFinite(lowestOdd) ? lowestOdd : highest + 1;
+  const floor = lowestReversedLevel(baseRightToLeft, lowestOdd, highest);
   for (let level = highest; level >= floor; level--) {
     for (let i = 0; i < length; ) {
       if (levels[order[i]] < level) {
@@ -519,6 +578,91 @@ function toBBox(box: Box): OcrLineBlock['bbox'] {
   return { x: box.x0, y: box.y0, width: box.x1 - box.x0, height: box.y1 - box.y0 };
 }
 
+/** The item's text-space axes in user space, with its origin and the page viewport. */
+interface TextFrame {
+  viewport: Viewport;
+  e: number;
+  f: number;
+  /** Unit vector along the baseline. */
+  ux: number;
+  uy: number;
+  /** Unit vector up from the baseline. */
+  vx: number;
+  vy: number;
+}
+
+/** Distances along the item's advance direction. */
+interface Span {
+  d0: number;
+  d1: number;
+}
+
+interface WordSpan {
+  start: number;
+  end: number;
+}
+
+interface FontMetrics {
+  ascent: number;
+  descent: number;
+}
+
+function fontMetrics(style: FontStyle | undefined): FontMetrics {
+  const ascent = typeof style?.ascent === 'number' && Number.isFinite(style.ascent) ? style.ascent : FALLBACK_ASCENT_EM;
+  const descent = typeof style?.descent === 'number' && Number.isFinite(style.descent) ? -style.descent : FALLBACK_DESCENT_EM;
+  return { ascent, descent };
+}
+
+/** Offset of each unit's start along the item, sharing `length` between the units in proportion to their weights. */
+function shareOffsets(placement: Placement, count: number, length: number): Float64Array {
+  let total = 0;
+  for (let i = 0; i < count; i++) total += placement.advance[i];
+  if (!(total > 0)) {
+    // Glyphs with no advance at all: share the item's width equally rather than dropping its text.
+    placement.advance.fill(1);
+    total = count;
+  }
+  const offsets = new Float64Array(count + 1);
+  for (let i = 0; i < count; i++) offsets[i + 1] = offsets[i] + (placement.advance[i] / total) * length;
+  return offsets;
+}
+
+/** The words of `text` (runs of non-space units), counted against the page's word budget. */
+function wordSpansOf(text: string, budget: WordBudget): WordSpan[] {
+  const spans: WordSpan[] = [];
+  let start = -1;
+  for (let i = 0; i <= text.length; i++) {
+    const space = i === text.length || isWordSpace(text.charCodeAt(i));
+    if (!space) {
+      if (start === -1) start = i;
+      continue;
+    }
+    if (start === -1) continue;
+    if (budget.left-- <= 0) throw new PdfTextGeometryError(`PDF page ${budget.pageNumber} has more than ${PDF_TEXT_MAX_WORDS_PER_PAGE} words.`);
+    spans.push({ start, end: i });
+    start = -1;
+  }
+  return spans;
+}
+
+/** The corners of one word in the displayed page. */
+function wordCorners(span: WordSpan, placement: Placement, offsets: Float64Array, frame: TextFrame, vertical: boolean, size: number, metrics: FontMetrics): Point[] {
+  let d0 = Infinity;
+  let d1 = -Infinity;
+  let wide = 0;
+  for (let k = span.start; k < span.end; k++) {
+    const visualIndex = placement.toVisual ? placement.toVisual[k] : k;
+    d0 = Math.min(d0, offsets[visualIndex]);
+    d1 = Math.max(d1, offsets[visualIndex + 1]);
+    wide = Math.max(wide, placement.cross[visualIndex]);
+  }
+  if (vertical) {
+    const cell = wide > 0 ? wide : 1;
+    return verticalCorners(frame, { d0, d1 }, (cell * size) / 2);
+  }
+  return horizontalCorners(frame, { d0, d1 }, { up: metrics.ascent * size, down: metrics.descent * size });
+}
+
 /** Splits one item into positioned words, or null when it has none or is invisible (zero scale). */
 function splitItem(
   item: TextItem,
@@ -533,115 +677,75 @@ function splitItem(
   const size = Math.hypot(c, d);
   const length = vertical ? item.height : item.width;
   if (run === 0 || size === 0 || !(length > 0)) return null;
-  // Unit vectors of the text-space x axis (along the baseline) and y axis (up), in user space.
-  const ux = a / run;
-  const uy = b / run;
-  const vx = c / size;
-  const vy = d / size;
-  const ascent = typeof style?.ascent === 'number' && Number.isFinite(style.ascent) ? style.ascent : FALLBACK_ASCENT_EM;
-  const descent = typeof style?.descent === 'number' && Number.isFinite(style.descent) ? -style.descent : FALLBACK_DESCENT_EM;
+  const frame: TextFrame = { viewport, e, f, ux: a / run, uy: b / run, vx: c / size, vy: d / size };
+  const offsets = shareOffsets(placement, item.str.length, length);
+  const spans = wordSpansOf(item.str, budget);
+  if (spans.length === 0) return null;
 
-  const count = item.str.length;
-  let total = 0;
-  for (let i = 0; i < count; i++) total += placement.advance[i];
-  if (!(total > 0)) {
-    // Glyphs with no advance at all: share the item's width equally rather than dropping its text.
-    placement.advance.fill(1);
-    total = count;
-  }
-  const offsets = new Float64Array(count + 1);
-  for (let i = 0; i < count; i++) offsets[i + 1] = offsets[i] + (placement.advance[i] / total) * length;
-
+  const metrics = fontMetrics(style);
   const words: OcrWord[] = [];
   const corners: Point[] = [];
-  let start = -1;
-  for (let i = 0; i <= count; i++) {
-    const space = i === count || isWordSpace(item.str.charCodeAt(i));
-    if (!space) {
-      if (start === -1) start = i;
-      continue;
-    }
-    if (start === -1) continue;
-    if (budget.left-- <= 0) throw new PdfTextGeometryError(`PDF page ${budget.pageNumber} has more than ${PDF_TEXT_MAX_WORDS_PER_PAGE} words.`);
-    let d0 = Infinity;
-    let d1 = -Infinity;
-    let wide = 0;
-    for (let k = start; k < i; k++) {
-      const visualIndex = placement.toVisual ? placement.toVisual[k] : k;
-      d0 = Math.min(d0, offsets[visualIndex]);
-      d1 = Math.max(d1, offsets[visualIndex + 1]);
-      wide = Math.max(wide, placement.cross[visualIndex]);
-    }
-    const wordCorners = vertical
-      ? verticalCorners(viewport, e, f, ux, uy, vx, vy, d0, d1, ((wide > 0 ? wide : 1) * size) / 2)
-      : horizontalCorners(viewport, e, f, ux, uy, vx, vy, d0, d1, ascent * size, descent * size);
-    words.push({ text: item.str.slice(start, i), bbox: toBBox(boxOf(wordCorners)) });
-    corners.push(...wordCorners);
-    start = -1;
+  for (const span of spans) {
+    const spanCorners = wordCorners(span, placement, offsets, frame, vertical, size, metrics);
+    words.push({ text: item.str.slice(span.start, span.end), bbox: toBBox(boxOf(spanCorners)) });
+    corners.push(...spanCorners);
   }
-  if (words.length === 0) return null;
+  return itemRun(item, words, boxOf(corners), frame, { vertical, length, size, rtl: placement.rightToLeft });
+}
 
+interface RunShape {
+  vertical: boolean;
+  length: number;
+  size: number;
+  rtl: boolean;
+}
+
+/** The item's run: its words with the box, direction, size and (for horizontal text) baseline in the displayed page. */
+function itemRun(item: TextItem, words: OcrWord[], box: Box, frame: TextFrame, shape: RunShape): ItemRun {
+  const { viewport, e, f, ux, uy, vx, vy } = frame;
   const first = toViewport(viewport, e, f);
-  const last = vertical ? toViewport(viewport, e - vx * length, f - vy * length) : toViewport(viewport, e + ux * length, f + uy * length);
+  const last = shape.vertical
+    ? toViewport(viewport, e - vx * shape.length, f - vy * shape.length)
+    : toViewport(viewport, e + ux * shape.length, f + uy * shape.length);
   const dx = last.x - first.x;
   const dy = last.y - first.y;
-  const horizontal = !vertical && dx > 0 && Math.abs(dy) <= HORIZONTAL_SLOPE_TOLERANCE * dx;
+  const horizontal = !shape.vertical && dx > 0 && Math.abs(dy) <= HORIZONTAL_SLOPE_TOLERANCE * dx;
   const result: ItemRun = {
     words,
-    box: boxOf(corners),
+    box,
     horizontal,
-    rtl: placement.rightToLeft,
-    size,
+    rtl: shape.rtl,
+    size: shape.size,
     baselineY: first.y,
     startsWithWord: !isWordSpace(item.str.charCodeAt(0)),
-    endsWithWord: !isWordSpace(item.str.charCodeAt(count - 1)),
+    endsWithWord: !isWordSpace(item.str.charCodeAt(item.str.length - 1)),
   };
-  if (!vertical && dx > 0 && Math.abs(dy) <= dx) result.baseline = { x0: first.x, y0: first.y, x1: last.x, y1: last.y };
+  if (!shape.vertical && dx > 0 && Math.abs(dy) <= dx) result.baseline = { x0: first.x, y0: first.y, x1: last.x, y1: last.y };
   return result;
 }
 
-function horizontalCorners(
-  viewport: Viewport,
-  e: number,
-  f: number,
-  ux: number,
-  uy: number,
-  vx: number,
-  vy: number,
-  d0: number,
-  d1: number,
-  up: number,
-  down: number
-): Point[] {
-  const p0x = e + ux * d0;
-  const p0y = f + uy * d0;
-  const p1x = e + ux * d1;
-  const p1y = f + uy * d1;
+/** Corners of a horizontal word: `up` above the baseline and `down` below it, between the distances `span`. */
+function horizontalCorners(frame: TextFrame, span: Span, extent: { up: number; down: number }): Point[] {
+  const { viewport, e, f, ux, uy, vx, vy } = frame;
+  const p0x = e + ux * span.d0;
+  const p0y = f + uy * span.d0;
+  const p1x = e + ux * span.d1;
+  const p1y = f + uy * span.d1;
   return [
-    toViewport(viewport, p0x + vx * up, p0y + vy * up),
-    toViewport(viewport, p1x + vx * up, p1y + vy * up),
-    toViewport(viewport, p1x - vx * down, p1y - vy * down),
-    toViewport(viewport, p0x - vx * down, p0y - vy * down),
+    toViewport(viewport, p0x + vx * extent.up, p0y + vy * extent.up),
+    toViewport(viewport, p1x + vx * extent.up, p1y + vy * extent.up),
+    toViewport(viewport, p1x - vx * extent.down, p1y - vy * extent.down),
+    toViewport(viewport, p0x - vx * extent.down, p0y - vy * extent.down),
   ];
 }
 
 /** Vertical text runs down from the origin: the cell of a word is `half` either side of the path. */
-function verticalCorners(
-  viewport: Viewport,
-  e: number,
-  f: number,
-  ux: number,
-  uy: number,
-  vx: number,
-  vy: number,
-  d0: number,
-  d1: number,
-  half: number
-): Point[] {
-  const p0x = e - vx * d0;
-  const p0y = f - vy * d0;
-  const p1x = e - vx * d1;
-  const p1y = f - vy * d1;
+function verticalCorners(frame: TextFrame, span: Span, half: number): Point[] {
+  const { viewport, e, f, ux, uy, vx, vy } = frame;
+  const p0x = e - vx * span.d0;
+  const p0y = f - vy * span.d0;
+  const p1x = e - vx * span.d1;
+  const p1y = f - vy * span.d1;
   return [
     toViewport(viewport, p0x + ux * half, p0y + uy * half),
     toViewport(viewport, p0x - ux * half, p0y - uy * half),
@@ -950,6 +1054,13 @@ async function readPage(
   if (content.items.length > PDF_TEXT_MAX_ITEMS_PER_PAGE) {
     throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_ITEMS_PER_PAGE} text items.`);
   }
+  let characters = 0;
+  for (const item of content.items) {
+    if (isTextItem(item)) characters += item.str.length;
+    if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
+      throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
+    }
+  }
   const wantAdvances = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
   const glyphs = wantAdvances ? collectGlyphs(await page.getOperatorList(), pdfjs.OPS) : [];
   const hasText = content.items.some((item) => isTextItem(item) && item.str.trim() !== '');
@@ -957,7 +1068,7 @@ async function readPage(
     warnedNoGlyphs = true;
     console.warn('[pdf-text] pdfjs returned no glyph advances for a page with text; word boxes use equal shares per character');
   }
-  const cursor: Cursor = { glyphs, next: 0, failures: 0 };
+  const cursor: Cursor = { glyphs, next: 0, failures: 0, steps: 0 };
   const budget: WordBudget = { left: PDF_TEXT_MAX_WORDS_PER_PAGE, pageNumber };
 
   const runs: ItemRun[] = [];
