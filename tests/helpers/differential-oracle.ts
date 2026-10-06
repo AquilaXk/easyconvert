@@ -24,7 +24,6 @@ export type ExternalOracleTool =
   | 'metaflac'
   | 'soffice'
   | 'tesseract'
-  | 'xmllint'
   | '7z'
   | 'tar'
   | 'zstd'

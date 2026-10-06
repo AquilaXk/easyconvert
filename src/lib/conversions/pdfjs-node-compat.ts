@@ -28,7 +28,7 @@ function toIndex(value: unknown, fallback: number): number {
   if (value === undefined) return fallback;
   const number = Math.trunc(Number(value));
   if (Number.isNaN(number)) return 0;
-  if (number < 0 || number > Number.MAX_SAFE_INTEGER) throw new RangeError(`Invalid array buffer length: ${String(value)}`);
+  if (number < 0 || number > Number.MAX_SAFE_INTEGER) throw new RangeError(`Invalid array buffer length: ${number}`);
   return number;
 }
 
