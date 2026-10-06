@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { isBlockedIp, isBlockedIpv4, isBlockedIpv6, validateUrlForSsrf } from '../src/lib/security/ssrf';
@@ -18,6 +18,9 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
 import { DataLimitExceededError, DataParseError } from '../src/lib/types';
 import JSZip from 'jszip';
+
+const OVER_FILE_CAP_ENTRIES = 50_001;
+const FIXTURE_BUILD_TIMEOUT_MS = 60_000;
 
 describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () => {
   describe('1. Fail-Closed Removal of Fake Synthesizers and Generators', () => {
@@ -121,14 +124,18 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
   });
 
   describe('3. Zip Bomb & Archive Security Limits', () => {
-    it('enforces maximum file count limit (1000 files)', async () => {
+    // Building 50,001 entries is fixture cost, not the behaviour under test, so it gets its own budget.
+    let overCapZip: Buffer;
+    beforeAll(async () => {
       const zip = new JSZip();
-      for (let i = 0; i < 1005; i++) {
+      for (let i = 0; i < OVER_FILE_CAP_ENTRIES; i++) {
         zip.file(`file_${i}.txt`, 'a');
       }
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      overCapZip = await zip.generateAsync({ type: 'nodebuffer' });
+    }, FIXTURE_BUILD_TIMEOUT_MS);
 
-      await expect(extractZipArchive(zipBuffer)).rejects.toThrow(
+    it('enforces maximum file count limit (50,000 files)', async () => {
+      await expect(extractZipArchive(overCapZip)).rejects.toThrow(
         /Archive bomb detected: file count .* exceeds limit/
       );
     });
