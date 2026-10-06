@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
   ConversionOptions,
@@ -192,6 +193,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
+    if (error instanceof InputPixelLimitError) {
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

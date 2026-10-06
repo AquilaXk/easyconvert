@@ -61,11 +61,41 @@ export interface OcrWord {
   confidence?: number;
 }
 
+/**
+ * A block or paragraph of the recognizer's layout. Every line of one group points at the same
+ * object, so group membership survives reordering and merging of line blocks.
+ */
+export interface OcrLayoutGroup {
+  /** The engine's own box; when absent the union of the group's line boxes is used. */
+  bbox?: OcrBBox;
+  /** Language of the group, as the engine code (`eng`) or a BCP 47 tag. */
+  language?: string;
+}
+
+/** The line a text row rests on, as two absolute points in image pixels with y pointing down. */
+export interface OcrBaseline {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
 export interface OcrLineBlock {
   text: string;
   bbox: OcrBBox;
   words: OcrWord[];
   tableId?: string | number;
+  /** Layout block (hOCR `ocr_carea`) holding this line, when the source had one. */
+  block?: OcrLayoutGroup;
+  /** Paragraph (hOCR `ocr_par`) holding this line, when the source had one. */
+  paragraph?: OcrLayoutGroup;
+  baseline?: OcrBaseline;
+  /** Height of the text row (hOCR `x_size`), in pixels. */
+  rowHeight?: number;
+  /** Height of the tallest ascender above the x-height (hOCR `x_ascenders`), in pixels. */
+  ascenders?: number;
+  /** Depth of the deepest descender below the baseline (hOCR `x_descenders`), in pixels. */
+  descenders?: number;
 }
 
 export interface OcrPageResult {
@@ -76,6 +106,8 @@ export interface OcrPageResult {
   confidence: number | null;
   lineBlocks: OcrLineBlock[];
   lines?: string[];
+  /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
+  language?: string;
 }
 
 export interface OcrResult {
@@ -87,6 +119,8 @@ export interface OcrResult {
   imageWidth?: number;
   imageHeight?: number;
   pages?: OcrPageResult[];
+  /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
+  language?: string;
 }
 
 export interface ColumnGutter {
@@ -876,23 +910,52 @@ export function sortLineBlocksTopological(
   return result;
 }
 
+function finiteOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** A block or paragraph box from the engine (`x0 y0 x1 y1`), or undefined when it is missing or empty. */
+function engineBox(box: any): OcrBBox | undefined {
+  const x0 = finiteOrUndefined(box?.x0);
+  const y0 = finiteOrUndefined(box?.y0);
+  const x1 = finiteOrUndefined(box?.x1);
+  const y1 = finiteOrUndefined(box?.y1);
+  if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) return undefined;
+  if (x1 <= x0 || y1 <= y0) return undefined;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** The engine reports no baseline for a line as a zero-length segment; only a real one is kept. */
+function engineBaseline(baseline: any): OcrBaseline | undefined {
+  const x0 = finiteOrUndefined(baseline?.x0);
+  const y0 = finiteOrUndefined(baseline?.y0);
+  const x1 = finiteOrUndefined(baseline?.x1);
+  const y1 = finiteOrUndefined(baseline?.y1);
+  if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined) return undefined;
+  return x1 > x0 ? { x0, y0, x1, y1 } : undefined;
+}
+
 /**
  * Parses raw Tesseract recognition block hierarchy into clean lines and blocks
  * ordered with topological reading order (preserving multi-column structure).
- * Shared between server and client edge pipelines.
+ * Shared between server and client edge pipelines. Each line keeps the block and paragraph it
+ * came from (`block`, `paragraph`) and, when the engine reports them, its baseline and row metrics.
  */
 export function parseTesseractBlocks(
   blocks: any[] | null | undefined,
   pageWidth?: number,
-  pageHeight?: number
+  pageHeight?: number,
+  language?: string
 ): { lines: string[]; lineBlocks: OcrLineBlock[] } {
   const lineBlocks: OcrLineBlock[] = [];
   if (!blocks || blocks.length === 0) return { lines: [], lineBlocks: [] };
 
   for (const block of blocks) {
     if (!block.paragraphs) continue;
+    const blockGroup: OcrLayoutGroup = { bbox: engineBox(block.bbox) };
     for (const para of block.paragraphs) {
       if (!para.lines) continue;
+      const paragraphGroup: OcrLayoutGroup = { bbox: engineBox(para.bbox), language };
       for (const line of para.lines) {
         const text = (line.text || '').trim();
         if (!text) continue;
@@ -930,6 +993,12 @@ export function parseTesseractBlocks(
             skewY: line.skewY ?? block.skewY,
           },
           words,
+          block: blockGroup,
+          paragraph: paragraphGroup,
+          baseline: engineBaseline(line.baseline),
+          rowHeight: finiteOrUndefined(line.rowAttributes?.rowHeight),
+          ascenders: finiteOrUndefined(line.rowAttributes?.ascenders),
+          descenders: finiteOrUndefined(line.rowAttributes?.descenders),
         });
       }
     }
