@@ -35,7 +35,11 @@ function requireEnglishData(): void {
   if (!found) throw new OracleToolMissingError('eng.traineddata', 'eng.traineddata is not installed');
 }
 
-const PAGE = Buffer.from('not decoded, preparation is replaced');
+// A valid 1x1 PNG: it passes the input pixel gate that runs before preparation, which is then replaced.
+const PAGE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+);
 
 describe('errors from page preparation', () => {
   beforeEach(() => {
