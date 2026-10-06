@@ -7,6 +7,7 @@
 
 import Papa from 'papaparse';
 import yaml from 'js-yaml';
+import { detectDelimiter, nominalDelimiter, parseDelimitedRecords } from '../../conversions/delimited-detect';
 
 export interface PureDataResult {
   data: Uint8Array;
@@ -64,19 +65,10 @@ export function convertPureData(
 
   // 1. Ingest input into normalized JavaScript structure
   if (src === 'csv' || src === 'tsv' || src === 'tab') {
-    const delimiter =
-      options.delimiter || (src === 'tsv' || src === 'tab' ? '\t' : ',');
-    const parsed = Papa.parse(textContent, {
-      header: true,
-      skipEmptyLines: true,
-      delimiter,
-    });
-
-    if (parsed.errors && parsed.errors.length > 0 && parsed.data.length === 0) {
-      throw new Error(`Failed to parse ${src.toUpperCase()}: ${parsed.errors[0].message}`);
-    }
-
-    intermediate = parsed.data;
+    // The server's reader: the same delimiter detection, own-property records, header renaming
+    // and fail-closed DataParseError for any quote or field-count problem.
+    const delimiter = options.delimiter ?? detectDelimiter(textContent, nominalDelimiter(src));
+    intermediate = parseDelimitedRecords(textContent, delimiter, src).records;
   } else if (src === 'json') {
     try {
       intermediate = JSON.parse(textContent);

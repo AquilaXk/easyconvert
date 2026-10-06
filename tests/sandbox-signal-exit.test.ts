@@ -112,10 +112,26 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
 
   describe('2. Native Engine Swallowed Error Elimination & No-Output Fail-Closed', () => {
     it('fails closed when LibreOffice execution completes without creating output file', async () => {
-      // Create a temporary mock script that succeeds (exit 0) but writes NO output file
+      // Mock soffice: answers the pool readiness probe (probe.txt) with a PDF, so the
+      // pool is ready, but exits 0 without writing any output for the real document.
       const tempScriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-soffice-'));
       const mockScriptPath = path.join(tempScriptDir, 'mock-soffice.sh');
-      fs.writeFileSync(mockScriptPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const mockScript = [
+        '#!/bin/sh',
+        'outdir=""',
+        'input=""',
+        'while [ "$#" -gt 0 ]; do',
+        '  if [ "$1" = "--outdir" ]; then outdir="$2"; shift; fi',
+        '  input="$1"',
+        '  shift',
+        'done',
+        'if [ "$(basename "$input")" = "probe.txt" ]; then',
+        '  printf \'%%PDF-1.4\\n%%%%EOF\\n\' > "$outdir/probe.pdf"',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n');
+      fs.writeFileSync(mockScriptPath, mockScript, { mode: 0o755 });
 
       const prevSoffice = process.env.SOFFICE_PATH;
       process.env.SOFFICE_PATH = mockScriptPath;

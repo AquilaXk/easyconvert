@@ -1,0 +1,5 @@
+spec-0.31.2.json
+Source:   https://spec.commonmark.org/0.31.2/spec.json (official CommonMark 0.31.2 specification examples)
+Fetched:  2026-10-05
+SHA-256:  d431b29d97b6f73e69d547109cf5081578fac931e72afe95639ebe766c1b2a20
+Content:  652 examples, unmodified. Used as the independent expected-HTML oracle in tests/markdown-commonmark-spec.test.ts.
