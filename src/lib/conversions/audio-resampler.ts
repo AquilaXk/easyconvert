@@ -84,8 +84,10 @@ export const MAX_RESAMPLE_RATE_HZ = 768000;
 /** Largest decimation or interpolation factor; bounds the filter length (taps ~ 160 x ratio). */
 export const MAX_RESAMPLE_RATIO = 64;
 export const MAX_RESAMPLE_CHANNELS = 32;
-/** Upper bound on output samples (frames x channels) allocated by one call. */
-export const MAX_RESAMPLE_OUTPUT_SAMPLES = 2 ** 30;
+/** Upper bound on the bytes of output one call allocates (512 MiB), i.e. minutes of CPU at most. */
+export const MAX_RESAMPLE_OUTPUT_BYTES = 512 * 1024 * 1024;
+const INT16_BYTES = 2;
+const FLOAT32_BYTES = 4;
 /** Coefficient doubles one plan may hold (2 MiB); decides exact versus interpolated rows. */
 const MAX_TABLE_ENTRIES = 2 ** 18;
 const MIN_INTERPOLATED_PHASE_ROWS = 32;
@@ -96,6 +98,8 @@ export const MAX_RESAMPLER_PLAN_CACHE_ENTRIES = 8;
 const BLOCK_OUT_FRAMES = 4096;
 /** Cap on the interleaved input scratch (doubles) of one block; bounds memory for long files. */
 const MAX_SCRATCH_SAMPLES = 2 ** 22;
+/** Smallest block the pipeline shrinks to when many channels or deep cascades need less scratch. */
+const MIN_BLOCK_FRAMES = 64;
 /** A ratio is at most MAX_RESAMPLE_RATIO = 2^6, so at most this many 2:1 stages can apply. */
 const MAX_HALF_BAND_STAGES = 6;
 /** Per-frame cost of loading, zero-padding and copying in a stage, in multiply equivalents. */
@@ -452,15 +456,21 @@ function validateQuality(quality: string): asserts quality is ResampleQuality {
   }
 }
 
-function validateOutputFrames(inputFrames: number, plan: ResamplerPlan, channels: number): number {
+function validateOutputFrames(
+  inputFrames: number,
+  plan: ResamplerPlan,
+  channels: number,
+  bytesPerSample: number
+): number {
   const product = inputFrames * plan.totalUp;
   if (!Number.isSafeInteger(product)) {
     throw new AudioResampleError(`Input of ${inputFrames} frames is too long to resample`);
   }
   const outFrames = Math.floor(product / plan.totalDown);
-  if (outFrames * channels > MAX_RESAMPLE_OUTPUT_SAMPLES) {
+  const outputBytes = outFrames * channels * bytesPerSample;
+  if (outputBytes > MAX_RESAMPLE_OUTPUT_BYTES) {
     throw new AudioResampleError(
-      `Resampled output of ${outFrames * channels} samples exceeds the ${MAX_RESAMPLE_OUTPUT_SAMPLES} sample limit`
+      `Resampled output of ${outputBytes} bytes exceeds the ${MAX_RESAMPLE_OUTPUT_BYTES} byte limit`
     );
   }
   return outFrames;
@@ -950,16 +960,6 @@ class SignalSource implements FrameSource {
   }
 }
 
-/** Zero the frames of dst that lie outside [0, length). */
-function zeroOutside(dst: Float64Array, channels: number, start: number, count: number, length: number): void {
-  if (start < 0) dst.fill(0, 0, Math.min(count, -start) * channels);
-  const tail = start + count - length;
-  if (tail > 0) {
-    const kept = Math.max(0, count - tail);
-    dst.fill(0, kept * channels, count * channels);
-  }
-}
-
 class HalfBandDecimateStage implements FrameSource {
   private readonly input: Float64Array;
 
@@ -967,8 +967,7 @@ class HalfBandDecimateStage implements FrameSource {
     private readonly upstream: FrameSource,
     private readonly filter: HalfBandFilter,
     private readonly channels: number,
-    inputSpan: number,
-    private readonly length: number
+    inputSpan: number
   ) {
     this.input = new Float64Array(inputSpan * channels);
   }
@@ -977,7 +976,6 @@ class HalfBandDecimateStage implements FrameSource {
     const span = halfBandDecimateSpan(this.filter, count);
     this.upstream.produce(2 * start - this.filter.reach, span, this.input);
     halfBandDecimateBlock(this.filter, this.input, this.channels, count, dst);
-    zeroOutside(dst, this.channels, start, count, this.length);
   }
 }
 
@@ -988,8 +986,7 @@ class HalfBandInterpolateStage implements FrameSource {
     private readonly upstream: FrameSource,
     private readonly filter: HalfBandFilter,
     private readonly channels: number,
-    inputSpan: number,
-    private readonly length: number
+    inputSpan: number
   ) {
     this.input = new Float64Array(inputSpan * channels);
   }
@@ -999,7 +996,6 @@ class HalfBandInterpolateStage implements FrameSource {
     const lastInput = Math.floor((start + count - 1) / 2) + this.filter.pairs;
     this.upstream.produce(firstInput, lastInput - firstInput + 1, this.input);
     halfBandInterpolateBlock(this.filter, this.input, this.channels, start, count, dst);
-    zeroOutside(dst, this.channels, start, count, this.length);
   }
 }
 
@@ -1011,8 +1007,7 @@ class PolyphaseStage implements FrameSource {
     private readonly upstream: FrameSource,
     private readonly plan: PolyPlan,
     private readonly channels: number,
-    inputSpan: number,
-    private readonly length: number
+    inputSpan: number
   ) {
     this.input = new Float64Array(inputSpan * channels);
     this.rowScratch = new Float64Array(plan.mode === 'exact' ? 0 : plan.taps);
@@ -1051,18 +1046,13 @@ class PolyphaseStage implements FrameSource {
  * Builds the stage chain for `plan` and returns its last stage plus the output block size.
  * Stage input scratch sizes follow from the block size backwards through the chain.
  */
-function buildPipeline(
-  plan: ResamplerPlan,
-  io: ChannelIo,
-  inFrames: number,
-  outFrames: number
-): { source: FrameSource; blockFrames: number } {
+function buildPipeline(plan: ResamplerPlan, io: ChannelIo): { source: FrameSource; blockFrames: number } {
   const { poly, halfBands, halfBandsFirst } = plan;
   const channels = io.channels;
   const exactPoly = poly.mode === 'exact';
   const polyLast = halfBandsFirst || halfBands.length === 0;
-  const blockFrames =
-    polyLast && exactPoly ? Math.max(1, Math.floor(BLOCK_OUT_FRAMES / poly.upFactor)) * poly.upFactor : BLOCK_OUT_FRAMES;
+  // An exact polyphase last stage works on whole periods of L outputs; otherwise any block size.
+  const wholePeriods = polyLast && exactPoly;
 
   type Kind = { kind: 'decimate' | 'interpolate'; filter: HalfBandFilter } | { kind: 'poly' };
   const order: Kind[] = [];
@@ -1074,39 +1064,46 @@ function buildPipeline(
   else order.push({ kind: 'poly' }, ...halfBandKinds);
 
   // Scratch needed by stage i = frames it requests from stage i - 1, derived from the last stage.
-  const requests = new Array<number>(order.length);
-  let count = blockFrames;
-  for (let i = order.length - 1; i >= 0; i--) {
-    const stage = order[i];
-    if (stage.kind === 'poly') count = PolyphaseStage.inputSpan(poly, count);
-    else if (stage.kind === 'decimate') count = halfBandDecimateSpan(stage.filter, count);
-    else count = halfBandInterpolateMaxSpan(stage.filter, count);
-    requests[i] = count;
-  }
-  let scratchSamples = 0;
-  for (const frames of requests) scratchSamples += frames * channels;
-  if (scratchSamples > MAX_SCRATCH_SAMPLES) {
-    throw new AudioResampleError(
-      `Resampling ${channels} channels at ratio ${plan.totalUp}:${plan.totalDown} exceeds the supported block size`
-    );
+  const requestsFor = (blockSize: number): number[] => {
+    const requests = new Array<number>(order.length);
+    let count = blockSize;
+    for (let i = order.length - 1; i >= 0; i--) {
+      const stage = order[i];
+      if (stage.kind === 'poly') count = PolyphaseStage.inputSpan(poly, count);
+      else if (stage.kind === 'decimate') count = halfBandDecimateSpan(stage.filter, count);
+      else count = halfBandInterpolateMaxSpan(stage.filter, count);
+      requests[i] = count;
+    }
+    return requests;
+  };
+
+  // Halve the block until the scratch of every stage fits: channels x cascade depth x ratio.
+  let periods = Math.max(1, Math.floor(BLOCK_OUT_FRAMES / poly.upFactor));
+  let blockFrames = wholePeriods ? periods * poly.upFactor : BLOCK_OUT_FRAMES;
+  let requests = requestsFor(blockFrames);
+  const scratchOf = (frames: number[]): number => frames.reduce((sum, n) => sum + n * channels, 0);
+  while (scratchOf(requests) > MAX_SCRATCH_SAMPLES) {
+    if (wholePeriods && periods > 1) {
+      periods = Math.floor(periods / 2);
+      blockFrames = periods * poly.upFactor;
+    } else if (!wholePeriods && blockFrames > MIN_BLOCK_FRAMES) {
+      blockFrames = Math.max(MIN_BLOCK_FRAMES, Math.floor(blockFrames / 2));
+    } else {
+      throw new AudioResampleError(
+        `Resampling ${channels} channels at ratio ${plan.totalUp}:${plan.totalDown} exceeds the supported block size`
+      );
+    }
+    requests = requestsFor(blockFrames);
   }
 
-  // Stage signal lengths (frames): zero beyond them. The last stage is bounded by the output length.
+  // Stages are not truncated at the signal edges: each one computes its response to the
+  // zero-extended signal, so a cascade matches the same signal padded with silence.
   let source: FrameSource = new SignalSource(io);
-  let length = inFrames;
   for (let i = 0; i < order.length; i++) {
     const stage = order[i];
-    const last = i === order.length - 1;
-    if (stage.kind === 'poly') {
-      length = last ? outFrames : Math.ceil((length * poly.upFactor) / poly.downFactor);
-      source = new PolyphaseStage(source, poly, channels, requests[i], length);
-    } else if (stage.kind === 'decimate') {
-      length = last ? outFrames : Math.ceil(length / 2);
-      source = new HalfBandDecimateStage(source, stage.filter, channels, requests[i], length);
-    } else {
-      length = last ? outFrames : 2 * length;
-      source = new HalfBandInterpolateStage(source, stage.filter, channels, requests[i], length);
-    }
+    if (stage.kind === 'poly') source = new PolyphaseStage(source, poly, channels, requests[i]);
+    else if (stage.kind === 'decimate') source = new HalfBandDecimateStage(source, stage.filter, channels, requests[i]);
+    else source = new HalfBandInterpolateStage(source, stage.filter, channels, requests[i]);
   }
   return { source, blockFrames };
 }
@@ -1114,12 +1111,11 @@ function buildPipeline(
 function runResampler(
   plan: ResamplerPlan,
   io: ChannelIo,
-  inFrames: number,
   outFrames: number,
   quantizer: DitherQuantizer | null
 ): void {
   const channels = io.channels;
-  const { source, blockFrames } = buildPipeline(plan, io, inFrames, outFrames);
+  const { source, blockFrames } = buildPipeline(plan, io);
   const raw = new Float64Array(blockFrames * channels);
   const quantized = quantizer ? new Float64Array(blockFrames * channels) : raw;
   for (let n0 = 0; n0 < outFrames; n0 += blockFrames) {
@@ -1152,6 +1148,28 @@ function resolveQuality(options: ResampleOptions): ResampleQuality {
   return quality;
 }
 
+/** Samples quantised per pass when the rates are equal and only the output depth changes. */
+const IDENTITY_CHUNK_SAMPLES = 4096;
+
+/** Copies `src` into a new array, rounding to the dither grid when `quantizer` is given. */
+function copyQuantized<T extends Int16Array | Float32Array>(
+  src: T,
+  create: (length: number) => T,
+  quantizer: DitherQuantizer | null
+): T {
+  if (quantizer === null) return src.slice() as T;
+  const out = create(src.length);
+  const chunk = new Float64Array(IDENTITY_CHUNK_SAMPLES);
+  const rounded = new Float64Array(IDENTITY_CHUNK_SAMPLES);
+  for (let start = 0; start < src.length; start += IDENTITY_CHUNK_SAMPLES) {
+    const count = Math.min(IDENTITY_CHUNK_SAMPLES, src.length - start);
+    for (let i = 0; i < count; i++) chunk[i] = src[start + i];
+    quantizer.quantize(chunk, count, rounded);
+    for (let i = 0; i < count; i++) out[start + i] = rounded[i];
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------------------------
@@ -1180,10 +1198,19 @@ export function resamplePlanarFloat(
       throw new AudioResampleError('All audio channels must have the same length');
     }
   }
-  if (srcRate === tgtRate || inFrames === 0) return channelData.map((ch) => ch.slice());
+  let quantizer: DitherQuantizer | null = null;
+  if (DITHERED_BIT_DEPTHS.has(depth)) {
+    const bits = depth as number;
+    const lsb = 2 ** (1 - bits);
+    quantizer = new DitherQuantizer(lsb, -1, 1 - lsb, seed);
+  }
+  if (srcRate === tgtRate || inFrames === 0) {
+    // Equal rates: still copy (never alias the caller's data) and honour the requested depth.
+    return channelData.map((ch) => copyQuantized(ch, (n) => new Float32Array(n), quantizer));
+  }
 
   const plan = getPlan(srcRate, tgtRate, quality);
-  const outFrames = validateOutputFrames(inFrames, plan, channelData.length);
+  const outFrames = validateOutputFrames(inFrames, plan, channelData.length, FLOAT32_BYTES);
   const outputs = channelData.map(() => new Float32Array(outFrames));
 
   const channels = channelData.length;
@@ -1212,13 +1239,7 @@ export function resamplePlanarFloat(
     },
   };
 
-  let quantizer: DitherQuantizer | null = null;
-  if (DITHERED_BIT_DEPTHS.has(depth)) {
-    const bits = depth as number;
-    const lsb = 2 ** (1 - bits);
-    quantizer = new DitherQuantizer(lsb, -1, 1 - lsb, seed);
-  }
-  runResampler(plan, io, inFrames, outFrames, quantizer);
+  runResampler(plan, io, outFrames, quantizer);
   return outputs;
 }
 
@@ -1246,11 +1267,16 @@ export function resampleInterleavedInt16(
       `Interleaved sample count ${data.length} is not a multiple of the channel count ${channels}`
     );
   }
-  if (srcRate === tgtRate || data.length === 0) return data;
+  const lsb = 2 ** (INT16_BITS - (depth as number));
+  if (srcRate === tgtRate || data.length === 0) {
+    // Equal rates: a new array; 16-bit samples already sit on the 16-bit grid, 8-bit output is dithered.
+    const identityQuantizer = lsb > 1 ? new DitherQuantizer(lsb, INT16_MIN, INT16_MAX + 1 - lsb, seed) : null;
+    return copyQuantized(data, (n) => new Int16Array(n), identityQuantizer);
+  }
 
   const inFrames = data.length / channels;
   const plan = getPlan(srcRate, tgtRate, quality);
-  const outFrames = validateOutputFrames(inFrames, plan, channels);
+  const outFrames = validateOutputFrames(inFrames, plan, channels, INT16_BYTES);
   const output = new Int16Array(outFrames * channels);
 
   const io: ChannelIo = {
@@ -1271,9 +1297,7 @@ export function resampleInterleavedInt16(
     },
   };
 
-  const lsb = 2 ** (INT16_BITS - (depth as number));
-  const high = INT16_MAX + 1 - lsb;
-  const quantizer = new DitherQuantizer(lsb, INT16_MIN, high, seed);
-  runResampler(plan, io, inFrames, outFrames, quantizer);
+  const quantizer = new DitherQuantizer(lsb, INT16_MIN, INT16_MAX + 1 - lsb, seed);
+  runResampler(plan, io, outFrames, quantizer);
   return output;
 }

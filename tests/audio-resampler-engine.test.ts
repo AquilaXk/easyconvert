@@ -182,9 +182,11 @@ describe('exact rational stepping', () => {
     }
   });
 
-  it('returns the input unchanged for equal rates and an empty result for empty input', () => {
+  it('returns an equal copy for equal rates and an empty result for empty input', () => {
     const pcm = Int16Array.from([1, -2, 3, -4]);
-    expect(resampleInterleavedInt16(pcm, SAMPLE_RATE_44K, SAMPLE_RATE_44K, 2)).toBe(pcm);
+    const same = resampleInterleavedInt16(pcm, SAMPLE_RATE_44K, SAMPLE_RATE_44K, 2);
+    expect(same).not.toBe(pcm);
+    expect(Array.from(same)).toEqual(Array.from(pcm));
     expect(resampleInterleavedInt16(new Int16Array(0), SAMPLE_RATE_44K, SAMPLE_RATE_48K, 2).length).toBe(0);
     expect(resamplePlanarFloat([new Float32Array(0)], SAMPLE_RATE_44K, SAMPLE_RATE_48K)[0].length).toBe(0);
   });
