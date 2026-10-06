@@ -16,10 +16,13 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
+import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
+import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 
 /**
@@ -91,6 +94,19 @@ const CSV_TEXT = Buffer.from('name,count\nalpha,1\nbeta,2\n', 'utf-8');
 const SVG_TEXT = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">' +
     '<rect x="4" y="4" width="24" height="24" fill="#336699"/><line x1="0" y1="0" x2="32" y2="32" stroke="#000"/></svg>',
+  'utf-8'
+);
+
+/** A hand-written SVG font whose glyph paths cover lines, a quadratic and a cubic curve and an arc. */
+const SVG_FONT_SEED = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg"><defs><font horiz-adv-x="1000">' +
+    '<font-face font-family="Probe Sans" units-per-em="1000" ascent="800" descent="-200"/>' +
+    '<missing-glyph horiz-adv-x="500" d="M50 0 H450 V700 H50 Z"/>' +
+    '<glyph unicode="A" horiz-adv-x="700" d="M0 0 L350 700 L700 0 Z"/>' +
+    '<glyph unicode="B" horiz-adv-x="700" d="M100 0 V700 Q600 700 600 350 T100 0 Z"/>' +
+    '<glyph unicode="C" horiz-adv-x="700" d="M100 100 C100 700 600 700 600 100 Z"/>' +
+    '<glyph unicode="D" horiz-adv-x="800" d="M0 350 A350 350 0 1 1 700 350 A350 350 0 1 1 0 350 Z"/>' +
+    '</font></defs></svg>',
   'utf-8'
 );
 
@@ -242,6 +258,18 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   txz: () => compressXz(TAR_SEED),
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
+  // SVG fonts (also read from the plain svg extension) need glyph paths to become outlines.
+  svg: () => SVG_FONT_SEED,
+  svgfont: () => SVG_FONT_SEED,
+  // Font probes need real outlines: a font without glyf or CFF glyphs makes conversion fail closed, which
+  // the gate would read as inconclusive. Both seeds come from the independent writers in tests/helpers.
+  ttf: () => FONT_TTF_SEED,
+  otf: () => FONT_OTF_SEED,
+  // Web font containers wrapped around the TrueType seed.
+  woff: () => wrapFontSeed('woff'),
+  woff2: () => wrapFontSeed('woff2'),
+  eot: () => wrapFontSeed('eot'),
+  rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
@@ -250,6 +278,24 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   exr: () => buildPatchExr('half'),
   ultrahdr: () => buildPatchUltraHdr(),
 };
+
+/** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */
+const FONT_TTF_SEED = buildTrueTypeFont({ family: 'Probe Sans' });
+
+/** OpenType probe font: a CFF charstring rectangle mapped to U+0041 in the cmap. */
+const FONT_OTF_SEED = buildOtf({
+  family: 'Probe Sans CFF',
+  glyphs: [
+    { charstring: cs('endchar'), advance: 500, lsb: 0 },
+    { charstring: cs(100, 0, 'rmoveto', 400, 700, -400, 'hlineto', 'endchar'), advance: 600, lsb: 100 },
+  ],
+  codePoints: [0x41],
+  cff: { defaultWidthX: 600, nominalWidthX: 0 },
+});
+
+async function wrapFontSeed(target: 'woff' | 'woff2' | 'eot'): Promise<Buffer> {
+  return (await convertFile(FONT_TTF_SEED, 'ttf', target, {}, 'probe.ttf')).buffer;
+}
 
 async function requireDerived(format: string): Promise<Buffer> {
   const derived = await deriveProbeInput(format);
@@ -309,7 +355,8 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 /**
  * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
  * for Office-to-Office targets, LibreOffice chained with Poppler pdftoppm for raster targets,
- * and Poppler pdftocairo for pdf->svg. Authored by hand from the native tools' capabilities.
+ * Poppler pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
+ * hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
@@ -317,7 +364,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
-  pdf: ['svg'],
+  pdf: ['jpg', 'png', 'svg', 'tiff'],
   ppt: ['jpg', 'odp', 'png'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
@@ -902,14 +949,28 @@ describe('native-engine pairs route through the dispatcher', () => {
   const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
   const ODF_MIMETYPE: Readonly<Record<string, string>> = { odp: 'application/vnd.oasis.opendocument.presentation' };
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
-  const POPPLER_SVG_SOURCE = 'pdf';
+  const PDF_SOURCE = 'pdf';
+  const SVG_TARGET = 'svg';
+  /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
+  const PDF_RASTER_DPI = 100;
+  const POINTS_PER_INCH = 72;
+  /** Mean absolute 8-bit difference allowed between two independent rasterizers of the same page. */
+  const RENDERER_MEAN_DIFF_MAX = 12;
 
   const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== POPPLER_SVG_SOURCE && !IMAGE_TARGETS.has(target));
-  const officeToImage = pairs.filter(([source, target]) => source !== POPPLER_SVG_SOURCE && IMAGE_TARGETS.has(target));
-  const pdfToSvg = pairs.filter(([source]) => source === POPPLER_SVG_SOURCE);
+  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target));
+  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target));
+  const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
+  const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
+
+  /** Native engine (and the environment variable that points to it) that converts a pair. */
+  function engineOf(source: string, target: string): { envVar: string; engineName: string } {
+    if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
+    return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
+  }
 
   const fixture = (rel: string) => readFileSync(path.join(FIXTURE_ROOT, rel));
   const SEEDS: Readonly<Record<string, string>> = {
@@ -995,8 +1056,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   });
 
   it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
-    const envVar = source === POPPLER_SVG_SOURCE ? 'PDFTOCAIRO_PATH' : 'SOFFICE_PATH';
-    const engineName = source === POPPLER_SVG_SOURCE ? 'pdftocairo' : 'soffice';
+    const { envVar, engineName } = engineOf(source, target);
     const input = await missingEngineInput(source);
     const run = withMissingBinary(envVar, () => dispatchConversion(input, source, target, {}, `probe.${source}`));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
@@ -1019,6 +1079,63 @@ describe('native-engine pairs route through the dispatcher', () => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
       await expectPageImage(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  /** Page size in pixels at `dpi`, from the page size in points that pdfinfo reports. */
+  function pdfinfoPagePixels(pdf: Buffer, dpi: number): { width: number; height: number } {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'pdf-raster-oracle-'));
+    try {
+      const file = path.join(dir, 'page.pdf');
+      writeFileSync(file, pdf);
+      const info = execFileSync('pdfinfo', [file], { encoding: 'utf-8' });
+      const size = /Page size:\s+([\d.]+) x ([\d.]+) pts/.exec(info);
+      if (!size) throw new Error(`pdfinfo reported no page size: ${info}`);
+      return { width: (Number(size[1]) * dpi) / POINTS_PER_INCH, height: (Number(size[2]) * dpi) / POINTS_PER_INCH };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** Renders the first page with pdftocairo, a rasterizer separate from the pdftoppm engine under test. */
+  function cairoRender(pdf: Buffer, dpi: number): Buffer {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'pdf-cairo-oracle-'));
+    try {
+      writeFileSync(path.join(dir, 'page.pdf'), pdf);
+      execFileSync('pdftocairo', ['-png', '-r', String(dpi), '-f', '1', '-l', '1', '-singlefile', path.join(dir, 'page.pdf'), path.join(dir, 'oracle')]);
+      return readFileSync(path.join(dir, 'oracle.png'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO || !HAS_PDFINFO).each(pdfToImage)(
+    '%s -> %s renders the page with Poppler (needs pdftoppm, pdftocairo, pdfinfo)',
+    async (source, target) => {
+      const pdf = realInput(source);
+      const result = await dispatchConversion(pdf, source, target, { dpi: PDF_RASTER_DPI, multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      const meta = await sharp(result.buffer).metadata();
+      expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : target);
+      const { width, height } = meta;
+      if (width === undefined || height === undefined) throw new Error(`the ${target} render reports no dimensions`);
+      const expected = pdfinfoPagePixels(pdf, PDF_RASTER_DPI);
+      expect(Math.abs(width - expected.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs(height - expected.height)).toBeLessThanOrEqual(1);
+      // Same page from an independent rasterizer: the two renders must agree pixel for pixel on average.
+      const oracleRender = cairoRender(pdf, PDF_RASTER_DPI);
+      const oracleMeta = await sharp(oracleRender).metadata();
+      expect(Math.abs((oracleMeta.width ?? 0) - expected.width)).toBeLessThanOrEqual(1);
+      expect(Math.abs((oracleMeta.height ?? 0) - expected.height)).toBeLessThanOrEqual(1);
+      const size = { width, height };
+      const rendered = await sharp(result.buffer).removeAlpha().resize(size).raw().toBuffer();
+      const oracle = await sharp(oracleRender).removeAlpha().resize({ ...size, fit: 'fill' }).raw().toBuffer();
+      let total = 0;
+      for (let i = 0; i < rendered.length; i += 1) total += Math.abs(rendered[i] - oracle[i]);
+      expect(total / rendered.length).toBeLessThan(RENDERER_MEAN_DIFF_MAX);
+      const { channels } = await sharp(result.buffer).stats();
+      expect(Math.min(...channels.map((c) => c.min))).toBeLessThan(DARK_CHANNEL_MAX);
     },
     NATIVE_TIMEOUT_MS
   );
