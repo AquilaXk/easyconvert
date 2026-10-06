@@ -20,6 +20,8 @@ export type ExternalOracleTool =
   | 'pdffonts'
   | 'ffmpeg'
   | 'ffprobe'
+  | 'flac'
+  | 'metaflac'
   | 'soffice'
   | 'tesseract'
   | '7z'
@@ -30,8 +32,13 @@ export type ExternalOracleTool =
   | 'unrar'
   | 'qpdf'
   | 'python3'
+  | 'iconv'
+  | 'xmllint'
+  | 'jq'
   | 'raw-identify'
-  | 'dcraw_emu';
+  | 'dcraw_emu'
+  | 'woff2_decompress'
+  | 'woff2_info';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

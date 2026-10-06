@@ -1,0 +1,33 @@
+Delimited-text fixtures for tests/data-csv-encoding.test.ts.
+
+The *.utf8.csv files and the delimiter samples (semicolon.csv, pipe.csv, tab.csv) are
+hand-authored UTF-8. Every other file was produced from a UTF-8 source with GNU iconv
+(glibc 2.39) and is committed byte for byte; tests/data-csv-encoding.test.ts re-runs the
+same commands and compares the bytes whenever iconv is installed.
+
+Run from this directory:
+
+  iconv -f UTF-8 -t CP949      korean.utf8.csv       > korean.cp949.csv
+  iconv -f UTF-8 -t EUC-KR     korean-basic.utf8.csv > korean-basic.euc-kr.csv
+  iconv -f UTF-8 -t SHIFT_JIS  japanese.utf8.csv     > japanese.shift_jis.csv
+  iconv -f UTF-8 -t GBK        chinese.utf8.csv      > chinese.gbk.csv
+  iconv -f UTF-8 -t ISO-8859-1 latin1.utf8.csv       > latin1.iso-8859-1.csv
+  iconv -f UTF-8 -t UTF-16LE   english.utf8.csv      > english.utf16le.csv
+  iconv -f UTF-8 -t UTF-16BE   english.utf8.csv      > english.utf16be.csv
+
+  printf '\xef\xbb\xbf' > korean.utf8-bom.csv;     cat korean.utf8.csv >> korean.utf8-bom.csv
+  printf '\xff\xfe'     > korean.utf16le-bom.csv;  iconv -f UTF-8 -t UTF-16LE korean.utf8.csv >> korean.utf16le-bom.csv
+  printf '\xfe\xff'     > japanese.utf16be-bom.csv; iconv -f UTF-8 -t UTF-16BE japanese.utf8.csv >> japanese.utf16be-bom.csv
+
+The XML fixtures for tests/data-xml-faithful.test.ts come from the hand-authored
+japanese.utf8.xml; only the encoding declaration is rewritten before transcoding:
+
+  sed 's/encoding="UTF-8"/encoding="Shift_JIS"/' japanese.utf8.xml > sjis-decl.xml
+  iconv -f UTF-8 -t SHIFT_JIS sjis-decl.xml > japanese.shift_jis.xml
+  sed 's/encoding="UTF-8"/encoding="UTF-16"/' japanese.utf8.xml > utf16-decl.xml
+  printf '\xff\xfe' > japanese.utf16le-bom.xml; iconv -f UTF-8 -t UTF-16LE utf16-decl.xml >> japanese.utf16le-bom.xml
+
+korean.utf8.csv, japanese.utf8.csv and english.utf8.csv use CRLF record separators and
+carry the RFC 4180 corner cases (doubled quotes, quoted delimiters, line breaks inside a
+quoted field). korean.utf8.csv contains a CP949-only syllable, so its CP949 file is not
+plain EUC-KR; korean-basic.utf8.csv stays inside KS X 1001 for the EUC-KR file.

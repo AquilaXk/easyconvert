@@ -1,7 +1,6 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, checkOpfsSupport, ConversionTier } from './edge/tier-router';
-import { isPureDataConvertible, convertPureData } from './edge/pure/pure-data';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
@@ -97,21 +96,7 @@ export async function tryProcessClientEdge(
   if (resolution.tier === 'L0') {
     onProgress?.(25);
 
-    // Pure Data conversion (CSV, TSV, JSON, YAML)
-    if (isPureDataConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const res = convertPureData(new Uint8Array(arrayBuf), src, tgt, item.options);
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
+    // Structured data never resolves to L0: the router sends it to the server data engine.
 
     // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
     if (isPureCadConvertible(src, tgt)) {
