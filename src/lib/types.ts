@@ -431,6 +431,18 @@ export class ConversionFailedError extends Error {
   }
 }
 
+/**
+ * Marker base of every failure that means "this worker lacks the tool" (an engine, binary or codec) rather than
+ * "this input is bad". A worker pool can be mixed, so a queued job that fails with one is retried on another
+ * worker. Every error class named like a missing tool must extend it; a test scans the source tree for that.
+ */
+export class EngineMissingError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EngineMissingError';
+  }
+}
+
 export class FileExtensionSpoofError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -438,7 +450,7 @@ export class FileExtensionSpoofError extends ConversionFailedError {
   }
 }
 
-export class OcrEngineUnavailableError extends ConversionFailedError {
+export class OcrEngineUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'OcrEngineUnavailableError';
@@ -452,7 +464,7 @@ export class UnsupportedTargetError extends ConversionFailedError {
   }
 }
 
-export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
+export class ArchiveEncryptionUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'ArchiveEncryptionUnavailableError';
@@ -522,7 +534,7 @@ export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
   }
 }
 
-export class CadGeometryUnavailableError extends ConversionFailedError {
+export class CadGeometryUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'CadGeometryUnavailableError';
@@ -543,7 +555,7 @@ export class CadTopologyError extends ConversionFailedError {
   }
 }
 
-export class EngineUnavailableError extends ConversionFailedError {
+export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
 
@@ -571,7 +583,7 @@ export class InvalidPageRangeError extends ConversionFailedError {
   }
 }
 
-export class ComplexScriptRequiresNativeEngineError extends ConversionFailedError {
+export class ComplexScriptRequiresNativeEngineError extends EngineMissingError {
   constructor(
     message = 'Rendering complex scripts (CTL/RTL) requires the native LibreOffice engine'
   ) {
@@ -614,7 +626,7 @@ export class RawDecodeError extends ConversionFailedError {
 }
 
 /** The in-process engine cannot decode this camera RAW sensor data; only the native RAW engine can. */
-export class RawEngineRequiredError extends ConversionFailedError {
+export class RawEngineRequiredError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'RawEngineRequiredError';

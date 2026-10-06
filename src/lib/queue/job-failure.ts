@@ -1,11 +1,4 @@
-import {
-  CadGeometryUnavailableError,
-  ComplexScriptRequiresNativeEngineError,
-  ConversionFailedError,
-  EngineUnavailableError,
-  OcrEngineUnavailableError,
-  RawEngineRequiredError,
-} from '../types';
+import { ConversionFailedError, EngineMissingError, EngineUnavailableError } from '../types';
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_SERVICE_UNAVAILABLE = 503;
@@ -20,18 +13,6 @@ export interface JobFailureInfo {
   retryable: boolean;
 }
 
-/**
- * Failures that mean "this worker lacks the engine", not "this input is bad". A worker pool can be mixed, so
- * another worker may have the engine and the job is retried. Every such error is listed here, in one place.
- */
-const ENGINE_MISSING_ERRORS: ReadonlyArray<abstract new (...args: never[]) => ConversionFailedError> = [
-  EngineUnavailableError,
-  OcrEngineUnavailableError,
-  RawEngineRequiredError,
-  CadGeometryUnavailableError,
-  ComplexScriptRequiresNativeEngineError,
-];
-
 /** The status a typed failure carries itself (for example 413), when it is a number. */
 function ownStatus(err: ConversionFailedError): number | undefined {
   const status = (err as { status?: unknown }).status;
@@ -41,12 +22,12 @@ function ownStatus(err: ConversionFailedError): number | undefined {
 /**
  * Classifies a failed attempt. A typed conversion failure is a verdict on the input (malformed, unsupported,
  * over a limit), so retrying only repeats the work; a missing engine is the exception, because another worker
- * of the pool may have it (`ENGINE_MISSING_ERRORS`). Anything untyped (a dropped socket, an out-of-memory kill)
+ * of the pool may have it (`EngineMissingError`). Anything untyped (a dropped socket, an out-of-memory kill)
  * says nothing about the input and stays retryable.
  */
 export function classifyJobFailure(err: unknown): JobFailureInfo {
   if (err instanceof ConversionFailedError) {
-    const retryable = ENGINE_MISSING_ERRORS.some((missing) => err instanceof missing);
+    const retryable = err instanceof EngineMissingError;
     const fallbackStatus = err instanceof EngineUnavailableError ? HTTP_SERVICE_UNAVAILABLE : HTTP_BAD_REQUEST;
     return { code: err.name, status: ownStatus(err) ?? fallbackStatus, retryable };
   }
