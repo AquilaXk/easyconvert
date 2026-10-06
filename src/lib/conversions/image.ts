@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
-import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels, openInputImage, openLimitedSharp } from './image-input-limits';
+import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -2973,8 +2973,9 @@ export async function convertImage(
         if (imgMeta.format !== 'png') {
           pngBuffer = await s.png().toBuffer();
         }
-      } catch {
-        // If sharp cannot decode directly, fallback to inputBuffer
+      } catch (err) {
+        // If sharp cannot decode directly, fallback to inputBuffer; an oversized canvas is never tolerated.
+        rethrowInputPixelLimit(err);
       }
       outputBuffer = await buildOpenXpsPackage(
         [

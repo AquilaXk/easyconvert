@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
-import { openLimitedSharp } from './image-input-limits';
+import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -6531,6 +6531,8 @@ export async function parsePptxSlideSceneGraph(
         const mediaFile = zip.file(mediaPath);
         if (mediaFile) {
           let imgBuffer = await mediaFile.async('nodebuffer');
+          // Every embedded picture is checked, including PNG and JPEG that are embedded without a re-encode.
+          await assertEncodedImageWithinLimit(imgBuffer);
           let mimeType = 'image/png';
           const lower = mediaPath.toLowerCase();
           if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
@@ -6539,7 +6541,9 @@ export async function parsePptxSlideSceneGraph(
             try {
               imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer();
               mimeType = 'image/png';
-            } catch {}
+            } catch (err) {
+              rethrowInputPixelLimit(err);
+            }
           }
 
           // DrawingML <a:srcRect> image cropping (ISO/IEC 29500-1 §20.1.8.56)
@@ -6563,7 +6567,9 @@ export async function parsePptxSlideSceneGraph(
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
                 }
-              } catch {}
+              } catch (err) {
+                rethrowInputPixelLimit(err);
+              }
             }
           }
           shapes.push({
@@ -7721,6 +7727,7 @@ async function convertCbzSource(
 
     for (const name of imageNames) {
       const imgBuf = await zip.files[name].async('nodebuffer');
+      await assertEncodedImageWithinLimit(imgBuf);
       doc.addPage({ size: 'A4' });
       try {
         doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });

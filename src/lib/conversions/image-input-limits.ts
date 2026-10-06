@@ -112,3 +112,9 @@ export function asInputPixelLimitError(error: unknown): unknown {
   }
   return error;
 }
+
+/** For `catch` blocks that tolerate a broken image: rethrows a pixel-limit rejection (typed or native) and ignores the rest. */
+export function rethrowInputPixelLimit(error: unknown): void {
+  const mapped = asInputPixelLimitError(error);
+  if (mapped instanceof InputPixelLimitError) throw mapped;
+}

@@ -142,3 +142,20 @@ export function bombBmp(width: number, height: number): Buffer {
   header.writeUInt16LE(24, 28);
   return Buffer.concat([header, Buffer.alloc(Math.min(width * 3, 256))]);
 }
+
+/** GIF89a whose logical screen and single frame both declare `width` x `height`, with a one-block LZW stream. */
+export function bombGif(width: number, height: number): Buffer {
+  const screen = Buffer.alloc(7);
+  screen.writeUInt16LE(width, 0);
+  screen.writeUInt16LE(height, 2);
+  const descriptor = Buffer.alloc(10);
+  descriptor[0] = 0x2c;
+  descriptor.writeUInt16LE(width, 5);
+  descriptor.writeUInt16LE(height, 7);
+  return Buffer.concat([
+    Buffer.from('GIF89a', 'ascii'),
+    screen,
+    descriptor,
+    Buffer.from([0x02, 0x02, 0x44, 0x01, 0x00, 0x3b]),
+  ]);
+}

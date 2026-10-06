@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { assertEncodedImageWithinLimit, openLimitedSharp } from './image-input-limits';
+import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   ConversionOptions,
   OcrLanguageUnavailableError,
@@ -148,7 +148,8 @@ export async function performOcr(
   await assertEncodedImageWithinLimit(imageBuffer);
   try {
     ocrInput = await openLimitedSharp(imageBuffer).rotate().png().toBuffer();
-  } catch {
+  } catch (err) {
+    rethrowInputPixelLimit(err);
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
   const { height: inputHeight } = await sharp(ocrInput).metadata();
