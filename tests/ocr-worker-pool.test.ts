@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { performOcr, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import {
@@ -21,6 +22,9 @@ const MAX_CER_PERCENT = 1;
 const PAGE_TIMEOUT_MS = 120_000;
 const SHORT_WAIT_MS = 20;
 const SETTLE_MS = 150;
+const SHUTDOWN_PROBE_MS = 1_500;
+const TRUNCATED_TRAINEDDATA_BYTES = 20_000;
+const REAL_START_FAILURE_TIMEOUT_MS = 30_000;
 
 const baseSpec: OcrWorkerSpec = {
   langs: 'eng',
@@ -42,8 +46,12 @@ class FakePool extends OcrWorkerPool {
   readonly created: FakeWorker[] = [];
   concurrent = 0;
   maxConcurrent = 0;
+  /** Delay before a start completes; `never` makes it hang like a worker with unreadable data. */
+  startDelayMs: number | 'never' = 0;
 
   override async createWorker(spec: OcrWorkerSpec, health: OcrWorkerHealth): Promise<OcrPooledWorker> {
+    if (this.startDelayMs === 'never') return new Promise<OcrPooledWorker>(() => undefined);
+    if (this.startDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.startDelayMs as number));
     const worker: FakeWorker = {
       id: this.created.length,
       terminated: false,
@@ -160,17 +168,65 @@ describe('OcrWorkerPool', () => {
     expect(pool.created[0].terminated).toBe(true);
   });
 
-  it('applies the job parameters before every recognition so nothing leaks between requests', async () => {
+  it('re-applies the job parameters before every recognition on a reused worker', async () => {
     const pool = makePool();
-    await recognizeOnce(pool, { ...baseSpec, parameters: { tessedit_pageseg_mode: '3' } });
-    await recognizeOnce(pool, { ...baseSpec, parameters: { tessedit_pageseg_mode: '5' } });
+    await recognizeOnce(pool);
+    await recognizeOnce(pool);
     expect(pool.created).toHaveLength(1);
     expect(pool.created[0].calls).toEqual([
       'params:{"tessedit_pageseg_mode":"3"}',
       'recognize',
-      'params:{"tessedit_pageseg_mode":"5"}',
+      'params:{"tessedit_pageseg_mode":"3"}',
       'recognize',
     ]);
+  });
+
+  it('never runs a job on a worker that was configured with other parameters', async () => {
+    const pool = makePool();
+    await recognizeOnce(pool, { ...baseSpec, parameters: { tessedit_pageseg_mode: '3' } });
+    await recognizeOnce(pool, { ...baseSpec, parameters: { tessedit_pageseg_mode: '5' } });
+    expect(pool.created).toHaveLength(2);
+    expect(pool.created[0].calls).toEqual(['params:{"tessedit_pageseg_mode":"3"}', 'recognize']);
+    expect(pool.created[1].calls).toEqual(['params:{"tessedit_pageseg_mode":"5"}', 'recognize']);
+  });
+
+  it('treats parameter order as irrelevant when matching workers', async () => {
+    const pool = makePool();
+    await recognizeOnce(pool, { ...baseSpec, parameters: { a: '1', b: '2' } });
+    await recognizeOnce(pool, { ...baseSpec, parameters: { b: '2', a: '1' } });
+    expect(pool.created).toHaveLength(1);
+  });
+
+  it('fails a worker start that exceeds the creation timeout and frees its slot', async () => {
+    const pool = makePool({ createTimeoutMs: SHORT_WAIT_MS });
+    pool.startDelayMs = 'never';
+    await expect(recognizeOnce(pool)).rejects.toThrow(
+      new OcrEngineUnavailableError(`OCR worker did not start within ${SHORT_WAIT_MS} ms.`)
+    );
+    expect(pool.size).toBe(0);
+  });
+
+  it('terminates a worker that finishes starting after the creation timeout', async () => {
+    const pool = makePool({ createTimeoutMs: SHORT_WAIT_MS });
+    pool.startDelayMs = SETTLE_MS;
+    await expect(recognizeOnce(pool)).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS * 2));
+    expect(pool.created).toHaveLength(1);
+    expect(pool.created[0].terminated).toBe(true);
+    expect(pool.size).toBe(0);
+  });
+
+  it('shuts down without waiting for a start that never finishes', async () => {
+    const pool = makePool({ createTimeoutMs: SHUTDOWN_PROBE_MS * 10, shutdownTimeoutMs: SHORT_WAIT_MS });
+    pool.startDelayMs = 'never';
+    const starting = recognizeOnce(pool);
+    const outcome = await Promise.race([
+      pool.shutdown().then(() => 'finished'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), SHUTDOWN_PROBE_MS)),
+    ]);
+    expect(outcome).toBe('finished');
+    await expect(starting).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+    expect(pool.size).toBe(0);
   });
 
   it('rejects with a typed error once the wait queue is full', async () => {
@@ -253,6 +309,67 @@ describe('performOcr worker reuse', () => {
         expect(characterErrorRatePercent(GROUND_TRUTH, result.text)).toBeLessThanOrEqual(MAX_CER_PERCENT);
       }
       expect(createSpy.mock.calls.length).toBeLessThanOrEqual(pool.limits.maxWorkersPerKey);
+    },
+    PAGE_TIMEOUT_MS
+  );
+});
+
+const REAL_TESSDATA_DIR = [
+  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
+  '/usr/share/tesseract-ocr/5/tessdata',
+  '/usr/share/tesseract-ocr/4.00/tessdata',
+  '/usr/share/tessdata',
+].find((dir) => fs.existsSync(path.join(dir, 'eng.traineddata')));
+
+describe('unreadable language data', () => {
+  let tessdataDir = '';
+
+  /** A real traineddata file cut short, like an interrupted download. */
+  function truncatedTessdata(): string {
+    if (!REAL_TESSDATA_DIR) throw new OracleToolMissingError('eng.traineddata', 'eng.traineddata is not installed');
+    tessdataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-truncated-'));
+    const full = fs.readFileSync(path.join(REAL_TESSDATA_DIR, 'eng.traineddata'));
+    fs.writeFileSync(path.join(tessdataDir, 'eng.traineddata'), full.subarray(0, TRUNCATED_TRAINEDDATA_BYTES));
+    return tessdataDir;
+  }
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await shutdownOcrWorkerPool();
+    if (tessdataDir) fs.rmSync(tessdataDir, { recursive: true, force: true });
+    tessdataDir = '';
+  });
+
+  oracleTest(
+    'fails the job with a typed error instead of hanging, and shuts down',
+    ['tesseract'],
+    async () => {
+      const pool = new OcrWorkerPool({ createTimeoutMs: REAL_START_FAILURE_TIMEOUT_MS });
+      pools.push(pool);
+      const spec: OcrWorkerSpec = { ...baseSpec, langPath: truncatedTessdata() };
+      const failure = await recognizeOnce(pool, spec).then(
+        () => null,
+        (err: unknown) => err
+      );
+      expect(failure).toBeInstanceOf(OcrEngineUnavailableError);
+      expect((failure as Error).message).not.toContain(tessdataDir);
+      expect(pool.size).toBe(0);
+      const outcome = await Promise.race([
+        pool.shutdown().then(() => 'finished'),
+        new Promise<string>((resolve) => setTimeout(() => resolve('hung'), SHUTDOWN_PROBE_MS)),
+      ]);
+      expect(outcome).toBe('finished');
+    },
+    PAGE_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'performOcr rejects with the engine-unavailable error for truncated data',
+    ['tesseract'],
+    async () => {
+      vi.stubEnv('TESSDATA_PREFIX', truncatedTessdata());
+      const page = fs.readFileSync(path.join(FIXTURE_DIR, 'twocol__dpi150.png'));
+      await expect(performOcr(page, 'eng')).rejects.toBeInstanceOf(OcrEngineUnavailableError);
     },
     PAGE_TIMEOUT_MS
   );
