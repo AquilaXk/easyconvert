@@ -102,17 +102,22 @@ const XML_ENTITIES: ReadonlyMap<string, string> = new Map([
 const XML_REFERENCE_PATTERN = /&(?:(amp|lt|gt|quot|apos)|#x([0-9A-Fa-f]+)|#([0-9]+));/g;
 const HEX_RADIX = 16;
 const DECIMAL_RADIX = 10;
-/** The most digits a reference to any legal code point needs: U+10FFFF is `10FFFF` / `1114111`. */
+/**
+ * The most digits a reference to any legal code point needs: U+10FFFF is `10FFFF` / `1114111`.
+ * XML 1.0 section 4.1 also allows leading zeros (`&#0000034;`); a longer run is refused on purpose
+ * (fail closed) rather than parsed, since no server pads a reference that way.
+ */
 const MAX_HEX_REFERENCE_DIGITS = 6;
 const MAX_DECIMAL_REFERENCE_DIGITS = 7;
 const XML_TAB = 0x09;
 const XML_LINE_FEED = 0x0a;
 const XML_CARRIAGE_RETURN = 0x0d;
-const XML_CHAR_RANGES: ReadonlyArray<readonly [number, number]> = [
-  [0x20, 0xd7ff],
-  [0xe000, 0xfffd],
-  [0x10000, 0x10ffff],
-];
+const XML_CHAR_BMP_LOW_FIRST = 0x20;
+const XML_CHAR_BMP_LOW_LAST = 0xd7ff;
+const XML_CHAR_BMP_HIGH_FIRST = 0xe000;
+const XML_CHAR_BMP_HIGH_LAST = 0xfffd;
+const XML_CHAR_SUPPLEMENTARY_FIRST = 0x10000;
+const XML_CHAR_SUPPLEMENTARY_LAST = 0x10ffff;
 const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['&', '&amp;'],
   ['<', '&lt;'],
@@ -150,10 +155,17 @@ export interface S3ErrorDocument {
 
 /** XML 1.0 production `Char`: the code points a document, and so a character reference, may name. */
 function isXmlChar(codePoint: number): boolean {
+  // Checked in order of frequency: almost every reference names a code point below U+D800.
+  if (codePoint >= XML_CHAR_BMP_LOW_FIRST && codePoint <= XML_CHAR_BMP_LOW_LAST) {
+    return true;
+  }
   if (codePoint === XML_TAB || codePoint === XML_LINE_FEED || codePoint === XML_CARRIAGE_RETURN) {
     return true;
   }
-  return XML_CHAR_RANGES.some(([first, last]) => codePoint >= first && codePoint <= last);
+  if (codePoint >= XML_CHAR_BMP_HIGH_FIRST && codePoint <= XML_CHAR_BMP_HIGH_LAST) {
+    return true;
+  }
+  return codePoint >= XML_CHAR_SUPPLEMENTARY_FIRST && codePoint <= XML_CHAR_SUPPLEMENTARY_LAST;
 }
 
 function decodeCharacterReference(digits: string, radix: number, maxDigits: number): string {
@@ -169,8 +181,8 @@ function decodeCharacterReference(digits: string, radix: number, maxDigits: numb
 
 /**
  * Decodes the five predefined entities and numeric character references in one pass (a decoded
- * `&` never starts another reference). Servers differ in how they write a quote: AWS S3 sends
- * `&quot;`, MinIO sends `&#34;` (XML 1.0 section 4.1 allows both). A reference to a code point
+ * `&` never starts another reference). Servers differ in how they write a quote: some send
+ * `&quot;`, others `&#34;` (XML 1.0 section 4.1 allows both). A reference to a code point
  * XML forbids, such as `&#0;` or a surrogate, throws a MalformedXML StorageServiceError.
  */
 export function decodeXmlText(text: string): string {
@@ -202,7 +214,8 @@ export type S3XmlElement =
   | 'IsTruncated'
   | 'NextContinuationToken'
   | 'PartNumber'
-  | 'NextPartNumberMarker';
+  | 'NextPartNumberMarker'
+  | 'EncodingType';
 
 /**
  * Returns the decoded text of the first `<name>text</name>` whose content has no markup, using

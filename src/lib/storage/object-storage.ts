@@ -56,7 +56,7 @@ export interface StoragePresignedUrlResult {
 /**
  * Universal Async Stream-First Object Storage Interface.
  * Standardizes storage abstraction across the local filesystem and S3-compatible object stores
- * (OCI Object Storage S3 Compatibility API, MinIO, and other S3-compatible services).
+ * (OCI Object Storage S3 Compatibility API and other S3-compatible services).
  */
 export interface IObjectStorage {
   readonly providerName: string;
