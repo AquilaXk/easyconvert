@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import type { EngineUnavailableError } from '../types';
+import { PdfAValidationError, type EngineUnavailableError, type PdfPostprocessError } from '../types';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -91,6 +91,10 @@ const DEFAULT_PROBLEM_TYPES: Record<number, { type: string; title: string }> = {
 /** Problem type for a conversion whose native engine (for example LibreOffice) is not installed. */
 export const ENGINE_UNAVAILABLE_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
 const HTTP_SERVICE_UNAVAILABLE = 503;
+const HTTP_UNPROCESSABLE_ENTITY = 422;
+
+/** Problem type for a PDF/A output that veraPDF rejected. */
+export const PDFA_VALIDATION_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdfa-validation-failed';
 
 /** Problem type for a short-lived per-key burst rejection (retry after seconds), distinct from the daily quota. */
 export const RATE_LIMITED_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/rate-limited';
@@ -105,7 +109,8 @@ export function createProblemDetailsResponse(
   customTitle?: string,
   customType?: string,
   extraHeaders?: Record<string, string>,
-  invalidParams?: Array<{ name: string; reason: string }>
+  invalidParams?: Array<{ name: string; reason: string }>,
+  extensions?: Record<string, unknown>
 ): NextResponse {
   const fallback = DEFAULT_PROBLEM_TYPES[status] || {
     type: 'about:blank',
@@ -121,6 +126,7 @@ export function createProblemDetailsResponse(
     success: false,
     error: detail,
     ...(invalidParams && invalidParams.length > 0 ? { invalidParams } : {}),
+    ...extensions,
   };
 
   return NextResponse.json(payload, {
@@ -147,6 +153,41 @@ export function createEngineUnavailableResponse(
     instance,
     'Engine Unavailable',
     ENGINE_UNAVAILABLE_PROBLEM_TYPE,
+    extraHeaders
+  );
+}
+
+/** Problem type for a PDF post-processing step (PDF/A, watermark, protection) the document made fail. */
+export const PDF_POSTPROCESS_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdf-postprocess-failed';
+
+/**
+ * Maps a PdfPostprocessError to HTTP 422: the document converted, but a post-processing step
+ * could not complete on it. A PdfAValidationError also names the requested `profile` and the
+ * veraPDF `failedRules`. The error messages are fixed text, never a path or a command line.
+ */
+export function createPdfPostprocessResponse(
+  error: PdfPostprocessError,
+  instance: string,
+  extraHeaders?: Record<string, string>
+): NextResponse {
+  if (error instanceof PdfAValidationError) {
+    return createProblemDetailsResponse(
+      HTTP_UNPROCESSABLE_ENTITY,
+      error.message,
+      instance,
+      'PDF/A Validation Failed',
+      PDFA_VALIDATION_PROBLEM_TYPE,
+      extraHeaders,
+      undefined,
+      { profile: error.profile, failedRules: [...error.failedRules] }
+    );
+  }
+  return createProblemDetailsResponse(
+    HTTP_UNPROCESSABLE_ENTITY,
+    error.message,
+    instance,
+    'PDF Post-processing Failed',
+    PDF_POSTPROCESS_PROBLEM_TYPE,
     extraHeaders
   );
 }
