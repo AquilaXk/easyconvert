@@ -77,6 +77,15 @@ describe('unattributed mode must not let one client degrade everyone else', () =
   });
 
   describe('anonymous access', () => {
+    it('answers 503 with Retry-After when an unattributed burst setting is malformed', async () => {
+      vi.stubEnv('ANONYMOUS_UNATTRIBUTED_BURST_CAPACITY', 'abc');
+      const auth = await validateApiAccess(anonymousRequest(), { requiredUnits: 1, allowAnonymous: true });
+      expect(auth.authorized).toBe(false);
+      expect(auth.status).toBe(503);
+      expect(auth.retryAfterSeconds).toBeGreaterThan(0);
+      expect(auth.error).not.toContain('abc');
+    });
+
     it('does not share a daily quota across all unattributed clients', async () => {
       vi.stubEnv('ANONYMOUS_DAILY_LIMIT', String(ANON_DAILY_LIMIT));
       for (let i = 0; i < ANON_REQUESTS; i++) {
