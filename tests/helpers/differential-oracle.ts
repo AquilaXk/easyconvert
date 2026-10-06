@@ -18,6 +18,8 @@ export type ExternalOracleTool =
   | 'pdftoppm'
   | 'pdftocairo'
   | 'pdffonts'
+  | 'pdfimages'
+  | 'fc-list'
   | 'ffmpeg'
   | 'ffprobe'
   | 'flac'
@@ -260,16 +262,19 @@ export function extractFontsWithExternalPdffonts(buffer: Buffer): PdfFontEntry[]
     if (lines.length < 2) return [];
     const entries: PdfFontEntry[] = [];
     for (let i = 2; i < lines.length; i++) {
+      // Columns: name, type (may be several words, e.g. "CID TrueType"), encoding, emb, sub, uni,
+      // object number, generation. Read the fixed columns from the right so multi-word types parse.
       const parts = lines[i].trim().split(/\s+/);
-      if (parts.length >= 7) {
+      if (parts.length >= 8) {
+        const n = parts.length;
         entries.push({
           name: parts[0],
-          type: parts[1],
-          encoding: parts[2],
-          emb: parts[3] === 'yes',
-          sub: parts[4] === 'yes',
-          uni: parts[5] === 'yes',
-          object: parseInt(parts[6], 10) || 0,
+          type: parts.slice(1, n - 6).join(' '),
+          encoding: parts[n - 6],
+          emb: parts[n - 5] === 'yes',
+          sub: parts[n - 4] === 'yes',
+          uni: parts[n - 3] === 'yes',
+          object: parseInt(parts[n - 2], 10) || 0,
         });
       }
     }
