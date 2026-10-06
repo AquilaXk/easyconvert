@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { extractStructuredTextFromPdf, parseToUnicodeCMap } from '../src/lib/conversions/pdf-utils';
 import { PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, textContent } from './helpers/pdf-craft';
@@ -9,12 +9,17 @@ import { type CraftObject, buildPdf, flate, textContent } from './helpers/pdf-cr
  * section markers are located without rescanning the stream. Expected values are written by hand.
  */
 
-const FAST_MS = 1000;
+// A quadratic regression at these input sizes runs for tens of seconds or more; the budget leaves headroom for a
+// loaded CI runner executing the suite in parallel, where linear runs measured up to 3 s.
+const FAST_MS = 4000;
+const BOUND_TEST_TIMEOUT_MS = 30_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const RANGE_CAP = 0x10000;
 const UNTERMINATED_MARKERS = 30 * 1000;
 const FONT_COUNT = 3;
 const RANGES_PER_FONT = 3;
+
+vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
 function timed<T>(run: () => T): { value?: T; err?: unknown; ms: number } {
   const started = Date.now();

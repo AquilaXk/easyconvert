@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { extractStructuredTextFromPdf } from '../src/lib/conversions/pdf-utils';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
@@ -11,7 +11,10 @@ import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from '.
  */
 
 const MIB = 1024 * 1024;
-const FAST_MS = 1000;
+// A quadratic regression at these input sizes runs for tens of seconds or more; the budget leaves headroom for a
+// loaded CI runner executing the suite in parallel, where linear runs measured up to 3 s.
+const FAST_MS = 4000;
+const BOUND_TEST_TIMEOUT_MS = 30_000;
 const OBJSTM_ENTRIES = 100;
 const OBJSTM_BODY_MIB = 8;
 const HEADER_FLOOD_PAIRS = 32 * MIB;
@@ -23,6 +26,8 @@ const catalog: CraftObject[] = [
   { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
   { id: 2, dict: '/Type /Pages /Kids [] /Count 0' },
 ];
+
+vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
 function timed<T>(run: () => T): { value?: T; err?: unknown; ms: number } {
   const started = Date.now();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { extractStructuredTextFromPdf, recursiveXyCut, type PdfTextBlock } from '../src/lib/conversions/pdf-utils';
 import { PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
@@ -9,14 +9,19 @@ import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from '.
  * ISO 32000-1 section 9.4 (text objects) and 9.3 (Tf), with every expected value written by hand.
  */
 
-const FAST_MS = 1000;
+// A quadratic regression at these input sizes runs for tens of seconds or more; the budget leaves headroom for a
+// loaded CI runner executing the suite in parallel, where linear runs measured up to 3 s.
+const FAST_MS = 4000;
+const BOUND_TEST_TIMEOUT_MS = 30_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const OPERAND_RUN = 80 * 1000;
 const BLOCKS_OVER_CAP = 100 * 1000 + 1;
 const FORM_BLOCKS = 1000;
 const FORM_INVOCATIONS = 120;
 const XY_CUT_BLOCKS = 50 * 1000;
-const XY_CUT_MS = 2000;
+const XY_CUT_MS = 8000;
+
+vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
 function timed<T>(run: () => T): { value?: T; err?: unknown; ms: number } {
   const started = Date.now();
