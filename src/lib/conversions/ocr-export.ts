@@ -76,6 +76,7 @@ const SURROGATE_LOW_LAST = 0xdfff;
 const NONCHARACTER_FFFE = 0xfffe;
 const NONCHARACTER_FFFF = 0xffff;
 const FIRST_PRINTABLE = 0x20;
+const FIRST_ASTRAL = 0x10000;
 
 function isAsciiLetter(code: number): boolean {
   return (code >= CH_UPPER_A && code <= CH_UPPER_Z) || (code >= CH_LOWER_A && code <= CH_LOWER_Z);
@@ -91,7 +92,7 @@ function isLanguageTag(tag: string): boolean {
   let subtagLength = 0;
   let firstSubtag = true;
   for (let i = 0; i < tag.length; i++) {
-    const code = tag.charCodeAt(i);
+    const code = tag.codePointAt(i) ?? 0;
     if (code === CH_HYPHEN) {
       if (subtagLength === 0) return false;
       subtagLength = 0;
@@ -126,6 +127,30 @@ function finishExport(): void {
   droppedCharacters = 0;
 }
 
+const XML_ESCAPES: ReadonlyMap<number, string> = new Map([
+  [CH_AMPERSAND, '&amp;'],
+  [CH_LT, '&lt;'],
+  [CH_GT, '&gt;'],
+  [CH_QUOTE, '&quot;'],
+  [CH_APOSTROPHE, '&apos;'],
+]);
+
+/** Whether XML 1.0 cannot carry the code unit: controls (other than tab, line feed, carriage return), lone surrogates, U+FFFE and U+FFFF. */
+function isDroppedCode(code: number): boolean {
+  if (code < FIRST_PRINTABLE || code === NONCHARACTER_FFFE || code === NONCHARACTER_FFFF) return true;
+  return code >= SURROGATE_HIGH_FIRST && code <= SURROGATE_LOW_LAST;
+}
+
+/** What replaces the character `code` in escaped text, or null when it is kept as it is. */
+function replacementFor(code: number, attribute: boolean): string | null {
+  const escaped = XML_ESCAPES.get(code);
+  if (escaped !== undefined) return escaped;
+  if (code === CH_TAB || code === CH_LF || code === CH_CR) return attribute ? `&#${code};` : null;
+  if (!isDroppedCode(code)) return null;
+  droppedCharacters++;
+  return '';
+}
+
 /**
  * Escapes text for XML in one pass. Characters XML 1.0 cannot carry (control characters other than
  * tab, line feed and carriage return, unpaired surrogates, U+FFFE and U+FFFF) are dropped. In
@@ -137,28 +162,13 @@ function escapeXml(text: string, attribute = false): string {
   let parts: string[] | null = null;
   let copied = 0;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    let replacement: string | null = null;
-    if (code === CH_AMPERSAND) replacement = '&amp;';
-    else if (code === CH_LT) replacement = '&lt;';
-    else if (code === CH_GT) replacement = '&gt;';
-    else if (code === CH_QUOTE) replacement = '&quot;';
-    else if (code === CH_APOSTROPHE) replacement = '&apos;';
-    else if (code === CH_TAB || code === CH_LF || code === CH_CR) replacement = attribute ? `&#${code};` : null;
-    else if (code < FIRST_PRINTABLE || code === NONCHARACTER_FFFE || code === NONCHARACTER_FFFF) {
-      replacement = '';
-      droppedCharacters++;
+    const code = text.codePointAt(i) ?? 0;
+    // A surrogate pair reads as one astral code point, which XML carries; a lone surrogate reads as itself.
+    if (code >= FIRST_ASTRAL) {
+      i++;
+      continue;
     }
-    else if (code >= SURROGATE_HIGH_FIRST && code <= SURROGATE_LOW_LAST) {
-      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
-      const paired = code <= SURROGATE_HIGH_LAST && next >= SURROGATE_LOW_FIRST && next <= SURROGATE_LOW_LAST;
-      if (paired) {
-        i++;
-      } else {
-        replacement = '';
-        droppedCharacters++;
-      }
-    }
+    const replacement = replacementFor(code, attribute);
     if (replacement === null) continue;
     parts ??= [];
     parts.push(text.slice(copied, i), replacement);
@@ -552,26 +562,14 @@ function altoBoxAttributes(box: Box): string {
   return `HPOS="${box.x0}" VPOS="${box.y0}" WIDTH="${box.x1 - box.x0}" HEIGHT="${box.y1 - box.y0}"`;
 }
 
-/**
- * Exports OCR results to ALTO 4.4 XML (Library of Congress). Pages are numbered by position, and text
- * XML 1.0 cannot carry is dropped as for hOCR (counted in a debug log). A recognizer block is a ComposedBlock,
- * a paragraph a TextBlock, and every line a TextLine with its BASELINE polyline when known; words are
- * String elements with WC confidence between 0 and 1 separated by SP.
- * @throws OcrMarkupError when `measurementUnit` is not `pixel` (the coordinates are pixels) or a
- * coordinate is not finite.
- */
-export function exportAlto(
-  ocrInput: OcrResult | OcrResult[],
-  options: AltoExportOptions = {}
-): string {
-  const unit = options.measurementUnit || ALTO_PIXEL_UNIT;
-  if (unit !== ALTO_PIXEL_UNIT) {
-    throw new OcrMarkupError(`ALTO export writes pixel coordinates; measurement unit '${unit}' is not supported.`);
-  }
-  startExport();
-  const pages = normalizePages(ocrInput);
-  assertWordGeometry(pages);
+/** Boxes reused across lines so a large page allocates none per line. */
+interface AltoScratch {
+  line: Box;
+  nextLine: Box;
+  group: Box;
+}
 
+function altoHeader(unit: string, options: AltoExportOptions): string[] {
   const out: string[] = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"',
@@ -599,41 +597,73 @@ export function exportAlto(
     '  </Description>',
     '  <Layout>'
   );
+  return out;
+}
 
-  const scratch = newBox();
-  const nextScratch = newBox();
-  const groupScratch = newBox();
-  for (const page of pages) {
-    const pNum = page.pageNumber;
-    const { width, height } = pageDimensions(page);
-    out.push(`    <Page ID="PAGE_${pNum}" PHYSICAL_IMG_NR="${pNum}" WIDTH="${width}" HEIGHT="${height}">`);
-    out.push(`      <PrintSpace HPOS="0" VPOS="0" WIDTH="${width}" HEIGHT="${height}">`);
+/** Running numbers of the blocks and lines of one page. */
+interface AltoCounters {
+  composedBlock: number;
+  textBlock: number;
+  line: number;
+}
 
-    let blockNumber = 0;
-    let textBlockNumber = 0;
-    let lineNumber = 0;
-    for (const block of planLayout(page.lineBlocks || [], scratch)) {
-      const indent = block.structured ? '          ' : '        ';
-      if (block.structured) {
-        const cb = groupBox(groupScratch, block.group, block.extent);
-        out.push(`        <ComposedBlock ID="CB_${pNum}_${++blockNumber}" ${altoBoxAttributes(cb)}>`);
-      }
-      for (const paragraph of block.paragraphs) {
-        const pb = groupBox(groupScratch, paragraph.group, paragraph.extent);
-        const tag = languageTag(paragraph.group?.language) ?? languageTag(page.language);
-        const lang = tag === undefined ? '' : ` LANG="${tag}"`;
-        out.push(`${indent}<TextBlock ID="TB_${pNum}_${++textBlockNumber}" ${altoBoxAttributes(pb)}${lang}>`);
-        for (const line of paragraph.lines) {
-          writeAltoLine(out, line, pNum, ++lineNumber, `${indent}  `, scratch, nextScratch);
-        }
-        out.push(`${indent}</TextBlock>`);
-      }
-      if (block.structured) out.push('        </ComposedBlock>');
-    }
-
-    out.push('      </PrintSpace>', '    </Page>');
+function writeAltoBlock(out: string[], block: BlockPlan, page: OcrPageResult, counters: AltoCounters, scratch: AltoScratch): void {
+  const pNum = page.pageNumber;
+  const indent = block.structured ? '          ' : '        ';
+  if (block.structured) {
+    const cb = groupBox(scratch.group, block.group, block.extent);
+    out.push(`        <ComposedBlock ID="CB_${pNum}_${++counters.composedBlock}" ${altoBoxAttributes(cb)}>`);
   }
+  for (const paragraph of block.paragraphs) {
+    const pb = groupBox(scratch.group, paragraph.group, paragraph.extent);
+    const tag = languageTag(paragraph.group?.language) ?? languageTag(page.language);
+    const lang = tag === undefined ? '' : ` LANG="${tag}"`;
+    out.push(`${indent}<TextBlock ID="TB_${pNum}_${++counters.textBlock}" ${altoBoxAttributes(pb)}${lang}>`);
+    for (const line of paragraph.lines) {
+      writeAltoLine(out, line, pNum, ++counters.line, `${indent}  `, scratch.line, scratch.nextLine);
+    }
+    out.push(`${indent}</TextBlock>`);
+  }
+  if (block.structured) out.push('        </ComposedBlock>');
+}
 
+function writeAltoPage(out: string[], page: OcrPageResult, scratch: AltoScratch): void {
+  const pNum = page.pageNumber;
+  const { width, height } = pageDimensions(page);
+  out.push(
+    `    <Page ID="PAGE_${pNum}" PHYSICAL_IMG_NR="${pNum}" WIDTH="${width}" HEIGHT="${height}">`,
+    `      <PrintSpace HPOS="0" VPOS="0" WIDTH="${width}" HEIGHT="${height}">`
+  );
+  const counters: AltoCounters = { composedBlock: 0, textBlock: 0, line: 0 };
+  for (const block of planLayout(page.lineBlocks || [], scratch.line)) {
+    writeAltoBlock(out, block, page, counters, scratch);
+  }
+  out.push('      </PrintSpace>', '    </Page>');
+}
+
+/**
+ * Exports OCR results to ALTO 4.4 XML (Library of Congress). Pages are numbered by position, and text
+ * XML 1.0 cannot carry is dropped as for hOCR (counted in a debug log). A recognizer block is a ComposedBlock,
+ * a paragraph a TextBlock, and every line a TextLine with its BASELINE polyline when known; words are
+ * String elements with WC confidence between 0 and 1 separated by SP.
+ * @throws OcrMarkupError when `measurementUnit` is not `pixel` (the coordinates are pixels) or a
+ * coordinate is not finite.
+ */
+export function exportAlto(
+  ocrInput: OcrResult | OcrResult[],
+  options: AltoExportOptions = {}
+): string {
+  const unit = options.measurementUnit || ALTO_PIXEL_UNIT;
+  if (unit !== ALTO_PIXEL_UNIT) {
+    throw new OcrMarkupError(`ALTO export writes pixel coordinates; measurement unit '${unit}' is not supported.`);
+  }
+  startExport();
+  const pages = normalizePages(ocrInput);
+  assertWordGeometry(pages);
+
+  const out = altoHeader(unit, options);
+  const scratch: AltoScratch = { line: newBox(), nextLine: newBox(), group: newBox() };
+  for (const page of pages) writeAltoPage(out, page, scratch);
   out.push('  </Layout>', '</alto>', '');
   finishExport();
   return out.join('\n');
