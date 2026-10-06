@@ -17,8 +17,8 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # 2. EasyConvert OCI Backend Worker Daemon (CPU / Default)
-  worker:
+  # 2. EasyConvert OCI Backend Worker Daemon (Base / CPU Default)
+  worker: &worker-base
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -29,6 +29,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=8g,noexec,nosuid
+      - /tmp:size=8g,noexec,nosuid,nodev
       - /home/easyconvert:size=512m,nosuid,nodev
     pids_limit: 256
     ulimits:
@@ -50,15 +51,15 @@ services:
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}
+      - OCI_NAMESPACE
       - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
       - OCI_REGION=${OCI_REGION:-ap-seoul-1}
-      - OCI_ENDPOINT=${OCI_ENDPOINT:-https://local-dev-tenancy.compat.objectstorage.ap-seoul-1.oraclecloud.com}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local-dev-access-key}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-local-dev-access-key}
+      - OCI_ENDPOINT
+      - STORAGE_SIGNING_SECRET
+      - S3_SIGNING_SECRET
+      - OCI_SIGNING_SECRET
+      - AWS_ACCESS_KEY_ID
+      - S3_ACCESS_KEY_ID
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
@@ -74,55 +75,129 @@ services:
           cpus: '0.5'
           memory: 1G
 
-  # 3. EasyConvert OCI Backend Worker Daemon (GPU Profile with VA-API /dev/dri)
-  worker-gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: easyconvert-oci-worker-gpu
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 120s
-    read_only: true
-    tmpfs:
-      - /tmp:size=8g,noexec,nosuid
-      - /home/easyconvert:size=512m,nosuid,nodev
-    pids_limit: 256
-    ulimits:
-      nproc: 256
-      nofile:
-        soft: 65536
-        hard: 65536
-      fsize: 10737418240
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    devices:
-      - /dev/dri:/dev/dri
+  # 3. Split Profile Worker: Light Queue (Fast I/O & Metadata)
+  worker-light:
+    <<: *worker-base
+    container_name: easyconvert-oci-worker-light
     profiles:
-      - gpu
-    depends_on:
-      - redis
+      - split
     environment:
       - NODE_ENV=production
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}
+      - OCI_NAMESPACE
       - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
       - OCI_REGION=${OCI_REGION:-ap-seoul-1}
-      - OCI_ENDPOINT=${OCI_ENDPOINT:-https://local-dev-tenancy.compat.objectstorage.ap-seoul-1.oraclecloud.com}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local-dev-access-key}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-local-dev-access-key}
+      - OCI_ENDPOINT
+      - STORAGE_SIGNING_SECRET
+      - S3_SIGNING_SECRET
+      - OCI_SIGNING_SECRET
+      - AWS_ACCESS_KEY_ID
+      - S3_ACCESS_KEY_ID
+      - WORKER_CONCURRENCY=3
+      - EASYCONVERT_STORAGE_DIR=/shared/storage
+      - STRICT_SANDBOX=true
+      - WORKER_QUEUES=light
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.2'
+          memory: 256M
+
+  # 4. Split Profile Worker: CPU Queue (Heavy Software Transcoding & Documents)
+  worker-cpu:
+    <<: *worker-base
+    container_name: easyconvert-oci-worker-cpu
+    profiles:
+      - split
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OCI_NAMESPACE
+      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
+      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
+      - OCI_ENDPOINT
+      - STORAGE_SIGNING_SECRET
+      - S3_SIGNING_SECRET
+      - OCI_SIGNING_SECRET
+      - AWS_ACCESS_KEY_ID
+      - S3_ACCESS_KEY_ID
+      - WORKER_CONCURRENCY=3
+      - EASYCONVERT_STORAGE_DIR=/shared/storage
+      - STRICT_SANDBOX=true
+      - WORKER_QUEUES=cpu,default
+    deploy:
+      resources:
+        limits:
+          cpus: '2.5'
+          memory: 8G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+
+  # 5. Split Profile Worker: Memory Queue (CAD & OCR High Memory)
+  worker-memory:
+    <<: *worker-base
+    container_name: easyconvert-oci-worker-memory
+    profiles:
+      - split
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OCI_NAMESPACE
+      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
+      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
+      - OCI_ENDPOINT
+      - STORAGE_SIGNING_SECRET
+      - S3_SIGNING_SECRET
+      - OCI_SIGNING_SECRET
+      - AWS_ACCESS_KEY_ID
+      - S3_ACCESS_KEY_ID
+      - WORKER_CONCURRENCY=2
+      - EASYCONVERT_STORAGE_DIR=/shared/storage
+      - STRICT_SANDBOX=true
+      - WORKER_QUEUES=memory
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 12G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+
+  # 6. Split Profile Worker: GPU Profile (VA-API /dev/dri Hardware Acceleration)
+  worker-gpu:
+    <<: *worker-base
+    container_name: easyconvert-oci-worker-gpu
+    devices:
+      - /dev/dri:/dev/dri
+    profiles:
+      - gpu
+      - split
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OCI_NAMESPACE
+      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
+      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
+      - OCI_ENDPOINT
+      - STORAGE_SIGNING_SECRET
+      - S3_SIGNING_SECRET
+      - OCI_SIGNING_SECRET
+      - AWS_ACCESS_KEY_ID
+      - S3_ACCESS_KEY_ID
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
       - HWACCEL_ENABLED=true
-    volumes:
-      - shared-storage:/shared/storage
+      - WORKER_QUEUES=gpu
     deploy:
       resources:
         limits:

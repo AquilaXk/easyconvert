@@ -1,8 +1,9 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
+import { SandboxUnavailableError } from '../types';
 
 export interface SandboxEnvironment {
   isContainer: boolean;
@@ -308,16 +309,18 @@ export interface UnshareCapability {
 
 let unshareCapability: UnshareCapability | null = null;
 
-export function resetUnshareCapabilityCache(): void {
+export function resetUnshareCapabilityProbe(): void {
   unshareCapability = null;
 }
+export const resetUnshareCapabilityCache = resetUnshareCapabilityProbe;
 
 /**
  * Probes the operating system to determine whether Linux unshare can actually create network namespaces.
  */
 export function getUnshareCapability(): UnshareCapability {
   if (unshareCapability !== null) return unshareCapability;
-  if (process.platform !== 'linux') {
+  const isLinux = process.platform === 'linux' || os.platform() === 'linux';
+  if (!isLinux) {
     unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false };
     return unshareCapability;
   }
@@ -327,16 +330,20 @@ export function getUnshareCapability(): UnshareCapability {
     if (fs.existsSync(p)) {
       // First probe -r -n (unprivileged user + net namespace)
       try {
-        execFileSync(p, ['-r', '-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-r', '-n'], supportsNetNamespace: true };
-        return unshareCapability;
+        const res = spawnSync(p, ['-r', '-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
+        if (res.status === 0) {
+          unshareCapability = { available: true, path: p, args: ['-r', '-n'], supportsNetNamespace: true };
+          return unshareCapability;
+        }
       } catch {}
 
       // Second probe -n (net namespace, requires CAP_SYS_ADMIN)
       try {
-        execFileSync(p, ['-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
-        unshareCapability = { available: true, path: p, args: ['-n'], supportsNetNamespace: true };
-        return unshareCapability;
+        const res = spawnSync(p, ['-n', '--', '/bin/true'], { stdio: 'ignore', timeout: 500 });
+        if (res.status === 0) {
+          unshareCapability = { available: true, path: p, args: ['-n'], supportsNetNamespace: true };
+          return unshareCapability;
+        }
       } catch {}
     }
   }
@@ -513,7 +520,10 @@ export function resolveSandboxedCommand(
     }
   }
 
-  if (process.platform === 'linux' && networkIsolated) {
+  const isStrict = strictIsolation || process.env.STRICT_SANDBOX === 'true';
+  const isLinux = process.platform === 'linux' || os.platform() === 'linux';
+
+  if (isLinux && networkIsolated) {
     const cap = getUnshareCapability();
     if (cap.available) {
       const isolationArgs = buildUnshareIsolationArgs(cap, sandboxOptions);
@@ -522,14 +532,20 @@ export function resolveSandboxedCommand(
         args: [...isolationArgs, '--', finalBinary, ...finalArgs],
         wrapped: true,
       };
-    } else if (strictIsolation) {
+    } else if (isStrict) {
+      if (process.env.STRICT_SANDBOX === 'true') {
+        throw new SandboxUnavailableError('EPERM: unshare namespace isolation unavailable');
+      }
       throw new SandboxedProcessError(
         'Strict network isolation failed: Linux unshare capability is unavailable',
         126,
         'EPERM: unshare namespace isolation unavailable'
       );
     }
-  } else if (strictIsolation && networkIsolated && process.platform !== 'linux') {
+  } else if (isStrict && networkIsolated && !isLinux) {
+    if (process.env.STRICT_SANDBOX === 'true') {
+      throw new SandboxUnavailableError('EPERM: unshare namespace isolation unavailable');
+    }
     throw new SandboxedProcessError(
       `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`,
       126,
@@ -825,3 +841,6 @@ export async function executeSandboxedBinary(
     });
   });
 }
+
+export const executeCommandSandboxed = executeSandboxedBinary;
+

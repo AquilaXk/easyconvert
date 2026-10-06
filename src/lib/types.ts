@@ -576,6 +576,14 @@ export class EngineUnavailableError extends EngineMissingError {
   }
 }
 
+export class SandboxUnavailableError extends EngineUnavailableError {
+  constructor(message = 'EPERM: unshare namespace isolation unavailable', reason?: string) {
+    super('sandbox', reason || message);
+    this.name = 'SandboxUnavailableError';
+    this.message = message;
+  }
+}
+
 /** An `export.url` node could not deliver an artifact to the destination URL. */
 export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {
