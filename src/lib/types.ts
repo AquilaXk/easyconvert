@@ -474,6 +474,30 @@ export class UnsupportedOptionError extends ConversionFailedError {
   }
 }
 
+export class ArchivePasswordRequiredError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string = 'Archive requires a password for decryption') {
+    super(message);
+    this.name = 'ArchivePasswordRequiredError';
+  }
+}
+
+export class DecompressionLimitError extends ConversionFailedError {
+  readonly status = 413;
+  constructor(message: string = 'Decompressed data exceeds safe size limit') {
+    super(message);
+    this.name = 'DecompressionLimitError';
+  }
+}
+
+export class CorruptStreamError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string = 'Corrupt compressed stream') {
+    super(message);
+    this.name = 'CorruptStreamError';
+  }
+}
+
 /** Input bytes that are not valid text in the detected or requested character encoding. */
 export class DataEncodingError extends ConversionFailedError {
   constructor(message: string) {
