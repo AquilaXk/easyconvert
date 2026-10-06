@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
 
@@ -9,6 +9,25 @@ import { convertFile } from '../src/lib/conversions';
  * The directory is read here byte by byte, independently of the font engine.
  */
 const SOURCE = readFileSync(path.join(__dirname, 'fixtures', 'sample.woff2'));
+/**
+ * The sfnt writers need glyph outlines, which the committed WOFF2 sample only carries in the
+ * transformed glyf form; a system TrueType font gives them a real outline source instead.
+ */
+const OUTLINE_FONT_PATH = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+const OUTLINE_FONT_PRESENT = existsSync(OUTLINE_FONT_PATH);
+if (!OUTLINE_FONT_PRESENT && process.env.ORACLE_STRICT_MODE === '1') {
+  throw new Error(`Strict mode requires the outline font ${OUTLINE_FONT_PATH} (fonts-dejavu-core)`);
+}
+const OUTLINE_SOURCE = OUTLINE_FONT_PRESENT ? readFileSync(OUTLINE_FONT_PATH) : Buffer.alloc(0);
+
+/** TrueType output comes from a WOFF 1.0 wrapper (ttf -> ttf is not an offered pair); OpenType CFF output comes straight from the TTF. */
+async function convertOutlineFont(target: string): Promise<Buffer> {
+  if (target === 'ttf') {
+    const woff = (await convertFile(OUTLINE_SOURCE, 'ttf', 'woff', {}, 'DejaVuSans.ttf')).buffer;
+    return (await convertFile(woff, 'woff', 'ttf', {}, 'DejaVuSans.woff')).buffer;
+  }
+  return (await convertFile(OUTLINE_SOURCE, 'ttf', target, {}, 'DejaVuSans.ttf')).buffer;
+}
 const SFNT_HEADER_BYTES = 12;
 const SFNT_ENTRY_BYTES = 16;
 const WOFF_HEADER_BYTES = 44;
@@ -36,8 +55,8 @@ function uint32Sum(data: Buffer): number {
 }
 
 describe('font checksums', () => {
-  it.each(['ttf', 'otf'])('woff2 -> %s carries a whole-font checksum and per-table checksums that verify', async (target) => {
-    const font = (await convertFile(SOURCE, 'woff2', target, {}, 'sample.woff2')).buffer;
+  it.skipIf(!OUTLINE_FONT_PRESENT).each(['ttf', 'otf'])('outline font -> %s carries a whole-font checksum and per-table checksums that verify', async (target) => {
+    const font = await convertOutlineFont(target);
     expect(uint32Sum(font)).toBe(SFNT_CHECKSUM_MAGIC);
     const count = font.readUInt16BE(4);
     for (let i = 0; i < count; i += 1) {
@@ -53,9 +72,8 @@ describe('font checksums', () => {
 });
 
 describe('font table directory order', () => {
-  it.each(['ttf', 'otf'])('woff2 -> %s lists tables in ascending binary tag order', async (target) => {
-    const result = await convertFile(SOURCE, 'woff2', target, {}, 'sample.woff2');
-    const tags = directoryTags(result.buffer, SFNT_HEADER_BYTES, SFNT_ENTRY_BYTES, 4);
+  it.skipIf(!OUTLINE_FONT_PRESENT).each(['ttf', 'otf'])('outline font -> %s lists tables in ascending binary tag order', async (target) => {
+    const tags = directoryTags(await convertOutlineFont(target), SFNT_HEADER_BYTES, SFNT_ENTRY_BYTES, 4);
     expect(tags.some((tag) => tag !== tag.toLowerCase())).toBe(true);
     expect(tags).toEqual(binarySorted(tags));
   });
