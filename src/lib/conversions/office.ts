@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
+import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -6467,15 +6468,20 @@ export async function parsePptxSlideSceneGraph(
         const mediaFile = zip.file(mediaPath);
         if (mediaFile) {
           let imgBuffer = await mediaFile.async('nodebuffer');
+          // PNG and JPEG are embedded without a re-encode, whatever the part is called: check their header.
+          // Pictures are processed one at a time on purpose: each decode can hold up to the pixel limit in memory.
+          await assertEmbeddableImageWithinLimit(imgBuffer); // NOSONAR S9382: sequential to bound memory
           let mimeType = 'image/png';
           const lower = mediaPath.toLowerCase();
           if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
             mimeType = 'image/jpeg';
           } else if (!lower.endsWith('.png')) {
             try {
-              imgBuffer = await sharp(imgBuffer).png().toBuffer();
+              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer(); // NOSONAR S9382: sequential to bound memory
               mimeType = 'image/png';
-            } catch {}
+            } catch (err) {
+              rethrowInputPixelLimit(err);
+            }
           }
 
           // DrawingML <a:srcRect> image cropping (ISO/IEC 29500-1 §20.1.8.56)
@@ -6495,11 +6501,13 @@ export async function parsePptxSlideSceneGraph(
                   const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
                   const extractW = Math.max(1, meta.width - cropLeft - cropRight);
                   const extractH = Math.max(1, meta.height - cropTop - cropBottom);
-                  imgBuffer = await sharp(imgBuffer)
+                  imgBuffer = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
                 }
-              } catch {}
+              } catch (err) {
+                rethrowInputPixelLimit(err);
+              }
             }
           }
           shapes.push({
@@ -7657,6 +7665,8 @@ async function convertCbzSource(
 
     for (const name of imageNames) {
       const imgBuf = await zip.files[name].async('nodebuffer');
+      // Pages are processed one at a time on purpose: pdfkit decodes each into memory.
+      await assertEmbeddableImageWithinLimit(imgBuf); // NOSONAR S9382: sequential to bound memory
       doc.addPage({ size: 'A4' });
       try {
         doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });
