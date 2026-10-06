@@ -1,5 +1,6 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
+import { HDR_FLOAT_PIXEL_BUDGET, assertEncodedImageWithinLimit, openLimitedSharp } from './image-input-limits';
 import {
   ConversionFailedError,
   ConversionOptions,
@@ -1739,7 +1740,8 @@ export async function reconstructUltraHdr(buf: Buffer): Promise<{
   const { gainMapMin, gainMapMax, gamma, offsetSdr, offsetHdr } = gainMapParams;
 
   // Decode primary SDR JPEG
-  const { data: sdrData, info: sdrInfo } = await sharp(primaryJpeg)
+  await assertEncodedImageWithinLimit(primaryJpeg, HDR_FLOAT_PIXEL_BUDGET);
+  const { data: sdrData, info: sdrInfo } = await openLimitedSharp(primaryJpeg)
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -1748,7 +1750,8 @@ export async function reconstructUltraHdr(buf: Buffer): Promise<{
   const height = sdrInfo.height;
 
   // Decode secondary Gain Map JPEG (grayscale, resized if needed to match primary dimension)
-  const gmBuffer = await sharp(secondaryJpeg)
+  await assertEncodedImageWithinLimit(secondaryJpeg);
+  const gmBuffer = await openLimitedSharp(secondaryJpeg)
     .resize(width, height, { fit: 'fill' })
     .toColourspace('b-w')
     .raw()

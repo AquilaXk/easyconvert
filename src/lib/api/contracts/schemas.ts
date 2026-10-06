@@ -1043,6 +1043,14 @@ export const JobResourceSchema = {
       type: 'string',
       description: 'Reason for job failure if status is failed.',
     },
+    failedCode: {
+      type: 'string',
+      description: 'Error class of a typed failure, for example InputPixelLimitError.',
+    },
+    failedStatus: {
+      type: 'integer',
+      description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
+    },
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
