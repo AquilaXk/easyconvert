@@ -102,27 +102,39 @@ jobs:
 
       # Real-server leg of the S3 storage tests, which read STORAGE_TEST_S3_*: a server this
       # repository did not write, which verifies SigV4 itself. It is started with `docker run`
-      # because a service container cannot pass `server /data`. The image is pinned by digest. The
-      # upstream minio/minio images are no longer pullable (quay.io answers "unauthorized" and Docker
-      # Hub lists no tags), so this is the last Bitnami-packaged release of the same server.
+      # because a service container cannot pass `server /data`. The image is pinned by digest; move
+      # the pin if that image repository is removed. Anonymous registry pulls are rate limited, so the
+      # pull is retried before the step fails.
       - name: Start the S3 test server
         env:
           S3_TEST_SERVER_IMAGE: bitnamilegacy/minio:2025.7.23@sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7
         run: |
+          pulled=0
+          for attempt in 1 2 3; do
+            if docker pull "$S3_TEST_SERVER_IMAGE"; then
+              pulled=1
+              break
+            fi
+            sleep $((attempt * 20))
+          done
+          if [ "$pulled" != 1 ]; then
+            echo "could not pull $S3_TEST_SERVER_IMAGE after 3 attempts" >&2
+            exit 1
+          fi
           docker run -d --name s3-test-server -p 127.0.0.1:9000:9000 \
             -e MINIO_ROOT_USER="$STORAGE_TEST_S3_ACCESS_KEY_ID" \
             -e MINIO_ROOT_PASSWORD="$STORAGE_TEST_S3_SECRET_ACCESS_KEY" \
             "$S3_TEST_SERVER_IMAGE"
           ready=0
           for attempt in $(seq 1 30); do
-            if curl -fsS "$STORAGE_TEST_S3_ENDPOINT/minio/health/live" >/dev/null; then
+            if curl -fsS --max-time 5 "$STORAGE_TEST_S3_ENDPOINT/minio/health/live" >/dev/null; then
               ready=1
               break
             fi
             sleep 2
           done
           if [ "$ready" != 1 ]; then
-            echo "S3 test server did not become live within 60 seconds" >&2
+            echo "S3 test server did not become live after 30 attempts" >&2
             docker logs s3-test-server >&2
             exit 1
           fi
@@ -134,7 +146,7 @@ jobs:
         run: |
           empty_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
           sign() {
-            curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+            curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X PUT \
               --user "$STORAGE_TEST_S3_ACCESS_KEY_ID:$1" --aws-sigv4 "aws:amz:us-east-1:s3" \
               -H "x-amz-content-sha256: $empty_sha256" "$STORAGE_TEST_S3_ENDPOINT/$2"
           }
