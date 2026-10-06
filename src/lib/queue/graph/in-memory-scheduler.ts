@@ -9,7 +9,9 @@ import type {
   NodeExecutionStatus,
   NodeFailureResult,
 } from './scheduler-types';
-import { cancelGraphNodeJob, enqueueGraphNodeJob } from './node-jobs';
+import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
+import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
+import { redactText } from '../../security/redact';
 import { s3Storage } from '../../storage/s3-storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
@@ -29,13 +31,15 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
   async initGraph(
     graphId: string,
-    graph: JobGraph,
+    submittedGraph: JobGraph,
     meta: GraphMetadata = {}
   ): Promise<GraphExecutionState> {
     if (this.graphs.has(graphId)) {
       throw new Error(`Graph already exists: ${graphId}`);
     }
 
+    // Bearer secrets are sealed before anything is stored or queued; the caller's graph is untouched.
+    const graph = sealJobGraph(submittedGraph, (nodeId) => graphNodeJobId(graphId, nodeId));
     const nodeEntries = Object.entries(graph.nodes);
     const totalNodes = nodeEntries.length;
     const policy = graph.failurePolicy || 'fail_fast';
@@ -78,7 +82,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
       originalFilename: meta.originalFilename,
       sourceFormat: meta.sourceFormat,
       targetFormat: meta.targetFormat,
-      tasks: meta.tasks,
+      tasks: maskTaskRecords(meta.tasks),
       createdAt,
       totalNodes,
       completedNodes: 0,
@@ -186,8 +190,10 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
   async onNodeFailed(
     graphId: string,
     nodeId: NodeId,
-    error: string
+    reportedError: string
   ): Promise<NodeFailureResult> {
+    // The reason is stored, returned by the job API and sent in webhooks: it is masked once, here.
+    const error = redactText(reportedError);
     const data = this.graphs.get(graphId);
     const nodeState = data?.state.nodes[nodeId];
     if (!data || data.state.status !== 'running' || !nodeState || !RUNNABLE_NODE_STATUSES.has(nodeState.status)) {

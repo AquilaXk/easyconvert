@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { redactForOutput, redactText, scrubError } from '../security/redact';
 import { classifyJobFailure } from './job-failure';
 
 export interface JobOptions {
@@ -160,7 +161,7 @@ export class Job<T = any, R = any> {
   }
 
   async log(row: string): Promise<void> {
-    const entry = `[${new Date().toISOString()}] ${row}`;
+    const entry = `[${new Date().toISOString()}] ${redactText(row)}`;
     this.logs.push(entry);
     if (this.onUpdateHook) {
       try {
@@ -266,6 +267,23 @@ export interface IQueueWorker<T = any, R = any> extends EventEmitter {
   readonly name: string;
   pause(): void;
   close(): Promise<void>;
+}
+
+/**
+ * Dead-letter record of a failed job. Everything in it is masked: the reason and stack traces may
+ * quote a request, and the job data may hold credentials. A part of the data beyond the redaction
+ * limits is replaced by the mask rather than stored as it is.
+ */
+function buildDlqEntry<T, R>(job: Job<T, R>, reason: string): DlqEntry<T> {
+  return {
+    jobId: job.id,
+    name: job.name,
+    data: redactForOutput(job.data),
+    failedReason: redactText(reason),
+    attemptsMade: job.attemptsMade,
+    timestamp: Date.now(),
+    stacktrace: job.stacktrace.map(redactText),
+  };
 }
 
 export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
@@ -543,15 +561,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
-    const entry: DlqEntry<T> = {
-      jobId: job.id,
-      name: job.name,
-      data: job.data,
-      failedReason: reason,
-      attemptsMade: job.attemptsMade,
-      timestamp: Date.now(),
-      stacktrace: [...job.stacktrace],
-    };
+    const entry = buildDlqEntry(job, reason);
     this.dlq.push(entry);
     this.emit('dlq', entry);
   }
@@ -816,13 +826,15 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    // Mask the error itself so the failed event, console output and rethrows also show masked text.
+    scrubError(err);
+    const errorMessage = redactText(err instanceof Error ? err.message : String(err));
     job.failedReason = errorMessage;
     const failure = classifyJobFailure(err);
     job.failedCode = failure.code;
     job.failedStatus = failure.status;
     if (err instanceof Error && err.stack) {
-      job.stacktrace.push(err.stack);
+      job.stacktrace.push(redactText(err.stack));
     }
 
     const maxAttempts = job.opts.attempts || 1;
@@ -2066,15 +2078,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
     if (this.redisClient && this.redisConnected) {
       try {
-        const entry: DlqEntry<T> = {
-          jobId: job.id,
-          name: job.name,
-          data: job.data,
-          failedReason: reason,
-          attemptsMade: job.attemptsMade,
-          timestamp: Date.now(),
-          stacktrace: [...job.stacktrace],
-        };
+        const entry = buildDlqEntry(job, reason);
         await this.redisClient.rpush(this.dlqKey, JSON.stringify(entry));
         this.emit('dlq', entry);
       } catch {}
@@ -2344,7 +2348,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.getHeartbeatKey(job.id),
         job.id,
         String(job.finishedOn || Date.now()),
-        job.failedReason || String(err),
+        job.failedReason || redactText(String(err)),
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
         job.opts?.removeOnFail === true ? '1' : '0',
@@ -2358,7 +2362,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         );
         return false;
       }
-      await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: redactText(String(err)) });
       if (job.opts?.removeOnFail === true) {
         const userId = (job.data as any)?.userId;
         if (userId) {
