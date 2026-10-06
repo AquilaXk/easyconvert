@@ -369,7 +369,9 @@ describe('unreadable language data', () => {
     async () => {
       vi.stubEnv('TESSDATA_PREFIX', truncatedTessdata());
       const page = fs.readFileSync(path.join(FIXTURE_DIR, 'twocol__dpi150.png'));
-      await expect(performOcr(page, 'eng')).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+      await expect(performOcr(page, 'eng')).rejects.toThrow(
+        new OcrEngineUnavailableError("OCR language data for 'eng' is unreadable.")
+      );
     },
     PAGE_TIMEOUT_MS
   );
