@@ -77,6 +77,10 @@ jobs:
       - name: Install Python format oracles
         run: sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2
 
+      # PDF/A validator: PDF/A results are refused unless veraPDF validates them.
+      - name: Install veraPDF
+        run: sudo scripts/install-verapdf.sh /opt/verapdf
+
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
 

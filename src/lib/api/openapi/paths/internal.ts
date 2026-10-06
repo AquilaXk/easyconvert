@@ -1,5 +1,6 @@
 import {
   CONVERT_FORM_PROPERTIES,
+  INPUT_PIXEL_LIMIT_DESCRIPTION,
   PUBLIC_ACCESS,
   SESSION_ONLY,
   createErrorResponse,
@@ -207,6 +208,7 @@ export const internalPaths = {
         '200': binaryResponse('Converted file.'),
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
+        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
         '422': createErrorResponse('Page count exceeds the tier limit.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
@@ -237,6 +239,7 @@ export const internalPaths = {
           },
         },
         '401': createProblemResponse('Authentication required.'),
+        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
