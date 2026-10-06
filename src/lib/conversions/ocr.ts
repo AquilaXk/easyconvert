@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
+import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import {
   ConversionOptions,
   OcrLanguageUnavailableError,
@@ -34,6 +35,7 @@ import {
   ocrSegmentationFor,
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
+import { runPdfTextJob } from './pdf-text-geometry';
 import { mapOcrResultToSource } from './ocr-geometry';
 import {
   OCR_PREPROCESS_STEPS,
@@ -158,9 +160,11 @@ export async function performOcr(
   // orientation is applied first, so text is recognized as displayed, and the page is prepared
   // for recognition (see ocr-preprocess.ts), which both engines below then read.
   let prepared: OcrPreprocessResult;
+  await assertEncodedImageWithinLimit(imageBuffer);
   try {
     prepared = await preprocessOcrImage(imageBuffer, steps);
   } catch (err) {
+    rethrowInputPixelLimit(err);
     if (err instanceof OcrPreprocessError || err instanceof OcrEngineUnavailableError) throw err;
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
@@ -204,7 +208,7 @@ export async function performOcr(
       const fullText = (ret.data.text || '').trim();
       const imgWidth = prepared.geometry.outputWidth;
       const imgHeight = prepared.geometry.outputHeight;
-      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
+      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight, tesseractLang);
 
       const words = fullText.split(/\s+/).filter(Boolean);
 
@@ -248,6 +252,7 @@ export async function performOcr(
           lineBlocks,
           imageWidth: imgWidth,
           imageHeight: imgHeight,
+          language: tesseractLang,
         },
         prepared.geometry
       );
@@ -303,55 +308,23 @@ const EXIF_ORIENTATION_UPRIGHT = 1;
  * image. A rotated photo is re-encoded upright so the page and its text layer line up.
  */
 async function uprightImage(imageBuffer: Buffer): Promise<Buffer> {
+  await assertEncodedImageWithinLimit(imageBuffer);
   const { orientation } = await sharp(imageBuffer).metadata();
   if (!orientation || orientation === EXIF_ORIENTATION_UPRIGHT) {
     return imageBuffer;
   }
-  return sharp(imageBuffer).rotate().png().toBuffer();
+  return openLimitedSharp(imageBuffer).rotate().png().toBuffer();
 }
 
 /**
- * Inspects each page of a PDF document for existing digital text layer density.
+ * Inspects each page of a PDF document for existing digital text layer density, on the PDF text worker
+ * thread and under its wall-clock deadline.
  */
 export async function inspectPdfPagesTextDensity(
   pdfBuffer: Buffer,
   densityThreshold: number = 15
 ): Promise<PdfPageAnalysis[]> {
-  const analyses: PdfPageAnalysis[] = [];
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(pdfBuffer),
-    useSystemFonts: true,
-    disableFontFace: true,
-    verbosity: 0,
-  });
-
-  const doc = await loadingTask.promise;
-  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-    const page = await doc.getPage(pageNum);
-    const view = page.view || [0, 0, 612, 792];
-    const width = Math.abs(view[2] - view[0]);
-    const height = Math.abs(view[3] - view[1]);
-
-    const textContent = await page.getTextContent();
-    const strings = (textContent.items || []).map((it: any) => it.str || '');
-    const pageText = strings.join(' ').trim();
-    const charCount = pageText.replace(/\s+/g, '').length;
-    const wordCount = pageText.split(/\s+/).filter(Boolean).length;
-    const hasTextLayer = charCount >= densityThreshold;
-
-    analyses.push({
-      pageNumber: pageNum,
-      width,
-      height,
-      charCount,
-      wordCount,
-      hasTextLayer,
-      text: pageText,
-    });
-  }
-
-  return analyses;
+  return (await runPdfTextJob(pdfBuffer, { densityThreshold, geometry: 'none' })).analyses;
 }
 
 /**
@@ -440,6 +413,7 @@ export function assembleCombinedOcrResult(
         confidence: ocr.confidence,
         lineBlocks: ocr.lineBlocks || [],
         lines: ocr.lines,
+        language: ocr.language,
       });
       allTexts.push(ocr.text);
       allLines.push(...ocr.lines);
@@ -476,6 +450,7 @@ export function assembleCombinedOcrResult(
     imageWidth: pageAnalyses[0]?.width || 612,
     imageHeight: pageAnalyses[0]?.height || 792,
     pages: combinedPages,
+    language: combinedPages.find((p) => p.language)?.language,
   };
 }
 
