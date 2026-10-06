@@ -179,6 +179,11 @@ export interface ConversionOptions {
   solid?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   entries?: string[];
+  /**
+   * Opt in to extracting archives that contain symbolic or hard links by leaving those entries out.
+   * Without it such archives are rejected. Skipped names are reported in `ConversionResult.skippedLinks`.
+   */
+  skipLinks?: boolean;
   repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
@@ -350,6 +355,8 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Link entries left out of an extraction because `skipLinks` was set. */
+  skippedLinks?: string[];
   /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
   metadata?: Record<string, unknown>;
 }
@@ -670,6 +677,12 @@ export interface ArchiveEntryMetadata {
   isDirectory: boolean;
   modifiedAt?: string;
   crc32?: string;
+  /** Set for entries that are not plain files or directories. Links are reported, never resolved. */
+  kind?: 'symlink' | 'hardlink' | 'special';
+  /** The name is absolute, climbs out with `..`, or is otherwise invalid. `name` is kept verbatim. */
+  unsafePath?: boolean;
+  /** Another entry in the archive has the same path. */
+  duplicate?: boolean;
 }
 
 export interface ArchiveInspectResponse {
@@ -679,6 +692,10 @@ export interface ArchiveInspectResponse {
   totalCompressedBytes: number;
   isEncrypted: boolean;
   entries: ArchiveEntryMetadata[];
+  /** False when extraction would refuse the archive: links, unsafe paths, special entries or duplicates. */
+  extractable: boolean;
+  /** One line per blocking category, with a count and the first offending entry; empty when extractable. */
+  unextractableReasons: string[];
 }
 
 export class MissingVolumeError extends Error {
@@ -689,7 +706,7 @@ export class MissingVolumeError extends Error {
   }
 }
 
-export class ArchiveEntryCollisionError extends Error {
+export class ArchiveEntryCollisionError extends ConversionFailedError {
   readonly status = 422;
   readonly entryName: string;
   constructor(entryName: string, message?: string) {

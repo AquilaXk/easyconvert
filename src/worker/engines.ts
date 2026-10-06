@@ -53,7 +53,13 @@ import {
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
+import {
+  assertArchivePasswordSafe,
+  cleanupDirectoryTree,
+  extractArchiveContained,
+  sanitizeLeafFilename,
+} from '../lib/conversions/archive-extraction-safety';
 import {
   LIBREOFFICE_POOL_ENGINE_NAME,
   LibreOfficePoolManager,
@@ -229,11 +235,7 @@ async function withSandboxDir<T>(
   try {
     return await operation(tempDir);
   } finally {
-    try {
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    } catch {}
+    cleanupDirectoryTree(tempDir);
   }
 }
 
@@ -726,6 +728,16 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   return true;
 }
 
+/** Turns a failed `7z a` run into a typed error; other failures (timeouts, aborts) keep their own type. */
+function toPackagingFailure(err: unknown, targetFormat: string): unknown {
+  if (err instanceof SandboxedProcessError) {
+    return new ConversionFailedError(
+      `7-Zip failed to create the ${targetFormat} archive (exit code ${err.exitCode ?? 'unknown'}).`
+    );
+  }
+  return err;
+}
+
 interface ExtractArchiveParams {
   p7zBin: string;
   inputPath: string;
@@ -736,32 +748,57 @@ interface ExtractArchiveParams {
   options?: WorkerEngineOptions;
 }
 
-async function extractSourceArchive(params: ExtractArchiveParams): Promise<void> {
+/** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
+const COMPRESSED_STREAM_FORMATS = new Set([
+  'gz', 'gzip', 'tgz', 'tar.gz',
+  'bz2', 'bzip2', 'tbz2', 'tar.bz2',
+  'xz', 'txz', 'tar.xz',
+]);
+
+interface SourceExtraction {
+  entryCount: number;
+  skippedLinks: string[];
+}
+
+/**
+ * Extracts the source archive into `extractDir` through the contained 7z pipeline (list, vet,
+ * extract, re-verify). Throws a typed error for any unsafe, oversized or unreadable archive; it
+ * never returns a partial result.
+ */
+async function extractSourceArchive(params: ExtractArchiveParams, src: string): Promise<SourceExtraction> {
   const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
+
   if (options?.archiveParts && options.archiveParts.length > 0) {
-    await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
+    // Multi-volume input is stitched to one seekable file so it is listed like any other archive.
+    const spanned = await extractWithSpannedStream7z(options.archiveParts, extractDir, {
       timeoutMs: timeout,
       maxBuffer,
       password: options.password,
+      skipLinks: options.skipLinks,
+      collisionPolicy: options.collisionPolicy,
+      signal: options.signal,
     });
-  } else {
-    const pwArgs = options?.password ? ['-p'] : [];
-    const includeArgs = (options?.entries && options.entries.length > 0)
-      ? options.entries.map((p) => `-i!${p}`)
-      : [];
-    await executeSandboxedBinary(
-      p7zBin,
-      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath, ...includeArgs],
-      {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        stdin: options?.password ? Buffer.from(options.password + '\n') : undefined,
-        signal: options?.signal,
-      }
-    );
+    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks };
   }
+
+  const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
+  const tree = await extractArchiveContained({
+    p7zBin,
+    archivePath: inputPath,
+    extractDir,
+    cwd: tempDir,
+    timeoutMs: timeout,
+    maxBuffer,
+    limits: ARCHIVE_SECURITY_LIMITS,
+    label: 'archive',
+    password: options?.password,
+    includePatterns,
+    skipLinks: options?.skipLinks,
+    collisionPolicy: options?.collisionPolicy,
+    validateNestedTar: COMPRESSED_STREAM_FORMATS.has(src),
+    signal: options?.signal,
+  });
+  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks };
 }
 
 /**
@@ -776,6 +813,7 @@ export async function convertWithNative7z(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  assertArchivePasswordSafe(options.password);
 
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
@@ -800,19 +838,23 @@ export async function convertWithNative7z(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
 
-  try {
-    return await withSandboxDir('easyconvert-7z-', async (tempDir) => {
-      const inputExt = src.includes('.') ? src.split('.').pop()! : src;
-      const { inputPath } = resolveInputContext(input, inputExt, tempDir);
+  // Failures are typed errors that propagate: a bad archive must never become a null that lets a
+  // caller drop to another engine.
+  return withSandboxDir('easyconvert-7z-', async (tempDir) => {
+    const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+    const { inputPath } = resolveInputContext(input, inputExt, tempDir);
 
-      const timeout = Math.min(options.timeoutMs || 60000, 180000);
-      const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-      const extractDir = path.join(tempDir, 'extracted');
-      fs.mkdirSync(extractDir, { recursive: true });
+    const timeout = Math.min(options.timeoutMs || 60000, 180000);
+    const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+    const extractDir = path.join(tempDir, 'extracted');
+    fs.mkdirSync(extractDir, { recursive: true });
 
-      // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
-      if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-        await extractSourceArchive({
+    // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
+    let entryCount: number;
+    let skippedLinks: string[] = [];
+    if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
+      const extraction = await extractSourceArchive(
+        {
           p7zBin,
           inputPath,
           extractDir,
@@ -820,19 +862,26 @@ export async function convertWithNative7z(
           timeout,
           maxBuffer,
           options,
-        });
-      } else {
-        const destPath = path.join(extractDir, originalFilename || `file.${src}`);
-        fs.copyFileSync(inputPath, destPath);
-      }
+        },
+        src
+      );
+      entryCount = extraction.entryCount;
+      skippedLinks = extraction.skippedLinks;
+    } else {
+      // The caller-supplied name becomes a single path component inside the extraction root.
+      const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
+      fs.copyFileSync(inputPath, destPath);
+      entryCount = 1;
+    }
 
-      const extractedFiles = fs.readdirSync(extractDir);
-      if (extractedFiles.length === 0) {
-        throw new Error('7-Zip extraction completed without producing any files');
-      }
+    if (entryCount === 0) {
+      throw new ConversionFailedError('The archive contains no files to convert.');
+    }
 
-      const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-      const packaged = await package7zArchive({
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+    let packaged: boolean;
+    try {
+      packaged = await package7zArchive({
         p7zBin,
         tgt,
         extractDir,
@@ -842,27 +891,22 @@ export async function convertWithNative7z(
         maxBuffer,
         options,
       });
-      if (!packaged || !fs.existsSync(tempOutputPath)) {
-        throw new Error('7-Zip packaging failed to produce output archive');
-      }
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        tgt,
-        baseName,
-        'native-7z',
-        Date.now() - startTime
-      );
-    });
-  } catch (err) {
-    if (options.throwOnUnavailable) {
-      throw err;
+    } catch (err) {
+      throw toPackagingFailure(err, tgt);
     }
-    return null;
-  }
+    if (!packaged || !fs.existsSync(tempOutputPath)) {
+      throw new ConversionFailedError('7-Zip packaging failed to produce output archive');
+    }
+
+    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    const result = createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
+    if (skippedLinks.length > 0) {
+      result.skippedLinks = skippedLinks;
+    }
+    return result;
+  });
 }
 
 /**

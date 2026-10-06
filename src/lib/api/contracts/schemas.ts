@@ -392,6 +392,12 @@ export const ConversionOptionsSchema = {
       items: { type: 'string' },
       description: 'Glob patterns for selective extraction from archives.',
     },
+    skipLinks: {
+      type: 'boolean',
+      default: false,
+      description:
+        'Extract archives that contain symbolic or hard links by leaving those entries out. By default such archives are rejected. The skipped entry names are reported in the result as skippedLinks.',
+    },
     repair: {
       type: 'boolean',
       description: 'Attempt archive repair mode (supported for ZIP via zip -FF).',
@@ -1255,13 +1261,32 @@ export const UsageQueryResponseSchema = {
 export const ArchiveInspectResponseSchema = {
   $id: 'https://easyconvert.local/schemas/archive-inspect-response.json',
   type: 'object',
-  required: ['format', 'totalEntries', 'totalUncompressedBytes', 'totalCompressedBytes', 'isEncrypted', 'entries'],
+  required: [
+    'format',
+    'totalEntries',
+    'totalUncompressedBytes',
+    'totalCompressedBytes',
+    'isEncrypted',
+    'entries',
+    'extractable',
+    'unextractableReasons',
+  ],
   properties: {
     format: { type: 'string', description: 'Detected archive format standard.' },
     totalEntries: { type: 'integer', minimum: 0, description: 'Total number of items in the archive.' },
     totalUncompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of uncompressed file sizes in bytes.' },
     totalCompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of compressed storage sizes in bytes.' },
     isEncrypted: { type: 'boolean', description: 'Whether archive or its entries require a password.' },
+    extractable: {
+      type: 'boolean',
+      description:
+        'False when extraction would refuse the archive because of links, unsafe paths, special entries or duplicate paths. Inspection reports these and never follows them.',
+    },
+    unextractableReasons: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'One line per category that blocks extraction, with a count and the first offending entry.',
+    },
     entries: {
       type: 'array',
       items: {
@@ -1275,6 +1300,16 @@ export const ArchiveInspectResponseSchema = {
           isDirectory: { type: 'boolean', description: 'Whether this entry represents a directory.' },
           modifiedAt: { type: 'string', description: 'ISO 8601 modification timestamp.' },
           crc32: { type: 'string', description: 'Hex-encoded CRC32 checksum.' },
+          kind: {
+            type: 'string',
+            enum: ['symlink', 'hardlink', 'special'],
+            description: 'Present for link and device/FIFO/socket entries. Links are never resolved.',
+          },
+          unsafePath: {
+            type: 'boolean',
+            description: 'The name is absolute, traverses with `..`, or is invalid. The name is reported verbatim.',
+          },
+          duplicate: { type: 'boolean', description: 'Another entry in the archive has the same path.' },
         },
       },
     },
