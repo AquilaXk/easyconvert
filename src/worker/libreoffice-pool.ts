@@ -10,6 +10,7 @@ import {
   SandboxedTimeoutError,
 } from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
+import { buildPdfExportFilterData } from '../lib/conversions/pdf-export-options';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 /** Engine name reported by the typed error when the pool cannot serve conversions. */
@@ -139,6 +140,16 @@ const MIME_TYPES: Record<string, string> = {
   csv: 'text/csv',
 };
 
+const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
+const PRESENTATION_SOURCES: ReadonlySet<string> = new Set(['pptx', 'ppt', 'odp', 'potx', 'key']);
+
+/** PDF export filter of the LibreOffice component that opens a source format. */
+function pdfExportFilterName(sourceFormat: string): string {
+  if (SPREADSHEET_SOURCES.has(sourceFormat)) return 'calc_pdf_Export';
+  if (PRESENTATION_SOURCES.has(sourceFormat)) return 'impress_pdf_Export';
+  return 'writer_pdf_Export';
+}
+
 /**
  * Resolves compliant LibreOffice --convert-to filter specification according to
  * source document domain and output parameters (PDF/A profiles, lossless compression).
@@ -156,28 +167,7 @@ export function resolveLibreOfficeFilter(
   }
 
   if (tgt === 'pdf') {
-    const isSpreadsheet = ['xlsx', 'xls', 'ods', 'csv', 'tsv'].includes(src);
-    const isPresentation = ['pptx', 'ppt', 'odp', 'potx', 'key'].includes(src);
-    const filterName = isSpreadsheet
-      ? 'calc_pdf_Export'
-      : isPresentation
-      ? 'impress_pdf_Export'
-      : 'writer_pdf_Export';
-
-    const pdfVersion = (options.pdfVersion || options.pdfStandard || '').toLowerCase();
-    if (pdfVersion === 'pdfa' || pdfVersion === 'pdfa-1b' || pdfVersion === 'pdf/a-1b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"1"}}`;
-    }
-    if (pdfVersion === 'pdfa-2b' || pdfVersion === 'pdf/a-2b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"2"}}`;
-    }
-    if (pdfVersion === 'pdfa-3b' || pdfVersion === 'pdf/a-3b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"3"}}`;
-    }
-
-    if (options.losslessImageCompression) {
-      return `${tgt}:${filterName}:{"UseLosslessCompression":{"type":"boolean","value":"true"}}`;
-    }
+    return `${tgt}:${pdfExportFilterName(src)}:${JSON.stringify(buildPdfExportFilterData(options))}`;
   }
 
   return tgt;

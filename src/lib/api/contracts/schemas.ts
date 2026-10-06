@@ -60,7 +60,7 @@ export const PdfAOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdfa-options.json',
   type: 'object',
   properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
+    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
     recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
   },
 } as const;
@@ -105,6 +105,11 @@ export const ConversionOptionsSchema = {
       minimum: 72,
       maximum: 600,
       description: 'Dots per inch resolution (72-600).',
+    },
+    layout: {
+      type: 'boolean',
+      description:
+        'PDF to TXT: keep the physical page layout so table rows stay on one line. Defaults to false, which reads text in reading order (column after column).',
     },
     colorDepth: {
       type: 'integer',
@@ -717,7 +722,7 @@ export const ConversionOptionsSchema = {
     pdfStandard: {
       type: 'string',
       enum: ['pdfa', 'pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
-      description: 'PDF archival standard conformance level.',
+      description: "PDF archival standard conformance level. The bare value 'pdfa' means pdfa-2b.",
     },
     pdfVersion: {
       type: 'string',
@@ -730,6 +735,20 @@ export const ConversionOptionsSchema = {
     losslessImageCompression: {
       type: 'boolean',
       description: 'Preserve lossless pixel compression during document export.',
+    },
+    imageDpi: {
+      type: 'integer',
+      minimum: 72,
+      maximum: 1200,
+      description:
+        'Office to PDF: downsample embedded images to this resolution (72-1200). Defaults to keeping images at their source resolution.',
+    },
+    jpegQuality: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description:
+        'Office to PDF: re-encode embedded JPEG images at this quality (1-100). Defaults to keeping the source JPEG stream byte for byte.',
     },
     watermark: {
       type: 'object',
@@ -978,6 +997,25 @@ export const ProblemDetailsSchema = {
     error: {
       type: 'string',
       description: 'Legacy compatibility error message mirroring detail.',
+    },
+  },
+} as const;
+
+/** Members a PDF/A validation problem (HTTP 422) adds to the problem details. */
+export const PdfaValidationProblemSchema = {
+  $id: 'https://easyconvert.local/schemas/pdfa-validation-problem.json',
+  type: 'object',
+  required: ['profile', 'failedRules'],
+  properties: {
+    profile: {
+      type: 'string',
+      enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
+      description: 'The PDF/A level the request asked for and the output was validated against.',
+    },
+    failedRules: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'veraPDF rule IDs the output failed, as `<clause>-<test number>` (for example `6.2.11.4.1-1`).',
     },
   },
 } as const;

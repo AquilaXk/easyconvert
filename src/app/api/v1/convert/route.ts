@@ -6,7 +6,11 @@ import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
-import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import {
+  createProblemDetailsResponse,
+  createEngineUnavailableResponse,
+  createPdfPostprocessResponse,
+} from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
@@ -16,6 +20,7 @@ import {
   ConversionFailedError,
   PayloadLimitError,
   EngineUnavailableError,
+  PdfPostprocessError,
 } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
@@ -407,6 +412,9 @@ export async function POST(req: NextRequest) {
     }
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
+    }
+    if (err instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
     }
     if (err instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(

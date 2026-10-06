@@ -26,6 +26,7 @@ import {
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
 import { assertNoComplexScript } from './ctl';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex } from './pdf-fonts';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
@@ -951,6 +952,7 @@ export async function convertData(
   const baseName = originalFilename.replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (src === 'parquet' && tgt === 'parquet') {
     // Decoding re-infers column types (INT32 -> INT64, FLOAT -> DOUBLE) and drops the codec, so a
@@ -1121,12 +1123,18 @@ async function renderDataToPdf(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
+    // Embedded fonts chosen per run by glyph coverage (EngineUnavailableError when none covers a character).
+    const writer = new PdfUnicodeTextWriter(doc);
+
     // Title header
-    doc.fillColor('#5C6BC0').fontSize(16).text(title, 30, 30);
-    doc.fillColor('#8E95AF').fontSize(9).text(`Structured Data Export • ${new Date().toLocaleDateString()}`, 30, 50);
+    doc.fillColor('#5C6BC0').fontSize(16);
+    writer.write(title, {}, 30, 30);
+    doc.fillColor('#8E95AF').fontSize(9);
+    writer.write(`Structured Data Export • ${new Date().toLocaleDateString()}`, {}, 30, 50);
 
     if (!Array.isArray(data) || data.length === 0) {
-      doc.fillColor('#4D536B').fontSize(11).text('No records found in dataset.', 30, 80);
+      doc.fillColor('#4D536B').fontSize(11);
+      writer.write('No records found in dataset.', {}, 30, 80);
       doc.end();
       return;
     }
@@ -1150,17 +1158,13 @@ async function renderDataToPdf(
     doc.rect(startX, currY, pageWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(1).stroke();
 
     headers.forEach((h, idx) => {
-      doc.fillColor('#1F2340').fontSize(10).font('Helvetica-Bold');
-      doc.text(h, startX + idx * colWidth + 6, currY + 6, {
-        width: colWidth - 12,
-        ellipsis: true,
-      });
+      doc.fillColor('#1F2340').fontSize(10);
+      writer.write(h, { width: colWidth - 12, ellipsis: true }, startX + idx * colWidth + 6, currY + 6);
     });
 
     currY += rowHeight;
 
     // Data rows
-    doc.font('Helvetica');
     data.slice(0, 200).forEach((row, rIdx) => {
       if (currY + rowHeight > doc.page.height - 40) {
         doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
@@ -1175,10 +1179,7 @@ async function renderDataToPdf(
       headers.forEach((h, idx) => {
         const val = String(row[h] ?? '');
         doc.fillColor('#4D536B').fontSize(9);
-        doc.text(val, startX + idx * colWidth + 6, currY + 6, {
-          width: colWidth - 12,
-          ellipsis: true,
-        });
+        writer.write(val, { width: colWidth - 12, ellipsis: true }, startX + idx * colWidth + 6, currY + 6);
       });
 
       currY += rowHeight;

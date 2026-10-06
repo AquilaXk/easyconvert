@@ -277,7 +277,7 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
       expect(convertArgs).toContain('--norestore');
       expect(convertArgs).toContain('--nofirststartwizard');
       expect(convertArgs).toContain('--convert-to');
-      expect(convertArgs).toContain('pdf');
+      expect(convertArgs[convertArgs.indexOf('--convert-to') + 1]).toMatch(/^pdf:\w+_pdf_Export:\{/);
       expect(convertArgs.some((arg: string) => arg.startsWith('-env:UserInstallation=file://'))).toBe(true);
 
       // Verify worker was returned to READY
@@ -355,29 +355,46 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
     }, REAL_SOFFICE_TIMEOUT_MS);
 
     it('resolves compliant LibreOffice PDF export filter specifications according to document domain and options', () => {
-      // 1. Default clean format without redundant filter options
-      expect(resolveLibreOfficeFilter('pdf', 'docx')).toBe('pdf');
-      expect(resolveLibreOfficeFilter('pdf', 'xlsx')).toBe('pdf');
-      expect(resolveLibreOfficeFilter('pdf', 'pptx')).toBe('pdf');
+      // Hand-written goldens: JSON FilterData as LibreOffice's --convert-to syntax defines it.
+      const keepJpegData =
+        '"ReduceImageResolution":{"type":"boolean","value":"false"},"Quality":{"type":"long","value":"100"},' +
+        '"ExportBookmarks":{"type":"boolean","value":"true"}';
+
+      // 1. The default export keeps JPEG streams (no downsampling, quality 100) and writes the outline
+      expect(resolveLibreOfficeFilter('pdf', 'docx')).toBe(`pdf:writer_pdf_Export:{${keepJpegData}}`);
+      expect(resolveLibreOfficeFilter('pdf', 'xlsx')).toBe(`pdf:calc_pdf_Export:{${keepJpegData}}`);
+      expect(resolveLibreOfficeFilter('pdf', 'pptx')).toBe(`pdf:impress_pdf_Export:{${keepJpegData}}`);
 
       // 2. PDF/A-1b profile for document
       expect(resolveLibreOfficeFilter('pdf', 'docx', { pdfStandard: 'pdfa-1b' })).toBe(
-        'pdf:writer_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"1"}}'
+        `pdf:writer_pdf_Export:{${keepJpegData},"SelectPdfVersion":{"type":"long","value":"1"}}`
       );
 
-      // 3. PDF/A-2b profile for spreadsheet
-      expect(resolveLibreOfficeFilter('pdf', 'xlsx', { pdfStandard: 'pdfa-2b' })).toBe(
-        'pdf:calc_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"2"}}'
+      // 3. PDF/A-2b profile for spreadsheet, requested through the pdfa option
+      expect(resolveLibreOfficeFilter('pdf', 'xlsx', { pdfa: { conformance: 'pdfa-2b' } })).toBe(
+        `pdf:calc_pdf_Export:{${keepJpegData},"SelectPdfVersion":{"type":"long","value":"2"}}`
       );
 
       // 4. PDF/A-3b profile for presentation
       expect(resolveLibreOfficeFilter('pdf', 'pptx', { pdfStandard: 'pdfa-3b' })).toBe(
-        'pdf:impress_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"3"}}'
+        `pdf:impress_pdf_Export:{${keepJpegData},"SelectPdfVersion":{"type":"long","value":"3"}}`
       );
+
+      // 5. A watermarked PDF/A request exports plain: the PDF/A conversion runs after the watermark
+      expect(
+        resolveLibreOfficeFilter('pdf', 'docx', { pdfa: { conformance: 'pdfa-2b' }, watermark: { text: 'DRAFT' } })
+      ).toBe(`pdf:writer_pdf_Export:{${keepJpegData}}`);
 
       // 6. Lossless image compression
       expect(resolveLibreOfficeFilter('pdf', 'docx', { losslessImageCompression: true })).toBe(
-        'pdf:writer_pdf_Export:{"UseLosslessCompression":{"type":"boolean","value":"true"}}'
+        `pdf:writer_pdf_Export:{${keepJpegData},"UseLosslessCompression":{"type":"boolean","value":"true"}}`
+      );
+
+      // 6b. Compression profile: downsample and re-encode only when asked
+      expect(resolveLibreOfficeFilter('pdf', 'docx', { imageDpi: 150, jpegQuality: 60 })).toBe(
+        'pdf:writer_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"true"},' +
+          '"Quality":{"type":"long","value":"60"},"ExportBookmarks":{"type":"boolean","value":"true"},' +
+          '"MaxImageResolution":{"type":"long","value":"150"}}'
       );
 
       // 7. Explicit custom filter

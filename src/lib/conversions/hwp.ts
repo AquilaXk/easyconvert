@@ -1,12 +1,12 @@
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
-import PDFDocument from 'pdfkit';
 import sharp from 'sharp';
 import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
 import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
 import { assertNoComplexScript } from './ctl';
+import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 
 /**
  * HWP 5.0 Record Tag IDs
@@ -1201,112 +1201,42 @@ export async function convertHwp(
   return convertHwpDocument(doc, targetFormat, options, baseName);
 }
 
+/** Heading level HWP heading paragraphs are drawn at. */
+const HWP_PDF_HEADING_LEVEL = 3;
+
 /**
- * Renders HWP document paragraphs and tables into PDF using PDFKit
+ * Renders HWP paragraphs and tables into PDF. The page holds only the document content (the
+ * title goes to the PDF metadata), drawn with embedded fonts covering every character.
  */
 async function generatePdfFromHwp(
   doc: HwpDocument,
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS HWP to PDF');
-  if (doc.paragraphs) {
-    for (const p of doc.paragraphs) {
-      if (p.text) assertNoComplexScript(p.text, 'Pure-TS HWP to PDF');
-    }
+  for (const p of doc.paragraphs ?? []) {
+    if (p.text) assertNoComplexScript(p.text, 'Pure-TS HWP to PDF');
   }
-  if (doc.tables) {
-    for (const tbl of doc.tables) {
-      for (const r of tbl.rows) {
-        for (const cell of r) {
-          assertNoComplexScript(cell, 'Pure-TS HWP to PDF');
-        }
+  for (const tbl of doc.tables ?? []) {
+    for (const r of tbl.rows) {
+      for (const cell of r) {
+        assertNoComplexScript(cell, 'Pure-TS HWP to PDF');
       }
     }
   }
 
-  return new Promise((resolve, reject) => {
-    const isLandscape = options.orientation === 'landscape';
-    const pdf = new PDFDocument({
-      size: 'A4',
-      layout: isLandscape ? 'landscape' : 'portrait',
-      margin: 50,
-      info: { Title: title, Creator: 'EasyConvert HWP Engine' },
-    });
-
-    const chunks: Buffer[] = [];
-    pdf.on('data', (c) => chunks.push(c));
-    pdf.on('end', () => resolve(Buffer.concat(chunks)));
-    pdf.on('error', (err) => reject(err));
-
-    // Accent header
-    pdf.rect(50, 40, pdf.page.width - 100, 3).fill('#5C6BC0');
-    pdf.moveDown(1.5);
-
-    // Title
-    pdf.fillColor('#1F2340').fontSize(18).text(title);
-    pdf.moveDown(0.8);
-
-    // Paragraphs
-    for (const p of doc.paragraphs) {
-      if (p.isHeading) {
-        pdf.moveDown(0.5);
-        pdf.fillColor('#5C6BC0').fontSize(14).text(p.text);
-        pdf.fillColor('#1F2340').fontSize(11);
-        pdf.moveDown(0.3);
-      } else {
-        pdf.fontSize(11).text(p.text, { align: 'left', lineGap: 3 });
-        pdf.moveDown(0.4);
-      }
-    }
-
-    // Tables
-    for (const tbl of doc.tables) {
-      if (tbl.rows.length === 0) continue;
-      pdf.moveDown(0.8);
-
-      const tableWidth = pdf.page.width - 100;
-      const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
-      const colWidth = tableWidth / colCount;
-
-      tbl.rows.forEach((row, rIdx) => {
-        const y = pdf.y;
-        if (y > pdf.page.height - 80) {
-          pdf.addPage();
-        }
-
-        const isHeader = rIdx === 0;
-        const currentY = pdf.y;
-        const rowHeight = 24;
-
-        // Background highlight for header row
-        if (isHeader) {
-          pdf.rect(50, currentY, tableWidth, rowHeight).fill('#F0F2FE');
-        }
-
-        row.forEach((cell, cIdx) => {
-          const x = 50 + cIdx * colWidth;
-          // Border
-          pdf.rect(x, currentY, colWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(0.5).stroke();
-
-          // Text
-          pdf.fillColor(isHeader ? '#1F2340' : '#4A5568')
-            .fontSize(isHeader ? 10 : 9)
-            .text(cell, x + 6, currentY + 6, {
-              width: colWidth - 12,
-              height: rowHeight - 8,
-              ellipsis: true,
-            });
-        });
-
-        pdf.y = currentY + rowHeight;
-      });
-
-      pdf.moveDown(1);
-    }
-
-    pdf.end();
-  });
+  const blocks: PdfBlock[] = [];
+  for (const p of doc.paragraphs ?? []) {
+    blocks.push(
+      p.isHeading
+        ? { kind: 'heading', level: HWP_PDF_HEADING_LEVEL, content: [{ text: p.text }] }
+        : { kind: 'paragraph', content: [{ text: p.text }] }
+    );
+  }
+  for (const tbl of doc.tables ?? []) {
+    if (tbl.rows.length === 0) continue;
+    blocks.push({ kind: 'table', rows: tbl.rows.map((row) => row.map((cell) => ({ content: [{ text: cell }], span: 1 }))) });
+  }
+  return renderPdfBlocks(blocks, { orientation: options.orientation, title });
 }
 
 /**
