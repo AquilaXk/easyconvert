@@ -176,8 +176,10 @@ describe('OcrWorkerPool', () => {
   it('rejects with a typed error once the wait queue is full', async () => {
     const pool = makePool({ maxWorkersPerKey: 1, maxWaiters: 1 });
     const running = [recognizeOnce(pool), recognizeOnce(pool)];
-    await expect(recognizeOnce(pool)).rejects.toBeInstanceOf(OcrEngineUnavailableError);
-    await Promise.all(running);
+    await expect(recognizeOnce(pool)).rejects.toThrow(/OCR is saturated: 1 jobs are already waiting/);
+    const finished = await Promise.all(running);
+    expect(finished.map((r) => r.data.text)).toEqual(['worker-0', 'worker-0']);
+    expect(pool.created).toHaveLength(1);
   });
 
   it('fails a job that exceeds its time limit and terminates the stuck worker', async () => {
