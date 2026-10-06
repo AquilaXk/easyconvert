@@ -1395,7 +1395,7 @@ const BITS_PER_BYTE = 8;
 
 /** MD5 over the little-endian signed interleaved samples, each padded to whole bytes (section 8.2). */
 function flacPcmMd5(samples: Int16Array | Int32Array, bitsPerSample: number): Buffer {
-  const hash = crypto.createHash('md5');
+  const hash = crypto.createHash('md5'); // NOSONAR S4790: FLAC STREAMINFO integrity field (RFC 9639 section 8.2), not a security control
   const bytesPerSample = Math.ceil(bitsPerSample / BITS_PER_BYTE);
   if (samples instanceof Int16Array && bytesPerSample === 2 && LITTLE_ENDIAN_HOST) {
     hash.update(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
