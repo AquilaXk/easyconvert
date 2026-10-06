@@ -13,6 +13,8 @@ export interface RawPage {
   rotate?: number;
   /** Extra resource entries such as `/XObject << /X1 9 0 R >>`. */
   resources?: string;
+  /** Extra entries of the font resource dictionary such as `/F2 6 0 R`. */
+  fonts?: string;
 }
 
 /** Objects numbered from 1 are the catalog, the page tree, the font; page k uses objects 4+2k (page) and 5+2k (content). */
@@ -34,7 +36,7 @@ export function rawPdf(pages: RawPage[], extraObjects: string[] = []): Buffer {
   objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
   pages.forEach((page, index) => {
     const rotate = page.rotate === undefined ? '' : ` /Rotate ${page.rotate}`;
-    const resources = `<< /Font << /F1 3 0 R >> ${page.resources ?? ''} >>`;
+    const resources = `<< /Font << /F1 3 0 R ${page.fonts ?? ''} >> ${page.resources ?? ''} >>`;
     objects.push(
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}]${rotate} /Resources ${resources} /Contents ${pageObjectNumber(index) + 1} 0 R >>`
     );
