@@ -1236,9 +1236,12 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
   }
 }
 
-/** Runs a job on a worker thread with a deadline, or in this thread where no worker entry exists. */
-export async function runPdfTextJob(pdfBuffer: Buffer, job: PdfTextJob): Promise<PdfTextJobResult> {
-  return (await runPdfTextJobInThread(pdfBuffer, job)) ?? analyzePdfPagesInProcess(pdfBuffer, job);
+/**
+ * Runs a job on a worker thread with a wall-clock deadline.
+ * @throws EngineUnavailableError when no thread can be run (see pdf-text-host.ts).
+ */
+export function runPdfTextJob(pdfBuffer: Buffer, job: PdfTextJob): Promise<PdfTextJobResult> {
+  return runPdfTextJobInThread(pdfBuffer, job);
 }
 
 /** Word geometry for the requested pages, as one OcrResult per page; a page without text yields an empty result. */

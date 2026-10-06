@@ -76,6 +76,16 @@ export function extractTextFromTex(tex: string): string {
     .trim();
 }
 
+/**
+ * Reading a text layer is best effort for conversions that do not export its geometry: a document whose
+ * text layer cannot be read is handled as a scanned one. An engine that cannot run at all is the service's
+ * failure and is reported, not hidden behind that fallback.
+ */
+function treatUnreadableTextLayerAsScanned(error: unknown): PdfPageAnalysis[] {
+  if (error instanceof EngineUnavailableError) throw error;
+  return [];
+}
+
 export async function convertDocument(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -191,7 +201,7 @@ export async function convertDocument(
       pageAnalyses = read.analyses;
       textLayerResults = read.geometry;
     } else {
-      pageAnalyses = await inspectPdfPagesTextDensity(inputBuffer, densityThreshold).catch(() => []);
+      pageAnalyses = await inspectPdfPagesTextDensity(inputBuffer, densityThreshold).catch(treatUnreadableTextLayerAsScanned);
     }
 
     const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);

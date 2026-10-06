@@ -33,7 +33,7 @@ import {
   ocrSegmentationFor,
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
-import { analyzePdfPagesInProcess } from './pdf-text-geometry';
+import { runPdfTextJob } from './pdf-text-geometry';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
@@ -290,13 +290,14 @@ async function uprightImage(imageBuffer: Buffer): Promise<Buffer> {
 }
 
 /**
- * Inspects each page of a PDF document for existing digital text layer density.
+ * Inspects each page of a PDF document for existing digital text layer density, on the PDF text worker
+ * thread and under its wall-clock deadline.
  */
 export async function inspectPdfPagesTextDensity(
   pdfBuffer: Buffer,
   densityThreshold: number = 15
 ): Promise<PdfPageAnalysis[]> {
-  return (await analyzePdfPagesInProcess(pdfBuffer, { densityThreshold, geometry: 'none' })).analyses;
+  return (await runPdfTextJob(pdfBuffer, { densityThreshold, geometry: 'none' })).analyses;
 }
 
 /**
