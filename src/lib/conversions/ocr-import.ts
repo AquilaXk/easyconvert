@@ -82,7 +82,7 @@ function collapseSpace(parts: string[]): string {
   const words: string[] = [];
   let start = -1;
   for (let i = 0; i <= text.length; i++) {
-    const code = i < text.length ? text.charCodeAt(i) : CH_SPACE;
+    const code = text.codePointAt(i) ?? CH_SPACE;
     const space = code === CH_SPACE || code === CH_TAB || code === CH_LF || code === CH_CR || code === CH_NBSP;
     if (space && start !== -1) {
       words.push(text.slice(start, i));
@@ -223,7 +223,7 @@ function hocrKind(className: string | undefined): HocrKind | null {
   if (!className) return null;
   let start = -1;
   for (let i = 0; i <= className.length; i++) {
-    const space = i === className.length || className.charCodeAt(i) <= CH_SPACE;
+    const space = (className.codePointAt(i) ?? CH_SPACE) <= CH_SPACE;
     if (space && start !== -1) {
       const kind = HOCR_CLASS_KINDS.get(className.slice(start, i));
       if (kind) return kind;
@@ -237,7 +237,7 @@ function hocrKind(className: string | undefined): HocrKind | null {
 
 function languageOf(attributes: MarkupAttributes): string | undefined {
   const language = attributes.lang ?? attributes['xml:lang'];
-  return language ? language : undefined;
+  return language || undefined;
 }
 
 interface PageDraft {
@@ -341,23 +341,32 @@ class HocrReader implements MarkupHandler {
     else if (this.line) this.line.text.push(text);
   }
 
+  /** Adds the finished word to its line unless it has no text. */
+  private closeWord(word: WordDraft, line: LineDraft): void {
+    const text = collapseSpace(word.text);
+    if (text !== '') {
+      const box = word.props.bbox;
+      if (!box) throw new OcrMarkupError(`The hOCR word '${text}' has no bbox.`);
+      const finished: OcrWord = { text, bbox: toBBox(box) };
+      if (word.props.xWconf !== undefined) finished.confidence = word.props.xWconf;
+      line.words.push(finished);
+    }
+    this.word = null;
+  }
+
+  private closeLine(line: LineDraft): void {
+    const finished = finishHocrLine(line);
+    if (finished && this.page) this.page.lines.push(finished);
+    this.line = null;
+  }
+
   close(_name: string, depth: number): void {
     const kind = this.kinds[depth];
     this.kinds.length = depth;
     if (kind === 'word' && this.word && this.line) {
-      const text = collapseSpace(this.word.text);
-      if (text !== '') {
-        const box = this.word.props.bbox;
-        if (!box) throw new OcrMarkupError(`The hOCR word '${text}' has no bbox.`);
-        const word: OcrWord = { text, bbox: toBBox(box) };
-        if (this.word.props.xWconf !== undefined) word.confidence = this.word.props.xWconf;
-        this.line.words.push(word);
-      }
-      this.word = null;
+      this.closeWord(this.word, this.line);
     } else if (kind === 'line' && this.line) {
-      const finished = finishHocrLine(this.line);
-      if (finished && this.page) this.page.lines.push(finished);
-      this.line = null;
+      this.closeLine(this.line);
     } else if (kind === 'par') {
       this.paragraph = undefined;
     } else if (kind === 'area') {
