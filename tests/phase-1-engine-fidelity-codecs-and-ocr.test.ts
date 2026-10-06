@@ -176,17 +176,18 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       expect(cmap16).toContain('/CIDInit /ProcSet findresource begin');
       expect(cmap16).toContain('/CMapName /Custom-ToUnicode def');
       expect(cmap16).toContain('<0000> <FFFF>');
-      expect(cmap16).toContain('1 beginbfrange');
+      // §9.10.3: a full-range bfrange would vary the first byte of the code, so none is emitted.
+      expect(cmap16).not.toContain('bfrange');
 
       const cmapWinAnsi = createWinAnsiToUnicodeCMap();
       expect(cmapWinAnsi).toContain('/CMapName /WinAnsi-ToUnicode def');
       expect(cmapWinAnsi).toContain('<00> <FF>');
 
-      // Astral code points (> 0xFFFF, e.g. U+20BB7) decomposed into 4-hex surrogate CIDs
-      const cmapAstral = createToUnicodeCMap([0x20bb7]);
-      expect(cmapAstral).toContain('2 beginbfchar');
-      expect(cmapAstral).toContain('<D842> <D842>');
-      expect(cmapAstral).toContain('<DFB7> <DFB7>');
+      // Astral code points (> 0xFFFF, e.g. U+20BB7) keep one 2-byte CID and a UTF-16BE surrogate-pair destination
+      const cmapAstral = createToUnicodeCMap([[1, 0x20bb7]]);
+      expect(cmapAstral).toContain('1 beginbfchar\n<0001> <D842DFB7>\nendbfchar');
+      expect(cmapAstral).not.toContain('<D842> <');
+      expect(cmapAstral).not.toContain('<DFB7> <');
     });
 
     it('injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers', async () => {
