@@ -71,11 +71,17 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         tesseract-ocr-kor \
         tesseract-ocr-jpn \
         qpdf \
+        default-jre-headless \
+        unzip \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
     && groupadd -g 10001 -r easyconvert \
     && useradd -u 10001 -r -g easyconvert -G video,render -m -d /home/easyconvert -s /bin/bash easyconvert
+
+# PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
+COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
+RUN /tmp/install-verapdf.sh /opt/verapdf && rm /tmp/install-verapdf.sh
 
 WORKDIR /app
 
