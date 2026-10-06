@@ -28,10 +28,10 @@ const DESKEW_STAGES: ReadonlyArray<{ stepDegrees: number; spanDegrees: number }>
 ];
 /** Ink pixels used to score an angle; on a denser page every n-th one is taken. */
 export const OCR_DESKEW_MAX_POINTS = 300_000;
+/** Pixels scanned between hand-offs to the event loop while the page is read for ink. */
+const SCAN_YIELD_PIXELS = 1 << 19;
 /** Fewer ink pixels than this carry no line structure; the page is reported as straight. */
 const DESKEW_MIN_POINTS = 50;
-/** Angles scored between hand-offs to the event loop. */
-const DESKEW_ANGLES_PER_YIELD = 8;
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
 function assertBinary(binary: Uint8Array, width: number, height: number): void {
@@ -101,33 +101,63 @@ interface InkPoints {
   radius: number;
 }
 
-/** Centre-relative coordinates of the ink pixels, thinned to at most OCR_DESKEW_MAX_POINTS. */
-function collectInk(binary: Uint8Array, width: number, height: number): InkPoints {
+/** Ink pixels in one row of the binary page. */
+function countRowInk(binary: Uint8Array, base: number, width: number): number {
+  let count = 0;
+  for (let x = 0; x < width; x++) {
+    if (binary[base + x] === SAUVOLA_INK) count++;
+  }
+  return count;
+}
+
+interface InkCursor {
+  /** Ink pixels passed so far, and ink pixels stored. */
+  seen: number;
+  taken: number;
+}
+
+/** Stores every `every`-th ink pixel of row `y`, relative to the page centre. */
+function takeRowInk(
+  binary: Uint8Array,
+  y: number,
+  width: number,
+  every: number,
+  centre: { x: number; y: number },
+  points: { xs: Int32Array; ys: Int32Array },
+  cursor: InkCursor
+): void {
+  const base = y * width;
+  for (let x = 0; x < width; x++) {
+    if (binary[base + x] !== SAUVOLA_INK) continue;
+    if (cursor.seen % every === 0) {
+      points.xs[cursor.taken] = x - centre.x;
+      points.ys[cursor.taken] = y - centre.y;
+      cursor.taken++;
+    }
+    cursor.seen++;
+  }
+}
+
+/**
+ * Centre-relative coordinates of the ink pixels, thinned to at most OCR_DESKEW_MAX_POINTS. Rows
+ * are scanned in plain functions with a hand-off to the event loop every SCAN_YIELD_PIXELS.
+ */
+async function collectInk(binary: Uint8Array, width: number, height: number): Promise<InkPoints> {
+  const rowsPerYield = Math.max(1, Math.floor(SCAN_YIELD_PIXELS / width));
   let ink = 0;
-  for (let i = 0; i < binary.length; i++) {
-    if (binary[i] === SAUVOLA_INK) ink++;
+  for (let y = 0; y < height; y++) {
+    ink += countRowInk(binary, y * width, width);
+    if ((y + 1) % rowsPerYield === 0) await yieldToEventLoop();
   }
   const every = Math.max(1, Math.ceil(ink / OCR_DESKEW_MAX_POINTS));
-  const used = Math.ceil(ink / every);
-  const xs = new Int32Array(used);
-  const ys = new Int32Array(used);
-  const centreX = width >> 1;
-  const centreY = height >> 1;
-  let seen = 0;
-  let taken = 0;
+  const points = { xs: new Int32Array(Math.ceil(ink / every)), ys: new Int32Array(Math.ceil(ink / every)) };
+  const cursor: InkCursor = { seen: 0, taken: 0 };
+  const centre = { x: width >> 1, y: height >> 1 };
   for (let y = 0; y < height; y++) {
-    const base = y * width;
-    for (let x = 0; x < width; x++) {
-      if (binary[base + x] !== SAUVOLA_INK) continue;
-      if (seen % every === 0) {
-        xs[taken] = x - centreX;
-        ys[taken] = y - centreY;
-        taken++;
-      }
-      seen++;
-    }
+    takeRowInk(binary, y, width, every, centre, points, cursor);
+    if ((y + 1) % rowsPerYield === 0) await yieldToEventLoop();
   }
-  return { xs, ys, radius: Math.ceil(Math.hypot(width, height) / 2) + 2 };
+  return { ...points, radius: Math.ceil(Math.hypot(width, height) / 2) + 2 };
 }
 
 /**
@@ -169,7 +199,7 @@ export interface SkewEstimate {
  */
 export async function estimateSkew(binary: Uint8Array, width: number, height: number): Promise<SkewEstimate> {
   assertBinary(binary, width, height);
-  const points = collectInk(binary, width, height);
+  const points = await collectInk(binary, width, height);
   const counts = new Uint32Array(2 * points.radius + 1);
   const baseline = projectionScore(points, 0, counts);
   if (points.xs.length < DESKEW_MIN_POINTS) {
@@ -178,7 +208,6 @@ export async function estimateSkew(binary: Uint8Array, width: number, height: nu
 
   let bestDegrees = 0;
   let bestScore = baseline;
-  let evaluated = 0;
   for (const stage of DESKEW_STAGES) {
     const centre = bestDegrees;
     const steps = Math.round(stage.spanDegrees / stage.stepDegrees);
@@ -191,7 +220,7 @@ export async function estimateSkew(binary: Uint8Array, width: number, height: nu
         bestScore = score;
         bestDegrees = degrees;
       }
-      if (++evaluated % DESKEW_ANGLES_PER_YIELD === 0) await yieldToEventLoop();
+      await yieldToEventLoop();
     }
   }
   projectionScore(points, bestDegrees, counts);

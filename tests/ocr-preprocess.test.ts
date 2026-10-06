@@ -93,7 +93,7 @@ describe('Sauvola binarization', () => {
   });
 
   for (const windowSize of [7, 15, 31]) {
-    it(`equals the per-window reference on random pixels (window ${windowSize}, several strips)`, async () => {
+    it(`equals the per-window reference on random pixels (window ${windowSize}, ring buffer wraps many times)`, async () => {
       const width = 53;
       const height = 47;
       const next = mulberry32(windowSize);
@@ -101,8 +101,8 @@ describe('Sauvola binarization', () => {
       const k = 0.34;
       const range = 128;
       const expected = referenceSauvola(gray, width, height, windowSize, k, range);
-      // A tiny cell budget forces strips of the minimum height, exercising the strip seams.
-      const actual = await sauvolaBinarize(gray, width, height, { windowSize, k, dynamicRange: range, maxStripCells: 1 });
+      // The 47-row page is many times the ring of 2 * half + 2 integral rows, so rows are reused.
+      const actual = await sauvolaBinarize(gray, width, height, { windowSize, k, dynamicRange: range, yieldEveryPixels: 1 });
       expect(Buffer.from(actual).equals(Buffer.from(expected))).toBe(true);
     });
   }
@@ -158,7 +158,7 @@ describe('Sauvola binarization', () => {
     ).rejects.toThrow(OcrPreprocessError);
   });
 
-  it('returns control to the event loop between strips', async () => {
+  it('returns control to the event loop while binarizing', async () => {
     const width = 300;
     const height = 400;
     const gray = new Uint8Array(width * height).fill(200);
@@ -170,11 +170,51 @@ describe('Sauvola binarization', () => {
       setImmediate(spin);
     };
     setImmediate(spin);
-    // 400 rows in strips of 16 rows is 25 strips, so 24 hand-offs.
-    await sauvolaBinarize(gray, width, height, { windowSize: 5, maxStripCells: 1 });
+    // One hand-off per row built and per row thresholded, at least 400.
+    await sauvolaBinarize(gray, width, height, { windowSize: 5, yieldEveryPixels: 1 });
     running = false;
-    expect(ticks).toBeGreaterThanOrEqual(24);
+    expect(ticks).toBeGreaterThanOrEqual(height);
   });
+
+  it('hands control back every quarter of a million pixels by default', async () => {
+    const width = 1500;
+    const height = 1500;
+    const gray = new Uint8Array(width * height).fill(200);
+    let ticks = 0;
+    let running = true;
+    const spin = (): void => {
+      if (!running) return;
+      ticks++;
+      setImmediate(spin);
+    };
+    setImmediate(spin);
+    await sauvolaBinarize(gray, width, height, { windowSize: 31 });
+    running = false;
+    // 2.25 million pixels are integrated and 2.25 million thresholded: 4.5 million / 262144 = 17.
+    expect(ticks).toBeGreaterThanOrEqual(16);
+  });
+
+  it('stays exact on a page whose cumulative sums exceed 32 bits', async () => {
+    // 5000 x 4400 = 22 million pixels of level 230 sum to 5.06e9, beyond a Uint32.
+    const width = 5000;
+    const height = 4400;
+    const paper = 230;
+    const stroke = 40;
+    const gray = new Uint8Array(width * height).fill(paper);
+    const strokeColumn = (x: number): boolean => x % 500 >= 250 && x % 500 < 256;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) if (strokeColumn(x)) gray[y * width + x] = stroke;
+    }
+    const out = await sauvolaBinarize(gray, width, height, { windowSize: 21 });
+    let wrong = 0;
+    // Rows from the last quarter, where the running sums have wrapped, plus the first rows.
+    for (const y of [0, 1, 2, 3300, 3301, 4000, 4398, 4399]) {
+      for (let x = 0; x < width; x++) {
+        if ((out[y * width + x] === SAUVOLA_INK) !== strokeColumn(x)) wrong++;
+      }
+    }
+    expect(wrong).toBe(0);
+  }, 60_000);
 });
 
 /** A page of `lines` dark bands of `bandHeight` rows, `pitch` rows apart, on paper. */
@@ -576,6 +616,42 @@ describe('preprocessOcrImage', () => {
     expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: false });
     const expected = await sharp(source).rotate().png().toBuffer();
     expect(result.image.equals(expected)).toBe(true);
+  });
+
+  it('reads text on a transparent background (alpha is flattened onto white)', async () => {
+    const width = 700;
+    const height = 420;
+    const bands = bandPage(width, height, 8, 14, 46);
+    const rgba = Buffer.alloc(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+      const ink = bands[i] === SAUVOLA_INK;
+      // Ink is opaque black; the paper is fully transparent black, which would read as ink if the
+      // alpha channel were ignored.
+      rgba[i * 4 + 3] = ink ? 255 : 0;
+    }
+    const png = await sharp(rgba, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const result = await preprocessOcrImage(png);
+    expect(result.lineHeightPx).toBe(14);
+    const { data } = await grayPixels(result.image);
+    const inkShare = Array.from(data).filter((value) => value === SAUVOLA_INK).length / data.length;
+    expect(inkShare).toBeGreaterThan(0.1);
+    expect(inkShare).toBeLessThan(0.35);
+  });
+
+  it('reads a 16-bit gray page', async () => {
+    const width = 700;
+    const height = 420;
+    const bands = bandPage(width, height, 8, 14, 46);
+    const png = await sharp(Buffer.from(bands), { raw: { width, height, channels: 1 } })
+      .toColourspace('grey16')
+      .png()
+      .toBuffer();
+    expect((await sharp(png).metadata()).depth).toBe('ushort');
+    const result = await preprocessOcrImage(png);
+    expect(result.lineHeightPx).toBe(14);
+    expect([result.geometry.sourceWidth, result.geometry.sourceHeight]).toEqual([width, height]);
+    const { data } = await grayPixels(result.image);
+    expect(data.length).toBe(result.geometry.outputWidth * result.geometry.outputHeight);
   });
 
   it('rejects bytes that are not an image', async () => {

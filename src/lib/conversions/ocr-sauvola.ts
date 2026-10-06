@@ -10,6 +10,9 @@ import { OcrPreprocessError } from '../types';
  * the pixel, k is the sensitivity and R the largest standard deviation (128 for 8-bit data).
  * Window sums come from integral images of the values and of their squares, so each pixel costs
  * a constant number of operations whatever the window size.
+ *
+ * Only the integral rows a window can reach are kept (a ring of 2 * half + 2 rows), so memory
+ * follows the window and the page width, not the page area.
  */
 
 /** Sensitivity; the paper recommends 0.5, lower values keep thin strokes on noisy backgrounds. */
@@ -23,24 +26,20 @@ export const SAUVOLA_MAX_WINDOW = 255;
 export const SAUVOLA_INK = 0;
 export const SAUVOLA_PAPER = 255;
 /**
- * Integral image cells held at once (4 bytes per sum and 8 per sum of squares). Rows are
- * processed in strips so a large page needs a few megabytes, not a table the size of the page.
+ * Pixels processed between hand-offs to the event loop. At roughly 25 ns per pixel this keeps
+ * each uninterrupted run near 6 ms.
  */
-export const SAUVOLA_MAX_STRIP_CELLS = 1 << 20;
-/** A strip always advances by at least this many rows, whatever the window and width. */
-export const SAUVOLA_MIN_STRIP_ROWS = 16;
+export const SAUVOLA_YIELD_PIXELS = 1 << 18;
 /** Largest image accepted; larger inputs are rejected before anything is allocated. */
 export const SAUVOLA_MAX_PIXELS = 100_000_000;
-/** Sums of 8-bit values stay exact in a Uint32Array while a strip holds fewer cells than this. */
-const UINT32_SAFE_CELLS = Math.floor(0xffffffff / 255);
 
 export interface SauvolaOptions {
   /** Window side in pixels; rounded up to an odd number inside the allowed range. */
   windowSize: number;
   k?: number;
   dynamicRange?: number;
-  /** Overrides SAUVOLA_MAX_STRIP_CELLS (tests use it to force several strips). */
-  maxStripCells?: number;
+  /** Overrides SAUVOLA_YIELD_PIXELS (tests use it to force many hand-offs). */
+  yieldEveryPixels?: number;
 }
 
 /** Hands control back to the event loop so a long binarization does not stall other requests. */
@@ -69,6 +68,80 @@ function assertImage(gray: Uint8Array, width: number, height: number): void {
   }
 }
 
+
+/** The integral rows a window can reach, kept in a ring indexed by row number. */
+interface IntegralRing {
+  sum: Uint32Array;
+  sumSquares: Float64Array;
+  /** Cells per integral row: one more than the image width, for the zero column. */
+  stride: number;
+  /** Integral rows in the ring. */
+  rows: number;
+}
+
+/**
+ * Adds integral row `index` (the sums of image rows 0..index-1) to the ring. The per-pixel loops
+ * live in plain functions, not in the async driver: code that resumes after an `await` runs its
+ * loops in the interpreter until the optimizer catches up, which made each chunk several times slower.
+ */
+function integrateRow(gray: Uint8Array, width: number, ring: IntegralRing, index: number): void {
+  const { sum, sumSquares, stride } = ring;
+  const slot = (index % ring.rows) * stride;
+  const above = ((index - 1) % ring.rows) * stride;
+  const source = (index - 1) * width;
+  let rowSum = 0;
+  let rowSquares = 0;
+  for (let x = 0; x < width; x++) {
+    const value = gray[source + x];
+    rowSum += value;
+    rowSquares += value * value;
+    sum[slot + x + 1] = sum[above + x + 1] + rowSum;
+    sumSquares[slot + x + 1] = sumSquares[above + x + 1] + rowSquares;
+  }
+}
+
+interface RowWindow {
+  /** Window columns [left[x], right[x]) of every pixel x, clipped at the border. */
+  left: Int32Array;
+  right: Int32Array;
+  k: number;
+  dynamicRange: number;
+}
+
+/** Thresholds image row `y` from the window between integral rows `top` and `bottom`. */
+function thresholdRow(
+  gray: Uint8Array,
+  out: Uint8Array,
+  width: number,
+  y: number,
+  ring: IntegralRing,
+  top: number,
+  bottom: number,
+  window: RowWindow
+): void {
+  const { sum, sumSquares, stride } = ring;
+  const { left, right, k, dynamicRange } = window;
+  const topSlot = (top % ring.rows) * stride;
+  const bottomSlot = (bottom % ring.rows) * stride;
+  const rows = bottom - top;
+  const base = y * width;
+  for (let x = 0; x < width; x++) {
+    const x0 = left[x];
+    const x1 = right[x];
+    const area = rows * (x1 - x0);
+    // Cumulative sums wrap modulo 2^32 on pages over 16.8 million pixels; a window sum is far
+    // below that, so reducing the four-term difference modulo 2^32 recovers it exactly.
+    const total = (sum[bottomSlot + x1] - sum[topSlot + x1] - sum[bottomSlot + x0] + sum[topSlot + x0]) >>> 0;
+    const squares =
+      sumSquares[bottomSlot + x1] - sumSquares[topSlot + x1] - sumSquares[bottomSlot + x0] + sumSquares[topSlot + x0];
+    const mean = total / area;
+    const variance = squares / area - mean * mean;
+    const deviation = variance > 0 ? Math.sqrt(variance) : 0;
+    const threshold = mean * (1 + k * (deviation / dynamicRange - 1));
+    out[base + x] = gray[base + x] <= threshold ? SAUVOLA_INK : SAUVOLA_PAPER;
+  }
+}
+
 /**
  * Binarizes 8-bit gray pixels. Returns one byte per pixel, SAUVOLA_INK or SAUVOLA_PAPER. Windows
  * are clipped at the image border, and the statistics use the clipped area.
@@ -85,68 +158,44 @@ export async function sauvolaBinarize(
   if (!(dynamicRange > 0) || !Number.isFinite(k)) {
     throw new OcrPreprocessError('Sauvola parameters must be finite and the dynamic range positive.');
   }
+  const yieldEvery = Math.max(1, options.yieldEveryPixels ?? SAUVOLA_YIELD_PIXELS);
   const half = (oddWindow(options.windowSize) - 1) >> 1;
   const stride = width + 1;
-  const cellBudget = Math.min(options.maxStripCells ?? SAUVOLA_MAX_STRIP_CELLS, UINT32_SAFE_CELLS);
-  const minRows = Math.min(SAUVOLA_MIN_STRIP_ROWS, height);
-  // Output rows per strip; the integral image also covers `half` rows above and below them.
-  const stripRows = Math.min(
-    height,
-    Math.max(minRows, Math.floor(cellBudget / stride) - 2 * half - 1)
-  );
-  const maxIntegralRows = Math.min(height, stripRows + 2 * half) + 1;
-  if (maxIntegralRows * stride > UINT32_SAFE_CELLS) {
-    throw new OcrPreprocessError(`A ${width}x${height} image cannot be binarized with a ${2 * half + 1} px window.`);
-  }
-  const sum = new Uint32Array(maxIntegralRows * stride);
-  const sumSquares = new Float64Array(maxIntegralRows * stride);
-  const left = new Int32Array(width);
-  const right = new Int32Array(width);
+  // Integral row k holds the sums of image rows 0..k-1; row 0 is zero and so is column 0. A window
+  // reads two integral rows at most 2 * half + 1 apart, so a ring of one more row suffices.
+  const ringRows = 2 * half + 2;
+  const ring: IntegralRing = {
+    sum: new Uint32Array(ringRows * stride),
+    sumSquares: new Float64Array(ringRows * stride),
+    stride,
+    rows: ringRows,
+  };
+  const window: RowWindow = { left: new Int32Array(width), right: new Int32Array(width), k, dynamicRange };
   for (let x = 0; x < width; x++) {
-    left[x] = Math.max(0, x - half);
-    right[x] = Math.min(width, x + half + 1);
+    window.left[x] = Math.max(0, x - half);
+    window.right[x] = Math.min(width, x + half + 1);
   }
   const out = new Uint8Array(width * height);
 
-  for (let y0 = 0; y0 < height; y0 += stripRows) {
-    const y1 = Math.min(height, y0 + stripRows);
-    const top = Math.max(0, y0 - half);
-    const bottom = Math.min(height, y1 + half);
-    for (let row = 0; row < bottom - top; row++) {
-      const source = (top + row) * width;
-      const base = (row + 1) * stride;
-      const above = row * stride;
-      let rowSum = 0;
-      let rowSquares = 0;
-      for (let x = 0; x < width; x++) {
-        const value = gray[source + x];
-        rowSum += value;
-        rowSquares += value * value;
-        sum[base + x + 1] = sum[above + x + 1] + rowSum;
-        sumSquares[base + x + 1] = sumSquares[above + x + 1] + rowSquares;
+  let built = 0;
+  let pending = 0;
+  for (let y = 0; y < height; y++) {
+    const top = Math.max(0, y - half);
+    const bottom = Math.min(height, y + half + 1);
+    while (built < bottom) {
+      integrateRow(gray, width, ring, ++built);
+      pending += width;
+      if (pending >= yieldEvery) {
+        pending = 0;
+        await yieldToEventLoop();
       }
     }
-    for (let y = y0; y < y1; y++) {
-      const r0 = Math.max(0, y - half) - top;
-      const r1 = Math.min(height, y + half + 1) - top;
-      const rowTop = r0 * stride;
-      const rowBottom = r1 * stride;
-      const rows = r1 - r0;
-      for (let x = 0; x < width; x++) {
-        const x0 = left[x];
-        const x1 = right[x];
-        const area = rows * (x1 - x0);
-        const total = sum[rowBottom + x1] - sum[rowTop + x1] - sum[rowBottom + x0] + sum[rowTop + x0];
-        const squares =
-          sumSquares[rowBottom + x1] - sumSquares[rowTop + x1] - sumSquares[rowBottom + x0] + sumSquares[rowTop + x0];
-        const mean = total / area;
-        const variance = squares / area - mean * mean;
-        const deviation = variance > 0 ? Math.sqrt(variance) : 0;
-        const threshold = mean * (1 + k * (deviation / dynamicRange - 1));
-        out[y * width + x] = gray[y * width + x] <= threshold ? SAUVOLA_INK : SAUVOLA_PAPER;
-      }
+    thresholdRow(gray, out, width, y, ring, top, bottom, window);
+    pending += width;
+    if (pending >= yieldEvery && y + 1 < height) {
+      pending = 0;
+      await yieldToEventLoop();
     }
-    if (y1 < height) await yieldToEventLoop();
   }
   return out;
 }
