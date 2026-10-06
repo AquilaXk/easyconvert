@@ -13,11 +13,15 @@ import {
   SAUVOLA_PAPER,
 } from '../src/lib/conversions/ocr-sauvola';
 import { estimateLineHeight } from '../src/lib/conversions/ocr-text-metrics';
-import { preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
+import { OCR_MAX_UPSCALE, OCR_PREPROCESS_MAX_PIXELS, planRescale, preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
+import { identityGeometry, mapBoxToSource, mapOcrResultToSource } from '../src/lib/conversions/ocr-geometry';
+import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');
 const PAPER_LEVEL = 235;
-const INK_LEVEL = 40;
+/** Line heights the recognizer reads best, from the issue. */
+const MIN_LINE_HEIGHT_PX = 30;
+const MAX_LINE_HEIGHT_PX = 40;
 
 /** Deterministic generator so every run sees the same pixels. */
 function mulberry32(seed: number): () => number {
@@ -211,6 +215,91 @@ describe('line height measurement', () => {
   });
 });
 
+describe('rescale planning', () => {
+  it('aims 10 px lines at 35 px (a factor of 3.5)', () => {
+    expect(planRescale(10, 480, 117)).toBeCloseTo(3.5, 10);
+    expect(planRescale(20, 1000, 800)).toBeCloseTo(1.75, 10);
+  });
+
+  it('never shrinks: lines of 30 px or more, and unmeasured pages, keep their size', () => {
+    expect(planRescale(30, 1000, 800)).toBe(1);
+    expect(planRescale(42.5, 2000, 490)).toBe(1);
+    expect(planRescale(300, 2000, 490)).toBe(1);
+    expect(planRescale(null, 1000, 800)).toBe(1);
+    expect(planRescale(0, 1000, 800)).toBe(1);
+  });
+
+  it('caps the enlargement at OCR_MAX_UPSCALE', () => {
+    expect(planRescale(2, 400, 300)).toBe(OCR_MAX_UPSCALE);
+    expect(OCR_MAX_UPSCALE).toBe(4);
+  });
+
+  it('keeps the enlarged page inside the pixel budget', () => {
+    const scale = planRescale(8, 6000, 5000);
+    expect(scale).toBeGreaterThan(1);
+    expect(Math.round(6000 * scale) * Math.round(5000 * scale)).toBeLessThanOrEqual(OCR_PREPROCESS_MAX_PIXELS * 1.001);
+    // A page already at the budget cannot grow at all.
+    expect(planRescale(8, 10_000, 5_000)).toBe(1);
+  });
+});
+
+describe('mapping boxes back to the source image', () => {
+  const doubled = { sourceWidth: 100, sourceHeight: 50, outputWidth: 200, outputHeight: 100 };
+
+  it('divides a box of the enlarged image by the scale', () => {
+    expect(mapBoxToSource({ x: 20, y: 10, width: 40, height: 20 }, doubled)).toEqual({
+      x: 10,
+      y: 5,
+      width: 20,
+      height: 10,
+    });
+  });
+
+  it('keeps boxes inside the source and at least one pixel wide', () => {
+    expect(mapBoxToSource({ x: 190, y: 90, width: 40, height: 40 }, doubled)).toEqual({ x: 95, y: 45, width: 5, height: 5 });
+    expect(mapBoxToSource({ x: 199, y: 99, width: 0, height: 0 }, doubled)).toEqual({ x: 99, y: 49, width: 1, height: 1 });
+  });
+
+  it('maps line and word boxes, reports the source size and leaves the text alone', () => {
+    const result: OcrResult = {
+      text: 'ab cd',
+      confidence: 0.9,
+      wordCount: 2,
+      lines: ['ab cd'],
+      lineBlocks: [
+        {
+          text: 'ab cd',
+          bbox: { x: 20, y: 10, width: 100, height: 20 },
+          words: [
+            { text: 'ab', confidence: 91, bbox: { x: 20, y: 10, width: 40, height: 20 } },
+            { text: 'cd', bbox: { x: 80, y: 10, width: 40, height: 20 } },
+          ],
+        },
+      ],
+      imageWidth: 200,
+      imageHeight: 100,
+    };
+    const mapped = mapOcrResultToSource(result, doubled);
+    expect(mapped.imageWidth).toBe(100);
+    expect(mapped.imageHeight).toBe(50);
+    expect(mapped.text).toBe('ab cd');
+    expect(mapped.confidence).toBe(0.9);
+    expect(mapped.lineBlocks?.[0].bbox).toEqual({ x: 10, y: 5, width: 50, height: 10 });
+    expect(mapped.lineBlocks?.[0].words.map((w) => w.bbox)).toEqual([
+      { x: 10, y: 5, width: 20, height: 10 },
+      { x: 40, y: 5, width: 20, height: 10 },
+    ]);
+    expect(mapped.lineBlocks?.[0].words[0].confidence).toBe(91);
+    // The input is not modified.
+    expect(result.lineBlocks?.[0].bbox).toEqual({ x: 20, y: 10, width: 100, height: 20 });
+  });
+
+  it('is the identity when the image was not resized', () => {
+    const box = { x: 3, y: 4, width: 5, height: 6 };
+    expect(mapBoxToSource(box, identityGeometry(100, 50))).toEqual(box);
+  });
+});
+
 async function grayPixels(png: Buffer): Promise<{ data: Buffer; width: number; height: number }> {
   const { data, info } = await sharp(png).toColourspace('b-w').raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height };
@@ -244,19 +333,40 @@ describe('preprocessOcrImage', () => {
     expect(left / right).toBeLessThan(1.25);
   });
 
-  it('leaves a 72 dpi page (about 10 px lines) unbinarized', async () => {
+  it('does not rescale a 300 dpi page whose lines are already tall enough', async () => {
+    const result = await preprocessOcrImage(fixture('en_a__clean300'));
+    expect(result.applied).toEqual({ rescale: false, binarize: true });
+    expect(result.geometry.outputWidth).toBe(result.geometry.sourceWidth);
+  });
+
+  it('enlarges a 72 dpi page (about 10 px lines) until its lines are 30 to 40 px, then binarizes', async () => {
     const result = await preprocessOcrImage(fixture('en_a__dpi72'));
-    expect(result.applied.binarize).toBe(false);
+    expect(result.applied).toEqual({ rescale: true, binarize: true });
     expect(result.lineHeightPx).toBeGreaterThan(8);
     expect(result.lineHeightPx).toBeLessThan(13);
+    const { sourceWidth, sourceHeight, outputWidth, outputHeight } = result.geometry;
+    expect([sourceWidth, sourceHeight]).toEqual([480, 117]);
+    expect(outputWidth / sourceWidth).toBeCloseTo(outputHeight / sourceHeight, 1);
+    // Measure the prepared image itself, not the value the step used to decide.
+    const { data, width, height } = await grayPixels(result.image);
+    expect([width, height]).toEqual([outputWidth, outputHeight]);
+    expect(new Set(data)).toEqual(new Set([SAUVOLA_INK, SAUVOLA_PAPER]));
+    const outputLine = estimateLineHeight(new Uint8Array(data), width, height) as number;
+    expect(outputLine).toBeGreaterThanOrEqual(MIN_LINE_HEIGHT_PX);
+    expect(outputLine).toBeLessThanOrEqual(MAX_LINE_HEIGHT_PX);
+  });
+
+  it('enlarges without binarizing when only the rescale step is on', async () => {
+    const result = await preprocessOcrImage(fixture('en_a__dpi72'), { rescale: true, binarize: false });
+    expect(result.applied).toEqual({ rescale: true, binarize: false });
     const { data } = await grayPixels(result.image);
     expect(new Set(data).size).toBeGreaterThan(2);
   });
 
-  it('does not touch the page when the step is switched off', async () => {
+  it('does not touch the page when every step is switched off', async () => {
     const source = fixture('en_a__shade');
-    const result = await preprocessOcrImage(source, { binarize: false });
-    expect(result.applied.binarize).toBe(false);
+    const result = await preprocessOcrImage(source, { rescale: false, binarize: false });
+    expect(result.applied).toEqual({ rescale: false, binarize: false });
     const expected = await sharp(source).rotate().png().toBuffer();
     expect(result.image.equals(expected)).toBe(true);
   });

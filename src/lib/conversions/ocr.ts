@@ -28,6 +28,7 @@ import {
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 import { ocrSegmentationFor } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
+import { mapOcrResultToSource } from './ocr-geometry';
 import { preprocessOcrImage, type OcrPreprocessResult } from './ocr-preprocess';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
@@ -191,15 +192,18 @@ export async function performOcr(
           ? ret.data.confidence / 100
           : null;
 
-      return {
-        text: fullText,
-        confidence: meanConf,
-        wordCount: words.length,
-        lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
-        lineBlocks,
-        imageWidth: imgWidth,
-        imageHeight: imgHeight,
-      };
+      return mapOcrResultToSource(
+        {
+          text: fullText,
+          confidence: meanConf,
+          wordCount: words.length,
+          lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
+          lineBlocks,
+          imageWidth: imgWidth,
+          imageHeight: imgHeight,
+        },
+        prepared.geometry
+      );
     }
   } catch (err: any) {
     if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
@@ -212,12 +216,15 @@ export async function performOcr(
   const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
   const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
   if (tesseractCli) {
-    return recognizeWithCli({
-      cliPath: tesseractCli,
-      tessdataDir: localLangPath,
-      tesseractLang,
-      image: ocrInput,
-    });
+    return mapOcrResultToSource(
+      await recognizeWithCli({
+        cliPath: tesseractCli,
+        tessdataDir: localLangPath,
+        tesseractLang,
+        image: ocrInput,
+      }),
+      prepared.geometry
+    );
   }
 
   throw new OcrEngineUnavailableError(
