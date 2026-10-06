@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import { convertFont, decodeSfnt, decodeWoff2, encodeWoff2, type ParsedFont } from '../src/lib/conversions/font';
-import { WOFF2_MAX_DECODED_BYTES, WOFF2_MAX_TABLES, Woff2FormatError, Woff2LimitError } from '../src/lib/conversions/font-woff2';
+import {
+  WOFF2_BROTLI_MAX_QUALITY_BYTES,
+  WOFF2_MAX_DECODED_BYTES,
+  WOFF2_MAX_TABLES,
+  Woff2FormatError,
+  Woff2LimitError,
+  woff2BrotliQuality,
+} from '../src/lib/conversions/font-woff2';
 import { readGlyf, readSfntTables } from './helpers/font-oracles';
 import { sfntFromTables, sfntHead, sfntHhea, sfntMaxp } from './helpers/woff2-builder';
 import { assertWoff2Consistent, firstFlagOffset, readWoff2Reference, SFNT_FLAG_OVERLAP_SIMPLE } from './helpers/woff2-reference';
@@ -72,6 +79,8 @@ const KNOWN_INDEX: Record<string, number> = {
   loca: 11, prep: 12, 'CFF ': 13, gasp: 17, GDEF: 26, GPOS: 27, GSUB: 28, EBSC: 29, MATH: 31, bloc: 41,
 };
 const EXPLICIT_TAG = 63;
+/** hhea.numberOfHMetrics is the last field, at offset 34; the table is 36 bytes. */
+const HHEA_NUMBER_OF_H_METRICS_END = 36;
 
 function encodeFixture(name: string): Buffer {
   return encodeWoff2(decodeSfnt(fixture(name), name));
@@ -494,6 +503,29 @@ describe('WOFF2 encoder: glyf edge cases', () => {
       const glyph = triangle();
       glyph.writeUInt16BE(500, 12);
       return fontWithGlyphs([Buffer.alloc(0), glyph], 0);
+    });
+    it('compresses at the highest quality up to the large-font bound, then at a faster one', () => {
+      expect(woff2BrotliQuality(WOFF2_BROTLI_MAX_QUALITY_BYTES)).toBe(zlibConstants.BROTLI_MAX_QUALITY);
+      expect(woff2BrotliQuality(WOFF2_BROTLI_MAX_QUALITY_BYTES + 1)).toBeLessThan(zlibConstants.BROTLI_MAX_QUALITY);
+    });
+    fails('an hhea table too short for numberOfHMetrics', () =>
+      fontWithGlyphs([Buffer.alloc(0), triangle()], 0, { hhea: sfntHhea(2).subarray(0, HHEA_NUMBER_OF_H_METRICS_END - 1) })
+    );
+    it('names the limit for a contour of more than 65535 points', () => {
+      const POINTS = 65536;
+      const FLAGS_PER_RUN = 256; // a flag byte plus a repeat count of 255
+      // on curve, repeated, x and y both "same", so the points carry no coordinate bytes
+      const SAME_XY_REPEATED_ON_CURVE = 0x39;
+      const header = Buffer.alloc(14);
+      header.writeInt16BE(1, 0);
+      header.writeUInt16BE(POINTS - 1, 10);
+      const flags = Buffer.alloc((POINTS / FLAGS_PER_RUN) * 2);
+      for (let i = 0; i < flags.length; i += 2) {
+        flags[i] = SAME_XY_REPEATED_ON_CURVE;
+        flags[i + 1] = FLAGS_PER_RUN - 1;
+      }
+      const font = fontWithGlyphs([Buffer.alloc(0), Buffer.concat([header, flags])], 1);
+      expect(() => encodeWoff2(font)).toThrow(/more than 65535 points/);
     });
     fails('a zero-contour glyph that carries a bounding box', () => {
       const zeroContours = Buffer.alloc(12); // numberOfContours 0, then a box of (5, 5, 10, 10)

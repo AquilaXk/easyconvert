@@ -467,7 +467,19 @@ const HEAD_FLAGS_LOSSLESS_TRANSFORM = 0x0800;
 const HEAD_INDEX_FORMAT_VALUES = 2;
 const LOCA_SHORT_MAX_BYTES = 0x1fffe;
 const GLYF_HEADER_INDEX_FORMAT_AT = 6;
-const BROTLI_QUALITY = 11;
+/** Brotli quality for fonts up to WOFF2_BROTLI_MAX_QUALITY_BYTES of table data: the smallest output. */
+export const WOFF2_BROTLI_MAX_QUALITY = 11;
+/**
+ * Above this many bytes of table data, quality 11 runs at under 1 MB/s and would hold the worker
+ * for minutes on a large font; quality 9 is several times faster for a slightly larger file.
+ */
+export const WOFF2_BROTLI_MAX_QUALITY_BYTES = 4 * 1024 * 1024;
+export const WOFF2_BROTLI_LARGE_FONT_QUALITY = 9;
+
+/** The Brotli quality used for a stream of the given size. */
+export function woff2BrotliQuality(streamBytes: number): number {
+  return streamBytes > WOFF2_BROTLI_MAX_QUALITY_BYTES ? WOFF2_BROTLI_LARGE_FONT_QUALITY : WOFF2_BROTLI_MAX_QUALITY;
+}
 const PAD_BYTE = 0;
 const TAG_PAD_CHAR = ' ';
 const DSIG_TAG = 'DSIG';
@@ -555,7 +567,10 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
 
     const hmtx = byTag.get('hmtx');
     const hhea = byTag.get('hhea');
-    if (hmtx !== undefined && hhea !== undefined && hhea.data.length >= HHEA_MIN_BYTES) {
+    if (hhea !== undefined && hhea.data.length < HHEA_MIN_BYTES) {
+      throw new Woff2FormatError(`Cannot encode WOFF2: the hhea table is ${hhea.data.length} bytes, shorter than numberOfHMetrics needs.`);
+    }
+    if (hmtx !== undefined && hhea !== undefined) {
       const numHMetrics = dataView(hhea.data).getUint16(HHEA_NUM_H_METRICS_AT);
       const storedHmtx = transformHmtx(hmtx.data, reconstruction.numGlyphs, numHMetrics, reconstruction.xMin);
       if (storedHmtx !== null) encoded.set('hmtx', { tag: 'hmtx', data: hmtx.data, stored: storedHmtx, version: HMTX_TRANSFORMED, transformed: true });
@@ -602,7 +617,7 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
   const compressed = zlib.brotliCompressSync(stream, {
     params: {
       [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_FONT,
-      [zlib.constants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+      [zlib.constants.BROTLI_PARAM_QUALITY]: woff2BrotliQuality(stream.length),
       [zlib.constants.BROTLI_PARAM_SIZE_HINT]: stream.length,
     },
   });

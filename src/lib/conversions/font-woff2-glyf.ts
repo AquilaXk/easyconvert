@@ -646,6 +646,8 @@ export function transformGlyf(glyf: Uint8Array, loca: Uint8Array, numGlyphs: num
     for (let c = 0; c < contours; c++) {
       const endPoint = view.getUint16(p + c * BYTES_PER_UINT16);
       if (endPoint <= previous) throw glyphProblem(glyph, 'contour end points do not increase');
+      // 255UInt16 holds a contour's point count only up to 65535; the first contour can need 65536
+      if (endPoint - previous > UINT16_MASK) throw glyphProblem(glyph, `a contour has more than ${UINT16_MASK} points`);
       pointStream.u255(endPoint - previous);
       previous = endPoint;
     }

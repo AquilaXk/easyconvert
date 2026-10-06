@@ -34,8 +34,11 @@ export const WOFF2_MAX_FONTS = 256;
 export const WOFF2_MAX_DECODED_BYTES = 256 * 1024 * 1024;
 /** Bytes of table data all fonts of one collection may describe together, shared tables counted once per font. */
 export const WOFF2_MAX_COLLECTION_BYTES = WOFF2_MAX_DECODED_BYTES;
-/** Table bytes a compressed stream may carry per compressed byte; real fonts stay below 20. */
-export const WOFF2_MAX_EXPANSION_RATIO = 1000;
+/**
+ * Table bytes a compressed stream may carry per compressed byte. Real fonts stay below 20; the
+ * bound keeps a few hundred kilobytes of input from claiming the whole decoded-size budget.
+ */
+export const WOFF2_MAX_EXPANSION_RATIO = 100;
 /** The expansion ratio is only enforced above this many table bytes, where it could hurt memory. */
 export const WOFF2_EXPANSION_RATIO_FLOOR_BYTES = 4 * 1024 * 1024;
 /** The head table is exactly 54 bytes, so a longer one is not a font table but an amplification vehicle. */
