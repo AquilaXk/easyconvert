@@ -126,11 +126,11 @@ export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}
  * `InputPixelLimitError` when they exceed the input limit. A header sharp cannot read is left to the decode
  * that follows, which reports it as malformed input.
  */
-export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget): Promise<void> {
+export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: sharp.SharpOptions = {}): Promise<void> {
   let width: number | undefined;
   let height: number | undefined;
   try {
-    const meta = await sharp(input, { limitInputPixels: false }).metadata();
+    const meta = await sharp(input, { ...options, limitInputPixels: false }).metadata();
     ({ width, height } = meta);
   } catch {
     return;
@@ -143,7 +143,7 @@ export async function assertEncodedImageWithinLimit(input: Buffer, budget?: Pixe
 
 /** Checks the declared dimensions of an encoded image, then opens it for decoding under the same limit. */
 export async function openInputImage(input: Buffer, options: sharp.SharpOptions = {}): Promise<sharp.Sharp> {
-  await assertEncodedImageWithinLimit(input);
+  await assertEncodedImageWithinLimit(input, undefined, options);
   return openLimitedSharp(input, options);
 }
 

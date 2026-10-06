@@ -3,6 +3,7 @@ import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { encodeBmp, encodePostscript } from './image';
+import { openInputImage } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 
 import {
@@ -291,6 +292,9 @@ export async function convertVectorCad(
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
 
+/** Resolution an SVG is rendered at when the request names none. */
+const DEFAULT_SVG_RENDER_DPI = 300;
+
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
@@ -326,7 +330,9 @@ async function convertSvgSource(
 
   // SVG -> PDF
   if (tgt === 'pdf') {
-    const pngBuffer = await sharp(inputBuffer, { density: options.dpi || 300 }).png().toBuffer();
+    // The render size follows the requested dpi, so the declared canvas is checked at that density.
+    const renderer = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
+    const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
     const width = meta.width || 600;
     const height = meta.height || 400;
@@ -356,7 +362,7 @@ async function convertSvgSource(
   }
 
   // SVG -> Raster Images via Sharp
-  let pipeline = sharp(inputBuffer, { density: options.dpi || 300 });
+  let pipeline = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
 
   if (options.width || options.height) {
     pipeline = pipeline.resize({
