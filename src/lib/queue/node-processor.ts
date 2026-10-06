@@ -16,6 +16,7 @@ import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
+import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -119,6 +120,10 @@ export async function processNodeJob(
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
     return processGraphNodeJob(job, engine, storage);
   }
+
+  // Job data comes from the queue, not only from the routes: options that are not an object fail
+  // the job with a typed error instead of being spread into {} or an index-keyed object.
+  if (job.data.options !== undefined) assertConversionOptionsObject(job.data.options);
 
   const startTime = Date.now();
   const attemptSignal = job.signal;
