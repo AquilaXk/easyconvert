@@ -27,8 +27,8 @@ import {
 
 /**
  * Decoder conformance against the W3C WOFF2 Recommendation. The reference files in
- * tests/fixtures/woff2 were written by the Google woff2 reference encoder and by fontTools; their
- * "*-decoded.*" companions are the output of the Google reference decoder (see PROVENANCE.txt).
+ * tests/fixtures/woff2 were written by the woff2 reference encoder and by fontTools; their
+ * "*-decoded.*" companions are the output of the reference decoder (see PROVENANCE.txt).
  */
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'woff2');
@@ -97,20 +97,20 @@ function expectTablesEqual(font: ParsedFont, reference: Map<string, SfntRecord>,
 const RINGS_GLYPH = 7; // the glyph of synthetic-triplets that carries the overlap bit
 
 const SINGLE_FONT_FIXTURES = [
-  ['dejavu-sans-latin', 'dejavu-sans-latin.google.woff2', 'dejavu-sans-latin.google-decoded.ttf'],
-  ['dejavu-serif-hinted-ascii', 'dejavu-serif-hinted-ascii.google.woff2', 'dejavu-serif-hinted-ascii.google-decoded.ttf'],
-  ['synthetic-triplets', 'synthetic-triplets.google.woff2', 'synthetic-triplets.google-decoded.ttf'],
-  ['synthetic-cff', 'synthetic-cff.google.woff2', 'synthetic-cff.google-decoded.otf'],
-  ['dejavu-sans-latin with hmtx transform (fontTools)', 'dejavu-sans-latin.fonttools-hmtx.woff2', 'dejavu-sans-latin.fonttools-hmtx.google-decoded.ttf'],
-  ['synthetic-triplets with hmtx transform (fontTools)', 'synthetic-triplets.fonttools-hmtx.woff2', 'synthetic-triplets.fonttools-hmtx.google-decoded.ttf'],
+  ['dejavu-sans-latin', 'dejavu-sans-latin.reference.woff2', 'dejavu-sans-latin.reference-decoded.ttf'],
+  ['dejavu-serif-hinted-ascii', 'dejavu-serif-hinted-ascii.reference.woff2', 'dejavu-serif-hinted-ascii.reference-decoded.ttf'],
+  ['synthetic-triplets', 'synthetic-triplets.reference.woff2', 'synthetic-triplets.reference-decoded.ttf'],
+  ['synthetic-cff', 'synthetic-cff.reference.woff2', 'synthetic-cff.reference-decoded.otf'],
+  ['dejavu-sans-latin with hmtx transform (fontTools)', 'dejavu-sans-latin.fonttools-hmtx.woff2', 'dejavu-sans-latin.fonttools-hmtx.reference-decoded.ttf'],
+  ['synthetic-triplets with hmtx transform (fontTools)', 'synthetic-triplets.fonttools-hmtx.woff2', 'synthetic-triplets.fonttools-hmtx.reference-decoded.ttf'],
 ] as const;
 
 describe('WOFF2 decoder: reference files from independent encoders', () => {
-  it.each(SINGLE_FONT_FIXTURES)('%s: every table equals the Google reference decoder output', (_label, woff2, decoded) => {
+  it.each(SINGLE_FONT_FIXTURES)('%s: every table equals the reference decoder output', (_label, woff2, decoded) => {
     const font = decodeWoff2(fixture(woff2), 'fixture');
     const reference = readRecords(fixture(decoded));
     if (woff2 === 'synthetic-triplets.fonttools-hmtx.woff2') {
-      // fontTools writes an overlapSimple bitmap; the 1.0.2 Google decoder predates it and drops the bit
+      // fontTools writes an overlapSimple bitmap; the 1.0.2 reference decoder predates it and drops the bit
       const tables = new Map(Object.entries(font.tables).map(([tag, t]) => [tag, t.data]));
       const flagAt = firstFlagOffset(tables, RINGS_GLYPH);
       expect(font.tables['glyf'].data[flagAt] & SFNT_FLAG_OVERLAP_SIMPLE).toBe(SFNT_FLAG_OVERLAP_SIMPLE);
@@ -161,7 +161,7 @@ describe('WOFF2 decoder: reference files from independent encoders', () => {
 
   it('reconstructs the outlines of the source font point by point', () => {
     const source = readSfntTables(fixture('synthetic-triplets.ttf'));
-    const decoded = decodeWoff2(fixture('synthetic-triplets.google.woff2'), 'fixture');
+    const decoded = decodeWoff2(fixture('synthetic-triplets.reference.woff2'), 'fixture');
     const tables = new Map(Object.entries(decoded.tables).map(([tag, t]) => [tag, t.data]));
     const COMPOSITE_GLYPHS = new Set([10, 11]);
     const EMPTY_GLYPH = 1;
@@ -176,7 +176,7 @@ describe('WOFF2 decoder: reference files from independent encoders', () => {
 
   it('keeps the composite glyph records, including their instructions, byte for byte', () => {
     const source = readSfntTables(fixture('synthetic-triplets.ttf'));
-    const decoded = decodeWoff2(fixture('synthetic-triplets.google.woff2'), 'fixture');
+    const decoded = decodeWoff2(fixture('synthetic-triplets.reference.woff2'), 'fixture');
     const slice = (tables: Map<string, Buffer>, id: number): Buffer => {
       const loca = tables.get('loca')!;
       const long = tables.get('head')!.readInt16BE(50) === 1;
@@ -191,9 +191,9 @@ describe('WOFF2 decoder: reference files from independent encoders', () => {
     }
   });
 
-  it('decodes a WOFF2 collection: every font equals the Google reference decoder output', () => {
-    const fonts = decodeWoff2Collection(fixture('pair.google.woff2'), 'pair');
-    const reference = readCollection(fixture('pair.google-decoded.ttc'));
+  it('decodes a WOFF2 collection: every font equals the reference decoder output', () => {
+    const fonts = decodeWoff2Collection(fixture('pair.reference.woff2'), 'pair');
+    const reference = readCollection(fixture('pair.reference-decoded.ttc'));
     expect(fonts).toHaveLength(2);
     expect(reference).toHaveLength(2);
     fonts.forEach((font, i) => expectTablesEqual(font, reference[i]));
@@ -202,14 +202,14 @@ describe('WOFF2 decoder: reference files from independent encoders', () => {
   });
 
   it('decodes the first font of a collection when a single font is requested', () => {
-    const first = decodeWoff2(fixture('pair.google.woff2'), 'pair');
+    const first = decodeWoff2(fixture('pair.reference.woff2'), 'pair');
     expect(first.fontFamily).toBe('DejaVu Sans');
   });
 });
 
 describe.skipIf(!HAS_FC_SCAN)('WOFF2 decoder: fontconfig reads the converted reference file (needs fc-scan)', () => {
   it('converts a reference WOFF2 to TTF with the family and coverage of the source font', async () => {
-    const result = await convertFont(fixture('dejavu-sans-latin.google.woff2'), 'woff2', 'ttf', {}, 'dejavu.woff2');
+    const result = await convertFont(fixture('dejavu-sans-latin.reference.woff2'), 'woff2', 'ttf', {}, 'dejavu.woff2');
     const converted = fcScan(result.buffer, 'ttf');
     const source = fcScan(fixture('dejavu-sans-latin.ttf'), 'ttf');
     expect(converted.family).toBe('DejaVu Sans');

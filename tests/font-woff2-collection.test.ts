@@ -53,7 +53,7 @@ function fontIndexOffsets(woff2: Buffer): number[][] {
 }
 
 describe('WOFF2 collection: glyf and loca pairing', () => {
-  const pair = fs.readFileSync(path.join(FIXTURES, 'pair.google.woff2'));
+  const pair = fs.readFileSync(path.join(FIXTURES, 'pair.reference.woff2'));
   const directory = readWoff2Reference(pair).directory;
 
   /** Points the given table of font `font` at directory entry `index`. */
@@ -68,7 +68,7 @@ describe('WOFF2 collection: glyf and loca pairing', () => {
   const fontEntries = (font: number): number[] => fontIndexOffsets(pair)[font].map((offset) => pair[offset]);
   const indexOf = (font: number, tag: string): number => fontEntries(font).find((i) => directory[i].tag === tag)!;
 
-  it('decodes the unmodified Google collection', () => {
+  it('decodes the unmodified reference-encoded collection', () => {
     expect(decodeWoff2Collection(pair, 'pair')).toHaveLength(2);
     expect(indexOf(0, 'loca')).toBe(indexOf(0, 'glyf') + 1);
     expect(indexOf(1, 'loca')).toBe(indexOf(1, 'glyf') + 1);

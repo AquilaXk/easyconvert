@@ -10,7 +10,7 @@ import { readSfntTables } from './helpers/font-oracles';
 import { readWoff2Reference } from './helpers/woff2-reference';
 
 /**
- * The WOFF2 encoder's output is read by the independent tools the format ships with: the Google
+ * The WOFF2 encoder's output is read by the independent tools the format ships with: the
  * reference decoder (woff2_decompress, woff2_info) and fontTools. Each test skips locally when its tool
  * is missing and throws under ORACLE_STRICT_MODE=1.
  */
@@ -21,10 +21,10 @@ const HEAD_ADJUSTMENT_OFFSET = 8;
 const RINGS_GLYPH = 7; // the glyph of synthetic-triplets that carries the overlap bit
 
 const SOURCES = [
-  ['dejavu-sans-latin.ttf', 'dejavu-sans-latin.google-decoded.ttf'],
-  ['dejavu-serif-hinted-ascii.ttf', 'dejavu-serif-hinted-ascii.google-decoded.ttf'],
-  ['synthetic-triplets.ttf', 'synthetic-triplets.google-decoded.ttf'],
-  ['synthetic-cff.otf', 'synthetic-cff.google-decoded.otf'],
+  ['dejavu-sans-latin.ttf', 'dejavu-sans-latin.reference-decoded.ttf'],
+  ['dejavu-serif-hinted-ascii.ttf', 'dejavu-serif-hinted-ascii.reference-decoded.ttf'],
+  ['synthetic-triplets.ttf', 'synthetic-triplets.reference-decoded.ttf'],
+  ['synthetic-cff.otf', 'synthetic-cff.reference-decoded.otf'],
 ] as const;
 
 const fixture = (name: string): Buffer => fs.readFileSync(path.join(FIXTURES, name));
@@ -48,7 +48,7 @@ function withoutAdjustment(tables: Map<string, Buffer>): Map<string, Buffer> {
   return new Map(tables).set('head', head);
 }
 
-describe('WOFF2 encoder output read by the Google reference tools', () => {
+describe('WOFF2 encoder output read by the reference tools', () => {
   for (const [source, referenceDecoded] of SOURCES) {
     oracleTest(`woff2_decompress rebuilds ${source} like it rebuilds the reference encoder's file`, ['woff2_decompress'], () => {
       const decoder = requireOracleTool('woff2_decompress');

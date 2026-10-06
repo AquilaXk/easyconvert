@@ -749,7 +749,7 @@ export function unwrapWoff(woff: Buffer): Map<string, Buffer> {
 
 /**
  * Returns the sfnt tables stored in a WOFF2 file, with the glyf, loca and hmtx transforms reversed by
- * the spec-literal reader in woff2-reference.ts (pinned to the Google reference decoder in tests).
+ * the spec-literal reader in woff2-reference.ts (pinned to the reference decoder in tests).
  */
 export function unwrapWoff2(woff2: Buffer): Map<string, Buffer> {
   return readWoff2Reference(woff2).tables;

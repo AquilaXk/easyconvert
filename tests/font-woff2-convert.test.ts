@@ -13,24 +13,24 @@ describe('convertFont with a WOFF2 collection', () => {
   const SINGLE_FONT_TARGETS = ['ttf', 'otf', 'woff', 'woff2', 'eot', 'svg'];
 
   it('counts the fonts of a WOFF2 file from its headers', () => {
-    expect(countWoff2Fonts(fixture('pair.google.woff2'))).toBe(2);
-    expect(countWoff2Fonts(fixture('dejavu-sans-latin.google.woff2'))).toBe(1);
+    expect(countWoff2Fonts(fixture('pair.reference.woff2'))).toBe(2);
+    expect(countWoff2Fonts(fixture('dejavu-sans-latin.reference.woff2'))).toBe(1);
   });
 
   it.each(SINGLE_FONT_TARGETS)('refuses to turn a two-font collection into one %s font', async (target) => {
-    const attempt = convertFont(fixture('pair.google.woff2'), 'woff2', target, {}, 'pair.woff2');
+    const attempt = convertFont(fixture('pair.reference.woff2'), 'woff2', target, {}, 'pair.woff2');
     await expect(attempt).rejects.toBeInstanceOf(UnsupportedOptionError);
     await expect(attempt).rejects.toThrow(/2 fonts/);
   });
 
   it('refuses the collection when the format is only recognised by its signature', async () => {
-    const attempt = convertFont(fixture('pair.google.woff2'), 'ttf', 'ttf', {}, 'pair.ttf');
+    const attempt = convertFont(fixture('pair.reference.woff2'), 'ttf', 'ttf', {}, 'pair.ttf');
     await expect(attempt).rejects.toBeInstanceOf(UnsupportedOptionError);
     await expect(attempt).rejects.toThrow(/collection of 2 fonts/);
   });
 
   it('still converts a WOFF2 file with a single font', async () => {
-    const result = await convertFont(fixture('dejavu-sans-latin.google.woff2'), 'woff2', 'ttf', {}, 'dejavu.woff2');
+    const result = await convertFont(fixture('dejavu-sans-latin.reference.woff2'), 'woff2', 'ttf', {}, 'dejavu.woff2');
     expect(result.buffer.readUInt32BE(0)).toBe(0x00010000);
   });
 });
@@ -84,10 +84,10 @@ describe('convertFont writes fonts that satisfy the sfnt checksum rules', () => 
   }
 
   const CASES = [
-    ['dejavu-sans-latin.google.woff2', 'ttf'],
-    ['dejavu-serif-hinted-ascii.google.woff2', 'ttf'],
-    ['synthetic-triplets.google.woff2', 'ttf'],
-    ['synthetic-cff.google.woff2', 'otf'],
+    ['dejavu-sans-latin.reference.woff2', 'ttf'],
+    ['dejavu-serif-hinted-ascii.reference.woff2', 'ttf'],
+    ['synthetic-triplets.reference.woff2', 'ttf'],
+    ['synthetic-cff.reference.woff2', 'otf'],
   ] as const;
 
   it.each(CASES)('%s to %s: the whole file sums to 0xB1B0AFBA', async (source, target) => {
@@ -113,7 +113,7 @@ describe('convertFont writes fonts that satisfy the sfnt checksum rules', () => 
   });
 
   it('woff2 to woff: the WOFF tables come in ascending byte order and rebuild a font that sums to 0xB1B0AFBA', async () => {
-    const { buffer } = await convertFont(fixture('dejavu-sans-latin.google.woff2'), 'woff2', 'woff', {}, 'font.woff2');
+    const { buffer } = await convertFont(fixture('dejavu-sans-latin.reference.woff2'), 'woff2', 'woff', {}, 'font.woff2');
     const tables = unwrapWoff(buffer);
     const tags = [...tables.keys()];
     expect(tags).toEqual([...tags].sort());

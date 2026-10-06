@@ -2,7 +2,7 @@
  * An unoptimised, spec-literal WOFF2 reader for tests, written from the W3C WOFF2 Recommendation
  * (table directory, transformed glyf, loca and hmtx tables). It shares no code with src/ and models
  * glyphs as plain objects, so a table it rebuilds from the output of the encoder under test is an
- * independent check. Its own correctness is pinned against the Google reference decoder in
+ * independent check. Its own correctness is pinned against the reference decoder in
  * font-woff2-reference.test.ts.
  */
 import { brotliDecompressSync } from 'node:zlib';

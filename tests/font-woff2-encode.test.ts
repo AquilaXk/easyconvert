@@ -9,7 +9,7 @@ import { sfntFromTables, sfntHead, sfntHhea, sfntMaxp } from './helpers/woff2-bu
 import { assertWoff2Consistent, firstFlagOffset, readWoff2Reference, SFNT_FLAG_OVERLAP_SIMPLE } from './helpers/woff2-reference';
 
 /**
- * Encoder conformance against the W3C WOFF2 Recommendation. Expected values come from the Google
+ * Encoder conformance against the W3C WOFF2 Recommendation. Expected values come from the
  * reference encoder output in tests/fixtures/woff2 (PROVENANCE.txt), from a hand-written table of
  * known-tag indices, and from the independent test-side reader in tests/helpers/woff2-reference.ts.
  */
@@ -27,8 +27,8 @@ const BROTLI_FAST_QUALITY = 5;
 interface Source {
   label: string;
   file: string;
-  google: string;
-  googleDecoded: string;
+  reference: string;
+  referenceDecoded: string;
   /** glyph whose overlap bit fontTools-style bitmaps carry but the 1.0.2 reference decoder drops */
   overlapGlyph: number | null;
 }
@@ -36,34 +36,34 @@ interface Source {
 const DEJAVU_SANS: Source = {
   label: 'dejavu-sans-latin',
   file: 'dejavu-sans-latin.ttf',
-  google: 'dejavu-sans-latin.google.woff2',
-  googleDecoded: 'dejavu-sans-latin.google-decoded.ttf',
+  reference: 'dejavu-sans-latin.reference.woff2',
+  referenceDecoded: 'dejavu-sans-latin.reference-decoded.ttf',
   overlapGlyph: null,
 };
 const DEJAVU_SERIF: Source = {
   label: 'dejavu-serif-hinted-ascii',
   file: 'dejavu-serif-hinted-ascii.ttf',
-  google: 'dejavu-serif-hinted-ascii.google.woff2',
-  googleDecoded: 'dejavu-serif-hinted-ascii.google-decoded.ttf',
+  reference: 'dejavu-serif-hinted-ascii.reference.woff2',
+  referenceDecoded: 'dejavu-serif-hinted-ascii.reference-decoded.ttf',
   overlapGlyph: null,
 };
 const TRIPLETS: Source = {
   label: 'synthetic-triplets',
   file: 'synthetic-triplets.ttf',
-  google: 'synthetic-triplets.google.woff2',
-  googleDecoded: 'synthetic-triplets.google-decoded.ttf',
+  reference: 'synthetic-triplets.reference.woff2',
+  referenceDecoded: 'synthetic-triplets.reference-decoded.ttf',
   overlapGlyph: RINGS_GLYPH,
 };
 const CFF: Source = {
   label: 'synthetic-cff',
   file: 'synthetic-cff.otf',
-  google: 'synthetic-cff.google.woff2',
-  googleDecoded: 'synthetic-cff.google-decoded.otf',
+  reference: 'synthetic-cff.reference.woff2',
+  referenceDecoded: 'synthetic-cff.reference-decoded.otf',
   overlapGlyph: null,
 };
 const TRUETYPE_SOURCES = [DEJAVU_SANS, DEJAVU_SERIF, TRIPLETS];
 const ALL_SOURCES = [...TRUETYPE_SOURCES, CFF];
-/** Fonts without overlap flags, whose transformed glyf stream the 1.0.2 Google encoder reproduces exactly. */
+/** Fonts without overlap flags, whose transformed glyf stream the 1.0.2 reference encoder reproduces exactly. */
 const STREAM_COMPARABLE_SOURCES = [DEJAVU_SANS, DEJAVU_SERIF];
 
 /** Known tag indices of the Recommendation for the tags the fixtures use, written out by hand. */
@@ -77,8 +77,8 @@ function encodeFixture(name: string): Buffer {
   return encodeWoff2(decodeSfnt(fixture(name), name));
 }
 
-function googleFileFor(name: string): string {
-  return name.replace(/\.(ttf|otf)$/, '.google.woff2');
+function referenceFileFor(name: string): string {
+  return name.replace(/\.(ttf|otf)$/, '.reference.woff2');
 }
 
 /** Replaces the checkSumAdjustment of head, which depends on the table order and is checked on its own. */
@@ -123,7 +123,7 @@ describe.each(ALL_SOURCES)('WOFF2 encoder: $label', (source) => {
   const original = readSfntTables(fixture(source.file));
   const woff2 = encodeFixture(source.file);
   const reading = readWoff2Reference(woff2);
-  const google = readWoff2Reference(fixture(source.google));
+  const reference = readWoff2Reference(fixture(source.reference));
 
   it('writes a header that agrees with the file', () => {
     expect(woff2.toString('latin1', 0, 4)).toBe('wOF2');
@@ -164,8 +164,8 @@ describe.each(ALL_SOURCES)('WOFF2 encoder: $label', (source) => {
     expect(flags & ~HEAD_FLAGS_LOSSLESS_TRANSFORM).toBe(original.get('head')!.readUInt16BE(HEAD_FLAGS_OFFSET) & ~HEAD_FLAGS_LOSSLESS_TRANSFORM);
   });
 
-  it('rebuilds the tables the Google reference encoder rebuilds, glyph for glyph', () => {
-    expectSameTables(clearForComparison(reading.tables, source), clearForComparison(google.tables, source));
+  it('rebuilds the tables the reference encoder rebuilds, glyph for glyph', () => {
+    expectSameTables(clearForComparison(reading.tables, source), clearForComparison(reference.tables, source));
   });
 
   it('keeps every table except glyf, loca and head byte for byte', () => {
@@ -184,7 +184,7 @@ describe.each(ALL_SOURCES)('WOFF2 encoder: $label', (source) => {
 
   it('decodes with this engine to the font the reference decoder produces', () => {
     const decoded = tablesOf(decodeWoff2(woff2, 'fixture'));
-    const referenceDecoded = readSfntTables(fixture(source.googleDecoded));
+    const referenceDecoded = readSfntTables(fixture(source.referenceDecoded));
     expectSameTables(clearForComparison(decoded, source), clearForComparison(new Map(referenceDecoded), source));
   });
 
@@ -254,10 +254,10 @@ describe.each(COMPOSITE_SOURCES)('WOFF2 encoder composite glyphs: $label', (sour
   });
 });
 
-describe.each(STREAM_COMPARABLE_SOURCES)('WOFF2 encoder against the Google reference encoder: $label', (source) => {
+describe.each(STREAM_COMPARABLE_SOURCES)('WOFF2 encoder against the reference encoder: $label', (source) => {
   it('produces the same transformed glyf stream', () => {
     const ours = readWoff2Reference(encodeFixture(source.file));
-    const theirs = readWoff2Reference(fixture(source.google));
+    const theirs = readWoff2Reference(fixture(source.reference));
     expect(ours.stored.get('glyf')!.equals(theirs.stored.get('glyf')!)).toBe(true);
   });
 });
@@ -327,9 +327,9 @@ describe('WOFF2 encoder: specific encodings', () => {
     expect(reading.directory.length).toBe(tables.size - 1);
   });
 
-  it('compresses at least as tightly as the Google reference encoder', () => {
+  it('compresses at least as tightly as the reference encoder', () => {
     const ours = encodeFixture('dejavu-serif-hinted-ascii.ttf');
-    const theirs = fixture('dejavu-serif-hinted-ascii.google.woff2');
+    const theirs = fixture('dejavu-serif-hinted-ascii.reference.woff2');
     expect(ours.length).toBeLessThanOrEqual(theirs.length);
   });
 
@@ -349,8 +349,8 @@ describe('WOFF2 encoder: specific encodings', () => {
   });
 
   it('converts WOFF2 to WOFF2 through the decoder and the encoder without changing the file', async () => {
-    const result = await convertFont(fixture('dejavu-serif-hinted-ascii.google.woff2'), 'woff2', 'woff2', {}, 'serif.woff2');
-    const before = readWoff2Reference(fixture('dejavu-serif-hinted-ascii.google.woff2')).tables;
+    const result = await convertFont(fixture('dejavu-serif-hinted-ascii.reference.woff2'), 'woff2', 'woff2', {}, 'serif.woff2');
+    const before = readWoff2Reference(fixture('dejavu-serif-hinted-ascii.reference.woff2')).tables;
     const after = readWoff2Reference(result.buffer).tables;
     expectSameTables(maskAdjustment(after), maskAdjustment(before));
   });

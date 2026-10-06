@@ -7,8 +7,8 @@ Nothing in this directory was written by the engine under test.
 
 Tools
 -----
-- Google reference implementation: woff2_compress, woff2_decompress, woff2_info
-  (Debian/Ubuntu package "woff2" 1.0.2-2build1; upstream https://github.com/google/woff2)
+- Reference implementation: woff2_compress, woff2_decompress, woff2_info
+  (Debian/Ubuntu package "woff2" 1.0.2-2build1)
 - fontTools 4.66.1 with brotli 1.2.0 (python3 -m pip install fonttools brotli)
 
 Source fonts (generate-sources.py <dir> rebuilds them from system fonts and fontTools)
@@ -30,18 +30,18 @@ pair.ttc                       TrueType Collection of dejavu-sans-latin.ttf and 
 
 Reference encodings
 -------------------
-<name>.google.woff2            woff2_compress <name>.<ext>     (glyf/loca transformed, hmtx untransformed;
-                               pair.google.woff2 is a WOFF2 collection)
+<name>.reference.woff2            woff2_compress <name>.<ext>     (glyf/loca transformed, hmtx untransformed;
+                               pair.reference.woff2 is a WOFF2 collection)
 <name>.fonttools-hmtx.woff2    fontTools TTFont.save() with flavor "woff2" and
                                flavorData.transformedTables = {"glyf", "loca", "hmtx"}, so the optional
-                               hmtx transform is present (the Google encoder never emits it)
+                               hmtx transform is present (the reference encoder never emits it)
 
 Reference decodings
 -------------------
-<name>.google-decoded.<ext>    woff2_decompress <name>.google.woff2
-<name>.fonttools-hmtx.google-decoded.ttf
+<name>.reference-decoded.<ext>    woff2_decompress <name>.reference.woff2
+<name>.fonttools-hmtx.reference-decoded.ttf
                                woff2_decompress <name>.fonttools-hmtx.woff2
 
-The Google decoder pads every reconstructed glyph to four bytes and recomputes head.checkSumAdjustment,
+The reference decoder pads every reconstructed glyph to four bytes and recomputes head.checkSumAdjustment,
 so its glyf, loca and head differ from the source font; hmtx, cmap, name, post and the layout tables are
 byte identical to the source.
