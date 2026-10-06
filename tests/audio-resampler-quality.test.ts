@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ResampleQuality } from '../src/lib/conversions/audio-resampler';
 import { resampleAudioSinc } from '../src/lib/conversions/media';
 import {
   aliasedBin,
@@ -26,6 +27,8 @@ const FFT_SIZE = 16384;
 /** Frames trimmed from each end of the output so the zero-padded edge transient is excluded. */
 const EDGE_GUARD_FRAMES = 4096;
 const STOPBAND_MAX_DB = -90;
+/** The `high` preset targets 24-bit and float output. */
+const HIGH_STOPBAND_MAX_DB = -130;
 const PASSBAND_RIPPLE_MAX_DB = 0.1;
 /** Required SNR margin to the oracle for 16-bit output (issue acceptance: within 1 dB). */
 const ORACLE_SNR_MARGIN_DB = 1;
@@ -43,11 +46,14 @@ const DOWN_CASES: RateCase[] = [
   { inRate: 96000, outRate: 44100 },
   { inRate: 44100, outRate: 22050 },
   { inRate: 48000, outRate: 16000 },
+  { inRate: 192000, outRate: 48000 },
 ];
 const UP_CASES: RateCase[] = [
   { inRate: 44100, outRate: 48000 },
   { inRate: 22050, outRate: 44100 },
   { inRate: 44100, outRate: 96000 },
+  { inRate: 16000, outRate: 48000 },
+  { inRate: 48000, outRate: 96000 },
 ];
 const PASSBAND_FRACTIONS = [0.1, 0.5, 0.8, 0.9];
 const TONE_AMPLITUDE = 0.5;
@@ -55,13 +61,17 @@ const TONE_AMPLITUDE = 0.5;
 const label = (c: RateCase) => `${c.inRate} -> ${c.outRate}`;
 
 /** Resample one bin-centred tone through the float path and return the analysis window. */
-function resampleTone(c: RateCase, freq: number): { spectrum: Float64Array; toneBin: number } {
+function resampleTone(
+  c: RateCase,
+  freq: number,
+  quality: ResampleQuality = 'standard'
+): { spectrum: Float64Array; toneBin: number } {
   const snapped = snapToBin(freq, c.outRate, FFT_SIZE);
   const outFrames = FFT_SIZE + 2 * EDGE_GUARD_FRAMES;
   const inFrames = Math.ceil((outFrames * c.inRate) / c.outRate) + 64;
   const tone: Tone = { freq: snapped.freq, amp: TONE_AMPLITUDE, phase: 0.3 };
   const input = Float32Array.from(synthesizeTones([tone], c.inRate, inFrames));
-  const [out] = resampleAudioSinc([input], c.inRate, c.outRate);
+  const [out] = resampleAudioSinc([input], c.inRate, c.outRate, { quality });
   expect(out.length).toBeGreaterThanOrEqual(FFT_SIZE + 2 * EDGE_GUARD_FRAMES - 1);
   return {
     spectrum: amplitudeSpectrum(out, EDGE_GUARD_FRAMES, FFT_SIZE),
@@ -101,6 +111,26 @@ describe('audio resampler quality (independent FFT)', () => {
       );
     });
   });
+
+  describe.each([...DOWN_CASES, ...UP_CASES])('high preset $inRate -> $outRate', (c) => {
+    const nyquistLow = Math.min(c.inRate, c.outRate) / 2;
+    it('keeps the passband flat and every alias, image and spur below -130 dB', () => {
+      const passband = resampleTone(c, 0.9 * nyquistLow, 'high');
+      const gainDb = toDb(passband.spectrum[passband.toneBin] / TONE_AMPLITUDE);
+      expect(Math.abs(gainDb), `${label(c)} high gain at 0.9 x Nyquist: ${gainDb.toFixed(4)} dB`).toBeLessThanOrEqual(
+        PASSBAND_RIPPLE_MAX_DB
+      );
+      const spurDb = maxSpurDb(passband.spectrum, [passband.toneBin], 1) - toDb(TONE_AMPLITUDE);
+      expect(spurDb, `${label(c)} high spur/image: ${spurDb.toFixed(1)} dB`).toBeLessThanOrEqual(HIGH_STOPBAND_MAX_DB);
+      if (c.inRate > c.outRate) {
+        const alias = resampleTone(c, 1.01 * nyquistLow, 'high');
+        const aliasDb = maxSpurDb(alias.spectrum, [], 0) - toDb(TONE_AMPLITUDE);
+        expect(aliasDb, `${label(c)} high alias at 1.01 x Nyquist: ${aliasDb.toFixed(1)} dB`).toBeLessThanOrEqual(
+          HIGH_STOPBAND_MAX_DB
+        );
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -115,6 +145,9 @@ const SNR_CASES: RateCase[] = [
   { inRate: 48000, outRate: 44100 },
   { inRate: 96000, outRate: 44100 },
   { inRate: 44100, outRate: 22050 },
+  { inRate: 192000, outRate: 48000 },
+  { inRate: 44100, outRate: 96000 },
+  { inRate: 16000, outRate: 48000 },
 ];
 const SINGLE_TONE: Tone[] = [{ freq: 1000, amp: 0.5, phase: 0.2 }];
 /** Multi-tone frequencies as fractions of the lower Nyquist, so every tone is in the passband. */
@@ -234,44 +267,70 @@ describe('audio resampler SNR versus the reference resampler', () => {
 // ---------------------------------------------------------------------------------------------
 
 const THROUGHPUT_CHANNELS = 2;
-const THROUGHPUT_SECONDS = 20;
-const THROUGHPUT_IN_RATE = 44100;
-const THROUGHPUT_OUT_RATE = 48000;
-/**
- * Regression floor in output samples per second for the default (-96 dB, ~124-tap) filter on
- * stereo 16-bit input. Measured on the development VM: 6.3 M samples/s end to end, against a
- * scalar-JavaScript multiply-accumulate ceiling of about 1.1 GMAC/s (about 9 M samples/s) for
- * this filter length; the previous implementation measured 1.4 M samples/s. The floor leaves
- * headroom for shared CI runners while still failing on a return to per-tap sin/cos or to
- * allocation in the inner loop.
- */
-const MIN_THROUGHPUT_SAMPLES_PER_SECOND = 3_000_000;
+const THROUGHPUT_SECONDS = 3;
+const THROUGHPUT_WARMUP_PASSES = 2;
+const THROUGHPUT_TIMED_PASSES = 3;
 const MS_PER_SECOND = 1000;
 const THROUGHPUT_LCG_MULTIPLIER = 1664525;
 const THROUGHPUT_LCG_INCREMENT = 1013904223;
 const UINT32_RANGE = 4294967296;
 const SIGNAL_SPAN = 16000;
 
-describe('audio resampler throughput', () => {
-  it('sustains the regression-floor throughput on stereo 44.1 kHz -> 48 kHz', () => {
-    const frames = THROUGHPUT_IN_RATE * THROUGHPUT_SECONDS;
-    const pcm = new Int16Array(frames * THROUGHPUT_CHANNELS);
-    let state = 1;
-    for (let i = 0; i < pcm.length; i++) {
-      state = (Math.imul(state, THROUGHPUT_LCG_MULTIPLIER) + THROUGHPUT_LCG_INCREMENT) >>> 0;
-      pcm[i] = Math.round((state / UINT32_RANGE - 0.5) * SIGNAL_SPAN);
-    }
-    // Warm up the JIT and the cached coefficient tables.
-    resampleAudioSinc(pcm.subarray(0, THROUGHPUT_IN_RATE * THROUGHPUT_CHANNELS), THROUGHPUT_IN_RATE, THROUGHPUT_OUT_RATE, THROUGHPUT_CHANNELS);
+interface ThroughputCase extends RateCase {
+  /** Regression floor in output samples (frames x channels) per second. */
+  floor: number;
+  /** Median on the development VM in M output samples/s, previous single-stage design in brackets. */
+  measured: string;
+}
 
-    const start = performance.now();
-    const out = resampleAudioSinc(pcm, THROUGHPUT_IN_RATE, THROUGHPUT_OUT_RATE, THROUGHPUT_CHANNELS);
-    const seconds = (performance.now() - start) / MS_PER_SECOND;
-    const samplesPerSecond = out.length / seconds;
-    expect(out.length).toBe(Math.floor((frames * THROUGHPUT_OUT_RATE) / THROUGHPUT_IN_RATE) * THROUGHPUT_CHANNELS);
-    expect(
-      samplesPerSecond,
-      `measured ${(samplesPerSecond / 1e6).toFixed(2)} M output samples/s`
-    ).toBeGreaterThanOrEqual(MIN_THROUGHPUT_SAMPLES_PER_SECOND);
-  });
+/**
+ * Stereo 16-bit input with the default (96 dB) filter. The issue target is 20 M samples/s; the
+ * development VM tops out near 1.0 GMAC/s of scalar JavaScript multiply-accumulate, which puts the
+ * single-stage 44.1 <-> 48 kHz case (about 124 taps per output sample) at roughly 7 to 8 M
+ * samples/s. The floor is about 70% of the measured value for that case (about 55% for the other
+ * paths, which tier up later) and applies to the best of several passes, so shared CI runners and
+ * parallel test files do not trip it, while a return to per-tap sin/cos, per-sample allocation or an
+ * inliner-dependent hot loop (which cost a third) still does.
+ */
+const THROUGHPUT_CASES: ThroughputCase[] = [
+  { inRate: 44100, outRate: 48000, floor: 5_000_000, measured: '7.3 (5.8)' },
+  { inRate: 48000, outRate: 44100, floor: 5_000_000, measured: '7.4 (5.7)' },
+  { inRate: 96000, outRate: 44100, floor: 2_400_000, measured: '4.3 (3.1) half-band + polyphase' },
+  { inRate: 44100, outRate: 22050, floor: 2_400_000, measured: '4.3 (3.4) folded 2:1 rows' },
+  { inRate: 48000, outRate: 16000, floor: 2_300_000, measured: '4.3 (2.2) half-band + folded rows' },
+  { inRate: 16000, outRate: 48000, floor: 6_000_000, measured: '11.9 (4.2) polyphase + half-band' },
+  { inRate: 192000, outRate: 48000, floor: 2_000_000, measured: '3.6 (1.8) half-band + folded rows' },
+];
+
+describe('audio resampler throughput', () => {
+  it.each(THROUGHPUT_CASES)(
+    'sustains the regression-floor throughput on stereo $inRate -> $outRate (measured $measured M samples/s)',
+    ({ inRate, outRate, floor }) => {
+      const frames = inRate * THROUGHPUT_SECONDS;
+      const pcm = new Int16Array(frames * THROUGHPUT_CHANNELS);
+      let state = 1;
+      for (let i = 0; i < pcm.length; i++) {
+        state = (Math.imul(state, THROUGHPUT_LCG_MULTIPLIER) + THROUGHPUT_LCG_INCREMENT) >>> 0;
+        pcm[i] = Math.round((state / UINT32_RANGE - 0.5) * SIGNAL_SPAN);
+      }
+      // Warm up the JIT (every kernel the case uses) and the cached coefficient tables.
+      for (let pass = 0; pass < THROUGHPUT_WARMUP_PASSES; pass++) {
+        resampleAudioSinc(pcm, inRate, outRate, THROUGHPUT_CHANNELS);
+      }
+
+      let samplesPerSecond = 0;
+      let outLength = 0;
+      for (let pass = 0; pass < THROUGHPUT_TIMED_PASSES; pass++) {
+        const start = performance.now();
+        const out = resampleAudioSinc(pcm, inRate, outRate, THROUGHPUT_CHANNELS);
+        const seconds = (performance.now() - start) / MS_PER_SECOND;
+        samplesPerSecond = Math.max(samplesPerSecond, out.length / seconds);
+        outLength = out.length;
+      }
+      expect(outLength).toBe(Math.floor((frames * outRate) / inRate) * THROUGHPUT_CHANNELS);
+      expect(samplesPerSecond, `measured ${(samplesPerSecond / 1e6).toFixed(2)} M output samples/s`).toBeGreaterThanOrEqual(
+        floor
+      );
+    }
+  );
 });

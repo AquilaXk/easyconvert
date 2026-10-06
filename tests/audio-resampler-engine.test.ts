@@ -55,14 +55,57 @@ describe('filter design (Kaiser 1974 formulas)', () => {
   });
 
   it('scales the filter length with 1 / cutoff when decimating', () => {
+    // 44.1 kHz -> 22.05 kHz is an exact 2:1 ratio, which is not cascaded (see the half-band tests).
     const up = describeResamplerPlan(SAMPLE_RATE_44K, SAMPLE_RATE_48K);
-    const down = describeResamplerPlan(96000, SAMPLE_RATE_44K);
-    expect(down.upFactor).toBe(147);
-    expect(down.downFactor).toBe(320);
-    const decimation = 96000 / SAMPLE_RATE_44K;
-    expect(down.taps).toBeGreaterThanOrEqual(kaiserTaps(1 / decimation));
-    expect(down.taps).toBeLessThanOrEqual(kaiserTaps(1 / decimation) + TAP_ROUNDING_MARGIN);
-    expect(down.taps / up.taps).toBeGreaterThan(decimation * 0.95);
+    const down = describeResamplerPlan(SAMPLE_RATE_44K, 22050);
+    expect(down.halfBandStages).toBe(0);
+    expect(down.upFactor).toBe(1);
+    expect(down.downFactor).toBe(2);
+    expect(down.taps).toBeGreaterThanOrEqual(kaiserTaps(0.5));
+    expect(down.taps).toBeLessThanOrEqual(kaiserTaps(0.5) + TAP_ROUNDING_MARGIN);
+    expect(down.taps / up.taps).toBeGreaterThan(2 * 0.95);
+  });
+
+  describe('half-band cascades', () => {
+    // A half-band stage is used while its transition band stays clear of the lower Nyquist, so
+    // the polyphase stage keeps the remaining ratio in (1, 2] and the cascade never aliases.
+    it.each([
+      { src: 96000, tgt: 44100, stages: 1, polyUp: 147, polyDown: 160 },
+      { src: 192000, tgt: 48000, stages: 1, polyUp: 1, polyDown: 2 },
+      { src: 48000, tgt: 16000, stages: 1, polyUp: 2, polyDown: 3 },
+      { src: 44100, tgt: 96000, stages: 1, polyUp: 160, polyDown: 147 },
+      { src: 16000, tgt: 48000, stages: 1, polyUp: 3, polyDown: 2 },
+    ])('plans $stages half-band stage for $src -> $tgt with a $polyUp/$polyDown polyphase remainder', (c) => {
+      const plan = describeResamplerPlan(c.src, c.tgt);
+      expect(plan.halfBandStages).toBe(c.stages);
+      expect(plan.halfBandPairs).toHaveLength(c.stages);
+      expect(plan.upFactor).toBe(c.polyUp);
+      expect(plan.downFactor).toBe(c.polyDown);
+      // Odd-tap pairs follow the Kaiser estimate for a transition of 0.5 - lowerRate / stageRate
+      // cycles per sample (A + 1 dB), rounded up to a multiple of four pairs.
+      const stageRate = c.src > c.tgt ? c.src : c.tgt;
+      const transition = 0.5 - Math.min(c.src, c.tgt) / stageRate;
+      const length = (attenuationDb + 1 - 8) / (2.285 * 2 * Math.PI * transition);
+      const pairs = plan.halfBandPairs[0];
+      expect(pairs % 4).toBe(0);
+      expect(pairs).toBeGreaterThanOrEqual((length + 1) / 4);
+      expect(pairs).toBeLessThan((length + 1) / 4 + 4);
+    });
+
+    it('does not cascade where a half-band transition would have no width or cost more', () => {
+      expect(describeResamplerPlan(44100, 22050).halfBandStages).toBe(0); // exactly 2:1
+      expect(describeResamplerPlan(48000, 24000).halfBandStages).toBe(0);
+      expect(describeResamplerPlan(44100, 48000).halfBandStages).toBe(0); // ratio below 2
+      expect(describeResamplerPlan(22050, 44100).halfBandStages).toBe(0);
+      expect(describeResamplerPlan(48000, 96000).halfBandStages).toBe(0);
+    });
+
+    it('chains several stages for large factors', () => {
+      const plan = describeResamplerPlan(192000, 16000); // 12:1 -> 3 stages then 1.5:1
+      expect(plan.halfBandStages).toBe(3);
+      expect(plan.upFactor).toBe(2);
+      expect(plan.downFactor).toBe(3);
+    });
   });
 
   it('uses oversampled rows with linear interpolation for ratios with huge reduced denominators', () => {
@@ -94,9 +137,13 @@ describe('exact rational stepping', () => {
   it.each([
     { name: 'exact 160/147 table', inRate: SAMPLE_RATE_44K, outRate: SAMPLE_RATE_48K },
     { name: 'oversampled 48000/44101 table', inRate: 44101, outRate: SAMPLE_RATE_48K },
-    { name: 'decimating 147/320 table', inRate: 96000, outRate: SAMPLE_RATE_44K },
+    { name: 'decimating cascade 96 kHz -> 44.1 kHz', inRate: 96000, outRate: SAMPLE_RATE_44K },
+    { name: 'interpolating cascade 44.1 kHz -> 96 kHz', inRate: SAMPLE_RATE_44K, outRate: 96000 },
+    { name: 'folded 2:1 rows 44.1 kHz -> 22.05 kHz', inRate: SAMPLE_RATE_44K, outRate: 22050 },
+    { name: 'folded 1:2 rows 22.05 kHz -> 44.1 kHz', inRate: 22050, outRate: SAMPLE_RATE_44K },
+    { name: 'three-stage cascade 192 kHz -> 16 kHz', inRate: 192000, outRate: 16000 },
   ])('tracks the analytic tone over a long signal and across block seams: $name', ({ inRate, outRate }) => {
-    const inFrames = inRate * 12;
+    const inFrames = inRate * 8;
     const freq = 1000;
     const input = tone(freq, inRate, inFrames);
     const [out] = resamplePlanarFloat([input], inRate, outRate);
@@ -109,13 +156,25 @@ describe('exact rational stepping', () => {
     expect(worst, `max deviation ${worst.toExponential(2)}`).toBeLessThan(1e-5);
   });
 
-  it('produces identical channels in the mono, stereo and multichannel kernels', () => {
+  it.each([
+    { inRate: SAMPLE_RATE_44K, outRate: SAMPLE_RATE_48K },
+    { inRate: 96000, outRate: SAMPLE_RATE_44K },
+    { inRate: SAMPLE_RATE_44K, outRate: 96000 },
+    { inRate: SAMPLE_RATE_44K, outRate: 22050 },
+    { inRate: 22050, outRate: SAMPLE_RATE_44K },
+    { inRate: 16000, outRate: SAMPLE_RATE_48K },
+  ])('produces identical channels in the mono, stereo and multichannel kernels: $inRate -> $outRate', ({ inRate, outRate }) => {
     const frames = 20000;
-    const channelsIn = [tone(1000, SAMPLE_RATE_44K, frames), tone(3100, SAMPLE_RATE_44K, frames, 0.3, 1.1), tone(7000, SAMPLE_RATE_44K, frames, 0.2, 2.0)];
-    const [mono0, mono1, mono2] = channelsIn.map((c) => resamplePlanarFloat([c], SAMPLE_RATE_44K, SAMPLE_RATE_48K)[0]);
-    const stereo = resamplePlanarFloat(channelsIn.slice(0, 2), SAMPLE_RATE_44K, SAMPLE_RATE_48K);
-    const triple = resamplePlanarFloat(channelsIn, SAMPLE_RATE_44K, SAMPLE_RATE_48K);
+    const channelsIn = [
+      tone(1000, inRate, frames),
+      tone(3100, inRate, frames, 0.3, 1.1),
+      tone(7000, inRate, frames, 0.2, 2.0),
+    ];
+    const [mono0, mono1, mono2] = channelsIn.map((c) => resamplePlanarFloat([c], inRate, outRate)[0]);
+    const stereo = resamplePlanarFloat(channelsIn.slice(0, 2), inRate, outRate);
+    const triple = resamplePlanarFloat(channelsIn, inRate, outRate);
     const KERNEL_ORDER_TOLERANCE = 1e-6;
+    expect(mono0.length).toBe(Math.floor((frames * outRate) / inRate));
     for (let i = 0; i < mono0.length; i++) {
       expect(Math.abs(stereo[0][i] - mono0[i])).toBeLessThan(KERNEL_ORDER_TOLERANCE);
       expect(Math.abs(stereo[1][i] - mono1[i])).toBeLessThan(KERNEL_ORDER_TOLERANCE);

@@ -1,5 +1,5 @@
 /**
- * Bandlimited polyphase audio resampler.
+ * Bandlimited multi-stage audio resampler.
  *
  * Method: bandlimited interpolation (J. O. Smith, CCRMA) with a Kaiser-windowed sinc
  * prototype (Kaiser 1974), evaluated as a polyphase filter bank (Crochiere and Rabiner).
@@ -14,10 +14,27 @@
  *    integer quotient/remainder accumulator, so there is no floating-point drift on any ratio.
  *  - Small L: one exact coefficient row per phase. Large L: a finely oversampled row set with
  *    linear interpolation between adjacent rows (error far below the stopband floor).
+ *  - Factor-of-two parts of a ratio run through cascaded half-band stages (audio-halfband.ts),
+ *    which need about a quarter of the multiplies of a direct filter: decimation runs them
+ *    before the polyphase stage, interpolation after it. A stage is only used while its
+ *    transition band stays clear of the lower Nyquist, so nothing aliases or images into
+ *    0..Nyquist; the polyphase stage then handles the remaining ratio (at most 2:1).
  *  - Coefficient tables are built once per (ratio, quality) and kept in a bounded cache.
+ *  - Stages pull their input block by block with exact index arithmetic, so memory stays
+ *    bounded for long files and block seams are bit-exact.
  *  - Integer output is quantised with seeded TPDF dither; float and 24/32-bit output never is.
  */
 import { ConversionFailedError } from '../types';
+import { besselI0, kaiserBeta, kaiserLengthEstimate } from './audio-kaiser';
+import {
+  type HalfBandFilter,
+  designHalfBand,
+  halfBandDecimateBlock,
+  halfBandDecimateSpan,
+  halfBandInterpolateBlock,
+  halfBandInterpolateMaxSpan,
+  halfBandPairsFor,
+} from './audio-halfband';
 
 export class AudioResampleError extends ConversionFailedError {
   constructor(message: string) {
@@ -51,6 +68,10 @@ export interface ResamplerPlanInfo {
   phaseRows: number;
   tableEntries: number;
   beta: number;
+  /** Cascaded 2:1 (before the polyphase stage) or 1:2 (after it) half-band stages; 0 = direct. */
+  halfBandStages: number;
+  /** Odd-tap pairs of each half-band stage, in processing order. */
+  halfBandPairs: number[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -74,6 +95,12 @@ export const MAX_RESAMPLER_PLAN_CACHE_ENTRIES = 8;
 const BLOCK_OUT_FRAMES = 4096;
 /** Cap on the interleaved input scratch (doubles) of one block; bounds memory for long files. */
 const MAX_SCRATCH_SAMPLES = 2 ** 22;
+/** A ratio is at most MAX_RESAMPLE_RATIO = 2^6, so at most this many 2:1 stages can apply. */
+const MAX_HALF_BAND_STAGES = 6;
+/** Per-frame cost of loading, zero-padding and copying in a stage, in multiply equivalents. */
+const STAGE_OVERHEAD_MULTIPLIES = 2;
+/** Accuracy margin added to the half-band stopband so two cascaded stages still meet the preset. */
+const HALF_BAND_EXTRA_ATTENUATION_DB = 1;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 const INT16_BITS = 16;
@@ -102,47 +129,10 @@ const FILTER_PRESETS: Record<ResampleQuality, FilterPreset> = {
   high: { attenuationDb: 130, cutoff: 0.95, transition: 0.1 },
 };
 
-const KAISER_BETA_HIGH_ATTENUATION_DB = 50;
-const KAISER_BETA_LOW_ATTENUATION_DB = 21;
-const KAISER_BETA_SLOPE = 0.1102;
-const KAISER_BETA_OFFSET_DB = 8.7;
-const KAISER_BETA_MID_EXPONENT = 0.4;
-const KAISER_BETA_MID_COEFFICIENT_A = 0.5842;
-const KAISER_BETA_MID_COEFFICIENT_B = 0.07886;
-const KAISER_LENGTH_OFFSET_DB = 8;
-const KAISER_LENGTH_SLOPE = 2.285;
-const BESSEL_MAX_TERMS = 200;
-const BESSEL_TOLERANCE = 1e-17;
-const TWO_PI = 2 * Math.PI;
 /** Kernel taps per phase are a multiple of this (unrolled accumulators). */
 const TAP_UNROLL = 4;
 /** |pi x| below this is treated as the sinc limit 1. */
 const SINC_ARGUMENT_EPSILON = 1e-12;
-
-/** Kaiser window shape parameter for a stopband attenuation in dB (Kaiser 1974). */
-function kaiserBeta(attenuationDb: number): number {
-  if (attenuationDb > KAISER_BETA_HIGH_ATTENUATION_DB) {
-    return KAISER_BETA_SLOPE * (attenuationDb - KAISER_BETA_OFFSET_DB);
-  }
-  if (attenuationDb >= KAISER_BETA_LOW_ATTENUATION_DB) {
-    const d = attenuationDb - KAISER_BETA_LOW_ATTENUATION_DB;
-    return KAISER_BETA_MID_COEFFICIENT_A * d ** KAISER_BETA_MID_EXPONENT + KAISER_BETA_MID_COEFFICIENT_B * d;
-  }
-  return 0;
-}
-
-/** Zeroth-order modified Bessel function of the first kind, by its power series. */
-function besselI0(x: number): number {
-  const q = (x * x) / 4;
-  let term = 1;
-  let sum = 1;
-  for (let k = 1; k <= BESSEL_MAX_TERMS; k++) {
-    term *= q / (k * k);
-    sum += term;
-    if (term < sum * BESSEL_TOLERANCE) break;
-  }
-  return sum;
-}
 
 function gcd(a: number, b: number): number {
   let x = a;
@@ -155,8 +145,14 @@ function gcd(a: number, b: number): number {
   return x;
 }
 
-interface ResamplerPlan extends ResamplerPlanInfo {
+interface PolyPlan {
+  upFactor: number;
+  downFactor: number;
+  taps: number;
   halfTaps: number;
+  mode: 'exact' | 'interpolated';
+  phaseRows: number;
+  beta: number;
   /** floor(M / L) and M mod L: per-output integer advance of the input position. */
   quotient: number;
   remainder: number;
@@ -165,7 +161,20 @@ interface ResamplerPlan extends ResamplerPlanInfo {
   /** Exact mode, per output residue r = n mod L: kernel row index and whole-sample input offset. */
   residueRow: Int32Array;
   residueBase: Int32Array;
+  /** Exact mode, per residue: ROW_ASYMMETRIC, ROW_CENTRE_SYMMETRIC or ROW_PALINDROME. */
+  residueSymmetry: Uint8Array;
   table: Float64Array;
+}
+
+interface ResamplerPlan {
+  poly: PolyPlan;
+  /** Half-band stages in processing order. */
+  halfBands: HalfBandFilter[];
+  /** Whether the half-band stages run before (decimation) or after (interpolation) the poly stage. */
+  halfBandsFirst: boolean;
+  /** Overall reduced ratio: output frames = floor(input frames x totalUp / totalDown). */
+  totalUp: number;
+  totalDown: number;
 }
 
 /**
@@ -210,26 +219,39 @@ function pow2Floor(n: number): number {
   return 2 ** Math.floor(Math.log2(n));
 }
 
-function designPlan(srcRate: number, tgtRate: number, quality: ResampleQuality): ResamplerPlan {
+interface PolyGeometry {
+  upFactor: number;
+  downFactor: number;
+  halfTaps: number;
+  taps: number;
+  cutoff: number;
+}
+
+/**
+ * Filter geometry of the polyphase stage for the (possibly virtual) rate pair; only the ratio
+ * matters. Everything is in cycles per INPUT sample: the lower Nyquist, expressed there, is
+ * 0.5 x min(1, tgt/src), which is what makes the filter length scale with 1 / cutoff.
+ */
+function polyGeometry(srcRate: number, tgtRate: number, quality: ResampleQuality): PolyGeometry {
   const divisor = gcd(srcRate, tgtRate);
-  const upFactor = tgtRate / divisor;
-  const downFactor = srcRate / divisor;
   const preset = FILTER_PRESETS[quality];
-  const beta = kaiserBeta(preset.attenuationDb);
-
-  // Everything below is in cycles per INPUT sample. The lower Nyquist, expressed there, is
-  // 0.5 x min(1, tgt/src): this is what makes the filter length scale with 1 / cutoff.
   const lowerNyquist = 0.5 * Math.min(1, tgtRate / srcRate);
-  const cutoff = preset.cutoff * lowerNyquist;
   const transitionWidth = preset.transition * lowerNyquist;
-  const tapEstimate =
-    (preset.attenuationDb - KAISER_LENGTH_OFFSET_DB) / (KAISER_LENGTH_SLOPE * TWO_PI * transitionWidth);
-  let halfTaps = Math.ceil(tapEstimate / 2);
+  let halfTaps = Math.ceil(kaiserLengthEstimate(preset.attenuationDb, transitionWidth) / 2);
   if (halfTaps % 2 !== 0) halfTaps++;
-  const taps = 2 * halfTaps; // multiple of TAP_UNROLL because halfTaps is even
+  return {
+    upFactor: tgtRate / divisor,
+    downFactor: srcRate / divisor,
+    halfTaps,
+    taps: 2 * halfTaps, // multiple of TAP_UNROLL because halfTaps is even
+    cutoff: preset.cutoff * lowerNyquist,
+  };
+}
 
-  const exactEntries = upFactor * taps;
-  const exact = exactEntries <= MAX_TABLE_ENTRIES;
+function buildPolyPlan(srcRate: number, tgtRate: number, quality: ResampleQuality): PolyPlan {
+  const { upFactor, downFactor, halfTaps, taps, cutoff } = polyGeometry(srcRate, tgtRate, quality);
+  const beta = kaiserBeta(FILTER_PRESETS[quality].attenuationDb);
+  const exact = upFactor * taps <= MAX_TABLE_ENTRIES;
   let phaseRows = upFactor;
   if (!exact) {
     phaseRows = Math.min(MAX_INTERPOLATED_PHASE_ROWS, pow2Floor(Math.floor(MAX_TABLE_ENTRIES / taps) - 1));
@@ -241,15 +263,17 @@ function designPlan(srcRate: number, tgtRate: number, quality: ResampleQuality):
   }
   const residueRow = new Int32Array(exact ? upFactor : 0);
   const residueBase = new Int32Array(exact ? upFactor : 0);
+  const residueSymmetry = new Uint8Array(exact ? upFactor : 0);
   for (let r = 0; r < residueRow.length; r++) {
     const scaled = r * downFactor;
     residueBase[r] = Math.floor(scaled / upFactor);
     residueRow[r] = scaled - residueBase[r] * upFactor;
+    if (residueRow[r] === 0) residueSymmetry[r] = ROW_CENTRE_SYMMETRIC;
+    else if (upFactor % 2 === 0 && residueRow[r] === upFactor / 2) residueSymmetry[r] = ROW_PALINDROME;
   }
   const storedRows = exact ? phaseRows : phaseRows + 1;
   const table = new Float64Array(storedRows * taps);
   buildKernelRows(table, storedRows, exact ? upFactor : phaseRows, taps, halfTaps, cutoff, beta);
-
   return {
     upFactor,
     downFactor,
@@ -257,14 +281,84 @@ function designPlan(srcRate: number, tgtRate: number, quality: ResampleQuality):
     halfTaps,
     mode: exact ? 'exact' : 'interpolated',
     phaseRows,
-    tableEntries: table.length,
     beta,
     quotient: Math.floor(downFactor / upFactor),
     remainder: downFactor % upFactor,
     rowScale: phaseRows / upFactor,
     residueRow,
     residueBase,
+    residueSymmetry,
     table,
+  };
+}
+
+/** Transition width of a half-band stage running at `stageRate`, in cycles per sample of that rate. */
+function halfBandTransition(stageRate: number, lowerRate: number): number {
+  return 0.5 - lowerRate / stageRate;
+}
+
+function halfBandAttenuation(quality: ResampleQuality): number {
+  return FILTER_PRESETS[quality].attenuationDb + HALF_BAND_EXTRA_ATTENUATION_DB;
+}
+
+/**
+ * Number of half-band stages with the lowest estimated multiply count. A decimating cascade
+ * runs stage j at src / 2^j; its transition band is 0.5 - tgt / rate wide and starts at the
+ * target Nyquist, so it must stay positive. An interpolating cascade mirrors that.
+ */
+function chooseHalfBandStages(srcRate: number, tgtRate: number, quality: ResampleQuality): number {
+  const decimating = srcRate > tgtRate;
+  const lowerRate = Math.min(srcRate, tgtRate);
+  const higherRate = Math.max(srcRate, tgtRate);
+  const attenuation = halfBandAttenuation(quality);
+  let bestStages = 0;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (let k = 0; k <= MAX_HALF_BAND_STAGES; k++) {
+    // The slowest half-band stage input/output rate is higherRate / 2^k and must exceed lowerRate.
+    if (k > 0 && higherRate / 2 ** k <= lowerRate) break;
+    const poly = decimating
+      ? polyGeometry(srcRate, tgtRate * 2 ** k, quality)
+      : polyGeometry(srcRate * 2 ** k, tgtRate, quality);
+    const polyOutputRate = decimating ? tgtRate : tgtRate / 2 ** k;
+    let cost = poly.taps * polyOutputRate;
+    for (let j = 0; j < k; j++) {
+      if (decimating) {
+        const stageRate = srcRate / 2 ** j;
+        const pairs = halfBandPairsFor(attenuation, halfBandTransition(stageRate, lowerRate));
+        cost += (pairs + 1 + STAGE_OVERHEAD_MULTIPLIES) * (stageRate / 2);
+      } else {
+        const stageRate = tgtRate / 2 ** (k - 1 - j);
+        const pairs = halfBandPairsFor(attenuation, halfBandTransition(stageRate, lowerRate));
+        cost += (pairs / 2 + STAGE_OVERHEAD_MULTIPLIES) * stageRate;
+      }
+    }
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestStages = k;
+    }
+  }
+  return bestStages;
+}
+
+function designPlan(srcRate: number, tgtRate: number, quality: ResampleQuality): ResamplerPlan {
+  const divisor = gcd(srcRate, tgtRate);
+  const decimating = srcRate > tgtRate;
+  const lowerRate = Math.min(srcRate, tgtRate);
+  const stages = chooseHalfBandStages(srcRate, tgtRate, quality);
+  const poly = decimating
+    ? buildPolyPlan(srcRate, tgtRate * 2 ** stages, quality)
+    : buildPolyPlan(srcRate * 2 ** stages, tgtRate, quality);
+  const halfBands: HalfBandFilter[] = [];
+  for (let j = 0; j < stages; j++) {
+    const stageRate = decimating ? srcRate / 2 ** j : tgtRate / 2 ** (stages - 1 - j);
+    halfBands.push(designHalfBand(halfBandAttenuation(quality), halfBandTransition(stageRate, lowerRate)));
+  }
+  return {
+    poly,
+    halfBands,
+    halfBandsFirst: decimating,
+    totalUp: tgtRate / divisor,
+    totalDown: srcRate / divisor,
   };
 }
 
@@ -292,7 +386,10 @@ export function resamplerPlanCacheSize(): number {
   return planCache.size;
 }
 
-/** Design summary for a ratio (also validates the rates); used by tests and diagnostics. */
+/**
+ * Design summary for a ratio (also validates the rates); used by tests and diagnostics. The
+ * rate fields describe the polyphase stage, which handles what the half-band stages leave.
+ */
 export function describeResamplerPlan(
   srcRate: number,
   tgtRate: number,
@@ -300,8 +397,18 @@ export function describeResamplerPlan(
 ): ResamplerPlanInfo {
   validateRates(srcRate, tgtRate);
   validateQuality(quality);
-  const { upFactor, downFactor, taps, mode, phaseRows, tableEntries, beta } = getPlan(srcRate, tgtRate, quality);
-  return { upFactor, downFactor, taps, mode, phaseRows, tableEntries, beta };
+  const { poly, halfBands } = getPlan(srcRate, tgtRate, quality);
+  return {
+    upFactor: poly.upFactor,
+    downFactor: poly.downFactor,
+    taps: poly.taps,
+    mode: poly.mode,
+    phaseRows: poly.phaseRows,
+    tableEntries: poly.table.length,
+    beta: poly.beta,
+    halfBandStages: halfBands.length,
+    halfBandPairs: halfBands.map((h) => h.pairs),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -342,11 +449,11 @@ function validateQuality(quality: string): asserts quality is ResampleQuality {
 }
 
 function validateOutputFrames(inputFrames: number, plan: ResamplerPlan, channels: number): number {
-  const product = inputFrames * plan.upFactor;
+  const product = inputFrames * plan.totalUp;
   if (!Number.isSafeInteger(product)) {
     throw new AudioResampleError(`Input of ${inputFrames} frames is too long to resample`);
   }
-  const outFrames = Math.floor(product / plan.downFactor);
+  const outFrames = Math.floor(product / plan.totalDown);
   if (outFrames * channels > MAX_RESAMPLE_OUTPUT_SAMPLES) {
     throw new AudioResampleError(
       `Resampled output of ${outFrames * channels} samples exceeds the ${MAX_RESAMPLE_OUTPUT_SAMPLES} sample limit`
@@ -513,27 +620,275 @@ function dotFrame(
 }
 
 /**
- * Exact polyphase: a block is a whole number of periods of `upFactor` outputs, so output
- * n = k x L + r always uses kernel row (r x M) mod L at input offset k x M + floor(r x M / L).
- * Residue-major order keeps one 1 KiB-scale row hot in cache for every period of the block.
+ * Kernel rows are not all different: a row whose fractional offset is 0 is symmetric about its
+ * centre tap (halfTaps - 1) and a row at offset 1/2 is a palindrome, so those outputs fold
+ * x[j] + x[mirror] and need half the multiplies.
  */
-function convolveExactBlock(plan: ResamplerPlan, x: Float64Array, channels: number, count: number, out: Float64Array): void {
-  const { taps, table, upFactor, downFactor, residueRow, residueBase } = plan;
-  const periods = Math.ceil(count / upFactor);
+const ROW_ASYMMETRIC = 0;
+const ROW_CENTRE_SYMMETRIC = 1;
+const ROW_PALINDROME = 2;
+
+/** Outputs k x L + firstOutput for k in [firstPeriod, periods) with an arbitrary kernel row. */
+function convolveRowAsymmetric(
+  plan: PolyPlan,
+  x: Float64Array,
+  channels: number,
+  out: Float64Array,
+  rowOffset: number,
+  base: number,
+  firstPeriod: number,
+  periods: number,
+  firstOutput: number,
+  count: number
+): void {
+  const { taps, table, upFactor, downFactor } = plan;
+  for (let k = firstPeriod; k < periods; k++) {
+    const n = (k * upFactor + firstOutput) | 0;
+    if (n >= count) break;
+    const xFrame = (k * downFactor + base) | 0;
+    if (channels === STEREO && n + upFactor < count) {
+      // Two consecutive periods share the kernel row: one coefficient load feeds four sums.
+      let la0 = 0;
+      let la1 = 0;
+      let ra0 = 0;
+      let ra1 = 0;
+      let lb0 = 0;
+      let lb1 = 0;
+      let rb0 = 0;
+      let rb1 = 0;
+      let qa = (xFrame * STEREO) | 0;
+      let qb = (qa + downFactor * STEREO) | 0;
+      for (let j = 0; j < taps; j += 2) {
+        const t = (rowOffset + j) | 0;
+        const c0 = table[t];
+        const c1 = table[t + 1];
+        la0 += c0 * x[qa];
+        ra0 += c0 * x[qa + 1];
+        lb0 += c0 * x[qb];
+        rb0 += c0 * x[qb + 1];
+        la1 += c1 * x[qa + 2];
+        ra1 += c1 * x[qa + 3];
+        lb1 += c1 * x[qb + 2];
+        rb1 += c1 * x[qb + 3];
+        qa = (qa + 2 * STEREO) | 0;
+        qb = (qb + 2 * STEREO) | 0;
+      }
+      out[n * STEREO] = la0 + la1;
+      out[n * STEREO + 1] = ra0 + ra1;
+      out[(n + upFactor) * STEREO] = lb0 + lb1;
+      out[(n + upFactor) * STEREO + 1] = rb0 + rb1;
+      k++;
+    } else if (channels === STEREO) {
+      let left0 = 0;
+      let left1 = 0;
+      let left2 = 0;
+      let left3 = 0;
+      let right0 = 0;
+      let right1 = 0;
+      let right2 = 0;
+      let right3 = 0;
+      let q = (xFrame * STEREO) | 0;
+      for (let j = 0; j < taps; j += TAP_UNROLL) {
+        const t = (rowOffset + j) | 0;
+        const c0 = table[t];
+        const c1 = table[t + 1];
+        const c2 = table[t + 2];
+        const c3 = table[t + 3];
+        left0 += c0 * x[q];
+        right0 += c0 * x[q + 1];
+        left1 += c1 * x[q + 2];
+        right1 += c1 * x[q + 3];
+        left2 += c2 * x[q + 4];
+        right2 += c2 * x[q + 5];
+        left3 += c3 * x[q + 6];
+        right3 += c3 * x[q + 7];
+        q = (q + 2 * TAP_UNROLL) | 0;
+      }
+      out[n * STEREO] = left0 + left1 + (left2 + left3);
+      out[n * STEREO + 1] = right0 + right1 + (right2 + right3);
+    } else if (channels === 1) {
+      let s0 = 0;
+      let s1 = 0;
+      let s2 = 0;
+      let s3 = 0;
+      let q = xFrame;
+      for (let j = 0; j < taps; j += TAP_UNROLL) {
+        const t = (rowOffset + j) | 0;
+        s0 += table[t] * x[q];
+        s1 += table[t + 1] * x[q + 1];
+        s2 += table[t + 2] * x[q + 2];
+        s3 += table[t + 3] * x[q + 3];
+        q = (q + TAP_UNROLL) | 0;
+      }
+      out[n] = s0 + s1 + (s2 + s3);
+    } else {
+      dotFrame(table, rowOffset, x, xFrame, channels, taps, out, n);
+    }
+  }
+}
+
+/** Same outputs for a row symmetric about its centre tap c = halfTaps - 1 (the last tap is zero). */
+function convolveRowCentreSymmetric(
+  plan: PolyPlan,
+  x: Float64Array,
+  channels: number,
+  out: Float64Array,
+  rowOffset: number,
+  base: number,
+  firstPeriod: number,
+  periods: number,
+  firstOutput: number,
+  count: number
+): void {
+  const { halfTaps, table, upFactor, downFactor, taps } = plan;
+  const centre = (halfTaps - 1) | 0;
+  const pairs = centre; // odd: taps 0 .. centre - 1 mirror taps 2 centre .. centre + 1
+  const centreCoefficient = table[rowOffset + centre];
+  for (let k = firstPeriod; k < periods; k++) {
+    const n = (k * upFactor + firstOutput) | 0;
+    if (n >= count) break;
+    const xFrame = (k * downFactor + base) | 0;
+    if (channels === STEREO) {
+      let l0 = 0;
+      let l1 = 0;
+      let r0 = 0;
+      let r1 = 0;
+      let lo = (xFrame * STEREO) | 0;
+      let hi = ((xFrame + 2 * centre) * STEREO) | 0;
+      let j = 0;
+      for (; j + 1 < pairs; j += 2) {
+        const h0 = table[rowOffset + j];
+        const h1 = table[rowOffset + j + 1];
+        l0 += h0 * (x[lo] + x[hi]);
+        r0 += h0 * (x[lo + 1] + x[hi + 1]);
+        l1 += h1 * (x[lo + 2] + x[hi - 2]);
+        r1 += h1 * (x[lo + 3] + x[hi - 1]);
+        lo = (lo + 2 * STEREO) | 0;
+        hi = (hi - 2 * STEREO) | 0;
+      }
+      const hLast = table[rowOffset + j];
+      l0 += hLast * (x[lo] + x[hi]);
+      r0 += hLast * (x[lo + 1] + x[hi + 1]);
+      const mid = ((xFrame + centre) * STEREO) | 0;
+      out[n * STEREO] = centreCoefficient * x[mid] + (l0 + l1);
+      out[n * STEREO + 1] = centreCoefficient * x[mid + 1] + (r0 + r1);
+    } else if (channels === 1) {
+      let s0 = 0;
+      let s1 = 0;
+      let lo = xFrame;
+      let hi = (xFrame + 2 * centre) | 0;
+      let j = 0;
+      for (; j + 1 < pairs; j += 2) {
+        s0 += table[rowOffset + j] * (x[lo] + x[hi]);
+        s1 += table[rowOffset + j + 1] * (x[lo + 1] + x[hi - 1]);
+        lo = (lo + 2) | 0;
+        hi = (hi - 2) | 0;
+      }
+      s0 += table[rowOffset + j] * (x[lo] + x[hi]);
+      out[n] = centreCoefficient * x[xFrame + centre] + (s0 + s1);
+    } else {
+      dotFrame(table, rowOffset, x, xFrame, channels, taps, out, n);
+    }
+  }
+}
+
+/** Same outputs for a palindromic row: tap j equals tap taps - 1 - j. */
+function convolveRowPalindrome(
+  plan: PolyPlan,
+  x: Float64Array,
+  channels: number,
+  out: Float64Array,
+  rowOffset: number,
+  base: number,
+  firstPeriod: number,
+  periods: number,
+  firstOutput: number,
+  count: number
+): void {
+  const { taps, table, upFactor, downFactor } = plan;
+  const pairs = (taps / 2) | 0; // even
+  for (let k = firstPeriod; k < periods; k++) {
+    const n = (k * upFactor + firstOutput) | 0;
+    if (n >= count) break;
+    const xFrame = (k * downFactor + base) | 0;
+    if (channels === STEREO) {
+      let l0 = 0;
+      let l1 = 0;
+      let r0 = 0;
+      let r1 = 0;
+      let lo = (xFrame * STEREO) | 0;
+      let hi = ((xFrame + taps - 1) * STEREO) | 0;
+      for (let j = 0; j < pairs; j += 2) {
+        const h0 = table[rowOffset + j];
+        const h1 = table[rowOffset + j + 1];
+        l0 += h0 * (x[lo] + x[hi]);
+        r0 += h0 * (x[lo + 1] + x[hi + 1]);
+        l1 += h1 * (x[lo + 2] + x[hi - 2]);
+        r1 += h1 * (x[lo + 3] + x[hi - 1]);
+        lo = (lo + 2 * STEREO) | 0;
+        hi = (hi - 2 * STEREO) | 0;
+      }
+      out[n * STEREO] = l0 + l1;
+      out[n * STEREO + 1] = r0 + r1;
+    } else if (channels === 1) {
+      let s0 = 0;
+      let s1 = 0;
+      let lo = xFrame;
+      let hi = (xFrame + taps - 1) | 0;
+      for (let j = 0; j < pairs; j += 2) {
+        s0 += table[rowOffset + j] * (x[lo] + x[hi]);
+        s1 += table[rowOffset + j + 1] * (x[lo + 1] + x[hi - 1]);
+        lo = (lo + 2) | 0;
+        hi = (hi - 2) | 0;
+      }
+      out[n] = s0 + s1;
+    } else {
+      dotFrame(table, rowOffset, x, xFrame, channels, taps, out, n);
+    }
+  }
+}
+
+/**
+ * Exact polyphase for output frames [start, start + count): output n = k x L + r uses kernel row
+ * (r x M) mod L at input offset k x M + floor(r x M / L) (relative to the first output's
+ * position). Residue-major order keeps one kernel row hot in cache across the block's periods.
+ * Hot loops are written out in full: the JIT inliner is not relied on (when it declined,
+ * throughput dropped by a third).
+ */
+function convolveExactBlock(
+  plan: PolyPlan,
+  x: Float64Array,
+  channels: number,
+  start: number,
+  count: number,
+  out: Float64Array
+): void {
+  const { taps, upFactor, downFactor, residueRow, residueBase, residueSymmetry } = plan;
+  const periodStart = Math.floor(start / upFactor);
+  // Block-local quantities are small, so they are forced to int32 for index arithmetic.
+  const periods = (Math.floor((start + count - 1) / upFactor) - periodStart + 1) | 0;
+  const startResidue = (start - periodStart * upFactor) | 0;
+  const periodInput = (periodStart * downFactor - Math.floor((start * downFactor) / upFactor)) | 0;
   for (let r = 0; r < upFactor; r++) {
-    const rowOffset = residueRow[r] * taps;
-    const base = residueBase[r];
-    for (let k = 0; k < periods; k++) {
-      const n = k * upFactor + r;
-      if (n >= count) break;
-      dotFrame(table, rowOffset, x, k * downFactor + base, channels, taps, out, n);
+    const rowOffset = (residueRow[r] * taps) | 0;
+    const base = (periodInput + residueBase[r]) | 0;
+    // The first period holds outputs from `startResidue` on; earlier residues start one period later.
+    const firstPeriod = r >= startResidue ? 0 : 1;
+    const firstOutput = (r - startResidue) | 0;
+    const symmetry = residueSymmetry[r];
+    if (symmetry === ROW_CENTRE_SYMMETRIC) {
+      convolveRowCentreSymmetric(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
+    } else if (symmetry === ROW_PALINDROME) {
+      convolveRowPalindrome(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
+    } else {
+      convolveRowAsymmetric(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
     }
   }
 }
 
 /** Oversampled rows: the row for each output is linearly interpolated once, then shared by all channels. */
 function convolveInterpolatedBlock(
-  plan: ResamplerPlan,
+  plan: PolyPlan,
   x: Float64Array,
   channels: number,
   rem0: number,
@@ -573,31 +928,96 @@ interface ChannelIo {
   store(start: number, count: number, src: Float64Array): void;
 }
 
-function runResampler(
-  plan: ResamplerPlan,
-  io: ChannelIo,
-  outFrames: number,
-  quantizer: DitherQuantizer | null
-): void {
-  const { halfTaps, taps, upFactor, downFactor, mode } = plan;
-  const channels = io.channels;
-  const exact = mode === 'exact';
-  const blockFrames = exact ? Math.max(1, Math.floor(BLOCK_OUT_FRAMES / upFactor)) * upFactor : BLOCK_OUT_FRAMES;
-  const maxSpan = Math.ceil((blockFrames * downFactor) / upFactor) + taps + 2;
-  if (maxSpan * channels > MAX_SCRATCH_SAMPLES) {
-    throw new AudioResampleError(
-      `Resampling ${channels} channels at ratio ${upFactor}:${downFactor} exceeds the supported block size`
-    );
-  }
-  const input = new Float64Array(maxSpan * channels);
-  const raw = new Float64Array(blockFrames * channels);
-  const quantized = quantizer ? new Float64Array(blockFrames * channels) : raw;
-  const rowScratch = new Float64Array(exact ? 0 : taps);
+// ---------------------------------------------------------------------------------------------
+// Pull pipeline: every stage computes frames [start, start + count) of its own signal on demand
+// from the stage before it, so no whole-signal intermediate buffer exists.
+// ---------------------------------------------------------------------------------------------
 
-  for (let n0 = 0; n0 < outFrames; n0 += blockFrames) {
-    const count = Math.min(blockFrames, outFrames - n0);
-    // Exact rational input position n0 x M / L as integer quotient and remainder.
-    const scaled = n0 * downFactor;
+interface FrameSource {
+  /** Fill dst[0 .. count x channels) with frames [start, start + count); zeros outside [0, length). */
+  produce(start: number, count: number, dst: Float64Array): void;
+}
+
+class SignalSource implements FrameSource {
+  constructor(private readonly io: ChannelIo) {}
+
+  produce(start: number, count: number, dst: Float64Array): void {
+    this.io.load(start, count, dst);
+  }
+}
+
+/** Zero the frames of dst that lie outside [0, length). */
+function zeroOutside(dst: Float64Array, channels: number, start: number, count: number, length: number): void {
+  if (start < 0) dst.fill(0, 0, Math.min(count, -start) * channels);
+  const tail = start + count - length;
+  if (tail > 0) {
+    const kept = Math.max(0, count - tail);
+    dst.fill(0, kept * channels, count * channels);
+  }
+}
+
+class HalfBandDecimateStage implements FrameSource {
+  private readonly input: Float64Array;
+
+  constructor(
+    private readonly upstream: FrameSource,
+    private readonly filter: HalfBandFilter,
+    private readonly channels: number,
+    inputSpan: number,
+    private readonly length: number
+  ) {
+    this.input = new Float64Array(inputSpan * channels);
+  }
+
+  produce(start: number, count: number, dst: Float64Array): void {
+    const span = halfBandDecimateSpan(this.filter, count);
+    this.upstream.produce(2 * start - this.filter.reach, span, this.input);
+    halfBandDecimateBlock(this.filter, this.input, this.channels, count, dst);
+    zeroOutside(dst, this.channels, start, count, this.length);
+  }
+}
+
+class HalfBandInterpolateStage implements FrameSource {
+  private readonly input: Float64Array;
+
+  constructor(
+    private readonly upstream: FrameSource,
+    private readonly filter: HalfBandFilter,
+    private readonly channels: number,
+    inputSpan: number,
+    private readonly length: number
+  ) {
+    this.input = new Float64Array(inputSpan * channels);
+  }
+
+  produce(start: number, count: number, dst: Float64Array): void {
+    const firstInput = Math.floor(start / 2) - this.filter.pairs + 1;
+    const lastInput = Math.floor((start + count - 1) / 2) + this.filter.pairs;
+    this.upstream.produce(firstInput, lastInput - firstInput + 1, this.input);
+    halfBandInterpolateBlock(this.filter, this.input, this.channels, start, count, dst);
+    zeroOutside(dst, this.channels, start, count, this.length);
+  }
+}
+
+class PolyphaseStage implements FrameSource {
+  private readonly input: Float64Array;
+  private readonly rowScratch: Float64Array;
+
+  constructor(
+    private readonly upstream: FrameSource,
+    private readonly plan: PolyPlan,
+    private readonly channels: number,
+    inputSpan: number,
+    private readonly length: number
+  ) {
+    this.input = new Float64Array(inputSpan * channels);
+    this.rowScratch = new Float64Array(plan.mode === 'exact' ? 0 : plan.taps);
+  }
+
+  produce(start: number, count: number, dst: Float64Array): void {
+    const { halfTaps, upFactor, downFactor, mode } = this.plan;
+    // Exact rational input position start x M / L as integer quotient and remainder.
+    const scaled = start * downFactor;
     let pos0 = Math.floor(scaled / upFactor);
     let rem0 = scaled - pos0 * upFactor;
     while (rem0 < 0) {
@@ -610,12 +1030,97 @@ function runResampler(
     }
     const firstInput = pos0 - halfTaps + 1;
     const lastPos = pos0 + Math.floor((rem0 + (count - 1) * downFactor) / upFactor);
-    io.load(firstInput, lastPos + halfTaps - firstInput + 1, input);
-    if (exact) {
-      convolveExactBlock(plan, input, channels, count, raw);
+    this.upstream.produce(firstInput, lastPos + halfTaps - firstInput + 1, this.input);
+    if (mode === 'exact') {
+      convolveExactBlock(this.plan, this.input, this.channels, start, count, dst);
     } else {
-      convolveInterpolatedBlock(plan, input, channels, rem0, count, raw, rowScratch);
+      convolveInterpolatedBlock(this.plan, this.input, this.channels, rem0, count, dst, this.rowScratch);
     }
+  }
+
+  static inputSpan(plan: PolyPlan, count: number): number {
+    return Math.ceil((count * plan.downFactor) / plan.upFactor) + plan.taps + 2;
+  }
+}
+
+/**
+ * Builds the stage chain for `plan` and returns its last stage plus the output block size.
+ * Stage input scratch sizes follow from the block size backwards through the chain.
+ */
+function buildPipeline(
+  plan: ResamplerPlan,
+  io: ChannelIo,
+  inFrames: number,
+  outFrames: number
+): { source: FrameSource; blockFrames: number } {
+  const { poly, halfBands, halfBandsFirst } = plan;
+  const channels = io.channels;
+  const exactPoly = poly.mode === 'exact';
+  const polyLast = halfBandsFirst || halfBands.length === 0;
+  const blockFrames =
+    polyLast && exactPoly ? Math.max(1, Math.floor(BLOCK_OUT_FRAMES / poly.upFactor)) * poly.upFactor : BLOCK_OUT_FRAMES;
+
+  type Kind = { kind: 'decimate' | 'interpolate'; filter: HalfBandFilter } | { kind: 'poly' };
+  const order: Kind[] = [];
+  const halfBandKinds: Kind[] = halfBands.map((filter) => ({
+    kind: halfBandsFirst ? 'decimate' : 'interpolate',
+    filter,
+  }));
+  if (halfBandsFirst) order.push(...halfBandKinds, { kind: 'poly' });
+  else order.push({ kind: 'poly' }, ...halfBandKinds);
+
+  // Scratch needed by stage i = frames it requests from stage i - 1, derived from the last stage.
+  const requests = new Array<number>(order.length);
+  let count = blockFrames;
+  for (let i = order.length - 1; i >= 0; i--) {
+    const stage = order[i];
+    if (stage.kind === 'poly') count = PolyphaseStage.inputSpan(poly, count);
+    else if (stage.kind === 'decimate') count = halfBandDecimateSpan(stage.filter, count);
+    else count = halfBandInterpolateMaxSpan(stage.filter, count);
+    requests[i] = count;
+  }
+  let scratchSamples = 0;
+  for (const frames of requests) scratchSamples += frames * channels;
+  if (scratchSamples > MAX_SCRATCH_SAMPLES) {
+    throw new AudioResampleError(
+      `Resampling ${channels} channels at ratio ${plan.totalUp}:${plan.totalDown} exceeds the supported block size`
+    );
+  }
+
+  // Stage signal lengths (frames): zero beyond them. The last stage is bounded by the output length.
+  let source: FrameSource = new SignalSource(io);
+  let length = inFrames;
+  for (let i = 0; i < order.length; i++) {
+    const stage = order[i];
+    const last = i === order.length - 1;
+    if (stage.kind === 'poly') {
+      length = last ? outFrames : Math.ceil((length * poly.upFactor) / poly.downFactor);
+      source = new PolyphaseStage(source, poly, channels, requests[i], length);
+    } else if (stage.kind === 'decimate') {
+      length = last ? outFrames : Math.ceil(length / 2);
+      source = new HalfBandDecimateStage(source, stage.filter, channels, requests[i], length);
+    } else {
+      length = last ? outFrames : 2 * length;
+      source = new HalfBandInterpolateStage(source, stage.filter, channels, requests[i], length);
+    }
+  }
+  return { source, blockFrames };
+}
+
+function runResampler(
+  plan: ResamplerPlan,
+  io: ChannelIo,
+  inFrames: number,
+  outFrames: number,
+  quantizer: DitherQuantizer | null
+): void {
+  const channels = io.channels;
+  const { source, blockFrames } = buildPipeline(plan, io, inFrames, outFrames);
+  const raw = new Float64Array(blockFrames * channels);
+  const quantized = quantizer ? new Float64Array(blockFrames * channels) : raw;
+  for (let n0 = 0; n0 < outFrames; n0 += blockFrames) {
+    const count = Math.min(blockFrames, outFrames - n0);
+    source.produce(n0, count, raw);
     if (quantizer) quantizer.quantize(raw, count * channels, quantized);
     io.store(n0, count, quantized);
   }
@@ -709,7 +1214,7 @@ export function resamplePlanarFloat(
     const lsb = 2 ** (1 - bits);
     quantizer = new DitherQuantizer(lsb, -1, 1 - lsb, seed);
   }
-  runResampler(plan, io, outFrames, quantizer);
+  runResampler(plan, io, inFrames, outFrames, quantizer);
   return outputs;
 }
 
@@ -765,6 +1270,6 @@ export function resampleInterleavedInt16(
   const lsb = 2 ** (INT16_BITS - (depth as number));
   const high = INT16_MAX + 1 - lsb;
   const quantizer = new DitherQuantizer(lsb, INT16_MIN, high, seed);
-  runResampler(plan, io, outFrames, quantizer);
+  runResampler(plan, io, inFrames, outFrames, quantizer);
   return output;
 }
