@@ -7,6 +7,7 @@ import {
   type PDFFont,
   type PDFImage,
 } from 'pdf-lib';
+import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { parsePageRanges } from '../page-range';
 import {
   PdfWatermarkOptions,
@@ -308,6 +309,8 @@ async function prepareWatermarkAsset(
       throw new PdfPostprocessError('Watermark image source is missing for image watermark.');
     }
     const { buffer: imgBuf, format } = parseImageBuffer(options.image);
+    // pdf-lib decodes PNG and JPEG itself and leniently: check the declared size first, and refuse a header libvips cannot read.
+    await assertEncodedImageWithinLimit(imgBuf);
     const image = format === 'png' ? await doc.embedPng(imgBuf) : await doc.embedJpg(imgBuf);
     return { isImage: true, image, font: null, text: '' };
   }
