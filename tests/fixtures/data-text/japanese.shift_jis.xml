@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="Shift_JIS"?>
+<名簿 xmlns:x="urn:example:extra">
+  <人 番号="1" x:役割="開発">佐藤 &amp; 花子</人>
+  <人 番号="2">鈴木<![CDATA[ <一郎> ]]>です</人>
+</名簿>

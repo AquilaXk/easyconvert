@@ -577,11 +577,11 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(Array.isArray(caps.supportedVideoEncoders)).toBe(true);
     });
 
-    it('routes pure data format pairs to Level 0 (Instant)', () => {
+    it('routes structured data pairs to the server data engine (Cloud L4)', () => {
       const res = resolveConversionTier('csv', 'json', 5000);
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
+      expect(res.tier).toBe('L4');
+      expect(res.tierName).toBe('Cloud (Zero-Retention)');
+      expect(res.isClientEdge).toBe(false);
     });
 
     it('routes pure CAD pairs to Level 0 (Instant)', () => {
@@ -650,7 +650,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(limit).toBeGreaterThanOrEqual(100 * 1024 * 1024);
     });
 
-    it('executes pure data conversion through tryProcessClientEdge without calling server', async () => {
+    it('leaves structured data conversion to the server: tryProcessClientEdge converts nothing', async () => {
       // Mock File and window in test environment
       const csvContent = 'name,score\nAda,100\nGrace,99';
       const file = new File([csvContent], 'scores.csv', { type: 'text/csv' });
@@ -676,15 +676,12 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       const onProgress = vi.fn();
       const edgeRes = await tryProcessClientEdge(queueItem, onProgress);
 
-      expect(edgeRes).not.toBeNull();
-      expect(edgeRes?.tier).toBe('L0');
-      expect(edgeRes?.tierName).toBe('Edge L0 (Instant)');
-      expect(edgeRes?.resultUrl).toBe(fakeUrl);
-      expect(edgeRes?.resultSize).toBeGreaterThan(0);
-      expect(onProgress).toHaveBeenCalled();
+      expect(edgeRes).toBeNull();
+      expect(createObjectURLMock).not.toHaveBeenCalled();
+      expect(onProgress).not.toHaveBeenCalled();
     });
 
-    it('strictly fails closed and reports error when pure edge conversion encounters corrupt input', async () => {
+    it('blocks a structured data conversion in client-only mode instead of uploading it without consent', async () => {
       (globalThis as any).window = globalThis;
       const fetchSpy = vi.fn();
       (globalThis as any).fetch = fetchSpy;
@@ -711,8 +708,10 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
         },
       });
 
-      expect(capturedError).toContain('JSON parsing failed');
-      // Crucial: Must NEVER make an unconsented network fetch to server when client edge fails!
+      expect(capturedError).toBe(
+        'Conversion from JSON to CSV requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.'
+      );
+      // Crucial: Must NEVER make an unconsented network fetch to server when the client edge cannot convert!
       expect(fetchSpy).not.toHaveBeenCalled();
     });
 
