@@ -64,13 +64,14 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       expect(hocr).toContain('<title>Invoice Verification</title>');
       expect(hocr).toContain('<meta name="ocr-system" content="easyconvert-ocr" />');
       expect(hocr).toContain(
-        '<meta name="ocr-capabilities" content="ocr_page ocr_carea ocr_par ocr_line ocrx_word" />'
+        '<meta name="ocr-capabilities" content="ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf" />'
       );
 
       // Hierarchical OCR structure
       expect(hocr).toContain('class="ocr_page"');
       expect(hocr).toContain('id="page_1"');
-      expect(hocr).toContain('bbox 0 0 600 800; ppageno 1');
+      // hOCR counts physical pages from zero, and the image name is a double-quoted string.
+      expect(hocr).toContain('title="image &quot;invoice.png&quot;; bbox 0 0 600 800; ppageno 0"');
 
       expect(hocr).toContain('class="ocr_carea"');
       expect(hocr).toContain('id="block_1_1"');
@@ -164,13 +165,13 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
       // XML declaration & root namespace
       expect(altoXml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
       expect(altoXml).toContain('<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"');
-      expect(altoXml).toContain('xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-2.xsd"');
+      expect(altoXml).toContain('xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# http://www.loc.gov/standards/alto/v4/alto-4-4.xsd"');
 
       // Description metadata
       expect(altoXml).toContain('<Description>');
       expect(altoXml).toContain('<MeasurementUnit>pixel</MeasurementUnit>');
       expect(altoXml).toContain('<fileName>preservation_sample.pdf</fileName>');
-      expect(altoXml).toContain('<softwareName>easyconvert</softwareName>');
+      expect(altoXml).toContain('<softwareName>EasyConvert OCR</softwareName>');
 
       // Layout hierarchy
       expect(altoXml).toContain('<Layout>');

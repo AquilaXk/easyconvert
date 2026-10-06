@@ -69,14 +69,28 @@ export function xpathText(xml: string, expression: string): string {
   return result.stdout;
 }
 
+/** The string value of an XPath expression such as `string(//x)`; xmllint adds one trailing line feed. */
+export function xpathString(xml: string, expression: string): string {
+  const out = xpathText(xml, expression);
+  return out.endsWith('\n') ? out.slice(0, -1) : out;
+}
+
 export function xpathCount(xml: string, expression: string): number {
   return Number.parseInt(xpathText(xml, `count(${expression})`), 10);
 }
 
 const ATTRIBUTE_LINE = /^\s*[\w:-]+="(.*)"$/;
 
+/** Decodes xmllint's attribute serialization: numeric references first, `&amp;` last. */
 function unescapeAttribute(value: string): string {
-  return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return value
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
 
 /** Values of the attributes an XPath attribute expression selects, in document order. */
