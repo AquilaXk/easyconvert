@@ -36,6 +36,18 @@ export const MAX_PDF_REFERENCE_CHAIN = 16;
 /** Largest non-stream object the structure parser reads; a bigger one cannot be a page tree node of a real file. */
 export const MAX_PDF_STRUCTURE_OBJECT_BYTES = 16 * 1024 * 1024;
 
+/** Bytes one object stored in an object stream may span, whatever the offsets that follow it say. */
+export const MAX_PDF_OBJSTM_ENTRY_BYTES = 4 * 1024 * 1024;
+/** Bytes of non-stream objects the structure parser reads over a whole document, counting every parse. */
+export const MAX_PDF_STRUCTURE_PARSE_BYTES = 128 * 1024 * 1024;
+/**
+ * Header bytes one object stream entry can need: two 10-digit numbers and separators take 22, and the
+ * allowance adds slack for padding. A /First beyond N entries of this size is not a header.
+ */
+const OBJSTM_HEADER_BYTES_PER_ENTRY = 32;
+const OBJSTM_HEADER_SLACK_BYTES = 256;
+const MAX_LENGTH_DIGITS = 12;
+
 const MAX_OBJECT_HEADER_LOOKBACK = 40;
 const MAX_OBJECT_NUMBER_DIGITS = 10;
 const MAX_GENERATION_DIGITS = 5;
@@ -297,6 +309,48 @@ function isRef(value: PdfValue | undefined): value is PdfRef {
   return typeof value === 'object' && value !== null && value.kind === 'ref';
 }
 
+/** Integer at the start of an object's body, or null when the body is not a plain non-negative integer. */
+function leadingInteger(src: string, from: number): number | null {
+  const start = skipWhite(src, from);
+  let end = start;
+  while (isDigit(src.charCodeAt(end)) && end - start < MAX_LENGTH_DIGITS) end++;
+  if (end === start || isRegular(src.charCodeAt(end))) return null;
+  return Number(src.slice(start, end));
+}
+
+/** Reads up to `count` "<object number> <offset>" pairs from the first `first` characters of an object stream. */
+function readObjectStreamHeader(decoded: string, first: number, count: number): Array<{ num: number; offset: number }> {
+  const members: Array<{ num: number; offset: number }> = [];
+  let pos = 0;
+  const nextInteger = (): number | null => {
+    pos = skipWhite(decoded, pos);
+    if (pos >= first) return null;
+    const start = pos;
+    while (isDigit(decoded.charCodeAt(pos)) && pos - start < MAX_OBJECT_NUMBER_DIGITS) pos++;
+    if (pos === start || isRegular(decoded.charCodeAt(pos))) return null;
+    return Number(decoded.slice(start, pos));
+  };
+  while (members.length < count) {
+    const num = nextInteger();
+    const offset = num === null ? null : nextInteger();
+    if (num === null || offset === null) break;
+    members.push({ num, offset });
+  }
+  return members;
+}
+
+/** Index of the first element of the sorted `values` that is greater than `target`. */
+function upperBound(values: number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (values[mid] <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 /** Names of the `Do` operators in a content stream, in drawing order. */
 const DO_OPERATOR = /\/([^\s/<>[\](){}%]+)\s+Do(?![A-Za-z0-9*'"])/g;
 
@@ -309,6 +363,7 @@ export class PdfDocument {
   private readonly objectStreams: PdfObjectEntry[] = [];
   private readonly objectStreamTexts: string[] = [];
   private readonly parsed = new Map<number, PdfValue>();
+  private readonly structureBudget = new InflateBudget(MAX_PDF_STRUCTURE_PARSE_BYTES);
   private readonly formCache = new Map<number, string | null>();
   private rootRef: PdfRef | null = null;
   private pageList: PageNode[] | null | undefined;
@@ -441,13 +496,13 @@ export class PdfDocument {
 
   private directLength(dict: PdfDict): number | null {
     const raw = dict.entries.get('Length');
-    let value: PdfValue | undefined = raw;
-    if (isRef(raw)) {
-      // Objects are still being indexed, so the length is read without caching the answer.
-      const target = this.index.get(raw.num);
-      value = target && !target.stream ? parseValue(target.source, target.start, 0).value : null;
-    }
-    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+    if (typeof raw === 'number') return Number.isInteger(raw) && raw >= 0 ? raw : null;
+    if (!isRef(raw)) return null;
+    // Objects are still being indexed, so the length object is not cached. Only its leading integer
+    // is read: a length object is a bare integer, and anything longer must not be parsed per stream.
+    const target = this.index.get(raw.num);
+    if (!target || target.stream) return null;
+    return leadingInteger(target.source, target.start);
   }
 
   /** Unpacks every object stream (section 7.5.7) so objects stored in them join the index. */
@@ -463,15 +518,18 @@ export class PdfDocument {
       if (decoded === null) continue;
       this.objectStreamTexts.push(decoded);
 
-      const header = decoded.slice(0, first).split(/[\0\t\n\f\r ]+/).filter((token) => token.length > 0);
-      const pairs = Math.min(count, Math.floor(header.length / 2));
-      for (let i = 0; i < pairs; i++) {
-        const num = Number(header[i * 2]);
-        const offset = Number(header[i * 2 + 1]);
-        if (!Number.isInteger(num) || !Number.isInteger(offset) || num < 0 || offset < 0) continue;
-        const start = first + offset;
+      if (first > decoded.length || first > count * OBJSTM_HEADER_BYTES_PER_ENTRY + OBJSTM_HEADER_SLACK_BYTES) {
+        throw new PdfStructureError(`PDF object stream has a /First of ${first} that its ${count} entries cannot need.`);
+      }
+      const members = readObjectStreamHeader(decoded, first, count);
+      const offsets = [...new Set(members.map((member) => first + member.offset))].sort((a, b) => a - b);
+      for (const member of members) {
+        const start = first + member.offset;
         if (start >= decoded.length) continue;
-        this.register({ num, source: decoded, start, end: skipValue(decoded, start), seq: holder.seq });
+        // An entry ends where the next higher offset begins, so entries never overlap and one pass covers them all.
+        const next = offsets[upperBound(offsets, start)] ?? decoded.length;
+        const end = Math.min(next, start + MAX_PDF_OBJSTM_ENTRY_BYTES);
+        this.register({ num: member.num, source: decoded, start, end, seq: holder.seq });
       }
     }
   }
@@ -488,7 +546,8 @@ export class PdfDocument {
       if (entry.stream) {
         value = entry.stream.dict;
       } else if (entry.end - entry.start <= MAX_PDF_STRUCTURE_OBJECT_BYTES) {
-        value = parseValue(entry.source, entry.start, 0).value;
+        this.structureBudget.charge(entry.end - entry.start, `PDF object ${num}`);
+        value = parseValue(entry.source.slice(entry.start, entry.end), 0, 0).value;
       }
     }
     this.parsed.set(num, value);
