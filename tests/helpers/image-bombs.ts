@@ -159,3 +159,12 @@ export function bombGif(width: number, height: number): Buffer {
     Buffer.from([0x02, 0x02, 0x44, 0x01, 0x00, 0x3b]),
   ]);
 }
+
+const PNG_IHDR_CRC_OFFSET = 29;
+
+/** The same PNG with a wrong CRC on its IHDR chunk: libvips refuses the header, lenient PNG readers do not. */
+export function withBrokenIhdrCrc(png: Buffer): Buffer {
+  const broken = Buffer.from(png);
+  broken[PNG_IHDR_CRC_OFFSET] ^= 0xff;
+  return broken;
+}

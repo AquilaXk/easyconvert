@@ -1,8 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
+import { convertImage } from '../src/lib/conversions/image';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
-import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp } from './helpers/image-bombs';
+import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp, withBrokenIhdrCrc } from './helpers/image-bombs';
+import { ConversionFailedError } from '../src/lib/types';
 import { cbzWithImages, pptxWithPicture } from './helpers/embedded-image-docs';
 
 const BYTES_PER_MIB = 1024 * 1024;
@@ -82,5 +84,37 @@ describe('images embedded in documents are held to the input pixel limit', () =>
     const result = await convertFile(await pptxWithPicture('ok.webp', picture), 'pptx', 'pdf', {}, 'ok.pptx');
     expect(result.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
     expect(result.buffer.includes(Buffer.from('/Subtype /Image'))).toBe(true);
+  });
+
+  describe('a header the size check cannot read is refused, not waved through', () => {
+    const brokenBomb = (): Buffer => withBrokenIhdrCrc(bombPng(OVER_CAP_SIDE, OVER_CAP_SIDE));
+
+    it('refuses a CBZ page whose PNG header has a bad checksum, which pdfkit would still decode', async () => {
+      const cbz = await cbzWithImages([{ name: '001.png', data: brokenBomb() }]);
+      const run = convertFile(cbz, 'cbz', 'pdf', {}, 'comic.cbz');
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.toThrow(/header could not be decoded/);
+    });
+
+    it.each(['logo.png', 'logo.jpg', 'logo.emf'])('refuses the same PNG as the PPTX picture %s', async (name) => {
+      const pptx = await pptxWithPicture(name, brokenBomb());
+      const run = convertFile(pptx, 'pptx', 'pdf', {}, 'deck.pptx');
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.toThrow(/header could not be decoded/);
+    });
+
+    it('refuses an unreadable image sent straight to the image converter', async () => {
+      const run = convertImage(brokenBomb(), 'jpg', {}, 'a.png', 'png');
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.toThrow(/header could not be decoded/);
+    });
+
+    it('keeps converting a CBZ page and a PPTX picture in a format pdfkit never decodes', async () => {
+      const notAnImage = Buffer.from('EMF placeholder bytes, not a PNG or a JPEG');
+      const comic = await convertFile(await cbzWithImages([{ name: '001.bmp', data: notAnImage }]), 'cbz', 'pdf', {}, 'ok.cbz');
+      expect(comic.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      const deck = await convertFile(await pptxWithPicture('chart.emf', notAnImage), 'pptx', 'pdf', {}, 'ok.pptx');
+      expect(deck.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+    });
   });
 });

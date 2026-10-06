@@ -101,10 +101,15 @@ export function maxInputPixels(env: Record<string, string | undefined> = process
   return value;
 }
 
+/** True when `pixels` is over `limit`; a count that is not a finite number is over every limit. */
+function exceeds(pixels: number, limit: number): boolean {
+  return !Number.isFinite(pixels) || pixels > limit;
+}
+
 /** Throws `InputPixelLimitError` when `width` x `height` pixels exceed the input limit. */
 export function assertInputPixels(width: number, height: number): void {
   const limit = maxInputPixels();
-  if (!(width * height <= limit)) {
+  if (exceeds(width * height, limit)) {
     throw new InputPixelLimitError(limit, width, height);
   }
 }
@@ -112,7 +117,7 @@ export function assertInputPixels(width: number, height: number): void {
 /** Throws `InputPixelLimitError` when `width` x `height` pixels exceed `budget` (or a lower input limit). */
 export function assertPixelBudget(width: number, height: number, budget: PixelBudget): void {
   const limit = Math.min(budget.maxPixels, maxInputPixels());
-  if (!(width * height <= limit)) {
+  if (exceeds(width * height, limit)) {
     throw new InputPixelLimitError(limit, width, height, budget.scope);
   }
 }
@@ -127,8 +132,9 @@ export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}
 
 /**
  * Reads the declared dimensions from the container header (no pixel is decoded) and throws
- * `InputPixelLimitError` when they exceed the input limit. A header sharp cannot read is left to the decode
- * that follows, which reports it as malformed input.
+ * `InputPixelLimitError` when they exceed the input limit. A header sharp cannot read is refused with a
+ * `ConversionFailedError`: a lenient decoder (pdfkit, pdf-lib) may accept bytes that libvips rejects, so an
+ * unreadable header proves nothing about the size.
  */
 export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: sharp.SharpOptions = {}): Promise<void> {
   let width: number | undefined;
@@ -136,13 +142,32 @@ export async function assertEncodedImageWithinLimit(input: Buffer, budget?: Pixe
   try {
     const meta = await sharp(input, { ...options, limitInputPixels: false }).metadata();
     ({ width, height } = meta);
-  } catch {
-    return;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new ConversionFailedError(`Invalid image: the header could not be decoded (${reason}).`);
   }
-  if (width !== undefined && height !== undefined) {
-    assertInputPixels(width, height);
-    if (budget) assertPixelBudget(width, height, budget);
+  if (width === undefined || height === undefined) {
+    throw new ConversionFailedError('Invalid image: the header declares no dimensions.');
   }
+  assertInputPixels(width, height);
+  if (budget) assertPixelBudget(width, height, budget);
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8]);
+
+/** True for the two formats pdfkit and pdf-lib decode themselves, recognised by their magic bytes. */
+export function isPngOrJpeg(input: Buffer): boolean {
+  return input.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) || input.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE);
+}
+
+/**
+ * For an image that is about to be embedded in a document: PNG and JPEG are decoded by the document writer
+ * itself, so their header must be readable and within the limit. Any other bytes are refused by the writer, so
+ * they need no check here.
+ */
+export async function assertEmbeddableImageWithinLimit(input: Buffer): Promise<void> {
+  if (isPngOrJpeg(input)) await assertEncodedImageWithinLimit(input);
 }
 
 /** Checks the declared dimensions of an encoded image, then opens it for decoding under the same limit. */
