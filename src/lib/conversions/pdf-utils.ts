@@ -1,4 +1,4 @@
-import zlib from 'node:zlib';
+import { PdfDocument } from './pdf-document';
 
 /**
  * PDF ToUnicode CMap structure per ISO 32000-1 Section 9.10
@@ -213,32 +213,18 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
  * Extracts and parses all embedded ToUnicode CMaps from a PDF document
  */
 export function extractPdfFontCMaps(pdfBuffer: Buffer): Map<string, PdfToUnicodeCMap> {
-  const binary = pdfBuffer.toString('binary');
+  return collectFontCMaps(new PdfDocument(pdfBuffer));
+}
+
+function collectFontCMaps(document: PdfDocument): Map<string, PdfToUnicodeCMap> {
   const cmaps = new Map<string, PdfToUnicodeCMap>();
-
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = streamRegex.exec(binary)) !== null) {
-    let content = '';
-    const rawStream = Buffer.from(match[1], 'binary');
-    try {
-      content = zlib.inflateSync(rawStream).toString('latin1');
-    } catch {
-      try {
-        content = zlib.inflateRawSync(rawStream).toString('latin1');
-      } catch {
-        content = match[1];
-      }
-    }
-
+  document.toUnicodeStreams((content) => {
     if (content.includes('beginbfchar') || content.includes('beginbfrange') || content.includes('begincmap')) {
       const cmap = parseToUnicodeCMap(content);
       const key = cmap.name || `cmap_${cmaps.size}`;
       cmaps.set(key, cmap);
     }
-  }
-
+  });
   return cmaps;
 }
 
@@ -342,6 +328,139 @@ export function recursiveXyCut(
 }
 
 /**
+ * Appends the positioned text of every BT..ET block of one decoded content stream to `rawBlocks`.
+ */
+function appendTextBlocks(
+  content: string,
+  cmaps: Map<string, PdfToUnicodeCMap>,
+  defaultCMap: PdfToUnicodeCMap | undefined,
+  rawBlocks: PdfTextBlock[]
+): void {
+  // Same blocks as /BT[\s\S]*?ET/g, found with indexOf so an unterminated BT cannot rescan the stream.
+  let searchFrom = 0;
+  while (true) {
+    const open = content.indexOf('BT', searchFrom);
+    if (open === -1) break;
+    const close = content.indexOf('ET', open + 2);
+    if (close === -1) break;
+    const block = content.slice(open, close + 2);
+    searchFrom = close + 2;
+
+    // Track text state
+    let currX = 0;
+    let currY = 0;
+    let currFontSize = 12;
+    let currFontName = '';
+
+    // Font selection: /F1 12 Tf
+    const tfRegex = /\/([a-zA-Z0-9_+\-]+)\s+([0-9.]+)\s+Tf/g;
+    let tfMatch: RegExpExecArray | null;
+    while ((tfMatch = tfRegex.exec(block)) !== null) {
+      currFontName = tfMatch[1];
+      currFontSize = parseFloat(tfMatch[2]) || 12;
+    }
+
+    const activeCMap = cmaps.get(currFontName) || defaultCMap;
+
+    // Matrix operators: a b c d e f Tm
+    const tmRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+Tm/g;
+    let tmMatch: RegExpExecArray | null;
+    while ((tmMatch = tmRegex.exec(block)) !== null) {
+      currX = parseFloat(tmMatch[5]) || 0;
+      currY = parseFloat(tmMatch[6]) || 0;
+    }
+
+    // Position operators: x y Td
+    const tdRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+Td/g;
+    let tdMatch: RegExpExecArray | null;
+    while ((tdMatch = tdRegex.exec(block)) !== null) {
+      currX += parseFloat(tdMatch[1]) || 0;
+      currY += parseFloat(tdMatch[2]) || 0;
+    }
+
+    // 1. Array text operator: [...] TJ
+    const tjRegex = /\[(.*?)\]\s*TJ/g;
+    let tjArrayMatch: RegExpExecArray | null;
+    while ((tjArrayMatch = tjRegex.exec(block)) !== null) {
+      const inner = tjArrayMatch[1];
+      const itemRegex = /\(((?:[^()\\]|\\.)*)\)|<([0-9a-fA-F\s]+)>/g;
+      let itemMatch: RegExpExecArray | null;
+      let line = '';
+      while ((itemMatch = itemRegex.exec(inner)) !== null) {
+        if (itemMatch[1] !== undefined) {
+          line += unescapePdfString(itemMatch[1]);
+        } else if (itemMatch[2] !== undefined) {
+          line += activeCMap
+            ? decodeWithCMap(itemMatch[2], activeCMap)
+            : decodePdfHexString(itemMatch[2]);
+        }
+      }
+      if (line.trim()) {
+        rawBlocks.push({
+          text: line.trim(),
+          x: currX,
+          y: currY,
+          width: Math.max(10, line.length * (currFontSize * 0.5)),
+          height: currFontSize,
+          fontName: currFontName,
+          fontSize: currFontSize,
+        });
+      }
+    }
+
+    // 2. Single text operator: (...) Tj or <...> Tj
+    const singleTjRegex = /\(((?:[^()\\]|\\.)*)\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
+    let sMatch: RegExpExecArray | null;
+    while ((sMatch = singleTjRegex.exec(block)) !== null) {
+      let text = '';
+      if (sMatch[1] !== undefined) {
+        text = unescapePdfString(sMatch[1]);
+      } else if (sMatch[2] !== undefined) {
+        text = activeCMap
+          ? decodeWithCMap(sMatch[2], activeCMap)
+          : decodePdfHexString(sMatch[2]);
+      }
+      if (text.trim()) {
+        rawBlocks.push({
+          text: text.trim(),
+          x: currX,
+          y: currY,
+          width: Math.max(10, text.length * (currFontSize * 0.5)),
+          height: currFontSize,
+          fontName: currFontName,
+          fontSize: currFontSize,
+        });
+      }
+    }
+
+    // 3. Prime operators
+    const primeRegex = /\(((?:[^()\\]|\\.)*)\)\s*['"]|<([0-9a-fA-F\s]+)>\s*['"]/g;
+    let pMatch: RegExpExecArray | null;
+    while ((pMatch = primeRegex.exec(block)) !== null) {
+      let text = '';
+      if (pMatch[1] !== undefined) {
+        text = unescapePdfString(pMatch[1]);
+      } else if (pMatch[2] !== undefined) {
+        text = activeCMap
+          ? decodeWithCMap(pMatch[2], activeCMap)
+          : decodePdfHexString(pMatch[2]);
+      }
+      if (text.trim()) {
+        rawBlocks.push({
+          text: text.trim(),
+          x: currX,
+          y: currY,
+          width: Math.max(10, text.length * (currFontSize * 0.5)),
+          height: currFontSize,
+          fontName: currFontName,
+          fontSize: currFontSize,
+        });
+      }
+    }
+  }
+}
+
+/**
  * Extracts structured text blocks with layout coordinates and applies CMap resolution
  */
 export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
@@ -350,150 +469,19 @@ export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
   blocks: PdfTextBlock[];
   cmaps: Map<string, PdfToUnicodeCMap>;
 } {
-  const binary = pdfBuffer.toString('binary');
-  if (!binary.includes('%PDF-')) {
+  if (!pdfBuffer.includes('%PDF-')) {
     throw new Error('Invalid PDF document: missing %PDF- header');
   }
 
-  const cmaps = extractPdfFontCMaps(pdfBuffer);
+  // Only the content streams a page draws are decoded (see PdfDocument), each within the stream cap and
+  // the document budget, so unreferenced, superseded and image streams never contribute text.
+  const document = new PdfDocument(pdfBuffer);
+  const cmaps = collectFontCMaps(document);
   // Default CMap if only one is available
   const defaultCMap = cmaps.size > 0 ? cmaps.values().next().value : undefined;
 
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
   const rawBlocks: PdfTextBlock[] = [];
-
-  while ((match = streamRegex.exec(binary)) !== null) {
-    let content = '';
-    const rawStream = Buffer.from(match[1], 'binary');
-    try {
-      content = zlib.inflateSync(rawStream).toString('latin1');
-    } catch {
-      try {
-        content = zlib.inflateRawSync(rawStream).toString('latin1');
-      } catch {
-        content = match[1];
-      }
-    }
-
-    const btRegex = /BT[\s\S]*?ET/g;
-    let btMatch: RegExpExecArray | null;
-    while ((btMatch = btRegex.exec(content)) !== null) {
-      const block = btMatch[0];
-
-      // Track text state
-      let currX = 0;
-      let currY = 0;
-      let currFontSize = 12;
-      let currFontName = '';
-
-      // Font selection: /F1 12 Tf
-      const tfRegex = /\/([a-zA-Z0-9_+\-]+)\s+([0-9.]+)\s+Tf/g;
-      let tfMatch: RegExpExecArray | null;
-      while ((tfMatch = tfRegex.exec(block)) !== null) {
-        currFontName = tfMatch[1];
-        currFontSize = parseFloat(tfMatch[2]) || 12;
-      }
-
-      const activeCMap = cmaps.get(currFontName) || defaultCMap;
-
-      // Matrix operators: a b c d e f Tm
-      const tmRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+Tm/g;
-      let tmMatch: RegExpExecArray | null;
-      while ((tmMatch = tmRegex.exec(block)) !== null) {
-        currX = parseFloat(tmMatch[5]) || 0;
-        currY = parseFloat(tmMatch[6]) || 0;
-      }
-
-      // Position operators: x y Td
-      const tdRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+Td/g;
-      let tdMatch: RegExpExecArray | null;
-      while ((tdMatch = tdRegex.exec(block)) !== null) {
-        currX += parseFloat(tdMatch[1]) || 0;
-        currY += parseFloat(tdMatch[2]) || 0;
-      }
-
-      // 1. Array text operator: [...] TJ
-      const tjRegex = /\[(.*?)\]\s*TJ/g;
-      let tjArrayMatch: RegExpExecArray | null;
-      while ((tjArrayMatch = tjRegex.exec(block)) !== null) {
-        const inner = tjArrayMatch[1];
-        const itemRegex = /\(((?:[^()\\]|\\.)*)\)|<([0-9a-fA-F\s]+)>/g;
-        let itemMatch: RegExpExecArray | null;
-        let line = '';
-        while ((itemMatch = itemRegex.exec(inner)) !== null) {
-          if (itemMatch[1] !== undefined) {
-            line += unescapePdfString(itemMatch[1]);
-          } else if (itemMatch[2] !== undefined) {
-            line += activeCMap
-              ? decodeWithCMap(itemMatch[2], activeCMap)
-              : decodePdfHexString(itemMatch[2]);
-          }
-        }
-        if (line.trim()) {
-          rawBlocks.push({
-            text: line.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, line.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-
-      // 2. Single text operator: (...) Tj or <...> Tj
-      const singleTjRegex = /\(((?:[^()\\]|\\.)*)\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
-      let sMatch: RegExpExecArray | null;
-      while ((sMatch = singleTjRegex.exec(block)) !== null) {
-        let text = '';
-        if (sMatch[1] !== undefined) {
-          text = unescapePdfString(sMatch[1]);
-        } else if (sMatch[2] !== undefined) {
-          text = activeCMap
-            ? decodeWithCMap(sMatch[2], activeCMap)
-            : decodePdfHexString(sMatch[2]);
-        }
-        if (text.trim()) {
-          rawBlocks.push({
-            text: text.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, text.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-
-      // 3. Prime operators
-      const primeRegex = /\(((?:[^()\\]|\\.)*)\)\s*['"]|<([0-9a-fA-F\s]+)>\s*['"]/g;
-      let pMatch: RegExpExecArray | null;
-      while ((pMatch = primeRegex.exec(block)) !== null) {
-        let text = '';
-        if (pMatch[1] !== undefined) {
-          text = unescapePdfString(pMatch[1]);
-        } else if (pMatch[2] !== undefined) {
-          text = activeCMap
-            ? decodeWithCMap(pMatch[2], activeCMap)
-            : decodePdfHexString(pMatch[2]);
-        }
-        if (text.trim()) {
-          rawBlocks.push({
-            text: text.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, text.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-    }
-  }
+  document.contentStreams((content) => appendTextBlocks(content, cmaps, defaultCMap, rawBlocks));
 
   // Apply Recursive XY-Cut++ reading order sorting
   const orderedBlocks = recursiveXyCut(rawBlocks);

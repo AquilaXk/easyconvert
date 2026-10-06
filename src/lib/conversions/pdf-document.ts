@@ -1,0 +1,788 @@
+import { ConversionFailedError } from '../types';
+import { InflateBudget, inflateBounded } from './bounded-inflate';
+
+/**
+ * Read-only structural view of a PDF (ISO 32000-1 sections 7.3 to 7.5) for the text extractor: an
+ * object index built by scanning the file, the page tree walked from the catalog, and bounded
+ * decoding of exactly the streams a page draws: its /Contents and the form XObjects its resources
+ * name. Image streams, orphan objects and objects superseded by an incremental update are never
+ * decoded. A scan replaces the cross-reference table, so a damaged table does not hide content.
+ */
+
+/** Malformed or over-complex PDF structure (cycles, runaway nesting, unterminated streams). Maps to HTTP 400. */
+export class PdfStructureError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfStructureError';
+  }
+}
+
+/** Objects one document may define, counting those packed in object streams. */
+export const MAX_PDF_OBJECTS = 1000 * 1000;
+/** Pages the page tree may list. */
+export const MAX_PDF_PAGES = 50 * 1000;
+/** Nesting of the page tree (Pages nodes below the root). */
+export const MAX_PDF_PAGE_TREE_DEPTH = 64;
+/** Nesting of form XObjects drawing other form XObjects. */
+export const MAX_PDF_FORM_DEPTH = 16;
+/** Form XObject invocations in one document. */
+export const MAX_PDF_FORM_INVOCATIONS = 100 * 1000;
+/** Content streams (page and form) one document may have decoded. */
+export const MAX_PDF_CONTENT_STREAMS = 200 * 1000;
+/** Nesting of arrays and dictionaries inside one object. */
+export const MAX_PDF_PARSE_DEPTH = 32;
+/** Longest chain of indirect references followed to reach a direct value. */
+export const MAX_PDF_REFERENCE_CHAIN = 16;
+/** Largest non-stream object the structure parser reads; a bigger one cannot be a page tree node of a real file. */
+export const MAX_PDF_STRUCTURE_OBJECT_BYTES = 16 * 1024 * 1024;
+
+const MAX_OBJECT_HEADER_LOOKBACK = 40;
+const MAX_OBJECT_NUMBER_DIGITS = 10;
+const MAX_GENERATION_DIGITS = 5;
+const ENDSTREAM = 'endstream';
+const STREAM_KEYWORD = 'stream';
+
+const CHAR_NUL = 0;
+const CHAR_TAB = 9;
+const CHAR_LF = 10;
+const CHAR_FF = 12;
+const CHAR_CR = 13;
+const CHAR_SPACE = 32;
+const CHAR_0 = 48;
+const CHAR_9 = 57;
+
+type PdfValue = null | boolean | number | PdfName | PdfRef | PdfDict | PdfArray | PdfOpaque;
+interface PdfName {
+  kind: 'name';
+  value: string;
+}
+interface PdfRef {
+  kind: 'ref';
+  num: number;
+}
+interface PdfDict {
+  kind: 'dict';
+  entries: Map<string, PdfValue>;
+}
+interface PdfArray {
+  kind: 'array';
+  items: PdfValue[];
+}
+interface PdfOpaque {
+  kind: 'string' | 'keyword';
+  value: string;
+}
+
+interface StreamSpan {
+  dict: PdfDict;
+  rawStart: number;
+  rawEnd: number;
+}
+
+interface PdfObjectEntry {
+  num: number;
+  /** Text the object lives in: the file, or the decoded text of the object stream that holds it. */
+  source: string;
+  start: number;
+  end: number;
+  /** Position of the definition in the file; the later definition of an object number wins (section 7.5.6). */
+  seq: number;
+  stream?: StreamSpan;
+}
+
+interface PageNode {
+  dict: PdfDict;
+  resources: PdfValue;
+}
+
+function isWhite(code: number): boolean {
+  return (
+    code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL
+  );
+}
+
+const DELIMITER_CODES = new Set<number>([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]); // ( ) < > [ ] { } / %
+
+function isRegular(code: number): boolean {
+  return !Number.isNaN(code) && !isWhite(code) && !DELIMITER_CODES.has(code);
+}
+
+function isDigit(code: number): boolean {
+  return code >= CHAR_0 && code <= CHAR_9;
+}
+
+function skipWhite(src: string, from: number): number {
+  let pos = from;
+  while (pos < src.length) {
+    const code = src.charCodeAt(pos);
+    if (isWhite(code)) {
+      pos++;
+    } else if (code === 37) {
+      // % starts a comment that runs to the end of the line
+      while (pos < src.length && src.charCodeAt(pos) !== CHAR_LF && src.charCodeAt(pos) !== CHAR_CR) pos++;
+    } else {
+      break;
+    }
+  }
+  return pos;
+}
+
+function decodeNameEscapes(raw: string): string {
+  return raw.includes('#') ? raw.replace(/#([0-9a-fA-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))) : raw;
+}
+
+/** End of a literal string starting at `pos` (which holds the opening parenthesis). */
+function endOfLiteralString(src: string, pos: number): number {
+  let depth = 0;
+  let i = pos;
+  while (i < src.length) {
+    const code = src.charCodeAt(i);
+    if (code === 92) {
+      i += 2;
+      continue;
+    }
+    if (code === 40) depth++;
+    if (code === 41) {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+    i++;
+  }
+  return src.length;
+}
+
+/** End of the value that starts at `from`, without building it. */
+function skipValue(src: string, from: number): number {
+  let pos = skipWhite(src, from);
+  if (pos >= src.length) return pos;
+  let depth = 0;
+  do {
+    pos = skipWhite(src, pos);
+    if (pos >= src.length) return pos;
+    const code = src.charCodeAt(pos);
+    if (code === 60 && src.charCodeAt(pos + 1) === 60) {
+      depth++;
+      pos += 2;
+    } else if (code === 62 && src.charCodeAt(pos + 1) === 62) {
+      depth--;
+      pos += 2;
+    } else if (code === 91) {
+      depth++;
+      pos++;
+    } else if (code === 93) {
+      depth--;
+      pos++;
+    } else if (code === 40) {
+      pos = endOfLiteralString(src, pos);
+    } else if (code === 60) {
+      const close = src.indexOf('>', pos);
+      pos = close === -1 ? src.length : close + 1;
+    } else if (code === 47) {
+      pos++;
+      while (isRegular(src.charCodeAt(pos))) pos++;
+    } else if (isRegular(code)) {
+      while (isRegular(src.charCodeAt(pos))) pos++;
+    } else {
+      pos++;
+    }
+    if (depth > MAX_PDF_PARSE_DEPTH) throw new PdfStructureError('PDF object is nested too deeply.');
+  } while (depth > 0);
+  return pos;
+}
+
+/** Reads a reference tail ("<gen> R") after an object number, returning its end or -1. */
+function referenceTailEnd(src: string, from: number): number {
+  let pos = skipWhite(src, from);
+  const genStart = pos;
+  while (isDigit(src.charCodeAt(pos)) && pos - genStart < MAX_GENERATION_DIGITS) pos++;
+  if (pos === genStart) return -1;
+  pos = skipWhite(src, pos);
+  if (src.charCodeAt(pos) === 82 && !isRegular(src.charCodeAt(pos + 1))) return pos + 1;
+  return -1;
+}
+
+function parseValue(src: string, from: number, depth: number): { value: PdfValue; end: number } {
+  if (depth > MAX_PDF_PARSE_DEPTH) throw new PdfStructureError('PDF object is nested too deeply.');
+  const pos = skipWhite(src, from);
+  if (pos >= src.length) return { value: null, end: pos };
+  const code = src.charCodeAt(pos);
+
+  if (code === 60 && src.charCodeAt(pos + 1) === 60) {
+    const entries = new Map<string, PdfValue>();
+    let cursor = pos + 2;
+    while (true) {
+      cursor = skipWhite(src, cursor);
+      if (cursor >= src.length) break;
+      if (src.charCodeAt(cursor) === 62 && src.charCodeAt(cursor + 1) === 62) {
+        cursor += 2;
+        break;
+      }
+      const key = parseValue(src, cursor, depth + 1);
+      cursor = key.end;
+      if (isName(key.value)) {
+        const valueAt = skipWhite(src, cursor);
+        if (src.charCodeAt(valueAt) === 62 && src.charCodeAt(valueAt + 1) === 62) {
+          entries.set(key.value.value, null);
+        } else {
+          const value = parseValue(src, valueAt, depth + 1);
+          cursor = value.end;
+          entries.set(key.value.value, value.value);
+        }
+      }
+    }
+    return { value: { kind: 'dict', entries }, end: cursor };
+  }
+  if (code === 91) {
+    const items: PdfValue[] = [];
+    let cursor = pos + 1;
+    while (true) {
+      cursor = skipWhite(src, cursor);
+      if (cursor >= src.length) break;
+      if (src.charCodeAt(cursor) === 93) {
+        cursor++;
+        break;
+      }
+      const item = parseValue(src, cursor, depth + 1);
+      if (item.end <= cursor) break;
+      cursor = item.end;
+      items.push(item.value);
+    }
+    return { value: { kind: 'array', items }, end: cursor };
+  }
+  if (code === 40) {
+    const end = endOfLiteralString(src, pos);
+    return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
+  }
+  if (code === 60) {
+    const close = src.indexOf('>', pos);
+    const end = close === -1 ? src.length : close + 1;
+    return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
+  }
+  if (code === 47) {
+    let end = pos + 1;
+    while (isRegular(src.charCodeAt(end))) end++;
+    return { value: { kind: 'name', value: decodeNameEscapes(src.slice(pos + 1, end)) }, end };
+  }
+  if (isDigit(code) || code === 43 || code === 45 || code === 46) {
+    let end = pos + 1;
+    while (isDigit(src.charCodeAt(end)) || src.charCodeAt(end) === 46) end++;
+    const text = src.slice(pos, end);
+    const number = Number(text);
+    if (/^\d+$/.test(text) && text.length <= MAX_OBJECT_NUMBER_DIGITS) {
+      const refEnd = referenceTailEnd(src, end);
+      if (refEnd !== -1) return { value: { kind: 'ref', num: number }, end: refEnd };
+    }
+    return { value: Number.isNaN(number) ? 0 : number, end };
+  }
+  let end = pos;
+  while (isRegular(src.charCodeAt(end))) end++;
+  if (end === pos) return { value: null, end: pos + 1 };
+  const word = src.slice(pos, end);
+  if (word === 'true') return { value: true, end };
+  if (word === 'false') return { value: false, end };
+  if (word === 'null') return { value: null, end };
+  return { value: { kind: 'keyword', value: word }, end };
+}
+
+function isName(value: PdfValue | undefined, name?: string): value is PdfName {
+  return typeof value === 'object' && value !== null && value.kind === 'name' && (name === undefined || value.value === name);
+}
+function isDict(value: PdfValue | undefined): value is PdfDict {
+  return typeof value === 'object' && value !== null && value.kind === 'dict';
+}
+function isArray(value: PdfValue | undefined): value is PdfArray {
+  return typeof value === 'object' && value !== null && value.kind === 'array';
+}
+function isRef(value: PdfValue | undefined): value is PdfRef {
+  return typeof value === 'object' && value !== null && value.kind === 'ref';
+}
+
+/** Names of the `Do` operators in a content stream, in drawing order. */
+const DO_OPERATOR = /\/([^\s/<>[\](){}%]+)\s+Do(?![A-Za-z0-9*'"])/g;
+
+export class PdfDocument {
+  /** True when the trailer names an Encrypt dictionary; streams are then ciphertext this reader cannot decode. */
+  encrypted = false;
+
+  private readonly text: string;
+  private readonly index = new Map<number, PdfObjectEntry>();
+  private readonly objectStreams: PdfObjectEntry[] = [];
+  private readonly objectStreamTexts: string[] = [];
+  private readonly parsed = new Map<number, PdfValue>();
+  private readonly formCache = new Map<number, string | null>();
+  private rootRef: PdfRef | null = null;
+  private pageList: PageNode[] | null | undefined;
+  private objectCount = 0;
+  private contentStreamCount = 0;
+  private formInvocations = 0;
+
+  constructor(
+    private readonly buffer: Buffer,
+    private readonly budget: InflateBudget = new InflateBudget()
+  ) {
+    this.text = buffer.toString('latin1');
+    this.scan();
+    this.expandObjectStreams();
+    // Anything resolved while the index was still growing may have seen a missing or older object.
+    this.parsed.clear();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Object index
+  // ---------------------------------------------------------------------------------------------
+
+  private register(entry: PdfObjectEntry): void {
+    this.objectCount++;
+    if (this.objectCount > MAX_PDF_OBJECTS) {
+      throw new PdfStructureError(`PDF defines more than ${MAX_PDF_OBJECTS} objects.`);
+    }
+    const existing = this.index.get(entry.num);
+    if (!existing || entry.seq >= existing.seq) this.index.set(entry.num, entry);
+  }
+
+  /** Reads "<num> <gen> " in front of an `obj` keyword at `objAt`. */
+  private objectHeaderBefore(objAt: number): number | null {
+    const src = this.text;
+    const floor = Math.max(0, objAt - MAX_OBJECT_HEADER_LOOKBACK);
+    let i = objAt - 1;
+    if (i < floor || !isWhite(src.charCodeAt(i))) return null;
+    while (i >= floor && isWhite(src.charCodeAt(i))) i--;
+    const genEnd = i;
+    while (i >= floor && isDigit(src.charCodeAt(i))) i--;
+    if (i === genEnd || genEnd - i > MAX_GENERATION_DIGITS) return null;
+    if (i < floor || !isWhite(src.charCodeAt(i))) return null;
+    while (i >= floor && isWhite(src.charCodeAt(i))) i--;
+    const numEnd = i;
+    while (i >= floor && isDigit(src.charCodeAt(i))) i--;
+    if (i === numEnd || numEnd - i > MAX_OBJECT_NUMBER_DIGITS) return null;
+    return Number(src.slice(i + 1, numEnd + 1));
+  }
+
+  private noteTrailer(dict: PdfDict): void {
+    const root = dict.entries.get('Root');
+    if (isRef(root)) this.rootRef = root;
+    if (dict.entries.has('Encrypt')) this.encrypted = true;
+  }
+
+  /** Walks the file once, front to back, registering every `N G obj` definition and noting trailers. */
+  private scan(): void {
+    const src = this.text;
+    let pos = 0;
+    let objAt = src.indexOf('obj', 0);
+    let trailerAt = src.indexOf('trailer', 0);
+
+    while (true) {
+      if (objAt !== -1 && objAt < pos) objAt = src.indexOf('obj', pos);
+      if (trailerAt !== -1 && trailerAt < pos) trailerAt = src.indexOf('trailer', pos);
+      if (objAt === -1 && trailerAt === -1) break;
+
+      if (trailerAt !== -1 && (objAt === -1 || trailerAt < objAt)) {
+        const parsed = parseValue(src, trailerAt + 'trailer'.length, 0);
+        if (isDict(parsed.value)) this.noteTrailer(parsed.value);
+        pos = Math.max(parsed.end, trailerAt + 'trailer'.length);
+        continue;
+      }
+
+      const num = this.objectHeaderBefore(objAt);
+      const afterKeyword = objAt + 3;
+      if (num === null || isRegular(src.charCodeAt(afterKeyword))) {
+        pos = afterKeyword;
+        continue;
+      }
+      pos = this.scanObject(num, objAt, afterKeyword);
+    }
+  }
+
+  /** Registers the object whose body starts at `bodyFrom` and returns where scanning resumes. */
+  private scanObject(num: number, seq: number, bodyFrom: number): number {
+    const src = this.text;
+    const start = skipWhite(src, bodyFrom);
+    const valueEnd = skipValue(src, start);
+    const entry: PdfObjectEntry = { num, source: src, start, end: valueEnd, seq };
+
+    const afterValue = skipWhite(src, valueEnd);
+    const startsDict = src.charCodeAt(start) === 60 && src.charCodeAt(start + 1) === 60;
+    if (!startsDict || !src.startsWith(STREAM_KEYWORD, afterValue)) {
+      this.register(entry);
+      return Math.max(valueEnd, bodyFrom);
+    }
+
+    const dict = parseValue(src, start, 0).value as PdfDict;
+    let rawStart = afterValue + STREAM_KEYWORD.length;
+    if (src.charCodeAt(rawStart) === CHAR_CR && src.charCodeAt(rawStart + 1) === CHAR_LF) rawStart += 2;
+    else if (src.charCodeAt(rawStart) === CHAR_LF || src.charCodeAt(rawStart) === CHAR_CR) rawStart += 1;
+
+    let rawEnd = -1;
+    let resume = -1;
+    const length = this.directLength(dict);
+    if (length !== null && rawStart + length <= src.length) {
+      const marker = skipWhite(src, rawStart + length);
+      if (src.startsWith(ENDSTREAM, marker)) {
+        rawEnd = rawStart + length;
+        resume = marker + ENDSTREAM.length;
+      }
+    }
+    if (rawEnd === -1) {
+      const marker = src.indexOf(ENDSTREAM, rawStart);
+      if (marker === -1) throw new PdfStructureError(`PDF stream of object ${num} is not terminated by endstream.`);
+      rawEnd = marker;
+      if (src.charCodeAt(rawEnd - 1) === CHAR_LF) rawEnd--;
+      if (rawEnd > rawStart && src.charCodeAt(rawEnd - 1) === CHAR_CR) rawEnd--;
+      resume = marker + ENDSTREAM.length;
+    }
+
+    entry.stream = { dict, rawStart, rawEnd };
+    this.register(entry);
+
+    if (isName(dict.entries.get('Type'), 'ObjStm')) this.objectStreams.push(entry);
+    if (isName(dict.entries.get('Type'), 'XRef')) this.noteTrailer(dict);
+    return resume;
+  }
+
+  private directLength(dict: PdfDict): number | null {
+    const raw = dict.entries.get('Length');
+    let value: PdfValue | undefined = raw;
+    if (isRef(raw)) {
+      // Objects are still being indexed, so the length is read without caching the answer.
+      const target = this.index.get(raw.num);
+      value = target && !target.stream ? parseValue(target.source, target.start, 0).value : null;
+    }
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+  }
+
+  /** Unpacks every object stream (section 7.5.7) so objects stored in them join the index. */
+  private expandObjectStreams(): void {
+    if (this.encrypted) return;
+    for (const holder of this.objectStreams) {
+      const stream = holder.stream as StreamSpan;
+      const first = stream.dict.entries.get('First');
+      const count = stream.dict.entries.get('N');
+      if (typeof first !== 'number' || typeof count !== 'number' || count < 0 || first < 0) continue;
+      if (count > MAX_PDF_OBJECTS) throw new PdfStructureError('PDF object stream lists too many objects.');
+      const decoded = this.decodeStream(holder);
+      if (decoded === null) continue;
+      this.objectStreamTexts.push(decoded);
+
+      const header = decoded.slice(0, first).split(/[\0\t\n\f\r ]+/).filter((token) => token.length > 0);
+      const pairs = Math.min(count, Math.floor(header.length / 2));
+      for (let i = 0; i < pairs; i++) {
+        const num = Number(header[i * 2]);
+        const offset = Number(header[i * 2 + 1]);
+        if (!Number.isInteger(num) || !Number.isInteger(offset) || num < 0 || offset < 0) continue;
+        const start = first + offset;
+        if (start >= decoded.length) continue;
+        this.register({ num, source: decoded, start, end: skipValue(decoded, start), seq: holder.seq });
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Values and references
+  // ---------------------------------------------------------------------------------------------
+
+  private parsedObject(num: number): PdfValue {
+    if (this.parsed.has(num)) return this.parsed.get(num) as PdfValue;
+    const entry = this.index.get(num);
+    let value: PdfValue = null;
+    if (entry) {
+      if (entry.stream) {
+        value = entry.stream.dict;
+      } else if (entry.end - entry.start <= MAX_PDF_STRUCTURE_OBJECT_BYTES) {
+        value = parseValue(entry.source, entry.start, 0).value;
+      }
+    }
+    this.parsed.set(num, value);
+    return value;
+  }
+
+  private resolve(value: PdfValue | undefined): PdfValue {
+    let current: PdfValue | undefined = value;
+    for (let hops = 0; hops < MAX_PDF_REFERENCE_CHAIN && isRef(current); hops++) {
+      current = this.parsedObject(current.num);
+    }
+    return isRef(current) || current === undefined ? null : current;
+  }
+
+  private resolveDict(value: PdfValue | undefined): PdfDict | null {
+    const resolved = this.resolve(value);
+    return isDict(resolved) ? resolved : null;
+  }
+
+  /** Index entry a reference leads to, following chains of references. */
+  private entryOf(value: PdfValue | undefined): PdfObjectEntry | null {
+    let current: PdfValue | undefined = value;
+    for (let hops = 0; hops < MAX_PDF_REFERENCE_CHAIN && isRef(current); hops++) {
+      const entry = this.index.get(current.num);
+      if (!entry) return null;
+      if (entry.stream) return entry;
+      current = this.parsedObject(current.num);
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Stream decoding
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Latin-1 text of a stream: stored as is, or Flate decoded within the stream cap and the document
+   * budget. Returns null for a stream this reader cannot decode (another filter, or a predictor).
+   */
+  private decodeStream(entry: PdfObjectEntry, budget: InflateBudget = this.budget): string | null {
+    const stream = entry.stream as StreamSpan;
+    const filters = this.resolve(stream.dict.entries.get('Filter'));
+    const names: string[] = [];
+    if (isName(filters)) names.push(filters.value);
+    if (isArray(filters)) {
+      for (const item of filters.items) {
+        const name = this.resolve(item);
+        if (isName(name)) names.push(name.value);
+      }
+    }
+    const label = `PDF stream of object ${entry.num}`;
+
+    if (names.length === 0) {
+      budget.charge(stream.rawEnd - stream.rawStart, label);
+      return this.buffer.toString('latin1', stream.rawStart, stream.rawEnd);
+    }
+    if (names.length !== 1 || (names[0] !== 'FlateDecode' && names[0] !== 'Fl') || this.hasPredictor(stream.dict)) {
+      return null;
+    }
+    const inflated = inflateBounded(this.buffer.subarray(stream.rawStart, stream.rawEnd), {
+      label,
+      format: 'zlib',
+      budget,
+    });
+    return inflated.toString('latin1');
+  }
+
+  private hasPredictor(dict: PdfDict): boolean {
+    const parms = this.resolve(dict.entries.get('DecodeParms'));
+    const candidates = isArray(parms) ? parms.items : [parms];
+    return candidates.some((candidate) => {
+      const parmsDict = this.resolveDict(candidate);
+      const predictor = parmsDict?.entries.get('Predictor');
+      return typeof predictor === 'number' && predictor > 1;
+    });
+  }
+
+  private isImage(entry: PdfObjectEntry): boolean {
+    return isName(entry.stream?.dict.entries.get('Subtype'), 'Image');
+  }
+
+  private countContentStream(): void {
+    this.contentStreamCount++;
+    if (this.contentStreamCount > MAX_PDF_CONTENT_STREAMS) {
+      throw new PdfStructureError(`PDF draws more than ${MAX_PDF_CONTENT_STREAMS} content streams.`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Page tree
+  // ---------------------------------------------------------------------------------------------
+
+  private catalogPages(): PdfValue {
+    const catalog = this.resolveDict(this.rootRef ?? undefined);
+    return catalog ? (catalog.entries.get('Pages') ?? null) : null;
+  }
+
+  private objectsOfType(type: string): PdfObjectEntry[] {
+    const found: PdfObjectEntry[] = [];
+    for (const entry of this.index.values()) {
+      if (entry.stream) continue;
+      const dict = this.resolveDict({ kind: 'ref', num: entry.num });
+      if (dict && isName(dict.entries.get('Type'), type)) found.push(entry);
+    }
+    return found.sort((a, b) => a.seq - b.seq || a.num - b.num);
+  }
+
+  private collectPages(
+    node: PdfValue,
+    inherited: PdfValue,
+    depth: number,
+    out: PageNode[],
+    active: Set<number>,
+    seen: Set<number>
+  ): void {
+    if (depth > MAX_PDF_PAGE_TREE_DEPTH) throw new PdfStructureError('PDF page tree is nested too deeply.');
+    const num = isRef(node) ? node.num : null;
+    if (num !== null) {
+      if (active.has(num)) throw new PdfStructureError('PDF page tree contains a cycle.');
+      if (seen.has(num)) return;
+      seen.add(num);
+      active.add(num);
+    }
+    const dict = this.resolveDict(node);
+    if (dict) {
+      const resources = dict.entries.has('Resources') ? (dict.entries.get('Resources') as PdfValue) : inherited;
+      const kids = this.resolve(dict.entries.get('Kids'));
+      if (isArray(kids)) {
+        for (const kid of kids.items) this.collectPages(kid, resources, depth + 1, out, active, seen);
+      } else {
+        if (out.length >= MAX_PDF_PAGES) throw new PdfStructureError(`PDF lists more than ${MAX_PDF_PAGES} pages.`);
+        out.push({ dict, resources });
+      }
+    }
+    if (num !== null) active.delete(num);
+  }
+
+  /** Pages in page-tree order, or null when the file has no page structure at all. */
+  private pages(): PageNode[] | null {
+    if (this.pageList === undefined) this.pageList = this.findPages();
+    return this.pageList;
+  }
+
+  private findPages(): PageNode[] | null {
+    const pages: PageNode[] = [];
+    const walk = (root: PdfValue) => this.collectPages(root, null, 0, pages, new Set<number>(), new Set<number>());
+
+    if (this.rootRef && this.resolveDict(this.rootRef)) {
+      walk(this.catalogPages());
+      return pages;
+    }
+    const catalogs = this.objectsOfType('Catalog');
+    if (catalogs.length > 0) {
+      const catalog = this.resolveDict({ kind: 'ref', num: catalogs[catalogs.length - 1].num });
+      walk(catalog?.entries.get('Pages') ?? null);
+      return pages;
+    }
+    const loose = this.objectsOfType('Page');
+    if (loose.length === 0) return null;
+    for (const entry of loose) walk({ kind: 'ref', num: entry.num });
+    return pages;
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Public readers
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Calls `visit` with the text of every content stream a page draws, in page-tree order: each page's
+   * /Contents, followed by the form XObjects its resources name and the content invokes. A file with no
+   * page structure (no trailer root, catalog or page object) is read stream by stream instead, still
+   * bounded, with image streams left alone. Encrypted files yield nothing.
+   */
+  contentStreams(visit: (content: string) => void): void {
+    if (this.encrypted) return;
+    const pages = this.pages();
+    if (pages === null) {
+      this.visitLooseStreams(visit);
+      return;
+    }
+    const activeForms = new Set<number>();
+    for (const page of pages) {
+      for (const entry of this.pageContentEntries(page.dict)) {
+        this.countContentStream();
+        const content = this.decodeStream(entry);
+        if (content === null) continue;
+        visit(content);
+        this.drawForms(content, page.resources, 0, activeForms, visit);
+      }
+    }
+  }
+
+  private pageContentEntries(page: PdfDict): PdfObjectEntry[] {
+    const contents = page.entries.get('Contents');
+    const resolved = this.resolve(contents);
+    if (isArray(resolved)) {
+      const entries: PdfObjectEntry[] = [];
+      for (const item of resolved.items) {
+        const entry = this.entryOf(item);
+        if (entry) entries.push(entry);
+      }
+      return entries;
+    }
+    const entry = this.entryOf(contents);
+    return entry ? [entry] : [];
+  }
+
+  private drawForms(
+    content: string,
+    resources: PdfValue,
+    depth: number,
+    active: Set<number>,
+    visit: (content: string) => void
+  ): void {
+    if (!content.includes('Do')) return;
+    const xobjects = this.resolveDict(this.resolveDict(resources)?.entries.get('XObject'));
+    if (!xobjects) return;
+
+    const operator = new RegExp(DO_OPERATOR.source, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = operator.exec(content)) !== null) {
+      const reference = xobjects.entries.get(decodeNameEscapes(match[1]));
+      const entry = this.entryOf(reference);
+      if (!entry || !isRef(reference)) continue;
+      if (!isName(entry.stream?.dict.entries.get('Subtype'), 'Form')) continue;
+
+      this.formInvocations++;
+      if (this.formInvocations > MAX_PDF_FORM_INVOCATIONS) {
+        throw new PdfStructureError(`PDF draws more than ${MAX_PDF_FORM_INVOCATIONS} form XObjects.`);
+      }
+      if (active.has(entry.num)) throw new PdfStructureError('PDF form XObject draws itself.');
+      if (depth >= MAX_PDF_FORM_DEPTH) throw new PdfStructureError('PDF form XObjects are nested too deeply.');
+
+      const formText = this.formContent(entry);
+      if (formText === null) continue;
+      visit(formText);
+      const formResources = (entry.stream as StreamSpan).dict.entries.get('Resources');
+      active.add(entry.num);
+      this.drawForms(formText, formResources === undefined ? resources : formResources, depth + 1, active, visit);
+      active.delete(entry.num);
+    }
+  }
+
+  /** Decoded form XObject, decoded once; every later drawing still counts its bytes against the budget. */
+  private formContent(entry: PdfObjectEntry): string | null {
+    this.countContentStream();
+    if (this.formCache.has(entry.num)) {
+      const cached = this.formCache.get(entry.num) ?? null;
+      if (cached !== null) this.budget.charge(cached.length, `PDF form XObject of object ${entry.num}`);
+      return cached;
+    }
+    const decoded = this.decodeStream(entry);
+    this.formCache.set(entry.num, decoded);
+    return decoded;
+  }
+
+  /**
+   * Calls `visit` with the text of each ToUnicode CMap stream (section 9.10.3) that a font dictionary
+   * names, in file order. In a file without page structure every non-image stream is offered instead.
+   */
+  toUnicodeStreams(visit: (content: string) => void): void {
+    if (this.encrypted) return;
+    if (this.pages() === null) {
+      this.visitLooseStreams(visit);
+      return;
+    }
+    const wanted = new Set<number>();
+    const reference = /\/ToUnicode\s+(\d{1,10})\s+\d{1,5}\s+R/g;
+    for (const haystack of [this.text, ...this.objectStreamTexts]) {
+      let match: RegExpExecArray | null;
+      while ((match = reference.exec(haystack)) !== null) wanted.add(Number(match[1]));
+    }
+    const entries = [...wanted]
+      .map((num) => this.index.get(num))
+      .filter((entry): entry is PdfObjectEntry => entry !== undefined && entry.stream !== undefined && !this.isImage(entry))
+      .sort((a, b) => a.seq - b.seq);
+    for (const entry of entries) {
+      const content = this.decodeStream(entry);
+      if (content !== null) visit(content);
+    }
+  }
+
+  /** Reads every stream in file order for a file with no page structure, each pass on its own budget. */
+  private visitLooseStreams(visit: (content: string) => void): void {
+    const passBudget = new InflateBudget();
+    const entries = [...this.index.values()]
+      .filter((entry) => entry.stream !== undefined && !this.isImage(entry))
+      .sort((a, b) => a.seq - b.seq);
+    for (const entry of entries) {
+      const type = entry.stream?.dict.entries.get('Type');
+      if (isName(type, 'XRef') || isName(type, 'ObjStm')) continue;
+      this.countContentStream();
+      const content = this.decodeStream(entry, passBudget);
+      if (content !== null) visit(content);
+    }
+  }
+}

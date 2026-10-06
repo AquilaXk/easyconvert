@@ -6,6 +6,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
+  DecompressionLimitError,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
@@ -192,6 +193,10 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
+    }
+    if (error instanceof DecompressionLimitError) {
+      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

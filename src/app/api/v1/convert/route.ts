@@ -10,7 +10,12 @@ import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
+import {
+  ArchiveEntryCollisionError,
+  ConversionFailedError,
+  DecompressionLimitError,
+  EngineUnavailableError,
+} from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -411,6 +416,10 @@ export async function POST(req: NextRequest) {
         undefined,
         rateLimitHeaders
       );
+    }
+    if (err instanceof DecompressionLimitError) {
+      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
+      return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
