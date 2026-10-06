@@ -3,7 +3,7 @@ import { ConversionFailedError, ConversionOptions, ConversionResult, Unsupported
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, checksumAdjustment, compareTags, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
@@ -275,80 +275,92 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
   };
 }
 
-const SFNT_HEAD_MIN_BYTES = 12;
-const SFNT_HEAD_ADJUSTMENT_AT = 8;
-const SFNT_DEFAULT_VERSION = 0x00010000;
-
-interface SfntOutputTable {
-  tag: string;
-  data: Buffer;
-  checkSum: number;
-}
-
 /**
- * The tables of a font as an sfnt directory lists them: tags in ascending byte order, each with its true
- * checksum (never a stale one carried from the source), and head.checkSumAdjustment set so that the whole
- * font sums to 0xB1B0AFBA. The adjustment assumes the layout encodeSfnt writes, which the WOFF directory
- * of the same font reproduces.
+ * Orders table records as the OpenType and WOFF specifications require: ascending by the four tag
+ * bytes as written ('OS/2' before 'cmap'), not by locale collation.
  */
-function sfntOutputTables(font: ParsedFont, version: number): SfntOutputTable[] {
-  const tables: SfntOutputTable[] = Object.values(font.tables)
-    .map((table) => ({ tag: formatSfntTag(table.tag), data: table.data, checkSum: 0 }))
-    .sort((a, b) => compareTags(a.tag, b.tag));
-  for (const table of tables) {
-    if (table.tag === 'head' && table.data.length >= SFNT_HEAD_MIN_BYTES) {
-      table.data = Buffer.from(table.data);
-      table.data.writeUInt32BE(0, SFNT_HEAD_ADJUSTMENT_AT);
-    }
-    table.checkSum = calculateTableChecksum(table.data);
-  }
-  const head = tables.find((table) => table.tag === 'head' && table.data.length >= SFNT_HEAD_MIN_BYTES);
-  if (head !== undefined) {
-    const sums = tables.map((table) => ({ tag: table.tag, length: table.data.length, checkSum: table.checkSum }));
-    head.data.writeUInt32BE(checksumAdjustment(version, sums), SFNT_HEAD_ADJUSTMENT_AT);
-  }
-  return tables;
+function compareSfntTags(a: { tag: string }, b: { tag: string }): number {
+  return Buffer.compare(Buffer.from(formatSfntTag(a.tag), 'latin1'), Buffer.from(formatSfntTag(b.tag), 'latin1'));
 }
 
 /**
  * Encodes canonical ParsedFont into standard SFNT (TTF / OTF) binary stream
  */
 export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
-  const tableEntries = sfntOutputTables(font, overrideVersion || font.sfntVersion || SFNT_DEFAULT_VERSION);
+  const version = overrideVersion || font.sfntVersion || DEFAULT_SFNT_VERSION;
+  return assembleSfnt(prepareSfntTables(font, version), version);
+}
+
+interface PreparedTable {
+  tag: string;
+  data: Buffer;
+  checkSum: number;
+}
+
+const DEFAULT_SFNT_VERSION = 0x00010000;
+/** The whole font's uint32 sum, with checkSumAdjustment in place, must equal this (OpenType 'head'). */
+const SFNT_CHECKSUM_MAGIC = 0xb1b0afba;
+const HEAD_CHECKSUM_ADJUSTMENT_OFFSET = 8;
+const HEAD_CHECKSUM_MIN_BYTES = HEAD_CHECKSUM_ADJUSTMENT_OFFSET + 4;
+const SFNT_DIRECTORY_HEADER_BYTES = 12;
+const SFNT_DIRECTORY_ENTRY_BYTES = 16;
+const TABLE_ALIGNMENT = 4;
+
+function isHeadTable(tbl: { tag: string; data: Buffer }): boolean {
+  return formatSfntTag(tbl.tag) === 'head' && tbl.data.length >= HEAD_CHECKSUM_MIN_BYTES;
+}
+
+/**
+ * Sorts the tables, recomputes every table checksum from its data, and fills the 'head' table's
+ * checkSumAdjustment for the SFNT layout these tables produce. The 'head' checksum is taken with the
+ * adjustment set to zero, as the OpenType specification requires.
+ */
+function prepareSfntTables(font: ParsedFont, version: number): PreparedTable[] {
+  const prepared = Object.values(font.tables)
+    .sort(compareSfntTags)
+    .map((tbl) => {
+      const head = isHeadTable(tbl);
+      const data = head ? Buffer.from(tbl.data) : tbl.data;
+      if (head) data.writeUInt32BE(0, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
+      return { tag: tbl.tag, data, checkSum: calculateTableChecksum(data) };
+    });
+  const head = prepared.find(isHeadTable);
+  if (head) {
+    const adjustment = (SFNT_CHECKSUM_MAGIC - calculateTableChecksum(assembleSfnt(prepared, version))) >>> 0;
+    head.data.writeUInt32BE(adjustment, HEAD_CHECKSUM_ADJUSTMENT_OFFSET);
+  }
+  return prepared;
+}
+
+function assembleSfnt(tableEntries: PreparedTable[], version: number): Buffer {
   const numTables = tableEntries.length;
 
-  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * 16 : 0;
+  const searchRange = numTables > 0 ? Math.pow(2, Math.floor(Math.log2(numTables))) * SFNT_DIRECTORY_ENTRY_BYTES : 0;
   const entrySelector = numTables > 0 ? Math.floor(Math.log2(numTables)) : 0;
-  const rangeShift = numTables > 0 ? numTables * 16 - searchRange : 0;
+  const rangeShift = numTables > 0 ? numTables * SFNT_DIRECTORY_ENTRY_BYTES - searchRange : 0;
 
-  const headerSize = 12 + numTables * 16;
+  const headerSize = SFNT_DIRECTORY_HEADER_BYTES + numTables * SFNT_DIRECTORY_ENTRY_BYTES;
   const chunks: Buffer[] = [];
   let currentOffset = headerSize;
 
-  const directory = Buffer.alloc(12 + numTables * 16);
-  directory.writeUInt32BE(overrideVersion || font.sfntVersion || 0x00010000, 0);
+  const directory = Buffer.alloc(headerSize);
+  directory.writeUInt32BE(version, 0);
   directory.writeUInt16BE(numTables, 4);
   directory.writeUInt16BE(searchRange, 6);
   directory.writeUInt16BE(entrySelector, 8);
   directory.writeUInt16BE(rangeShift, 10);
 
   tableEntries.forEach((tbl, idx) => {
-    const entryOffset = 12 + idx * 16;
-    directory.write(tbl.tag, entryOffset, 4, 'ascii');
+    const entryOffset = SFNT_DIRECTORY_HEADER_BYTES + idx * SFNT_DIRECTORY_ENTRY_BYTES;
+    directory.write(formatSfntTag(tbl.tag), entryOffset, 4, 'ascii');
     directory.writeUInt32BE(tbl.checkSum, entryOffset + 4);
     directory.writeUInt32BE(currentOffset, entryOffset + 8);
     directory.writeUInt32BE(tbl.data.length, entryOffset + 12);
 
     chunks.push(tbl.data);
-
-    // 4-byte alignment padding
-    const pad = (4 - (tbl.data.length % 4)) % 4;
-    if (pad > 0) {
-      chunks.push(Buffer.alloc(pad));
-      currentOffset += tbl.data.length + pad;
-    } else {
-      currentOffset += tbl.data.length;
-    }
+    const pad = (TABLE_ALIGNMENT - (tbl.data.length % TABLE_ALIGNMENT)) % TABLE_ALIGNMENT;
+    if (pad > 0) chunks.push(Buffer.alloc(pad));
+    currentOffset += tbl.data.length + pad;
   });
 
   return Buffer.concat([directory, ...chunks]);
@@ -359,7 +371,8 @@ export function encodeSfnt(font: ParsedFont, overrideVersion?: number): Buffer {
  * Tables are deflated using zlib and encapsulated with 44-byte WOFF header.
  */
 export function encodeWoff(font: ParsedFont): Buffer {
-  const tableEntries = sfntOutputTables(font, font.sfntVersion || SFNT_DEFAULT_VERSION);
+  const flavor = font.sfntVersion || DEFAULT_SFNT_VERSION;
+  const tableEntries = prepareSfntTables(font, flavor);
   const numTables = tableEntries.length;
 
   const woffHeaderSize = 44;
@@ -403,7 +416,7 @@ export function encodeWoff(font: ParsedFont): Buffer {
 
   const header = Buffer.alloc(44);
   header.write('wOFF', 0, 4, 'ascii'); // Signature
-  header.writeUInt32BE(font.sfntVersion || 0x00010000, 4); // Flavor
+  header.writeUInt32BE(flavor, 4); // Flavor
   header.writeUInt32BE(totalWoffLength, 8); // Total WOFF Length
   header.writeUInt16BE(numTables, 12); // Num Tables
   header.writeUInt16BE(0, 14); // Reserved
