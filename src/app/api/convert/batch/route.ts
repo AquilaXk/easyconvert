@@ -3,9 +3,15 @@ import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
-import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
+import {
+  ConversionOptions,
+  ConversionFailedError,
+  EngineUnavailableError,
+  ArchiveEntryCollisionError,
+} from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,14 +97,19 @@ export async function POST(req: NextRequest) {
 
     let defaultOptions: ConversionOptions = {};
     if (optionsRaw) {
+      let parsed: unknown;
       try {
-        defaultOptions = JSON.parse(optionsRaw);
+        parsed = JSON.parse(optionsRaw);
       } catch {
         return NextResponse.json(
           { success: false, error: 'Invalid JSON for options.' },
           { status: 400 }
         );
       }
+      if (!isConversionOptionsObject(parsed)) {
+        return await failWithRollback(400, 'The "options" field must be a JSON object.');
+      }
+      defaultOptions = parsed;
     }
 
     const convertedFiles: { filename: string; buffer: Buffer }[] = [];
@@ -171,6 +182,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof ArchiveEntryCollisionError) {
+      return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.

@@ -9,6 +9,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
+import { assertConversionOptionsObject } from './options-guard';
 import {
   executeWorkerConversion,
   type WorkerConversionResult,
@@ -137,6 +138,7 @@ export async function dispatchConversion(
   options: WorkerEngineOptions = {},
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
+  assertConversionOptionsObject(options);
   const src = normalizeFormat(sourceFormat);
   const tgt = normalizeFormat(targetFormat);
   assertAdvertised(src, tgt, options);

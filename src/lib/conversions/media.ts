@@ -8,13 +8,19 @@ import {
   ConversionOptions,
   ConversionResult,
   ConversionFailedError,
+  EngineUnavailableError,
   InvalidMediaOptionError,
   MediaPackagingOptions,
 } from '../types';
 export { ConversionFailedError };
 import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
 import { buildFfmpegArguments, buildHlsDashArguments, usesHardwareVideoEncoder } from './media-ffmpeg-args';
-import { encodePureMp3, encodePureH264Mp4, encodeFlacStream, encodeAacLcFramePayload } from './media-encoder';
+import { encodeFlacStream } from './media-encoder';
+import {
+  resampleInterleavedInt16,
+  resamplePlanarFloat,
+  type ResampleOptions,
+} from './audio-resampler';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -243,10 +249,7 @@ export async function convertMedia(
   }
 
   // When system FFmpeg is available and not explicitly disabled, execute native transcoding.
-  // Exception: for AAC when allowPureLossyBitstream is explicitly set, use pure TypeScript
-  // ISO/IEC 13818-7 AAC LC bitstream encoder so that pure bitstream tests test the TS pipeline.
-  const isPureAacRequested = (tgt === 'aac' || tgt === 'adts') && options.allowPureLossyBitstream;
-  if (!options.disableNativeEngine && !isPureAacRequested && checkFfmpeg()) {
+  if (!options.disableNativeEngine && checkFfmpeg()) {
     try {
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {
@@ -260,22 +263,23 @@ export async function convertMedia(
     }
   }
 
-  // Pure TypeScript mode without native FFmpeg:
-  // For Opus and Vorbis/OGG: strictly fail-closed (no pure TS pseudo-quantization permitted).
-  if (tgt === 'opus' || tgt === 'ogg' || tgt === 'vorbis') {
-    throw new ConversionFailedError(
-      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
+  // Without native FFmpeg only WAV and FLAC can be produced faithfully. Every other audio or
+  // video target fails closed with EngineUnavailableError (HTTP 503) before any decoding; there is
+  // no in-process fallback encoder and no opt-in that emits a synthesized stream.
+  if (!PURE_LOSSLESS_TARGETS.has(tgt)) {
+    const cause = options.disableNativeEngine
+      ? 'the native engine is disabled'
+      : 'FFmpeg is not installed or not in PATH';
+    const product = PURE_UNAVAILABLE_ENCODE_TARGETS.has(tgt)
+      ? `authentic lossy ${tgt.toUpperCase()} compression`
+      : `${tgt.toUpperCase()} output`;
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required for ${product} (${cause}); there is no in-process fallback encoder (Fail-Closed).`
     );
   }
 
-  // For other lossy formats (AAC, H.264 MP4), fail-closed unless explicitly allowed for low-level bitstream tests.
-  if (LOSSY_PSYCHOACOUSTIC_FORMATS.has(tgt) && !options.allowPureLossyBitstream) {
-    throw new ConversionFailedError(
-      `Native FFmpeg engine is required for authentic lossy ${tgt.toUpperCase()} compression. Pure TypeScript mode cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).`
-    );
-  }
-
-  // Pure TypeScript zero-dependency audio & video processing pipeline for supported formats
+  // Pure TypeScript zero-dependency pipeline for the lossless targets (WAV, FLAC)
   return processMediaPure(inputBuffer, src, tgt, options, baseName);
 }
 
@@ -293,6 +297,42 @@ export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
   'mkv',
   'avi',
 ]);
+
+/** The only targets the in-process engine may emit when FFmpeg is unavailable. */
+const PURE_LOSSLESS_TARGETS: ReadonlySet<string> = new Set(['wav', 'flac']);
+
+/** Lossy targets plus the raw ADTS alias, used to word the fail-closed message. */
+const PURE_UNAVAILABLE_ENCODE_TARGETS: ReadonlySet<string> = new Set([...LOSSY_PSYCHOACOUSTIC_FORMATS, 'adts']);
+
+/** The pure path reproduces only mono and stereo, 16-bit integer PCM faithfully. */
+const PURE_MAX_CHANNELS = 2;
+const PURE_SOURCE_BITS_PER_SAMPLE = 16;
+
+/**
+ * The in-process decoders reduce every source to 16-bit integers and the encoders handle at most
+ * two channels. Anything wider would be truncated or have its channels scrambled, so it must go
+ * to FFmpeg instead of producing a lossy-looking lossless file.
+ */
+function assertPureSourceIsFaithful(decoded: DecodedAudio): void {
+  if (!Number.isInteger(decoded.channels) || decoded.channels < 1) {
+    throw new ConversionFailedError(`Invalid decoded source channel count: ${decoded.channels}`);
+  }
+  if (decoded.channels > PURE_MAX_CHANNELS) {
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required to convert ${decoded.channels}-channel audio; the in-process engine reproduces only mono and stereo faithfully (Fail-Closed).`
+    );
+  }
+  const isReducedFormat =
+    decoded.sourceBitsPerSample !== undefined &&
+    (decoded.sourceBitsPerSample !== PURE_SOURCE_BITS_PER_SAMPLE || decoded.sourceSampleFormat !== 'int');
+  if (isReducedFormat) {
+    throw new EngineUnavailableError(
+      'ffmpeg',
+      `Native FFmpeg engine is required to convert ${decoded.sourceBitsPerSample}-bit ${decoded.sourceSampleFormat} audio; the in-process engine reproduces only 16-bit integer PCM faithfully (Fail-Closed).`
+    );
+  }
+}
 
 
 
@@ -537,6 +577,7 @@ function processMediaPure(
 ): ConversionResult {
   // 1. Extract PCM audio samples from source using pure audio decoder stack
   const decoded = decodeAudioBuffer(inputBuffer, src);
+  assertPureSourceIsFaithful(decoded);
   if (!Number.isFinite(decoded.sampleRate) || decoded.sampleRate < 4000 || decoded.sampleRate > 192000) {
     throw new ConversionFailedError(`Invalid decoded source sample rate: ${decoded.sampleRate}`);
   }
@@ -601,54 +642,9 @@ function processMediaPure(
       outputBuffer = encodeWav(pcmData, sampleRate, channels);
       break;
 
-    case 'mp3':
-      outputBuffer = encodeMp3Container(pcmData, sampleRate, channels, options.audioBitrate || '192k', baseName);
-      break;
-
-    case 'aac':
-    case 'm4a':
-      outputBuffer = encodeAacContainer(pcmData, sampleRate, channels, baseName);
-      break;
-
-    case 'ogg':
-      throw new ConversionFailedError(
-        'Authentic Vorbis bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
-      );
-
-    case 'opus':
-      throw new ConversionFailedError(
-        'Authentic Opus bitstream encoder is required. Pure TypeScript cannot emit raw PCM masquerading as compressed bitstreams (Fail-Closed).'
-      );
-
     case 'flac':
       outputBuffer = encodeFlacContainer(pcmData, sampleRate, channels);
       break;
-
-    case 'wma':
-      throw new ConversionFailedError(
-        'Authentic WMA bitstream encoder is required. Pure TypeScript cannot emit raw PCM in fake ASF container (Fail-Closed).'
-      );
-
-    // Video targets: build valid MP4 multimedia container with authentic H.264
-    case 'mp4':
-    case 'mov':
-      outputBuffer = encodeMp4Container(pcmData, sampleRate, channels, options, baseName);
-      break;
-
-    case 'webm':
-      throw new ConversionFailedError(
-        'Native FFmpeg is required to encode authentic WebM multimedia streams (Fail-Closed).'
-      );
-
-    case 'mkv':
-      throw new ConversionFailedError(
-        'Native FFmpeg is required to encode authentic Matroska MKV multimedia streams (Fail-Closed).'
-      );
-
-    case 'avi':
-      throw new ConversionFailedError(
-        'Native FFmpeg is required to encode authentic AVI multimedia streams (Fail-Closed).'
-      );
 
     default:
       throw new ConversionFailedError(
@@ -663,40 +659,6 @@ function processMediaPure(
     size: outputBuffer.length,
   };
 }
-
-/**
- * Parses RIFF WAV PCM audio bytes into Int16Array
- */
-function parseWavPcm(buffer: Buffer): Int16Array {
-  // Find 'data' chunk
-  let offset = 12;
-  while (offset < buffer.length - 8) {
-    const chunkId = buffer.toString('ascii', offset, offset + 4);
-    const chunkSize = buffer.readUInt32LE(offset + 4);
-    if (chunkId === 'data') {
-      const dataOffset = offset + 8;
-      const sampleCount = Math.floor(Math.min(chunkSize, buffer.length - dataOffset) / 2);
-      const samples = new Int16Array(sampleCount);
-      for (let i = 0; i < sampleCount; i++) {
-        samples[i] = buffer.readInt16LE(dataOffset + i * 2);
-      }
-      return samples;
-    }
-    offset += 8 + chunkSize;
-  }
-
-  // Fallback: take payload slice as 16-bit PCM
-  const sampleCount = Math.floor((buffer.length - 44) / 2);
-  const samples = new Int16Array(Math.max(1024, sampleCount));
-  for (let i = 0; i < samples.length; i++) {
-    const pos = 44 + i * 2;
-    if (pos + 1 < buffer.length) {
-      samples[i] = buffer.readInt16LE(pos);
-    }
-  }
-  return samples;
-}
-
 
 /**
  * Encodes PCM samples into standard RIFF WAV format
@@ -732,67 +694,6 @@ function encodeWav(samples: Int16Array, sampleRate: number, channels: number): B
   }
 
   return buffer;
-}
-
-/**
- * Encodes valid MP3 stream container with ID3v2 metadata header and MPEG sync frames
- */
-function encodeMp3Container(
-  samples: Int16Array,
-  sampleRate: number,
-  channels: number,
-  bitrateStr: string,
-  title: string
-): Buffer {
-  return encodePureMp3(samples, sampleRate, channels, bitrateStr, title);
-}
-
-const AAC_SAMPLE_RATES = [
-  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
-];
-
-/**
- * Encodes valid ADTS AAC audio stream container with compliant ISO/IEC 13818-7 / 14496-3 AAC LC frames
- */
-export function encodeAacContainer(
-  samples: Int16Array,
-  sampleRate: number,
-  channels: number,
-  baseName: string
-): Buffer {
-  if (channels < 1 || channels > 2) {
-    throw new Error(`Unsupported channel configuration for AAC LC: ${channels} channels (only mono and stereo supported)`);
-  }
-  const chunks: Buffer[] = [];
-  const srFound = AAC_SAMPLE_RATES.indexOf(sampleRate);
-  const srIdx = srFound !== -1 ? srFound : 4; // default to 44.1kHz
-  const chCount = channels;
-
-  const totalFrames = Math.max(1, Math.floor(samples.length / (1024 * chCount)));
-  const frames = totalFrames;
-
-  for (let i = 0; i < frames; i++) {
-    const sampleOffset = (i * 1024) % Math.max(1, Math.floor(samples.length / chCount));
-    const payload = encodeAacLcFramePayload(samples, sampleOffset, chCount);
-
-    const totalLen = 7 + payload.length;
-    const packet = Buffer.alloc(totalLen);
-
-    // ADTS Header (7 bytes) per ISO/IEC 13818-7 / 14496-3
-    packet[0] = 0xff; // 11111111 (syncword)
-    packet[1] = 0xf1; // 1111 (sync) + 0 (MPEG-4) + 00 (Layer 0) + 1 (protection absent)
-    packet[2] = (0x01 << 6) | (srIdx << 2) | ((chCount >> 2) & 1); // 01 (AAC LC) + sample rate idx + channel MSB
-    packet[3] = (chCount & 0x03) << 6; // channel LSB
-    packet[3] |= (totalLen >> 11) & 0x03;
-    packet[4] = (totalLen >> 3) & 0xff;
-    packet[5] = ((totalLen & 0x07) << 5) | 0x1f; // buffer fullness MSB (0x7FF VBR)
-    packet[6] = 0xfc; // buffer fullness LSB + 1 raw data block
-
-    payload.copy(packet, 7);
-    chunks.push(packet);
-  }
-
-  return Buffer.concat(chunks);
 }
 
 /**
@@ -1074,129 +975,34 @@ function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: 
 
 
 /**
- * Encodes ISO Base Media File Format (MP4 / MOV) container
- * Synthesizes valid ftyp, moov, trak, avc1, avcC, and mdat boxes with H.264 baseline NAL units.
- */
-function encodeMp4Container(
-  samples: Int16Array,
-  sampleRate: number,
-  channels: number,
-  options: ConversionOptions,
-  title: string
-): Buffer {
-  return encodePureH264Mp4(samples, sampleRate, channels, { ...options, fastStart: options.fastStart ?? true }, title);
-}
-
-/**
- * Bandlimited windowed Sinc audio resampler with Blackman window.
- * Eliminates high-frequency aliasing and quantization distortion.
+ * Bandlimited polyphase resampler (Kaiser-windowed sinc, cutoff scaled to the lower rate).
+ * The implementation lives in ./audio-resampler; this facade keeps the public entry point.
+ * 16-bit output is TPDF-dithered; planar float output is left untouched.
  */
 export function resampleAudioSinc(
   pcmData: Int16Array,
   srcRate: number,
   tgtRate: number,
-  channels: number
+  channels: number,
+  options?: ResampleOptions
 ): Int16Array;
 export function resampleAudioSinc(
   channels: Float32Array[],
   srcRate: number,
   tgtRate: number,
-  filterRadius?: number
+  options?: ResampleOptions
 ): Float32Array[];
 export function resampleAudioSinc(
   data: Int16Array | Float32Array[],
   srcRate: number,
   tgtRate: number,
-  param4: number = 8
-): any {
+  param4?: number | ResampleOptions,
+  param5?: ResampleOptions
+): Int16Array | Float32Array[] {
   if (Array.isArray(data)) {
-    const filterRadius = param4 > 0 ? param4 : 8;
-    const ratio = tgtRate / srcRate;
-    return data.map((ch) => {
-      if (srcRate === tgtRate || ch.length === 0) return ch;
-      const srcFrames = ch.length;
-      const tgtFrames = Math.floor(srcFrames * ratio);
-      const output = new Float32Array(tgtFrames);
-      const cutoff = Math.min(1.0, ratio);
-
-      for (let f = 0; f < tgtFrames; f++) {
-        const srcPos = f / ratio;
-        const center = Math.floor(srcPos);
-        let sum = 0;
-        let weightSum = 0;
-
-        const kMin = Math.max(0, center - filterRadius);
-        const kMax = Math.min(srcFrames - 1, center + filterRadius);
-
-        for (let k = kMin; k <= kMax; k++) {
-          const x = (srcPos - k) * cutoff;
-          let sincVal = 1.0;
-          if (Math.abs(x) > 1e-7) {
-            const pix = Math.PI * x;
-            sincVal = Math.sin(pix) / pix;
-          }
-
-          const t = (srcPos - k) / filterRadius;
-          if (Math.abs(t) <= 1.0) {
-            const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
-            const weight = sincVal * w * cutoff;
-            sum += ch[k] * weight;
-            weightSum += weight;
-          }
-        }
-
-        output[f] = weightSum > 0 ? sum / weightSum : ch[center];
-      }
-
-      return output;
-    });
+    return resamplePlanarFloat(data, srcRate, tgtRate, param4 as ResampleOptions | undefined);
   }
-
-  const channels = param4;
-  if (srcRate === tgtRate || data.length === 0) return data;
-
-  const ratio = tgtRate / srcRate;
-  const srcFrames = Math.floor(data.length / channels);
-  const tgtFrames = Math.floor(srcFrames * ratio);
-  const output = new Int16Array(tgtFrames * channels);
-
-  const filterRadius = 8;
-  const cutoff = Math.min(1.0, ratio);
-
-  for (let f = 0; f < tgtFrames; f++) {
-    const srcPos = f / ratio;
-    const center = Math.floor(srcPos);
-
-    for (let c = 0; c < channels; c++) {
-      let sum = 0;
-      let weightSum = 0;
-
-      const kMin = Math.max(0, center - filterRadius);
-      const kMax = Math.min(srcFrames - 1, center + filterRadius);
-
-      for (let k = kMin; k <= kMax; k++) {
-        const x = (srcPos - k) * cutoff;
-        let sincVal = 1.0;
-        if (Math.abs(x) > 1e-7) {
-          const pix = Math.PI * x;
-          sincVal = Math.sin(pix) / pix;
-        }
-
-        const t = (srcPos - k) / filterRadius;
-        if (Math.abs(t) <= 1.0) {
-          const w = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t);
-          const weight = sincVal * w * cutoff;
-          sum += data[k * channels + c] * weight;
-          weightSum += weight;
-        }
-      }
-
-      const sample = weightSum > 0 ? sum / weightSum : data[center * channels + c];
-      output[f * channels + c] = Math.max(-32768, Math.min(32767, Math.round(sample)));
-    }
-  }
-
-  return output;
+  return resampleInterleavedInt16(data, srcRate, tgtRate, param4 as number, param5);
 }
 
 /**

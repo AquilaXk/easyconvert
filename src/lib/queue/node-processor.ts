@@ -18,6 +18,7 @@ import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-po
 import { dispatchEngine } from './dispatch-engine';
 import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { frameMetadataFields } from '../api/frame-headers';
+import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -125,6 +126,10 @@ export async function processNodeJob(
   }
   // Every conversion of the job runs under the page limit of its owner's tier.
   const engine = pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId));
+
+  // Job data comes from the queue, not only from the routes: options that are not an object fail
+  // the job with a typed error instead of being spread into {} or an index-keyed object.
+  if (job.data.options !== undefined) assertConversionOptionsObject(job.data.options);
 
   const startTime = Date.now();
   const attemptSignal = job.signal;

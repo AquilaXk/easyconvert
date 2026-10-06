@@ -304,6 +304,23 @@ export const ConversionOptionsSchema = {
       maxLength: 5,
       description: 'Delimiter character for delimited text tables.',
     },
+    encoding: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 64,
+      description:
+        'WHATWG encoding label of delimited-text input (e.g. "euc-kr", "shift_jis", "windows-1252"). Detected from the BOM, the UTF-16 NUL pattern and the content when omitted.',
+    },
+    bom: {
+      type: 'boolean',
+      description: 'Prefix CSV/TSV output with a UTF-8 byte-order mark. Defaults to true for CSV and false for TSV.',
+    },
+    escapeFormulas: {
+      type: 'boolean',
+      default: true,
+      description:
+        'Prefix CSV/TSV cells that start with = + - @ TAB or CR (except plain numbers) with an apostrophe so spreadsheets do not evaluate them.',
+    },
     hasHeaders: {
       type: 'boolean',
       description: 'Treat first row of table data as column header names.',

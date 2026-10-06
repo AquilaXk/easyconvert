@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
-import { ConversionOptions, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
+import {
+  ConversionOptions,
+  ConversionFailedError,
+  EngineUnavailableError,
+  ArchiveEntryCollisionError,
+} from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -111,14 +117,19 @@ export async function POST(req: NextRequest) {
 
     let options: ConversionOptions = {};
     if (optionsRaw) {
+      let parsed: unknown;
       try {
-        options = JSON.parse(optionsRaw);
+        parsed = JSON.parse(optionsRaw);
       } catch {
         return NextResponse.json(
           { success: false, error: 'Invalid JSON format for "options" parameter.' },
           { status: 400 }
         );
       }
+      if (!isConversionOptionsObject(parsed)) {
+        return await failWithRollback(400, 'The "options" field must be a JSON object.');
+      }
+      options = parsed;
     }
 
     if (options) {
@@ -181,6 +192,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof ArchiveEntryCollisionError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =
