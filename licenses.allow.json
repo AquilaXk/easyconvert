@@ -1,0 +1,28 @@
+{
+  "allowed": [
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "MPL-2.0",
+    "0BSD",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "LGPL-3.0"
+  ],
+  "exceptions": {
+    "argparse@2.0.1": {
+      "license": "Python-2.0",
+      "reason": "Permissive Python Software Foundation License used for CLI parsing"
+    },
+    "caniuse-lite@1.0.30001812": {
+      "license": "CC-BY-4.0",
+      "reason": "Browser support database, attribution only, non-copyleft"
+    },
+    "pako@1.0.11": {
+      "license": "Zlib",
+      "reason": "Permissive zlib component in dual license (MIT AND Zlib)"
+    }
+  }
+}
