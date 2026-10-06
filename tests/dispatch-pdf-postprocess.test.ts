@@ -64,12 +64,13 @@ describe('PDF post-processing on native-routed output', () => {
         SAMPLE_DOCX,
         'docx',
         'pdf',
-        { pdfa: { conformance: 'pdfa-1b' } },
+        // PDF/A-2b: this LibreOffice build's 1b output fails veraPDF rule 6.7.3-1 (issue #582).
+        { pdfa: { conformance: 'pdfa-2b' } },
         'sample.docx'
       );
       expect(result.engineUsed).toMatch(/^native-soffice/);
       const xmp = pdfinfo(result.buffer, ['-meta']);
-      expect(xmp).toContain('pdfaid:part');
+      expect(xmp).toMatch(/<pdfaid:part>2<\/pdfaid:part>/);
       expect(xmp).toMatch(/<pdfaid:conformance>B<\/pdfaid:conformance>/);
     },
     CONVERT_TIMEOUT_MS
