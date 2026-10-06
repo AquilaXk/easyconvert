@@ -6532,14 +6532,15 @@ export async function parsePptxSlideSceneGraph(
         if (mediaFile) {
           let imgBuffer = await mediaFile.async('nodebuffer');
           // PNG and JPEG are embedded without a re-encode, whatever the part is called: check their header.
-          await assertEmbeddableImageWithinLimit(imgBuffer);
+          // Pictures are processed one at a time on purpose: each decode can hold up to the pixel limit in memory.
+          await assertEmbeddableImageWithinLimit(imgBuffer); // NOSONAR S9382: sequential to bound memory
           let mimeType = 'image/png';
           const lower = mediaPath.toLowerCase();
           if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
             mimeType = 'image/jpeg';
           } else if (!lower.endsWith('.png')) {
             try {
-              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer();
+              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer(); // NOSONAR S9382: sequential to bound memory
               mimeType = 'image/png';
             } catch (err) {
               rethrowInputPixelLimit(err);
@@ -6563,7 +6564,7 @@ export async function parsePptxSlideSceneGraph(
                   const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
                   const extractW = Math.max(1, meta.width - cropLeft - cropRight);
                   const extractH = Math.max(1, meta.height - cropTop - cropBottom);
-                  imgBuffer = await openLimitedSharp(imgBuffer)
+                  imgBuffer = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
                 }
@@ -7727,7 +7728,8 @@ async function convertCbzSource(
 
     for (const name of imageNames) {
       const imgBuf = await zip.files[name].async('nodebuffer');
-      await assertEmbeddableImageWithinLimit(imgBuf);
+      // Pages are processed one at a time on purpose: pdfkit decodes each into memory.
+      await assertEmbeddableImageWithinLimit(imgBuf); // NOSONAR S9382: sequential to bound memory
       doc.addPage({ size: 'A4' });
       try {
         doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });

@@ -5,7 +5,6 @@ import {
   MAX_INPUT_PIXELS_ENV,
 } from '@/lib/conversions/image-input-limit-config';
 
-
 /** Assignable API key scopes, including the admin wildcard. */
 export const API_KEY_SCOPES = [...ALL_API_KEY_SCOPES, '*'];
 
