@@ -6,6 +6,7 @@ import {
   OcrLanguageUnavailableError,
   ConversionFailedError,
   OcrEngineUnavailableError,
+  OcrPreprocessError,
   HocrExportOptions,
   AltoExportOptions,
   OcrPageDecision,
@@ -27,6 +28,7 @@ import {
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
 import { ocrSegmentationFor } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
+import { preprocessOcrImage, type OcrPreprocessResult } from './ocr-preprocess';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
@@ -125,13 +127,16 @@ export async function performOcr(
 
   // Decode with sharp and re-encode as PNG: the OCR reader opens fewer formats (no AVIF, HEIF,
   // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG. EXIF
-  // orientation is applied first, so text is recognized as displayed.
-  let ocrInput: Buffer;
+  // orientation is applied first, so text is recognized as displayed, and the page is prepared
+  // for recognition (see ocr-preprocess.ts), which both engines below then read.
+  let prepared: OcrPreprocessResult;
   try {
-    ocrInput = await sharp(imageBuffer).rotate().png().toBuffer();
-  } catch {
+    prepared = await preprocessOcrImage(imageBuffer);
+  } catch (err) {
+    if (err instanceof OcrPreprocessError) throw err;
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
+  const ocrInput = prepared.image;
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
@@ -149,9 +154,8 @@ export async function performOcr(
 
     if (ret && ret.data) {
       const fullText = (ret.data.text || '').trim();
-      const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
-      const imgWidth = meta.width || 800;
-      const imgHeight = meta.height || 600;
+      const imgWidth = prepared.geometry.outputWidth;
+      const imgHeight = prepared.geometry.outputHeight;
       const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
 
       const words = fullText.split(/\s+/).filter(Boolean);

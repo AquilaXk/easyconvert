@@ -439,6 +439,14 @@ export class OcrEngineUnavailableError extends ConversionFailedError {
   }
 }
 
+/** An image handed to OCR preprocessing is malformed, inconsistent or beyond its limits. */
+export class OcrPreprocessError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OcrPreprocessError';
+  }
+}
+
 export class UnsupportedTargetError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
