@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -74,7 +75,7 @@ export async function withValidator<T>(validator: string, operation: () => Promi
 export async function createApiKey(): Promise<string> {
   const user = await userStore.createUser({
     name: 'PDF/A Route Tester',
-    email: `pdfa_route_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
+    email: `pdfa_route_${randomUUID()}@easyconvert.local`,
     tier: 'pro',
   });
   const key = await redisKeyStore.generateApiKey(user.id, 'PDF/A Route Key', { scopes: ['convert:write', 'convert:read'] });
