@@ -33,6 +33,7 @@ import {
   ocrSegmentationFor,
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
+import { analyzePdfPagesInProcess } from './pdf-text-geometry';
 import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
@@ -295,41 +296,7 @@ export async function inspectPdfPagesTextDensity(
   pdfBuffer: Buffer,
   densityThreshold: number = 15
 ): Promise<PdfPageAnalysis[]> {
-  const analyses: PdfPageAnalysis[] = [];
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(pdfBuffer),
-    useSystemFonts: true,
-    disableFontFace: true,
-    verbosity: 0,
-  });
-
-  const doc = await loadingTask.promise;
-  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-    const page = await doc.getPage(pageNum);
-    const view = page.view || [0, 0, 612, 792];
-    const width = Math.abs(view[2] - view[0]);
-    const height = Math.abs(view[3] - view[1]);
-
-    const textContent = await page.getTextContent();
-    const strings = (textContent.items || []).map((it: any) => it.str || '');
-    const pageText = strings.join(' ').trim();
-    const charCount = pageText.replace(/\s+/g, '').length;
-    const wordCount = pageText.split(/\s+/).filter(Boolean).length;
-    const hasTextLayer = charCount >= densityThreshold;
-
-    analyses.push({
-      pageNumber: pageNum,
-      width,
-      height,
-      charCount,
-      wordCount,
-      hasTextLayer,
-      text: pageText,
-    });
-  }
-
-  return analyses;
+  return (await analyzePdfPagesInProcess(pdfBuffer, { densityThreshold, geometry: 'none' })).analyses;
 }
 
 /**

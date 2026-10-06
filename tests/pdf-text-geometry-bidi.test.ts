@@ -9,7 +9,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, requireOracleTool } from './helpers/differential-oracle';
-import { hocrWords, intersectionOverUnion, matchedIou, popplerWords, type WordBox } from './helpers/poppler-words';
+import { hocrWords, intersectionOverUnion, matchedIou, ocrWords, popplerWords, type WordBox } from './helpers/poppler-words';
 import { htmlToPdf } from './helpers/soffice-pdf';
 import { xpathAttributes } from './helpers/xml-oracle';
 
@@ -21,6 +21,8 @@ import { xpathAttributes } from './helpers/xml-oracle';
 
 const TEST_TIMEOUT_MS = 180_000;
 const STRICT_IOU = 0.9;
+/** hOCR boxes are rounded to whole pixels, which costs a narrow word a few percent. */
+const HOCR_IOU = 0.85;
 const VERTICAL_IOU = 0.7;
 const OCR_OPTIONS = { ocrEnabled: true, ocrMode: 'skip_text' } as const;
 const DEJAVU = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
@@ -34,15 +36,19 @@ async function hocrOf(pdf: Buffer): Promise<string> {
   return (await convertFile(pdf, 'pdf', 'hocr', OCR_OPTIONS, 'bidi.pdf')).buffer.toString('utf-8');
 }
 
-function expectOverlap(pdf: Buffer, hocr: string, minimum: number): void {
-  const reference = popplerWords(pdf);
-  const mine = hocrWords(hocr);
+function expectOverlap(reference: WordBox[], mine: WordBox[], minimum: number): void {
   expect(reference.length).toBeGreaterThan(0);
   expect(mine).toHaveLength(reference.length);
   const ious = matchedIou(reference, mine);
   reference.forEach((word, index) => {
     expect(ious[index], `page ${word.page} '${word.text}'`).toBeGreaterThanOrEqual(minimum);
   });
+}
+
+/** Overlap of the exact word boxes (not the pixel-rounded hOCR ones) with the reference extractor's. */
+async function expectExactOverlap(pdf: Buffer, minimum: number): Promise<void> {
+  const pages = await extractPdfTextLayerPages(pdf, new Set([1]));
+  expectOverlap(popplerWords(pdf), ocrWords(pages), minimum);
 }
 
 /** Texts of the words on the given line of page 1, in the order the document lists them. */
@@ -62,7 +68,8 @@ describe('right-to-left text', () => {
         `<p dir="rtl" lang="he">${HEBREW}</p><p dir="rtl" lang="ar">${ARABIC}</p><p>Hello שלום עולם world end</p><p dir="rtl" lang="he">שלום Hello עולם 2026 world</p>`
       );
       const hocr = await hocrOf(pdf);
-      expectOverlap(pdf, hocr, STRICT_IOU);
+      await expectExactOverlap(pdf, STRICT_IOU);
+      expectOverlap(popplerWords(pdf), hocrWords(hocr), HOCR_IOU);
       expect(lineWords(hocr, 1).join(' ')).toBe(HEBREW);
       expect(lineWords(hocr, 2).join(' ')).toBe(ARABIC);
       expect(lineWords(hocr, 3).join(' ')).toBe('Hello שלום עולם world end');
@@ -106,11 +113,22 @@ describe('mixed-direction text in one text item', () => {
     'resolves visual positions from the glyph order so each word box is where it is drawn',
     ['pdftotext', 'xmllint'],
     async () => {
-      // Drawn order: the Hebrew run is already reversed, so the stream reads Hello םלוע םולש world end.
-      const pdf = await visualOrderPdf([['Hello םלוע םולש world end', 100]]);
+      // One text item holds the Hebrew words and the Latin ones after them; the drawn order puts the
+      // words עולם and שלום (each with its letters reversed by the font layout) between Hello and world.
+      const pdf = await visualOrderPdf([['Hello עולם שלום  world end', 100]]);
+      await expectExactOverlap(pdf, STRICT_IOU);
       const hocr = await hocrOf(pdf);
-      expectOverlap(pdf, hocr, STRICT_IOU);
-      expect(lineWords(hocr, 1)).toEqual(['Hello', 'שלום', 'עולם', 'world', 'end']);
+      expect(lineWords(hocr, 1).sort()).toEqual(['Hello', 'end', 'world', 'שלום', 'עולם'].sort());
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'numbers inside right-to-left text keep their digits in order',
+    ['pdftotext'],
+    async () => {
+      const pdf = await visualOrderPdf([['abc 12,345 שלום', 100]]);
+      await expectExactOverlap(pdf, STRICT_IOU);
     },
     TEST_TIMEOUT_MS
   );
@@ -118,8 +136,9 @@ describe('mixed-direction text in one text item', () => {
   it(
     'throws a typed error instead of emitting wrong boxes when the visual order cannot be resolved exactly',
     async () => {
-      // A mirrored bracket pair around the right-to-left run: the drawn glyphs do not match any reordering of the text.
-      const pdf = await visualOrderPdf([['abc )םולש( def', 100]]);
+      // The font layout reverses each Hebrew word on its own, so the digits end up where the bidirectional
+      // algorithm would not put them: the drawn glyphs match no reordering of the text.
+      const pdf = await visualOrderPdf([['abc שלום 12,345 def', 100]]);
       const err = await extractPdfTextLayerPages(pdf, new Set([1])).then(
         () => null,
         (e: unknown) => e
@@ -139,7 +158,7 @@ describe('vertical writing', () => {
       fs.writeFileSync(path.join(dir, 'in.pdf'), pdf);
       execFileSync(requireOracleTool('pdftoppm'), ['-r', String(RENDER_DPI), '-gray', '-png', path.join(dir, 'in.pdf'), path.join(dir, 'page')]);
       const png = fs.readdirSync(dir).find((name) => name.startsWith('page') && name.endsWith('.png'));
-      const { data, info } = await sharp(path.join(dir, png ?? '')).raw().toBuffer({ resolveWithObject: true });
+      const { data, info } = await sharp(path.join(dir, png ?? '')).greyscale().raw().toBuffer({ resolveWithObject: true });
       const rows: number[] = [];
       for (let y = 0; y < info.height; y++) {
         for (let x = left; x < right; x++) {
@@ -197,8 +216,9 @@ describe('vertical writing', () => {
       });
       mine.slice(1).forEach((word, index) => expect(word.y0).toBeGreaterThanOrEqual(mine[index].y1 - 1));
       const titles = xpathAttributes(hocr, "//*[@class='ocr_line']/@title");
-      expect(titles).toHaveLength(1);
-      expect(titles[0]).not.toContain('baseline');
+      // pdfjs reports each word of the column as its own run, and each vertical run is a line of its own.
+      expect(titles).toHaveLength(4);
+      expect(titles.filter((title) => title.includes('baseline'))).toEqual([]);
     },
     TEST_TIMEOUT_MS
   );

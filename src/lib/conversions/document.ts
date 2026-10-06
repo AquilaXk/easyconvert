@@ -40,7 +40,7 @@ import {
   type XyCutOptions,
 } from './pdf-utils';
 import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
-import { extractPdfTextLayerPages } from './pdf-text-geometry';
+import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { assertNoComplexScript } from './ctl';
 import { renderMarkdownFragment } from './markdown';
@@ -181,12 +181,19 @@ export async function convertDocument(
     const pageOcrResults = new Map<number, OcrResult>();
 
     // Inspect each page for existing text layer density to enable Smart Multi-Page OCR
-    const pageAnalyses = await inspectPdfPagesTextDensity(
-      inputBuffer,
-      options.ocrDensityThreshold || 15
-    ).catch(() => []);
-
     const ocrMode = options.ocrMode || 'skip_text';
+    const densityThreshold = options.ocrDensityThreshold || 15;
+    let pageAnalyses: PdfPageAnalysis[];
+    // Word geometry of pages that keep their own text layer, read in the same pass as the density analysis.
+    let textLayerResults = new Map<number, OcrResult>();
+    if ((tgt === 'hocr' || tgt === 'alto') && ocrMode !== 'force' && ocrMode !== 'redo') {
+      const read = await analyzePdfPagesWithGeometry(inputBuffer, densityThreshold);
+      pageAnalyses = read.analyses;
+      textLayerResults = read.geometry;
+    } else {
+      pageAnalyses = await inspectPdfPagesTextDensity(inputBuffer, densityThreshold).catch(() => []);
+    }
+
     const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
 
     // If scanned document or OCR is requested or target is hocr/alto
@@ -470,13 +477,9 @@ export async function convertDocument(
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
-      // Pages whose text is the PDF's own text layer (skipped by OCR) get their word boxes from it.
-      const textLayerPages = new Set(
-        pageAnalyses.filter((pa) => !pageOcrResults.has(pa.pageNumber) && pa.text.trim() !== '').map((pa) => pa.pageNumber)
-      );
-      const textLayerResults = await extractPdfTextLayerPages(inputBuffer, textLayerPages);
+      // Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer.
       const combinedResult = assembleCombinedOcrResult(
-        new Map([...pageOcrResults, ...textLayerResults]),
+        new Map([...textLayerResults, ...pageOcrResults]),
         pageAnalyses,
         extractedText,
         ocrInfo.confidence

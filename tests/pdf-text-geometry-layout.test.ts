@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { oracleTest } from './helpers/oracle-test';
-import { hocrWords, matchedIou, popplerWords } from './helpers/poppler-words';
+import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
+import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
 import { rawPdf, run } from './helpers/raw-pdf';
 import { htmlToPdf } from './helpers/soffice-pdf';
-import { xpathCount } from './helpers/xml-oracle';
 
 /**
  * Reading order, ligatures, superscripts, justified lines and invisible text in PDF text-layer geometry.
@@ -143,13 +143,13 @@ describe('superscripts and justified lines', () => {
           ].join(''),
         },
       ]);
-      const hocr = await hocrOf(pdf);
+      const page = (await extractPdfTextLayerPages(pdf, new Set([1]))).get(1);
       const reference = popplerWords(pdf);
-      const ious = matchedIou(reference, hocrWords(hocr));
+      const ious = matchedIou(reference, ocrWords(new Map([[1, page as OcrResult]])));
       reference.forEach((word, index) => {
         expect(ious[index], `'${word.text}'`).toBeGreaterThanOrEqual(STRICT_IOU);
       });
-      expect(xpathCount(hocr, "//*[@class='ocr_line']")).toBe(2);
+      expect(page?.lines).toHaveLength(2);
     },
     TEST_TIMEOUT_MS
   );

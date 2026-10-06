@@ -52,6 +52,8 @@ import {
 } from '../src/lib/conversions/pdf-text-geometry';
 
 const TEST_TIMEOUT_MS = 120_000;
+/** pdfjs drops text beyond the page, so a very long item needs a very wide page. */
+const WIDE_PAGE_PT = 2_000_000;
 const GROUPING_CPU_BUDGET_MS = 1_000;
 const MANY_RUNS = 96_000;
 
@@ -88,7 +90,7 @@ describe('per-page limits', () => {
     `rejects a single item of more than ${PDF_TEXT_MAX_WORDS_PER_PAGE} words before laying it out`,
     async () => {
       const words = Array.from({ length: PDF_TEXT_MAX_WORDS_PER_PAGE + 1 }, () => 'a').join(' ');
-      const pdf = rawPdf([{ width: 100, height: 100, content: run(words, 1, 50, 1) }]);
+      const pdf = rawPdf([{ width: WIDE_PAGE_PT, height: 100, content: run(words, 1, 50, 1) }]);
       const err = await failure(analyzePdfPagesInProcess(pdf, { geometry: [1] }));
       expect(err).toBeInstanceOf(PdfTextGeometryError);
       expect((err as Error).message).toBe(`PDF page 1 has more than ${PDF_TEXT_MAX_WORDS_PER_PAGE} words.`);
@@ -99,7 +101,7 @@ describe('per-page limits', () => {
   it(
     `rejects an item longer than ${PDF_TEXT_MAX_ITEM_CHARS} characters before allocating per-character data`,
     async () => {
-      const pdf = rawPdf([{ width: 100, height: 100, content: run('a'.repeat(PDF_TEXT_MAX_ITEM_CHARS + 1), 1, 50, 1) }]);
+      const pdf = rawPdf([{ width: WIDE_PAGE_PT, height: 100, content: run('a'.repeat(PDF_TEXT_MAX_ITEM_CHARS + 1), 1, 50, 1) }]);
       const err = await failure(analyzePdfPagesInProcess(pdf, { geometry: [1] }));
       expect(err).toBeInstanceOf(PdfTextGeometryError);
       expect((err as Error).message).toBe(`PDF page 1 has a text item longer than ${PDF_TEXT_MAX_ITEM_CHARS} characters.`);

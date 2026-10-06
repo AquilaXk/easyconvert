@@ -74,6 +74,31 @@ export function hocrWords(hocr: string): WordBox[] {
   return words;
 }
 
+/** The part of a per-page OCR result this helper reads (structural, so the helper imports no production module). */
+interface PageWords {
+  lineBlocks?: Array<{ words: Array<{ text: string; bbox: { x: number; y: number; width: number; height: number } }> }>;
+}
+
+/** Word boxes of per-page OCR results (the exact geometry, before an export rounds it to pixels). */
+export function ocrWords(pages: Map<number, PageWords>): WordBox[] {
+  const words: WordBox[] = [];
+  for (const [page, result] of [...pages].sort(([p, ], [q, ]) => p - q)) {
+    for (const block of result.lineBlocks ?? []) {
+      for (const word of block.words) {
+        words.push({
+          page,
+          text: word.text,
+          x0: word.bbox.x,
+          y0: word.bbox.y,
+          x1: word.bbox.x + word.bbox.width,
+          y1: word.bbox.y + word.bbox.height,
+        });
+      }
+    }
+  }
+  return words;
+}
+
 export function intersectionOverUnion(a: WordBox, b: WordBox): number {
   const width = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
   const height = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
