@@ -151,8 +151,11 @@ const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
 const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
 /** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
 const PASSWORD_PROMPT_ABORT_PATTERN = /^(?:Break signaled|Enter password.*)$/m;
-/** The prompt 7-Zip prints on stdout before reading a password from stdin; it is not part of a listing. */
-const SEVEN_ZIP_PASSWORD_PROMPT = /^Enter password \(will not be echoed\):/gm;
+/**
+ * The prompt 7-Zip prints on stdout before reading a password from stdin; it is not part of a listing.
+ * p7zip and 7-Zip up to 23.01 print "Enter password (will not be echoed):", 7-Zip 26.01 "Enter password:".
+ */
+const SEVEN_ZIP_PASSWORD_PROMPT = /^Enter password(?: \(will not be echoed\))?:/gm;
 
 /** Removes 7-Zip's password prompt from a listing, which it prints whenever it reads the answer from stdin. */
 export function stripSevenZipPasswordPrompt(stdout: string): string {
