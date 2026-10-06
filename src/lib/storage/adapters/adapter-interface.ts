@@ -1,3 +1,5 @@
+import { redactText } from '../../security/redact';
+
 export interface StorageAdapterMetadata {
   size: number;
   etag?: string;
@@ -36,7 +38,8 @@ export class StorageProviderUnavailableError extends StorageAdapterError {
 
 export class StorageSsrfError extends StorageAdapterError {
   constructor(hostOrUrl: string, provider: string) {
-    super(`Blocked outbound connection to restricted host or IP: "${hostOrUrl}"`, provider);
+    // The target may be a caller-supplied signed URL, so userinfo and query are masked in the message.
+    super(`Blocked outbound connection to restricted host or IP: "${redactText(hostOrUrl)}"`, provider);
     this.name = 'StorageSsrfError';
   }
 }
