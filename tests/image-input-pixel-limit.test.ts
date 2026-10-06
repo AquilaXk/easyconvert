@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import sharp from 'sharp';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
@@ -86,12 +86,41 @@ describe('input pixel limit configuration', () => {
 
   it('honours the environment override and lowers a value above the hard ceiling', () => {
     expect(maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: '4096' })).toBe(SMALL_LIMIT);
+    expect(maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: ' 4096\n' })).toBe(SMALL_LIMIT);
     expect(maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: String(EXPECTED_CEILING) })).toBe(EXPECTED_CEILING);
     expect(maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: '999999999999' })).toBe(EXPECTED_CEILING);
+    expect(maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: '99999999999999999999999' })).toBe(EXPECTED_CEILING);
   });
 
-  it.each(['0', '-5', '1.5', 'abc', '1e3x', 'NaN'])('rejects the malformed override %j instead of disabling the guard', (value) => {
-    expect(() => maxInputPixels({ [MAX_INPUT_PIXELS_ENV]: value })).toThrow(RangeError);
+  it.each(['0', '-5', '1.5', 'abc', '1e3', '0x10', '+5', '4096px', 'NaN', 'Infinity'])(
+    'falls back to the default for the malformed override %j and warns once, without failing requests',
+    (value) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const env = { [MAX_INPUT_PIXELS_ENV]: value };
+        expect(maxInputPixels(env)).toBe(EXPECTED_DEFAULT_LIMIT);
+        expect(maxInputPixels(env)).toBe(EXPECTED_DEFAULT_LIMIT);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0][0])).toContain(MAX_INPUT_PIXELS_ENV);
+        expect(String(warn.mock.calls[0][0])).toContain(`${EXPECTED_DEFAULT_LIMIT}`);
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
+
+  it('keeps converting under a malformed override instead of answering 500', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const previous = process.env[MAX_INPUT_PIXELS_ENV];
+    process.env[MAX_INPUT_PIXELS_ENV] = 'lots';
+    try {
+      const result = await convertImage(await solidPng(SMALL_LIMIT_SIDE, SMALL_LIMIT_SIDE), 'png', {}, 'ok.png', 'png');
+      expect(result.buffer.readUInt32BE(PNG_IHDR_WIDTH_OFFSET)).toBe(SMALL_LIMIT_SIDE);
+    } finally {
+      if (previous === undefined) delete process.env[MAX_INPUT_PIXELS_ENV];
+      else process.env[MAX_INPUT_PIXELS_ENV] = previous;
+      warn.mockRestore();
+    }
   });
 });
 

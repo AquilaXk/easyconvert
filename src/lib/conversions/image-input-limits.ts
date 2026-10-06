@@ -82,19 +82,37 @@ export const RAW_SENSOR_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, sco
  */
 export const HDR_FLOAT_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scope: 'Ultra HDR float reconstruction' };
 
+/** A whole number of pixels in plain decimal digits: no sign, exponent, fraction or radix prefix. */
+const DECIMAL_PIXEL_COUNT = /^\d{1,64}$/;
+
+/** Override values already parsed (by their exact text), so each is parsed and, when malformed, reported once. */
+const parsedOverrides = new Map<string, number>();
+
+function parseOverride(raw: string): number {
+  const text = raw.trim();
+  const value = DECIMAL_PIXEL_COUNT.test(text) ? Number(text) : 0;
+  if (value >= 1) return Math.min(value, MAX_INPUT_PIXELS_CEILING);
+  console.warn(
+    `${MAX_INPUT_PIXELS_ENV}=${JSON.stringify(raw)} is not a positive whole number of pixels; using the default of ${DEFAULT_MAX_INPUT_PIXELS} pixels.`
+  );
+  return DEFAULT_MAX_INPUT_PIXELS;
+}
+
 /**
- * The input pixel limit in force: the default, or `EASYCONVERT_MAX_INPUT_PIXELS` when set to a whole number
- * of pixels. A larger value is lowered to the ceiling; a value that is not a positive whole number throws,
- * so a typo cannot silently disable the guard.
+ * The input pixel limit in force: the default, or `EASYCONVERT_MAX_INPUT_PIXELS` when it holds a positive
+ * whole number of pixels in decimal digits. A larger value is lowered to the ceiling. A malformed value is
+ * reported once in the log and replaced by the default, so a typo never disables the guard and never fails
+ * every request.
  */
 export function maxInputPixels(env: Record<string, string | undefined> = process.env): number {
   const raw = env[MAX_INPUT_PIXELS_ENV];
   if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_INPUT_PIXELS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new RangeError(`${MAX_INPUT_PIXELS_ENV} must be a positive whole number of pixels, got ${JSON.stringify(raw)}`);
+  let value = parsedOverrides.get(raw);
+  if (value === undefined) {
+    value = parseOverride(raw);
+    parsedOverrides.set(raw, value);
   }
-  return Math.min(value, MAX_INPUT_PIXELS_CEILING);
+  return value;
 }
 
 /** Throws `InputPixelLimitError` when `width` x `height` pixels exceed the input limit. */
