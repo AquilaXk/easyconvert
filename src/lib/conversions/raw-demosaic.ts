@@ -14,8 +14,9 @@
  *
  * The arithmetic follows the reference implementation of the two algorithms in image.ts operation by operation
  * (same operand order, same float32 rounding points), so AMaZE is bit-identical to it. AHD differs in how the
- * homogeneity decision is computed, and only in the last bits: CIELab comes from a linearisation table and a
- * table-seeded Halley cube root (about 1e-15 relative error), the 3-D distance uses sqrt instead of Math.hypot, and the
+ * homogeneity decision is computed, and only in the last bits: CIELab comes from a Hermite-interpolated
+ * linearisation table and a table-seeded series cube root (each within 2e-14 relative, far below the float32 rounding the
+ * reference applies to its Lab planes), the 3-D distance uses sqrt instead of Math.hypot, and the
  * window sums are accumulated pair by pair (each symmetric pair once) rather than in raster order. These can change a
  * decision only when the two directions score within about 1e-14 of each other; identical neighbourhoods still tie
  * exactly. On the 21 MP and 3 MP real frames and every golden the output is bit-identical.
@@ -97,7 +98,6 @@ const XYZ_RZ = 0.0193339;
 const XYZ_GZ = 0.119192;
 const XYZ_BZ = 0.9503041;
 const WHITE_X = 0.95047;
-const WHITE_Y = 1.0;
 const WHITE_Z = 1.08883;
 const LAB_EPSILON = 0.008856;
 const LAB_KAPPA = 7.787;
@@ -107,12 +107,20 @@ const LAB_L_OFFSET = 16.0;
 const LAB_A_SCALE = 500.0;
 const LAB_B_SCALE = 200.0;
 
-// Linearisation table: sample values 0..LIN_LUT_MAX in 1/LIN_LUT_STEPS increments, linearly interpolated.
-const LIN_LUT_MAX = 512;
+// Linearisation table: values and slopes at sample values 0..LIN_LUT_MAX in 1/LIN_LUT_STEPS increments, cubic Hermite
+// interpolated (relative error below 1e-14, six orders under the rounding of the float32 CIELab planes).
+const LIN_LUT_MAX = 384;
 const LIN_LUT_STEPS = 32;
 const LIN_LUT_SIZE = LIN_LUT_MAX * LIN_LUT_STEPS + 2;
+const LIN_LUT_STEP = 1 / LIN_LUT_STEPS;
+/** The only segment where the transfer curve changes branch; it is evaluated exactly. */
+const LIN_KNEE_SEGMENT = Math.floor(SRGB_KNEE * BYTE_RANGE * LIN_LUT_STEPS);
 
-// Cube root: table of the mantissa root (CBRT_MANTISSA_BITS bits) times the root of the power of two, then one Halley step.
+// Cube root: table of the mantissa root (CBRT_MANTISSA_BITS bits) times the root of the power of two as the seed y, then
+// cbrt(t) = y * (1 + u)^(1/3) with u = t / y^3 - 1 (|u| < 2e-4) from the binomial series up to u^3 (error below 1e-17).
+const CBRT_C1 = 1 / 3;
+const CBRT_C2 = -1 / 9;
+const CBRT_C3 = 5 / 81;
 const CBRT_MANTISSA_BITS = 12;
 const CBRT_MANTISSA_SHIFT = 20 - CBRT_MANTISSA_BITS;
 const CBRT_MANTISSA_COUNT = 1 << CBRT_MANTISSA_BITS;
@@ -150,8 +158,20 @@ function exactLinear(c: number): number {
   return v > SRGB_KNEE ? Math.pow((v + SRGB_OFFSET) / SRGB_SCALE, SRGB_EXPONENT) : v / SRGB_TOE_SLOPE;
 }
 
+/** d/dc of exactLinear, for c given in sample units. */
+function exactLinearSlope(c: number): number {
+  const v = c / BYTE_RANGE;
+  if (v <= SRGB_KNEE) return 1 / (SRGB_TOE_SLOPE * BYTE_RANGE);
+  return (SRGB_EXPONENT * Math.pow((v + SRGB_OFFSET) / SRGB_SCALE, SRGB_EXPONENT - 1)) / (SRGB_SCALE * BYTE_RANGE);
+}
+
 const LIN_LUT = new Float64Array(LIN_LUT_SIZE);
-for (let i = 0; i < LIN_LUT_SIZE; i += 1) LIN_LUT[i] = exactLinear(i / LIN_LUT_STEPS);
+/** Slope times the grid step, as the Hermite form uses it. */
+const LIN_LUT_SLOPE = new Float64Array(LIN_LUT_SIZE);
+for (let i = 0; i < LIN_LUT_SIZE; i += 1) {
+  LIN_LUT[i] = exactLinear(i / LIN_LUT_STEPS);
+  LIN_LUT_SLOPE[i] = exactLinearSlope(i / LIN_LUT_STEPS) * LIN_LUT_STEP;
+}
 
 const CBRT_MANTISSA = new Float64Array(CBRT_MANTISSA_COUNT);
 for (let i = 0; i < CBRT_MANTISSA_COUNT; i += 1) CBRT_MANTISSA[i] = Math.cbrt(1 + (i + 0.5) / CBRT_MANTISSA_COUNT);
@@ -163,36 +183,47 @@ const U32_VIEW = new Uint32Array(F64_VIEW.buffer);
 F64_VIEW[0] = 1;
 const HIGH_WORD = U32_VIEW[1] === F64_ONE_HIGH_WORD ? 1 : 0;
 
-/** Cube root of t in (LAB_EPSILON, CBRT_FAST_MAX): table seed, one Halley iteration (cubic convergence). */
+/** Cube root of t in (LAB_EPSILON, CBRT_FAST_MAX): table seed plus one binomial-series correction. */
 function fastCbrt(t: number): number {
   if (t >= CBRT_FAST_MAX) return Math.cbrt(t);
   F64_VIEW[0] = t;
   const high = U32_VIEW[HIGH_WORD];
   const exponent = ((high >>> 20) & F64_EXPONENT_MASK) - CBRT_EXPONENT_BIAS;
   const y = CBRT_MANTISSA[(high & F64_HIGH_MANTISSA_MASK) >>> CBRT_MANTISSA_SHIFT] * CBRT_EXPONENT[exponent - CBRT_EXPONENT_MIN];
-  const y3 = y * y * y;
-  return (y * (y3 + t + t)) / (y3 + y3 + t);
+  const u = t / (y * y * y) - 1;
+  return y * (1 + u * (CBRT_C1 + u * (CBRT_C2 + u * CBRT_C3)));
 }
 
-function linearize(c: number): number {
+/** sRGB-encoded sample value (0..255 scale) to linear light, by Hermite interpolation of a table. Exported for the accuracy test. */
+export function linearizeSrgbSample(c: number): number {
   if (c >= LIN_LUT_MAX) return exactLinear(c);
   const pos = c * LIN_LUT_STEPS;
   const i = pos | 0;
-  const t0 = LIN_LUT[i];
-  return t0 + (LIN_LUT[i + 1] - t0) * (pos - i);
+  if (i === LIN_KNEE_SEGMENT) return exactLinear(c);
+  const t = pos - i;
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (
+    (2 * t3 - 3 * t2 + 1) * LIN_LUT[i] +
+    (t3 - 2 * t2 + t) * LIN_LUT_SLOPE[i] +
+    (3 * t2 - 2 * t3) * LIN_LUT[i + 1] +
+    (t3 - t2) * LIN_LUT_SLOPE[i + 1]
+  );
 }
 
-function labF(t: number): number {
+/** CIE Lab companding function f(t). Exported for the accuracy test. */
+export function cieLabF(t: number): number {
   return t > LAB_EPSILON ? fastCbrt(t) : LAB_KAPPA * t + LAB_OFFSET;
 }
 
 function storeLab(r: number, g: number, b: number, lp: Float32Array, ap: Float32Array, bp: Float32Array, i: number): void {
-  const rL = linearize(r);
-  const gL = linearize(g);
-  const bL = linearize(b);
-  const fx = labF((XYZ_RX * rL + XYZ_GX * gL + XYZ_BX * bL) / WHITE_X);
-  const fy = labF((XYZ_RY * rL + XYZ_GY * gL + XYZ_BY * bL) / WHITE_Y);
-  const fz = labF((XYZ_RZ * rL + XYZ_GZ * gL + XYZ_BZ * bL) / WHITE_Z);
+  const rL = linearizeSrgbSample(r);
+  const gL = linearizeSrgbSample(g);
+  const bL = linearizeSrgbSample(b);
+  const fx = cieLabF((XYZ_RX * rL + XYZ_GX * gL + XYZ_BX * bL) / WHITE_X);
+  // The Y white is exactly 1, so dividing by it is the identity.
+  const fy = cieLabF(XYZ_RY * rL + XYZ_GY * gL + XYZ_BY * bL);
+  const fz = cieLabF((XYZ_RZ * rL + XYZ_GZ * gL + XYZ_BZ * bL) / WHITE_Z);
   lp[i] = LAB_L_SCALE * fy - LAB_L_OFFSET;
   ap[i] = LAB_A_SCALE * (fx - fy);
   bp[i] = LAB_B_SCALE * (fy - fz);

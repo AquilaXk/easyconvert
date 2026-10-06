@@ -5,6 +5,8 @@ import {
   demosaicAhdBayerCfa,
   demosaicAmazeBayerCfa,
   medianOf25,
+  linearizeSrgbSample,
+  cieLabF,
 } from '../src/lib/conversions/raw-demosaic';
 import { ConversionFailedError, InvalidRawSensorError } from '../src/lib/types';
 import { mulberry32 } from './raw-demosaic/inputs';
@@ -21,6 +23,11 @@ const MEDIAN_WINDOW = 25;
 const MEDIAN_INDEX = 12;
 const FLOAT_TOLERANCE = 1e-6;
 const OVER_LIMIT_SIDE = 20000;
+const LAB_TRIALS = 200000;
+const SAMPLE_RANGE = 600;
+const TERM_RANGE = 14;
+/** Table interpolation must stay far below the float32 rounding of the CIELab planes (about 6e-8 relative). */
+const MAX_RELATIVE_ERROR = 2e-14;
 
 /** IEC 61966-2-1 sRGB encoding, written out from the standard (not taken from the module under test). */
 function srgbEncode(linear: number): number {
@@ -141,5 +148,38 @@ describe('medianOf25 equals the middle element of a sort', () => {
       const expected = Float32Array.from(window).sort()[MEDIAN_INDEX];
       expect(medianOf25(window)).toBe(expected);
     }
+  });
+});
+
+describe('CIELab building blocks match the closed-form definitions', () => {
+  const exactLinear = (c: number): number => {
+    const v = c / 255;
+    return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
+  };
+  const exactF = (t: number): number => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+
+  it('linearises sRGB samples (table + Hermite) to 2e-14 relative error across 0..600', () => {
+    const rand = mulberry32(486);
+    let worst = 0;
+    for (let k = 0; k < LAB_TRIALS; k += 1) {
+      const c = k % 2 === 0 ? rand() * SAMPLE_RANGE : (k / LAB_TRIALS) * SAMPLE_RANGE;
+      const exact = exactLinear(c);
+      worst = Math.max(worst, Math.abs(linearizeSrgbSample(c) - exact) / Math.max(exact, Number.MIN_VALUE));
+    }
+    expect(worst).toBeLessThan(MAX_RELATIVE_ERROR);
+    // The knee of the transfer curve and the table edges, where the interpolation changes segment.
+    for (const c of [0, 10.31474, 10.31475, 10.31476, 10.3125, 10.375, 255, 511.99, 512, 700]) {
+      expect(Math.abs(linearizeSrgbSample(c) - exactLinear(c))).toBeLessThanOrEqual(MAX_RELATIVE_ERROR * Math.max(exactLinear(c), 1e-12));
+    }
+  });
+
+  it('computes the Lab companding function (table-seeded cube root) to 2e-14 relative error', () => {
+    const rand = mulberry32(487);
+    let worst = 0;
+    for (let k = 0; k < LAB_TRIALS; k += 1) {
+      const t = k % 2 === 0 ? rand() * TERM_RANGE : 0.008 + rand() * 0.002;
+      worst = Math.max(worst, Math.abs(cieLabF(t) - exactF(t)) / exactF(t));
+    }
+    expect(worst).toBeLessThan(MAX_RELATIVE_ERROR);
   });
 });
