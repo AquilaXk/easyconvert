@@ -1,4 +1,5 @@
-import zlib from 'node:zlib';
+import { PayloadLimitError } from '../types';
+import { PdfDocument } from './pdf-document';
 
 /**
  * PDF ToUnicode CMap structure per ISO 32000-1 Section 9.10
@@ -118,12 +119,42 @@ export function decodeWithCMap(hex: string, cmap: PdfToUnicodeCMap): string {
   return decodePdfHexString(cleanHex);
 }
 
+/** Character codes one bfrange entry may map; a 2-byte code space has 0x10000. */
+export const MAX_CMAP_RANGE_CODES = 0x10000;
+/** Character mappings one CMap stream may write, counting repeated writes of the same code. */
+export const MAX_CMAP_MAPPINGS = 0x40000;
+/** Character mappings all CMaps of one document may hold together. */
+export const MAX_PDF_CMAP_MAPPINGS = 0x80000;
+
+/** Bodies between each `begin...` marker and the next `end...` marker, found without rescanning the stream. */
+function* cmapSections(content: string, begin: string, end: string): Generator<string> {
+  let from = 0;
+  while (true) {
+    const open = content.indexOf(begin, from);
+    if (open === -1) return;
+    const bodyStart = open + begin.length;
+    const close = content.indexOf(end, bodyStart);
+    if (close === -1) return;
+    yield content.slice(bodyStart, close).trim();
+    from = close + end.length;
+  }
+}
+
 /**
- * Parses a PostScript Adobe ToUnicode CMap stream per ISO 32000-1 Section 9.10
+ * Parses a PostScript Adobe ToUnicode CMap stream per ISO 32000-1 Section 9.10.
+ * A bfrange past MAX_CMAP_RANGE_CODES, or a stream writing more than MAX_CMAP_MAPPINGS mappings,
+ * throws a PayloadLimitError.
  */
 export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   const charMap = new Map<number, string>();
   let name: string | undefined;
+  let written = 0;
+  const claim = (count: number): void => {
+    written += count;
+    if (written > MAX_CMAP_MAPPINGS) {
+      throw new PayloadLimitError(`ToUnicode CMap writes more than ${MAX_CMAP_MAPPINGS} character mappings.`);
+    }
+  };
 
   const nameMatch = /\/CMapName\s*\/([^\s]+)/.exec(cmapContent);
   if (nameMatch) {
@@ -144,13 +175,12 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   };
 
   // 1. beginbfchar ... endbfchar
-  const bfCharRegex = /beginbfchar\s+([\s\S]*?)\s+endbfchar/g;
-  let bfMatch: RegExpExecArray | null;
-  while ((bfMatch = bfCharRegex.exec(cmapContent)) !== null) {
-    const lines = bfMatch[1].trim().split(/\r?\n/);
+  for (const body of cmapSections(cmapContent, 'beginbfchar', 'endbfchar')) {
+    const lines = body.split(/\r?\n/);
     for (const line of lines) {
       const tokens = line.trim().match(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/);
       if (tokens) {
+        claim(1);
         const srcCode = parseInt(tokens[1], 16);
         const dstChar = decodeDstHex(tokens[2]);
         charMap.set(srcCode, dstChar);
@@ -159,10 +189,7 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
   }
 
   // 2. beginbfrange ... endbfrange
-  const bfRangeRegex = /beginbfrange\s+([\s\S]*?)\s+endbfrange/g;
-  let rangeMatch: RegExpExecArray | null;
-  while ((rangeMatch = bfRangeRegex.exec(cmapContent)) !== null) {
-    const content = rangeMatch[1].trim();
+  for (const content of cmapSections(cmapContent, 'beginbfrange', 'endbfrange')) {
     // Format 1: <start> <end> <destStart>
     const directRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g;
     let dMatch: RegExpExecArray | null;
@@ -170,35 +197,43 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
       const start = parseInt(dMatch[1], 16);
       const end = parseInt(dMatch[2], 16);
       const dstBase = parseInt(dMatch[3], 16);
+      const count = end - start + 1;
+      if (count > MAX_CMAP_RANGE_CODES) {
+        throw new PayloadLimitError(`ToUnicode bfrange spans more than ${MAX_CMAP_RANGE_CODES} codes.`);
+      }
+      if (!(count > 0)) continue;
+      claim(count);
       for (let code = start; code <= end; code++) {
         charMap.set(code, String.fromCharCode(dstBase + (code - start)));
       }
     }
 
-    // Format 2: <start> <end> [ <dst1> <dst2> ... ]
-    const arrayRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*\[([\s\S]*?)\]/g;
+    // Format 2: <start> <end> [ <dst1> <dst2> ... ]; the array decides how many codes are mapped
+    const arrayRegex = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*\[/g;
     let aMatch: RegExpExecArray | null;
     while ((aMatch = arrayRegex.exec(content)) !== null) {
+      const close = content.indexOf(']', arrayRegex.lastIndex);
+      if (close === -1) break;
       const start = parseInt(aMatch[1], 16);
       const end = parseInt(aMatch[2], 16);
-      const elements = aMatch[3].match(/<([0-9a-fA-F]+)>/g) || [];
-      for (let code = start; code <= end; code++) {
-        const elemIdx = code - start;
-        if (elemIdx < elements.length) {
-          charMap.set(code, decodeDstHex(elements[elemIdx]));
-        }
+      const elements = content.slice(arrayRegex.lastIndex, close).match(/<([0-9a-fA-F]+)>/g) || [];
+      arrayRegex.lastIndex = close + 1;
+      const count = Math.min(end - start + 1, elements.length);
+      if (!(count > 0)) continue;
+      claim(count);
+      for (let elemIdx = 0; elemIdx < count; elemIdx++) {
+        charMap.set(start + elemIdx, decodeDstHex(elements[elemIdx]));
       }
     }
   }
 
   // 3. begincidchar ... endcidchar
-  const cidCharRegex = /begincidchar\s+([\s\S]*?)\s+endcidchar/g;
-  let cidCharMatch: RegExpExecArray | null;
-  while ((cidCharMatch = cidCharRegex.exec(cmapContent)) !== null) {
-    const lines = cidCharMatch[1].trim().split(/\r?\n/);
+  for (const body of cmapSections(cmapContent, 'begincidchar', 'endcidchar')) {
+    const lines = body.split(/\r?\n/);
     for (const line of lines) {
       const tokens = line.trim().match(/<([0-9a-fA-F]+)>\s*([0-9]+)/);
       if (tokens) {
+        claim(1);
         const srcCode = parseInt(tokens[1], 16);
         const dstChar = String.fromCharCode(parseInt(tokens[2], 10));
         charMap.set(srcCode, dstChar);
@@ -213,32 +248,23 @@ export function parseToUnicodeCMap(cmapContent: string): PdfToUnicodeCMap {
  * Extracts and parses all embedded ToUnicode CMaps from a PDF document
  */
 export function extractPdfFontCMaps(pdfBuffer: Buffer): Map<string, PdfToUnicodeCMap> {
-  const binary = pdfBuffer.toString('binary');
+  return collectFontCMaps(new PdfDocument(pdfBuffer));
+}
+
+function collectFontCMaps(document: PdfDocument): Map<string, PdfToUnicodeCMap> {
   const cmaps = new Map<string, PdfToUnicodeCMap>();
-
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = streamRegex.exec(binary)) !== null) {
-    let content = '';
-    const rawStream = Buffer.from(match[1], 'binary');
-    try {
-      content = zlib.inflateSync(rawStream).toString('latin1');
-    } catch {
-      try {
-        content = zlib.inflateRawSync(rawStream).toString('latin1');
-      } catch {
-        content = match[1];
-      }
-    }
-
+  let mappings = 0;
+  document.toUnicodeStreams((content) => {
     if (content.includes('beginbfchar') || content.includes('beginbfrange') || content.includes('begincmap')) {
       const cmap = parseToUnicodeCMap(content);
+      mappings += cmap.charMap.size;
+      if (mappings > MAX_PDF_CMAP_MAPPINGS) {
+        throw new PayloadLimitError(`PDF CMaps hold more than ${MAX_PDF_CMAP_MAPPINGS} character mappings.`);
+      }
       const key = cmap.name || `cmap_${cmaps.size}`;
       cmaps.set(key, cmap);
     }
-  }
-
+  });
   return cmaps;
 }
 
@@ -251,7 +277,15 @@ export function recursiveXyCut(
   blocks: PdfTextBlock[],
   options: XyCutOptions = {}
 ): PdfTextBlock[] {
+  return xyCutGroup(blocks, options, 0);
+}
+
+/** Cut levels after which a group is ordered line by line instead of being cut further. */
+export const MAX_XY_CUT_DEPTH = 128;
+
+function xyCutGroup(blocks: PdfTextBlock[], options: XyCutOptions, depth: number): PdfTextBlock[] {
   if (blocks.length <= 1) return [...blocks];
+  const cutting = depth < MAX_XY_CUT_DEPTH;
 
   const minGapX = options.minGapX ?? 15; // Point width separating columns
   const minGapY = options.minGapY ?? 3; // Point height separating lines/paragraphs
@@ -271,14 +305,10 @@ export function recursiveXyCut(
   let bestXSplit = -1;
   let maxGapX = 0;
 
-  for (let i = 0; i < sortedByX.length - 1; i++) {
-    // Current rightmost boundary of left partition
-    let leftRightmost = -Infinity;
-    for (let j = 0; j <= i; j++) {
-      if (sortedByX[j].x + sortedByX[j].width > leftRightmost) {
-        leftRightmost = sortedByX[j].x + sortedByX[j].width;
-      }
-    }
+  // Rightmost boundary of the left partition, extended one block per step
+  let leftRightmost = -Infinity;
+  for (let i = 0; cutting && i < sortedByX.length - 1; i++) {
+    leftRightmost = Math.max(leftRightmost, sortedByX[i].x + sortedByX[i].width);
     // Next block leftmost boundary
     const rightLeftmost = sortedByX[i + 1].x;
     const gap = rightLeftmost - leftRightmost;
@@ -292,8 +322,8 @@ export function recursiveXyCut(
     const leftGroup = sortedByX.slice(0, bestXSplit + 1);
     const rightGroup = sortedByX.slice(bestXSplit + 1);
     return [
-      ...recursiveXyCut(leftGroup, options),
-      ...recursiveXyCut(rightGroup, options),
+      ...xyCutGroup(leftGroup, options, depth + 1),
+      ...xyCutGroup(rightGroup, options, depth + 1),
     ];
   }
 
@@ -303,14 +333,10 @@ export function recursiveXyCut(
   let bestYSplit = -1;
   let maxGapY = 0;
 
-  for (let i = 0; i < sortedByYDesc.length - 1; i++) {
-    // Current bottom boundary of top partition
-    let topBottom = Infinity;
-    for (let j = 0; j <= i; j++) {
-      if (sortedByYDesc[j].y < topBottom) {
-        topBottom = sortedByYDesc[j].y;
-      }
-    }
+  // Bottom boundary of the top partition, extended one block per step
+  let topBottom = Infinity;
+  for (let i = 0; cutting && i < sortedByYDesc.length - 1; i++) {
+    topBottom = Math.min(topBottom, sortedByYDesc[i].y);
     // Next block top boundary
     const nextTop = sortedByYDesc[i + 1].y + sortedByYDesc[i + 1].height;
     const gap = topBottom - nextTop;
@@ -324,8 +350,8 @@ export function recursiveXyCut(
     const topGroup = sortedByYDesc.slice(0, bestYSplit + 1);
     const bottomGroup = sortedByYDesc.slice(bestYSplit + 1);
     return [
-      ...recursiveXyCut(topGroup, options),
-      ...recursiveXyCut(bottomGroup, options),
+      ...xyCutGroup(topGroup, options, depth + 1),
+      ...xyCutGroup(bottomGroup, options, depth + 1),
     ];
   }
 
@@ -341,6 +367,283 @@ export function recursiveXyCut(
   });
 }
 
+/** Text blocks one document may yield, counting every drawing of a form XObject. */
+export const MAX_PDF_TEXT_BLOCKS = 100 * 1000;
+
+const CHAR_TAB = 9;
+const CHAR_LF = 10;
+const CHAR_FF = 12;
+const CHAR_CR = 13;
+const CHAR_NUL = 0;
+const CHAR_SPACE = 32;
+const CHAR_LEFT_PAREN = 40;
+const CHAR_RIGHT_PAREN = 41;
+const CHAR_PLUS = 43;
+const CHAR_MINUS = 45;
+const CHAR_DOT = 46;
+const CHAR_SLASH = 47;
+const CHAR_DIGIT_0 = 48;
+const CHAR_DIGIT_9 = 57;
+const CHAR_PERCENT = 37;
+const CHAR_LESS = 60;
+const CHAR_GREATER = 62;
+const CHAR_LEFT_BRACKET = 91;
+const CHAR_BACKSLASH = 92;
+const CHAR_UPPER_A = 65;
+const CHAR_UPPER_F = 70;
+const CHAR_LOWER_A = 97;
+const CHAR_LOWER_F = 102;
+const CHAR_RIGHT_BRACKET = 93;
+const CHAR_LEFT_BRACE = 123;
+const CHAR_RIGHT_BRACE = 125;
+
+/** Operands kept while looking for the operator that consumes them; text operators take at most six. */
+const MAX_TEXT_OPERANDS = 64;
+const DEFAULT_FONT_SIZE = 12;
+const TEXT_WIDTH_PER_POINT = 0.5;
+const MIN_TEXT_WIDTH = 10;
+
+const TEXT_DELIMITERS = new Set<number>([
+  CHAR_LEFT_PAREN,
+  CHAR_RIGHT_PAREN,
+  CHAR_LESS,
+  CHAR_GREATER,
+  CHAR_LEFT_BRACKET,
+  CHAR_RIGHT_BRACKET,
+  CHAR_LEFT_BRACE,
+  CHAR_RIGHT_BRACE,
+  CHAR_SLASH,
+  CHAR_PERCENT,
+]);
+
+/** One string operand: a literal with its escapes intact, or the digits of a hex string. */
+interface TextItem {
+  literal?: string;
+  hex?: string;
+}
+interface NameOperand {
+  name: string;
+}
+type TextOperand = number | NameOperand | TextItem | TextItem[];
+
+/** What one BT..ET block says, before fonts and CMaps turn its strings into text. */
+interface ScannedTextObject {
+  fontName: string;
+  fontSize: number;
+  x: number;
+  y: number;
+  arrays: TextItem[][];
+  shows: TextItem[];
+  quotes: TextItem[];
+}
+
+function isTextSpace(code: number): boolean {
+  return code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL;
+}
+
+function isTextRegular(code: number): boolean {
+  return !Number.isNaN(code) && !isTextSpace(code) && !TEXT_DELIMITERS.has(code);
+}
+
+function isNumberChar(code: number): boolean {
+  return (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || code === CHAR_DOT || code === CHAR_MINUS || code === CHAR_PLUS;
+}
+
+function isHexContent(text: string): boolean {
+  let digits = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    const isHexDigit =
+      (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || (code >= CHAR_UPPER_A && code <= CHAR_UPPER_F) || (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F);
+    if (isHexDigit) digits++;
+    else if (!isTextSpace(code)) return false;
+  }
+  return digits > 0;
+}
+
+function isTextItem(operand: TextOperand | undefined): operand is TextItem {
+  return typeof operand === 'object' && operand !== null && !Array.isArray(operand) && !('name' in operand);
+}
+
+/**
+ * Reads the text operators of one BT..ET block in a single left-to-right pass: Tf, Tm and Td set the
+ * font and position, TJ, Tj, ' and " show strings. Every position is advanced by at least one
+ * character, so the cost is linear in the block whatever the operands look like.
+ */
+function scanTextObject(block: string): ScannedTextObject {
+  const result: ScannedTextObject = { fontName: '', fontSize: DEFAULT_FONT_SIZE, x: 0, y: 0, arrays: [], shows: [], quotes: [] };
+  let tmX = 0;
+  let tmY = 0;
+  let tdX = 0;
+  let tdY = 0;
+  let operands: TextOperand[] = [];
+  let arrayItems: TextItem[] | null = null;
+  const length = block.length;
+  let pos = 0;
+
+  const push = (operand: TextOperand): void => {
+    operands.push(operand);
+    if (operands.length >= 2 * MAX_TEXT_OPERANDS) operands = operands.slice(-MAX_TEXT_OPERANDS);
+  };
+  const addItem = (item: TextItem): void => {
+    if (arrayItems) arrayItems.push(item);
+    else push(item);
+  };
+  const lastNumbers = (count: number): number[] | null => {
+    const tail = operands.slice(-count);
+    return tail.length === count && tail.every((o) => typeof o === 'number') ? (tail as number[]) : null;
+  };
+
+  while (pos < length) {
+    const code = block.charCodeAt(pos);
+    if (isTextSpace(code)) {
+      pos++;
+    } else if (code === CHAR_PERCENT) {
+      while (pos < length && block.charCodeAt(pos) !== CHAR_LF && block.charCodeAt(pos) !== CHAR_CR) pos++;
+    } else if (code === CHAR_LEFT_PAREN) {
+      let depth = 0;
+      let i = pos;
+      while (i < length) {
+        const c = block.charCodeAt(i);
+        if (c === CHAR_BACKSLASH) {
+          i += 2;
+          continue;
+        }
+        if (c === CHAR_LEFT_PAREN) depth++;
+        if (c === CHAR_RIGHT_PAREN) {
+          depth--;
+          if (depth === 0) break;
+        }
+        i++;
+      }
+      if (i >= length) {
+        pos = length; // unterminated string: nothing after it can be read
+      } else {
+        addItem({ literal: block.slice(pos + 1, i) });
+        pos = i + 1;
+      }
+    } else if (code === CHAR_LESS) {
+      if (block.charCodeAt(pos + 1) === CHAR_LESS) {
+        pos += 2;
+      } else {
+        const close = block.indexOf('>', pos);
+        if (close === -1) {
+          pos = length;
+        } else {
+          const digits = block.slice(pos + 1, close);
+          if (isHexContent(digits)) addItem({ hex: digits });
+          pos = close + 1;
+        }
+      }
+    } else if (code === CHAR_LEFT_BRACKET) {
+      arrayItems = [];
+      pos++;
+    } else if (code === CHAR_RIGHT_BRACKET) {
+      if (arrayItems) push(arrayItems);
+      arrayItems = null;
+      pos++;
+    } else if (code === CHAR_SLASH) {
+      let end = pos + 1;
+      while (isTextRegular(block.charCodeAt(end))) end++;
+      if (!arrayItems) push({ name: block.slice(pos + 1, end) });
+      pos = end;
+    } else if (isNumberChar(code)) {
+      let end = pos + 1;
+      while (isNumberChar(block.charCodeAt(end))) end++;
+      if (!arrayItems) push(Number.parseFloat(block.slice(pos, end)) || 0);
+      pos = end;
+    } else if (isTextRegular(code)) {
+      let end = pos + 1;
+      while (isTextRegular(block.charCodeAt(end))) end++;
+      const operator = block.slice(pos, end);
+      pos = end;
+      const last = operands[operands.length - 1];
+
+      if (operator === 'Tf') {
+        const [fontName, size] = operands.slice(-2);
+        if (typeof fontName === 'object' && !Array.isArray(fontName) && 'name' in fontName && typeof size === 'number') {
+          result.fontName = fontName.name;
+          result.fontSize = size || DEFAULT_FONT_SIZE;
+        }
+      } else if (operator === 'Tm') {
+        const matrix = lastNumbers(6);
+        if (matrix) {
+          tmX = matrix[4];
+          tmY = matrix[5];
+        }
+      } else if (operator === 'Td') {
+        const offset = lastNumbers(2);
+        if (offset) {
+          tdX += offset[0];
+          tdY += offset[1];
+        }
+      } else if (operator === 'TJ') {
+        if (Array.isArray(last)) result.arrays.push(last);
+      } else if (operator === 'Tj') {
+        if (isTextItem(last)) result.shows.push(last);
+      } else if (operator === "'" || operator === '"') {
+        if (isTextItem(last)) result.quotes.push(last);
+      }
+      operands = [];
+      arrayItems = null;
+    } else {
+      pos++; // a stray delimiter such as ')', '>', '{' or '}'
+    }
+  }
+
+  result.x = tmX + tdX;
+  result.y = tmY + tdY;
+  return result;
+}
+
+/**
+ * Appends the positioned text of every BT..ET block of one decoded content stream to `rawBlocks`.
+ * Past MAX_PDF_TEXT_BLOCKS blocks in the document it throws a PayloadLimitError.
+ */
+function appendTextBlocks(
+  content: string,
+  cmaps: Map<string, PdfToUnicodeCMap>,
+  defaultCMap: PdfToUnicodeCMap | undefined,
+  rawBlocks: PdfTextBlock[]
+): void {
+  // Same blocks as /BT[\s\S]*?ET/g, found with indexOf so an unterminated BT cannot rescan the stream.
+  let searchFrom = 0;
+  while (true) {
+    const open = content.indexOf('BT', searchFrom);
+    if (open === -1) break;
+    const close = content.indexOf('ET', open + 2);
+    if (close === -1) break;
+    const scanned = scanTextObject(content.slice(open, close + 2));
+    searchFrom = close + 2;
+
+    const activeCMap = cmaps.get(scanned.fontName) || defaultCMap;
+    const decode = (item: TextItem): string => {
+      if (item.literal !== undefined) return unescapePdfString(item.literal);
+      const hex = item.hex ?? '';
+      return activeCMap ? decodeWithCMap(hex, activeCMap) : decodePdfHexString(hex);
+    };
+    const emit = (text: string): void => {
+      if (!text.trim()) return;
+      if (rawBlocks.length >= MAX_PDF_TEXT_BLOCKS) {
+        throw new PayloadLimitError(`PDF yields more than ${MAX_PDF_TEXT_BLOCKS} text blocks.`);
+      }
+      rawBlocks.push({
+        text: text.trim(),
+        x: scanned.x,
+        y: scanned.y,
+        width: Math.max(MIN_TEXT_WIDTH, text.length * (scanned.fontSize * TEXT_WIDTH_PER_POINT)),
+        height: scanned.fontSize,
+        fontName: scanned.fontName,
+        fontSize: scanned.fontSize,
+      });
+    };
+
+    for (const array of scanned.arrays) emit(array.map(decode).join(''));
+    for (const item of scanned.shows) emit(decode(item));
+    for (const item of scanned.quotes) emit(decode(item));
+  }
+}
+
 /**
  * Extracts structured text blocks with layout coordinates and applies CMap resolution
  */
@@ -350,150 +653,19 @@ export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
   blocks: PdfTextBlock[];
   cmaps: Map<string, PdfToUnicodeCMap>;
 } {
-  const binary = pdfBuffer.toString('binary');
-  if (!binary.includes('%PDF-')) {
+  if (!pdfBuffer.includes('%PDF-')) {
     throw new Error('Invalid PDF document: missing %PDF- header');
   }
 
-  const cmaps = extractPdfFontCMaps(pdfBuffer);
+  // Only the content streams a page draws are decoded (see PdfDocument), each within the stream cap and
+  // the document budget, so unreferenced, superseded and image streams never contribute text.
+  const document = new PdfDocument(pdfBuffer);
+  const cmaps = collectFontCMaps(document);
   // Default CMap if only one is available
   const defaultCMap = cmaps.size > 0 ? cmaps.values().next().value : undefined;
 
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
   const rawBlocks: PdfTextBlock[] = [];
-
-  while ((match = streamRegex.exec(binary)) !== null) {
-    let content = '';
-    const rawStream = Buffer.from(match[1], 'binary');
-    try {
-      content = zlib.inflateSync(rawStream).toString('latin1');
-    } catch {
-      try {
-        content = zlib.inflateRawSync(rawStream).toString('latin1');
-      } catch {
-        content = match[1];
-      }
-    }
-
-    const btRegex = /BT[\s\S]*?ET/g;
-    let btMatch: RegExpExecArray | null;
-    while ((btMatch = btRegex.exec(content)) !== null) {
-      const block = btMatch[0];
-
-      // Track text state
-      let currX = 0;
-      let currY = 0;
-      let currFontSize = 12;
-      let currFontName = '';
-
-      // Font selection: /F1 12 Tf
-      const tfRegex = /\/([a-zA-Z0-9_+\-]+)\s+([0-9.]+)\s+Tf/g;
-      let tfMatch: RegExpExecArray | null;
-      while ((tfMatch = tfRegex.exec(block)) !== null) {
-        currFontName = tfMatch[1];
-        currFontSize = parseFloat(tfMatch[2]) || 12;
-      }
-
-      const activeCMap = cmaps.get(currFontName) || defaultCMap;
-
-      // Matrix operators: a b c d e f Tm
-      const tmRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+Tm/g;
-      let tmMatch: RegExpExecArray | null;
-      while ((tmMatch = tmRegex.exec(block)) !== null) {
-        currX = parseFloat(tmMatch[5]) || 0;
-        currY = parseFloat(tmMatch[6]) || 0;
-      }
-
-      // Position operators: x y Td
-      const tdRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+Td/g;
-      let tdMatch: RegExpExecArray | null;
-      while ((tdMatch = tdRegex.exec(block)) !== null) {
-        currX += parseFloat(tdMatch[1]) || 0;
-        currY += parseFloat(tdMatch[2]) || 0;
-      }
-
-      // 1. Array text operator: [...] TJ
-      const tjRegex = /\[(.*?)\]\s*TJ/g;
-      let tjArrayMatch: RegExpExecArray | null;
-      while ((tjArrayMatch = tjRegex.exec(block)) !== null) {
-        const inner = tjArrayMatch[1];
-        const itemRegex = /\(((?:[^()\\]|\\.)*)\)|<([0-9a-fA-F\s]+)>/g;
-        let itemMatch: RegExpExecArray | null;
-        let line = '';
-        while ((itemMatch = itemRegex.exec(inner)) !== null) {
-          if (itemMatch[1] !== undefined) {
-            line += unescapePdfString(itemMatch[1]);
-          } else if (itemMatch[2] !== undefined) {
-            line += activeCMap
-              ? decodeWithCMap(itemMatch[2], activeCMap)
-              : decodePdfHexString(itemMatch[2]);
-          }
-        }
-        if (line.trim()) {
-          rawBlocks.push({
-            text: line.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, line.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-
-      // 2. Single text operator: (...) Tj or <...> Tj
-      const singleTjRegex = /\(((?:[^()\\]|\\.)*)\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
-      let sMatch: RegExpExecArray | null;
-      while ((sMatch = singleTjRegex.exec(block)) !== null) {
-        let text = '';
-        if (sMatch[1] !== undefined) {
-          text = unescapePdfString(sMatch[1]);
-        } else if (sMatch[2] !== undefined) {
-          text = activeCMap
-            ? decodeWithCMap(sMatch[2], activeCMap)
-            : decodePdfHexString(sMatch[2]);
-        }
-        if (text.trim()) {
-          rawBlocks.push({
-            text: text.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, text.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-
-      // 3. Prime operators
-      const primeRegex = /\(((?:[^()\\]|\\.)*)\)\s*['"]|<([0-9a-fA-F\s]+)>\s*['"]/g;
-      let pMatch: RegExpExecArray | null;
-      while ((pMatch = primeRegex.exec(block)) !== null) {
-        let text = '';
-        if (pMatch[1] !== undefined) {
-          text = unescapePdfString(pMatch[1]);
-        } else if (pMatch[2] !== undefined) {
-          text = activeCMap
-            ? decodeWithCMap(pMatch[2], activeCMap)
-            : decodePdfHexString(pMatch[2]);
-        }
-        if (text.trim()) {
-          rawBlocks.push({
-            text: text.trim(),
-            x: currX,
-            y: currY,
-            width: Math.max(10, text.length * (currFontSize * 0.5)),
-            height: currFontSize,
-            fontName: currFontName,
-            fontSize: currFontSize,
-          });
-        }
-      }
-    }
-  }
+  document.contentStreams((content) => appendTextBlocks(content, cmaps, defaultCMap, rawBlocks));
 
   // Apply Recursive XY-Cut++ reading order sorting
   const orderedBlocks = recursiveXyCut(rawBlocks);

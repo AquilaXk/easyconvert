@@ -9,20 +9,26 @@ import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 
 export const dynamic = 'force-dynamic';
 
+// Next.js 15 passes route params as a promise.
+interface JobRouteContext {
+  params: Promise<{ id: string }>;
+}
+
 // Jobs created through the authenticated API carry `userId` and are visible only to that user;
 // jobs without an owner (anonymous uploads) keep capability-URL access by job id.
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: JobRouteContext
 ) {
+  const { id: jobId } = await params;
   const notFound = () =>
     NextResponse.json(
-      { success: false, error: `Job with ID "${params.id}" not found.` },
+      { success: false, error: `Job with ID "${jobId}" not found.` },
       { status: 404 }
     );
 
-  const job = await conversionQueue.getJob(params.id);
+  const job = await conversionQueue.getJob(jobId);
   if (!job) {
     return notFound();
   }
@@ -55,7 +61,7 @@ export async function GET(
           return;
         }
 
-        const unsubscribe = subscribeToJobTelemetry(conversionQueue, params.id, (event) => {
+        const unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
           try {
             const dataStr = JSON.stringify(event.data);
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
@@ -105,17 +111,20 @@ export async function GET(
     },
     returnvalue: job.returnvalue,
     failedReason: job.failedReason,
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
     logs: job.logs,
   });
 }
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: JobRouteContext
 ) {
+  const { id: jobId } = await params;
   const notFound = () => NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
 
-  const job = await conversionQueue.getJob(params.id);
+  const job = await conversionQueue.getJob(jobId);
   if (!job) {
     return notFound();
   }
@@ -125,7 +134,7 @@ export async function DELETE(
     return denied;
   }
 
-  const cancelled = await conversionQueue.cancelJob(params.id, 'Job was cancelled by client request.');
+  const cancelled = await conversionQueue.cancelJob(jobId, 'Job was cancelled by client request.');
   if (!cancelled) {
     return NextResponse.json(
       { success: false, error: `Job in state "${job.state}" cannot be cancelled.` },

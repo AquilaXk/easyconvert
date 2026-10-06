@@ -17,6 +17,7 @@ export interface EngineResult {
   metadata?: Record<string, unknown>;
   fallbackReason?: string;
   fallbackChain?: string[];
+  skippedLinks?: string[];
   ocrExtractedText?: string;
   sourceFrameCount?: number;
   frameUsed?: number;

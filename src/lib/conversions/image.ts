@@ -1,12 +1,13 @@
 import zlib from 'node:zlib';
-import sharp from 'sharp';
+import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
-import { encodeDecodedAnimation, joinPageTiffs, resizedDimensions, zipPageImages } from './image-frame-output';
+import { encodeDecodedAnimation, joinPageTiffs, zipPageImages } from './image-frame-output';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -174,9 +175,12 @@ export function encodeBmp(raw: Buffer, width: number, height: number, channels: 
   return buf;
 }
 
+/** Bit depths a BMP can declare (Microsoft BITMAPINFOHEADER). */
+const BMP_BITS_PER_PIXEL = new Set([1, 4, 8, 16, 24, 32]);
+
 export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: number; channels: 4 } {
   if (buf.length < 54 || buf.toString('ascii', 0, 2) !== 'BM') {
-    throw new Error('Invalid BMP file: missing BM header signature.');
+    throw new ConversionFailedError('Invalid BMP file: missing BM header signature.');
   }
 
   const pixelOffset = buf.readUInt32LE(10);
@@ -185,14 +189,24 @@ export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: nu
   const bpp = buf.readUInt16LE(28);
 
   if (width <= 0 || height === 0) {
-    throw new Error(`Invalid BMP dimensions: ${width}x${height}`);
+    throw new ConversionFailedError(`Invalid BMP dimensions: ${width}x${height}`);
+  }
+  if (!BMP_BITS_PER_PIXEL.has(bpp)) {
+    throw new ConversionFailedError(`Invalid BMP: ${bpp} bits per pixel is not a BMP bit depth.`);
   }
 
   const isBottomUp = height > 0;
   const absHeight = Math.abs(height);
-  const rawRgba = Buffer.alloc(width * absHeight * 4);
+  assertInputPixels(width, absHeight);
 
   const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
+  // The declared canvas must be backed by the file: a header cannot make the decoder allocate it for nothing.
+  if (pixelOffset + rowSize * absHeight > buf.length) {
+    throw new ConversionFailedError(
+      `Invalid BMP: the header declares ${width}x${absHeight} pixels at ${bpp} bits (${rowSize * absHeight} bytes of pixel data from offset ${pixelOffset}), but the file ends at byte ${buf.length}.`
+    );
+  }
+  const rawRgba = Buffer.alloc(width * absHeight * 4);
 
   for (let y = 0; y < absHeight; y++) {
     const srcY = isBottomUp ? absHeight - 1 - y : y;
@@ -1560,7 +1574,26 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
 /**
  * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
  */
-export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
+/** Refuses a lossless JPEG frame over the input limit, the RAW sensor budget, or the strip or tile that holds it. */
+function assertLosslessFrameFits(width: number, height: number, expected?: { width: number; height: number }): void {
+  assertInputPixels(width, height);
+  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
+  if (expected && (width > expected.width || height > expected.height)) {
+    throw new InvalidRawSensorError(
+      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
+    );
+  }
+}
+
+/**
+ * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
+ * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
+ * strip or tile is (`expected`), against that size, before any sample is allocated.
+ */
+export function decodeLosslessJpegStrip(
+  strip: Buffer | Uint8Array,
+  expected?: { width: number; height: number }
+): {
   width: number;
   height: number;
   data: Uint16Array;
@@ -1626,6 +1659,7 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
   if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
     return null;
   }
+  assertLosslessFrameFits(width, height, expected);
 
   // Build canonical Huffman decoding tree
   interface HuffmanNode {
@@ -1733,6 +1767,21 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
   }
 
   return { width, height, data: outputData, bpp };
+}
+
+/** Slack, in bytes, allowed above the sensor size when a deflate strip is inflated (predictor rows, padding). */
+const SENSOR_INFLATE_SLACK_BYTES = 1024 * 1024;
+
+/** Inflates a deflate-compressed sensor strip, refusing one that expands to much more than `expectedBytes`. */
+function inflateSensorChunk(chunk: Buffer, expectedBytes: number): Buffer {
+  try {
+    return zlib.inflateSync(chunk, { maxOutputLength: expectedBytes + SENSOR_INFLATE_SLACK_BYTES });
+  } catch (err) {
+    if (err instanceof RangeError) {
+      throw new InvalidRawSensorError(`Deflate sensor strip inflates to more than the ${expectedBytes} bytes its dimensions allow.`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -2042,6 +2091,8 @@ export function decodeRawBayerSensor(
           );
         }
         const { width, height } = chosen;
+        assertInputPixels(width, height);
+        assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
         const bpp = chosen.bitsPerSample || 8;
         const pattern = chosen.cfaPattern || 'RGGB';
         const bytesPerPixel = bpp > 8 ? 2 : 1;
@@ -2049,9 +2100,9 @@ export function decodeRawBayerSensor(
         const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
           let activeChunk = chunk;
           if (chosen.compression === 8) {
-            activeChunk = zlib.inflateSync(chunk);
+            activeChunk = inflateSensorChunk(chunk, (expW || width) * (expH || height) * Math.ceil(bpp / 8));
           } else if (activeChunk.length >= 4 && activeChunk[0] === 0xff && activeChunk[1] === 0xd8) {
-            const lj92 = decodeLosslessJpegStrip(activeChunk);
+            const lj92 = decodeLosslessJpegStrip(activeChunk, { width: expW || width, height: expH || height });
             if (lj92) {
               return { data: lj92.data, width: lj92.width, height: lj92.height, bpp: lj92.bpp };
             }
@@ -2331,6 +2382,20 @@ function findJpegEnd(buffer: Buffer, start: number): number {
 const SHARP_EIGHT_BIT_DEPTH = 'uchar';
 
 /**
+ * Quality metric the AVIF encoder optimises for. sharp 0.35 defaults to a perceptual (SSIMULACRA2-based)
+ * metric that spends roughly 5 dB less PSNR than the encoder tuning of earlier releases at the same
+ * `quality`; pinning PSNR keeps a given `quality` value producing the same pixel fidelity.
+ */
+export const AVIF_TUNE = 'psnr';
+
+/**
+ * Encoder effort for AVIF. The bundled libaom 3.15 searches several times longer from the default effort 4
+ * upward (a 39-megapixel RAW took about 3 minutes against about 50 seconds with sharp 0.33), while effort 3
+ * encodes the same picture in a tenth of that time with the same PSNR (41.8 dB against 41.9 dB at quality 80).
+ */
+export const AVIF_EFFORT = 3;
+
+/**
  * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
  * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
  * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
@@ -2338,7 +2403,7 @@ const SHARP_EIGHT_BIT_DEPTH = 'uchar';
  * is what reaches an 8-bit output. The pipeline has already been auto-oriented, which removes the
  * Orientation tag from the kept EXIF block.
  */
-async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
+async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
   const meta = await pipeline.metadata();
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
@@ -2346,6 +2411,8 @@ async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
 
 /** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
 function toImageDecodeError(err: unknown): ConversionFailedError {
+  const pixelLimit = asInputPixelLimitError(err);
+  if (pixelLimit instanceof ConversionFailedError) return pixelLimit;
   if (err instanceof ConversionFailedError) return err;
   const detail = err instanceof Error ? err.message : String(err);
   const failure = new ConversionFailedError(`Invalid image: it could not be decoded (${detail})`);
@@ -2355,7 +2422,7 @@ function toImageDecodeError(err: unknown): ConversionFailedError {
 
 /** libvips and sharp report a source they cannot read this way (loaders, `*2vips`, corrupt or short input). */
 const DECODE_FAILURE_PATTERN =
-  /Input (buffer|file)|\b\w*load\w*:|\w+2vips:|corrupt|premature end|end of stream|truncated|unsupported image format/i;
+  /Input (buffer|file)|\b\w*load\w*:|\w+2vips:|corrupt|premature end|end of stream|truncated|unsupported image format|\bread error\b/i;
 
 /**
  * Names a sharp/libvips failure after what failed: a source that cannot be read is a decode error, anything
@@ -2363,6 +2430,8 @@ const DECODE_FAILURE_PATTERN =
  * (type errors, exhausted memory) pass through unchanged.
  */
 function toImageFailure(err: unknown, target: string): unknown {
+  const pixelLimit = asInputPixelLimitError(err);
+  if (pixelLimit instanceof ConversionFailedError) return pixelLimit;
   if (err instanceof ConversionFailedError) return err;
   const isLibraryError = err instanceof Error && err.constructor === Error;
   if (!isLibraryError) return err;
@@ -2398,7 +2467,7 @@ function resizeOptionsOf(
   options: ConversionOptions,
   background: ReturnType<typeof parseBackground>,
   isOpaqueTarget: boolean
-): sharp.ResizeOptions | null {
+): ResizeOptions | null {
   const requested = requestedResizeOf(options);
   if (!requested) return null;
   if (requested.width !== undefined && requested.height !== undefined) assertOutputPixels(requested.width, requested.height);
@@ -2425,12 +2494,23 @@ function assertAnimatableOptions(options: ConversionOptions): void {
 }
 
 /** The EPS, EXR and Ultra HDR encoders read three bytes per pixel; any other layout would shear the picture. */
-function assertRgbSamples(info: sharp.OutputInfo, target: string): void {
+function assertRgbSamples(info: OutputInfo, target: string): void {
   if (info.channels !== RGB_CHANNEL_COUNT) {
     throw new ConversionFailedError(
       `Cannot encode .${target}: expected 3 colour channels per pixel but the decoded image has ${info.channels}`
     );
   }
+}
+
+/**
+ * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
+ * budget from its header, with the resize that will be applied, before the raster is decoded.
+ */
+async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
+  const { width, height } = await pipeline.metadata();
+  if (width === undefined || height === undefined) return;
+  const target = resizedDimensions(width, height, options);
+  assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
 }
 
 export async function convertImage(
@@ -2458,6 +2538,7 @@ export async function convertImage(
 
   // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
   if (fmt === 'hocr' || fmt === 'alto') {
+    await assertEncodedImageWithinLimit(inputBuffer);
     const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
     const isHocr = fmt === 'hocr';
     const xml = isHocr
@@ -2520,7 +2601,7 @@ export async function convertImage(
     }
   }
 
-  let pipeline: sharp.Sharp;
+  let pipeline: Sharp;
   let frameSelection: FrameSelection | undefined;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
@@ -2602,11 +2683,11 @@ export async function convertImage(
           raw: { width: decoded.width, height: decoded.height, channels: 4 },
         });
       } else {
-        pipeline = sharp(payload);
+        pipeline = await openInputImage(payload);
       }
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
       const payload = decodeIcns(activeBuffer);
-      pipeline = sharp(payload);
+      pipeline = await openInputImage(payload);
     } else if (
       src === 'exr' ||
       (activeBuffer.length >= 4 &&
@@ -2653,10 +2734,12 @@ export async function convertImage(
     } else {
       // Multi-frame sources: animated targets keep every frame, still targets take frame 1 (or `page`),
       // multi-page documents become one image per page.
+      // The declared canvas is checked from the header before any frame or page is decoded.
+      await assertEncodedImageWithinLimit(activeBuffer);
       frameSelection = await selectFrames(activeBuffer, fmt, options, requestedResizeOf(options));
       const packaged = await packageMultiFrameSource(frameSelection);
       if (packaged) return packaged;
-      pipeline = sharp(frameSelection.source, frameSelection.input);
+      pipeline = openLimitedSharp(frameSelection.source, frameSelection.input);
     }
 
     if (isRawInput) {
@@ -2672,6 +2755,7 @@ export async function convertImage(
       pipeline = await preserveMetadata(pipeline);
     }
   } catch (err: unknown) {
+    if (err instanceof InputPixelLimitError) throw err;
     if (isRawInput) {
       const demosaiced = decodeRawBayerSensor(inputBuffer, src, options);
       if (demosaiced) {
@@ -2797,6 +2881,7 @@ export async function convertImage(
               }
               rgbaBuffer = reconstructed;
             } else {
+              assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
               const oklabRes = applyOklabQuantizationAndDither(
                 { data, width: info.width, height: info.height },
                 colours,
@@ -2833,7 +2918,7 @@ export async function convertImage(
         break;
 
       case 'avif':
-        outputBuffer = await pipeline.avif({ quality }).toBuffer();
+        outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
         mimeType = 'image/avif';
         break;
 
@@ -2885,17 +2970,20 @@ export async function convertImage(
               hdrFloat = uHdr.rgbFloat;
               imgW = uHdr.width;
               imgH = uHdr.height;
-            } catch {
-              // Standard non-UltraHDR image
+            } catch (err) {
+              // Standard non-UltraHDR image; an image over the pixel limit is never tolerated.
+              rethrowInputPixelLimit(err);
             }
           }
 
           if (hdrFloat && imgW > 0 && imgH > 0) {
             outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
           } else {
+            await assertFloatBudgetBeforeDecode(pipeline, options);
             const { data, info } = await pipeline
               .raw()
               .toBuffer({ resolveWithObject: true });
+            assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
             assertRgbSamples(info, fmt);
             const floatPix = new Float32Array(info.width * info.height * 3);
             for (let i = 0; i < data.length; i++) {
@@ -2918,9 +3006,11 @@ export async function convertImage(
             { quality }
           );
         } else {
+          await assertFloatBudgetBeforeDecode(pipeline, options);
           const { data, info } = await pipeline
             .raw()
             .toBuffer({ resolveWithObject: true });
+          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
           assertRgbSamples(info, fmt);
           const floatPix = new Float32Array(info.width * info.height * 3);
           for (let i = 0; i < data.length; i++) {
@@ -2970,6 +3060,7 @@ export async function convertImage(
             }
             rgbaBuffer = reconstructed;
           } else {
+            assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
             const oklabRes = applyOklabQuantizationAndDither(
               { data, width: info.width, height: info.height },
               colours,
@@ -3013,6 +3104,7 @@ export async function convertImage(
             });
             outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
           } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
             const res = applyOklabQuantizationAndDither(
               { data, width: info.width, height: info.height },
               colours,
@@ -3074,6 +3166,7 @@ export async function convertImage(
             }
             rgbaBuffer = reconstructed;
           } else {
+            assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
             const oklabRes = applyOklabQuantizationAndDither(
               { data, width: info.width, height: info.height },
               colours,
@@ -3188,7 +3281,7 @@ async function decodePdfPages(
   options: ConversionOptions,
   sourceFormat: string | undefined
 ): Promise<{ pages: PdfPageImage[]; sourceFrameCount?: number; frameUsed?: number }> {
-  const toPage = async (pipeline: sharp.Sharp): Promise<PdfPageImage> => {
+  const toPage = async (pipeline: Sharp): Promise<PdfPageImage> => {
     const { data, info } = await pipeline.rotate().png().toBuffer({ resolveWithObject: true });
     return { png: data, width: info.width, height: info.height };
   };

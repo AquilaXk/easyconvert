@@ -1,4 +1,4 @@
-import type { OcrBBox, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
+import type { OcrBaseline, OcrBBox, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 
 /**
  * Preprocessing can resize and turn the page, so the recognizer reports boxes in the prepared
@@ -38,16 +38,24 @@ function isIdentity(g: OcrGeometry): boolean {
   return g.rotationDegrees === 0 && g.sourceWidth === g.outputWidth && g.sourceHeight === g.outputHeight;
 }
 
+/** Maps a point from prepared-image pixels to source-image pixels (unclamped). */
+function mapPointToSource(x: number, y: number, g: OcrGeometry): [number, number] {
+  const radians = g.rotationDegrees * DEGREES_TO_RADIANS;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  // Undo the clockwise turn (rows grow downwards) about the centre, then the scale.
+  const dx = x - g.outputWidth / 2;
+  const dy = y - g.outputHeight / 2;
+  const scaledX = dx * cos + dy * sin + g.scaledWidth / 2;
+  const scaledY = -dx * sin + dy * cos + g.scaledHeight / 2;
+  return [scaledX / (g.scaledWidth / g.sourceWidth), scaledY / (g.scaledHeight / g.sourceHeight)];
+}
+
 /**
  * Maps a box from prepared-image pixels to source-image pixels. A turned box is not a box, so the
  * result is the bounding box of its four corners; it stays inside the source and is at least 1 px.
  */
 export function mapBoxToSource(box: OcrBBox, g: OcrGeometry): OcrBBox {
-  const scaleX = g.scaledWidth / g.sourceWidth;
-  const scaleY = g.scaledHeight / g.sourceHeight;
-  const radians = g.rotationDegrees * DEGREES_TO_RADIANS;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
   let left = Infinity;
   let top = Infinity;
   let right = -Infinity;
@@ -58,15 +66,11 @@ export function mapBoxToSource(box: OcrBBox, g: OcrGeometry): OcrBBox {
     [box.x, box.y + box.height],
     [box.x + box.width, box.y + box.height],
   ]) {
-    // Undo the clockwise turn (rows grow downwards) about the centre, then the scale.
-    const dx = cornerX - g.outputWidth / 2;
-    const dy = cornerY - g.outputHeight / 2;
-    const scaledX = dx * cos + dy * sin + g.scaledWidth / 2;
-    const scaledY = -dx * sin + dy * cos + g.scaledHeight / 2;
-    left = Math.min(left, scaledX / scaleX);
-    right = Math.max(right, scaledX / scaleX);
-    top = Math.min(top, scaledY / scaleY);
-    bottom = Math.max(bottom, scaledY / scaleY);
+    const [sourceX, sourceY] = mapPointToSource(cornerX, cornerY, g);
+    left = Math.min(left, sourceX);
+    right = Math.max(right, sourceX);
+    top = Math.min(top, sourceY);
+    bottom = Math.max(bottom, sourceY);
   }
   const x0 = Math.min(g.sourceWidth - 1, Math.max(0, Math.round(left)));
   const y0 = Math.min(g.sourceHeight - 1, Math.max(0, Math.round(top)));
@@ -79,8 +83,47 @@ function mapWord(word: OcrWord, g: OcrGeometry): OcrWord {
   return { ...word, bbox: mapBoxToSource(word.bbox, g) };
 }
 
-function mapLineBlock(block: OcrLineBlock, g: OcrGeometry): OcrLineBlock {
-  return { ...block, bbox: mapBoxToSource(block.bbox, g), words: block.words.map((word) => mapWord(word, g)) };
+/**
+ * Lines of one block or paragraph share the same group object, and exporters group lines by that
+ * identity, so each group is mapped once and the mapped copy is shared the same way.
+ */
+type GroupCache = Map<OcrLayoutGroup, OcrLayoutGroup>;
+
+function mapLayoutGroup(group: OcrLayoutGroup | undefined, g: OcrGeometry, cache: GroupCache): OcrLayoutGroup | undefined {
+  if (!group) return group;
+  let mapped = cache.get(group);
+  if (!mapped) {
+    mapped = group.bbox ? { ...group, bbox: mapBoxToSource(group.bbox, g) } : { ...group };
+    cache.set(group, mapped);
+  }
+  return mapped;
+}
+
+function mapBaseline(baseline: OcrBaseline | undefined, g: OcrGeometry): OcrBaseline | undefined {
+  if (!baseline) return baseline;
+  const [x0, y0] = mapPointToSource(baseline.x0, baseline.y0, g);
+  const [x1, y1] = mapPointToSource(baseline.x1, baseline.y1, g);
+  return { x0, y0, x1, y1 };
+}
+
+/** A vertical text measure (row height, ascenders, descenders) in source pixels. */
+function mapRowMeasure(value: number | undefined, g: OcrGeometry): number | undefined {
+  if (value === undefined) return value;
+  return value * (g.sourceHeight / g.scaledHeight);
+}
+
+function mapLineBlock(block: OcrLineBlock, g: OcrGeometry, cache: GroupCache): OcrLineBlock {
+  return {
+    ...block,
+    bbox: mapBoxToSource(block.bbox, g),
+    words: block.words.map((word) => mapWord(word, g)),
+    block: mapLayoutGroup(block.block, g, cache),
+    paragraph: mapLayoutGroup(block.paragraph, g, cache),
+    baseline: mapBaseline(block.baseline, g),
+    rowHeight: mapRowMeasure(block.rowHeight, g),
+    ascenders: mapRowMeasure(block.ascenders, g),
+    descenders: mapRowMeasure(block.descenders, g),
+  };
 }
 
 /** Returns the result with every box, and the reported page size, in source-image pixels. */
@@ -88,9 +131,10 @@ export function mapOcrResultToSource(result: OcrResult, g: OcrGeometry): OcrResu
   if (isIdentity(g)) {
     return { ...result, imageWidth: g.sourceWidth, imageHeight: g.sourceHeight };
   }
+  const groups: GroupCache = new Map();
   return {
     ...result,
-    lineBlocks: result.lineBlocks?.map((block) => mapLineBlock(block, g)),
+    lineBlocks: result.lineBlocks?.map((block) => mapLineBlock(block, g, groups)),
     imageWidth: g.sourceWidth,
     imageHeight: g.sourceHeight,
   };

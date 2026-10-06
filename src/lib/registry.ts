@@ -516,7 +516,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Portable Document Format - Industry standard fixed-layout document.',
     targetFormats: ['docx', 'html', 'md', 'pdf', 'rtf', 'txt', 'epub', 'xlsx', 'png', 'pptx', 'svg', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'jpg', 'tiff', 'xls', 'hocr', 'alto'],
-    optionsSchema: { orientation: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
+    optionsSchema: { orientation: true, layout: true, ocrEnabled: true, ocrLanguage: true, ocrMode: true },
   },
   docx: {
     id: 'docx',
@@ -526,7 +526,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'document',
     description: 'Microsoft Word OpenXML document format with complete styles and tables.',
     targetFormats: ['pdf', 'html', 'txt', 'md', 'epub', 'odt', 'pptx', 'zip', 'doc', 'rtf', 'jpg', 'png'],
-    optionsSchema: { orientation: true },
+    optionsSchema: { orientation: true, imageDpi: true, jpegQuality: true },
   },
   doc: {
     id: 'doc',
@@ -1287,7 +1287,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     category: 'presentation',
     description: 'Microsoft PowerPoint OpenXML slide presentation standard.',
     targetFormats: ['pdf', 'html', 'odp', 'ppt', 'txt', 'zip', 'jpg', 'png'],
-    optionsSchema: { orientation: true },
+    optionsSchema: { orientation: true, imageDpi: true, jpegQuality: true },
   },
   ppt: {
     id: 'ppt',

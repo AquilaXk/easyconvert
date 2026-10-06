@@ -21,6 +21,9 @@ export interface FormatOptionsSchema {
   stripMetadata?: boolean;
   background?: boolean;
   dpi?: boolean;
+  imageDpi?: boolean;
+  jpegQuality?: boolean;
+  layout?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
   hasHeaders?: boolean;
@@ -89,6 +92,8 @@ export interface ConversionOptions {
   /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
   background?: string;
   dpi?: number;
+  /** pdf -> txt: keep physical layout so table rows stay on one line (default: reading order). */
+  layout?: boolean;
   colorDepth?: number;
   colors?: number;
   palette?: boolean;
@@ -177,6 +182,11 @@ export interface ConversionOptions {
   solid?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   entries?: string[];
+  /**
+   * Opt in to extracting archives that contain symbolic or hard links by leaving those entries out.
+   * Without it such archives are rejected. Skipped names are reported in `ConversionResult.skippedLinks`.
+   */
+  skipLinks?: boolean;
   repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
@@ -208,6 +218,10 @@ export interface ConversionOptions {
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+  /** Office to PDF: downsample embedded images to this resolution (72-1200). Default: keep them. */
+  imageDpi?: number;
+  /** Office to PDF: re-encode embedded JPEGs at this quality (1-100). Default: keep the stream. */
+  jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
@@ -348,6 +362,10 @@ export interface ConversionResult {
   sourceFrameCount?: number;
   /** 1-based frame or page a still output was taken from: frame 1 by default, or the requested `page`. */
   frameUsed?: number;
+  /** Link entries left out of an extraction because `skipLinks` was set. */
+  skippedLinks?: string[];
+  /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
+  metadata?: Record<string, unknown>;
 }
 
 // S3 Chunked Upload Types
@@ -440,6 +458,18 @@ export class ConversionFailedError extends Error {
   }
 }
 
+/**
+ * Marker base of every failure that means "this worker lacks the tool" (an engine, binary or codec) rather than
+ * "this input is bad". A worker pool can be mixed, so a queued job that fails with one is retried on another
+ * worker. Every error class named like a missing tool must extend it; a test scans the source tree for that.
+ */
+export class EngineMissingError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EngineMissingError';
+  }
+}
+
 export class FileExtensionSpoofError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -447,7 +477,7 @@ export class FileExtensionSpoofError extends ConversionFailedError {
   }
 }
 
-export class OcrEngineUnavailableError extends ConversionFailedError {
+export class OcrEngineUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'OcrEngineUnavailableError';
@@ -469,7 +499,7 @@ export class UnsupportedTargetError extends ConversionFailedError {
   }
 }
 
-export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
+export class ArchiveEncryptionUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'ArchiveEncryptionUnavailableError';
@@ -539,7 +569,7 @@ export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
   }
 }
 
-export class CadGeometryUnavailableError extends ConversionFailedError {
+export class CadGeometryUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'CadGeometryUnavailableError';
@@ -560,7 +590,7 @@ export class CadTopologyError extends ConversionFailedError {
   }
 }
 
-export class EngineUnavailableError extends ConversionFailedError {
+export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
 
@@ -581,6 +611,36 @@ export class GraphExportError extends ConversionFailedError {
   }
 }
 
+/**
+ * An input asks for more work or memory than the engine allows: a stream that would decode past a
+ * size limit, or a document that would produce more text blocks or character mappings than the caps.
+ * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ */
+export class PayloadLimitError extends ConversionFailedError {
+  readonly status = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PayloadLimitError';
+  }
+}
+
+/** A compressed stream would decode past a per-stream or per-document byte limit. */
+export class DecompressionLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DecompressionLimitError';
+  }
+}
+
+/** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
+export class CorruptStreamError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CorruptStreamError';
+  }
+}
+
 export class InvalidPageRangeError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -588,7 +648,7 @@ export class InvalidPageRangeError extends ConversionFailedError {
   }
 }
 
-export class ComplexScriptRequiresNativeEngineError extends ConversionFailedError {
+export class ComplexScriptRequiresNativeEngineError extends EngineMissingError {
   constructor(
     message = 'Rendering complex scripts (CTL/RTL) requires the native LibreOffice engine'
   ) {
@@ -631,7 +691,7 @@ export class RawDecodeError extends ConversionFailedError {
 }
 
 /** The in-process engine cannot decode this camera RAW sensor data; only the native RAW engine can. */
-export class RawEngineRequiredError extends ConversionFailedError {
+export class RawEngineRequiredError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'RawEngineRequiredError';
@@ -656,6 +716,12 @@ export interface ArchiveEntryMetadata {
   isDirectory: boolean;
   modifiedAt?: string;
   crc32?: string;
+  /** Set for entries that are not plain files or directories. Links are reported, never resolved. */
+  kind?: 'symlink' | 'hardlink' | 'special';
+  /** The name is absolute, climbs out with `..`, or is otherwise invalid. `name` is kept verbatim. */
+  unsafePath?: boolean;
+  /** Another entry in the archive has the same path. */
+  duplicate?: boolean;
 }
 
 export interface ArchiveInspectResponse {
@@ -665,6 +731,10 @@ export interface ArchiveInspectResponse {
   totalCompressedBytes: number;
   isEncrypted: boolean;
   entries: ArchiveEntryMetadata[];
+  /** False when extraction would refuse the archive: links, unsafe paths, special entries or duplicates. */
+  extractable: boolean;
+  /** One line per blocking category, with a count and the first offending entry; empty when extractable. */
+  unextractableReasons: string[];
 }
 
 export class MissingVolumeError extends Error {
@@ -675,7 +745,7 @@ export class MissingVolumeError extends Error {
   }
 }
 
-export class ArchiveEntryCollisionError extends Error {
+export class ArchiveEntryCollisionError extends ConversionFailedError {
   readonly status = 422;
   readonly entryName: string;
   constructor(entryName: string, message?: string) {
@@ -758,6 +828,21 @@ export class PdfPostprocessError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PdfPostprocessError';
+  }
+}
+
+/**
+ * veraPDF validated a PDF/A output and it failed. `failedRules` lists the rule IDs
+ * (`<clause>-<test number>`, for example `6.2.11.4.1-1`) in the order veraPDF reports them.
+ */
+export class PdfAValidationError extends PdfPostprocessError {
+  constructor(
+    readonly profile: PdfAConformance,
+    readonly failedRules: readonly string[]
+  ) {
+    const rules = failedRules.length > 0 ? ` Failed rules: ${failedRules.join(', ')}.` : '';
+    super(`PDF/A validation failed: the output is not PDF/A compliant (${profile}).${rules}`);
+    this.name = 'PdfAValidationError';
   }
 }
 

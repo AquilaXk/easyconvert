@@ -21,6 +21,7 @@ export const dispatchEngine: ConversionEnginePort = {
       metadata: res.metadata,
       fallbackReason: res.fallbackReason,
       fallbackChain: res.fallbackChain,
+      skippedLinks: res.skippedLinks,
       ocrExtractedText: res.ocrExtractedText,
       sourceFrameCount: res.sourceFrameCount,
       frameUsed: res.frameUsed,

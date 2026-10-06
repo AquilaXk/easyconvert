@@ -1,4 +1,4 @@
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, EngineMissingError } from '../types';
 
 /**
  * Parquet format constants shared by the writer and the reader.
@@ -111,7 +111,7 @@ export class ParquetValueError extends ConversionFailedError {
 }
 
 /** The requested compression codec is not available in this runtime. */
-export class ParquetCodecUnavailableError extends ConversionFailedError {
+export class ParquetCodecUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'ParquetCodecUnavailableError';

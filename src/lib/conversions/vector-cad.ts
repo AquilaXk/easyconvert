@@ -1,11 +1,12 @@
-import sharp from 'sharp';
+import sharp, { type ResizeOptions } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
-import { resizedDimensions } from './image-frame-output';
-import { encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { openInputImage, resizedDimensions } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
   tessellateCadBuffer,
@@ -226,6 +227,7 @@ export async function convertVectorCad(
   const baseName = (originalFilename || 'model').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Vector/CAD conversion payload is empty (0 bytes).');
@@ -293,8 +295,35 @@ export async function convertVectorCad(
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
 
-/** Density SVG drawings are rendered at unless the request names one. */
-const SVG_RENDER_DENSITY = 300;
+/** Resolution an SVG is rendered at when the request names none. */
+const DEFAULT_SVG_RENDER_DPI = 300;
+
+/** SVG to SVG, EMF, WMF or CGM straight from the vector geometry; null for any other target. */
+function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): ConversionResult | null {
+  let buffer: Buffer;
+  let mimeType: string;
+  switch (tgt) {
+    case 'svg':
+      buffer = Buffer.from(sanitizeSvgDocument(inputBuffer.toString('utf-8')), 'utf-8');
+      mimeType = 'image/svg+xml';
+      break;
+    case 'emf':
+      buffer = encodeEmf(inputBuffer);
+      mimeType = 'image/emf';
+      break;
+    case 'wmf':
+      buffer = encodeWmf(inputBuffer);
+      mimeType = 'image/wmf';
+      break;
+    case 'cgm':
+      buffer = encodeCgm(inputBuffer, baseName);
+      mimeType = 'image/cgm';
+      break;
+    default:
+      return null;
+  }
+  return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
+}
 
 /** Targets the SVG converter writes without rendering pixels, so the output size options do not apply. */
 const SVG_NON_RASTER_TARGETS = new Set(['svg', 'emf', 'wmf', 'cgm']);
@@ -321,7 +350,7 @@ async function assertSvgRenderSize(svg: Buffer, density: number): Promise<{ widt
  * are validated like raster images and the resized box is checked against the output pixel limit before the
  * drawing is rendered.
  */
-async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<sharp.ResizeOptions | null> {
+async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<ResizeOptions | null> {
   const width = outputSideOf(options.width, 'width');
   const height = outputSideOf(options.height, 'height');
   const rendered = await assertSvgRenderSize(svg, density);
@@ -365,12 +394,14 @@ async function convertSvgSource(
     };
   }
 
-  const density = options.dpi || SVG_RENDER_DENSITY;
+  const density = options.dpi || DEFAULT_SVG_RENDER_DPI;
 
   // SVG -> PDF
   if (tgt === 'pdf') {
+    // The render size follows the requested dpi, so the declared canvas is checked at that density first.
+    const renderer = await openInputImage(inputBuffer, { density });
     await assertSvgRenderSize(inputBuffer, density);
-    const pngBuffer = await sharp(inputBuffer, { density }).png().toBuffer();
+    const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
     const width = meta.width || 600;
     const height = meta.height || 400;
@@ -399,8 +430,12 @@ async function convertSvgSource(
     });
   }
 
+  // Vector targets are written from the SVG geometry and never rasterize it.
+  const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
+  if (vectorOutput) return vectorOutput;
+
   // SVG -> Raster Images via Sharp
-  let pipeline = sharp(inputBuffer, { density });
+  let pipeline = await openInputImage(inputBuffer, { density });
 
   if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
     const resize = await svgResizeOf(inputBuffer, density, options);
@@ -429,7 +464,7 @@ async function convertSvgSource(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       mimeType = 'image/avif';
       break;
 
@@ -437,29 +472,6 @@ async function convertSvgSource(
       outputBuffer = await pipeline.tiff({ quality }).toBuffer();
       mimeType = 'image/tiff';
       break;
-
-    case 'svg':
-      outputBuffer = Buffer.from(sanitizeSvgDocument(inputBuffer.toString('utf-8')), 'utf-8');
-      mimeType = 'image/svg+xml';
-      break;
-
-    case 'emf': {
-      outputBuffer = encodeEmf(inputBuffer);
-      mimeType = 'image/emf';
-      break;
-    }
-
-    case 'wmf': {
-      outputBuffer = encodeWmf(inputBuffer);
-      mimeType = 'image/wmf';
-      break;
-    }
-
-    case 'cgm': {
-      outputBuffer = encodeCgm(inputBuffer, baseName);
-      mimeType = 'image/cgm';
-      break;
-    }
 
     case 'eps':
     case 'ps': {

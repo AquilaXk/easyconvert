@@ -15,7 +15,7 @@ const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExe
 ]);
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
@@ -109,6 +109,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
     finishedOn: job.finishedOn,
     attemptsMade: job.attemptsMade,
     failedReason: graphState?.failedReason || job.failedReason,
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
     result: job.returnvalue,
     tasks: job.data?.tasks,
     graph: graphState?.graph || job.data?.graph,

@@ -14,6 +14,7 @@ import {
   PdfWatermarkOptionsSchema,
   PdfProtectOptionsSchema,
   PdfAOptionsSchema,
+  PdfaValidationProblemSchema,
 } from '@/lib/api/contracts';
 import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { API_KEY_SCOPES } from './shared';
@@ -48,6 +49,13 @@ export const components = {
       },
     },
     ProblemDetails: ProblemDetailsSchema,
+    PdfaValidationProblem: {
+      description: 'Problem details of a PDF/A output that veraPDF rejected, with the requested profile and the failed rules.',
+      allOf: [
+        { $ref: '#/components/schemas/ProblemDetails' },
+        { type: 'object', required: PdfaValidationProblemSchema.required, properties: PdfaValidationProblemSchema.properties },
+      ],
+    },
     ConversionOptions: ConversionOptionsSchema,
     PipelineTask: PipelineTaskSchema,
     JobGraph: JobGraphSchema,
@@ -97,6 +105,8 @@ export const components = {
         processedOn: { type: 'number' },
         finishedOn: { type: 'number' },
         failedReason: { type: 'string' },
+        failedCode: { type: 'string' },
+        failedStatus: { type: 'integer' },
       },
     },
     ApiKey: {
