@@ -58,6 +58,9 @@ const VERAPDF_MAX_FAILURES_DISPLAYED = '1';
 const MAX_FAILED_RULES_REPORTED = 200;
 /** Engine name of the EngineUnavailableError raised when veraPDF is missing or cannot run. */
 export const VERAPDF_ENGINE_NAME = 'verapdf';
+/** Detail of the 422 for a document the validator could not process; it never carries paths or commands. */
+const VALIDATOR_UNPROCESSABLE_MESSAGE = 'The PDF/A validator could not process the document.';
+const PDF_UNREADABLE_MESSAGE = 'The PDF/A output could not be read as a PDF document.';
 
 export interface VerapdfVerdict {
   compliant: boolean;
@@ -75,7 +78,7 @@ export function parseVerapdfVerdict(json: string): VerapdfVerdict {
   try {
     parsed = JSON.parse(json);
   } catch {
-    throw new PdfPostprocessError('veraPDF did not return a JSON report.');
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
   const jobs = (parsed as { report?: { jobs?: unknown[] } })?.report?.jobs;
   const results = Array.isArray(jobs) ? jobs.map((job) => (job as { validationResult?: unknown }).validationResult) : [];
@@ -104,7 +107,7 @@ export function parseVerapdfVerdict(json: string): VerapdfVerdict {
     }
   }
   if (verdicts.length === 0) {
-    throw new PdfPostprocessError('veraPDF report contains no validation result.');
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
   return { compliant: verdicts.every(Boolean), failedRules: [...failedRules] };
 }
@@ -116,15 +119,20 @@ export function parseVerapdfReport(json: string): boolean {
 
 /** `pdfaid:part` and `pdfaid:conformance` from the document's XMP metadata, if present. */
 async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; conformance?: string }> {
-  const doc = await PDFDocument.load(pdf, { updateMetadata: false });
-  const metadata = doc.catalog.lookup(PDFName.of('Metadata'));
-  if (!(metadata instanceof PDFRawStream)) {
-    return {};
+  try {
+    const doc = await PDFDocument.load(pdf, { updateMetadata: false });
+    const metadata = doc.catalog.lookup(PDFName.of('Metadata'));
+    if (!(metadata instanceof PDFRawStream)) {
+      return {};
+    }
+    const xmp = Buffer.from(decodePDFRawStream(metadata).decode()).toString('utf-8');
+    const field = (name: string) =>
+      xmp.match(new RegExp(`pdfaid:${name}\\s*(?:=\\s*["']([^"']+)["']|>\\s*([^<\\s]+)\\s*<)`))?.slice(1).find(Boolean);
+    return { part: field('part'), conformance: field('conformance') };
+  } catch {
+    // The parser's own message can quote offsets and object contents of an untrusted file.
+    throw new PdfPostprocessError(PDF_UNREADABLE_MESSAGE);
   }
-  const xmp = Buffer.from(decodePDFRawStream(metadata).decode()).toString('utf-8');
-  const field = (name: string) =>
-    xmp.match(new RegExp(`pdfaid:${name}\\s*(?:=\\s*["']([^"']+)["']|>\\s*([^<\\s]+)\\s*<)`))?.slice(1).find(Boolean);
-  return { part: field('part'), conformance: field('conformance') };
 }
 
 /** The veraPDF binary, or an EngineUnavailableError (HTTP 503): an unvalidated PDF/A is never returned. */
@@ -269,8 +277,9 @@ export async function convertToPdfA(
         timeout: SOFFICE_TIMEOUT_MS,
       });
     } catch (err: any) {
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '');
-      throw new PdfPostprocessError(`PDF/A conversion via LibreOffice failed: ${errMsg}`);
+      // The command line and stderr hold sandbox paths: log them here, keep them out of the response.
+      console.error('[pdfa] LibreOffice PDF/A conversion failed:', (err?.message || '') + (err?.stderr?.toString() || ''));
+      throw new PdfPostprocessError('PDF/A conversion failed: LibreOffice could not convert the document.');
     }
 
     if (!fs.existsSync(outputPdf)) {

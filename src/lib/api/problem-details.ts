@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import type { EngineUnavailableError, PdfAValidationError } from '../types';
+import { PdfAValidationError, type EngineUnavailableError, type PdfPostprocessError } from '../types';
 
 /**
  * RFC 9457 Problem Details for HTTP APIs (supersedes RFC 7807).
@@ -157,23 +157,37 @@ export function createEngineUnavailableResponse(
   );
 }
 
+/** Problem type for a PDF post-processing step (PDF/A, watermark, protection) the document made fail. */
+export const PDF_POSTPROCESS_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/pdf-postprocess-failed';
+
 /**
- * Maps a PdfAValidationError to HTTP 422: the document converted, but the PDF/A output does not
- * conform. `profile` is the requested level and `failedRules` the veraPDF rule IDs that failed.
+ * Maps a PdfPostprocessError to HTTP 422: the document converted, but a post-processing step
+ * could not complete on it. A PdfAValidationError also names the requested `profile` and the
+ * veraPDF `failedRules`. The error messages are fixed text, never a path or a command line.
  */
-export function createPdfaValidationResponse(
-  error: PdfAValidationError,
+export function createPdfPostprocessResponse(
+  error: PdfPostprocessError,
   instance: string,
   extraHeaders?: Record<string, string>
 ): NextResponse {
+  if (error instanceof PdfAValidationError) {
+    return createProblemDetailsResponse(
+      HTTP_UNPROCESSABLE_ENTITY,
+      error.message,
+      instance,
+      'PDF/A Validation Failed',
+      PDFA_VALIDATION_PROBLEM_TYPE,
+      extraHeaders,
+      undefined,
+      { profile: error.profile, failedRules: [...error.failedRules] }
+    );
+  }
   return createProblemDetailsResponse(
     HTTP_UNPROCESSABLE_ENTITY,
     error.message,
     instance,
-    'PDF/A Validation Failed',
-    PDFA_VALIDATION_PROBLEM_TYPE,
-    extraHeaders,
-    undefined,
-    { profile: error.profile, failedRules: [...error.failedRules] }
+    'PDF Post-processing Failed',
+    PDF_POSTPROCESS_PROBLEM_TYPE,
+    extraHeaders
   );
 }

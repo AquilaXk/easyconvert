@@ -8,13 +8,13 @@ import { storageProvider } from '@/lib/storage';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
-  createPdfaValidationResponse,
+  createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError, PdfAValidationError } from '@/lib/types';
+import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError, PdfPostprocessError } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -406,8 +406,8 @@ export async function POST(req: NextRequest) {
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
     }
-    if (err instanceof PdfAValidationError) {
-      return createPdfaValidationResponse(err, instanceUri, rateLimitHeaders);
+    if (err instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
     }
     if (err instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(
