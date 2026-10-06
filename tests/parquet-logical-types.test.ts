@@ -60,11 +60,16 @@ describe('logical types read from reference-writer files', () => {
   it('keeps 64-bit integers exact through a conversion to JSON text', async () => {
     const file = fs.readFileSync(path.join(FIXTURE_DIR, 'logical-types.parquet'));
     const json = await convertData(file, 'parquet', 'json', {}, 'logical.parquet');
-    const text = json.buffer.toString('utf-8');
-    expect(text).toContain('"i64": "9223372036854775807"');
-    expect(text).toContain('"u64": "18446744073709551615"');
-    expect(text).toContain('"dec20_4": "-123456789012345.6789"');
-    expect(text).toContain('"ts_us_utc": "2024-05-06T07:08:09.123456Z"');
+    const rows = JSON.parse(json.buffer.toString('utf-8')) as Record<string, unknown>[];
+    expect(rows.map((r) => [r.i64, r.u64, r.dec20_4, r.ts_us_utc])).toEqual([
+      ['9223372036854775807', '18446744073709551615', '-123456789012345.6789', '2024-05-06T07:08:09.123456Z'],
+      ['-9223372036854775808', '9007199254740993', '0.0001', '1969-12-31T23:59:59.999999Z'],
+      ['9007199254740993', 9007199254740991, '12.0000', '1970-01-01T00:00:00Z'],
+      [9007199254740991, 5, null, null],
+      [-9007199254740991, 0, '-0.0001', '2000-02-29T12:00:00.500000Z'],
+      [0, null, '0.0000', '0001-01-01T00:00:00Z'],
+      [null, 1, '9999999999999999.9999', '9999-12-31T23:59:59Z'],
+    ]);
   });
 
   it('returns a safe 64-bit integer as a Number and an unsafe one as its decimal digits', () => {
