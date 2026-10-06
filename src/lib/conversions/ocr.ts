@@ -418,6 +418,7 @@ export function assembleCombinedOcrResult(
         confidence: ocr.confidence,
         lineBlocks: ocr.lineBlocks || [],
         lines: ocr.lines,
+        language: ocr.language,
       });
       allTexts.push(ocr.text);
       allLines.push(...ocr.lines);
@@ -454,6 +455,7 @@ export function assembleCombinedOcrResult(
     imageWidth: pageAnalyses[0]?.width || 612,
     imageHeight: pageAnalyses[0]?.height || 792,
     pages: combinedPages,
+    language: combinedPages.find((p) => p.language)?.language,
   };
 }
 

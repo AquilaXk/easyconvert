@@ -35,7 +35,11 @@ const UNDETERMINED_LANGUAGE = 'und';
 const MAX_LANGUAGE_TAG_CHARS = 35;
 const MAX_LANGUAGE_SUBTAG_CHARS = 8;
 
-/** BCP 47 tags for the recognition language codes the pipeline accepts (see ocr.ts). */
+/**
+ * BCP 47 tags for the recognition language codes the pipeline accepts (see ocr.ts). The `_vert`
+ * (vertical writing) models keep the plain language tag: hOCR and ALTO tag the language, and the
+ * writing direction is not carried over.
+ */
 const ENGINE_LANGUAGE_TAGS: ReadonlyMap<string, string> = new Map([
   ['eng', 'en'],
   ['kor', 'ko'],
