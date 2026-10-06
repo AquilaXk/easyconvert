@@ -3,7 +3,15 @@ import { NextRequest } from 'next/server';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
-import { EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
+import {
+  CadGeometryUnavailableError,
+  ComplexScriptRequiresNativeEngineError,
+  EngineUnavailableError,
+  OcrEngineUnavailableError,
+  OcrLanguageUnavailableError,
+  RawEngineRequiredError,
+  UnsupportedOptionError,
+} from '../src/lib/types';
 import type { ConversionJobData } from '../src/lib/types';
 import { GET as getV1JobRoute } from '../src/app/api/v1/jobs/[id]/route';
 import { GET as getQueueJobRoute } from '../src/app/api/queue/jobs/[id]/route';
@@ -69,6 +77,19 @@ describe('jobs that fail on their input are not retried', () => {
     expect(job.attemptsMade).toBe(ATTEMPTS);
     expect(job.failedStatus).toBe(HTTP_SERVICE_UNAVAILABLE);
     expect(job.failedCode).toBe('EngineUnavailableError');
+  });
+
+  it.each([
+    ['OcrEngineUnavailableError', new OcrEngineUnavailableError('tesseract missing')],
+    ['OcrLanguageUnavailableError', new OcrLanguageUnavailableError('traineddata missing')],
+    ['RawEngineRequiredError', new RawEngineRequiredError('native RAW decoder required')],
+    ['CadGeometryUnavailableError', new CadGeometryUnavailableError('CAD kernel missing')],
+    ['ComplexScriptRequiresNativeEngineError', new ComplexScriptRequiresNativeEngineError()],
+  ])('retries %s, since a mixed worker pool may have the engine', async (name, error) => {
+    const { calls, job } = await runFailingJob(`retry-${name}`, error);
+    expect(calls).toBe(ATTEMPTS);
+    expect(job.attemptsMade).toBe(ATTEMPTS);
+    expect(job.failedCode).toBe(name);
   });
 
   it('still retries an untyped failure, which says nothing about the input', async () => {
