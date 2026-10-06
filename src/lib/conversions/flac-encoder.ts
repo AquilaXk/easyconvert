@@ -1482,11 +1482,12 @@ function planStereo(
 
   const sideBps = bitsPerSample + 1;
   let assignment = ASSIGNMENT_INDEPENDENT_STEREO;
+  // Always analyse: for blocks too short for LPC this clears the previous block's models.
+  analyzeChannel(ws, left, n);
+  analyzeChannel(ws, right, n);
+  analyzeChannel(ws, mid, n);
+  analyzeChannel(ws, side, n);
   if (n >= LPC_MIN_BLOCK_SAMPLES) {
-    analyzeChannel(ws, left, n);
-    analyzeChannel(ws, right, n);
-    analyzeChannel(ws, mid, n);
-    analyzeChannel(ws, side, n);
     const costLeft = estimateChannelBits(ws, left, n, bitsPerSample);
     const costRight = estimateChannelBits(ws, right, n, bitsPerSample);
     const costMid = estimateChannelBits(ws, mid, n, bitsPerSample);

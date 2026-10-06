@@ -154,3 +154,34 @@ describe('FLAC stereo decorrelation is lossless at the extremes', () => {
     expect(sha256Hex(flacCliDecodeRaw(stream))).toBe(sha256Hex(pcmLittleEndianBytes(pcm, 3)));
   });
 });
+
+describe('FLAC stereo tail blocks do not inherit analysis from the previous block', () => {
+  const SHORT_TAIL_LIMIT = 32;
+
+  function tonalStereo(frames: number): Int16Array {
+    const out = new Int16Array(frames * 2);
+    for (let i = 0; i < frames; i++) {
+      out[2 * i] = Math.round(9000 * Math.sin(i * 0.071) + 2500 * Math.sin(i * 0.43));
+      out[2 * i + 1] = Math.round(7000 * Math.sin(i * 0.071 + 0.5) + 2000 * Math.sin(i * 0.29));
+    }
+    return out;
+  }
+
+  for (let tail = 1; tail < SHORT_TAIL_LIMIT; tail++) {
+    oracleTest(`4096 + ${tail} frames: tail coded as if alone, flac -t passes`, ['flac'], () => {
+      const pcm = tonalStereo(BLOCK + tail);
+      const stream = encodeFlacStream(pcm, RATE, 2);
+      const tested = flacCliTest(stream);
+      expect(tested.ok, tested.stderr.slice(0, 300)).toBe(true);
+
+      const parsed = parseFlacStructure(stream);
+      const lastFrame = parsed.frames[parsed.frames.length - 1];
+      const alone = parseFlacStructure(encodeFlacStream(pcm.slice(BLOCK * 2), RATE, 2)).frames[0];
+      expect(lastFrame.blockSize).toBe(tail);
+      expect(lastFrame.channelAssignment).toBe(alone.channelAssignment);
+      expect(lastFrame.subframes.map((sub) => [sub.type, sub.order])).toEqual(
+        alone.subframes.map((sub) => [sub.type, sub.order])
+      );
+    });
+  }
+});
