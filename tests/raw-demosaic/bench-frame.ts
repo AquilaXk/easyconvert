@@ -16,6 +16,7 @@ import path from 'node:path';
 import { demosaicAhdBayerCfa as referenceAhd, demosaicAmazeBayerCfa as referenceAmaze, type BayerSensorData } from '../../src/lib/conversions/image';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from '../../src/lib/conversions/raw-demosaic';
 import { readTiff16 } from './tiff16';
+import { getOracleToolPath } from '../helpers/differential-oracle';
 
 const SAMPLE = path.join(__dirname, '..', 'fixtures', 'raw', '.cache', 'mos.mos');
 const FULL_SCALE = 65535;
@@ -26,7 +27,9 @@ function mosaicFromDcraw(): { cfa: Uint16Array; width: number; height: number } 
   const dir = mkdtempSync(path.join(os.tmpdir(), 'demosaic-bench-'));
   try {
     const out = path.join(dir, 'mosaic.tiff');
-    execFileSync('dcraw_emu', ['-disinterp', '-4', '-T', '-t', '0', '-o', '0', '-r', '1', '1', '1', '1', '-H', '0', '-Z', out, SAMPLE], { stdio: 'pipe' });
+    const dcraw = getOracleToolPath('dcraw_emu');
+    if (!dcraw) throw new Error('dcraw_emu is required to build the benchmark mosaic');
+    execFileSync(dcraw, ['-disinterp', '-4', '-T', '-t', '0', '-o', '0', '-r', '1', '1', '1', '1', '-H', '0', '-Z', out, SAMPLE], { stdio: 'pipe' });
     const tiff = readTiff16(out);
     const cfa = new Uint16Array(tiff.width * tiff.height);
     for (let i = 0; i < cfa.length; i += 1) {
