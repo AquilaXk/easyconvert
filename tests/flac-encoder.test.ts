@@ -1,7 +1,11 @@
 import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { encodeFlacStream } from '../src/lib/conversions/media-encoder';
-import { FlacInputError } from '../src/lib/conversions/flac-encoder';
+import {
+  FlacInputError,
+  FlacInternalError,
+  assertFlacFrameFitsBuffer,
+} from '../src/lib/conversions/flac-encoder';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import {
@@ -146,5 +150,20 @@ describe('FLAC encoder fails closed on unsupported input', () => {
     expect(parsed.streamInfo.sampleRate).toBe(192000);
     expect(parsed.streamInfo.channels).toBe(2);
     expect(parsed.streamInfo.bitsPerSample).toBe(16);
+  });
+});
+
+describe('FLAC encoder internal invariants', () => {
+  it('reports a frame that overran its buffer as an internal error, not a client error', () => {
+    try {
+      assertFlacFrameFitsBuffer(101, 100);
+      expect.unreachable('guard must throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(FlacInternalError);
+      expect(err).not.toBeInstanceOf(ConversionFailedError);
+      expect((err as Error).name).toBe('FlacInternalError');
+      expect((err as Error).message).toMatch(/101 bytes.*100/);
+    }
+    expect(() => assertFlacFrameFitsBuffer(100, 100)).not.toThrow();
   });
 });

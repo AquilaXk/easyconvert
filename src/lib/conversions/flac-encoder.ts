@@ -36,6 +36,26 @@ export class FlacInputError extends ConversionFailedError {
   }
 }
 
+/**
+ * A broken encoder invariant, not bad input. Deliberately not a ConversionFailedError, so
+ * the API routes answer HTTP 500 instead of 400.
+ */
+export class FlacInternalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FlacInternalError';
+  }
+}
+
+/** Fails when a frame wrote past the buffer sized from the worst-case frame bound. */
+export function assertFlacFrameFitsBuffer(bytesWritten: number, capacity: number): void {
+  if (bytesWritten > capacity) {
+    throw new FlacInternalError(
+      `FLAC frame needed ${bytesWritten} bytes but its buffer holds ${capacity} (encoder bug).`
+    );
+  }
+}
+
 export interface FlacEncodeOptions {
   /** Bits per sample of the values in the input array; defaults to 16. */
   bitsPerSample?: number;
@@ -1560,9 +1580,7 @@ export function encodeFlacStream(
     }
     writer.alignToByte();
     writer.writeBits(flacCrc16(writer.bytes, writer.bytePosition), 16);
-    if (writer.bytePosition > writer.capacity) {
-      throw new ConversionFailedError('FLAC frame exceeded its proven size bound (encoder bug).');
-    }
+    assertFlacFrameFitsBuffer(writer.bytePosition, writer.capacity);
     frames.push(Buffer.from(writer.bytes.subarray(0, writer.bytePosition)));
     frameSizes.push(writer.bytePosition);
     frameNumber++;
