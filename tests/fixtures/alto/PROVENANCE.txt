@@ -4,6 +4,10 @@ ALTO 4.4 schema fixtures
 These files let the OCR export tests validate generated ALTO with `xmllint --schema`.
 They are vendored unmodified; nothing in src/ reads them.
 
+NOTICE: alto-4-4.xsd and xlink.xsd are third-party schema documents, byte-for-byte as published
+(hashes below). They are used only by the test suite (tests/helpers/xml-oracle.ts) to validate
+generated ALTO and are not part of the shipped product or its build.
+
 alto-4-4.xsd
   Source:   https://www.loc.gov/standards/alto/v4/alto-4-4.xsd (Library of Congress, ALTO Editorial Board)
   Version:  4.4 (the file's own "Version 4.4" header and version="4.4" attribute)

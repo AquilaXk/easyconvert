@@ -86,6 +86,8 @@ interface ReferenceLine {
   baselineStart: number;
   baselineEnd: number;
   xSize: number;
+  xDescenders: number;
+  xAscenders: number;
 }
 
 /** A hOCR baseline is `slope offset` relative to the bottom-left corner of the line box. */
@@ -93,7 +95,11 @@ function readLine(title: string): ReferenceLine {
   const bbox = /bbox (-?\d+) (-?\d+) (-?\d+) (-?\d+)/.exec(title);
   const baseline = /baseline (-?[\d.]+) (-?[\d.]+)/.exec(title);
   const xSize = /x_size (-?[\d.]+)/.exec(title);
-  if (!bbox || !baseline || !xSize) throw new Error(`hOCR line without bbox, baseline or x_size: ${title}`);
+  const xDescenders = /x_descenders (-?[\d.]+)/.exec(title);
+  const xAscenders = /x_ascenders (-?[\d.]+)/.exec(title);
+  if (!bbox || !baseline || !xSize || !xDescenders || !xAscenders) {
+    throw new Error(`hOCR line without bbox, baseline, x_size, x_descenders or x_ascenders: ${title}`);
+  }
   const [left, bottom, right] = [Number(bbox[1]), Number(bbox[4]), Number(bbox[3])];
   const slope = Number(baseline[1]);
   const offset = Number(baseline[2]);
@@ -104,6 +110,8 @@ function readLine(title: string): ReferenceLine {
     baselineStart: bottom + offset,
     baselineEnd: bottom + offset + slope * (right - left),
     xSize: Number(xSize[1]),
+    xDescenders: Number(xDescenders[1]),
+    xAscenders: Number(xAscenders[1]),
   };
 }
 
@@ -116,7 +124,8 @@ function readingOrderless(lines: ReferenceLine[]): ReferenceLine[] {
   return [...lines].sort((a, b) => a.top - b.top || a.left - b.left);
 }
 
-const LINE_CLASS = "//*[@class='ocr_line']";
+/** The reference writes heading, caption and float lines under their own classes; they are lines too. */
+const LINE_CLASS = "//*[@class='ocr_line' or @class='ocr_header' or @class='ocr_caption' or @class='ocr_textfloat']";
 const PAR_CLASS = "//*[@class='ocr_par']";
 const AREA_CLASS = "//*[@class='ocr_carea']";
 const WORD_CLASS = "//*[@class='ocrx_word']";
@@ -139,7 +148,7 @@ describe('hOCR export matches the reference hierarchy and baselines', () => {
     );
 
     oracleTest(
-      `${file}: line baselines are within ${MAX_BASELINE_DELTA_PX} px of the reference and x_size matches`,
+      `${file}: line baselines are within ${MAX_BASELINE_DELTA_PX} px of the reference and x_size, x_descenders and x_ascenders match`,
       ['tesseract', 'xmllint'],
       async () => {
         const mine = exportHocr(await pipeline(file), { filename: file });
@@ -155,6 +164,8 @@ describe('hOCR export matches the reference hierarchy and baselines', () => {
           expect(Math.abs(actual.baselineStart - expected.baselineStart), `line ${expected.bbox}`).toBeLessThanOrEqual(MAX_BASELINE_DELTA_PX);
           expect(Math.abs(actual.baselineEnd - expected.baselineEnd), `line ${expected.bbox}`).toBeLessThanOrEqual(MAX_BASELINE_DELTA_PX);
           expect(actual.xSize).toBe(expected.xSize);
+          expect(actual.xDescenders).toBe(expected.xDescenders);
+          expect(actual.xAscenders).toBe(expected.xAscenders);
         });
       },
       PAGE_TIMEOUT_MS
@@ -235,7 +246,7 @@ describe('ALTO 4.4 export validates and matches the reference hierarchy', () => 
             (line) =>
               Math.abs(line.baselineStart - y0) <= MAX_BASELINE_DELTA_PX &&
               Math.abs(line.baselineEnd - y1) <= MAX_BASELINE_DELTA_PX &&
-              Number(line.bbox.split(' ')[2]) - x1 <= MAX_BASELINE_DELTA_PX
+              Math.abs(Number(line.bbox.split(' ')[2]) - x1) <= MAX_BASELINE_DELTA_PX
           );
           expect(best, `BASELINE ${baseline}`).toBeDefined();
           compared++;
@@ -256,7 +267,8 @@ describe('ALTO 4.4 export validates and matches the reference hierarchy', () => 
       expect(xpathCount(alto, "//*[local-name()='fileName' and text()='twocol__clean300.png']")).toBe(1);
       expect(xpathCount(alto, "//*[local-name()='softwareName' and text()='EasyConvert OCR']")).toBe(1);
       expect(xpathCount(alto, "//*[local-name()='String'][@WC < 0 or @WC > 1]")).toBe(0);
-      expect(xpathCount(alto, "//*[local-name()='TextBlock'][@LANG='en']")).toBe(4);
+      const ref = reference('twocol__clean300.png');
+      expect(xpathCount(alto, "//*[local-name()='TextBlock'][@LANG='en']")).toBe(xpathCount(ref, PAR_CLASS));
     },
     PAGE_TIMEOUT_MS
   );
