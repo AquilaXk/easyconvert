@@ -250,7 +250,11 @@ const FLAC_RATE_CODE_FROM_STREAMINFO = 0;
 const FLAC_MAX_KHZ_FIELD = 255;
 const FLAC_MAX_HZ_FIELD = 65535;
 
-/** Chooses the shortest frame-header encoding of a sample rate. */
+/**
+ * Chooses the shortest frame-header encoding of a sample rate. Rates above 655350 Hz that are
+ * not multiples of 10 have no in-header form and use code 0 (read STREAMINFO); the stream is
+ * still valid but outside the streamable subset, whose frames must carry their own rate.
+ */
 function flacSampleRateCode(sampleRate: number): number {
   const tableCode = FLAC_TABLE_RATE_CODES.get(sampleRate);
   if (tableCode !== undefined) return tableCode;
