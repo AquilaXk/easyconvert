@@ -210,6 +210,8 @@ const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
 ];
 
 const NDJSON_TEXT = Buffer.from('{"name":"alpha","count":1}\n{"name":"beta","count":2}\n', 'utf-8');
+// A YAML mapping: the CSV-derived YAML probe is a sequence, which a TOML document (a table) cannot hold.
+const YAML_MAPPING_TEXT = Buffer.from('name: alpha\ncount: 1\ntags: [x, y]\n', 'utf-8');
 const STL_TEXT = Buffer.from(
   [
     'solid probe',
@@ -240,6 +242,8 @@ async function buildCbz(): Promise<Buffer> {
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
+  yaml: () => YAML_MAPPING_TEXT,
+  yml: () => YAML_MAPPING_TEXT,
   stl: () => STL_TEXT,
   obj: () => OBJ_TEXT,
   gz: () => gzipSync(PLAIN_TEXT),
@@ -639,6 +643,26 @@ describe('every advertised registry pair has an engine path', () => {
     },
     RAW_SOURCE_TIMEOUT_MS
   );
+
+  it('converts every toml pair, as source or target, through a real engine run', async () => {
+    const tomlPairs = pairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
+    expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
+      'json->toml',
+      'toml->json',
+      'toml->txt',
+      'toml->xml',
+      'toml->yaml',
+      'toml->zip',
+      'yaml->toml',
+      'yml->toml',
+    ]);
+    const notRouted: string[] = [];
+    for (const [source, target] of tomlPairs) {
+      const { outcome, detail } = await probePairCached(source, target);
+      if (outcome !== 'routed') notRouted.push(`${source}->${target}: ${outcome} ${detail}`);
+    }
+    expect(notRouted).toEqual([]);
+  }, CATEGORY_TIMEOUT_MS);
 
   it('audio and video sources routed outside the media transcoder', async () => {
     const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');

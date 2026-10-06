@@ -15,7 +15,8 @@ import {
 } from '../src/lib/conversions/office';
 import { convertMedia } from '../src/lib/conversions/media';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { simpleXmlToJson } from '../src/lib/conversions/data';
+import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
+import { DataLimitExceededError, DataParseError } from '../src/lib/types';
 import JSZip from 'jszip';
 
 describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () => {
@@ -248,28 +249,33 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
   });
 
   describe('6. ReDoS-Safe XML Parsing', () => {
-    it('parses XML with nested tags and attributes without catastrophic backtracking', () => {
+    it('parses XML with nested tags and attributes into ordered JsonML', () => {
       const xml = '<catalog version="2.0"><item id="A1" active="true"><name>Widget</name><price>19.99</price></item><item id="A2"><name>Gadget</name></item></catalog>';
-      const parsed = simpleXmlToJson(xml) as any;
-
-      expect(parsed.catalog).toBeDefined();
-      expect(parsed.catalog.version).toBe('2.0');
-      expect(Array.isArray(parsed.catalog.item)).toBe(true);
-      expect(parsed.catalog.item[0].name).toBe('Widget');
-      expect(parsed.catalog.item[0].id).toBe('A1');
-      expect(parsed.catalog.item[1].name).toBe('Gadget');
-      expect(parsed.catalog.item[1].id).toBe('A2');
+      expect(xmlToJsonMl(parseXmlDocument(xml))).toEqual([
+        'catalog',
+        { version: '2.0' },
+        ['item', { id: 'A1', active: 'true' }, ['name', 'Widget'], ['price', '19.99']],
+        ['item', { id: 'A2' }, ['name', 'Gadget']],
+      ]);
     });
 
-    it('safely handles deeply nested unclosed and malformed XML tags in O(N) time without ReDoS', () => {
-      // Craft input that would cause catastrophic backtracking in regular expressions
-      const malformedXml = '<div>' + '<p><span>'.repeat(500) + 'test text' + '</div>';
-      const start = Date.now();
-      const parsed = simpleXmlToJson(malformedXml);
-      const elapsedMs = Date.now() - start;
-
-      expect(elapsedMs).toBeLessThan(100); // Must complete instantly
-      expect(parsed).toBeDefined();
+    it('rejects deeply nested unclosed tags with typed errors instead of guessing a tree', () => {
+      const rejectionOf = (xml: string): Error => {
+        try {
+          parseXmlDocument(xml);
+        } catch (err) {
+          return err as Error;
+        }
+        throw new Error('expected the XML to be rejected');
+      };
+      // The input that made a regex parser backtrack: 1,001 open elements stop at the nesting cap.
+      const deep = rejectionOf('<div>' + '<p><span>'.repeat(500) + 'test text' + '</div>');
+      expect(deep).toBeInstanceOf(DataLimitExceededError);
+      expect(deep.message).toMatch(/nesting exceeds 512 levels/);
+      // Within the cap, the mismatched close tag is reported as a parse error.
+      const shallow = rejectionOf('<div>' + '<p><span>'.repeat(50) + 'test text' + '</div>');
+      expect(shallow).toBeInstanceOf(DataParseError);
+      expect(shallow.message).toMatch(/unexpected close tag/);
     });
   });
 });

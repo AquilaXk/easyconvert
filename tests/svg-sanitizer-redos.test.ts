@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_SVG_INPUT_CHARS } from '../src/lib/conversions/svg-geometry';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { simpleXmlToJson } from '../src/lib/conversions/data';
+import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
 import { isSvg, sanitizeSvgBuffer, sanitizeSvgDocument, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { ConversionFailedError, SvgSanitizationError } from '../src/lib/types';
 
@@ -165,9 +165,10 @@ describe('SVG sanitizer input size cap', () => {
 
   it('converts XML larger than the SVG cap through the data path', () => {
     const payload = 'x'.repeat(MAX_SVG_INPUT_CHARS + 1024);
-    const parsed = simpleXmlToJson(`<root><item>${payload}</item></root>`);
-    const root = parsed.root as { item: string };
-    expect(root.item.length).toBe(payload.length);
-    expect(root.item.slice(0, 8)).toBe('xxxxxxxx');
+    const parsed = xmlToJsonMl(parseXmlDocument(`<root><item>${payload}</item></root>`)) as [string, [string, string]];
+    expect(parsed[0]).toBe('root');
+    expect(parsed[1][0]).toBe('item');
+    expect(parsed[1][1].length).toBe(payload.length);
+    expect(parsed[1][1].slice(0, 8)).toBe('xxxxxxxx');
   });
 });
