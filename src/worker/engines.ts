@@ -7,6 +7,7 @@ import { PDFDocument } from 'pdf-lib';
 import {
   ConversionOptions,
   ConversionResult,
+  ConversionFailedError,
   ArchiveEncryptionUnavailableError,
   ArchiveNotEncryptedError,
   UnsupportedOptionError,
@@ -27,7 +28,12 @@ import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
-import { hasComplexTextScript } from '../lib/conversions/ctl';
+import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
+import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
+import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
+import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
+import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
+import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
@@ -64,7 +70,12 @@ import {
   sevenZipReadPasswordInput,
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
+import {
+  LIBREOFFICE_POOL_ENGINE_NAME,
+  LibreOfficePoolManager,
+  LibreOfficePoolTimeoutError,
+  resolveLibreOfficeFilter,
+} from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -1546,32 +1557,182 @@ export async function convertWithInProcessRawSensor(
  */
 const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
-const COMPLEX_TEXT_FORMATS = new Set(['txt', 'html', 'htm', 'md']);
+/** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
+const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
+/** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. */
+const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt', 'html', 'htm']);
+/** HTML always prefers LibreOffice, which keeps its full structure. */
+const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
+const HTML_FORMAT = 'html';
+const PLAIN_TEXT_SOURCE = 'txt';
+const MARKDOWN_SOURCE = 'md';
+const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
 
-function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: string): boolean {
-  if (!COMPLEX_TEXT_FORMATS.has(src)) return false;
+/** CSS page sizes LibreOffice applies to staged HTML (the last @page rule wins). */
+const PAGE_SIZE_CSS: Readonly<Record<'portrait' | 'landscape', string>> = {
+  portrait: '210mm 297mm',
+  landscape: '297mm 210mm',
+};
+
+type PageOrientation = 'portrait' | 'landscape';
+
+interface TextPdfRoute {
+  /** Text has Arabic, Hebrew, Indic or another script the in-process writer cannot shape. */
+  readonly complexScript: boolean;
+  /** LibreOffice renders this input first when installed. */
+  readonly preferNative: boolean;
+  /** Page orientation LibreOffice must apply, when one was requested. */
+  readonly orientation?: PageOrientation;
+  /** The checked HTML LibreOffice renders, rebuilt from the parsed input (absent when it reads the text file itself). */
+  readonly stagedHtml?: Buffer;
+}
+
+/** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
+function distinctCharactersOfFile(filePath: string): string {
+  const seen = new Set<number>();
+  const chunk = Buffer.alloc(TEXT_SCAN_CHUNK_BYTES);
+  const fd = fs.openSync(filePath, 'r');
   try {
-    let buf: Buffer | undefined;
-    if (Buffer.isBuffer(input)) {
-      buf = input;
-    } else if (input.inputBuffer) {
-      buf = input.inputBuffer;
-    } else if (input.inputPath && fs.existsSync(input.inputPath)) {
-      const fd = fs.openSync(input.inputPath, 'r');
-      const stat = fs.fstatSync(fd);
-      const readLen = Math.min(512 * 1024, stat.size);
-      const readBuf = Buffer.alloc(readLen);
-      fs.readSync(fd, readBuf, 0, readLen, 0);
-      fs.closeSync(fd);
-      buf = readBuf;
+    let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
+    const decode = createTextInputDecoder(chunk.subarray(0, bytesRead));
+    while (bytesRead > 0) {
+      for (const ch of decode(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
+      bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
     }
-    if (buf) {
-      return hasComplexTextScript(buf.toString('utf-8'));
-    }
-  } catch {
-    // Ignore read errors
+    for (const ch of decode()) seen.add(ch.codePointAt(0) as number);
+  } finally {
+    fs.closeSync(fd);
   }
-  return false;
+  let text = '';
+  for (const codePoint of seen) text += String.fromCodePoint(codePoint);
+  return text;
+}
+
+/** The text whose scripts decide the PDF route: the file's characters, or the HWP document text. */
+function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): string {
+  if (src === 'hwp') {
+    const hwp = parseHwpDocument(readRawInputBuffer(input));
+    return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
+  }
+  const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
+  if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
+    return distinctCharactersOfFile(filePath);
+  }
+  const raw = readRawInputBuffer(input);
+  return decodeTextInput(raw);
+}
+
+/**
+ * Whether LibreOffice is not installed, as opposed to installed but failing. The daemon pool reports
+ * its own failures (a readiness probe that fails or hangs) as EngineUnavailableError under its own
+ * engine name; those are LibreOffice failures, not a missing renderer.
+ */
+function isLibreOfficeMissing(err: unknown): err is EngineUnavailableError {
+  return err instanceof EngineUnavailableError && err.engineName !== LIBREOFFICE_POOL_ENGINE_NAME;
+}
+
+/**
+ * Decides how text and HTML go to PDF. Complex-script text needs LibreOffice. HTML prefers it for
+ * its full structure, and so do CJK Markdown and HWP; plain CJK text stays in-process when the
+ * installed fonts cover it. With an explicit orientation, everything but complex-script text stays
+ * in-process, which applies the orientation itself. Both engines draw with the installed fonts, so
+ * CJK or complex-script letters no installed font covers fail first with EngineUnavailableError.
+ */
+async function planTextPdfRoute(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  tgt: string,
+  originalFilename: string,
+  orientation?: PageOrientation
+): Promise<TextPdfRoute | null> {
+  if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
+  await loadFontCoverageIndex();
+  const text = textForPdfRouting(input, src);
+  const complexScript = hasComplexTextScript(text);
+  const cjk = hasCjkScript(text);
+  if (complexScript || cjk) {
+    const scriptLetters = new Set<string>();
+    for (const ch of text) {
+      if (hasCjkScript(ch) || hasComplexTextScript(ch)) scriptLetters.add(ch);
+    }
+    assertFontCoverage(Array.from(scriptLetters).join(''));
+  }
+  const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
+  if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
+  // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
+  return { ...route, stagedHtml: await stageTextPdfHtml(input, src, originalFilename, route.orientation) };
+}
+
+/**
+ * The HTML LibreOffice renders for a text source, rebuilt from the parsed document so it reads
+ * only what was checked: HTML as given, Markdown and HWP converted in-process (LibreOffice cannot
+ * open them), and text as one paragraph per line. A requested orientation is a CSS page size.
+ */
+async function stageTextPdfHtml(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  originalFilename: string,
+  orientation?: PageOrientation
+): Promise<Buffer> {
+  const raw = readRawInputBuffer(input);
+  let html: string;
+  if (HTML_SOURCES.has(src)) {
+    html = decodeTextInput(raw);
+  } else if (src === PLAIN_TEXT_SOURCE) {
+    html = plainTextToHtml(decodeTextInput(raw));
+  } else if (src === MARKDOWN_SOURCE) {
+    html = markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, ''));
+  } else {
+    html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');
+  }
+  // Appended last so it overrides any @page rule of the document.
+  const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';
+  return Buffer.from((await stageHtmlForNativeEngine(html)) + pageSize, 'utf-8');
+}
+
+function planTextPdfEngine(
+  src: string,
+  text: string,
+  complexScript: boolean,
+  cjk: boolean,
+  orientation?: PageOrientation
+): TextPdfRoute {
+  if (complexScript) return { complexScript, preferNative: true, orientation };
+  if (orientation) return { complexScript, preferNative: false };
+  if (HTML_SOURCES.has(src)) return { complexScript, preferNative: true };
+  if (src === PLAIN_TEXT_SOURCE) return { complexScript, preferNative: cjk && findUncoveredCodePoint(text) !== null };
+  return { complexScript, preferNative: cjk };
+}
+
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Plain text as an HTML document, one paragraph per line. */
+function plainTextToHtml(text: string): string {
+  const paragraphs = text.split(/\r\n?|\n/).map((line) => (line.trim() ? `<p>${escapeHtmlText(line)}</p>` : '<p><br></p>'));
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>\n${paragraphs.join('\n')}\n</body></html>\n`;
+}
+
+/**
+ * Renders text or HTML to PDF with LibreOffice: the staged HTML when the route has one (HTML,
+ * Markdown, HWP, or text with an orientation), otherwise the text file itself.
+ */
+async function convertTextPdfWithHeadlessOffice(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  stagedHtml?: Buffer
+): Promise<WorkerConversionResult | null> {
+  if (!stagedHtml) {
+    return convertWithHeadlessOffice(input, src, 'pdf', options, originalFilename);
+  }
+  if (!resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH)) {
+    throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
+  }
+  const stagedInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? stagedHtml : { inputBuffer: stagedHtml, outputPath: input.outputPath };
+  return convertWithHeadlessOffice(stagedInput, HTML_FORMAT, 'pdf', options, originalFilename);
 }
 
 /** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
@@ -1606,13 +1767,17 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation);
+  const isComplexText = Boolean(textPdfRoute?.complexScript);
+  const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isComplexText || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  if (isNativeTextPdf || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
-      const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
+      const officeRes = isNativeTextPdf
+        ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
+        : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
         return {
           ...officeRes,
@@ -1620,12 +1785,24 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
-      if (err instanceof EngineUnavailableError) {
-        if (isComplexText) {
+      if (isNativeTextPdf && !options.signal?.aborted) {
+        // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
+        const message = err instanceof Error ? err.message : String(err);
+        if (isComplexText && isLibreOfficeMissing(err)) {
           throw new ComplexScriptRequiresNativeEngineError(
             `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
           );
         }
+        if (isComplexText) {
+          throw new EngineUnavailableError('soffice', `LibreOffice failed to render complex-script text (${src} to pdf): ${message}`);
+        }
+        if (options.pdfStandard) {
+          throw new EngineUnavailableError('soffice', `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}': ${message}`);
+        }
+        fallbackChain.push(`native-soffice: ${message}`);
+        fallbackReason = message;
+        if (err instanceof EngineUnavailableError) lastUnavailable = err;
+      } else if (err instanceof EngineUnavailableError) {
         if (isRecalculate) {
           throw new EngineUnavailableError(
             'soffice',
