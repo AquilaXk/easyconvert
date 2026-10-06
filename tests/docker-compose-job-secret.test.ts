@@ -4,30 +4,46 @@ import { describe, it, expect } from 'vitest';
 import { parse } from 'yaml';
 
 /**
- * The compose workers run with NODE_ENV=production, where the worker refuses to start without
- * JOB_SECRET_KEK. Compose must therefore require the value (no public default that would make every
- * deployment seal secrets under the same known key) and hand it to every worker service.
+ * The production overlay runs the workers with NODE_ENV=production, where the worker refuses to
+ * start without JOB_SECRET_KEK. It must therefore require the value (no public default that would
+ * make every deployment seal secrets under the same known key) and hand it to every worker service.
+ * Local development forwards the key from the shell when set and never invents one.
  */
 const ROOT = path.resolve(__dirname, '..');
+const LOCAL_FILE = 'docker-compose.yml';
+const PRODUCTION_FILE = 'docker-compose.prod.yml';
 const WORKER_SERVICES = ['worker', 'worker-gpu'];
 const REQUIRED_VALUE = /^JOB_SECRET_KEK=\$\{JOB_SECRET_KEK:\?[^}]+\}$/;
+const FORWARDED_VALUE = /^JOB_SECRET_KEK=\$\{JOB_SECRET_KEK\}$/;
+/** Any default form (`:-`, `-`) for JOB_SECRET_KEK itself; JOB_SECRET_KEK_PREVIOUS does not match. */
+const KEK_DEFAULT = /\$\{JOB_SECRET_KEK:?-/;
 
-describe('docker compose worker services', () => {
-  const compose = parse(fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8')) as {
+function workerKekEntries(file: string, service: string): string[] {
+  const compose = parse(fs.readFileSync(path.join(ROOT, file), 'utf8')) as {
     services: Record<string, { environment?: string[] }>;
   };
+  return (compose.services[service].environment ?? []).filter((entry) => entry.startsWith('JOB_SECRET_KEK='));
+}
 
+describe('docker compose worker services', () => {
   for (const service of WORKER_SERVICES) {
-    it(`${service} requires JOB_SECRET_KEK with no default`, () => {
-      const entries = compose.services[service].environment ?? [];
-      const kek = entries.filter((entry) => entry.startsWith('JOB_SECRET_KEK='));
+    it(`${service} requires JOB_SECRET_KEK with no default in production`, () => {
+      const kek = workerKekEntries(PRODUCTION_FILE, service);
       expect(kek).toHaveLength(1);
       expect(kek[0]).toMatch(REQUIRED_VALUE);
+    });
+
+    it(`${service} forwards JOB_SECRET_KEK from the shell in local development`, () => {
+      const kek = workerKekEntries(LOCAL_FILE, service);
+      expect(kek).toHaveLength(1);
+      expect(kek[0]).toMatch(FORWARDED_VALUE);
     });
   }
 
   it('does not give JOB_SECRET_KEK a default anywhere', () => {
-    expect(fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8')).not.toMatch(/JOB_SECRET_KEK:-/);
+    for (const file of [LOCAL_FILE, PRODUCTION_FILE]) {
+      expect(fs.readFileSync(path.join(ROOT, file), 'utf8'), file).not.toMatch(KEK_DEFAULT);
+    }
   });
 });
 

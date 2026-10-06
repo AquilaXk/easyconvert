@@ -98,7 +98,7 @@ describe('Unknown upload format is a typed 400 (#483)', () => {
         body: payload,
         duplex: 'half',
       } as never),
-      { params: { id: [sessionId] } }
+      { params: Promise.resolve({ id: [sessionId] }) }
     );
     expect(patchRes.status).toBe(400);
     const problem = await patchRes.json();
