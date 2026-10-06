@@ -14,6 +14,7 @@ import { storageProvider as ociStorage } from '../lib/storage';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
+import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 
 export interface WorkerLifecycleConfig {
   concurrency: number;
@@ -271,6 +272,7 @@ export async function drainWorker(
 
   // Close worker queue subscriptions and clean up listeners after active jobs finish
   await ociWorker.close();
+  await shutdownSharedOcrWorkerPool();
 
   stopHeartbeat();
   console.log(`[EasyConvert OCI Worker] Worker daemon drain completed cleanly.`);

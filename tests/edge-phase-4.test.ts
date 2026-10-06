@@ -212,8 +212,12 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       });
 
       const res = await streamConvertWithOpfs(dummyFile, 'csv', 'tsv');
-      expect(res.size).toBe(dummyFile.size);
-      expect(res.url).toBeDefined();
+      // Hand-written expected TSV: no BOM, CRLF between records and no trailing record separator.
+      const expected = Buffer.from('id\tname\trole\r\n1\tAlice\tEngineer\r\n2\tBob\tScientist', 'utf-8');
+      const produced = Buffer.from(await res.blob.arrayBuffer());
+      expect(produced.toString('hex')).toBe(expected.toString('hex'));
+      expect(res.size).toBe(expected.byteLength);
+      expect(res.url.startsWith('blob:')).toBe(true);
 
       // Enforces fail-closed on unsupported streaming formats
       const unsupportedFile = new File([new Uint8Array(1024)], 'unsupported.mp4', { type: 'video/mp4' });
