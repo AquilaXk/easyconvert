@@ -114,11 +114,6 @@ export function parseVerapdfVerdict(json: string): VerapdfVerdict {
   return { compliant: verdicts.every(Boolean), failedRules: [...failedRules] };
 }
 
-/** Whether a veraPDF JSON report says the file is compliant. */
-export function parseVerapdfReport(json: string): boolean {
-  return parseVerapdfVerdict(json).compliant;
-}
-
 /** `pdfaid:part` and `pdfaid:conformance` from the document's XMP metadata, if present. */
 async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; conformance?: string }> {
   try {

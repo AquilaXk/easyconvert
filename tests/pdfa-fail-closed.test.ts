@@ -6,7 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
-import { convertToPdfA, parseVerapdfReport } from '../src/lib/conversions/pdf-postprocess/pdfa';
+import * as pdfaModule from '../src/lib/conversions/pdf-postprocess/pdfa';
+import { convertToPdfA, parseVerapdfVerdict } from '../src/lib/conversions/pdf-postprocess/pdfa';
 import { convertFile } from '../src/lib/conversions';
 import { EngineUnavailableError, PdfPostprocessError, UnsupportedOptionError } from '../src/lib/types';
 
@@ -159,17 +160,58 @@ describe('convertToPdfA fails closed', () => {
   });
 });
 
-describe('parseVerapdfReport', () => {
+describe('parseVerapdfVerdict', () => {
   it('reads compliance from array and object validation results', () => {
-    expect(parseVerapdfReport('{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}')).toBe(true);
-    expect(parseVerapdfReport('{"report":{"jobs":[{"validationResult":[{"compliant":true},{"compliant":false}]}]}}')).toBe(false);
-    expect(parseVerapdfReport('{"report":{"jobs":[{"validationResult":{"isCompliant":true}}]}}')).toBe(true);
-    expect(parseVerapdfReport('{"report":{"jobs":[{"validationResult":{"isCompliant":false}}]}}')).toBe(false);
+    expect(parseVerapdfVerdict('{"report":{"jobs":[{"validationResult":[{"compliant":true}]}]}}').compliant).toBe(true);
+    expect(
+      parseVerapdfVerdict('{"report":{"jobs":[{"validationResult":[{"compliant":true},{"compliant":false}]}]}}').compliant
+    ).toBe(false);
+    expect(parseVerapdfVerdict('{"report":{"jobs":[{"validationResult":{"isCompliant":true}}]}}').compliant).toBe(true);
+    expect(parseVerapdfVerdict('{"report":{"jobs":[{"validationResult":{"isCompliant":false}}]}}').compliant).toBe(false);
+  });
+
+  it('lists the failed rules as clause-test IDs without duplicates, in report order', () => {
+    const report = JSON.stringify({
+      report: {
+        jobs: [
+          {
+            validationResult: [
+              {
+                compliant: false,
+                details: {
+                  ruleSummaries: [
+                    { clause: '6.2.11.4.1', testNumber: 1, status: 'failed' },
+                    { clause: '6.1.3', testNumber: 1, status: 'failed' },
+                    { clause: '6.1.3', testNumber: 1, status: 'failed' },
+                    { clause: '6.1.7', testNumber: 2, status: 'passed' },
+                    { clause: 6, testNumber: 'x', status: 'failed' },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(parseVerapdfVerdict(report)).toEqual({ compliant: false, failedRules: ['6.2.11.4.1-1', '6.1.3-1'] });
   });
 
   it('throws on a report without a validation result instead of guessing', () => {
-    expect(() => parseVerapdfReport('{"report":{"jobs":[{"itemDetails":{"passed":true}}]}}')).toThrow(PdfPostprocessError);
-    expect(() => parseVerapdfReport('not json')).toThrow(PdfPostprocessError);
+    expect(() => parseVerapdfVerdict('{"report":{"jobs":[{"itemDetails":{"passed":true}}]}}')).toThrow(PdfPostprocessError);
+    expect(() => parseVerapdfVerdict('not json')).toThrow(PdfPostprocessError);
+  });
+
+  it('is the only report reader: the module exports no boolean wrapper around it', () => {
+    expect(Object.keys(pdfaModule).sort()).toEqual([
+      'VERAPDF_ENGINE_NAME',
+      'convertToPdfA',
+      'getLibreOfficeBinaryPath',
+      'getVerapdfBinaryPath',
+      'parseVerapdfVerdict',
+      'requireVerapdf',
+      'verifyPdfA',
+    ]);
   });
 });
 
