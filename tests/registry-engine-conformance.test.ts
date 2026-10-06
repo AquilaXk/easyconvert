@@ -22,6 +22,7 @@ const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
+import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 
 /**
@@ -93,6 +94,19 @@ const CSV_TEXT = Buffer.from('name,count\nalpha,1\nbeta,2\n', 'utf-8');
 const SVG_TEXT = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">' +
     '<rect x="4" y="4" width="24" height="24" fill="#336699"/><line x1="0" y1="0" x2="32" y2="32" stroke="#000"/></svg>',
+  'utf-8'
+);
+
+/** A hand-written SVG font whose glyph paths cover lines, a quadratic and a cubic curve and an arc. */
+const SVG_FONT_SEED = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg"><defs><font horiz-adv-x="1000">' +
+    '<font-face font-family="Probe Sans" units-per-em="1000" ascent="800" descent="-200"/>' +
+    '<missing-glyph horiz-adv-x="500" d="M50 0 H450 V700 H50 Z"/>' +
+    '<glyph unicode="A" horiz-adv-x="700" d="M0 0 L350 700 L700 0 Z"/>' +
+    '<glyph unicode="B" horiz-adv-x="700" d="M100 0 V700 Q600 700 600 350 T100 0 Z"/>' +
+    '<glyph unicode="C" horiz-adv-x="700" d="M100 100 C100 700 600 700 600 100 Z"/>' +
+    '<glyph unicode="D" horiz-adv-x="800" d="M0 350 A350 350 0 1 1 700 350 A350 350 0 1 1 0 350 Z"/>' +
+    '</font></defs></svg>',
   'utf-8'
 );
 
@@ -196,6 +210,8 @@ const DERIVATION_SEEDS: readonly { format: string; buffer: Buffer }[] = [
 ];
 
 const NDJSON_TEXT = Buffer.from('{"name":"alpha","count":1}\n{"name":"beta","count":2}\n', 'utf-8');
+// A YAML mapping: the CSV-derived YAML probe is a sequence, which a TOML document (a table) cannot hold.
+const YAML_MAPPING_TEXT = Buffer.from('name: alpha\ncount: 1\ntags: [x, y]\n', 'utf-8');
 const STL_TEXT = Buffer.from(
   [
     'solid probe',
@@ -226,6 +242,8 @@ async function buildCbz(): Promise<Buffer> {
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
+  yaml: () => YAML_MAPPING_TEXT,
+  yml: () => YAML_MAPPING_TEXT,
   stl: () => STL_TEXT,
   obj: () => OBJ_TEXT,
   gz: () => gzipSync(PLAIN_TEXT),
@@ -244,6 +262,17 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   txz: () => compressXz(TAR_SEED),
   'tar.xz': () => compressXz(TAR_SEED),
   'tar.7z': () => create7zArchive([{ filename: 'probe.tar', buffer: TAR_SEED }]).buffer,
+  // SVG fonts (also read from the plain svg extension) need glyph paths to become outlines.
+  svg: () => SVG_FONT_SEED,
+  svgfont: () => SVG_FONT_SEED,
+  // Font probes need real outlines: a font without glyf or CFF glyphs makes conversion fail closed, which
+  // the gate would read as inconclusive. Both seeds come from the independent writers in tests/helpers.
+  ttf: () => FONT_TTF_SEED,
+  otf: () => FONT_OTF_SEED,
+  // Web font containers wrapped around the TrueType seed.
+  woff: () => wrapFontSeed('woff'),
+  woff2: () => wrapFontSeed('woff2'),
+  eot: () => wrapFontSeed('eot'),
   rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
@@ -253,6 +282,24 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   exr: () => buildPatchExr('half'),
   ultrahdr: () => buildPatchUltraHdr(),
 };
+
+/** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */
+const FONT_TTF_SEED = buildTrueTypeFont({ family: 'Probe Sans' });
+
+/** OpenType probe font: a CFF charstring rectangle mapped to U+0041 in the cmap. */
+const FONT_OTF_SEED = buildOtf({
+  family: 'Probe Sans CFF',
+  glyphs: [
+    { charstring: cs('endchar'), advance: 500, lsb: 0 },
+    { charstring: cs(100, 0, 'rmoveto', 400, 700, -400, 'hlineto', 'endchar'), advance: 600, lsb: 100 },
+  ],
+  codePoints: [0x41],
+  cff: { defaultWidthX: 600, nominalWidthX: 0 },
+});
+
+async function wrapFontSeed(target: 'woff' | 'woff2' | 'eot'): Promise<Buffer> {
+  return (await convertFile(FONT_TTF_SEED, 'ttf', target, {}, 'probe.ttf')).buffer;
+}
 
 async function requireDerived(format: string): Promise<Buffer> {
   const derived = await deriveProbeInput(format);
@@ -596,6 +643,26 @@ describe('every advertised registry pair has an engine path', () => {
     },
     RAW_SOURCE_TIMEOUT_MS
   );
+
+  it('converts every toml pair, as source or target, through a real engine run', async () => {
+    const tomlPairs = pairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
+    expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
+      'json->toml',
+      'toml->json',
+      'toml->txt',
+      'toml->xml',
+      'toml->yaml',
+      'toml->zip',
+      'yaml->toml',
+      'yml->toml',
+    ]);
+    const notRouted: string[] = [];
+    for (const [source, target] of tomlPairs) {
+      const { outcome, detail } = await probePairCached(source, target);
+      if (outcome !== 'routed') notRouted.push(`${source}->${target}: ${outcome} ${detail}`);
+    }
+    expect(notRouted).toEqual([]);
+  }, CATEGORY_TIMEOUT_MS);
 
   it('audio and video sources routed outside the media transcoder', async () => {
     const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');

@@ -485,15 +485,14 @@ END-ISO-10303-21;`;
       const header = Buffer.alloc(48);
       header.write('wOF2', 0, 4, 'ascii');
       header.writeUInt32BE(0x00010000, 4); // flavor
-      header.writeUInt32BE(120, 8); // total length
       header.writeUInt16BE(1, 12); // numTables = 1
       const tableDir = Buffer.from([0x00, 0x10]); // tag 0, length 16
       const corruptPayload = Buffer.from('TOTALLY_CORRUPTED_NON_BROTLI_BITSTREAM_BYTES_XYZ');
+      header.writeUInt32BE(header.length + tableDir.length + corruptPayload.length, 8); // total length
+      header.writeUInt32BE(corruptPayload.length, 20); // total compressed size
       const corruptWoff2 = Buffer.concat([header, tableDir, corruptPayload]);
 
-      expect(() => decodeWoff2(corruptWoff2, 'corrupt.woff2')).toThrow(
-        /compressed table stream is corrupted or invalid/
-      );
+      expect(() => decodeWoff2(corruptWoff2, 'corrupt.woff2')).toThrow(/not a valid Brotli stream/);
     });
 
     it('extracts embedded image from PDF when /Filter /DCTDecode has whitespace formatting', () => {

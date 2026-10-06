@@ -2,14 +2,13 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
-import { createCanonicalFont, encodeSfnt } from '../src/lib/conversions/font';
+import { buildTrueTypeFont } from './helpers/mac-font-containers';
 import { CadGeometryUnavailableError } from '../src/lib/types';
 
 describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadsheet, Presentation, Document)', () => {
-  // Helper to generate a minimal valid TrueType font buffer
+  // A small TrueType font with real glyf outlines, written by the independent test helper
   function createTestTtfBuffer(fontFamily = 'EasyConvertSans'): Buffer {
-    const canonical = createCanonicalFont(Buffer.alloc(0), fontFamily);
-    return encodeSfnt(canonical);
+    return buildTrueTypeFont({ family: fontFamily });
   }
 
   // =========================================================================
@@ -82,7 +81,10 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       const xml = result.buffer.toString('utf-8');
       expect(xml).toContain('<svg');
       expect(xml).toContain('<font');
-      expect(xml).toContain('<glyph');
+      // The helper font has glyphs for A, B and C; the SVG paths are their real outlines.
+      expect(xml).toContain('<glyph unicode="A" horiz-adv-x="600" d="M50 0 L50 700 L550 700 L550 0 Z" />');
+      expect(xml).toContain('<glyph unicode="B" horiz-adv-x="600" d="M50 0 L300 700 L550 0 Z" />');
+      expect(xml).toContain('<glyph unicode="C" horiz-adv-x="600"');
     });
   });
 

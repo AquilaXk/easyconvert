@@ -5,6 +5,7 @@ import { convertVectorCad, parseCgmToSvg } from '../src/lib/conversions/vector-c
 import { convertOffice, extractTextContentForOffice } from '../src/lib/conversions/office';
 import { create7zArchive, extract7zArchive } from '../src/lib/conversions/archive';
 import { convertMedia, ConversionFailedError, checkFfmpeg } from '../src/lib/conversions/media';
+import { EngineUnavailableError } from '../src/lib/types';
 import {
   applyRgbaQuantize,
   WasmEngine,
@@ -373,7 +374,7 @@ endobj
       return buf;
     }
 
-    it('strictly throws ConversionFailedError for lossy psychoacoustic formats when FFmpeg is absent or disabled and allowPureLossyBitstream is omitted', async () => {
+    it('strictly throws ConversionFailedError for lossy psychoacoustic formats when FFmpeg is absent or disabled', async () => {
       const wav = createTestWav();
 
       await expect(
@@ -393,16 +394,22 @@ endobj
       ).rejects.toThrow(ConversionFailedError);
     });
 
-    it('allows lossless FLAC and pure TS MP3 conversion with allowPureLossyBitstream without throwing ConversionFailedError', async () => {
+    it('allows lossless FLAC without the native engine but refuses pure MP3 even with allowPureLossyBitstream', async () => {
       const wav = createTestWav();
 
       const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
       expect(flacRes.mimeType).toBe('audio/flac');
       expect(flacRes.buffer.indexOf('fLaC')).toBe(0);
 
-      const mp3Res = await convertMedia(wav, 'wav', 'mp3', { disableNativeEngine: true, allowPureLossyBitstream: true }, 'test.wav');
-      expect(mp3Res.mimeType).toBe('audio/mpeg');
-      expect(mp3Res.buffer.length).toBeGreaterThan(0);
+      const mp3Error = await convertMedia(
+        wav,
+        'wav',
+        'mp3',
+        { disableNativeEngine: true, allowPureLossyBitstream: true },
+        'test.wav'
+      ).catch((err: unknown) => err);
+      expect(mp3Error).toBeInstanceOf(EngineUnavailableError);
+      expect((mp3Error as EngineUnavailableError).engineName).toBe('ffmpeg');
     });
   });
 
