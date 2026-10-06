@@ -58,13 +58,10 @@ const KIND_FLOAT = 2;
 const KIND_INT = 4;
 const KIND_BOOL = 8;
 const KIND_OTHER = 16;
-
-const ALLOWED_KINDS_BY_TYPE: ReadonlyMap<ParquetType, number> = new Map([
-  [ParquetType.BYTE_ARRAY, KIND_STRING],
-  [ParquetType.DOUBLE, KIND_FLOAT | KIND_INT],
-  [ParquetType.INT64, KIND_INT],
-  [ParquetType.BOOLEAN, KIND_BOOL],
-]);
+const KIND_DATE = 32;
+/** Kinds that are exactly one family of value; more than one family widens the column to text. */
+const NUMBER_KINDS = KIND_FLOAT | KIND_INT;
+const FAMILY_KINDS = [KIND_STRING, NUMBER_KINDS, KIND_BOOL, KIND_DATE];
 
 const SUPPORTED_WRITE_CODECS: ReadonlySet<CompressionCodec> = new Set([
   CompressionCodec.UNCOMPRESSED,
@@ -87,14 +84,6 @@ const UTF16_PRIVATE_BMP_START = 0xe000;
 const UTF16_SURROGATE_REMAP = 0x2000;
 const UTF16_BMP_REMAP = 0x800;
 
-function kindName(kind: number): string {
-  if (kind === KIND_STRING) return 'a string';
-  if (kind === KIND_FLOAT) return 'a non-integer number';
-  if (kind === KIND_INT) return 'an integer';
-  if (kind === KIND_BOOL) return 'a boolean';
-  return 'an unsupported value';
-}
-
 function typeName(type: ParquetType): string {
   return ParquetType[type] ?? String(type);
 }
@@ -105,6 +94,7 @@ function classifyValue(value: unknown): number {
   if (t === 'string') return KIND_STRING;
   if (t === 'boolean') return KIND_BOOL;
   if (t === 'number') return Number.isSafeInteger(value) ? KIND_INT : KIND_FLOAT;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? KIND_OTHER : KIND_DATE;
   return KIND_OTHER;
 }
 
@@ -161,6 +151,9 @@ function analyzeRecords(records: readonly unknown[]): AnalyzedColumn[] {
 }
 
 function inferType(flags: number): ParquetType {
+  const families = FAMILY_KINDS.filter((family) => (flags & family) !== 0).length;
+  // Mixed families (or dates, which have no column type of their own) widen to text, losslessly.
+  if (families > 1 || (flags & KIND_DATE) !== 0) return ParquetType.BYTE_ARRAY;
   if ((flags & KIND_STRING) !== 0) return ParquetType.BYTE_ARRAY;
   if ((flags & KIND_FLOAT) !== 0) return ParquetType.DOUBLE;
   if ((flags & KIND_INT) !== 0) return ParquetType.INT64;
@@ -176,33 +169,29 @@ function schemaFor(name: string, type: ParquetType): ColumnSchema {
 }
 
 /**
- * Infers one OPTIONAL column per record key. Precedence: string, then double, then int64, then boolean;
- * a column with no values is an all-null string column.
+ * Infers one OPTIONAL column per record key: double, int64, boolean or string. A column that mixes numbers,
+ * booleans, strings or dates becomes a string column (numbers and booleans in their canonical JS text, dates as
+ * ISO-8601); a column with no values is an all-null string column.
  */
 export function inferColumnSchemas(records: Record<string, unknown>[]): ColumnSchema[] {
   if (records.length === 0) return [];
   return analyzeRecords(records).map((c) => schemaFor(c.name, inferType(c.flags)));
 }
 
-/** Throws a typed error naming the first value that does not fit the inferred column type. */
-function assertValuesFit(column: AnalyzedColumn, type: ParquetType): void {
-  const unsupported = column.flags & KIND_OTHER;
-  const allowed = ALLOWED_KINDS_BY_TYPE.get(type) ?? 0;
-  const mismatch = (column.flags & ~allowed) | unsupported;
-  if (mismatch === 0) return;
+/** Throws a typed error naming the first value that no column type can represent. */
+function assertValuesFit(column: AnalyzedColumn): void {
+  if ((column.flags & KIND_OTHER) === 0) return;
   for (let r = 0; r < column.values.length; r++) {
-    const kind = classifyValue(column.values[r]);
-    if (kind !== 0 && (kind & allowed) === 0) {
-      const found = kind === KIND_OTHER ? describeUnsupported(column.values[r]) : kindName(kind);
+    if (classifyValue(column.values[r]) === KIND_OTHER) {
       throw new ParquetValueError(
-        `Cannot write Parquet: column "${column.name}" row ${r} holds ${found}, which does not fit the inferred ${typeName(type)} column.`
+        `Cannot write Parquet: column "${column.name}" row ${r} holds ${describeUnsupported(column.values[r])}, which has no Parquet column type.`
       );
     }
   }
 }
 
 function describeUnsupported(value: unknown): string {
-  if (value instanceof Date) return 'a date';
+  if (value instanceof Date) return 'an invalid date';
   if (Array.isArray(value)) return 'an array';
   if (value !== null && typeof value === 'object') return 'a nested object';
   return `a ${typeof value} value`;
@@ -219,15 +208,25 @@ interface ColumnPlan {
   byteLengths: Uint32Array | null;
 }
 
+/** Text form of a value that widened into a string column; null for nulls and non-text values. */
+function canonicalText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value instanceof Date) return value.toISOString();
+  return null;
+}
+
 function planColumn(column: AnalyzedColumn): ColumnPlan {
   const type = inferType(column.flags);
-  assertValuesFit(column, type);
+  assertValuesFit(column);
   let byteLengths: Uint32Array | null = null;
   if (type === ParquetType.BYTE_ARRAY) {
     byteLengths = new Uint32Array(column.values.length);
     for (let r = 0; r < column.values.length; r++) {
-      const v = column.values[r];
-      if (typeof v !== 'string') continue;
+      const v = canonicalText(column.values[r]);
+      if (v === null) continue;
+      column.values[r] = v;
       if (ANY_SURROGATE.test(v) && LONE_SURROGATE.test(v)) {
         throw new ParquetValueError(
           `Cannot write Parquet: column "${column.name}" row ${r} holds a string with an unpaired UTF-16 surrogate, which has no UTF-8 encoding.`

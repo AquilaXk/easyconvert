@@ -208,6 +208,32 @@ describe('Parquet writer conformance (issue 526)', () => {
     expect(read.schema.map((f) => f.type)).toEqual(['double', 'double', 'int64']);
   });
 
+  oracleTest('a column mixing numbers, booleans and strings becomes a string column with canonical text', ['python3'], () => {
+    const rows: Row[] = [{ v: 1 }, { v: 'x' }, { v: 2.5 }, { v: true }, { v: -0 }, { v: null }, { v: '' }, { v: 1e21 }, { v: false }];
+    const read = pyarrowRead(encodeParquet(rows));
+    expectColumnEquals(read.columns.v, ['1', 'x', '2.5', 'true', '0', null, '', '1e+21', 'false']);
+    expect(read.schema.map((f) => f.type)).toEqual(['string']);
+  });
+
+  oracleTest('numbers mixed with booleans widen to strings, while int and float still widen to double', ['python3'], () => {
+    const read = pyarrowRead(encodeParquet([{ a: 1, b: 1 }, { a: true, b: 2.5 }]));
+    expectColumnEquals(read.columns.a, ['1', 'true']);
+    expectColumnEquals(read.columns.b, [1, 2.5]);
+    expect(read.schema.map((f) => f.type)).toEqual(['string', 'double']);
+  });
+
+  oracleTest('Date values become ISO-8601 strings, alone or mixed with text', ['python3'], () => {
+    const rows: Row[] = [
+      { d: new Date(Date.UTC(2024, 1, 29, 12, 30, 5, 123)), m: new Date(0) },
+      { d: null, m: 'later' },
+      { d: new Date(Date.UTC(1969, 11, 31, 23, 59, 59, 999)), m: 7 },
+    ];
+    const read = pyarrowRead(encodeParquet(rows));
+    expectColumnEquals(read.columns.d, ['2024-02-29T12:30:05.123Z', null, '1969-12-31T23:59:59.999Z']);
+    expectColumnEquals(read.columns.m, ['1970-01-01T00:00:00.000Z', 'later', '7']);
+    expect(read.schema.map((f) => f.type)).toEqual(['string', 'string']);
+  });
+
   oracleTest('a string column keeps empty strings distinct from nulls', ['python3'], () => {
     const rows: Row[] = [{ s: '' }, { s: null }, { s: 'a' }, {}];
     const read = pyarrowRead(encodeParquet(rows));
@@ -569,24 +595,14 @@ describe('Parquet writer conformance (issue 526)', () => {
       expectValueError([[1, 2]], /record 0 is not an object/);
     });
 
-    it('rejects a number in a string column with the column and row in the message', () => {
-      expectValueError([{ id: 'a' }, { id: 'b' }, { id: 3 }], /column "id" row 2 holds an integer/);
-    });
-
-    it('rejects a string in a numeric column the inference resolved to string', () => {
-      expectValueError([{ v: 1 }, { v: 'x' }], /column "v" row 0 holds an integer/);
-    });
-
-    it('rejects booleans mixed into numeric columns', () => {
-      expectValueError([{ v: 1 }, { v: true }], /column "v" row 1 holds a boolean/);
-      expectValueError([{ v: 1.5 }, { v: false }], /column "v" row 1 holds a boolean/);
-    });
-
-    it('rejects nested objects, arrays, dates and bigints instead of stringifying them', () => {
+    it('rejects nested objects, arrays and bigints with the column and row in the message', () => {
       expectValueError([{ v: { a: 1 } }], /column "v" row 0 holds a nested object/);
-      expectValueError([{ v: [1, 2] }], /holds an array/);
-      expectValueError([{ v: new Date(0) }], /holds a date/);
+      expectValueError([{ v: 'x' }, { v: [1, 2] }], /column "v" row 1 holds an array/);
       expectValueError([{ v: 10n }], /holds a bigint value/);
+    });
+
+    it('rejects an invalid Date, which has no ISO-8601 text', () => {
+      expectValueError([{ v: new Date(Number.NaN) }], /column "v" row 0 holds an invalid date/);
     });
 
     it('rejects strings with unpaired surrogates, which have no UTF-8 encoding', () => {
@@ -607,14 +623,20 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(() => encodeParquet([{ a: 1 }], { codec: CompressionCodec.ZSTD })).toThrow(ParquetCodecUnavailableError);
     });
 
-    it('answers HTTP-400-class errors through convertData for mixed-type JSON', async () => {
-      const json = Buffer.from(JSON.stringify([{ id: 1 }, { id: 'two' }]), 'utf-8');
-      const failure = await convertData(json, 'json', 'parquet', {}, 'mixed.json').then(
+    it('answers HTTP-400-class errors through convertData for nested JSON values', async () => {
+      const json = Buffer.from(JSON.stringify([{ id: 1 }, { id: { inner: 2 } }]), 'utf-8');
+      const failure = await convertData(json, 'json', 'parquet', {}, 'nested.json').then(
         () => null,
         (error: unknown) => error
       );
       expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect((failure as Error).message).toMatch(/column "id" row 0 holds an integer/);
+      expect((failure as Error).message).toMatch(/column "id" row 1 holds a nested object/);
+    });
+
+    it('widens mixed-type JSON to a string column through convertData', async () => {
+      const json = Buffer.from(JSON.stringify([{ id: 1 }, { id: 'A2' }]), 'utf-8');
+      const parquet = await convertData(json, 'json', 'parquet', {}, 'mixed.json');
+      expect(decodeParquet(parquet.buffer)).toEqual([{ id: '1' }, { id: 'A2' }]);
     });
 
     it('converts JSON with nulls to a Parquet file whose nulls survive a decode', async () => {
