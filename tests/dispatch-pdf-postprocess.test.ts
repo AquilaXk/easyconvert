@@ -66,6 +66,7 @@ describe('PDF post-processing on native-routed output', () => {
         SAMPLE_DOCX,
         'docx',
         'pdf',
+        // PDF/A-2b: this LibreOffice build's 1b output fails veraPDF rule 6.7.3-1 (issue #582).
         { pdfa: { conformance: 'pdfa-2b' } },
         'sample.docx'
       );
