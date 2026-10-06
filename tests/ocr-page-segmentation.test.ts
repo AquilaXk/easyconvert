@@ -65,6 +65,14 @@ describe('OCR segmentation parameters', () => {
     expect(ocrSegmentationFor('chi_sim')).toEqual({ pageSegMode: '3', engineMode: 1 });
   });
 
+  it('reads images too short for page layout analysis as one block', () => {
+    expect(ocrSegmentationFor('kor', 40)).toEqual({ pageSegMode: '6', engineMode: 1 });
+    expect(ocrSegmentationFor('eng', 100)).toEqual({ pageSegMode: '6', engineMode: 1 });
+    expect(ocrSegmentationFor('eng', 101)).toEqual({ pageSegMode: '3', engineMode: 1 });
+    expect(ocrSegmentationFor('eng', 3508)).toEqual({ pageSegMode: '3', engineMode: 1 });
+    expect(ocrSegmentationFor('jpn_vert', 40)).toEqual({ pageSegMode: '5', engineMode: 1 });
+  });
+
   it('uses single-block vertical segmentation for _vert data', () => {
     expect(ocrSegmentationFor('jpn_vert')).toEqual({ pageSegMode: '5', engineMode: 1 });
     expect(ocrSegmentationFor('chi_tra_vert')).toEqual({ pageSegMode: '5', engineMode: 1 });

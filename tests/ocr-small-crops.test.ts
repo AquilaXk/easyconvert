@@ -10,9 +10,10 @@ import { getOracleToolPath, OracleToolMissingError } from './helpers/differentia
 import { wordRecall } from './helpers/ocr-cer';
 
 /**
- * Automatic page segmentation finds no text block in very small images (a UI label, a cropped
- * word): it returns nothing. Such images are retried with single-block segmentation on the same
- * worker. Expected text is the text drawn into each image.
+ * Images too short for page layout analysis (a UI label, a cropped word) are read as one block on
+ * the same worker; automatic segmentation can return nothing or stray glyphs on them. Taller
+ * images where automatic segmentation finds no words are retried as one block. Expected text is
+ * the text drawn into each image.
  */
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');
 const TEST_TIMEOUT_MS = 120_000;
@@ -44,7 +45,7 @@ async function textImage(word: string, width: number, height: number, fontSize: 
     .toBuffer();
 }
 
-/** Counts the jobs that fall back to single-block segmentation, by wrapping the shared pool's run. */
+/** Counts the recognitions run with single-block segmentation, by wrapping the shared pool's run. */
 function countSegmentationRetries(): () => number {
   const pool = getSharedOcrWorkerPool();
   const run = pool.run.bind(pool);
@@ -67,7 +68,7 @@ describe('small crops', () => {
   });
 
   oracleTest(
-    'reads a 120x40 Korean label on the worker that found nothing under automatic segmentation',
+    'reads a 120x40 Korean label as one block on the shared worker',
     ['tesseract'],
     async () => {
       requireTraineddata('kor');
@@ -93,6 +94,7 @@ describe('small crops', () => {
         tessdataDir,
         tesseractLang: 'kor',
         image: await textImage('한글', 120, 40, 20, 'monospace'),
+        imageHeight: 40,
       });
       expect(result.text).toBe('한글');
       expect(result.wordCount).toBe(1);
@@ -124,6 +126,24 @@ describe('small crops', () => {
       const result = await performOcr(blank, 'eng');
       expect(result.text).toBe('');
       expect(result.wordCount).toBe(0);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'retries a blank page as one block once and still returns no text',
+    ['tesseract'],
+    async () => {
+      requireTraineddata('eng');
+      const retries = countSegmentationRetries();
+      const blankPage = await sharp({
+        create: { width: 600, height: 400, channels: 3, background: { r: 255, g: 255, b: 255 } },
+      })
+        .png()
+        .toBuffer();
+      const result = await performOcr(blankPage, 'eng');
+      expect(result.text).toBe('');
+      expect(retries()).toBe(1);
     },
     TEST_TIMEOUT_MS
   );

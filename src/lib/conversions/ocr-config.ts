@@ -16,6 +16,12 @@
 export const OCR_PSM_AUTO = '3';
 /** PSM 6: one uniform block of text; reads small crops and single lines that PSM 3 finds nothing in. */
 export const OCR_PSM_SINGLE_BLOCK = '6';
+/**
+ * Images up to this height hold one or two text lines (a UI label, a cropped word or line) and no
+ * page layout. Page layout analysis on them can return stray glyphs instead of the text (a 120x40
+ * Korean label read as "00 [기" under PSM 3 on one engine build), so they are read as one block.
+ */
+export const OCR_SMALL_CROP_MAX_HEIGHT_PX = 100;
 /** The single-block retry replaces an empty automatic reading when it recognizes at least this many more words. */
 export const OCR_FALLBACK_MIN_WORD_GAIN = 1;
 /** PSM 5: a single uniform block of vertically aligned text, for `_vert` traineddata. */
@@ -31,13 +37,22 @@ export interface OcrSegmentation {
   engineMode: number;
 }
 
-/** Picks page segmentation and engine mode for a Tesseract language set such as `eng` or `jpn_vert`. */
-export function ocrSegmentationFor(tesseractLang: string): OcrSegmentation {
-  const vertical = tesseractLang.split(LANGUAGE_SEPARATOR).some((lang) => lang.endsWith(VERTICAL_DATA_SUFFIX));
-  return {
-    pageSegMode: vertical ? OCR_PSM_VERTICAL_BLOCK : OCR_PSM_AUTO,
-    engineMode: OCR_OEM_LSTM_ONLY,
-  };
+function isVerticalData(tesseractLang: string): boolean {
+  return tesseractLang.split(LANGUAGE_SEPARATOR).some((lang) => lang.endsWith(VERTICAL_DATA_SUFFIX));
+}
+
+/**
+ * Picks page segmentation and engine mode for a Tesseract language set such as `eng` or `jpn_vert`,
+ * and for the image height in pixels when it is known.
+ */
+export function ocrSegmentationFor(tesseractLang: string, imageHeight?: number): OcrSegmentation {
+  let pageSegMode = OCR_PSM_AUTO;
+  if (isVerticalData(tesseractLang)) {
+    pageSegMode = OCR_PSM_VERTICAL_BLOCK;
+  } else if (imageHeight !== undefined && imageHeight <= OCR_SMALL_CROP_MAX_HEIGHT_PX) {
+    pageSegMode = OCR_PSM_SINGLE_BLOCK;
+  }
+  return { pageSegMode, engineMode: OCR_OEM_LSTM_ONLY };
 }
 
 /**
@@ -45,7 +60,7 @@ export function ocrSegmentationFor(tesseractLang: string): OcrSegmentation {
  * there is none. Vertical data is already single-block, and PSM 6 would read it sideways.
  */
 export function ocrFallbackPageSegMode(tesseractLang: string): string | null {
-  return ocrSegmentationFor(tesseractLang).pageSegMode === OCR_PSM_AUTO ? OCR_PSM_SINGLE_BLOCK : null;
+  return isVerticalData(tesseractLang) ? null : OCR_PSM_SINGLE_BLOCK;
 }
 
 /** Whether a retry found enough more words than the first reading to replace it. */
