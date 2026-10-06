@@ -560,6 +560,13 @@ describe('preprocessOcrImage', () => {
     expect(outputLine).toBeLessThanOrEqual(MAX_LINE_HEIGHT_PX);
   });
 
+  it('records no resolution in the prepared image: a 300 dpi hint made the Korean pages read worse', async () => {
+    for (const name of ['en_a__dpi72', 'en_a__shade', 'en_a__skew3']) {
+      const { density } = await sharp((await preprocessOcrImage(fixture(name))).image).metadata();
+      expect(density, name).toBeUndefined();
+    }
+  });
+
   it('enlarges without binarizing when only the rescale step is on', async () => {
     const result = await preprocessOcrImage(fixture('en_a__dpi72'), { rescale: true, deskew: false, binarize: false });
     expect(result.applied).toEqual({ rescale: true, deskew: false, binarize: false });

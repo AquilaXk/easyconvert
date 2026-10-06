@@ -136,15 +136,17 @@ function mean(values: number[]): number {
 }
 
 /**
- * CJK pages per degradation. Bounds sit above the measured error rates with room for engine build
- * differences. The 3 degree skew is asserted for Japanese above; Korean skew is not asserted because
- * the WebAssembly engine's automatic page segmentation reads the same Korean page from 0% to 66%
- * depending on small changes in the input (the native CLI reads this page exactly).
+ * Korean and Japanese pages per degradation (the Japanese 3 degree skew is asserted above). Bounds
+ * sit above the measured error rates with room for engine build differences. Korean is the least
+ * stable: the WebAssembly engine's automatic page segmentation reads clean Korean pages anywhere
+ * from 0% to 100% depending on the text and on small changes in the input, so the Korean skew bound
+ * is only below what the unprepared page scores (16%).
  */
 const CJK_BOUNDS: Array<{ page: string; variant: string; maxCerPercent: number }> = [
   { page: 'ko_a', variant: 'shade', maxCerPercent: 5 },
   { page: 'ko_a', variant: 'dpi72', maxCerPercent: 5 },
-  { page: 'ko_a', variant: 'noise', maxCerPercent: 10 },
+  { page: 'ko_a', variant: 'noise', maxCerPercent: 5 },
+  { page: 'ko_a', variant: 'skew3', maxCerPercent: 12 },
   { page: 'ja_a', variant: 'shade', maxCerPercent: 2 },
   { page: 'ja_a', variant: 'dpi72', maxCerPercent: 5 },
   { page: 'ja_a', variant: 'noise', maxCerPercent: 2 },
@@ -189,10 +191,9 @@ describe('English degradation set', () => {
 /**
  * The gate for the preparation steps: a step stays enabled only if the pages it targets read
  * better with it than without it, and the pages with every step beat the unprepared pages.
- * Pages are the shaded, 72 dpi and skewed variants of two English and two Japanese pages (Korean
- * is left out because its page segmentation is erratic, see CJK_BOUNDS).
+ * Pages are the shaded, 72 dpi and skewed variants of two English, one Korean and two Japanese pages.
  */
-const GATE_PAGES = ['en_a', 'en_b', 'ja_a', 'ja_b'];
+const GATE_PAGES = ['en_a', 'en_b', 'ko_a', 'ja_a', 'ja_b'];
 const GATE_VARIANTS = ['shade', 'dpi72', 'skew3'];
 
 async function gateMean(steps: OcrPreprocessSteps): Promise<number> {
@@ -208,8 +209,7 @@ describe('preparation step gate', () => {
     'keeps every enabled step only if it lowers the mean CER',
     ['tesseract'],
     async () => {
-      requireData('eng');
-      requireData('jpn');
+      for (const lang of ['eng', 'kor', 'jpn']) requireData(lang);
       const all = OCR_PREPROCESS_STEPS;
       const withAll = await gateMean(all);
       const withNone = await gateMean({ rescale: false, deskew: false, binarize: false });

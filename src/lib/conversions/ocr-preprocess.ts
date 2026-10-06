@@ -52,8 +52,6 @@ export const SAUVOLA_WINDOW_LINE_FACTOR = 1.5;
  */
 export const OCR_BINARIZE_MIN_LINE_PX = 20;
 export const OCR_PNG_COMPRESSION_LEVEL = 3;
-/** Resolution recorded in the prepared image, so recognition does not guess it from the pixel size. */
-export const OCR_OUTPUT_DPI = 300;
 const GRAY_CHANNELS = 1;
 const GRAY_LEVELS = 256;
 const DEGREES_TO_RADIANS = Math.PI / 180;
@@ -155,10 +153,14 @@ function turn(page: GrayPage, degrees: number, paper: number): Promise<GrayPage>
   return toGrayPage(fromGray(page).rotate(degrees, { background: { r: paper, g: paper, b: paper, alpha: 1 } }));
 }
 
+/**
+ * No resolution is written into the PNG: with a 300 dpi hint the WebAssembly engine read the golden
+ * pages at a mean 2.7% character error rate, without it at 0.6% (Korean layout analysis
+ * suffered most), so the recognizer estimates the resolution itself as it does for any image.
+ */
 async function encodePng(pixels: Uint8Array, width: number, height: number): Promise<Buffer> {
   return sharp(pixels, { raw: { width, height, channels: GRAY_CHANNELS } })
     .png({ compressionLevel: OCR_PNG_COMPRESSION_LEVEL })
-    .withMetadata({ density: OCR_OUTPUT_DPI })
     .toBuffer();
 }
 
