@@ -504,6 +504,11 @@ describe('WOFF2 encoder: glyf edge cases', () => {
 
   describe('rejects fonts that cannot be written as WOFF2', () => {
     fails('a font without tables', () => ({ sfntVersion: 0x00010000, flavor: 'TrueType', numTables: 0, tables: {}, fontFamily: 'x' }));
+    fails('a head table that is not 54 bytes', () => {
+      const font = fontWithGlyphs([Buffer.alloc(0), triangle()], 0);
+      font.tables['head'] = { tag: 'head', checkSum: 0, offset: 0, length: 55, data: Buffer.alloc(55) };
+      return font;
+    });
     fails('a table tag with a non-printable character', () => {
       const font = fontWithGlyphs([Buffer.alloc(0), triangle()], 0);
       font.tables['bad\u0001'] = { tag: 'bad\u0001', checkSum: 0, offset: 0, length: 1, data: Buffer.alloc(1) };

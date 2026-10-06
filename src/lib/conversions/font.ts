@@ -461,7 +461,7 @@ function parsedFontFromWoff2(decoded: Woff2DecodedFont, defaultName: string): Pa
  * throws a Woff2FormatError. A collection yields its first font; decodeWoff2Collection returns all.
  */
 export function decodeWoff2(buffer: Buffer, defaultName: string): ParsedFont {
-  return parsedFontFromWoff2(decodeWoff2Fonts(buffer)[0], defaultName);
+  return parsedFontFromWoff2(decodeWoff2Fonts(buffer, { firstFontOnly: true })[0], defaultName);
 }
 
 /** Decodes every font of a WOFF2 file (several for a collection, one otherwise). */

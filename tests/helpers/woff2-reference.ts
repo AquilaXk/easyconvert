@@ -54,6 +54,8 @@ export interface Woff2Reading {
   tables: Map<string, Buffer>;
   /** Byte offset where the compressed stream ends. */
   compressedEnd: number;
+  /** Byte offset just past the table directory (where a collection header starts, if any). */
+  directoryEnd: number;
 }
 
 function base128(data: Buffer, at: number): { value: number; next: number } {
@@ -382,8 +384,21 @@ export function readWoff2Reference(woff2: Buffer): Woff2Reading {
     }
     directory.push(row);
   }
+  const directoryEnd = at;
+  const isCollection = header.flavor === 0x74746366;
+  if (isCollection) {
+    // collection header: version, then per font a table count, a flavor and the directory indices
+    const collection = new Reader(woff2, at + 4, woff2.length);
+    for (let fonts = collection.u255(); fonts > 0; fonts--) {
+      const count = collection.u255();
+      collection.bytes(4);
+      for (let i = 0; i < count; i++) collection.u255();
+    }
+    at = collection.at;
+  }
   const compressedEnd = at + header.totalCompressedSize;
   const stream = brotliDecompressSync(woff2.subarray(at, compressedEnd));
+  if (isCollection) return { header, directory, stream, stored: new Map(), tables: new Map(), compressedEnd, directoryEnd };
   const stored = new Map<string, Buffer>();
   let offset = 0;
   for (const row of directory) {
@@ -409,7 +424,7 @@ export function readWoff2Reference(woff2: Buffer): Woff2Reading {
       tables.set('head', head);
     } else tables.set(row.tag, Buffer.from(data));
   }
-  return { header, directory, stream, stored, tables, compressedEnd };
+  return { header, directory, stream, stored, tables, compressedEnd, directoryEnd };
 }
 
 export const SFNT_FLAG_OVERLAP_SIMPLE = 0x40;

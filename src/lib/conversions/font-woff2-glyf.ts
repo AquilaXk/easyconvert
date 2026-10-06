@@ -86,6 +86,20 @@ const TRIPLET_BLOCKS_PER_X_STEP = 12;
 const TRIPLET_AXIS_HIGH_BITS = 14;
 const TRIPLET_AXIS_HIGH_SHIFT = 7;
 const TRIPLET_Y_HIGH_SHIFT = 2;
+const TRIPLET_X_POSITIVE_BIT = 0x01;
+const TRIPLET_Y_POSITIVE_BIT = 0x02;
+/** Steps of the one and two byte forms start at 1: a zero step has its own, axis-only form. */
+const TRIPLET_MIN_STEP = 1;
+const TRIPLET_ONE_BYTE = 1;
+const TRIPLET_TWO_BYTES = 2;
+const TRIPLET_THREE_BYTES = 3;
+const TRIPLET_FOUR_BYTES = 4;
+const TRIPLET_Y_BLOCK_SHIFT = 2;
+const NIBBLE_BITS = 4;
+const NIBBLE_MASK = 0x0f;
+const BYTE_BITS = 8;
+const BYTE_MASK = 0xff;
+const UINT16_MASK = 0xffff;
 
 const HMTX_NO_LSB_ARRAY = 0x01;
 const HMTX_NO_TAIL_ARRAY = 0x02;
@@ -110,7 +124,7 @@ function read255(data: Uint8Array, cursor: { at: number }, end: number, what: st
   if (code === U255_WORD_CODE) {
     if (at + 3 > end) throw truncated(what);
     cursor.at = at + 3;
-    return (data[at + 1] << 8) | data[at + 2];
+    return (data[at + 1] << BYTE_BITS) | data[at + 2];
   }
   if (code === U255_ONE_MORE_BYTE_1 || code === U255_ONE_MORE_BYTE_2) {
     if (at + 2 > end) throw truncated(what);
@@ -257,45 +271,46 @@ export function reconstructGlyf(data: Uint8Array, lengthHint: number | null): Gl
         let dx: number;
         let dy: number;
         if (kind < TRIPLET_ONE_BYTE_END) {
-          if (at + 1 > glyphEnd) throw truncated('the glyph stream');
-          const b = data[at++];
+          if (at + TRIPLET_ONE_BYTE > glyphEnd) throw truncated('the glyph stream');
+          const b = data[at];
+          at += TRIPLET_ONE_BYTE;
           if (kind < TRIPLET_Y_ONLY_END) {
             dx = 0;
             dy = ((kind & TRIPLET_AXIS_HIGH_BITS) << TRIPLET_AXIS_HIGH_SHIFT) + b;
-            if ((kind & 1) === 0) dy = -dy;
+            if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dy = -dy;
           } else if (kind < TRIPLET_X_ONLY_END) {
             dx = (((kind - TRIPLET_Y_ONLY_END) & TRIPLET_AXIS_HIGH_BITS) << TRIPLET_AXIS_HIGH_SHIFT) + b;
-            if ((kind & 1) === 0) dx = -dx;
+            if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dx = -dx;
             dy = 0;
           } else {
             const base = kind - TRIPLET_X_ONLY_END;
-            dx = 1 + (base & TRIPLET_NIBBLE_HIGH_BITS) + (b >> 4);
-            dy = 1 + ((base & TRIPLET_NIBBLE_Y_HIGH_BITS) << TRIPLET_Y_HIGH_SHIFT) + (b & 0x0f);
-            if ((kind & 1) === 0) dx = -dx;
-            if ((kind & 2) === 0) dy = -dy;
+            dx = TRIPLET_MIN_STEP + (base & TRIPLET_NIBBLE_HIGH_BITS) + (b >> NIBBLE_BITS);
+            dy = TRIPLET_MIN_STEP + ((base & TRIPLET_NIBBLE_Y_HIGH_BITS) << TRIPLET_Y_HIGH_SHIFT) + (b & NIBBLE_MASK);
+            if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dx = -dx;
+            if ((kind & TRIPLET_Y_POSITIVE_BIT) === 0) dy = -dy;
           }
         } else if (kind < TRIPLET_TWO_BYTE_END) {
-          if (at + 2 > glyphEnd) throw truncated('the glyph stream');
+          if (at + TRIPLET_TWO_BYTES > glyphEnd) throw truncated('the glyph stream');
           const base = kind - TRIPLET_ONE_BYTE_END;
-          dx = 1 + (Math.floor(base / TRIPLET_BLOCKS_PER_X_STEP) << 8) + data[at];
-          dy = 1 + (((base % TRIPLET_BLOCKS_PER_X_STEP) >> 2) << 8) + data[at + 1];
-          at += 2;
-          if ((kind & 1) === 0) dx = -dx;
-          if ((kind & 2) === 0) dy = -dy;
+          dx = TRIPLET_MIN_STEP + (Math.floor(base / TRIPLET_BLOCKS_PER_X_STEP) << BYTE_BITS) + data[at];
+          dy = TRIPLET_MIN_STEP + (((base % TRIPLET_BLOCKS_PER_X_STEP) >> TRIPLET_Y_BLOCK_SHIFT) << BYTE_BITS) + data[at + 1];
+          at += TRIPLET_TWO_BYTES;
+          if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dx = -dx;
+          if ((kind & TRIPLET_Y_POSITIVE_BIT) === 0) dy = -dy;
         } else if (kind < TRIPLET_THREE_BYTE_END) {
-          if (at + 3 > glyphEnd) throw truncated('the glyph stream');
-          dx = (data[at] << 4) + (data[at + 1] >> 4);
-          dy = ((data[at + 1] & 0x0f) << 8) + data[at + 2];
-          at += 3;
-          if ((kind & 1) === 0) dx = -dx;
-          if ((kind & 2) === 0) dy = -dy;
+          if (at + TRIPLET_THREE_BYTES > glyphEnd) throw truncated('the glyph stream');
+          dx = (data[at] << NIBBLE_BITS) + (data[at + 1] >> NIBBLE_BITS);
+          dy = ((data[at + 1] & NIBBLE_MASK) << BYTE_BITS) + data[at + 2];
+          at += TRIPLET_THREE_BYTES;
+          if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dx = -dx;
+          if ((kind & TRIPLET_Y_POSITIVE_BIT) === 0) dy = -dy;
         } else {
-          if (at + 4 > glyphEnd) throw truncated('the glyph stream');
-          dx = (data[at] << 8) + data[at + 1];
-          dy = (data[at + 2] << 8) + data[at + 3];
-          at += 4;
-          if ((kind & 1) === 0) dx = -dx;
-          if ((kind & 2) === 0) dy = -dy;
+          if (at + TRIPLET_FOUR_BYTES > glyphEnd) throw truncated('the glyph stream');
+          dx = (data[at] << BYTE_BITS) + data[at + 1];
+          dy = (data[at + 2] << BYTE_BITS) + data[at + 3];
+          at += TRIPLET_FOUR_BYTES;
+          if ((kind & TRIPLET_X_POSITIVE_BIT) === 0) dx = -dx;
+          if ((kind & TRIPLET_Y_POSITIVE_BIT) === 0) dy = -dy;
         }
         x += dx;
         y += dy;
@@ -374,8 +389,8 @@ export function reconstructGlyf(data: Uint8Array, lengthHint: number | null): Gl
         const d = deltaX[i];
         if ((f & FLAG_X_SHORT) !== 0) bytes[o++] = d < 0 ? -d : d;
         else if ((f & FLAG_X_SAME_OR_POSITIVE) === 0) {
-          bytes[o++] = (d >> 8) & 0xff;
-          bytes[o++] = d & 0xff;
+          bytes[o++] = (d >> BYTE_BITS) & BYTE_MASK;
+          bytes[o++] = d & BYTE_MASK;
         }
       }
       for (let i = 0; i < points; i++) {
@@ -383,8 +398,8 @@ export function reconstructGlyf(data: Uint8Array, lengthHint: number | null): Gl
         const d = deltaY[i];
         if ((f & FLAG_Y_SHORT) !== 0) bytes[o++] = d < 0 ? -d : d;
         else if ((f & FLAG_Y_SAME_OR_POSITIVE) === 0) {
-          bytes[o++] = (d >> 8) & 0xff;
-          bytes[o++] = d & 0xff;
+          bytes[o++] = (d >> BYTE_BITS) & BYTE_MASK;
+          bytes[o++] = d & BYTE_MASK;
         }
       }
       out.length = o;
@@ -483,8 +498,6 @@ const COORDINATE_ONE_BYTE_AXIS_LIMIT = 1280;
 const COORDINATE_NIBBLE_LIMIT = 65;
 const COORDINATE_ONE_BYTE_PAIR_LIMIT = 769;
 const COORDINATE_THREE_BYTE_LIMIT = 4096;
-const BYTE_MASK = 0xff;
-const NIBBLE_MASK = 0x0f;
 const TRIPLET_AXIS_HIGH_MASK = 0xf00;
 const TRIPLET_AXIS_HIGH_SHIFT_OUT = 7;
 const TRIPLET_X_ONLY_BASE = 10;
@@ -516,24 +529,24 @@ function writeTriplet(flags: GrowBuffer, glyphs: GrowBuffer, dx: number, dy: num
     flags.u8(offCurveBit + TRIPLET_X_ONLY_BASE + ((absX & TRIPLET_AXIS_HIGH_MASK) >> TRIPLET_AXIS_HIGH_SHIFT_OUT) + xSign);
     glyphs.u8(absX & BYTE_MASK);
   } else if (absX < COORDINATE_NIBBLE_LIMIT && absY < COORDINATE_NIBBLE_LIMIT) {
-    flags.u8(offCurveBit + TRIPLET_NIBBLE_BASE + ((absX - 1) & TRIPLET_NIBBLE_HIGH_BITS) + (((absY - 1) & TRIPLET_NIBBLE_HIGH_BITS) >> 2) + signs);
-    glyphs.u8((((absX - 1) & NIBBLE_MASK) << 4) | ((absY - 1) & NIBBLE_MASK));
+    flags.u8(offCurveBit + TRIPLET_NIBBLE_BASE + ((absX - 1) & TRIPLET_NIBBLE_HIGH_BITS) + (((absY - 1) & TRIPLET_NIBBLE_HIGH_BITS) >> TRIPLET_Y_HIGH_SHIFT) + signs);
+    glyphs.u8((((absX - 1) & NIBBLE_MASK) << NIBBLE_BITS) | ((absY - 1) & NIBBLE_MASK));
   } else if (absX < COORDINATE_ONE_BYTE_PAIR_LIMIT && absY < COORDINATE_ONE_BYTE_PAIR_LIMIT) {
-    const xBlock = ((absX - 1) & TRIPLET_PAIR_HIGH_MASK) >> 8;
+    const xBlock = ((absX - 1) & TRIPLET_PAIR_HIGH_MASK) >> BYTE_BITS;
     const yBlock = ((absY - 1) & TRIPLET_PAIR_HIGH_MASK) >> TRIPLET_PAIR_Y_SHIFT;
     flags.u8(offCurveBit + TRIPLET_BYTE_PAIR_BASE + TRIPLET_BLOCKS_PER_X_STEP * xBlock + yBlock + signs);
     glyphs.u8((absX - 1) & BYTE_MASK);
     glyphs.u8((absY - 1) & BYTE_MASK);
   } else if (absX < COORDINATE_THREE_BYTE_LIMIT && absY < COORDINATE_THREE_BYTE_LIMIT) {
     flags.u8(offCurveBit + TRIPLET_THREE_BYTE_BASE + signs);
-    glyphs.u8(absX >> 4);
-    glyphs.u8(((absX & NIBBLE_MASK) << 4) | (absY >> 8));
+    glyphs.u8(absX >> NIBBLE_BITS);
+    glyphs.u8(((absX & NIBBLE_MASK) << NIBBLE_BITS) | (absY >> BYTE_BITS));
     glyphs.u8(absY & BYTE_MASK);
   } else {
     flags.u8(offCurveBit + TRIPLET_FOUR_BYTE_BASE + signs);
-    glyphs.u8(absX >> 8);
+    glyphs.u8(absX >> BYTE_BITS);
     glyphs.u8(absX & BYTE_MASK);
-    glyphs.u8(absY >> 8);
+    glyphs.u8(absY >> BYTE_BITS);
     glyphs.u8(absY & BYTE_MASK);
   }
 }
@@ -588,7 +601,7 @@ export function transformGlyf(glyf: Uint8Array, loca: Uint8Array, numGlyphs: num
       contourStream.u16be(0);
       continue;
     }
-    contourStream.u16be(contours & 0xffff);
+    contourStream.u16be(contours & UINT16_MASK);
     const headerBox = glyf.subarray(start + BYTES_PER_UINT16, start + GLYPH_HEADER_BYTES);
     let p = start + GLYPH_HEADER_BYTES;
     const bitmapMask = FIRST_BIT >> (glyph & BITS_PER_BYTE_MASK);

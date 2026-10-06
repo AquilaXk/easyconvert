@@ -264,3 +264,25 @@ export function sfntFromTables(version: number, tables: Map<string, Buffer>): Bu
   });
   return Buffer.concat(parts);
 }
+
+/** The collection header that follows the table directory of a WOFF2 collection (version 1.0). */
+export function collectionHeader(fonts: Array<{ flavor?: number; indices: number[] }>, version = 0x00010000): number[] {
+  const bytes = [version >>> 24, (version >> 16) & 0xff, (version >> 8) & 0xff, version & 0xff, ...u255(fonts.length)];
+  for (const font of fonts) {
+    const flavor = font.flavor ?? 0x00010000;
+    bytes.push(...u255(font.indices.length), flavor >>> 24, (flavor >> 16) & 0xff, (flavor >> 8) & 0xff, flavor & 0xff);
+    for (const index of font.indices) bytes.push(...u255(index));
+  }
+  return bytes;
+}
+
+export const COLLECTION_FLAVOR = 0x74746366; // 'ttcf'
+
+/**
+ * The tables of the hand built font in an order a collection allows: loca directly after glyf.
+ * Indices: 0 glyf, 1 loca, 2 head, 3 hhea, 4 hmtx, 5 maxp.
+ */
+export function collectionTables(overrides: Partial<TransformedGlyfSpec> = {}): Woff2TableSpec[] {
+  const byTag = new Map(minimalTransformedFont(overrides).map((t) => [t.tag, t]));
+  return ['glyf', 'loca', 'head', 'hhea', 'hmtx', 'maxp'].map((tag) => ({ ...byTag.get(tag)! }));
+}

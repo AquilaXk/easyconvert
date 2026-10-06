@@ -297,7 +297,7 @@ describe('WOFF2 decoder: a minimal hand built font', () => {
     });
     fails('rejects tables whose declared sizes exceed the decoded size limit', () => {
       const tables = minimalTransformedFont();
-      tables[1] = { ...tables[1], origLength: WOFF2_MAX_DECODED_BYTES + 1 };
+      tables.push({ tag: 'name', data: Buffer.alloc(0), origLength: WOFF2_MAX_DECODED_BYTES + 1 });
       return buildWoff2({ tables });
     }, Woff2LimitError);
     fails('rejects a collection header with an unknown version', () => collectionFile({ version: 0x00030000 }));

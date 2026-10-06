@@ -1,13 +1,18 @@
 import zlib from 'node:zlib';
 import { readXMins, reconstructGlyf, reconstructHmtx, serializeLoca, transformGlyf, transformHmtx, type GlyfReconstruction } from './font-woff2-glyf';
 import {
+  WOFF2_EXPANSION_RATIO_FLOOR_BYTES,
+  WOFF2_HEAD_BYTES,
   WOFF2_KNOWN_TAGS,
+  WOFF2_MAX_COLLECTION_BYTES,
   WOFF2_MAX_DECODED_BYTES,
+  WOFF2_MAX_EXPANSION_RATIO,
   WOFF2_MAX_FONTS,
   WOFF2_MAX_TABLES,
   Woff2FormatError,
   Woff2LimitError,
   alignUp,
+  compareTags,
   decode255UInt16,
   decodeUIntBase128,
   encodeUIntBase128,
@@ -105,7 +110,7 @@ interface FontSlice {
  * with the adjustment zeroed.
  */
 export function checksumAdjustment(flavor: number, tables: ReadonlyArray<{ tag: string; length: number; checkSum: number }>): number {
-  const sorted = [...tables].sort((a, b) => (a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0));
+  const sorted = [...tables].sort((a, b) => compareTags(a.tag, b.tag));
   const directory = new Uint8Array(SFNT_HEADER_BYTES + SFNT_RECORD_BYTES * sorted.length);
   const view = new DataView(directory.buffer);
   const entrySelector = Math.floor(Math.log2(sorted.length));
@@ -140,11 +145,18 @@ function readTag(input: Uint8Array, at: number): string {
   return tag;
 }
 
-/**
- * Decodes every font of a WOFF2 file: one for a plain font, several for a collection. Throws
- * {@link Woff2FormatError} for anything the Recommendation does not allow.
- */
-export function decodeWoff2Fonts(input: Buffer): Woff2DecodedFont[] {
+interface Container {
+  entries: DirectoryEntry[];
+  fonts: FontSlice[];
+  isCollection: boolean;
+  /** Bytes the Brotli stream decompresses to: the stored lengths of all directory entries. */
+  storedTotal: number;
+  compressedStart: number;
+  compressedEnd: number;
+}
+
+/** Validates the header, table directory, collection directory and block layout; inflates nothing. */
+function parseContainer(input: Buffer): Container {
   const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
   if (input.length < SIGNATURE_BYTES || view.getUint32(0) !== WOFF2_SIGNATURE) {
     throw new Woff2FormatError('Invalid WOFF2 font: missing wOF2 magic signature.');
@@ -181,6 +193,9 @@ export function decodeWoff2Fonts(input: Buffer): Woff2DecodedFont[] {
       tag = WOFF2_KNOWN_TAGS[tagIndex];
     }
     const origLength = decodeUIntBase128(input, cursor);
+    if (tag === 'head' && origLength !== WOFF2_HEAD_BYTES) {
+      throw new Woff2FormatError(`Invalid WOFF2: the head table is ${origLength} bytes; it must be ${WOFF2_HEAD_BYTES}.`);
+    }
 
     let transformed: boolean;
     if (tag === 'glyf' || tag === 'loca') {
@@ -240,6 +255,10 @@ export function decodeWoff2Fonts(input: Buffer): Woff2DecodedFont[] {
     fonts.push({ flavor, indices: entries.map((_, i) => i) });
   }
 
+  if (storedTotal > WOFF2_EXPANSION_RATIO_FLOOR_BYTES && storedTotal > compressedSize * WOFF2_MAX_EXPANSION_RATIO) {
+    throw new Woff2LimitError(`WOFF2 announces ${storedTotal} table bytes for ${compressedSize} compressed bytes, past the expansion ratio limit of ${WOFF2_MAX_EXPANSION_RATIO}.`);
+  }
+
   // compressed stream, then the optional metadata and private blocks, then at most three bytes of padding
   const compressedEnd = cursor.offset + compressedSize;
   if (compressedSize === 0 || compressedEnd > input.length) throw truncated('the compressed font data');
@@ -265,11 +284,38 @@ export function decodeWoff2Fonts(input: Buffer): Woff2DecodedFont[] {
   }
   if (input.length > alignUp(blockEnd)) throw new Woff2FormatError('Invalid WOFF2: the file has data after its last block.');
 
+  return { entries, fonts, isCollection: flavor === COLLECTION_FLAVOR, storedTotal, compressedStart: cursor.offset, compressedEnd };
+}
+
+/** The number of fonts in a WOFF2 file (1 unless it is a collection), from the headers alone. */
+export function countWoff2Fonts(input: Buffer): number {
+  return parseContainer(input).fonts.length;
+}
+
+export interface Woff2DecodeOptions {
+  /** Reconstruct only the first font of a collection; the others are validated but cost no further work. */
+  firstFontOnly?: boolean;
+}
+
+/**
+ * Decodes the fonts of a WOFF2 file: one for a plain font, several for a collection. Throws
+ * {@link Woff2FormatError} for anything the Recommendation does not allow.
+ */
+export function decodeWoff2Fonts(input: Buffer, options: Woff2DecodeOptions = {}): Woff2DecodedFont[] {
+  const container = parseContainer(input);
+  const { entries, storedTotal } = container;
+  const fonts = options.firstFontOnly === true ? container.fonts.slice(0, 1) : container.fonts;
+  let described = 0;
+  for (const font of fonts) for (const index of font.indices) described += entries[index].origLength;
+  if (described > WOFF2_MAX_COLLECTION_BYTES) {
+    throw new Woff2LimitError(`The fonts of this WOFF2 collection describe ${described} table bytes together; at most ${WOFF2_MAX_COLLECTION_BYTES} are supported.`);
+  }
+
   // Brotli only. The output is capped at the size the directory announces plus one byte, so a stream
   // that expands further is rejected without being inflated.
   let stream: Buffer;
   try {
-    stream = zlib.brotliDecompressSync(input.subarray(cursor.offset, compressedEnd), { maxOutputLength: storedTotal + 1 });
+    stream = zlib.brotliDecompressSync(input.subarray(container.compressedStart, container.compressedEnd), { maxOutputLength: storedTotal + 1 });
   } catch (error) {
     throw new Woff2FormatError(
       `Invalid WOFF2: the compressed font data is not a valid Brotli stream within the size the directory declares (${(error as Error).message}).`,
@@ -279,14 +325,15 @@ export function decodeWoff2Fonts(input: Buffer): Woff2DecodedFont[] {
     throw new Woff2FormatError(`Invalid WOFF2: the Brotli stream holds ${stream.length} bytes but the directory describes ${storedTotal}.`);
   }
 
-  return buildFonts(fonts, entries, stream);
+  return buildFonts(fonts, entries, stream, container.isCollection);
 }
 
-function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffer): Woff2DecodedFont[] {
+function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffer, isCollection: boolean): Woff2DecodedFont[] {
   const stored = (index: number): Buffer => stream.subarray(entries[index].offset, entries[index].offset + entries[index].storedLength);
   const glyfCache = new Map<number, GlyfReconstruction>();
   const locaCache = new Map<number, Uint8Array>();
-  const hmtxCache = new Map<number, Uint8Array>();
+  /** A transformed hmtx depends on the numberOfHMetrics and glyph count of the font it is read for. */
+  const hmtxCache = new Map<string, Uint8Array>();
   const sumCache = new Map<number, number>();
 
   return fonts.map((font) => {
@@ -307,6 +354,14 @@ function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffe
 
     const glyfIndex = byTag.get('glyf');
     const locaIndex = byTag.get('loca');
+    if ((glyfIndex === undefined) !== (locaIndex === undefined)) {
+      throw new Woff2FormatError('Invalid WOFF2: a font needs both glyf and loca, or neither.');
+    }
+    if (glyfIndex !== undefined && locaIndex !== undefined) {
+      // a collection pairs each glyf with the loca that directly follows it; a plain font only needs loca after glyf
+      const paired = isCollection ? locaIndex === glyfIndex + 1 : locaIndex > glyfIndex;
+      if (!paired) throw new Woff2FormatError('Invalid WOFF2: the loca table must follow its glyf table in the table directory.');
+    }
     const glyfTransformed = glyfIndex !== undefined && entries[glyfIndex].transformed;
     const locaTransformed = locaIndex !== undefined && entries[locaIndex].transformed;
     if (glyfTransformed !== locaTransformed) {
@@ -336,20 +391,29 @@ function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffe
     }
 
     const hmtxIndex = byTag.get('hmtx');
-    if (hmtxIndex !== undefined && entries[hmtxIndex].transformed && !hmtxCache.has(hmtxIndex)) {
+    let hmtx: Uint8Array | undefined;
+    if (hmtxIndex !== undefined && entries[hmtxIndex].transformed) {
       const numHMetrics = u16At(required('hhea', HHEA_MIN_BYTES, 'the hmtx transform'), HHEA_NUM_H_METRICS_AT);
       let numGlyphs: number;
-      let xMin: Int16Array;
+      let xMin: (() => Int16Array) | undefined;
       if (reconstruction !== undefined) {
-        ({ numGlyphs, xMin } = reconstruction);
+        numGlyphs = reconstruction.numGlyphs;
+        const known = reconstruction.xMin;
+        xMin = () => known;
       } else {
         numGlyphs = u16At(required('maxp', MAXP_MIN_BYTES, 'the hmtx transform'), MAXP_NUM_GLYPHS_AT);
         const head = required('head', HEAD_MIN_BYTES, 'the hmtx transform');
         if (glyfIndex === undefined || locaIndex === undefined) throw new Woff2FormatError('Invalid WOFF2: the hmtx transform needs glyf and loca.');
         const longLoca = new DataView(head.buffer, head.byteOffset, head.byteLength).getInt16(HEAD_INDEX_TO_LOC_AT) === 1;
-        xMin = readXMins(stored(glyfIndex), stored(locaIndex), longLoca, numGlyphs);
+        xMin = () => readXMins(stored(glyfIndex), stored(locaIndex), longLoca, numGlyphs);
       }
-      hmtxCache.set(hmtxIndex, reconstructHmtx(stored(hmtxIndex), entries[hmtxIndex].origLength, numGlyphs, numHMetrics, xMin));
+      // shared by fonts only when everything the rebuild depends on agrees
+      const key = `${hmtxIndex}:${glyfIndex ?? '-'}:${numHMetrics}:${numGlyphs}`;
+      hmtx = hmtxCache.get(key);
+      if (hmtx === undefined) {
+        hmtx = reconstructHmtx(stored(hmtxIndex), entries[hmtxIndex].origLength, numGlyphs, numHMetrics, xMin());
+        hmtxCache.set(key, hmtx);
+      }
     }
 
     const dataOf = (index: number): Uint8Array => {
@@ -357,7 +421,7 @@ function buildFonts(fonts: FontSlice[], entries: DirectoryEntry[], stream: Buffe
       if (!entry.transformed) return stored(index);
       if (entry.tag === 'glyf') return reconstruction!.glyf;
       if (entry.tag === 'loca') return locaCache.get(index)!;
-      return hmtxCache.get(index)!;
+      return hmtx!;
     };
 
     const tables: Woff2DecodedTable[] = font.indices.map((index) => {
@@ -467,9 +531,12 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
   let reconstruction: GlyfReconstruction | undefined;
   let indexFormat = 0;
   const head = byTag.get('head');
+  if (head !== undefined && head.data.length !== WOFF2_HEAD_BYTES) {
+    throw new Woff2FormatError(`Cannot encode WOFF2: the head table is ${head.data.length} bytes; it must be ${WOFF2_HEAD_BYTES}.`);
+  }
   if (glyf !== undefined && loca !== undefined) {
     const maxp = byTag.get('maxp');
-    if (head === undefined || head.data.length < HEAD_MIN_BYTES) throw new Woff2FormatError('Cannot encode WOFF2: the glyf transform needs a head table of 54 bytes.');
+    if (head === undefined) throw new Woff2FormatError('Cannot encode WOFF2: the glyf transform needs a head table.');
     if (maxp === undefined || maxp.data.length < MAXP_MIN_BYTES) throw new Woff2FormatError('Cannot encode WOFF2: the glyf transform needs a maxp table.');
     const sourceFormat = dataView(head.data).getInt16(HEAD_INDEX_TO_LOC_AT);
     if (sourceFormat < 0 || sourceFormat >= HEAD_INDEX_FORMAT_VALUES) {
@@ -496,7 +563,7 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
   }
 
   // head: lossless-transform flag, the loca format the decoder will rebuild, and the checksum adjustment
-  if (head !== undefined && head.data.length >= HEAD_MIN_BYTES) {
+  if (head !== undefined) {
     const patched = Uint8Array.from(head.data);
     const headView = dataView(patched);
     headView.setUint16(HEAD_FLAGS_AT, headView.getUint16(HEAD_FLAGS_AT) | HEAD_FLAGS_LOSSLESS_TRANSFORM);

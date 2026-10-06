@@ -32,6 +32,14 @@ export const WOFF2_MAX_TABLES = 4096;
 export const WOFF2_MAX_FONTS = 256;
 /** Bytes of table data a WOFF2 file may decode to or an sfnt may encode from, counted over all tables. */
 export const WOFF2_MAX_DECODED_BYTES = 256 * 1024 * 1024;
+/** Bytes of table data all fonts of one collection may describe together, shared tables counted once per font. */
+export const WOFF2_MAX_COLLECTION_BYTES = WOFF2_MAX_DECODED_BYTES;
+/** Table bytes a compressed stream may carry per compressed byte; real fonts stay below 20. */
+export const WOFF2_MAX_EXPANSION_RATIO = 1000;
+/** The expansion ratio is only enforced above this many table bytes, where it could hurt memory. */
+export const WOFF2_EXPANSION_RATIO_FLOOR_BYTES = 4 * 1024 * 1024;
+/** The head table is exactly 54 bytes, so a longer one is not a font table but an amplification vehicle. */
+export const WOFF2_HEAD_BYTES = 54;
 /** Points in one glyph: end points are 16-bit indices, so 0xFFFF is the last addressable one. */
 export const WOFF2_MAX_POINTS_PER_GLYPH = 0x10000;
 
@@ -48,6 +56,8 @@ export const WOFF2_KNOWN_TAGS: readonly string[] = [
 
 const UINT32_MAX = 0xffffffff;
 const UINT16_MAX = 0xffff;
+const BYTE_BITS = 8;
+const BYTE_MASK = 0xff;
 const BASE128_MAX_BYTES = 5;
 const BASE128_CONTINUE = 0x80;
 const BASE128_RADIX = 128;
@@ -108,7 +118,7 @@ export function encode255UInt16(value: number): number[] {
   if (value < U255_LOWEST_UCODE) return [value];
   if (value < U255_BYTE_2_BASE) return [U255_ONE_MORE_BYTE_1, value - U255_BYTE_1_BASE];
   if (value < U255_WORD_BASE) return [U255_ONE_MORE_BYTE_2, value - U255_BYTE_2_BASE];
-  return [U255_WORD_CODE, value >> 8, value & 0xff];
+  return [U255_WORD_CODE, value >> BYTE_BITS, value & BYTE_MASK];
 }
 
 /** Reads a 255UInt16 at `cursor.offset` and advances the cursor. */
@@ -119,7 +129,7 @@ export function decode255UInt16(buffer: Uint8Array, cursor: { offset: number }):
   if (code === U255_WORD_CODE) {
     if (at + 3 > buffer.length) throw new Woff2FormatError('Unexpected end of data while reading a 255UInt16 in WOFF2.');
     cursor.offset = at + 3;
-    return (buffer[at + 1] << 8) | buffer[at + 2];
+    return (buffer[at + 1] << BYTE_BITS) | buffer[at + 2];
   }
   if (code === U255_ONE_MORE_BYTE_1 || code === U255_ONE_MORE_BYTE_2) {
     if (at + 2 > buffer.length) throw new Woff2FormatError('Unexpected end of data while reading a 255UInt16 in WOFF2.');
@@ -131,6 +141,13 @@ export function decode255UInt16(buffer: Uint8Array, cursor: { offset: number }):
 }
 
 const ALIGNMENT = 4;
+
+/** Orders table tags as the sfnt directory does: by unsigned byte value, ascending. */
+export function compareTags(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
 
 /** Rounds up to the next multiple of four without 32-bit wrap-around. */
 export function alignUp(n: number): number {
@@ -197,8 +214,8 @@ export class GrowBuffer {
   /** Appends a 16-bit unsigned integer, big endian. */
   u16be(value: number): void {
     this.reserve(2);
-    this.bytes[this.length++] = value >> 8;
-    this.bytes[this.length++] = value & 0xff;
+    this.bytes[this.length++] = value >> BYTE_BITS;
+    this.bytes[this.length++] = value & BYTE_MASK;
   }
 
   /** Appends the bytes of `source`. */
@@ -220,8 +237,8 @@ export class GrowBuffer {
       this.u8(value - U255_BYTE_2_BASE);
     } else {
       this.u8(U255_WORD_CODE);
-      this.u8(value >> 8);
-      this.u8(value & 0xff);
+      this.u8(value >> BYTE_BITS);
+      this.u8(value & BYTE_MASK);
     }
   }
 
