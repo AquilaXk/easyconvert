@@ -236,10 +236,10 @@ describe.skipIf(!IN_MEMORY_MODE)('unsealing in the worker', () => {
     const graph = secretGraph();
     await enqueueAllNodes(graphId, graph);
     const job = await queuedJob(graphId, 'in', graph.nodes.in);
-    const [, , nonce, tag, ciphertext] = unsealSource(job).split(':');
+    const [, , kid, nonce, tag, ciphertext] = unsealSource(job).split(':');
     const flipped = Buffer.from(ciphertext, 'base64');
     flipped[0] ^= 0x01;
-    const tampered = `${SEALED_PREFIX}${nonce}:${tag}:${flipped.toString('base64')}`;
+    const tampered = `${SEALED_PREFIX}${kid}:${nonce}:${tag}:${flipped.toString('base64')}`;
     const forged = workerJob(job, { op: 'import.url', sealed: tampered });
 
     const { error, dispatches } = await dispatchesFor(() => processGraphNodeJob(forged, undefined, recordingStorage()));
