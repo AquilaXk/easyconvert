@@ -1,8 +1,7 @@
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
-import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   quantizeMedianCut,
@@ -25,6 +24,8 @@ import {
 } from './color-quantizer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
+import { buildOdgPackage } from './odg';
+import { RAW_CAMERA_FORMATS } from './raw-formats';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -775,13 +776,13 @@ export function demosaicAmazeBayerCfa(sensor: BayerSensorData): {
 } {
   const { width, height, pattern, data, whiteBalance, colorMatrix, applySrgbGamma } = sensor;
   if (width < 2 || height < 2 || (width & 1) !== 0 || (height & 1) !== 0) {
-    throw new Error(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
+    throw new InvalidRawSensorError(`Invalid sensor dimensions: ${width}x${height}. Minimum 2x2 with even dimensions required.`);
   }
   if (!['RGGB', 'BGGR', 'GRBG', 'GBRG'].includes(pattern)) {
     throw new Error(`Unsupported Bayer CFA pattern: '${pattern}'. Expected RGGB, BGGR, GRBG, or GBRG.`);
   }
   if (!data || data.length < width * height) {
-    throw new Error(`Bayer sensor buffer underflow: expected at least ${width * height} samples, got ${data ? data.length : 0}.`);
+    throw new InvalidRawSensorError(`Bayer sensor buffer underflow: expected at least ${width * height} samples, got ${data ? data.length : 0}.`);
   }
 
   // Determine normalization factor
@@ -2277,6 +2278,67 @@ export function decodeRawBayerSensor(
   return null;
 }
 
+const JPEG_SOI_MARKER = Buffer.from([0xff, 0xd8, 0xff]);
+const JPEG_MARKER_PREFIX = 0xff;
+const JPEG_EOI = 0xd9;
+const JPEG_SOS = 0xda;
+const JPEG_TEM = 0x01;
+const JPEG_RST_FIRST = 0xd0;
+const JPEG_RST_LAST = 0xd7;
+const JPEG_SOI = 0xd8;
+const JPEG_MARKER_BYTES = 2;
+
+/**
+ * Walks the segments of the JPEG stream that starts at `start` and returns the offset just past its
+ * EOI marker, or -1 when the stream is truncated. Walking segments (instead of searching for the
+ * first EOI bytes) keeps an Exif thumbnail nested inside an APPn segment from ending the stream early.
+ */
+function findJpegEnd(buffer: Buffer, start: number): number {
+  let pos = start + JPEG_MARKER_BYTES;
+  while (pos + 1 < buffer.length) {
+    if (buffer[pos] !== JPEG_MARKER_PREFIX) return -1;
+    const marker = buffer[pos + 1];
+    if (marker === JPEG_MARKER_PREFIX) {
+      pos += 1;
+      continue;
+    }
+    if (marker === JPEG_EOI) return pos + JPEG_MARKER_BYTES;
+    const hasNoPayload = marker === JPEG_TEM || marker === JPEG_SOI || (marker >= JPEG_RST_FIRST && marker <= JPEG_RST_LAST);
+    if (hasNoPayload) {
+      pos += JPEG_MARKER_BYTES;
+      continue;
+    }
+    if (pos + 3 >= buffer.length) return -1;
+    pos += JPEG_MARKER_BYTES + buffer.readUInt16BE(pos + JPEG_MARKER_BYTES);
+    if (marker === JPEG_SOS) {
+      // Entropy-coded data runs until the next marker that is neither a stuffed 0xFF00 nor a restart.
+      while (pos + 1 < buffer.length) {
+        const next = buffer[pos + 1];
+        const isMarker = buffer[pos] === JPEG_MARKER_PREFIX && next !== 0 && !(next >= JPEG_RST_FIRST && next <= JPEG_RST_LAST);
+        if (isMarker) break;
+        pos += 1;
+      }
+    }
+  }
+  return -1;
+}
+
+/** Sample depth that sharp reports for 8-bit images. */
+const SHARP_EIGHT_BIT_DEPTH = 'uchar';
+
+/**
+ * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
+ * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
+ * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
+ * keep only their EXIF block (orientation included) and reach the encoder as plain device RGB, so the
+ * high byte of each sample is what reaches an 8-bit output.
+ */
+async function preserveMetadata(pipeline: sharp.Sharp): Promise<sharp.Sharp> {
+  const meta = await pipeline.metadata();
+  const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
+  return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -2290,6 +2352,11 @@ export async function convertImage(
 
   // Special case: Image to PDF
   if (fmt === 'pdf') {
+    if (RAW_CAMERA_FORMATS.has(src)) {
+      // Camera files are not readable as a picture: decode to PNG first, then place that on the page.
+      const decoded = await convertImage(inputBuffer, 'png', options, originalFilename, src);
+      return convertImageToPdf(decoded.buffer, options, baseName, 'png');
+    }
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
 
@@ -2318,18 +2385,14 @@ export async function convertImage(
   }
 
   // Handle RAW camera inputs by decoding true RAW sensor Bayer/LJ92 data first
-  const rawExtensions = [
-    'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'pef', 'orf', 'srw', 'kdc',
-    '3fr', 'crw', 'dcr', 'erf', 'mos', 'mrw', 'x3f', 'raw'
-  ];
-  const isRawInput = rawExtensions.includes(src);
+  const isRawInput = RAW_CAMERA_FORMATS.has(src);
 
   let isEmbeddedPreview = false;
   let rawDemosaiced = isRawInput ? decodeRawBayerSensor(activeBuffer, src, options) : null;
 
   if (isRawInput && !rawDemosaiced) {
     if (!options.allowEmbeddedPreview) {
-      throw new ConversionFailedError(
+      throw new RawEngineRequiredError(
         `Unable to decode RAW camera sensor data for .${src} without external raw engine. To extract the embedded preview JPEG instead, enable allowEmbeddedPreview.`
       );
     }
@@ -2338,22 +2401,15 @@ export async function convertImage(
     let largestJpg: Buffer | null = null;
     let searchPos = 0;
     while (searchPos < activeBuffer.length - 4) {
-      const startIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd8, 0xff]), searchPos);
+      const startIdx = activeBuffer.indexOf(JPEG_SOI_MARKER, searchPos);
       if (startIdx === -1) break;
-      const endIdx = activeBuffer.indexOf(Buffer.from([0xff, 0xd9]), startIdx + 3);
-      if (endIdx !== -1) {
-        const candidate = activeBuffer.subarray(startIdx, endIdx + 2);
-        if (!largestJpg || candidate.length > largestJpg.length) {
-          largestJpg = candidate;
-        }
-        searchPos = endIdx + 2;
-      } else {
-        const candidate = activeBuffer.subarray(startIdx);
-        if (!largestJpg || candidate.length > largestJpg.length) {
-          largestJpg = candidate;
-        }
-        break;
+      const endIdx = findJpegEnd(activeBuffer, startIdx);
+      const candidate = activeBuffer.subarray(startIdx, endIdx === -1 ? undefined : endIdx);
+      if (!largestJpg || candidate.length > largestJpg.length) {
+        largestJpg = candidate;
       }
+      if (endIdx === -1) break;
+      searchPos = endIdx;
     }
 
     if (largestJpg && largestJpg.length >= 64) {
@@ -2451,7 +2507,7 @@ export async function convertImage(
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
-      pipeline = pipeline.withMetadata();
+      pipeline = await preserveMetadata(pipeline);
     }
   } catch (err: unknown) {
     if (isRawInput) {
@@ -2461,7 +2517,7 @@ export async function convertImage(
           raw: { width: demosaiced.width, height: demosaiced.height, channels: 3 },
         });
       } else {
-        throw new ConversionFailedError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
+        throw new RawEngineRequiredError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
       }
     } else {
       throw err;
@@ -2884,14 +2940,9 @@ export async function convertImage(
     }
 
     case 'odd': {
-      // OpenDocument Drawing XML package
-      const zip = new JSZip();
-      zip.file('mimetype', 'application/vnd.oasis.opendocument.graphics');
-      zip.file(
-        'content.xml',
-        '<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"><office:body><office:drawing/></office:body></office:document-content>'
-      );
-      outputBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      // OpenDocument Drawing package embedding the picture as a full-page frame
+      const { data: pngPicture, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
+      outputBuffer = await buildOdgPackage(pngPicture, info.width, info.height);
       mimeType = 'application/vnd.oasis.opendocument.graphics';
       break;
     }
@@ -2996,13 +3047,13 @@ async function convertImageToPdf(
   return new Promise((resolve, reject) => {
     const isLandscape =
       options.orientation === 'landscape' || (imgWidth > imgHeight && !options.orientation);
+    // The size is already [width, height] in the final orientation, so no layout swap is applied.
     const doc = new PDFDocument({
       size: [
         isLandscape ? Math.max(imgWidth, imgHeight) : imgWidth,
         isLandscape ? Math.min(imgWidth, imgHeight) : imgHeight,
       ],
       margin: 0,
-      layout: isLandscape ? 'landscape' : 'portrait',
     });
 
     const chunks: Buffer[] = [];

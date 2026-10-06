@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import crypto from 'crypto';
-import zlib from 'zlib';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import {
   create7zArchive,
   extract7zArchive,
@@ -13,7 +13,6 @@ import {
   convertMedia,
   decodeAudioBuffer,
   decodeAdtsAac,
-  encodeAacContainer,
   decodeOgg,
   encodeOggContainer,
   detectFfmpegEnvironment,
@@ -24,6 +23,10 @@ import {
   write7zVarint,
   read7zVarint,
 } from '../src/lib/conversions';
+import { adtsStream, bestSnrDb, decodeAudioWithFfmpeg, silentRawDataBlock, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
+
+const MIN_ROUNDTRIP_SNR_DB = 25;
 
 describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)', () => {
   // Helper to generate genuine RIFF WAV buffer
@@ -251,24 +254,20 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   // 3. Audio Decoders: ADTS AAC, Ogg Vorbis & Opus Fidelity
   // ==========================================================================
   describe('3. In-Memory Pure TS Audio Decoders (AAC & Ogg)', () => {
-    it('decodes ADTS AAC frames and recovers audio sample rate and channel layout', async () => {
-      const origWav = createTestWav(44100, 2, 0.25);
-      // Convert WAV to AAC using conversion engine
-      const aacResult = await convertMedia(origWav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'sample.wav');
-      expect(aacResult.mimeType).toBe('audio/aac');
-      expect(aacResult.buffer[0]).toBe(0xff);
-      expect((aacResult.buffer[1] & 0xf0)).toBe(0xf0);
+    it('decodes ADTS AAC frames and recovers audio sample rate and channel layout', () => {
+      // Hand-authored ADTS stream: four silent stereo AAC LC frames at 44.1 kHz
+      const frames = 4;
+      const adts = adtsStream(new Array(frames).fill(silentRawDataBlock(2)), 44100, 2);
 
-      // Decode using decodeAdtsAac
-      const decodedAac = decodeAdtsAac(aacResult.buffer);
+      const decodedAac = decodeAdtsAac(adts);
       expect(decodedAac.sampleRate).toBe(44100);
       expect(decodedAac.channels).toBe(2);
       expect(decodedAac.bitsPerSample).toBe(16);
-      expect(decodedAac.samples.length).toBeGreaterThan(0);
-      expect(decodedAac.duration).toBeGreaterThan(0);
+      expect(decodedAac.samples).toHaveLength(frames * 1024 * 2);
+      expect(decodedAac.duration).toBeCloseTo((frames * 1024) / 44100, 6);
 
       // Verify universal decoder auto-detection
-      const autoDecoded = decodeAudioBuffer(aacResult.buffer);
+      const autoDecoded = decodeAudioBuffer(adts);
       expect(autoDecoded.sampleRate).toBe(44100);
       expect(autoDecoded.channels).toBe(2);
       expect(autoDecoded.samples).toHaveLength(decodedAac.samples.length);
@@ -290,30 +289,26 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
-    it('performs roundtrip WAV -> AAC -> WAV with non-zero audio waveform RMS correlation', async () => {
-      const origWav = createTestWav(44100, 2, 0.2);
+    oracleTest('performs roundtrip WAV -> AAC -> WAV that reproduces the source tone', ['ffmpeg', 'ffprobe'], async () => {
+      const source = sineSamples(44100, 2, 1);
+      const origWav = wavFromSamples(source, 44100, 2);
 
-      // Step 1: WAV -> AAC
+      // Step 1: WAV -> AAC through the native engine, even when the pure opt-in is set
       const aacResult = await convertMedia(origWav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'tune.wav');
       expect(aacResult.mimeType).toBe('audio/aac');
 
-      // Step 2: AAC -> WAV (Pure TS decode and re-encode)
+      // Step 2: AAC -> WAV
       const roundtripWav = await convertMedia(aacResult.buffer, 'aac', 'wav', {}, 'tune.aac');
       expect(roundtripWav.mimeType).toBe('audio/wav');
       expect(roundtripWav.buffer.toString('ascii', 0, 4)).toBe('RIFF');
       expect(roundtripWav.buffer.toString('ascii', 8, 12)).toBe('WAVE');
 
-      // Step 3: Verify decoded audio waveform RMS is non-zero (authentic audio, not empty silence)
+      // Step 3: the decoded waveform matches the source signal (independent reference decoder)
       const decoded = decodeAudioBuffer(roundtripWav.buffer, 'wav');
       expect(decoded.sampleRate).toBe(44100);
       expect(decoded.channels).toBe(2);
-
-      let sumSq = 0;
-      for (let i = 0; i < decoded.samples.length; i++) {
-        sumSq += decoded.samples[i] * decoded.samples[i];
-      }
-      const rms = Math.sqrt(sumSq / decoded.samples.length);
-      expect(rms).toBeGreaterThan(100); // Non-zero RMS indicates genuine waveform reconstruction
+      expect(bestSnrDb(source, decoded.samples, 2)).toBeGreaterThanOrEqual(MIN_ROUNDTRIP_SNR_DB);
+      expect(bestSnrDb(source, decodeAudioWithFfmpeg(aacResult.buffer, 'aac', 44100, 2), 2)).toBeGreaterThanOrEqual(MIN_ROUNDTRIP_SNR_DB);
     });
 
     it('enforces Fail-Closed on WAV -> OGG conversion in pure TypeScript without native FFmpeg', async () => {
@@ -323,16 +318,16 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
-    it('preserves non-standard sampling rates (e.g. 48kHz) in AAC ADTS header', async () => {
-      const origWav = createTestWav(48000, 2, 0.25);
-      const aacResult = await convertMedia(origWav, 'wav', 'aac', { audioSampleRate: 48000, allowPureLossyBitstream: true }, 'sample48.wav');
-      const decodedAac = decodeAdtsAac(aacResult.buffer);
+    it('preserves non-standard sampling rates (e.g. 48kHz) in AAC ADTS header', () => {
+      const adts = adtsStream([silentRawDataBlock(2), silentRawDataBlock(2)], 48000, 2);
+      const decodedAac = decodeAdtsAac(adts);
       expect(decodedAac.sampleRate).toBe(48000);
+      expect(decodedAac.samples).toHaveLength(2 * 1024 * 2);
     });
 
     it('decodes ADTS AAC frames when prefixed by ID3v2 metadata and skips false syncwords', () => {
-      // 1. Build authentic ADTS frame (44.1kHz stereo)
-      const validFrame = encodeAacContainer(new Int16Array(2048), 44100, 2, 'valid');
+      // 1. Build a hand-authored ADTS frame (44.1kHz stereo, one silent block)
+      const validFrame = adtsStream([silentRawDataBlock(2)], 44100, 2);
 
       // 2. Prepend ID3v2 tag (10 bytes header + 10 bytes payload)
       const id3Header = Buffer.alloc(20);

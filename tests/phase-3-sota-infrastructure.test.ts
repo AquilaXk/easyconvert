@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import path from 'path';
-import zlib from 'zlib';
+import path from 'node:path';
+import zlib from 'node:zlib';
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
@@ -31,6 +31,7 @@ import {
   ParquetType,
   CompressionCodec,
   PARQUET_MAGIC,
+  ParquetValueError,
 } from '../src/lib/conversions/parquet';
 import {
   parseFvarTable,
@@ -416,11 +417,10 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       }
     });
 
-    it('handles empty datasets in encodeParquet and decodeParquet', () => {
-      const encoded = encodeParquet([]);
-      expect(encoded.length).toBeGreaterThan(12);
-      const decoded = decodeParquet(encoded);
-      expect(decoded).toEqual([]);
+    it('rejects empty datasets in encodeParquet with a typed 400-class error', () => {
+      expect(() => encodeParquet([])).toThrow(ParquetValueError);
+      expect(() => encodeParquet([])).toThrow(/no records/i);
+      expect(() => encodeParquet([{}, {}])).toThrow(/no columns/i);
     });
 
     it('rejects truncated Parquet data page fail-closed', () => {

@@ -36,12 +36,12 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
 
   describe('1. Universal 5-Tier Adaptive Resolution Matrix', () => {
     it.each([
-      { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
       { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'wav', tgt: 'mp3', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
-      { src: 'png', tgt: 'txt', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
+      { src: 'png', tgt: 'pdf', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
       { src: 'csv', tgt: 'tsv', size: 150 * 1024 * 1024, opts: {}, caps: { hasOpfsSyncAccess: true }, expectedTier: 'L3', expectedName: 'Edge L3 (OPFS Stream)', clientEdge: true },
       { src: 'mkv', tgt: 'avi', size: 5_000_000, opts: {}, caps: { hasWebCodecsVideo: false, hasWebCodecsAudio: false }, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
       { src: 'csv', tgt: 'json', size: 1024, opts: { clientEdgeMode: false }, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
@@ -154,7 +154,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
   });
 
   describe('4. End-to-End Client Edge Processing Verification', () => {
-    it('executes Level 0 data conversion directly in memory with Edge L0 telemetry', async () => {
+    it('does not convert structured data in memory: it is left to the server data engine', async () => {
       const csvData = 'id,name\n1,Alice\n2,Bob';
       const file = new File([new TextEncoder().encode(csvData)], 'users.csv', { type: 'text/csv' });
 
@@ -171,10 +171,8 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
       };
 
       const result = await tryProcessClientEdge(item);
-      expect(result).not.toBeNull();
-      expect(result?.tier).toBe('L0');
-      expect(result?.tierName).toBe('Edge L0 (Instant)');
-      expect(result?.resultSize).toBeGreaterThan(0);
+      expect(result).toBeNull();
+      expect(resolveConversionTier('csv', 'json', file.size)).toMatchObject({ tier: 'L4', isClientEdge: false });
     });
 
     it('executes Level 0 CAD tessellation directly in memory', async () => {

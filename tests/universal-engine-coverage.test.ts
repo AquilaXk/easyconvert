@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { decompressBzip2 } from '../src/lib/conversions/bzip2';
+import { probeStream } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive, buildSyntheticStoredRarBuffer } from '../src/lib/conversions/archive';
 
 describe('Universal Engine Conversion Coverage', () => {
@@ -58,25 +60,28 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res3.buffer.length).toBeGreaterThan(0);
   });
 
-  it('converts audio and video expanded formats', async () => {
+  oracleTest('converts audio and video expanded formats through the native engine', ['ffmpeg', 'ffprobe'], async () => {
     const pcmBytes = Buffer.alloc(2000, 0x55);
     const wavHeader = Buffer.from('RIFF\x04\x08\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\xd0\x07\x00\x00', 'binary');
     const audioData = Buffer.concat([wavHeader, pcmBytes]);
 
     // 3gpp -> mp4
-    const res1 = await convertFile(audioData, '3gpp', 'mp4', { allowPureLossyBitstream: true }, 'video.3gpp');
+    const res1 = await convertFile(audioData, '3gpp', 'mp4', {}, 'video.3gpp');
     expect(res1.filename).toBe('video.mp4');
-    expect(res1.buffer.length).toBeGreaterThan(0);
+    expect(probeStream(res1.buffer, 'mp4', 'a').codec_name).toBe('aac');
 
     // weba -> mp3
-    const res2 = await convertFile(audioData, 'weba', 'mp3', { allowPureLossyBitstream: true }, 'audio.weba');
+    const res2 = await convertFile(audioData, 'weba', 'mp3', {}, 'audio.weba');
     expect(res2.filename).toBe('audio.mp3');
-    expect(res2.buffer.length).toBeGreaterThan(0);
+    expect(probeStream(res2.buffer, 'mp3', 'a').codec_name).toBe('mp3');
 
     // m4b -> aac
-    const res3 = await convertFile(audioData, 'm4b', 'aac', { allowPureLossyBitstream: true }, 'book.m4b');
+    const res3 = await convertFile(audioData, 'm4b', 'aac', {}, 'book.m4b');
     expect(res3.filename).toBe('book.aac');
-    expect(res3.buffer.length).toBeGreaterThan(0);
+    // ADTS syncword 0xFFF; the 1000-sample DC fixture is too short for extension-less probing
+    expect(res3.buffer[0]).toBe(0xff);
+    expect(res3.buffer[1] & 0xf0).toBe(0xf0);
+    expect(res3.buffer.length).toBeGreaterThan(7);
   });
 
   it('converts vector and CAD formats (svg, emf, wmf, cgm, cdr, bmp, eps) with real encoders', async () => {
@@ -93,11 +98,10 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.filename).toBe('design.svg');
     expect(res2.buffer.toString('utf-8')).toContain('<svg');
 
-    // emf -> png
-    const res3 = await convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf');
-    expect(res3.filename).toBe('graphic.png');
-    // Real PNG signature
-    expect(res3.buffer.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
+    await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
+      /Cannot convert from Enhanced Metafile \(EMF\) \(\.emf\) to target format \.png/
+    );
 
     // svg -> bmp (must NOT be disguised PNG)
     const resBmp = await convertFile(svgBuffer, 'svg', 'bmp', {}, 'drawing.svg');
@@ -114,17 +118,20 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(epsText).toContain('colorimage');
     expect(epsText).not.toContain('<svg');
 
-    // cgm -> svg
+    // cgm -> svg: the CGM reader drops polygon sets, colours and widths, so CGM is not a source
     const cgmContent = Buffer.from('BEGMF "sample"; ENDMF;', 'utf-8');
-    const resCgm = await convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm');
-    expect(resCgm.filename).toBe('drawing.svg');
-    expect(resCgm.mimeType).toBe('image/svg+xml');
-    expect(resCgm.buffer.toString('utf-8')).toContain('<svg');
+    await expect(convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm')).rejects.toThrow(
+      /Cannot convert from .+ \(\.cgm\) to target format \.svg/
+    );
 
     // svg -> emf
-    await expect(convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg')).rejects.toThrow(
-      /EMF encoder is not available/
-    );
+    const resEmf = await convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg');
+    expect(resEmf.filename).toBe('drawing.emf');
+    expect(resEmf.mimeType).toBe('image/emf');
+    expect(resEmf.size).toBeGreaterThan(88);
+    expect(resEmf.buffer.readUInt32LE(0)).toBe(1); // EMR_HEADER
+    expect(resEmf.buffer.subarray(40, 44).toString('latin1')).toBe(' EMF');
+    expect(resEmf.buffer.readUInt32LE(48)).toBe(resEmf.size); // nBytes
   });
 
   it('converts image and raw formats (icns, eps, 3fr, crw, etc.) with real PostScript raster', async () => {

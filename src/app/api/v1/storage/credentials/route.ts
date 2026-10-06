@@ -1,9 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { credentialsVault, CustomerStorageCredentials, StorageProviderType } from '@/lib/storage';
+import {
+  credentialsVault,
+  CustomerStorageCredentials,
+  StorageProviderType,
+  StorageAdapterError,
+  validateStorageCredentials,
+} from '@/lib/storage';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { refuseUnavailableStorageProvider } from '@/lib/api/byos-provider-guard';
 
 export const dynamic = 'force-dynamic';
+
+const BYOS_INVALID_ENDPOINT_TYPE = 'https://api.easyconvert.io/problems/byos-invalid-endpoint';
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/storage/credentials';
@@ -42,12 +51,32 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const unavailable = refuseUnavailableStorageProvider(providerType, instanceUri);
+  if (unavailable) {
+    return unavailable;
+  }
+
   if (credentials.type !== providerType) {
     return createProblemDetailsResponse(
       400,
       `Mismatch between providerType "${providerType}" and credentials.type "${credentials.type}".`,
       instanceUri
     );
+  }
+
+  try {
+    await validateStorageCredentials(credentials);
+  } catch (err: unknown) {
+    if (err instanceof StorageAdapterError) {
+      return createProblemDetailsResponse(
+        400,
+        err.message,
+        instanceUri,
+        'Invalid Storage Endpoint',
+        BYOS_INVALID_ENDPOINT_TYPE
+      );
+    }
+    throw err;
   }
 
   try {

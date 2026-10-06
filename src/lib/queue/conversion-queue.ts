@@ -3,8 +3,9 @@ import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../t
 import { s3Storage } from '../storage/s3-storage';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
-import { webhookDispatcher } from '../api-keys/webhook-dispatcher';
-import { processNodeJob, tsEngine } from './node-processor';
+import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
+import { processNodeJob } from './node-processor';
+import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
@@ -28,12 +29,12 @@ export const allConversionQueues: readonly IQueueEngine<ConversionJobData, Conve
 
 /**
  * Standard Conversion Job Processor for in-process fallback / development workers.
- * Delegates to canonical shared node processor with the TypeScript engine.
+ * Delegates to canonical shared node processor with the shared conversion dispatcher.
  */
 export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
-  return processNodeJob(job, tsEngine, s3Storage);
+  return processNodeJob(job, dispatchEngine, s3Storage);
 }
 
 /**
@@ -91,7 +92,7 @@ export function attachJobLifecycleListeners(
               payload: result as unknown as Record<string, unknown>,
               secret: '',
               failedAt: Date.now(),
-              errorMessage: 'missing_webhook_secret',
+              errorMessage: MISSING_WEBHOOK_SECRET_REASON,
               retryCount: 0,
               status: 'failed',
               ownerUserId: job.data.userId,
@@ -149,7 +150,7 @@ export function attachJobLifecycleListeners(
               },
               secret: '',
               failedAt: Date.now(),
-              errorMessage: 'missing_webhook_secret',
+              errorMessage: MISSING_WEBHOOK_SECRET_REASON,
               retryCount: 0,
               status: 'failed',
               ownerUserId: job.data.userId,

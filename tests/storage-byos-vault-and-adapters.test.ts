@@ -6,7 +6,6 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import {
   credentialsVault,
-  S3StorageAdapter,
   GcsStorageAdapter,
   AzureBlobStorageAdapter,
   WebDavStorageAdapter,
@@ -17,7 +16,11 @@ import {
   localFsStorage,
   globalSharedObjects,
 } from '../src/lib/storage';
-import { StorageSsrfError, StorageNotFoundError, StorageAuthenticationError } from '../src/lib/storage/adapters/adapter-interface';
+import {
+  StorageSsrfError,
+  StorageNotFoundError,
+  StorageAuthenticationError,
+} from '../src/lib/storage/adapters/adapter-interface';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import type { User } from '../src/lib/auth/types';
@@ -146,30 +149,6 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
   });
 
   describe('2. Anti-SSRF Enforcements Across Storage Adapters', () => {
-    it('blocks S3 adapter connection to AWS/GCP cloud metadata IP (169.254.169.254)', async () => {
-      expect(() => {
-        new S3StorageAdapter({
-          type: 's3',
-          bucket: 'test-bucket',
-          accessKeyId: 'MOCK_KEY',
-          secretAccessKey: 'MOCK_SECRET',
-          endpoint: 'http://169.254.169.254/latest/meta-data',
-        });
-      }).toThrow(StorageSsrfError);
-    });
-
-    it('blocks S3 adapter connection to loopback addresses (127.0.0.1, localhost)', async () => {
-      expect(() => {
-        new S3StorageAdapter({
-          type: 's3',
-          bucket: 'test-bucket',
-          accessKeyId: 'MOCK_KEY',
-          secretAccessKey: 'MOCK_SECRET',
-          endpoint: 'http://localhost:9000',
-        });
-      }).toThrow(StorageSsrfError);
-    });
-
     it('blocks SFTP adapter from connecting to private/restricted IP or localhost', async () => {
       const adapter = new SftpStorageAdapter({
         type: 'sftp',
@@ -206,12 +185,8 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
 
   describe('3. Cloud Storage Adapters & Factory Dispatch', () => {
     it('instantiates matching storage adapter for each credential provider type', () => {
-      const s3Adapter = createStorageAdapter({
-        type: 's3',
-        bucket: 'b',
-        accessKeyId: 'k',
-        secretAccessKey: 's',
-      });
+      // s3 is covered end-to-end in tests/byos-s3-roundtrip.test.ts.
+      const s3Adapter = createStorageAdapter({ type: 's3', bucket: 'b-bucket', accessKeyId: 'k', secretAccessKey: 's' });
       expect(s3Adapter.providerName).toBe('s3');
 
       const gcsAdapter = createStorageAdapter({
@@ -241,136 +216,21 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
       expect(sftpAdapter.providerName).toBe('sftp');
     });
 
-    it('handles S3 compatible storage stream put, head, and download', async () => {
-      const adapter = new S3StorageAdapter({
-        type: 's3',
-        bucket: 'test-bucket',
-        accessKeyId: 'AKIA_TEST',
-        secretAccessKey: 'SECRET_TEST',
-      });
-
-      const payload = Buffer.from('Hello S3 BYOS Streaming', 'utf-8');
-      const uploadRes = await adapter.uploadStream('test-file.txt', Readable.from(payload), {
-        contentType: 'text/plain',
-        size: payload.length,
-      });
-
-      expect(uploadRes.size).toBe(payload.length);
-      expect(uploadRes.contentType).toBe('text/plain');
-
-      const headRes = await adapter.head('test-file.txt');
-      expect(headRes).not.toBeNull();
-      expect(headRes?.size).toBe(payload.length);
-
-      const stream = await adapter.downloadStream('test-file.txt');
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      const downloaded = Buffer.concat(chunks);
-      expect(downloaded.toString('utf-8')).toBe('Hello S3 BYOS Streaming');
-
-      const deleted = await adapter.delete('test-file.txt');
-      expect(deleted).toBe(true);
-
-      const headAfter = await adapter.head('test-file.txt');
-      expect(headAfter).toBeNull();
-    });
   });
 
   describe('4. Streaming BYOS Task Operations (Import & Export)', () => {
-    it('executes import/s3 task directly into localFsStorage and globalSharedObjects', async () => {
-      const s3CredRef = await credentialsVault.store('user-alice', {
-        type: 's3',
-        bucket: 'source-bucket',
-        accessKeyId: 'AKIA_SRC',
-        secretAccessKey: 'SECRET_SRC',
-      });
-
-      // Pre-seed an object in the S3 adapter's backing spool
-      const testAdapter = new S3StorageAdapter({
-        type: 's3',
-        bucket: 'source-bucket',
-        accessKeyId: 'AKIA_SRC',
-        secretAccessKey: 'SECRET_SRC',
-      });
-      const rawContent = Buffer.from('CSV,Header,Value\n1,Alpha,100\n2,Beta,200', 'utf-8');
-      await testAdapter.uploadStream('reports/financial.csv', Readable.from(rawContent), {
-        contentType: 'text/csv',
-        size: rawContent.length,
-      });
-
-      const importResult = await executeImportTask({
-        operation: 'import/s3',
-        remotePath: 'reports/financial.csv',
-        credentialRef: s3CredRef,
-        userId: 'user-alice',
-        filename: 'financial.csv',
-      });
-
-      expect(importResult.size).toBe(rawContent.length);
-      expect(importResult.filename).toBe('financial.csv');
-
-      // Verify object exists in localFsStorage
-      const downloaded = await localFsStorage.getBuffer(importResult.key);
-      expect(downloaded?.toString('utf-8')).toBe('CSV,Header,Value\n1,Alpha,100\n2,Beta,200');
-
-      // Verify object mirrored in globalSharedObjects for immediate worker consumption
-      expect(globalSharedObjects.has(importResult.key)).toBe(true);
-    });
-
-    it('executes export/s3 task streaming from localFsStorage to customer bucket', async () => {
-      const s3CredRef = await credentialsVault.store('user-alice', {
-        type: 's3',
-        bucket: 'dest-bucket',
-        accessKeyId: 'AKIA_DST',
-        secretAccessKey: 'SECRET_DST',
-      });
-
-      // Put an artifact into localFsStorage
-      const artifactContent = Buffer.from('Converted Video Transcode Result 1080p', 'utf-8');
-      const stored = await localFsStorage.putBuffer('output-task-123.mp4', artifactContent, {
-        contentType: 'video/mp4',
-      });
-
-      const exportResult = await executeExportTask({
-        operation: 'export/s3',
-        sourceKey: stored.key,
-        remotePath: 'transcodes/user-alice/video-1080p.mp4',
-        credentialRef: s3CredRef,
-        userId: 'user-alice',
-      });
-
-      expect(exportResult.success).toBe(true);
-      expect(exportResult.size).toBe(artifactContent.length);
-      expect(exportResult.destination).toBe('transcodes/user-alice/video-1080p.mp4');
-
-      // Verify destination object in customer S3
-      const s3Adapter = new S3StorageAdapter({
-        type: 's3',
-        bucket: 'dest-bucket',
-        accessKeyId: 'AKIA_DST',
-        secretAccessKey: 'SECRET_DST',
-      });
-      const head = await s3Adapter.head('transcodes/user-alice/video-1080p.mp4');
-      expect(head).not.toBeNull();
-      expect(head?.size).toBe(artifactContent.length);
-    });
-
     it('fails closed when export sourceKey does not exist', async () => {
-      const s3CredRef = await credentialsVault.store('user-alice', {
-        type: 's3',
+      const gcsCredRef = await credentialsVault.store('user-alice', {
+        type: 'gcs',
         bucket: 'dest-bucket',
-        accessKeyId: 'AKIA_DST',
-        secretAccessKey: 'SECRET_DST',
       });
 
       await expect(
         executeExportTask({
-          operation: 'export/s3',
+          operation: 'export/gcs',
           sourceKey: 'non-existent-key-999',
           remotePath: 'out.dat',
-          credentialRef: s3CredRef,
+          credentialRef: gcsCredRef,
           userId: 'user-alice',
         })
       ).rejects.toThrow(StorageNotFoundError);
@@ -379,7 +239,7 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
     it('fails closed when credentialRef is unauthorized or missing', async () => {
       await expect(
         executeImportTask({
-          operation: 'import/s3',
+          operation: 'import/gcs',
           remotePath: 'file.txt',
           credentialRef: 'cred_invalid1234567890123456789012',
           userId: 'user-alice',
@@ -394,8 +254,8 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          providerType: 's3',
-          credentials: { type: 's3', bucket: 'b', accessKeyId: 'k', secretAccessKey: 's' },
+          providerType: 'gcs',
+          credentials: { type: 'gcs', bucket: 'b' },
         }),
       });
 
@@ -411,14 +271,14 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
           ...authHeaders,
         },
         body: JSON.stringify({
-          providerType: 's3',
+          providerType: 'gcs',
           credentials: {
-            type: 's3',
+            type: 'gcs',
             bucket: 'customer-data',
-            accessKeyId: 'KEY123',
-            secretAccessKey: 'SECRET123',
+            clientEmail: 'svc@project.iam.gserviceaccount.com',
+            privateKey: 'SECRET123',
           },
-          name: 'Primary S3 Bucket',
+          name: 'Primary GCS Bucket',
         }),
       });
 
@@ -427,8 +287,8 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
       const json = await res.json();
       expect(json.success).toBe(true);
       expect(json.credentialRef).toMatch(/^cred_[a-f0-9]{32}$/);
-      expect(json.providerType).toBe('s3');
-      expect(json.name).toBe('Primary S3 Bucket');
+      expect(json.providerType).toBe('gcs');
+      expect(json.name).toBe('Primary GCS Bucket');
     });
 
     it('lists registered credentials for the authenticated user', async () => {

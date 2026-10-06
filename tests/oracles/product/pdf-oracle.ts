@@ -44,6 +44,21 @@ export interface PdfOracleVerificationResult {
   discrepancies: string[];
 }
 
+/** The two images compared by MSSIM do not have the same pixel dimensions. */
+export class MssimDimensionMismatchError extends Error {
+  constructor(
+    readonly actualWidth: number,
+    readonly actualHeight: number,
+    readonly referenceWidth: number,
+    readonly referenceHeight: number
+  ) {
+    super(
+      `Dimension mismatch for MSSIM comparison: A is ${actualWidth}x${actualHeight}, B is ${referenceWidth}x${referenceHeight}`
+    );
+    this.name = 'MssimDimensionMismatchError';
+  }
+}
+
 /**
  * 1D Gaussian kernel for Wang et al. 2004 MSSIM window.
  * Size: 11, sigma = 1.5, normalized to sum to 1.0.
@@ -118,24 +133,32 @@ export async function computeWang2004Mssim(
   options: MssimOptions = {}
 ): Promise<MssimResult> {
   const threshold = options.threshold ?? 0.98;
-
-  const [rawA, rawB] = await Promise.all([
-    sharp(imgA).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
-    sharp(imgB).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
-  ]);
-
-  if (rawA.info.width !== rawB.info.width || rawA.info.height !== rawB.info.height) {
-    throw new Error(
-      `Dimension mismatch for MSSIM comparison: A is ${rawA.info.width}x${rawA.info.height}, B is ${rawB.info.width}x${rawB.info.height}`
-    );
+  const scaleFactor = options.scaleFactor ?? 1.0;
+  if (!(scaleFactor > 0 && scaleFactor <= 1)) {
+    throw new Error(`MSSIM scaleFactor must be in (0, 1], got ${scaleFactor}`);
   }
+
+  const [metaA, metaB] = await Promise.all([sharp(imgA).metadata(), sharp(imgB).metadata()]);
+  if (metaA.width !== metaB.width || metaA.height !== metaB.height) {
+    throw new MssimDimensionMismatchError(metaA.width ?? 0, metaA.height ?? 0, metaB.width ?? 0, metaB.height ?? 0);
+  }
+  if (!metaA.width || !metaA.height) {
+    throw new Error('Cannot compute MSSIM on an image with no pixels');
+  }
+  // Both images are resampled identically so the comparison stays pixel-aligned.
+  const targetWidth = Math.max(1, Math.round(metaA.width * scaleFactor));
+  const targetHeight = Math.max(1, Math.round(metaA.height * scaleFactor));
+  const toRaw = (img: Buffer) => {
+    const pipeline = sharp(img);
+    if (scaleFactor < 1) {
+      pipeline.resize(targetWidth, targetHeight, { fit: 'fill', kernel: 'lanczos3' });
+    }
+    return pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  };
+  const [rawA, rawB] = await Promise.all([toRaw(imgA), toRaw(imgB)]);
 
   const { width, height } = rawA.info;
   const pixelCount = width * height;
-
-  if (pixelCount === 0) {
-    return { mssim: 1.0, passed: true, width, height, samplePoints: 0 };
-  }
 
   // Convert RGBA to grayscale luminance (0..255)
   const lumA = new Float64Array(pixelCount);
@@ -448,10 +471,26 @@ export async function verifyPdfFidelityWithOracle(
   const pageMssimScores: number[] = [];
   const minPages = Math.min(actualPages.length, refPages.length);
 
+  if (actualPages.length === 0) {
+    discrepancies.push('Actual PDF rendered no pages');
+  }
+
   for (let p = 0; p < minPages; p++) {
-    const mssimRes = await computeWang2004Mssim(actualPages[p], refPages[p], {
-      threshold: mssimThreshold,
-    });
+    let mssimRes: MssimResult;
+    try {
+      mssimRes = await computeWang2004Mssim(actualPages[p], refPages[p], {
+        threshold: mssimThreshold,
+      });
+    } catch (err: unknown) {
+      if (!(err instanceof MssimDimensionMismatchError)) {
+        throw err;
+      }
+      pageMssimScores.push(0);
+      discrepancies.push(
+        `Page ${p + 1} dimension mismatch: actual ${err.actualWidth}x${err.actualHeight}, reference ${err.referenceWidth}x${err.referenceHeight}`
+      );
+      continue;
+    }
     pageMssimScores.push(mssimRes.mssim);
     if (!mssimRes.passed) {
       discrepancies.push(

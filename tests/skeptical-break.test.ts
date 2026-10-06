@@ -81,7 +81,10 @@ endsolid TestModel`;
     const xml = '<users><user><id>1</id><name>Alice</name></user><user><id>2</id><name>Bob</name></user></users>';
     const yamlRes = await convertFile(Buffer.from(xml, 'utf-8'), 'xml', 'yaml', {}, 'data.xml');
     expect(yamlRes.mimeType).toBe('application/x-yaml');
-    expect(yamlRes.buffer.toString('utf-8')).toContain('name: Alice');
+    // The YAML carries the JsonML tree under $jsonml: [users, [user, [id, "1"], [name, Alice]], ...].
+    const yamlText = yamlRes.buffer.toString('utf-8');
+    expect(yamlText.startsWith('$jsonml:\n  - users\n')).toBe(true);
+    expect(yamlText).toContain('- - name\n      - Alice');
 
     const csvRes = await convertFile(Buffer.from(xml, 'utf-8'), 'xml', 'csv', {}, 'data.xml');
     expect(csvRes.mimeType).toBe('text/csv');
@@ -159,10 +162,10 @@ endsolid TestModel`;
     expect(json.success).toBe(false);
   });
 
-  it('10b. POST /api/convert with disabled placeholder target formats (emf, step) must fail closed with 400 Bad Request', async () => {
+  it('10b. POST /api/convert with incompatible target format (step for svg) must fail closed with 400 Bad Request', async () => {
     const formData = new FormData();
     formData.append('file', new File(['<svg xmlns="http://www.w3.org/2000/svg"></svg>'], 'drawing.svg', { type: 'image/svg+xml' }));
-    formData.append('targetFormat', 'emf');
+    formData.append('targetFormat', 'step');
 
     const req = new NextRequest('http://localhost/api/convert', {
       method: 'POST',
@@ -193,14 +196,14 @@ endsolid TestModel`;
       ConversionFailedError
     );
 
-    // PDF -> SVG without vector graphics renderer fails closed
+    // PDF -> SVG has no in-process engine path; only the native Poppler route converts it
     await expect(convertFile(pdfBuf, 'pdf', 'svg', {}, 'sample.pdf')).rejects.toThrow(
       UnsupportedTargetError
     );
 
-    // PDF -> DXF without vector CAD geometry fails closed
+    // PDF -> DXF has no engine path, so the registry no longer advertises it
     await expect(convertFile(pdfBuf, 'pdf', 'dxf', {}, 'sample.pdf')).rejects.toThrow(
-      UnsupportedTargetError
+      /^Cannot convert from PDF Document \(\.pdf\) to target format \.dxf\./
     );
 
     // PDF -> RTF succeeds with authentic text escaping

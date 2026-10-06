@@ -1,5 +1,5 @@
-import { execFileSync } from 'child_process';
-import fs from 'fs';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { decodeZstdCompressedBlockWithDict } from './zstd-dict';
 
 /**
@@ -420,10 +420,21 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
   };
 }
 
+export interface ZstdDecompressOptions {
+  /**
+   * The caller knows the exact output size it will accept (for example a container's declared page
+   * size). Output past this many bytes is rejected and the generic ratio guard is not applied, since
+   * the caller's bound already limits the expansion.
+   */
+  maxOutputBytes?: number;
+}
+
 /**
  * Decompresses an arbitrary RFC 8878 Zstandard stream with bomb safeguards.
  */
-export function decompressZstd(inputBuffer: Buffer): Buffer {
+export function decompressZstd(inputBuffer: Buffer, options: ZstdDecompressOptions = {}): Buffer {
+  const callerBound = options.maxOutputBytes;
+  const sizeLimit = callerBound ?? ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
   if (!inputBuffer || inputBuffer.length < 4) {
     throw new Error('Decompress error: input buffer too small for Zstandard stream.');
   }
@@ -510,13 +521,14 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
         totalUncompressedSize += blockData.length;
 
         // Cumulative Security Limits Check
-        if (totalUncompressedSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+        if (totalUncompressedSize > sizeLimit) {
           throw new Error(
-            `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+            `Archive bomb detected: uncompressed size exceeds limit of ${sizeLimit} bytes`
           );
         }
 
         if (
+          callerBound === undefined &&
           inputBuffer.length > 0 &&
           totalUncompressedSize / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
         ) {
@@ -556,12 +568,13 @@ export function decompressZstd(inputBuffer: Buffer): Buffer {
     // Attempt fallback via native zstd if available
     const nativeDec = decompressWithNativeZstd(inputBuffer);
     if (nativeDec) {
-      if (nativeDec.length > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      if (nativeDec.length > sizeLimit) {
         throw new Error(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+          `Archive bomb detected: uncompressed size exceeds limit of ${sizeLimit} bytes`
         );
       }
       if (
+        callerBound === undefined &&
         inputBuffer.length > 0 &&
         nativeDec.length / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
       ) {

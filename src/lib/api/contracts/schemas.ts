@@ -1,3 +1,5 @@
+import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
+
 import { PIPELINE_OPERATIONS } from './enums';
 
 export const PdfWatermarkOptionsSchema = {
@@ -291,6 +293,23 @@ export const ConversionOptionsSchema = {
       type: 'string',
       maxLength: 5,
       description: 'Delimiter character for delimited text tables.',
+    },
+    encoding: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 64,
+      description:
+        'WHATWG encoding label of delimited-text input (e.g. "euc-kr", "shift_jis", "windows-1252"). Detected from the BOM, the UTF-16 NUL pattern and the content when omitted.',
+    },
+    bom: {
+      type: 'boolean',
+      description: 'Prefix CSV/TSV output with a UTF-8 byte-order mark. Defaults to true for CSV and false for TSV.',
+    },
+    escapeFormulas: {
+      type: 'boolean',
+      default: true,
+      description:
+        'Prefix CSV/TSV cells that start with = + - @ TAB or CR (except plain numbers) with an apostrophe so spreadsheets do not evaluate them.',
     },
     hasHeaders: {
       type: 'boolean',
@@ -792,21 +811,11 @@ export const JobGraphSchema = {
         properties: {
           op: {
             type: 'string',
-            enum: [
-              'import.upload',
-              'import.url',
-              'convert',
-              'ocr',
-              'optimize',
-              'archive.create',
-              'archive.extract',
-              'export.url',
-              'export.internal',
-            ],
+            enum: [...GRAPH_OPERATIONS],
             description: 'Operation type for this graph node.',
           },
           input: {
-            description: 'Single upstream NodeId or array of upstream NodeIds.',
+            description: 'Single upstream NodeId or array of upstream NodeIds. A merge node needs at least 2 distinct inputs.',
             oneOf: [
               {
                 type: 'string',
@@ -874,7 +883,7 @@ export const JobCreateRequestSchema = {
     },
     targetFormat: {
       type: 'string',
-      description: 'Target format extension.',
+      description: 'Target format extension. With `tasks`, the final task determines the output format.',
     },
     sourceFormat: {
       type: 'string',

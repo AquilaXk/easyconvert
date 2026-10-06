@@ -2,20 +2,25 @@
   "name": "easyconvert",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && npm run build:raw-worker",
     "start": "next start",
     "lint": "next lint",
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
+    "fixtures:raw": "node scripts/fetch-raw-fixtures.mjs",
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",
-    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
+    "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
     "bench:zstd": "PERF_BENCH=1 vitest run tests/zstd-streaming-dict.test.ts",
     "worker": "tsx src/worker/index.ts",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && npm run build:raw-worker",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
-    "generate:sdk": "tsx scripts/generate-sdk.ts"
+    "generate:sdk": "tsx scripts/generate-sdk.ts",
+    "build:raw-worker": "esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node20 --outfile=dist/raw-decode-worker.js --packages=external"
   },
   "dependencies": {
     "@types/ioredis": "^4.28.10",
@@ -27,6 +32,7 @@
     "js-yaml": "^4.1.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.454.0",
+    "markdown-it": "^14.3.2",
     "next": "^14.2.15",
     "papaparse": "^5.4.1",
     "pdf-lib": "^1.17.1",
@@ -34,14 +40,18 @@
     "pdfkit": "^0.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "saxes": "^6.0.0",
     "sharp": "^0.33.5",
+    "smol-toml": "^1.9.0",
     "tailwind-merge": "^2.5.4",
     "tesseract.js": "^7.0.0",
-    "undici": "^6.21.1"
+    "undici": "^6.21.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@seriousme/openapi-schema-validator": "^2.11.0",
     "@types/js-yaml": "^4.0.9",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^20.17.0",
     "@types/papaparse": "^5.3.14",
     "@types/pdfkit": "^0.13.7",
@@ -51,6 +61,7 @@
     "esbuild": "^0.21.5",
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.15",
+    "parse5": "^7.3.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "tsx": "^4.23.15",

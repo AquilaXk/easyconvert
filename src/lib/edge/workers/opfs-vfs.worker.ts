@@ -8,6 +8,9 @@
  * 4. Memory-bounded processing for 100MB+ ~ 2GB files with peak memory strictly bounded (<50MB).
  */
 
+import { createDelimitedStreamTransformer, isStreamableDelimitedPair } from './delimited-stream';
+import { serializeWorkerError, type SerializedWorkerError } from './worker-errors';
+
 export const OPFS_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunk window
 
 export interface OpfsConversionJob {
@@ -37,6 +40,8 @@ export interface OpfsJobError {
   type: 'ERROR';
   jobId: string;
   message: string;
+  /** The thrown error as data, so the main thread can rebuild its class. */
+  error: SerializedWorkerError;
 }
 
 export type ChunkTransformerFn = (
@@ -195,25 +200,6 @@ function buildU8PcmTransformer(): ChunkTransformerFn {
     for (let i = 0; i < sampleCount; i++) {
       const s16 = view.getInt16(i * 2, true);
       out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
-    }
-    return out;
-  };
-}
-
-function buildCsvTsvTransformer(fromCode: number, toCode: number): ChunkTransformerFn {
-  let inQuotes = false;
-  return (chunk: Uint8Array) => {
-    const out = new Uint8Array(chunk.byteLength);
-    for (let i = 0; i < chunk.byteLength; i++) {
-      const b = chunk[i];
-      if (b === 34) {
-        inQuotes = !inQuotes;
-        out[i] = b;
-      } else if (b === fromCode && !inQuotes) {
-        out[i] = toCode;
-      } else {
-        out[i] = b;
-      }
     }
     return out;
   };
@@ -383,8 +369,7 @@ export function resolveChunkTransformer(
 
   if (isEndianSwapPair(src, tgt)) return buildEndianSwapTransformer();
   if (isU8PcmPair(src, tgt)) return buildU8PcmTransformer();
-  if (src === 'csv' && (tgt === 'tsv' || tgt === 'tab')) return buildCsvTsvTransformer(44, 9);
-  if ((src === 'tsv' || src === 'tab') && tgt === 'csv') return buildCsvTsvTransformer(9, 44);
+  if (isStreamableDelimitedPair(src, tgt)) return createDelimitedStreamTransformer(src, tgt, options);
   if (isGrayscalePair(src, tgt)) return buildGrayscaleTransformer();
   if (src === 'wav' && tgt === 'pcm') return buildWavToPcmTransformer();
   if (src === 'pcm' && tgt === 'wav') return buildPcmToWavTransformer(options);
@@ -654,59 +639,44 @@ export async function processOpfsStreaming(
   return streamWithChunkTransformer(job, input, onProgress);
 }
 
+type WorkerPost = (message: Record<string, unknown>, transfer?: Transferable[]) => void;
+
+/**
+ * Runs one START_OPFS_STREAM request and reports through `post`: progress, the result, or the
+ * error serialised with its class name so the main thread can rethrow the same typed error.
+ */
+export async function runOpfsWorkerJob(data: Record<string, any>, post: WorkerPost): Promise<void> {
+  if (!data || data.type !== 'START_OPFS_STREAM') return;
+  try {
+    const inputData = data.file || data.inputBuffer;
+    const result = await processOpfsStreaming(
+      {
+        jobId: data.jobId,
+        sourceFormat: data.sourceFormat,
+        targetFormat: data.targetFormat,
+        totalSize: data.totalSize,
+        options: data.options,
+      },
+      inputData,
+      (progress, bytesProcessed) => {
+        post({ type: 'PROGRESS', jobId: data.jobId, progress, bytesProcessed });
+      }
+    );
+
+    if (result.blob) {
+      post({ type: 'COMPLETED', jobId: data.jobId, outputSize: result.outputSize, blob: result.blob });
+    } else if (result.buffer) {
+      post({ type: 'COMPLETED', jobId: data.jobId, outputSize: result.outputSize, buffer: result.buffer }, [result.buffer]);
+    }
+  } catch (err) {
+    const error = serializeWorkerError(err);
+    post({ type: 'ERROR', jobId: data.jobId, message: error.message, error });
+  }
+}
+
 // Attach worker message handler
 if (typeof self !== 'undefined' && typeof (self as any).postMessage === 'function' && typeof window === 'undefined') {
   self.onmessage = async (e: MessageEvent) => {
-    const data = e.data;
-    if (!data) return;
-
-    if (data.type === 'START_OPFS_STREAM') {
-      try {
-        const inputData = data.file || data.inputBuffer;
-        const result = await processOpfsStreaming(
-          {
-            jobId: data.jobId,
-            sourceFormat: data.sourceFormat,
-            targetFormat: data.targetFormat,
-            totalSize: data.totalSize,
-            options: data.options,
-          },
-          inputData,
-          (progress, bytesProcessed) => {
-            (self as any).postMessage({
-              type: 'PROGRESS',
-              jobId: data.jobId,
-              progress,
-              bytesProcessed,
-            });
-          }
-        );
-
-        if (result.blob) {
-          (self as any).postMessage({
-            type: 'COMPLETED',
-            jobId: data.jobId,
-            outputSize: result.outputSize,
-            blob: result.blob,
-          });
-        } else if (result.buffer) {
-          (self as any).postMessage(
-            {
-              type: 'COMPLETED',
-              jobId: data.jobId,
-              outputSize: result.outputSize,
-              buffer: result.buffer,
-            },
-            [result.buffer]
-          );
-        }
-      } catch (err: any) {
-        (self as any).postMessage({
-          type: 'ERROR',
-          jobId: data.jobId,
-          message: err.message || 'OPFS VFS streaming execution failed',
-        });
-      }
-    }
+    await runOpfsWorkerJob(e.data, (message, transfer) => (self as any).postMessage(message, transfer ?? []));
   };
 }

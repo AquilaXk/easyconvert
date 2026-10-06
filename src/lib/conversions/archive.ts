@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import zlib from 'zlib';
+import zlib from 'node:zlib';
 import {
   ConversionOptions,
   ConversionResult,
@@ -130,65 +130,88 @@ function rarHeaderCrc(headerWithoutCrc: Buffer): number {
   return (c ^ 0xffffffff) & 0xffff;
 }
 
+const PATH_SLASH_CHAR_CODE = 0x2f;
+
+/** Strips trailing '/' characters in linear time (a regex would backtrack quadratically on slash runs). */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === PATH_SLASH_CHAR_CODE) end--;
+  return value.slice(0, end);
+}
+
 /**
  * Resolves entry collisions for archive creation based on the chosen collision policy.
- * - 'rename': appends a suffix (e.g., stem-1.ext, stem-2.ext) to conflicting files.
+ * A directory entry ('d/') and a file ('d') collide because they name the same path.
+ * - 'rename': appends a suffix (e.g., stem-1.ext, stem-2.ext) to conflicting files; directories keep
+ *   their trailing slash ('d-1/').
  * - 'error': throws ArchiveEntryCollisionError on any duplicate relative path.
  * - 'overwrite': keeps the last occurrence of the conflicting entry.
  */
-export function resolveArchiveEntryCollisions(
-  files: { filename: string; buffer: Buffer }[],
+export function resolveArchiveEntryCollisions<T extends { filename: string; buffer: Buffer }>(
+  files: T[],
   policy: ArchiveCollisionPolicy = 'rename'
-): { filename: string; buffer: Buffer }[] {
+): T[] {
   if (files.length <= 1) return [...files];
+  if (policy === 'overwrite') return keepLastArchiveEntries(files);
+  if (policy === 'error') return rejectDuplicateArchiveEntries(files);
+  return renameDuplicateArchiveEntries(files);
+}
 
-  if (policy === 'overwrite') {
-    const map = new Map<string, { filename: string; buffer: Buffer }>();
-    for (const f of files) {
-      const norm = f.filename.replace(/\\/g, '/');
-      map.set(norm, { filename: norm, buffer: f.buffer });
-    }
-    return Array.from(map.values());
+function keepLastArchiveEntries<T extends { filename: string }>(files: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const f of files) {
+    const norm = f.filename.replace(/\\/g, '/');
+    map.set(trimTrailingSlashes(norm), { ...f, filename: norm });
   }
+  return Array.from(map.values());
+}
 
-  if (policy === 'error') {
-    const seen = new Set<string>();
-    for (const f of files) {
-      const norm = f.filename.replace(/\\/g, '/');
-      if (seen.has(norm)) {
-        throw new ArchiveEntryCollisionError(
-          `Archive entry collision detected for '${norm}' under collision policy 'error'.`
-        );
-      }
-      seen.add(norm);
-    }
-    return [...files];
-  }
-
-  // policy === 'rename'
+function rejectDuplicateArchiveEntries<T extends { filename: string }>(files: T[]): T[] {
   const seen = new Set<string>();
-  const result: { filename: string; buffer: Buffer }[] = [];
+  for (const f of files) {
+    const norm = f.filename.replace(/\\/g, '/');
+    const key = trimTrailingSlashes(norm);
+    if (seen.has(key)) {
+      throw new ArchiveEntryCollisionError(
+        norm,
+        `Archive entry collision detected for '${norm}' under collision policy 'error'.`
+      );
+    }
+    seen.add(key);
+  }
+  return [...files];
+}
+
+/** Finds the first free `stem-N.ext` sibling of `key` (directories keep no extension) not yet in `seen`. */
+function nextFreeArchiveEntryName(key: string, isDirectory: boolean, seen: Set<string>): string {
+  const ext = isDirectory ? '' : path.extname(key);
+  const dir = path.dirname(key);
+  const baseStem = path.basename(key, ext);
+  const build = (n: number): string =>
+    dir === '.' || dir === '' ? `${baseStem}-${n}${ext}` : `${dir}/${baseStem}-${n}${ext}`;
+
+  let counter = 1;
+  while (seen.has(build(counter))) counter++;
+  return build(counter);
+}
+
+function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
 
   for (const f of files) {
     const norm = f.filename.replace(/\\/g, '/');
-    if (!seen.has(norm)) {
-      seen.add(norm);
-      result.push({ filename: norm, buffer: f.buffer });
+    const key = trimTrailingSlashes(norm);
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push({ ...f, filename: norm });
       continue;
     }
 
-    const ext = path.extname(norm);
-    const dir = path.dirname(norm);
-    const baseStem = path.basename(norm, ext);
-
-    let counter = 1;
-    let candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
-    while (seen.has(candidate)) {
-      counter++;
-      candidate = dir === '.' || dir === '' ? `${baseStem}-${counter}${ext}` : `${dir}/${baseStem}-${counter}${ext}`;
-    }
+    const isDirectory = key !== norm;
+    const candidate = nextFreeArchiveEntryName(key, isDirectory, seen);
     seen.add(candidate);
-    result.push({ filename: candidate, buffer: f.buffer });
+    result.push({ ...f, filename: isDirectory ? `${candidate}/` : candidate });
   }
 
   return result;
@@ -340,18 +363,50 @@ export const ARCHIVE_SECURITY_LIMITS = {
   MAX_RATIO: 100, // 100:1 compression ratio
 };
 
+const PATH_DOT_CHAR_CODE = 0x2e;
+const DRIVE_COLON_INDEX = 1;
+const DRIVE_COLON_CHAR_CODE = 0x3a;
+const BACKSLASH_CHAR = '\\';
+
+/** True when the path may carry a drive prefix or backslash separators (needs the regex normalization). */
+function hasWindowsPathSyntax(filename: string): boolean {
+  return filename.charCodeAt(DRIVE_COLON_INDEX) === DRIVE_COLON_CHAR_CODE || filename.includes(BACKSLASH_CHAR);
+}
+
+/** Joins the '/'-separated components except empty, '.' and '..' ones, without allocating arrays. */
+function joinSafePathSegments(filename: string): string {
+  let joined = '';
+  let start = 0;
+  while (start <= filename.length) {
+    const slash = filename.indexOf('/', start);
+    const end = slash === -1 ? filename.length : slash;
+    const length = end - start;
+    const isDot = length === 1 && filename.charCodeAt(start) === PATH_DOT_CHAR_CODE;
+    const isDotDot =
+      length === 2 && filename.charCodeAt(start) === PATH_DOT_CHAR_CODE && filename.charCodeAt(start + 1) === PATH_DOT_CHAR_CODE;
+    if (length > 0 && !isDot && !isDotDot) {
+      const segment = filename.slice(start, end);
+      joined = joined === '' ? segment : `${joined}/${segment}`;
+    }
+    start = end + 1;
+  }
+  return joined;
+}
+
 /**
  * Normalizes and validates archive entry paths against Zip-Slip traversal.
  * Strips Windows drive letters, converts backslashes, collapses /./ and /../ segments.
  * Returns null if the resulting path escapes the extraction root or is invalid.
  */
 export function sanitizeArchivePath(filename: string): string | null {
-  const normalized = filename
-    .replace(/^[a-zA-Z]:[\\/]+/, '')
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter((part) => part !== '..' && part !== '.' && part.length > 0)
-    .join('/');
+  const normalized = hasWindowsPathSyntax(filename)
+    ? filename
+        .replace(/^[a-zA-Z]:[\\/]+/, '')
+        .replace(/\\/g, '/')
+        .split('/')
+        .filter((part) => part !== '..' && part !== '.' && part.length > 0)
+        .join('/')
+    : joinSafePathSegments(filename);
 
   if (!normalized || normalized.startsWith('/') || normalized.includes('../')) {
     return null;
@@ -581,10 +636,325 @@ export async function extractZipArchive(
   return files;
 }
 
+// ---------------------------------------------------------------------------
+// POSIX pax/ustar (IEEE 1003.1) TAR writer and reader
+// ---------------------------------------------------------------------------
+
+const TAR_BLOCK_SIZE = 512;
+const TAR_OFFSET_NAME = 0;
+const TAR_LENGTH_NAME = 100;
+const TAR_OFFSET_MODE = 100;
+const TAR_LENGTH_MODE = 8;
+const TAR_OFFSET_UID = 108;
+const TAR_OFFSET_GID = 116;
+const TAR_LENGTH_ID = 8;
+const TAR_OFFSET_SIZE = 124;
+const TAR_LENGTH_SIZE = 12;
+const TAR_OFFSET_MTIME = 136;
+const TAR_LENGTH_MTIME = 12;
+const TAR_OFFSET_CHECKSUM = 148;
+const TAR_LENGTH_CHECKSUM = 8;
+const TAR_OFFSET_TYPEFLAG = 156;
+const TAR_OFFSET_LINKNAME = 157;
+const TAR_LENGTH_LINKNAME = 100;
+const TAR_OFFSET_MAGIC = 257;
+const TAR_LENGTH_MAGIC = 6;
+const TAR_OFFSET_VERSION = 263;
+const TAR_LENGTH_VERSION = 2;
+const TAR_OFFSET_DEVMAJOR = 329;
+const TAR_OFFSET_DEVMINOR = 337;
+const TAR_OFFSET_PREFIX = 345;
+const TAR_LENGTH_PREFIX = 155;
+const TAR_USTAR_MAGIC = 'ustar\0';
+const TAR_USTAR_VERSION = '00';
+const TAR_CHECKSUM_SPACE = 0x20;
+const TAR_OCTAL_RADIX = 8;
+/** Largest value of the 11-digit octal size/mtime fields (8 GiB - 1). */
+const TAR_MAX_OCTAL_VALUE = 0o77777777777;
+const TAR_BASE256_POSITIVE = 0x80;
+const TAR_BASE256_NEGATIVE = 0xff;
+const TAR_BITS_PER_BYTE = 8;
+const TAR_BYTE_SIGN_BIT = 0x80;
+const TAR_BYTE_RANGE = 0x100;
+const TAR_UTF8_CONTINUATION_MASK = 0xc0;
+const TAR_UTF8_CONTINUATION_BITS = 0x80;
+const TAR_ASCII_LIMIT = 0x80;
+const TAR_SLASH = 0x2f;
+const TAR_MAX_EXTENDED_HEADER_SIZE = 1024 * 1024;
+const TAR_PAX_HEADER_NAME_PREFIX = 'PaxHeaders.0/';
+const TAR_DEFAULT_FILE_MODE = 0o644;
+const TAR_DEFAULT_DIRECTORY_MODE = 0o755;
+const TAR_PERMISSION_MASK = 0o7777;
+const TAR_ZERO_DIGIT = '0';
+const TAR_MS_PER_SECOND = 1000;
+const TAR_MAX_PAX_NUMBER_DIGITS = 18;
+const TAR_PAX_MAX_LENGTH_DIGITS = 15;
+const TAR_PAX_NEWLINE = 0x0a;
+const TAR_PAX_EQUALS = 0x3d;
+/** A record is "<digits> <key>=<value>\n": at least a space, a one-byte key, '=' and a newline follow the digits. */
+const TAR_PAX_MIN_RECORD_TAIL = 4;
+const TAR_PAX_LENGTH_PATTERN = new RegExp(`^\\d{1,${TAR_PAX_MAX_LENGTH_DIGITS}}$`);
+const TAR_PAX_INTEGER_PATTERN = new RegExp(`^\\d{1,${TAR_MAX_PAX_NUMBER_DIGITS}}$`);
+const TAR_PAX_DECIMAL_PATTERN = /^-?\d{1,18}(\.\d{1,18})?$/;
+/** Longest entry path or link target accepted (twice Linux PATH_MAX); bounds per-entry symlink checks. */
+const TAR_MAX_PATH_LENGTH = 8192;
+/** Deterministic default modification time (Unix epoch) used when the input carries no metadata. */
+export const TAR_DEFAULT_MTIME_SECONDS = 0;
+
+const TAR_TYPEFLAG_PAX_LOCAL = 'x';
+const TAR_TYPEFLAG_PAX_GLOBAL = 'g';
+const TAR_TYPEFLAG_GNU_LONGNAME = 'L';
+const TAR_TYPEFLAG_GNU_LONGLINK = 'K';
+const TAR_TYPEFLAG_HARDLINK = '1';
+const TAR_TYPEFLAG_SYMLINK = '2';
+const TAR_TYPEFLAG_DIRECTORY = '5';
+/** GNU extensions that carry file content the reader cannot reconstruct, so they must not be skipped. */
+const TAR_UNSUPPORTED_CONTENT_TYPEFLAGS = new Set(['S', 'M']);
+/** Regular file typeflags: '0', NUL (pre-POSIX) and '7' (contiguous file, extracted as a regular file). */
+const TAR_REGULAR_TYPEFLAGS = new Set([TAR_ZERO_DIGIT, '\0', '7']);
+const TAR_EXTENSION_TYPEFLAGS = new Set([
+  TAR_TYPEFLAG_PAX_LOCAL,
+  TAR_TYPEFLAG_PAX_GLOBAL,
+  TAR_TYPEFLAG_GNU_LONGNAME,
+  TAR_TYPEFLAG_GNU_LONGLINK,
+]);
+/** POSIX reserves the uppercase letters A-Z for vendor extensions. */
+const TAR_VENDOR_TYPEFLAG = /^[A-Z]$/;
+const TAR_SPECIAL_TYPES = new Map<string, TarEntryType>([
+  ['3', 'character-device'],
+  ['4', 'block-device'],
+  ['6', 'fifo'],
+]);
+
+export type TarEntryType =
+  | 'file'
+  | 'directory'
+  | 'symlink'
+  | 'hardlink'
+  | 'character-device'
+  | 'block-device'
+  | 'fifo';
+
+/** One entry as stored in a TAR archive. `filename` is sanitized; directories carry no trailing slash. */
+export interface TarEntry {
+  filename: string;
+  type: TarEntryType;
+  /**
+   * Entry content: a view into the archive buffer for regular files, the shared content of the linked
+   * file for hardlinks, and empty for everything else.
+   */
+  buffer: Buffer;
+  /** Link target for `symlink` and `hardlink` entries. */
+  linkTarget?: string;
+  mode: number;
+  uid: number;
+  gid: number;
+  /** Modification time in seconds since the epoch (fractional when a pax `mtime` record says so). */
+  mtime: number;
+}
+
+export interface TarWriteInput {
+  /** Entry path; a trailing slash marks a directory entry (typeflag 5, empty buffer). */
+  filename: string;
+  buffer: Buffer;
+  /** Modification time recorded in the header; defaults to `TarWriteOptions.defaultMtime`. */
+  mtime?: Date;
+  /** Permission bits; defaults to 0644 for files and 0755 for directories. */
+  mode?: number;
+}
+
+export interface TarWriteOptions {
+  /** Modification time for entries without their own `mtime`. Defaults to the Unix epoch. */
+  defaultMtime?: Date;
+}
+
+export interface TarEntryHeaderSpec {
+  filename: string;
+  /** Content size in bytes; values of 8 GiB and above are carried in a pax `size` record. */
+  size: number | bigint;
+  mtime?: Date;
+  mode?: number;
+  directory?: boolean;
+}
+
+function tarWriteError(message: string): ConversionFailedError {
+  return new ConversionFailedError(`Cannot write TAR archive: ${message}`);
+}
+
+function tarReadError(message: string): ConversionFailedError {
+  return new ConversionFailedError(`Invalid TAR archive: ${message}`);
+}
+
+function putTarOctal(header: Buffer, offset: number, width: number, value: number | bigint): void {
+  const digits = value.toString(TAR_OCTAL_RADIX).padStart(width - 1, TAR_ZERO_DIGIT);
+  header.write(`${digits}\0`, offset, width, 'ascii');
+}
+
+/** Builds one pax record `<len> <key>=<value>\n`, where len counts its own digits. */
+function buildPaxRecord(key: string, value: string): Buffer {
+  const body = Buffer.from(` ${key}=${value}\n`, 'utf8');
+  let digits = 1;
+  for (;;) {
+    const total = body.length + digits;
+    if (String(total).length === digits) {
+      return Buffer.concat([Buffer.from(String(total), 'ascii'), body]);
+    }
+    digits++;
+  }
+}
+
+function sealTarHeaderChecksum(header: Buffer): void {
+  header.fill(TAR_CHECKSUM_SPACE, TAR_OFFSET_CHECKSUM, TAR_OFFSET_CHECKSUM + TAR_LENGTH_CHECKSUM);
+  let sum = 0;
+  for (let i = 0; i < TAR_BLOCK_SIZE; i++) sum += header[i];
+  const digits = sum.toString(TAR_OCTAL_RADIX).padStart(TAR_LENGTH_CHECKSUM - 2, TAR_ZERO_DIGIT);
+  header.write(`${digits}\0 `, TAR_OFFSET_CHECKSUM, TAR_LENGTH_CHECKSUM, 'ascii');
+}
+
+interface TarHeaderFields {
+  nameField: Buffer;
+  prefixField: Buffer;
+  mode: number;
+  size: number | bigint;
+  mtime: number;
+  typeflag: string;
+}
+
+function buildTarHeaderBlock(fields: TarHeaderFields): Buffer {
+  const header = Buffer.alloc(TAR_BLOCK_SIZE);
+  fields.nameField.copy(header, TAR_OFFSET_NAME);
+  putTarOctal(header, TAR_OFFSET_MODE, TAR_LENGTH_MODE, fields.mode);
+  putTarOctal(header, TAR_OFFSET_UID, TAR_LENGTH_ID, 0);
+  putTarOctal(header, TAR_OFFSET_GID, TAR_LENGTH_ID, 0);
+  putTarOctal(header, TAR_OFFSET_SIZE, TAR_LENGTH_SIZE, fields.size);
+  putTarOctal(header, TAR_OFFSET_MTIME, TAR_LENGTH_MTIME, fields.mtime);
+  header.write(fields.typeflag, TAR_OFFSET_TYPEFLAG, 1, 'ascii');
+  header.write(TAR_USTAR_MAGIC, TAR_OFFSET_MAGIC, TAR_LENGTH_MAGIC, 'ascii');
+  header.write(TAR_USTAR_VERSION, TAR_OFFSET_VERSION, TAR_LENGTH_VERSION, 'ascii');
+  putTarOctal(header, TAR_OFFSET_DEVMAJOR, TAR_LENGTH_MODE, 0);
+  putTarOctal(header, TAR_OFFSET_DEVMINOR, TAR_LENGTH_MODE, 0);
+  fields.prefixField.copy(header, TAR_OFFSET_PREFIX);
+  sealTarHeaderChecksum(header);
+  return header;
+}
+
+/** Cuts UTF-8 bytes to at most `limit` bytes without splitting a multi-byte sequence. */
+function fitUtf8(bytes: Buffer, limit: number): Buffer {
+  if (bytes.length <= limit) return bytes;
+  let cut = limit;
+  while (cut > 0 && (bytes[cut] & TAR_UTF8_CONTINUATION_MASK) === TAR_UTF8_CONTINUATION_BITS) cut--;
+  return bytes.subarray(0, cut);
+}
+
+interface TarNamePlan {
+  nameField: Buffer;
+  prefixField: Buffer;
+  /** Full path for a pax `path` record when the ustar fields cannot carry the name. */
+  paxPath: string | null;
+}
+
+/**
+ * Chooses how a path is stored: the ustar name/prefix split (prefix <= 155 bytes, name <= 100 bytes,
+ * split at '/') when it fits and is pure ASCII, otherwise a pax `path` record plus a best-effort
+ * shortened ustar name for readers that ignore pax headers.
+ */
+function planTarEntryName(fullPath: string): TarNamePlan {
+  const bytes = Buffer.from(fullPath, 'utf8');
+  const isAscii = bytes.every((b) => b < TAR_ASCII_LIMIT);
+  const empty = Buffer.alloc(0);
+  if (isAscii && bytes.length <= TAR_LENGTH_NAME) {
+    return { nameField: bytes, prefixField: empty, paxPath: null };
+  }
+  if (isAscii) {
+    for (let i = bytes.indexOf(TAR_SLASH); i !== -1; i = bytes.indexOf(TAR_SLASH, i + 1)) {
+      const nameLength = bytes.length - i - 1;
+      if (nameLength === 0 || i > TAR_LENGTH_PREFIX) break;
+      if (nameLength <= TAR_LENGTH_NAME) {
+        return { nameField: bytes.subarray(i + 1), prefixField: bytes.subarray(0, i), paxPath: null };
+      }
+    }
+  }
+  return { nameField: fitUtf8(bytes, TAR_LENGTH_NAME), prefixField: empty, paxPath: fullPath };
+}
+
+function tarPadding(length: number): number {
+  return (TAR_BLOCK_SIZE - (length % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
+}
+
+function normalizeTarWriteName(filename: string, directory: boolean): string {
+  if (filename.includes('\0')) throw tarWriteError('entry name contains a NUL byte');
+  const trimmed = trimTrailingSlashes(filename);
+  if (!trimmed) throw tarWriteError('entry name is empty');
+  const fullPath = directory ? `${trimmed}/` : trimmed;
+  if (fullPath.length > TAR_MAX_PATH_LENGTH) {
+    throw tarWriteError(`entry name is longer than ${TAR_MAX_PATH_LENGTH} characters`);
+  }
+  return fullPath;
+}
+
+/**
+ * Builds the header blocks of one entry: an optional pax `x` extension header (with its data)
+ * followed by the ustar header. The caller appends the block-padded content.
+ * @internal exported so oversized (>= 8 GiB) entries can be verified without allocating their body.
+ */
+export function buildTarEntryHeaders(spec: TarEntryHeaderSpec): Buffer {
+  const directory = spec.directory === true || spec.filename.endsWith('/');
+  const fullPath = normalizeTarWriteName(spec.filename, directory);
+  const size = directory ? 0 : spec.size;
+  if (typeof size === 'number' ? !Number.isSafeInteger(size) || size < 0 : size < 0n) {
+    throw tarWriteError('entry size must be a non-negative integer');
+  }
+  const mtimeDate = spec.mtime ?? new Date(TAR_DEFAULT_MTIME_SECONDS * TAR_MS_PER_SECOND);
+  if (Number.isNaN(mtimeDate.getTime())) throw tarWriteError(`invalid modification time for '${fullPath}'`);
+  const mtimeSeconds = Math.floor(mtimeDate.getTime() / TAR_MS_PER_SECOND);
+  const defaultMode = directory ? TAR_DEFAULT_DIRECTORY_MODE : TAR_DEFAULT_FILE_MODE;
+  const mode = (spec.mode ?? defaultMode) & TAR_PERMISSION_MASK;
+
+  const plan = planTarEntryName(fullPath);
+  const records: Buffer[] = [];
+  if (plan.paxPath !== null) records.push(buildPaxRecord('path', plan.paxPath));
+
+  let ustarSize: number | bigint = size;
+  if (BigInt(size) > BigInt(TAR_MAX_OCTAL_VALUE)) {
+    records.push(buildPaxRecord('size', String(size)));
+    ustarSize = TAR_MAX_OCTAL_VALUE;
+  }
+  let ustarMtime = mtimeSeconds;
+  if (mtimeSeconds < 0 || mtimeSeconds > TAR_MAX_OCTAL_VALUE) {
+    records.push(buildPaxRecord('mtime', String(mtimeSeconds)));
+    ustarMtime = 0;
+  }
+
+  const entryHeader = buildTarHeaderBlock({
+    nameField: plan.nameField,
+    prefixField: plan.prefixField,
+    mode,
+    size: ustarSize,
+    mtime: ustarMtime,
+    typeflag: directory ? TAR_TYPEFLAG_DIRECTORY : TAR_ZERO_DIGIT,
+  });
+  if (records.length === 0) return entryHeader;
+
+  const paxData = Buffer.concat(records);
+  const baseName = trimTrailingSlashes(fullPath).split('/').pop() ?? '';
+  const safeBase = baseName.replace(/[^A-Za-z0-9._-]/g, '_');
+  const paxName = Buffer.from(`${TAR_PAX_HEADER_NAME_PREFIX}${safeBase}`, 'ascii');
+  const paxHeader = buildTarHeaderBlock({
+    nameField: fitUtf8(paxName, TAR_LENGTH_NAME),
+    prefixField: Buffer.alloc(0),
+    mode: TAR_DEFAULT_FILE_MODE,
+    size: paxData.length,
+    mtime: ustarMtime,
+    typeflag: TAR_TYPEFLAG_PAX_LOCAL,
+  });
+  return Buffer.concat([paxHeader, paxData, Buffer.alloc(tarPadding(paxData.length)), entryHeader]);
+}
+
 export function createTarArchive(
-  files: { filename: string; buffer: Buffer }[],
+  files: TarWriteInput[],
   options: ConversionOptions = {},
-  archiveName = 'converted_files.tar'
+  archiveName = 'converted_files.tar',
+  tarOptions: TarWriteOptions = {}
 ): ConversionResult {
   if (options.password) {
     throw new UnsupportedOptionError('TAR archives do not support password encryption.');
@@ -593,46 +963,28 @@ export function createTarArchive(
   const blocks: Buffer[] = [];
 
   for (const file of resolvedFiles) {
-    const header = Buffer.alloc(512);
-    // name (100)
-    header.write(file.filename.slice(0, 100), 0, 100, 'ascii');
-    // mode (8)
-    header.write('0000644\0', 100, 8, 'ascii');
-    // uid (8)
-    header.write('0000000\0', 108, 8, 'ascii');
-    // gid (8)
-    header.write('0000000\0', 116, 8, 'ascii');
-    // size (12)
-    const sizeOctal = file.buffer.length.toString(8).padStart(11, '0') + '\0';
-    header.write(sizeOctal, 124, 12, 'ascii');
-    // mtime (12)
-    const mtimeOctal = Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0';
-    header.write(mtimeOctal, 136, 12, 'ascii');
-    // chksum placeholder (8 spaces)
-    header.write('        ', 148, 8, 'ascii');
-    // typeflag (1) regular file = '0'
-    header.write('0', 156, 1, 'ascii');
-    // magic (6) 'ustar\0'
-    header.write('ustar\0', 257, 6, 'ascii');
-    // version (2) '00'
-    header.write('00', 263, 2, 'ascii');
-
-    // Calculate checksum
-    let chksum = 0;
-    for (let i = 0; i < 512; i++) chksum += header[i];
-    const chksumOctal = chksum.toString(8).padStart(6, '0') + '\0 ';
-    header.write(chksumOctal, 148, 8, 'ascii');
-
-    blocks.push(header);
-    blocks.push(file.buffer);
-
-    // Padding to 512 bytes
-    const pad = (512 - (file.buffer.length % 512)) % 512;
-    if (pad > 0) blocks.push(Buffer.alloc(pad));
+    const directory = file.filename.endsWith('/');
+    if (directory && file.buffer.length > 0) {
+      throw tarWriteError(`directory entry '${file.filename}' must not carry content`);
+    }
+    blocks.push(
+      buildTarEntryHeaders({
+        filename: file.filename,
+        size: file.buffer.length,
+        mtime: file.mtime ?? tarOptions.defaultMtime,
+        mode: file.mode,
+        directory,
+      })
+    );
+    if (!directory) {
+      blocks.push(file.buffer);
+      const pad = tarPadding(file.buffer.length);
+      if (pad > 0) blocks.push(Buffer.alloc(pad));
+    }
   }
 
   // End of archive marker: two 512-byte zero blocks
-  blocks.push(Buffer.alloc(1024));
+  blocks.push(Buffer.alloc(TAR_BLOCK_SIZE * 2));
   const buffer = Buffer.concat(blocks);
 
   return {
@@ -643,49 +995,633 @@ export function createTarArchive(
   };
 }
 
+const EMPTY_TAR_BODY = Buffer.alloc(0);
+const TAR_OCTAL_DIGIT_MAX = 0x37; // '7'
+const TAR_OCTAL_DIGIT_MIN = 0x30; // '0'
+const TAR_NUL = 0;
+const TAR_SIGN_BIT_SHIFT = 7;
+
+/** True when every byte of `buf[start, end)` is zero; a non-zero block exits at its first byte. */
+function isZeroTarRange(buf: Buffer, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) {
+    if (buf[i] !== 0) return false;
+  }
+  return true;
+}
+
+/** Decodes the NUL-terminated UTF-8 string stored in `buf[offset, offset + length)`. */
+function readTarString(buf: Buffer, offset: number, length: number): string {
+  const limit = offset + length;
+  let end = offset;
+  while (end < limit && buf[end] !== TAR_NUL) end++;
+  return buf.toString('utf8', offset, end);
+}
+
+function readTarNumberField(
+  buf: Buffer,
+  offset: number,
+  length: number,
+  label: string,
+  allowNegative = false
+): number {
+  if ((buf[offset] & TAR_BASE256_POSITIVE) !== 0) {
+    return parseTarBase256(buf.subarray(offset, offset + length), label, allowNegative);
+  }
+  return parseTarOctal(buf, offset, length, label);
+}
+
+/** Decodes a base-256 (GNU/star extension) numeric field; the first byte carries the sign marker. */
+function parseTarBase256(field: Buffer, label: string, allowNegative: boolean): number {
+  let value = 0n;
+  for (const byte of field) value = (value << BigInt(TAR_BITS_PER_BYTE)) | BigInt(byte);
+  const bits = field.length * TAR_BITS_PER_BYTE;
+  if (field[0] === TAR_BASE256_NEGATIVE) {
+    value = BigInt.asIntN(bits, value);
+  } else if (field[0] === TAR_BASE256_POSITIVE) {
+    value &= (1n << BigInt(bits - 1)) - 1n;
+  } else {
+    throw tarReadError(`malformed base-256 ${label} field`);
+  }
+  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+    throw tarReadError(`${label} value exceeds the supported range`);
+  }
+  if (value < 0n && !allowNegative) throw tarReadError(`negative ${label} field`);
+  return Number(value);
+}
+
+function isTarFieldPadding(byte: number): boolean {
+  return byte === TAR_CHECKSUM_SPACE || byte === TAR_NUL;
+}
+
+/**
+ * Decodes an octal numeric field byte by byte: leading spaces/NULs are skipped, digits run to the
+ * first space or NUL (anything after that terminator is ignored), and any other byte is malformed.
+ */
+function parseTarOctal(buf: Buffer, offset: number, length: number, label: string): number {
+  const limit = offset + length;
+  let pos = offset;
+  while (pos < limit && isTarFieldPadding(buf[pos])) pos++;
+  let value = 0;
+  while (pos < limit && !isTarFieldPadding(buf[pos])) {
+    const digit = buf[pos++];
+    if (digit < TAR_OCTAL_DIGIT_MIN || digit > TAR_OCTAL_DIGIT_MAX) {
+      throw tarReadError(`malformed octal ${label} field`);
+    }
+    value = value * TAR_OCTAL_RADIX + (digit - TAR_OCTAL_DIGIT_MIN);
+  }
+  return value;
+}
+
+const TAR_WORD_BYTES = 4;
+const TAR_LANE_MASK = 0x00ff00ff;
+const TAR_SIGN_LANE_MASK = 0x01010101;
+const TAR_BYTE_MASK = 0xff;
+const TAR_HALF_WORD_SHIFT = 16;
+const TAR_HALF_WORD_MASK = 0xffff;
+const TAR_BYTE_SHIFT = 8;
+const TAR_BYTE_SHIFT_2 = 16;
+const TAR_BYTE_SHIFT_3 = 24;
+/** Block byte-sum and high-bit count travel together as `sum * TAR_SUM_PACK + highBits` (highBits < 512). */
+const TAR_SUM_PACK = 1024;
+
+/** Packs the unsigned byte sum and the count of bytes >= 0x80 of one header block (byte-wise path). */
+function sumTarBlockBytes(buf: Buffer, base: number): number {
+  let sum = 0;
+  let high = 0;
+  const blockEnd = base + TAR_BLOCK_SIZE;
+  for (let i = base; i < blockEnd; i++) {
+    const byte = buf[i];
+    sum += byte;
+    high += byte >>> TAR_SIGN_BIT_SHIFT;
+  }
+  return sum * TAR_SUM_PACK + high;
+}
+
+/** Same result as `sumTarBlockBytes`, reading aligned 32-bit words and summing four byte lanes at once. */
+function sumTarBlockWords(words: Uint32Array, base: number): number {
+  let evenLanes = 0;
+  let oddLanes = 0;
+  let highLanes = 0;
+  const first = base / TAR_WORD_BYTES;
+  const last = first + TAR_BLOCK_SIZE / TAR_WORD_BYTES;
+  for (let k = first; k < last; k++) {
+    const word = words[k];
+    evenLanes += word & TAR_LANE_MASK;
+    oddLanes += (word >>> TAR_BYTE_SHIFT) & TAR_LANE_MASK;
+    highLanes += (word >>> TAR_SIGN_BIT_SHIFT) & TAR_SIGN_LANE_MASK;
+  }
+  const sum =
+    (evenLanes & TAR_HALF_WORD_MASK) +
+    (evenLanes >>> TAR_HALF_WORD_SHIFT) +
+    (oddLanes & TAR_HALF_WORD_MASK) +
+    (oddLanes >>> TAR_HALF_WORD_SHIFT);
+  const high =
+    (highLanes & TAR_BYTE_MASK) +
+    ((highLanes >>> TAR_BYTE_SHIFT) & TAR_BYTE_MASK) +
+    ((highLanes >>> TAR_BYTE_SHIFT_2) & TAR_BYTE_MASK) +
+    (highLanes >>> TAR_BYTE_SHIFT_3);
+  return sum * TAR_SUM_PACK + high;
+}
+
+/** Verifies the header checksum; `words` is a 32-bit view of `buf` when its start is 4-byte aligned. */
+function verifyTarChecksum(buf: Buffer, words: Uint32Array | null, base: number, headerIndex: number): void {
+  const stored = readTarNumberField(buf, base + TAR_OFFSET_CHECKSUM, TAR_LENGTH_CHECKSUM, 'checksum');
+  const packed = words === null ? sumTarBlockBytes(buf, base) : sumTarBlockWords(words, base);
+  let unsigned = Math.floor(packed / TAR_SUM_PACK);
+  let negativeBytes = packed % TAR_SUM_PACK;
+  // The checksum field itself counts as spaces: replace what was summed for it.
+  for (let i = base + TAR_OFFSET_CHECKSUM; i < base + TAR_OFFSET_CHECKSUM + TAR_LENGTH_CHECKSUM; i++) {
+    const byte = buf[i];
+    unsigned += TAR_CHECKSUM_SPACE - byte;
+    negativeBytes -= byte >>> TAR_SIGN_BIT_SHIFT;
+  }
+  // Historic implementations summed signed chars; POSIX specifies the unsigned sum.
+  const signed = unsigned - negativeBytes * TAR_BYTE_RANGE;
+  if (stored !== unsigned && stored !== signed) {
+    throw tarReadError(
+      `header checksum mismatch at header ${headerIndex} (stored ${stored}, computed ${unsigned})`
+    );
+  }
+}
+
+const PAX_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+const ASCII_MAX_BYTE = 0x7f;
+
+/** Decodes `data[start, end)` as strict UTF-8; pure-ASCII text skips the decoder and the slice copy. */
+function decodePaxText(data: Buffer, start: number, end: number): string {
+  for (let i = start; i < end; i++) {
+    if (data[i] > ASCII_MAX_BYTE) return PAX_UTF8_DECODER.decode(data.subarray(start, end));
+  }
+  return data.toString('latin1', start, end);
+}
+
+/** Parses pax records `<len> <key>=<value>\n`; throws on any malformed length or encoding. */
+function parsePaxRecords(data: Buffer): Map<string, string> {
+  const records = new Map<string, string>();
+  let pos = 0;
+  while (pos < data.length) {
+    const space = data.indexOf(TAR_CHECKSUM_SPACE, pos);
+    const lengthText = space === -1 ? '' : data.toString('ascii', pos, space);
+    if (!TAR_PAX_LENGTH_PATTERN.test(lengthText)) throw tarReadError('malformed pax record length');
+    const length = Number(lengthText);
+    const end = pos + length;
+    if (
+      end > data.length ||
+      length < lengthText.length + TAR_PAX_MIN_RECORD_TAIL ||
+      data[end - 1] !== TAR_PAX_NEWLINE
+    ) {
+      throw tarReadError('pax record length does not match its content');
+    }
+    const bodyStart = space + 1;
+    const bodyEnd = end - 1;
+    const equals = data.indexOf(TAR_PAX_EQUALS, bodyStart);
+    if (equals <= bodyStart || equals >= bodyEnd) throw tarReadError('pax record has no key');
+    try {
+      records.set(decodePaxText(data, bodyStart, equals), decodePaxText(data, equals + 1, bodyEnd));
+    } catch {
+      throw tarReadError('pax record is not valid UTF-8');
+    }
+    pos = end;
+  }
+  return records;
+}
+
+function parsePaxInteger(value: string, key: string): number {
+  if (!TAR_PAX_INTEGER_PATTERN.test(value)) throw tarReadError(`invalid pax ${key} record`);
+  return Number(value);
+}
+
+function parsePaxDecimal(value: string, key: string): number {
+  if (!TAR_PAX_DECIMAL_PATTERN.test(value)) throw tarReadError(`invalid pax ${key} record`);
+  return Number(value);
+}
+
+/** Paths of symlink entries seen so far, indexed by length so ancestor checks stay cheap. */
+class TarSymlinkIndex {
+  private readonly paths = new Set<string>();
+  private readonly lengths = new Set<number>();
+
+  get size(): number {
+    return this.paths.size;
+  }
+
+  add(path: string): void {
+    this.paths.add(path);
+    this.lengths.add(path.length);
+  }
+
+  hasStack(stack: string[], joinedLength: number): boolean {
+    return this.lengths.has(joinedLength) && this.paths.has(stack.join('/'));
+  }
+}
+
+/**
+ * Resolves `tokens` lexically from the archive root and returns the normalized path. Throws when
+ * the path climbs above the root or when any component that is not the last one is a symlink seen
+ * earlier in the archive (a later entry would then be written through that link).
+ */
+function resolveTarPath(tokens: string[], symlinks: TarSymlinkIndex, describe: string): string {
+  const stack: string[] = [];
+  let joinedLength = 0; // length of stack.join('/')
+  for (const token of tokens) {
+    if (token === '' || token === '.') continue;
+    if (symlinks.size > 0 && stack.length > 0 && symlinks.hasStack(stack, joinedLength)) {
+      throw tarReadError(`${describe} passes through the symlink '${stack.join('/')}'`);
+    }
+    joinedLength = applyTarPathToken(stack, joinedLength, token, describe);
+  }
+  return stack.join('/');
+}
+
+/** Pushes or pops one path component and returns the updated length of `stack.join('/')`. */
+function applyTarPathToken(stack: string[], joinedLength: number, token: string, describe: string): number {
+  if (token === '..') {
+    const top = stack.pop();
+    if (top === undefined) throw tarReadError(`${describe} escapes the extraction root`);
+    return stack.length === 0 ? 0 : joinedLength - top.length - 1;
+  }
+  const grown = stack.length === 0 ? joinedLength + token.length : joinedLength + token.length + 1;
+  stack.push(token);
+  return grown;
+}
+
+/** Validates a link target and returns the root-relative path it points to. */
+function resolveTarLinkTarget(
+  entryName: string,
+  target: string,
+  kind: 'symlink' | 'hardlink',
+  symlinks: TarSymlinkIndex
+): string {
+  if (!target) throw tarReadError(`${kind} '${entryName}' has an empty target`);
+  if (target.length > TAR_MAX_PATH_LENGTH) {
+    throw tarReadError(`${kind} '${entryName}' has a target longer than ${TAR_MAX_PATH_LENGTH} characters`);
+  }
+  const unified = target.replace(/\\/g, '/');
+  if (unified.startsWith('/') || /^[a-zA-Z]:/.test(unified)) {
+    throw tarReadError(`${kind} '${entryName}' targets an absolute path and escapes the extraction root`);
+  }
+  const baseTokens = kind === 'symlink' ? entryName.split('/').slice(0, -1) : [];
+  return resolveTarPath(
+    [...baseTokens, ...unified.split('/')],
+    symlinks,
+    `${kind} '${entryName}' target '${target}'`
+  );
+}
+
+function resolveTarEntryType(typeflag: string, rawName: string): TarEntryType | null {
+  if (TAR_REGULAR_TYPEFLAGS.has(typeflag)) return rawName.endsWith('/') ? 'directory' : 'file';
+  if (typeflag === TAR_TYPEFLAG_DIRECTORY) return 'directory';
+  if (typeflag === TAR_TYPEFLAG_HARDLINK) return 'hardlink';
+  if (typeflag === TAR_TYPEFLAG_SYMLINK) return 'symlink';
+  return TAR_SPECIAL_TYPES.get(typeflag) ?? null;
+}
+
+const TAR_ENTRY_TYPEFLAGS = new Set([
+  ...TAR_REGULAR_TYPEFLAGS,
+  TAR_TYPEFLAG_DIRECTORY,
+  TAR_TYPEFLAG_HARDLINK,
+  TAR_TYPEFLAG_SYMLINK,
+  ...TAR_SPECIAL_TYPES.keys(),
+]);
+
+function tarBombError(message: string): ConversionFailedError {
+  return new ConversionFailedError(`Archive bomb detected: ${message}`);
+}
+
+/** Header-level values of one entry that a pax record may override, captured before the pending state resets. */
+interface TarEntryContext {
+  rawName: string;
+  linkName: string;
+  paxSize: string | undefined;
+  paxMtime: string | undefined;
+  paxUid: string | undefined;
+  paxGid: string | undefined;
+}
+
+const EMPTY_TAR_BODY_SIZE = 0;
+
+function readTarIdField(buf: Buffer, offset: number, label: 'uid' | 'gid', paxValue: string | undefined): number {
+  if (paxValue === undefined) return readTarNumberField(buf, offset, TAR_LENGTH_ID, label);
+  return parsePaxInteger(paxValue, label);
+}
+
+function readTarMtimeField(buf: Buffer, offset: number, paxValue: string | undefined): number {
+  if (paxValue === undefined) {
+    return readTarNumberField(buf, offset, TAR_LENGTH_MTIME, 'mtime', true);
+  }
+  return parsePaxDecimal(paxValue, 'mtime');
+}
+
+function assertTarEntryName(rawName: string, linkName: string, headerIndex: number): void {
+  if (!rawName) throw tarReadError(`header ${headerIndex} has an empty entry name`);
+  if (rawName.includes('\0') || linkName.includes('\0')) {
+    throw tarReadError(`header ${headerIndex} has a NUL byte in its path or link target`);
+  }
+  if (rawName.length > TAR_MAX_PATH_LENGTH) {
+    throw tarReadError(`header ${headerIndex} has a path longer than ${TAR_MAX_PATH_LENGTH} characters`);
+  }
+}
+
+/** Decodes a GNU `L`/`K` payload: the NUL-terminated UTF-8 string it carries. */
+function decodeGnuLongText(data: Buffer): string {
+  const nul = data.indexOf(0);
+  return (nul === -1 ? data : data.subarray(0, nul)).toString('utf8');
+}
+
+/**
+ * Stateful single-pass TAR reader. Per-block work goes through methods (no per-block closures) and
+ * entry bodies stay views into the source buffer.
+ */
+class TarReader {
+  private readonly entries: TarEntry[] = [];
+  private readonly globalPax = new Map<string, string>();
+  private globalPaxBytes = 0;
+  private localPax = new Map<string, string>();
+  private pendingExtensionBytes = 0;
+  private longName: string | null = null;
+  private longLink: string | null = null;
+  private readonly contentByName = new Map<string, Buffer>();
+  private readonly symlinks = new TarSymlinkIndex();
+  private offset = 0;
+  private totalSize = 0;
+  private headerIndex = 0;
+  /** Offset of the header block that `processHeader` is decoding. */
+  private headerStart = 0;
+
+  /** 32-bit view for the checksum fast path; null when the buffer start is not word-aligned. */
+  private readonly words: Uint32Array | null;
+
+  constructor(private readonly tarBuffer: Buffer) {
+    const aligned = tarBuffer.byteOffset % TAR_WORD_BYTES === 0;
+    this.words = aligned
+      ? new Uint32Array(tarBuffer.buffer, tarBuffer.byteOffset, Math.floor(tarBuffer.length / TAR_WORD_BYTES))
+      : null;
+  }
+
+  read(): TarEntry[] {
+    while (this.offset < this.tarBuffer.length) {
+      if (!this.nextHeader()) break;
+      this.processHeader();
+    }
+    if (this.localPax.size > 0 || this.longName !== null || this.longLink !== null) {
+      throw tarReadError('extension header is not followed by an entry');
+    }
+    return this.entries;
+  }
+
+  /** Verifies the next header block and records its offset; false at the end of the archive. */
+  private nextHeader(): boolean {
+    const buf = this.tarBuffer;
+    if (this.offset + TAR_BLOCK_SIZE > buf.length) {
+      if (buf.subarray(this.offset).some((b) => b !== 0)) {
+        throw tarReadError('truncated archive: partial header block');
+      }
+      return false;
+    }
+    const start = this.offset;
+    this.headerIndex++;
+
+    if (isZeroTarRange(buf, start, start + TAR_BLOCK_SIZE)) {
+      const nextEnd = Math.min(start + 2 * TAR_BLOCK_SIZE, buf.length);
+      if (isZeroTarRange(buf, start + TAR_BLOCK_SIZE, nextEnd)) return false;
+      throw tarReadError('data found after a lone zero block');
+    }
+    this.offset += TAR_BLOCK_SIZE;
+    this.headerStart = start;
+    verifyTarChecksum(buf, this.words, start, this.headerIndex);
+    return true;
+  }
+
+  private processHeader(): void {
+    const base = this.headerStart;
+    const typeflag = String.fromCharCode(this.tarBuffer[base + TAR_OFFSET_TYPEFLAG]);
+    const headerSize = readTarNumberField(this.tarBuffer, base + TAR_OFFSET_SIZE, TAR_LENGTH_SIZE, 'size');
+
+    if (TAR_EXTENSION_TYPEFLAGS.has(typeflag)) {
+      this.readExtension(typeflag, headerSize);
+      return;
+    }
+    if (TAR_UNSUPPORTED_CONTENT_TYPEFLAGS.has(typeflag)) {
+      throw tarReadError(`typeflag '${typeflag}' (sparse or multi-volume content) is not supported`);
+    }
+    if (TAR_ENTRY_TYPEFLAGS.has(typeflag)) {
+      this.emitEntry(typeflag, headerSize);
+      return;
+    }
+    if (!TAR_VENDOR_TYPEFLAG.test(typeflag)) {
+      throw tarReadError(`unsupported typeflag ${JSON.stringify(typeflag)}`);
+    }
+    this.takeBody(headerSize); // vendor extension: skip its payload, keep pending pax/GNU state
+  }
+
+  private takeBody(size: number): Buffer {
+    const end = this.offset + size;
+    const padded = end + tarPadding(size);
+    if (padded > this.tarBuffer.length) {
+      throw tarReadError(
+        `truncated archive: entry body needs ${padded - this.offset} bytes (including block padding) but only ${Math.max(0, this.tarBuffer.length - this.offset)} remain`
+      );
+    }
+    const body = this.tarBuffer.subarray(this.offset, end);
+    this.offset = padded;
+    return body;
+  }
+
+  private checkBomb(size: number): void {
+    this.totalSize += size;
+    if (this.totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
+      throw tarBombError(
+        `uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+      );
+    }
+  }
+
+  // --- pax / GNU extension accumulation ---
+
+  private setGlobalPax(key: string, value: string): void {
+    const previous = this.globalPax.get(key);
+    if (previous !== undefined) this.globalPaxBytes -= Buffer.byteLength(key) + Buffer.byteLength(previous);
+    if (value === '') {
+      this.globalPax.delete(key); // POSIX.1-2008: an empty value cancels the keyword
+      return;
+    }
+    this.globalPaxBytes += Buffer.byteLength(key) + Buffer.byteLength(value);
+    if (this.globalPaxBytes > TAR_MAX_EXTENDED_HEADER_SIZE) {
+      throw tarReadError(`global pax records exceed ${TAR_MAX_EXTENDED_HEADER_SIZE} bytes`);
+    }
+    this.globalPax.set(key, value);
+  }
+
+  /** Local record wins; an empty local value cancels the keyword for this entry (POSIX.1-2008). */
+  private pax(key: string): string | undefined {
+    if (this.localPax.size === 0 && this.globalPax.size === 0) return undefined;
+    const local = this.localPax.get(key);
+    if (local !== undefined) return local === '' ? undefined : local;
+    return this.globalPax.get(key);
+  }
+
+  private chargeExtensionBytes(headerSize: number): void {
+    this.pendingExtensionBytes += headerSize;
+    if (this.pendingExtensionBytes > TAR_MAX_EXTENDED_HEADER_SIZE) {
+      throw tarReadError(
+        `extension headers before one entry exceed ${TAR_MAX_EXTENDED_HEADER_SIZE} bytes in total`
+      );
+    }
+  }
+
+  private readExtension(typeflag: string, headerSize: number): void {
+    const isGlobal = typeflag === TAR_TYPEFLAG_PAX_GLOBAL;
+    if (headerSize > TAR_MAX_EXTENDED_HEADER_SIZE) {
+      throw tarReadError(`extended header of ${headerSize} bytes exceeds the supported size`);
+    }
+    if (!isGlobal) this.chargeExtensionBytes(headerSize);
+    const data = this.takeBody(headerSize);
+    if (typeflag === TAR_TYPEFLAG_GNU_LONGNAME) {
+      this.longName = decodeGnuLongText(data);
+    } else if (typeflag === TAR_TYPEFLAG_GNU_LONGLINK) {
+      this.longLink = decodeGnuLongText(data);
+    } else {
+      this.applyPaxRecords(data, isGlobal);
+    }
+  }
+
+  private applyPaxRecords(data: Buffer, isGlobal: boolean): void {
+    for (const [key, value] of parsePaxRecords(data)) {
+      if (key.startsWith('GNU.sparse.')) throw tarReadError('sparse files are not supported');
+      if (isGlobal) this.setGlobalPax(key, value);
+      else this.localPax.set(key, value);
+    }
+  }
+
+  // --- entry decoding and emission ---
+
+  /** Captures the names and pax overrides for one entry and clears the pending extension state. */
+  private consumeEntryContext(typeflag: string): TarEntryContext {
+    const buf = this.tarBuffer;
+    const base = this.headerStart;
+    const magic = buf.toString('latin1', base + TAR_OFFSET_MAGIC, base + TAR_OFFSET_MAGIC + TAR_LENGTH_MAGIC);
+    const prefix =
+      magic === TAR_USTAR_MAGIC ? readTarString(buf, base + TAR_OFFSET_PREFIX, TAR_LENGTH_PREFIX) : '';
+    const ustarName = readTarString(buf, base + TAR_OFFSET_NAME, TAR_LENGTH_NAME);
+    const context: TarEntryContext = {
+      rawName: this.pax('path') ?? this.longName ?? (prefix ? `${prefix}/${ustarName}` : ustarName),
+      linkName: this.pax('linkpath') ?? this.longLink ?? this.headerLinkName(typeflag),
+      paxSize: this.pax('size'),
+      paxMtime: this.pax('mtime'),
+      paxUid: this.pax('uid'),
+      paxGid: this.pax('gid'),
+    };
+    if (this.localPax.size > 0) this.localPax = new Map();
+    this.longName = null;
+    this.longLink = null;
+    this.pendingExtensionBytes = 0;
+    return context;
+  }
+
+  /** The ustar link-name field only matters for link entries; other types skip decoding it. */
+  private headerLinkName(typeflag: string): string {
+    if (typeflag !== TAR_TYPEFLAG_HARDLINK && typeflag !== TAR_TYPEFLAG_SYMLINK) return '';
+    return readTarString(this.tarBuffer, this.headerStart + TAR_OFFSET_LINKNAME, TAR_LENGTH_LINKNAME);
+  }
+
+  private entryBodySize(type: TarEntryType, headerSize: number, paxSize: string | undefined): number {
+    // Only regular files own a body; directories, links and special files ignore the size field.
+    if (type !== 'file') return EMPTY_TAR_BODY_SIZE;
+    const bodySize = paxSize === undefined ? headerSize : parsePaxInteger(paxSize, 'size');
+    this.checkBomb(bodySize);
+    return bodySize;
+  }
+
+  /** Registers a link entry; returns the shared content for a hardlink, null for a symlink. */
+  private registerLink(filename: string, linkName: string, type: 'symlink' | 'hardlink'): Buffer | null {
+    const resolved = resolveTarLinkTarget(filename, linkName, type, this.symlinks);
+    if (type === 'symlink') {
+      this.symlinks.add(filename);
+      return null;
+    }
+    const target = this.contentByName.get(resolved);
+    if (!target) {
+      throw tarReadError(`hardlink '${filename}' points to '${linkName}', which is not an earlier file entry`);
+    }
+    this.checkBomb(target.length);
+    return target;
+  }
+
+  private emitEntry(typeflag: string, headerSize: number): void {
+    const buf = this.tarBuffer;
+    const base = this.headerStart;
+    const context = this.consumeEntryContext(typeflag);
+    const { rawName, linkName } = context;
+    assertTarEntryName(rawName, linkName, this.headerIndex);
+    const type = resolveTarEntryType(typeflag, rawName);
+    if (type === null) throw tarReadError(`unsupported typeflag ${JSON.stringify(typeflag)}`);
+
+    const bodySize = this.entryBodySize(type, headerSize, context.paxSize);
+    if (this.entries.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+      throw tarBombError(`file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+    }
+    let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
+
+    const filename = sanitizeArchivePath(rawName);
+    if (!filename) return;
+
+    if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
+    const isLink = type === 'symlink' || type === 'hardlink';
+    if (isLink) body = this.registerLink(filename, linkName, type) ?? body;
+    if (type === 'file' || type === 'hardlink') this.contentByName.set(filename, body);
+
+    this.entries.push({
+      filename,
+      type,
+      buffer: body,
+      linkTarget: isLink ? linkName : undefined,
+      mode: readTarNumberField(buf, base + TAR_OFFSET_MODE, TAR_LENGTH_MODE, 'mode'),
+      uid: readTarIdField(buf, base + TAR_OFFSET_UID, 'uid', context.paxUid),
+      gid: readTarIdField(buf, base + TAR_OFFSET_GID, 'gid', context.paxGid),
+      mtime: readTarMtimeField(buf, base + TAR_OFFSET_MTIME, context.paxMtime),
+    });
+  }
+}
+
+/**
+ * Reads every entry of a POSIX ustar/pax (and GNU long-name) TAR archive.
+ *
+ * Verifies each header checksum, honours typeflags `0`/NUL/`7` (file), `5` (directory), `1`/`2`
+ * (links, contained in the root), `x`/`g` (pax local/global records), `L`/`K` (GNU long name/link),
+ * decodes base-256 numbers, detects truncated bodies, and stops at two consecutive zero blocks.
+ * Vendor-extension typeflags (A-Z) are skipped except the content-bearing GNU `S`/`M`; every other
+ * unknown typeflag is rejected with a ConversionFailedError.
+ *
+ * Entry buffers are views into `tarBuffer` (no copy); a hardlink entry shares the buffer of the
+ * earlier file it points to. Hardlink content counts against the same uncompressed-size budget as
+ * regular files. Entries that would be written through an earlier symlink are rejected.
+ */
+export function readTarEntries(tarBuffer: Buffer): TarEntry[] {
+  return new TarReader(tarBuffer).read();
+}
+
+/**
+ * Extracts the regular files of a TAR archive. A hardlink yields the content of the earlier file
+ * it points to (counted against the uncompressed-size budget); directories, symlinks and
+ * device/fifo entries carry no data and are not returned (use `readTarEntries` to inspect them).
+ * Only the entries that are returned are copied out of `tarBuffer`.
+ */
 export function extractTarArchive(
   tarBuffer: Buffer,
   options: { entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
-  let offset = 0;
-  let totalUncompressedSize = 0;
+  const copies = new Map<Buffer, Buffer>();
 
-  while (offset + 512 <= tarBuffer.length) {
-    if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-      throw new Error(
-        `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
-      );
+  for (const entry of readTarEntries(tarBuffer)) {
+    if (entry.type !== 'file' && entry.type !== 'hardlink') continue;
+    if (!matchArchiveGlob(entry.filename, options.entries)) continue;
+    let copy = copies.get(entry.buffer);
+    if (!copy) {
+      copy = Buffer.from(entry.buffer);
+      copies.set(entry.buffer, copy);
     }
-
-    const header = tarBuffer.subarray(offset, offset + 512);
-    offset += 512;
-
-    // Check for end of archive (all zeros)
-    if (header.every((b) => b === 0)) break;
-
-    const rawName = header.toString('ascii', 0, 100).replace(/\0.*$/, '').trim();
-    if (!rawName) break;
-
-    const sizeStr = header.toString('ascii', 124, 135).replace(/\0.*$/, '').trim();
-    const size = parseInt(sizeStr, 8) || 0;
-
-    totalUncompressedSize += size;
-    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new Error(
-        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-      );
-    }
-
-    const pad = (512 - (size % 512)) % 512;
-    const sanitizedName = sanitizeArchivePath(rawName);
-    if (sanitizedName) {
-      if (matchArchiveGlob(sanitizedName, options.entries)) {
-        const fileBuf = tarBuffer.subarray(offset, offset + size);
-        files.push({ filename: sanitizedName, buffer: Buffer.from(fileBuf) });
-      }
-    }
-    offset += size + pad;
+    files.push({ filename: entry.filename, buffer: copy });
   }
 
   return files;
@@ -2256,7 +3192,10 @@ function decompress7zFolder(
   }
   if (id.length === 3 && id[0] === 0x04 && id[1] === 0x02 && id[2] === 0x02) {
     // BZip2
-    return decompressBzip2(packSlice);
+    const bzipLimit = unpackSize > 0
+      ? Math.min(unpackSize, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE)
+      : ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+    return decompressBzip2(packSlice, bzipLimit);
   }
   throw new Error(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
 }
@@ -3071,51 +4010,23 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
 
 function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectResponse {
   const entries: ArchiveEntryMetadata[] = [];
-  let offset = 0;
   let totalUncompressedBytes = 0;
 
-  while (offset + 512 <= buffer.length) {
-    const header = buffer.subarray(offset, offset + 512);
-    offset += 512;
-
-    if (header.every((b) => b === 0)) break;
-
-    const rawName = header.toString('ascii', 0, 100).replace(/\0.*$/, '').trim();
-    if (!rawName) break;
-
-    const sizeStr = header.toString('ascii', 124, 135).replace(/\0.*$/, '').trim();
-    const size = parseInt(sizeStr, 8) || 0;
-    const mtimeStr = header.toString('ascii', 136, 147).replace(/\0.*$/, '').trim();
-    const mtimeSec = parseInt(mtimeStr, 8) || 0;
-    const modifiedAt = mtimeSec > 0 ? new Date(mtimeSec * 1000).toISOString() : undefined;
-
-    const chksumStr = header.toString('ascii', 148, 155).replace(/\0.*$/, '').trim();
-    const chksum = parseInt(chksumStr, 8) || 0;
-    const crc32Str = chksum > 0 ? chksum.toString(16).padStart(8, '0') : undefined;
-
-    const typeflag = String.fromCharCode(header[156]);
-    const isDirectory = typeflag === '5' || rawName.endsWith('/');
-
-    let fullName = rawName;
-    const magic = header.toString('ascii', 257, 262);
-    if (magic.startsWith('ustar')) {
-      const prefix = header.toString('ascii', 345, 500).replace(/\0.*$/, '').trim();
-      if (prefix) fullName = `${prefix}/${rawName}`;
-    }
-
+  // readTarEntries applies pax/GNU long names, verifies checksums and enforces the bomb limits.
+  for (const entry of readTarEntries(buffer)) {
+    const isDirectory = entry.type === 'directory';
+    const isFile = entry.type === 'file';
+    const size = isFile ? entry.buffer.length : 0;
     entries.push({
-      name: sanitizeArchivePath(fullName) || fullName,
-      uncompressedSize: isDirectory ? 0 : size,
-      compressedSize: isDirectory ? 0 : size,
+      name: entry.filename,
+      uncompressedSize: size,
+      compressedSize: size,
       isEncrypted: false,
       isDirectory,
-      modifiedAt,
-      crc32: crc32Str,
+      modifiedAt: entry.mtime > 0 ? new Date(entry.mtime * 1000).toISOString() : undefined,
+      crc32: isFile ? crc32(entry.buffer).toString(16).padStart(8, '0') : undefined,
     });
-
-    totalUncompressedBytes += isDirectory ? 0 : size;
-    const pad = (512 - (size % 512)) % 512;
-    offset += size + pad;
+    totalUncompressedBytes += size;
   }
 
   return {
@@ -3433,7 +4344,7 @@ export async function inspectArchive(
 
   if (archiveBuffer.length >= 3 && archiveBuffer[0] === 0x42 && archiveBuffer[1] === 0x5a && archiveBuffer[2] === 0x68) {
     try {
-      const decompressed = decompressBzip2(archiveBuffer);
+      const decompressed = decompressBzip2(archiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       return inspectTarBuffer(decompressed, 'tar.bz2');
     } catch {
       throw new ConversionFailedError('Failed to decompress bzip2 archive.');
@@ -3568,7 +4479,7 @@ export async function convertArchive(
     }
   } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
     try {
-      const uncompressed = decompressBzip2(effectiveBuffer);
+      const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw new Error(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
@@ -3637,12 +4548,12 @@ export async function convertArchive(
       uncompressed = decompressZstd(effectiveBuffer);
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new Error(
+      throw new ConversionFailedError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
     if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new Error(
+      throw new ConversionFailedError(
         `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }

@@ -1,12 +1,5 @@
 [
   {
-    "rule": "G3b-TRUNCATION",
-    "file": "src/lib/conversions/archive.ts",
-    "symbol": "createTarArchive",
-    "reason": "Hardcoded numeric truncation \"file.filename.slice(0, 100)\" inside generator/converter function \"createTarArchive\".",
-    "owningWP": "WP-45"
-  },
-  {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/advanced-conversions-boost.test.ts",
     "symbol": "converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup",
@@ -82,20 +75,6 @@
     "symbol": "renders 4-node square SmartArt diagram using 2x2 quadrant matrix layout",
     "reason": "Test block \"renders 4-node square SmartArt diagram using 2x2 quadrant matrix layout\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-47"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/edge-phase-1.test.ts",
-    "symbol": "pure-data.ts strictly avoids importing pdfkit, office, sharp, or fs",
-    "reason": "Test block \"pure-data.ts strictly avoids importing pdfkit, office, sharp, or fs\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/edge-phase-1.test.ts",
-    "symbol": "pure-cad.ts strictly avoids importing sharp, pdfkit, zlib, or vector-cad.ts",
-    "reason": "Test block \"pure-cad.ts strictly avoids importing sharp, pdfkit, zlib, or vector-cad.ts\" contains only weak assertions (5 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
@@ -251,7 +230,6 @@
     "reason": "Test block \"parses CSV with quoted commas cleanly using Papa.parse without splitting fields\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
-
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-1-queue-sandbox-lifecycle.test.ts",

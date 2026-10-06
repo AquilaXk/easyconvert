@@ -10,7 +10,8 @@
  * - ISO/IEC 10118-3 SHA-256 streaming verification
  */
 
-import { Readable, Transform, TransformCallback, Writable, pipeline } from 'node:stream';
+import { Readable, Transform, TransformCallback, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { IStorageBackend } from '../storage';
@@ -151,8 +152,15 @@ export function createDeterministicSyntheticStream(
   });
 }
 
+const TAR_BLOCK_SIZE = 512;
+const TAR_NAME_FIELD_LENGTH = 100;
+const TAR_END_OF_ARCHIVE_BLOCKS = 2;
+/** Largest size the 11-digit octal ustar size field can hold. */
+const TAR_MAX_ENTRY_SIZE = 0o77777777777;
+
 /**
  * Streams raw binary payload into an authentic POSIX ustar TAR archive container stream.
+ * The stream must carry exactly `totalSize` bytes, the size written in the header.
  */
 export class TarStreamingPacker extends Transform {
   private readonly filename: string;
@@ -160,50 +168,72 @@ export class TarStreamingPacker extends Transform {
   private headerPushed: boolean = false;
   private bytesWritten: number = 0;
 
-  constructor(filename: string = 'payload.bin', totalSize: number = 0, highWaterMark?: number) {
+  constructor(filename: string, totalSize: number, highWaterMark?: number) {
     super({ highWaterMark: highWaterMark ?? 64 * 1024 });
+    if (!Number.isSafeInteger(totalSize) || totalSize < 0 || totalSize > TAR_MAX_ENTRY_SIZE) {
+      throw new Error(`TAR entry size must be an integer from 0 to ${TAR_MAX_ENTRY_SIZE} bytes, got ${totalSize}`);
+    }
+    if (Buffer.byteLength(filename, 'ascii') > TAR_NAME_FIELD_LENGTH || /[^\x20-\x7e]/.test(filename)) {
+      throw new Error(`TAR entry name must be at most ${TAR_NAME_FIELD_LENGTH} printable ASCII characters: "${filename}"`);
+    }
     this.filename = filename;
     this.totalSize = totalSize;
   }
 
+  private pushHeader(): void {
+    const header = Buffer.alloc(TAR_BLOCK_SIZE);
+    header.write(this.filename, 0, TAR_NAME_FIELD_LENGTH, 'ascii');
+    header.write('0000644\0', 100, 8, 'ascii');
+    header.write('0000000\0', 108, 8, 'ascii');
+    header.write('0000000\0', 116, 8, 'ascii');
+    header.write(this.totalSize.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
+    header.write('00000000000\0', 136, 12, 'ascii');
+    header.write('        ', 148, 8, 'ascii');
+    header.write('0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    let chksum = 0;
+    for (let i = 0; i < TAR_BLOCK_SIZE; i++) chksum += header[i];
+    header.write(chksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
+    this.push(header);
+    this.headerPushed = true;
+  }
+
   override _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
     if (!this.headerPushed) {
-      const header = Buffer.alloc(512);
-      header.write(this.filename.slice(0, 100), 0, 100, 'ascii');
-      header.write('0000644\0', 100, 8, 'ascii');
-      header.write('0000000\0', 108, 8, 'ascii');
-      header.write('0000000\0', 116, 8, 'ascii');
-      header.write(this.totalSize.toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii');
-      header.write('00000000000\0', 136, 12, 'ascii');
-      header.write('        ', 148, 8, 'ascii');
-      header.write('0', 156, 1, 'ascii');
-      header.write('ustar\0', 257, 6, 'ascii');
-      header.write('00', 263, 2, 'ascii');
-      let chksum = 0;
-      for (let i = 0; i < 512; i++) chksum += header[i];
-      header.write(chksum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
-      this.push(header);
-      this.headerPushed = true;
+      this.pushHeader();
     }
     this.bytesWritten += chunk.length;
+    if (this.bytesWritten > this.totalSize) {
+      callback(new Error(`TAR entry "${this.filename}" received ${this.bytesWritten} bytes but its header declares ${this.totalSize}`));
+      return;
+    }
     this.push(chunk);
     callback();
   }
 
   override _flush(callback: TransformCallback): void {
-    const pad = (512 - (this.bytesWritten % 512)) % 512;
+    if (this.bytesWritten !== this.totalSize) {
+      callback(new Error(`TAR entry "${this.filename}" received ${this.bytesWritten} bytes but its header declares ${this.totalSize}`));
+      return;
+    }
+    // A zero-byte entry still needs its header block.
+    if (!this.headerPushed) {
+      this.pushHeader();
+    }
+    const pad = (TAR_BLOCK_SIZE - (this.bytesWritten % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE;
     if (pad > 0) {
       this.push(Buffer.alloc(pad));
     }
     // POSIX ustar requires two 512-byte zero blocks at end of archive
-    this.push(Buffer.alloc(1024));
+    this.push(Buffer.alloc(TAR_BLOCK_SIZE * TAR_END_OF_ARCHIVE_BLOCKS));
     callback();
   }
 }
 
 export function createTarStreamPacker(
-  filename: string = 'payload.bin',
-  totalSize: number = 0,
+  filename: string,
+  totalSize: number,
   highWaterMark?: number
 ): TarStreamingPacker {
   return new TarStreamingPacker(filename, totalSize, highWaterMark);
@@ -262,52 +292,31 @@ export async function streamProcessLargePayload(
   let totalBytes = 0;
   let totalChunks = 0;
 
-  await new Promise<void>((resolve, reject) => {
-    let isSettled = false;
+  const sink = new Writable({
+    highWaterMark: config.highWaterMark ?? 64 * 1024,
+    write(chunk: Buffer, _encoding, callback) {
+      totalBytes += chunk.length;
+      totalChunks++;
 
-    const cleanup = () => {
-      isSettled = true;
-    };
-
-    const sink = new Writable({
-      highWaterMark: config.highWaterMark ?? 64 * 1024,
-      write(chunk: Buffer, _encoding, callback) {
-        totalBytes += chunk.length;
-        totalChunks++;
-
-        const currentHeap = process.memoryUsage().heapUsed;
-        if (currentHeap > peakHeap) {
-          peakHeap = currentHeap;
-        }
-        callback();
-      },
-    });
-
-    const engineStream = typeof config.transformEngine === 'function'
-      ? config.transformEngine()
-      : config.transformEngine;
-
-    const pipelineStreams: any[] = engineStream
-      ? [inputStream, engineStream, metricsTransform, sink]
-      : [inputStream, metricsTransform, sink];
-
-    (pipeline as any)(...pipelineStreams, (err: any) => {
-      if (isSettled) return;
-      cleanup();
-
-      if (err) {
-        if (config.signal?.aborted && (err.name === 'AbortError' || err.message?.includes('abort'))) {
-          resolve();
-          return;
-        }
-        // Strict Fail-Closed error propagation
-        reject(err instanceof Error ? err : new Error(String(err)));
-        return;
+      const currentHeap = process.memoryUsage().heapUsed;
+      if (currentHeap > peakHeap) {
+        peakHeap = currentHeap;
       }
-
-      resolve();
-    });
+      callback();
+    },
   });
+
+  const engineStream = typeof config.transformEngine === 'function'
+    ? config.transformEngine()
+    : config.transformEngine;
+
+  const pipelineStreams: any[] = engineStream
+    ? [inputStream, engineStream, metricsTransform, sink]
+    : [inputStream, metricsTransform, sink];
+
+  // The signal destroys every stage as soon as it aborts; an aborted run rejects with an
+  // AbortError because its partial digest and byte counts describe no complete payload.
+  await (pipeline as any)(...pipelineStreams, { signal: config.signal });
 
   const elapsedMs = Math.max(1, Date.now() - startTime);
   const throughputMbPerSec = (totalBytes / (1024 * 1024)) / (elapsedMs / 1000);
@@ -403,11 +412,21 @@ export class EnduranceSoakController {
       ) {
         iteration++;
         const iterStream = createDeterministicSyntheticStream(bytesPerIteration, chunkSizeBytes);
-        const result = await streamProcessLargePayload(iterStream, {
-          chunkSizeBytes,
-          signal: this.abortController.signal,
-          transformEngine: transformEngineFactory ? transformEngineFactory() : undefined,
-        });
+        let result: StreamProcessingResult;
+        try {
+          result = await streamProcessLargePayload(iterStream, {
+            chunkSizeBytes,
+            signal: this.abortController.signal,
+            transformEngine: transformEngineFactory ? transformEngineFactory() : undefined,
+          });
+        } catch (err: unknown) {
+          // An iteration interrupted by abort() ends the session; it is not counted.
+          if (this.abortController.signal.aborted && (err as Error)?.name === 'AbortError') {
+            iteration--;
+            break;
+          }
+          throw err;
+        }
 
         totalBytes += result.totalBytesProcessed;
         lastIterationDigest = result.sha256Digest;

@@ -61,8 +61,10 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       const tsvText = new TextDecoder().decode(transformed);
 
       expect(tsvText).toContain('id\tname\tnotes');
-      expect(tsvText).toContain('1\t"Doe, John"\tEngineer');
-      expect(tsvText).toContain('2\t"Smith, Alice"\tScientist');
+      // TSV has no field quoting: the comma stays inside the field and is not turned into a tab
+      // (the same row a minimal-quoting writer emits with a tab delimiter).
+      expect(tsvText).toContain('1\tDoe, John\tEngineer');
+      expect(tsvText).toContain('2\tSmith, Alice\tScientist');
     });
 
     it('preserves CSV quoted string state across multiple sequential streaming chunk boundaries', async () => {
@@ -78,7 +80,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       const combinedText = new TextDecoder().decode(res1) + new TextDecoder().decode(res2);
       expect(combinedText).toContain('id\tname\trole');
       // The comma inside "Doe, Jane" MUST NOT be converted to tab
-      expect(combinedText).toContain('101\t"Doe, Jane"\tManager');
+      expect(combinedText).toContain('101\tDoe, Jane\tManager');
     });
 
     it('handles odd-length byte chunks without sample misalignment or data corruption in PCM streaming', async () => {

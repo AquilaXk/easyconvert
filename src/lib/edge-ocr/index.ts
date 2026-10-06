@@ -1,7 +1,4 @@
-import {
-  PDFDocument,
-  StandardFonts,
-} from 'pdf-lib';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 
@@ -13,18 +10,110 @@ export interface EdgeOcrResult {
 }
 
 /**
+ * Raised when the edge tier cannot produce a searchable PDF: the OCR engine failed to load or
+ * run, recognized nothing, or the input needs processing the edge tier does not have.
+ * Callers escalate to the cloud tier instead of returning an unsearchable result.
+ */
+export class EdgeOcrError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'EdgeOcrError';
+  }
+}
+
+const OCR_LANGUAGE_CODES: Readonly<Record<string, string>> = {
+  auto: 'eng',
+  en: 'eng',
+  ko: 'kor',
+  de: 'deu',
+  fr: 'fra',
+  es: 'spa',
+  ja: 'jpn',
+  zh: 'chi_sim',
+};
+const DEFAULT_OCR_LANGUAGE = 'eng';
+const CONFIDENCE_PERCENT_SCALE = 100;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
+/** Edge OCR only produces a searchable PDF; other OCR targets go through the normal flow. */
+const EDGE_OCR_TARGET_FORMAT = 'pdf';
+
+/**
  * Returns true if the client environment supports in-browser WebAssembly & Web Worker execution.
  */
 export function isClientEdgeOcrSupported(): boolean {
-  return (
-    typeof Blob !== 'undefined' &&
-    typeof Uint8Array !== 'undefined'
-  );
+  return typeof Blob !== 'undefined' && typeof Uint8Array !== 'undefined';
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function resolveTesseractLanguage(language: string | undefined): string {
+  if (!language) {
+    return DEFAULT_OCR_LANGUAGE;
+  }
+  return OCR_LANGUAGE_CODES[language.toLowerCase()] ?? language;
+}
+
+function hasSignature(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return signature.every((byte, i) => bytes[i] === byte);
+}
+
+async function recognizeImage(
+  file: File,
+  arrayBuffer: ArrayBuffer,
+  options: ConversionOptions,
+  onProgress?: (percent: number) => void
+): Promise<OcrResult> {
+  let data: { text?: string; confidence?: number; blocks?: unknown[] | null };
+  try {
+    const Tesseract = await import('tesseract.js');
+    const worker = await Tesseract.createWorker(resolveTesseractLanguage(options.ocrLanguage), 1, {
+      // Failures already reject the pending job; without a handler the worker also rethrows
+      // them from its message listener as an uncaught exception.
+      errorHandler: () => undefined,
+      logger: (m) => {
+        if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+          onProgress?.(Math.round(35 + m.progress * 45));
+        }
+      },
+    });
+    try {
+      const input = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : file;
+      ({ data } = await worker.recognize(input, {}, { blocks: true }));
+    } finally {
+      await worker.terminate();
+    }
+  } catch (err: unknown) {
+    throw new EdgeOcrError(`Edge OCR engine failed: ${describeError(err)}`, { cause: err });
+  }
+
+  const text = (data.text ?? '').trim();
+  if (!text) {
+    throw new EdgeOcrError('Edge OCR recognized no text in the image');
+  }
+  if (typeof data.confidence !== 'number' || !Number.isFinite(data.confidence)) {
+    throw new EdgeOcrError('Edge OCR engine reported no recognition confidence');
+  }
+  const { lines, lineBlocks } = parseTesseractBlocks(data.blocks as any[] | null | undefined);
+  if (lineBlocks.length === 0) {
+    throw new EdgeOcrError('Edge OCR returned text without line geometry, so no text layer can be placed');
+  }
+
+  return {
+    text,
+    confidence: data.confidence / CONFIDENCE_PERCENT_SCALE,
+    wordCount: text.split(/\s+/).length,
+    lines,
+    lineBlocks,
+  };
 }
 
 /**
- * Executes 100% local, client-side Edge OCR and Searchable PDF generation.
+ * Executes 100% local, client-side Edge OCR and Searchable PDF generation for a raster image.
  * All computations run strictly within client RAM without a single byte sent over the network.
+ * Throws {@link EdgeOcrError} whenever no searchable text layer can be produced.
  */
 export async function runClientEdgeOcr(
   file: File,
@@ -32,204 +121,76 @@ export async function runClientEdgeOcr(
   onProgress?: (percent: number) => void
 ): Promise<EdgeOcrResult> {
   if (!isClientEdgeOcrSupported()) {
-    throw new Error('Client-side Edge OCR is not supported in this environment.');
+    throw new EdgeOcrError('Client-side Edge OCR is not supported in this environment.');
+  }
+
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf' || file.type === 'application/pdf') {
+    throw new EdgeOcrError('Edge OCR cannot rasterize PDF pages; the document needs server-side OCR');
   }
 
   onProgress?.(10);
   const arrayBuffer = await file.arrayBuffer();
   const fileBytes = new Uint8Array(arrayBuffer);
   const fileName = file.name.replace(/\.[^/.]+$/, '');
-  const ext = (file.name.split('.').pop() || '').toLowerCase();
 
-  onProgress?.(25);
-
-  let doc: PDFDocument;
-  let ocrText = '';
-  let avgConfidence = 0.95;
-
-  if (ext === 'pdf') {
-    // PDF input: Load original PDF preserving 100% of metadata, catalog, and vectors
-    doc = await PDFDocument.load(fileBytes);
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const pageCount = doc.getPageCount();
-
-    // In client memory, attempt page-level text extraction or OCR via pdfjs
-    const pageTexts: string[] = [];
-    try {
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      const loadingTask = pdfjs.getDocument({
-        data: fileBytes,
-        useSystemFonts: true,
-        disableFontFace: true,
-        verbosity: 0,
-      });
-      const pdfDoc = await loadingTask.promise;
-
-      for (let i = 1; i <= pdfDoc.numPages; i++) {
-        const page = await pdfDoc.getPage(i);
-        const textContent = await page.getTextContent();
-        const pageStr = textContent.items
-          .map((item: any) => ('str' in item ? item.str : ''))
-          .filter(Boolean)
-          .join(' ');
-
-        if (pageStr.trim()) {
-          pageTexts.push(pageStr.trim());
-          const targetPage = doc.getPage(i - 1);
-          injectInvisibleTextLayer(
-            targetPage,
-            font,
-            {
-              text: pageStr,
-              confidence: 0.95,
-              wordCount: pageStr.split(/\s+/).length,
-              lines: [pageStr],
-            },
-            1.0,
-            1.0
-          );
-        }
-        onProgress?.(25 + Math.round((i / pdfDoc.numPages) * 50));
-      }
-    } catch {
-      // In constrained environments where pdfjs cannot load
-    }
-
-    ocrText = pageTexts.join('\n\n');
-  } else {
-    // Image input: Run optical character recognition via Tesseract.js WebAssembly
-    onProgress?.(35);
-
-    const ocrResult: OcrResult = {
-      text: '',
-      confidence: 0.92,
-      wordCount: 0,
-      lines: [] as string[],
-      lineBlocks: [],
-      imageWidth: 800,
-      imageHeight: 600,
-    };
-
-    try {
-      const Tesseract = await import('tesseract.js');
-      const lang = options.ocrLanguage || 'eng';
-      const langMap: Record<string, string> = {
-        auto: 'eng',
-        en: 'eng',
-        ko: 'kor',
-        de: 'deu',
-        fr: 'fra',
-        es: 'spa',
-        ja: 'jpn',
-        zh: 'chi_sim',
-      };
-      const tesseractLang = langMap[lang.toLowerCase()] || lang || 'eng';
-
-      const worker = await Tesseract.createWorker(tesseractLang, 1, {
-        logger: (m) => {
-          if (m.status === 'recognizing text' && typeof m.progress === 'number') {
-            onProgress?.(Math.round(35 + m.progress * 45));
-          }
-        },
-      });
-
-      const inputForOcr = typeof Buffer !== 'undefined' ? Buffer.from(arrayBuffer) : (file as any);
-      const ret = await worker.recognize(inputForOcr, {}, { blocks: true });
-      await worker.terminate();
-
-      if (ret?.data?.text?.trim()) {
-        ocrResult.text = ret.data.text.trim();
-        ocrResult.confidence = (ret.data.confidence || 90) / 100;
-        ocrResult.wordCount = ocrResult.text.split(/\s+/).length;
-        const parsed = parseTesseractBlocks(ret.data.blocks);
-        ocrResult.lines = parsed.lines;
-        ocrResult.lineBlocks = parsed.lineBlocks;
-      }
-    } catch {
-      // In offline or worker-restricted contexts
-    }
-
-    onProgress?.(80);
-
-    // Create authentic searchable PDF with pdf-lib
-    doc = await PDFDocument.create();
-    doc.setTitle(fileName);
-    doc.setCreator('EasyConvert Client-Side Edge OCR');
-
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-
-    let embeddedImage;
-    const isJpg = ext === 'jpg' || ext === 'jpeg' || file.type === 'image/jpeg';
-    if (isJpg) {
-      embeddedImage = await doc.embedJpg(fileBytes);
-    } else {
-      try {
-        embeddedImage = await doc.embedPng(fileBytes);
-      } catch {
-        embeddedImage = await doc.embedJpg(fileBytes);
-      }
-    }
-
-    const { width, height } = embeddedImage;
-    ocrResult.imageWidth = width;
-    ocrResult.imageHeight = height;
-
-    const page = doc.addPage([width, height]);
-    page.drawImage(embeddedImage, {
-      x: 0,
-      y: 0,
-      width,
-      height,
-    });
-
-    if (ocrResult.text) {
-      injectInvisibleTextLayer(page, font, ocrResult, 1.0, 1.0);
-      ocrText = ocrResult.text;
-      avgConfidence = ocrResult.confidence ?? 0;
-    } else {
-      ocrText = '';
-      avgConfidence = 0;
-    }
+  // Check the bytes, not the name or MIME type, before spending time on recognition.
+  const isJpg = hasSignature(fileBytes, JPEG_SIGNATURE);
+  if (!isJpg && !hasSignature(fileBytes, PNG_SIGNATURE)) {
+    throw new EdgeOcrError(`Edge OCR can only embed PNG or JPEG images, not "${ext || file.type}"`);
   }
+
+  onProgress?.(35);
+  const ocrResult = await recognizeImage(file, arrayBuffer, options, onProgress);
+  onProgress?.(80);
+
+  const doc = await PDFDocument.create();
+  doc.setTitle(fileName);
+  doc.setCreator('EasyConvert Client-Side Edge OCR');
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const embeddedImage = isJpg ? await doc.embedJpg(fileBytes) : await doc.embedPng(fileBytes);
+  const { width, height } = embeddedImage;
+  ocrResult.imageWidth = width;
+  ocrResult.imageHeight = height;
+
+  const page = doc.addPage([width, height]);
+  page.drawImage(embeddedImage, { x: 0, y: 0, width, height });
+  injectInvisibleTextLayer(page, font, ocrResult, 1.0, 1.0);
 
   onProgress?.(90);
   const pdfBytes = await doc.save();
   const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-
   onProgress?.(100);
 
   return {
     blob,
-    text: ocrText,
-    confidence: avgConfidence,
+    text: ocrResult.text,
+    confidence: ocrResult.confidence as number,
     filename: `${fileName}.pdf`,
   };
 }
 
 /**
- * Convenience helper to execute client-side Edge OCR for a queue item if enabled.
- * Returns result details on success, or null if edge mode is disabled or fails.
+ * Executes client-side Edge OCR for a queue item when edge OCR is enabled and the target is PDF.
+ * Returns null when edge OCR does not apply (including non-PDF targets, which the normal flow
+ * handles); throws {@link EdgeOcrError} when it applies but fails,
+ * so the caller can escalate to the cloud tier and record why.
  */
 export async function tryProcessClientEdgeOcr(
   item: ConversionQueueItem,
   onProgress?: (percent: number) => void
 ): Promise<{ resultUrl: string; resultSize: number } | null> {
-  if (
-    item.options.clientEdgeMode === false ||
-    !item.options.ocrEnabled ||
-    typeof window === 'undefined'
-  ) {
+  if (item.options.clientEdgeMode === false || !item.options.ocrEnabled || typeof window === 'undefined') {
+    return null;
+  }
+  if (item.targetFormat.toLowerCase() !== EDGE_OCR_TARGET_FORMAT) {
     return null;
   }
 
-  try {
-    const edgeResult = await runClientEdgeOcr(item.file, item.options, onProgress);
-    const resultUrl = URL.createObjectURL(edgeResult.blob);
-    return {
-      resultUrl,
-      resultSize: edgeResult.blob.size,
-    };
-  } catch {
-    return null;
-  }
+  const edgeResult = await runClientEdgeOcr(item.file, item.options, onProgress);
+  return {
+    resultUrl: URL.createObjectURL(edgeResult.blob),
+    resultSize: edgeResult.blob.size,
+  };
 }

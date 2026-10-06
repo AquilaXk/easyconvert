@@ -78,6 +78,82 @@ export function verifyArchiveWithNative7z(
   }
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CLOCK_TIME = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+const MONTH_NAME = /^[A-Z][a-z]{2}$/;
+const DAY_OF_MONTH = /^\d{1,2}$/;
+const YEAR = /^\d{4}$/;
+const SIZE = /^\d+$/;
+const SYMLINK_MODE = 'l';
+const HARDLINK_MODE = 'h';
+const SYMLINK_SEPARATOR = ' -> ';
+const HARDLINK_SEPARATOR = ' link to ';
+
+function splitListing(output: string): string[] {
+  return output.split('\n').filter((line) => line.length > 0);
+}
+
+/**
+ * Finds the size in the metadata columns before the entry name, anchored on the date columns
+ * that end them: GNU tar prints `owner/group size YYYY-MM-DD HH:MM`, bsdtar prints
+ * `links owner group size Mon DD HH:MM|YYYY`. Anchoring from the right keeps an owner or group
+ * that looks like a month name from being taken for the date.
+ */
+function sizeFromColumns(columns: string[]): string | undefined {
+  const n = columns.length;
+  if (ISO_DATE.test(columns[n - 2] ?? '') && CLOCK_TIME.test(columns[n - 1] ?? '')) {
+    return columns[n - 3];
+  }
+  const timeOrYear = columns[n - 1] ?? '';
+  const isBsdDate =
+    MONTH_NAME.test(columns[n - 3] ?? '') &&
+    DAY_OF_MONTH.test(columns[n - 2] ?? '') &&
+    (CLOCK_TIME.test(timeOrYear) || YEAR.test(timeOrYear));
+  if (isBsdDate) {
+    return columns[n - 4];
+  }
+  return undefined;
+}
+
+/** Splits `<metadata> <name><separator><target>` at the first name occurrence whose metadata parses. */
+function linkMetadataColumns(line: string, name: string, separator: string): string[] | undefined {
+  const marker = ` ${name}${separator}`;
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    const columns = line.slice(0, at).trim().split(/\s+/);
+    if (sizeFromColumns(columns) !== undefined) return columns;
+  }
+  return undefined;
+}
+
+function metadataColumns(line: string, name: string, mode: string): string[] {
+  if (mode.startsWith(SYMLINK_MODE) || mode.startsWith(HARDLINK_MODE)) {
+    const separator = mode.startsWith(SYMLINK_MODE) ? SYMLINK_SEPARATOR : HARDLINK_SEPARATOR;
+    const columns = linkMetadataColumns(line, name, separator);
+    if (!columns) {
+      throw new Error(`Cannot locate the size column in tar verbose line for link "${name}": ${line}`);
+    }
+    return columns;
+  }
+  if (!line.endsWith(` ${name}`)) {
+    throw new Error(`tar verbose line does not end with entry name "${name}": ${line}`);
+  }
+  return line.slice(0, line.length - name.length).trim().split(/\s+/);
+}
+
+/**
+ * Parses one `tar -tv` line whose entry name is already known from `tar -t`. Link entries carry
+ * their target after the name (` -> target` for symlinks, ` link to target` for hard links).
+ * Exported for the parser's own regression tests.
+ */
+export function parseVerboseTarLine(line: string, name: string): TarEntryInfo {
+  const mode = line.trimStart().split(/\s+/)[0] ?? '';
+  const sizeColumn = sizeFromColumns(metadataColumns(line, name, mode));
+  if (sizeColumn === undefined || !SIZE.test(sizeColumn)) {
+    throw new Error(`Cannot locate the size column in tar verbose line: ${line}`);
+  }
+  return { path: name, size: Number(sizeColumn), mode };
+}
+
 /**
  * Inspects TAR archive headers and table of contents using native system `tar -tvf` CLI.
  */
@@ -90,37 +166,18 @@ export function inspectTarWithNativeTar(
 
   try {
     fs.writeFileSync(tempFile, tarBuffer);
-    const output = execFileSync(tarPath, ['-tvf', tempFile], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const entries: TarEntryInfo[] = [];
-    const lines = output.split('\n').filter((l) => l.trim().length > 0);
-
-    for (const line of lines) {
-      // Standard tar -tvf format:
-      // -rw-r--r--  0 user group 1234 Oct  5 00:00 filename.txt
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 6) {
-        const mode = parts[0];
-        // Size is typically part index 4 or 2 depending on tar dialect
-        let size = 0;
-        let entryPath = parts[parts.length - 1];
-
-        for (let i = 1; i < parts.length - 1; i++) {
-          if (/^\d+$/.test(parts[i]) && parseInt(parts[i], 10) > 0) {
-            size = parseInt(parts[i], 10);
-          }
-        }
-
-        entries.push({
-          path: entryPath,
-          size,
-          mode,
-        });
-      }
+    const run = (flags: string) =>
+      execFileSync(tarPath, [flags, tempFile], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    // `-t` lists one exact name per line; `-tv` adds mode and size in the same order. Names are
+    // taken from the plain listing so spaces in names never shift the verbose columns.
+    const names = splitListing(run('-tf'));
+    const output = run('-tvf');
+    const verboseLines = splitListing(output);
+    if (verboseLines.length !== names.length) {
+      throw new Error(`tar listed ${names.length} names but ${verboseLines.length} verbose entries`);
     }
+
+    const entries: TarEntryInfo[] = names.map((name, i) => parseVerboseTarLine(verboseLines[i], name));
 
     return {
       passed: true,

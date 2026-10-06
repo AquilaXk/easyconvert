@@ -1,13 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import sharp from 'sharp';
 import {
   ConversionOptions,
   OcrLanguageUnavailableError,
+  ConversionFailedError,
   OcrEngineUnavailableError,
+  OcrPreprocessError,
   HocrExportOptions,
   AltoExportOptions,
   OcrPageDecision,
@@ -27,6 +26,22 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
+import {
+  countTextRows,
+  fallbackReadsMore,
+  OCR_SMALL_CROP_MAX_HEIGHT_PX,
+  ocrFallbackPageSegMode,
+  ocrSegmentationFor,
+} from './ocr-config';
+import { recognizeWithCli } from './ocr-cli';
+import { mapOcrResultToSource } from './ocr-geometry';
+import {
+  OCR_PREPROCESS_STEPS,
+  preprocessOcrImage,
+  type OcrPreprocessResult,
+  type OcrPreprocessSteps,
+} from './ocr-preprocess';
+import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
@@ -42,14 +57,33 @@ export {
   unescapeXml,
 } from './ocr-export';
 
+function countWords(text: string | null | undefined): number {
+  return (text || '').split(/\s+/).filter(Boolean).length;
+}
+
+/** Terminates pooled OCR workers; call on process shutdown. */
+export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
+
+/** Text rows in an image short enough to be read as one block or line; undefined for taller images. */
+async function countSmallCropTextRows(png: Buffer, height: number | undefined): Promise<number | undefined> {
+  if (height === undefined || height > OCR_SMALL_CROP_MAX_HEIGHT_PX) return undefined;
+  const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
+  return countTextRows(new Uint8Array(data.buffer, data.byteOffset, data.length), info.width, info.height);
+}
+
 /**
  * Optical Character Recognition (OCR) Engine
  * Powered by authentic WebAssembly inference (Tesseract.js) and native Tesseract CLI.
  * Strictly fail-closed without geometric fallback or fabricated glyph classification.
+ *
+ * `steps` selects the page preparation steps and is internal: callers never pass it from user
+ * options, and the default is OCR_PREPROCESS_STEPS. Tests and measurements use it to score a
+ * step against the same page without it.
  */
 export async function performOcr(
   imageBuffer: Buffer,
-  language: string = 'auto'
+  language: string = 'auto',
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
 ): Promise<OcrResult> {
   const langMap: Record<string, string> = {
     auto: 'eng',
@@ -119,31 +153,57 @@ export async function performOcr(
     );
   }
 
-  // Validate that imageBuffer is a decodable image before sending to Tesseract worker
+  // Decode with sharp and re-encode as PNG: the OCR reader opens fewer formats (no AVIF, HEIF,
+  // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG. EXIF
+  // orientation is applied first, so text is recognized as displayed, and the page is prepared
+  // for recognition (see ocr-preprocess.ts), which both engines below then read.
+  let prepared: OcrPreprocessResult;
   try {
-    await sharp(imageBuffer).metadata();
-  } catch (imgErr) {
-    throw new OcrEngineUnavailableError(
-      `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}': invalid image buffer.`
-    );
+    prepared = await preprocessOcrImage(imageBuffer, steps);
+  } catch (err) {
+    if (err instanceof OcrPreprocessError || err instanceof OcrEngineUnavailableError) throw err;
+    throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
+  const ocrInput = prepared.image;
+  // Segmentation follows the page as submitted: an enlarged label is still a label. Its text rows
+  // are counted on the prepared image, which scaling and binarization leave in the same number.
+  const inputHeight = prepared.geometry.sourceHeight;
+  const inputTextRows = await countSmallCropTextRows(ocrInput, inputHeight);
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
-    const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(tesseractLang, 1, {
-      langPath: localLangPath,
-      cacheMethod: 'none',
-      gzip: isGzip,
-    });
-    const ret = await worker.recognize(imageBuffer, {}, { blocks: true });
-    await worker.terminate();
+    const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
+    const ret = await getSharedOcrWorkerPool().run(
+      {
+        langs: tesseractLang,
+        langPath: localLangPath,
+        gzip: isGzip,
+        engineMode,
+        parameters: { tessedit_pageseg_mode: pageSegMode },
+      },
+      async (recognize, recognizeWith) => {
+        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+        if (imageMode !== pageSegMode) {
+          return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
+        }
+        const first = await recognize(ocrInput, {}, { blocks: true });
+        const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
+        if (!fallbackMode || countWords(first.data.text) > 0) return first;
+        // Automatic segmentation finds no text block in very small images; read them as one block.
+        const retry = await recognizeWith(
+          { tessedit_pageseg_mode: fallbackMode },
+          ocrInput,
+          {},
+          { blocks: true }
+        );
+        return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
+      }
+    );
 
     if (ret && ret.data) {
       const fullText = (ret.data.text || '').trim();
-      const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
-      const imgWidth = meta.width || 800;
-      const imgHeight = meta.height || 600;
+      const imgWidth = prepared.geometry.outputWidth;
+      const imgHeight = prepared.geometry.outputHeight;
       const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
 
       const words = fullText.split(/\s+/).filter(Boolean);
@@ -179,15 +239,18 @@ export async function performOcr(
           ? ret.data.confidence / 100
           : null;
 
-      return {
-        text: fullText,
-        confidence: meanConf,
-        wordCount: words.length,
-        lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
-        lineBlocks,
-        imageWidth: imgWidth,
-        imageHeight: imgHeight,
-      };
+      return mapOcrResultToSource(
+        {
+          text: fullText,
+          confidence: meanConf,
+          wordCount: words.length,
+          lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
+          lineBlocks,
+          imageWidth: imgWidth,
+          imageHeight: imgHeight,
+        },
+        prepared.geometry
+      );
     }
   } catch (err: any) {
     if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
@@ -200,38 +263,17 @@ export async function performOcr(
   const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
   const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
   if (tesseractCli) {
-    const tmpIn = path.join(os.tmpdir(), `ocr_cli_in_${crypto.randomUUID()}.png`);
-    const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
-    try {
-      fs.writeFileSync(tmpIn, imageBuffer);
-      const cliArgs = ['--tessdata-dir', localLangPath, tmpIn, tmpOutBase, '-l', tesseractLang];
-      execFileSync(tesseractCli, cliArgs, {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout: 15000,
-      });
-      const outTxtPath = `${tmpOutBase}.txt`;
-      if (fs.existsSync(outTxtPath)) {
-        const cliText = fs.readFileSync(outTxtPath, 'utf-8').trim();
-        fs.unlinkSync(outTxtPath);
-        const meta = await sharp(imageBuffer).metadata().catch(() => ({ width: 800, height: 600 }));
-        const lines = cliText ? cliText.split('\n').map((l) => l.trim()).filter(Boolean) : [];
-        return {
-          text: cliText,
-          confidence: null,
-          wordCount: cliText ? cliText.split(/\s+/).filter(Boolean).length : 0,
-          lines,
-          lineBlocks: [],
-          imageWidth: meta.width || 800,
-          imageHeight: meta.height || 600,
-        };
-      }
-    } catch (err: any) {
-      // CLI failed
-    } finally {
-      try {
-        if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn);
-      } catch {}
-    }
+    return mapOcrResultToSource(
+      await recognizeWithCli({
+        cliPath: tesseractCli,
+        tessdataDir: localLangPath,
+        tesseractLang,
+        image: ocrInput,
+        imageHeight: inputHeight,
+        textRows: inputTextRows,
+      }),
+      prepared.geometry
+    );
   }
 
   throw new OcrEngineUnavailableError(
@@ -250,7 +292,22 @@ export async function generateSearchablePdf(
   options: ConversionOptions = {},
   title = 'Searchable Document'
 ): Promise<Buffer> {
-  return createLosslessSandwichPdfFromImage(scannedImageBuffer, ocrResult, options, title);
+  return createLosslessSandwichPdfFromImage(await uprightImage(scannedImageBuffer), ocrResult, options, title);
+}
+
+/** EXIF orientation value for pixels that are already stored upright. */
+const EXIF_ORIENTATION_UPRIGHT = 1;
+
+/**
+ * PDF image embedding ignores EXIF orientation, while OCR coordinates refer to the displayed
+ * image. A rotated photo is re-encoded upright so the page and its text layer line up.
+ */
+async function uprightImage(imageBuffer: Buffer): Promise<Buffer> {
+  const { orientation } = await sharp(imageBuffer).metadata();
+  if (!orientation || orientation === EXIF_ORIENTATION_UPRIGHT) {
+    return imageBuffer;
+  }
+  return sharp(imageBuffer).rotate().png().toBuffer();
 }
 
 /**

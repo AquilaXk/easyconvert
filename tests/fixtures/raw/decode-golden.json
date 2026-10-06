@@ -1,0 +1,57 @@
+{
+  "x3f": {
+    "width": 2640,
+    "height": 1760,
+    "rgb16Sha256": "793b83989bae101d6f810d9d4a9020ef5f75748bc53a0dc4e27502e648f621b2",
+    "layerSha256": [
+      "19b0e7d6c29203c7ef76e7fd185503eb295b15a7586f7e58cf31aa03c7317d72",
+      "197039e9f99c88712dd554d6c397d1128fee6d51402c381481bba95503cf8d79",
+      "c9e203d7c08290fcd09609477bb1e4c6f458826d58376596c3af30c502daf351"
+    ]
+  },
+  "x3f-sd14": {
+    "width": 2640,
+    "height": 1760,
+    "rgb16Sha256": "762d63bccfff2bff29039d5ff8f841e36fbd0ea46cd8c087955b2c5a993b3606",
+    "layerSha256": [
+      "ec983bcd4ecb1372576b22df3faa714f5303c8b55881310caa1d80deeb0a65c5",
+      "86cfccfb1c7e04a8585bb20f9bb87dbbe5591daa4250ef0bd424b41002f97325",
+      "c3e6cb8dc3a4960c0e13c030bc57fac97b6003511f3128b5ef63b6e45554ae22"
+    ]
+  },
+  "x3f-merrill": {
+    "width": 4704,
+    "height": 3136,
+    "rgb16Sha256": "a6eff1fe9b3838cc01ac443cdaa0a26e43f20922f241761627920314d04e5510",
+    "layerSha256": [
+      "66d157fb773abe0ec75b939f9dc12d17a151bb4c5d58204b57e73a100a0280d9",
+      "2bb307278bd0fdb59dee006318c257e81e25d33d371b5e84648e77e15c053c36",
+      "d349f5400aade2177acd5d6916bb0e096c6338fabc3ad14128857e6599ebd451"
+    ]
+  },
+  "x3f-quattro": {
+    "width": 5424,
+    "height": 3616,
+    "rgb16Sha256": "832af9a508876acf39de486117a3adeb4ee221dbbeb3a333870117284299962f",
+    "layerSha256": [
+      "68c16416e56e099659bec8325b881ed9a33d547c4ea0d2cb027ac14b76f2b45d",
+      "2fd0f8f246e32f20343452300bea43376fec042da026528e1d05152c8856a198",
+      "e9d8bf016dd7dcee510961708c9ffaec8c643caf04222cada73210a987642bf2"
+    ]
+  },
+  "raw": {
+    "width": 2592,
+    "height": 1944,
+    "rgb16Sha256": "7bbf00dc3b450d12f2bd62be3753ca87c3d783c55421778a3c9d0e544e17214a"
+  },
+  "raw-imx219": {
+    "width": 3280,
+    "height": 2464,
+    "rgb16Sha256": "1ed72933780c8da4e40f690a4593e2040c4f1e1b4cb60cdbdca9ce7dfb1372a5"
+  },
+  "raw-imx477": {
+    "width": 4056,
+    "height": 3040,
+    "rgb16Sha256": "d99bb842e8c56282b17dd636a225ad10924899871b9df71b50ba4a82b76962db"
+  }
+}

@@ -1,7 +1,6 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, checkOpfsSupport, ConversionTier } from './edge/tier-router';
-import { isPureDataConvertible, convertPureData } from './edge/pure/pure-data';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
@@ -97,21 +96,7 @@ export async function tryProcessClientEdge(
   if (resolution.tier === 'L0') {
     onProgress?.(25);
 
-    // Pure Data conversion (CSV, TSV, JSON, YAML)
-    if (isPureDataConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const res = convertPureData(new Uint8Array(arrayBuf), src, tgt, item.options);
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
+    // Structured data never resolves to L0: the router sends it to the server data engine.
 
     // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
     if (isPureCadConvertible(src, tgt)) {
@@ -208,7 +193,19 @@ export async function tryProcessClientEdge(
       // Graceful cascade to L2 Wasm, keeping the reason
       escalationReason = describeEdgeError(err);
     }
-    const l2Res = await processL2Conversion(item, src, tgt, onProgress);
+    let l2Res: ClientEdgeResult | null;
+    try {
+      l2Res = await processL2Conversion(item, src, tgt, onProgress);
+    } catch (err: unknown) {
+      if (!(err instanceof ClientEdgeEscalationError)) {
+        throw err;
+      }
+      // L2 failed too: escalate from L2, keeping both reasons in tier order
+      throw new ClientEdgeEscalationError(
+        err.fallbackFrom,
+        `L1A: ${escalationReason}; ${err.fallbackFrom}: ${err.message}`
+      );
+    }
     if (l2Res) {
       return {
         ...l2Res,
@@ -396,21 +393,22 @@ async function processL2Conversion(
   onProgress?: (progress: number) => void
 ): Promise<ClientEdgeResult | null> {
   if (item.options.ocrEnabled || src === 'pdf') {
+    let edgeOcrRes: Awaited<ReturnType<typeof tryProcessClientEdgeOcr>>;
     try {
-      const edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
-      if (edgeOcrRes) {
-        return {
-          resultUrl: edgeOcrRes.resultUrl,
-          resultSize: edgeOcrRes.resultSize,
-          tier: 'L2',
-          tierName: 'Edge L2 (SIMD Wasm)',
-        };
-      }
+      edgeOcrRes = await tryProcessClientEdgeOcr(item, onProgress);
     } catch (err: unknown) {
-      // Propagate OCR error to respect fail-closed invariant
-      throw err;
+      // Edge OCR could not produce a searchable PDF: escalate to L4 and keep the reason
+      throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
     }
-    return null;
+    if (!edgeOcrRes) {
+      return null;
+    }
+    return {
+      resultUrl: edgeOcrRes.resultUrl,
+      resultSize: edgeOcrRes.resultSize,
+      tier: 'L2',
+      tierName: 'Edge L2 (SIMD Wasm)',
+    };
   } else {
     const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
     if (isImage) {
@@ -550,9 +548,14 @@ export async function executeItemConversion(
 
   // 2. Fail-closed check: if user strictly mandated client-only execution, block cloud upload
   if (item.options.clientEdgeMode === true) {
-    callbacks.onError(
-      `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`
-    );
+    const blockedMessage = `Conversion from ${item.sourceFormat.toUpperCase()} to ${item.targetFormat.toUpperCase()} requires cloud serverless processing, but client-only edge mode is strictly enabled without cloud fallback consent.`;
+    if (escalation) {
+      callbacks.onError(
+        `${blockedMessage} Edge tier ${escalation.fallbackFrom} failed: ${escalation.escalationReason}`
+      );
+      return;
+    }
+    callbacks.onError(blockedMessage);
     return;
   }
 

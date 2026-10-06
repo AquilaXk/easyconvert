@@ -62,12 +62,14 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libreoffice-impress \
         libreoffice-nogpu \
         libreoffice-writer \
+        libraw-bin \
         p7zip-full \
         p7zip-rar \
         poppler-utils \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-kor \
+        tesseract-ocr-jpn \
         qpdf \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
