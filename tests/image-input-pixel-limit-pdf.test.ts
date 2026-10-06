@@ -152,6 +152,15 @@ describe('the PDF image scan stays linear on hostile files', () => {
     expect(performance.now() - start).toBeLessThan(MAX_SCAN_MS);
   });
 
+  it('refuses a document with 5001 image markers, the cap of one PDF', async () => {
+    const pdf = Buffer.from(`%PDF-1.4\n${'/Subtype /Image /Width 1 /Height 1 '.repeat(5001)}`, 'latin1');
+    const start = performance.now();
+    const run = extractRasterImagesFromPdf(pdf);
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow('more than 5000 images');
+    expect(performance.now() - start).toBeLessThan(MAX_SCAN_MS);
+  });
+
   it('refuses a document with more image markers than the cap, without reading further', async () => {
     const pdf = Buffer.from(`%PDF-1.4\n${'/Subtype /Image /Width 1 /Height 1 '.repeat(MAX_PDF_IMAGE_MARKERS + 1)}`, 'latin1');
     const run = extractRasterImagesFromPdf(pdf);

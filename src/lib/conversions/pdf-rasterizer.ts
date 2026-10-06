@@ -43,7 +43,7 @@ function unpack1bpp(packed: Uint8Array, width: number, height: number, inverse: 
 /** Bytes before and after an image marker that are searched for the dimensions of its dictionary. */
 const IMAGE_DICTIONARY_WINDOW_BYTES = 4096;
 /** Most image markers one PDF may hold; a document with more is refused instead of scanned. */
-export const MAX_PDF_IMAGE_MARKERS = 20_000;
+export const MAX_PDF_IMAGE_MARKERS = 5000;
 /** Longest run of white space tolerated between the tokens the scan reads. */
 const MAX_TOKEN_GAP = 16;
 
