@@ -19,7 +19,7 @@ import {
   SandboxedProcessError,
 } from '../../security/process-sandbox';
 import { resolveBinaryPath } from './utils';
-import { buildPdfExportFilterData } from '../pdf-export-options';
+import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 
 /**
  * Locate LibreOffice binary on the host or in container.
@@ -267,7 +267,7 @@ export async function convertToPdfA(
     throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
   }
 
-  const conformance = options.conformance ?? 'pdfa-1b';
+  const conformance = options.conformance ?? DEFAULT_PDFA_CONFORMANCE;
   const part = PDFA_PART[conformance];
   if (!part) {
     throw new PdfPostprocessError(`Unsupported PDF/A conformance level: ${conformance}`);

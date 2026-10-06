@@ -46,6 +46,28 @@ describe('resolvePdfAConformance reads pdfVersion and pdfStandard independently'
   });
 });
 
+describe('the default PDF/A level', () => {
+  it.each([
+    ['an empty pdfa object', { pdfa: {} }],
+    ['pdfa set to true', { pdfa: true }],
+    ['the bare pdfa name in pdfStandard', { pdfStandard: 'pdfa' }],
+    ['the bare pdfa name in pdfVersion', { pdfVersion: 'pdfa' }],
+  ])('is PDF/A-2b for %s', (_label, options) => {
+    expect(resolvePdfAConformance(options as unknown as ConversionOptions)).toBe('pdfa-2b');
+  });
+
+  it('keeps an explicit PDF/A-1b request at 1b', () => {
+    expect(resolvePdfAConformance({ pdfa: { conformance: 'pdfa-1b' } })).toBe('pdfa-1b');
+    expect(resolvePdfAConformance({ pdfStandard: 'pdfa-1b' })).toBe('pdfa-1b');
+  });
+
+  it('selects PDF/A-2 in the export for the bare pdfa name', () => {
+    expect(resolveLibreOfficeFilter('pdf', 'docx', { pdfStandard: 'pdfa' })).toContain(
+      '"SelectPdfVersion":{"type":"long","value":"2"}'
+    );
+  });
+});
+
 describe('the export filter follows the resolved level', () => {
   it('selects PDF/A-2 in the export when pdfStandard says so next to a plain pdfVersion', () => {
     const filter = resolveLibreOfficeFilter('pdf', 'docx', { pdfVersion: '1.7', pdfStandard: 'pdfa-2b' });

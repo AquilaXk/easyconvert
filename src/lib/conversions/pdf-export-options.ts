@@ -7,12 +7,16 @@ export const PDF_IMAGE_DPI_MAX = 1200;
 export const PDF_JPEG_QUALITY_MIN = 1;
 export const PDF_JPEG_QUALITY_MAX = 100;
 
-/** PDF/A level a `pdfa` request without a `conformance` gets. */
-export const DEFAULT_PDFA_CONFORMANCE: PdfAConformance = 'pdfa-1b';
+/**
+ * PDF/A level a request without an explicit level gets (`pdfa: {}`, `pdfStandard: 'pdfa'`).
+ * It is 2b: LibreOffice's PDF/A-1 export always fails veraPDF rule 6.7.3-1 (the Info
+ * CreationDate and xmp:CreateDate differ), so 1b is only answered when it is asked for by name.
+ */
+export const DEFAULT_PDFA_CONFORMANCE: PdfAConformance = 'pdfa-2b';
 
 /** `pdfStandard` / `pdfVersion` spellings that request PDF/A, and the level each one means. */
 const PDFA_CONFORMANCE_BY_NAME: ReadonlyMap<string, PdfAConformance> = new Map([
-  ['pdfa', 'pdfa-1b'],
+  ['pdfa', DEFAULT_PDFA_CONFORMANCE],
   ['pdfa-1b', 'pdfa-1b'],
   ['pdf/a-1b', 'pdfa-1b'],
   ['pdfa-2b', 'pdfa-2b'],

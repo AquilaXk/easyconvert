@@ -11,7 +11,7 @@ import { buildDocxWithJpeg, buildTextDocx, makeNoisyJpeg } from './helpers/offic
 import { withMissingBinary } from './helpers/native-tools';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
+import { convertToPdfA, verifyPdfA } from '../src/lib/conversions/pdf-postprocess';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { EngineUnavailableError, PdfAValidationError, type PdfAConformance } from '../src/lib/types';
@@ -159,6 +159,22 @@ describe('PDF/A validation with veraPDF', () => {
       CONVERT_TIMEOUT_MS
     );
   }
+
+  oracleTest(
+    'a request that names no level is answered at PDF/A-2b and validated against 2b',
+    SOFFICE_VERAPDF_TOOLS,
+    async () => {
+      const result = await dispatchConversion(docx, 'docx', 'pdf', { pdfa: {} }, 'fx.docx');
+
+      expect(result.metadata).toMatchObject({ pdfaValidated: true, pdfaProfile: 'pdfa-2b' });
+      expect(runVerapdf(writePdf('default-level.pdf', result.buffer), '2b')).toEqual({ compliant: true, failedRules: [] });
+
+      const plain = await dispatchConversion(docx, 'docx', 'pdf', {}, 'fx.docx');
+      const roundTrip = await convertToPdfA(plain.buffer);
+      expect(roundTrip).toMatchObject({ pdfaValidated: true, conformanceLevel: 'pdfa-2b' });
+    },
+    CONVERT_TIMEOUT_MS
+  );
 
   oracleTest(
     'a PDF input converted to PDF/A passes veraPDF and reports the verdict in the result metadata',

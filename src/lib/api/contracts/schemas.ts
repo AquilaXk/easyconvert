@@ -60,7 +60,7 @@ export const PdfAOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdfa-options.json',
   type: 'object',
   properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
+    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
     recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
   },
 } as const;
@@ -722,7 +722,7 @@ export const ConversionOptionsSchema = {
     pdfStandard: {
       type: 'string',
       enum: ['pdfa', 'pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
-      description: 'PDF archival standard conformance level.',
+      description: "PDF archival standard conformance level. The bare value 'pdfa' means pdfa-2b.",
     },
     pdfVersion: {
       type: 'string',
