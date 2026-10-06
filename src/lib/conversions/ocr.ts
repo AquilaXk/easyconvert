@@ -28,6 +28,7 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
+import { ocrSegmentationFor } from './ocr-config';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
@@ -133,7 +134,8 @@ export async function performOcr(
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   try {
     const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker(tesseractLang, 1, {
+    const segmentation = ocrSegmentationFor(tesseractLang);
+    const worker = await Tesseract.createWorker(tesseractLang, segmentation.engineMode, {
       langPath: localLangPath,
       cacheMethod: 'none',
       gzip: isGzip,
@@ -143,6 +145,7 @@ export async function performOcr(
     });
     let ret: Awaited<ReturnType<typeof worker.recognize>>;
     try {
+      await worker.setParameters({ tessedit_pageseg_mode: segmentation.pageSegMode as any });
       ret = await worker.recognize(ocrInput, {}, { blocks: true });
     } finally {
       await worker.terminate();
@@ -213,7 +216,11 @@ export async function performOcr(
     const tmpOutBase = path.join(os.tmpdir(), `ocr_cli_out_${crypto.randomUUID()}`);
     try {
       fs.writeFileSync(tmpIn, ocrInput);
-      const cliArgs = ['--tessdata-dir', localLangPath, tmpIn, tmpOutBase, '-l', tesseractLang];
+      const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
+      const cliArgs = [
+        '--tessdata-dir', localLangPath, tmpIn, tmpOutBase,
+        '-l', tesseractLang, '--psm', pageSegMode, '--oem', String(engineMode),
+      ];
       execFileSync(tesseractCli, cliArgs, {
         stdio: ['ignore', 'ignore', 'pipe'],
         timeout: 15000,
