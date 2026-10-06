@@ -295,6 +295,33 @@ export async function convertVectorCad(
 /** Resolution an SVG is rendered at when the request names none. */
 const DEFAULT_SVG_RENDER_DPI = 300;
 
+/** SVG to SVG, EMF, WMF or CGM straight from the vector geometry; null for any other target. */
+function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): ConversionResult | null {
+  let buffer: Buffer;
+  let mimeType: string;
+  switch (tgt) {
+    case 'svg':
+      buffer = Buffer.from(sanitizeSvgDocument(inputBuffer.toString('utf-8')), 'utf-8');
+      mimeType = 'image/svg+xml';
+      break;
+    case 'emf':
+      buffer = encodeEmf(inputBuffer);
+      mimeType = 'image/emf';
+      break;
+    case 'wmf':
+      buffer = encodeWmf(inputBuffer);
+      mimeType = 'image/wmf';
+      break;
+    case 'cgm':
+      buffer = encodeCgm(inputBuffer, baseName);
+      mimeType = 'image/cgm';
+      break;
+    default:
+      return null;
+  }
+  return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
+}
+
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
@@ -361,6 +388,10 @@ async function convertSvgSource(
     });
   }
 
+  // Vector targets are written from the SVG geometry and never rasterize it.
+  const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
+  if (vectorOutput) return vectorOutput;
+
   // SVG -> Raster Images via Sharp
   let pipeline = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
 
@@ -403,29 +434,6 @@ async function convertSvgSource(
       outputBuffer = await pipeline.tiff({ quality }).toBuffer();
       mimeType = 'image/tiff';
       break;
-
-    case 'svg':
-      outputBuffer = Buffer.from(sanitizeSvgDocument(inputBuffer.toString('utf-8')), 'utf-8');
-      mimeType = 'image/svg+xml';
-      break;
-
-    case 'emf': {
-      outputBuffer = encodeEmf(inputBuffer);
-      mimeType = 'image/emf';
-      break;
-    }
-
-    case 'wmf': {
-      outputBuffer = encodeWmf(inputBuffer);
-      mimeType = 'image/wmf';
-      break;
-    }
-
-    case 'cgm': {
-      outputBuffer = encodeCgm(inputBuffer, baseName);
-      mimeType = 'image/cgm';
-      break;
-    }
 
     case 'eps':
     case 'ps': {
