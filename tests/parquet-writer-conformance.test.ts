@@ -624,14 +624,24 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(() => encodeParquet([{ a: 1 }], { codec: CompressionCodec.ZSTD })).toThrow(ParquetCodecUnavailableError);
     });
 
-    it('answers HTTP-400-class errors through convertData for nested JSON values', async () => {
+    // convertData tabulates records first: nested objects become dotted columns, as for every table target.
+    oracleTest('flattens nested JSON objects into dotted columns through convertData', ['python3'], async () => {
       const json = Buffer.from(JSON.stringify([{ id: 1 }, { id: { inner: 2 } }]), 'utf-8');
+      const parquet = await convertData(json, 'json', 'parquet', {}, 'nested.json');
+      const read = pyarrowRead(parquet.buffer);
+      expect(read.schema.map((field) => field.name)).toEqual(['id', 'id.inner']);
+      expect(read.columns.id).toEqual([1, null]);
+      expect(read.columns['id.inner']).toEqual([null, 2]);
+    });
+
+    it('answers HTTP-400-class errors through convertData when nested keys collide', async () => {
+      const json = Buffer.from(JSON.stringify([{ 'id.inner': 1, id: { inner: 2 } }]), 'utf-8');
       const failure = await convertData(json, 'json', 'parquet', {}, 'nested.json').then(
         () => null,
         (error: unknown) => error
       );
       expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect((failure as Error).message).toMatch(/column "id" row 1 holds a nested object/);
+      expect((failure as Error).message).toMatch(/Two values flatten to the same column "id\.inner"/);
     });
 
     it('widens mixed-type JSON to a string column through convertData', async () => {

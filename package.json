@@ -41,10 +41,13 @@
     "pdfkit": "^0.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "saxes": "^6.0.0",
     "sharp": "^0.33.5",
+    "smol-toml": "^1.9.0",
     "tailwind-merge": "^2.5.4",
     "tesseract.js": "^7.0.0",
-    "undici": "^6.21.1"
+    "undici": "^6.21.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@seriousme/openapi-schema-validator": "^2.11.0",
