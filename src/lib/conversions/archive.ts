@@ -17,7 +17,24 @@ import {
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
   ArchivePasswordRequiredError,
+  EngineUnavailableError,
 } from '../types';
+import {
+  NativeRenameUnsupportedError,
+  UnreadableArchiveError,
+  UnsafeArchiveError,
+  assertListingResourceCaps,
+  extractArchiveContained,
+  extractArchiveContainedSync,
+  hasTarMagic,
+  inspectedKindOf,
+  listingBufferLimit,
+  parse7zTechnicalListing,
+  stripSevenZipPasswordPrompt,
+  cleanupDirectoryTree,
+  sanitizeLeafFilename,
+  summarizeInspectionSafety,
+} from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -201,20 +218,23 @@ function rejectDuplicateArchiveEntries<T extends { filename: string }>(files: T[
 }
 
 /** Finds the first free `stem-N.ext` sibling of `key` (directories keep no extension) not yet in `seen`. */
-function nextFreeArchiveEntryName(key: string, isDirectory: boolean, seen: Set<string>): string {
+function nextFreeArchiveEntryName(key: string, isDirectory: boolean, seen: Set<string>, nextSuffix: Map<string, number>): string {
   const ext = isDirectory ? '' : path.extname(key);
   const dir = path.dirname(key);
   const baseStem = path.basename(key, ext);
   const build = (n: number): string =>
     dir === '.' || dir === '' ? `${baseStem}-${n}${ext}` : `${dir}/${baseStem}-${n}${ext}`;
 
-  let counter = 1;
+  let counter = nextSuffix.get(key) ?? 1;
   while (seen.has(build(counter))) counter++;
+  nextSuffix.set(key, counter + 1);
   return build(counter);
 }
 
 function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[]): T[] {
   const seen = new Set<string>();
+  // Next number to try per original name, so n duplicates cost O(n) rather than O(n^2) probing.
+  const nextSuffix = new Map<string, number>();
   const result: T[] = [];
 
   for (const f of files) {
@@ -227,7 +247,7 @@ function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[
     }
 
     const isDirectory = key !== norm;
-    const candidate = nextFreeArchiveEntryName(key, isDirectory, seen);
+    const candidate = nextFreeArchiveEntryName(key, isDirectory, seen, nextSuffix);
     seen.add(candidate);
     result.push({ ...f, filename: isDirectory ? `${candidate}/` : candidate });
   }
@@ -430,7 +450,7 @@ function makeExtractedTreeAccessible(root: string): void {
 }
 
 export const ARCHIVE_SECURITY_LIMITS = {
-  MAX_FILES: 1000,
+  MAX_FILES: 50_000,
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
   MAX_RATIO: 100, // 100:1 compression ratio
 };
@@ -520,7 +540,14 @@ export function isZipBufferEncrypted(buffer: Buffer): boolean {
 
 export async function extractZipArchive(
   zipBuffer: Buffer,
-  options: { password?: string; entries?: string[] } = {}
+  options: {
+    password?: string;
+    entries?: string[];
+    /** Encrypted archives only: leave link entries out and report them through `onSkippedLinks`. */
+    skipLinks?: boolean;
+    onSkippedLinks?: (names: string[]) => void;
+    collisionPolicy?: ArchiveCollisionPolicy;
+  } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   assertArchivePasswordSafe(options.password);
 
@@ -540,52 +567,42 @@ export async function extractZipArchive(
         fs.writeFileSync(zipPath, zipBuffer);
         const extractDir = path.join(workDir, 'out');
         fs.mkdirSync(extractDir, { recursive: true });
-        try {
-          await executeSandboxedBinary(
-            p7z,
-            ['x', '-y', `-o${extractDir}`, zipPath],
-            {
-              cwd: workDir,
-              timeoutMs: 60000,
-              maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-              networkIsolated: true,
-              stdin: sevenZipReadPasswordInput(options.password),
-            }
-          );
-        } catch (err: any) {
-          throw (
-            archivePasswordError(err, { password: options.password, label: 'ZIP archive' }) ??
-            new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`)
-          );
-        }
+
+        // List, vet, extract and re-verify: traversal, link, entry-count, size and ratio violations
+        // are rejected before or right after extraction, never silently followed.
+        const tree = await extractArchiveContained({
+          p7zBin: p7z,
+          archivePath: zipPath,
+          extractDir,
+          cwd: workDir,
+          timeoutMs: 60000,
+          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          limits: ARCHIVE_SECURITY_LIMITS,
+          label: 'ZIP archive',
+          password: options.password,
+          skipLinks: options.skipLinks,
+          collisionPolicy: options.collisionPolicy,
+        }).catch((err: unknown) => {
+          // Decryption has no other engine to hand duplicate entries to, so 'rename' cannot be honoured here.
+          if (err instanceof NativeRenameUnsupportedError) {
+            throw new ArchiveEntryCollisionError(
+              err.reason,
+              `${err.message}; use collisionPolicy 'overwrite' or 'error' for password-protected ZIP archives.`
+            );
+          }
+          throw err;
+        });
+        options.onSkippedLinks?.(tree.skippedLinks);
 
         const results: { filename: string; buffer: Buffer }[] = [];
-        let totalSize = 0;
-        const readRec = (dir: string, prefix = '') => {
-          for (const item of fs.readdirSync(dir)) {
-            const full = path.join(dir, item);
-            const rel = prefix ? `${prefix}/${item}` : item;
-            const stat = fs.statSync(full);
-            if (stat.isDirectory()) {
-              readRec(full, rel);
-            } else {
-              if (!matchArchiveGlob(rel, options.entries)) {
-                continue;
-              }
-              totalSize += stat.size;
-              if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-                throw new ConversionFailedError(
-                  `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-                );
-              }
-              results.push({ filename: rel, buffer: fs.readFileSync(full) });
-            }
+        for (const file of tree.files) {
+          if (matchArchiveGlob(file.relPath, options.entries)) {
+            results.push({ filename: file.relPath, buffer: fs.readFileSync(file.absPath) });
           }
-        };
-        readRec(extractDir);
+        }
         return results;
       } finally {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+        cleanupDirectoryTree(workDir);
       }
     } else {
       throw new ConversionFailedError('Cannot extract encrypted ZIP archive: 7-Zip binary not available.');
@@ -2590,6 +2607,9 @@ export function decompressXz(inputBuffer: Buffer): Buffer {
   return unpackXz(inputBuffer);
 }
 
+/** Names 7-Zip gives the intermediate tar when it unpacks a compressed tarball. */
+const INTERMEDIATE_TAR_NAMES = new Set(['input.tar', 'input']);
+
 export function convertWithNative7z(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -2652,76 +2672,60 @@ export function convertWithNative7z(
     const inputPath = path.join(workDir, `input.${inputExt}`);
     fs.writeFileSync(inputPath, inputBuffer);
 
-    const extractDir = path.join(workDir, 'extracted');
+    let extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
+    let skippedLinks: string[] = [];
+    let entryCount: number;
     if (supportedExtract.has(src)) {
-      try {
-        const resolved = resolveSandboxedCommand(p7zBin, ['x', '-y', `-o${extractDir}`, inputPath], {
-          networkIsolated: true,
-        });
-        execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
-          cwd: workDir,
-          env: getSanitizedEnvironment({}, true),
-          timeout: 60000,
-          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: sevenZipReadPasswordInput(options.password),
-        });
-      } catch (err: any) {
-        throw archivePasswordError(err, { password: options.password, label: `${src.toUpperCase()} archive` }) ?? err;
-      }
+      // List, vet, extract and re-verify; unsafe or oversized archives throw before anything is packaged.
+      const outerRequest = {
+        p7zBin,
+        archivePath: inputPath,
+        extractDir,
+        cwd: workDir,
+        timeoutMs: 60000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        limits: ARCHIVE_SECURITY_LIMITS,
+        label: `${src.toUpperCase()} archive`,
+        password: options.password,
+        skipLinks: options.skipLinks,
+        collisionPolicy: options.collisionPolicy,
+      };
+      let tree = extractArchiveContainedSync(outerRequest);
+      skippedLinks = tree.skippedLinks;
 
-      // If extracting a compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, etc.), 7-Zip produces an intermediate .tar archive
+      // A compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, ...) unpacks to one intermediate .tar, which is
+      // listed, vetted and extracted as its own layer; its ratio is measured against the original upload.
       if (src.startsWith('tar.') || src === 'tgz' || src === 'tbz2' || src === 'tbz' || src === 'txz') {
-        const intermediateTar = path.join(extractDir, 'input.tar');
-        const intermediateNoExt = path.join(extractDir, 'input');
-        const tarToExtract = fs.existsSync(intermediateTar) ? intermediateTar : (fs.existsSync(intermediateNoExt) ? intermediateNoExt : null);
-        if (tarToExtract) {
-          const rTarExt = resolveSandboxedCommand(p7zBin, ['x', '-y', `-o${extractDir}`, tarToExtract], {
-            networkIsolated: true,
+        // gzip headers carry the original file name, so the unpacked tar is recognised by name or by content.
+        const intermediate =
+          tree.files.length === 1 && (INTERMEDIATE_TAR_NAMES.has(tree.files[0].relPath) || hasTarMagic(tree.files[0].absPath))
+            ? tree.files[0]
+            : null;
+        if (intermediate) {
+          const tarDir = path.join(workDir, 'extracted-tar');
+          fs.mkdirSync(tarDir, { recursive: true });
+          tree = extractArchiveContainedSync({
+            ...outerRequest,
+            archivePath: intermediate.absPath,
+            extractDir: tarDir,
+            password: undefined,
+            ratioBaseBytes: inputBuffer.length,
           });
-          execFileSync(rTarExt.binary, rTarExt.args, {
-            cwd: workDir,
-            env: getSanitizedEnvironment({}, true),
-            timeout: 60000,
-            maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          });
-          try { fs.unlinkSync(tarToExtract); } catch {}
+          skippedLinks = [...skippedLinks, ...tree.skippedLinks];
+          extractDir = tarDir;
         }
       }
+      entryCount = tree.entryCount;
     } else {
-      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+      // The caller-supplied name becomes a single path component inside the extraction root.
+      const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
       fs.writeFileSync(destPath, inputBuffer);
+      entryCount = 1;
     }
 
-    const extractedFiles = fs.readdirSync(extractDir);
-    if (extractedFiles.length === 0) return null;
-
-    let totalExtractedSize = 0;
-    const computeDirSize = (dir: string) => {
-      for (const item of fs.readdirSync(dir)) {
-        const full = path.join(dir, item);
-        const stat = fs.statSync(full);
-        if (stat.isDirectory()) {
-          computeDirSize(full);
-        } else {
-          totalExtractedSize += stat.size;
-        }
-      }
-    };
-    computeDirSize(extractDir);
-
-    if (totalExtractedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new ConversionFailedError(
-        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-      );
-    }
-    if (inputBuffer.length > 0 && totalExtractedSize / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new ConversionFailedError(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-      );
-    }
-
+    if (entryCount === 0) return null;
 
     if (options.password && (tgt === 'zip' || tgt === '7z')) {
       assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
@@ -2788,23 +2792,25 @@ export function convertWithNative7z(
       mimeType: mime,
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
+      ...(skippedLinks.length > 0 ? { skippedLinks } : {}),
     };
   } catch (err) {
-    if (err instanceof ConversionFailedError) {
+    // A policy violation or bad password must surface; an archive 7-Zip cannot read may still be
+    // handled by the in-process engines, which the null return hands the conversion to.
+    if (err instanceof ConversionFailedError && !(err instanceof UnreadableArchiveError) && !(err instanceof EngineUnavailableError)) {
       throw err;
     }
     return null;
   } finally {
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch {}
+    cleanupDirectoryTree(workDir);
   }
 }
 
 /**
- * Extracts a multi-volume split archive directly using Virtual Spanned Stream and 7-Zip CLI.
- * Attempts zero-disk stdin streaming extraction via `7z x -si{name}`, falling back to
- * zero-memory disk streaming spooling (`stitchMultiVolumeToDisk`) if seek-heavy container random access is required.
+ * Extracts a multi-volume split archive with the 7-Zip CLI through the contained pipeline.
+ * The parts are spooled to one seekable temporary file in O(1) memory (`stitchMultiVolumeToDisk`) so the
+ * archive can be listed and vetted before anything is extracted; a zero-disk stdin stream cannot be listed first.
+ * Unsafe, oversized or unreadable archives throw a typed error.
  */
 export async function extractWithSpannedStream7z(
   parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>,
@@ -2813,8 +2819,19 @@ export async function extractWithSpannedStream7z(
     timeoutMs?: number;
     maxBuffer?: number;
     password?: string;
+    /** Leave link entries out of the extraction and report them instead of rejecting the archive. */
+    skipLinks?: boolean;
+    collisionPolicy?: ArchiveCollisionPolicy;
+    signal?: AbortSignal;
   } = {}
-): Promise<{ extractedFiles: string[]; totalBytes: number; baseFilename: string }> {
+): Promise<{
+  extractedFiles: string[];
+  totalBytes: number;
+  baseFilename: string;
+  /** Number of files and directories extracted. */
+  entryCount: number;
+  skippedLinks: string[];
+}> {
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
     throw new Error('7-Zip binary (7z/7za/7zr) not found on system.');
@@ -2826,113 +2843,49 @@ export async function extractWithSpannedStream7z(
     fs.mkdirSync(resolvedExtractDir, { recursive: true });
   }
 
-  const timeoutMs = options.timeoutMs ?? 60000;
-  const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  assertArchivePasswordSafe(options.password);
-  const formatMap: Record<string, string> = {
-    tar: 'tar',
-    zip: 'zip',
-    '7z': '7z',
-    rar: 'rar',
-  };
-  const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
-
-  // The archive itself occupies stdin in streaming mode, so a password has no channel there.
-  const isStreamableFormat = !options.password && (metadata.format === 'tar' || metadata.format === 'numeric');
-  let extractionSuccess = false;
-
-  // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename} for streamable archive formats
-  if (isStreamableFormat) {
+  const typeSwitch = SPANNED_ARCHIVE_TYPE_SWITCHES[metadata.format];
+  const uniqueSuffix = crypto.randomBytes(6).toString('hex');
+  const tempDiskFile = path.join(os.tmpdir(), `spanned_stitch_${Date.now()}_${uniqueSuffix}`);
+  try {
+    await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
+    const tree = await extractArchiveContained({
+      p7zBin,
+      archivePath: tempDiskFile,
+      extractDir: resolvedExtractDir,
+      cwd: resolvedExtractDir,
+      timeoutMs: options.timeoutMs ?? 60000,
+      maxBuffer: options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      limits: ARCHIVE_SECURITY_LIMITS,
+      label: 'archive',
+      password: options.password,
+      typeFlag: typeSwitch,
+      skipLinks: options.skipLinks,
+      collisionPolicy: options.collisionPolicy,
+      signal: options.signal,
+    });
+    return {
+      extractedFiles: tree.files.map((file) => file.relPath),
+      totalBytes: tree.totalBytes,
+      baseFilename: metadata.baseFilename,
+      entryCount: tree.entryCount,
+      skippedLinks: tree.skippedLinks,
+    };
+  } finally {
     try {
-      const { stream } = createVirtualSpannedStream(sortedParts);
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`],
-        {
-          cwd: resolvedExtractDir,
-          stdin: stream,
-          timeoutMs,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-      extractionSuccess = true;
-    } catch {
-      extractionSuccess = false;
-      // Clean partially extracted entries before fallback
-      try {
-        const existing = fs.readdirSync(resolvedExtractDir);
-        for (const item of existing) {
-          fs.rmSync(path.join(resolvedExtractDir, item), { recursive: true, force: true });
-        }
-      } catch {}
-    }
-  }
-
-  // Strategy 2: If stdin streaming is not supported or rejected by container format (e.g. 7z/zip/rar central directories),
-  // spool to temporary disk file in O(1) memory via stitchMultiVolumeToDisk
-  if (!extractionSuccess) {
-    const tmpDir = os.tmpdir();
-    const uniqueSuffix = crypto.randomBytes(6).toString('hex');
-    const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${uniqueSuffix}_${metadata.baseFilename}`);
-    try {
-      await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
-      try {
-        await executeSandboxedBinary(
-          p7zBin,
-          ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile],
-          {
-            cwd: resolvedExtractDir,
-            stdin: sevenZipReadPasswordInput(options.password),
-            timeoutMs,
-            maxBuffer,
-            networkIsolated: true,
-          }
-        );
-      } catch (err) {
-        throw archivePasswordError(err, { password: options.password, label: 'multi-volume archive' }) ?? err;
+      if (fs.existsSync(tempDiskFile)) {
+        fs.unlinkSync(tempDiskFile);
       }
-    } finally {
-      try {
-        if (fs.existsSync(tempDiskFile)) {
-          fs.unlinkSync(tempDiskFile);
-        }
-      } catch {}
-    }
+    } catch {}
   }
-
-  // Scan extracted files and enforce archive bomb limits
-  const extractedFiles: string[] = [];
-  let totalBytes = 0;
-
-  const scanDir = (dir: string, prefix = '') => {
-    for (const item of fs.readdirSync(dir)) {
-      const fullPath = path.join(dir, item);
-      const relPath = prefix ? `${prefix}/${item}` : item;
-      const stat = fs.statSync(fullPath);
-      if (stat.isDirectory()) {
-        scanDir(fullPath, relPath);
-      } else {
-        extractedFiles.push(relPath);
-        totalBytes += stat.size;
-      }
-    }
-  };
-
-  scanDir(resolvedExtractDir);
-
-  if (totalBytes > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-    throw new ConversionFailedError(
-      `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-    );
-  }
-
-  return {
-    extractedFiles,
-    totalBytes,
-    baseFilename: metadata.baseFilename,
-  };
 }
+
+/** 7z `-t` switches for the container types a multi-volume part list can resolve to. */
+const SPANNED_ARCHIVE_TYPE_SWITCHES: Record<string, string | undefined> = {
+  tar: '-ttar',
+  zip: '-tzip',
+  '7z': '-t7z',
+  rar: '-trar',
+};
 
 export function write7zVarint(arr: number[], value: number): void {
   if (value < 0x80) {
@@ -3929,7 +3882,16 @@ export async function repairZipArchive(
   return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
+/** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
+type InspectionBody = Omit<ArchiveInspectResponse, 'extractable' | 'unextractableReasons'>;
+
+const UNIX_FILE_TYPE_MASK = 0o170000;
+const UNIX_SYMLINK_TYPE = 0o120000;
+const ZIP_UNIX_HOST = 3;
+const ZIP_EXTERNAL_ATTR_MODE_SHIFT = 16;
+const ZIP_VERSION_MADE_BY_HOST_SHIFT = 8;
+
+function inspectZipBuffer(buffer: Buffer): InspectionBody {
   if (buffer.length < 22) {
     throw new ConversionFailedError('Invalid ZIP archive: buffer too small');
   }
@@ -4031,7 +3993,11 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         }
       }
 
-      const isDirectory = rawName.endsWith('/') || (buffer.readUInt32LE(pos + 38) & 0x10) !== 0;
+      const externalAttributes = buffer.readUInt32LE(pos + 38);
+      const isDirectory = rawName.endsWith('/') || (externalAttributes & 0x10) !== 0;
+      const madeByHost = buffer.readUInt16LE(pos + 4) >>> ZIP_VERSION_MADE_BY_HOST_SHIFT;
+      const unixFileType = (externalAttributes >>> ZIP_EXTERNAL_ATTR_MODE_SHIFT) & UNIX_FILE_TYPE_MASK;
+      const isSymlink = madeByHost === ZIP_UNIX_HOST && unixFileType === UNIX_SYMLINK_TYPE;
 
       entries.push({
         name: rawName,
@@ -4041,6 +4007,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         isDirectory,
         modifiedAt,
         crc32: crc32Str,
+        ...(isSymlink ? { kind: 'symlink' as const } : {}),
       });
 
       pos += 46 + fnLen + extraLen + commentLen;
@@ -4095,7 +4062,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
   };
 }
 
-function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectResponse {
+function inspectTarBuffer(buffer: Buffer, format = 'tar'): InspectionBody {
   const entries: ArchiveEntryMetadata[] = [];
   let totalUncompressedBytes = 0;
 
@@ -4131,7 +4098,7 @@ async function inspectArchiveVia7zCli(
   format: '7z' | 'rar',
   p7z: string,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${format}_inspect_${Date.now()}_${token}`);
@@ -4140,7 +4107,8 @@ async function inspectArchiveVia7zCli(
     const archivePath = path.join(workDir, `archive.${format}`);
     fs.writeFileSync(archivePath, buffer);
 
-    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], {
+    // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
+    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
       networkIsolated: true,
     });
 
@@ -4151,9 +4119,16 @@ async function inspectArchiveVia7zCli(
         env: getSanitizedEnvironment({}, true),
         timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
         input: sevenZipReadPasswordInput(password),
+        maxBuffer: listingBufferLimit(ARCHIVE_SECURITY_LIMITS),
       });
       stdoutStr = out.toString('utf-8');
     } catch (err: any) {
+      if (err?.code === 'ENOBUFS') {
+        throw new UnsafeArchiveError(
+          'entry-count',
+          `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
+        );
+      }
       const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
       if (
         errMsg.includes('Enter password') ||
@@ -4166,6 +4141,11 @@ async function inspectArchiveVia7zCli(
       }
       throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
     }
+
+    // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,
+    // which protect this service from an unbounded listing, still refuse.
+    const listed = parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdoutStr));
+    assertListingResourceCaps(listed, buffer.length, ARCHIVE_SECURITY_LIMITS);
 
     const entries: ArchiveEntryMetadata[] = [];
     const blocks = stdoutStr.split(/\r?\n\r?\n/);
@@ -4191,8 +4171,9 @@ async function inspectArchiveVia7zCli(
       const modTime = record.Modified || undefined;
       const crcHex = record.CRC || undefined;
 
+      // The name stays verbatim so a traversal or absolute path is visible to the caller; it is flagged, not followed.
       entries.push({
-        name: sanitizeArchivePath(record.Path) || record.Path,
+        name: record.Path,
         uncompressedSize: uncompSize,
         compressedSize: compSize,
         isEncrypted: isEnc,
@@ -4201,6 +4182,15 @@ async function inspectArchiveVia7zCli(
         crc32: crcHex ? crcHex.toLowerCase() : undefined,
       });
     }
+
+    // Both parsers read the same blocks, so they agree entry for entry; anything else is a listing we cannot trust.
+    if (listed.length !== entries.length) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing could not be matched entry for entry.');
+    }
+    listed.forEach((item, index) => {
+      const kind = inspectedKindOf(item);
+      if (kind !== undefined) entries[index].kind = kind;
+    });
 
     let totalUncompressedBytes = 0;
     let totalCompressedBytes = 0;
@@ -4225,7 +4215,7 @@ async function inspectArchiveVia7zCli(
 async function inspect7zBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const p7z = get7zBinaryPath();
   if (p7z) {
     return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
@@ -4272,7 +4262,7 @@ async function inspect7zBuffer(
 async function inspectRarBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   // Fast byte-level inspection for RAR header encryption (MHD_PASSWORD flag)
   if (buffer.length >= 14) {
     const isRar4 =
@@ -4371,10 +4361,34 @@ async function inspectRarBuffer(
   };
 }
 
+/**
+ * Describes an archive without extracting it. Unsafe entries are reported, not refused: links, absolute or
+ * traversing names and duplicated paths come back as per-entry flags with `extractable: false` and the
+ * reasons. Only resource caps (entry count, declared size, ratio) still reject, in the 7z/RAR listing.
+ * Tar names are normalized by the tar reader, so traversal inside a tar is not visible here.
+ */
 export async function inspectArchive(
   archiveBuffer: Buffer,
   options: { filename?: string; password?: string } = {}
 ): Promise<ArchiveInspectResponse> {
+  const body = await inspectArchiveEntries(archiveBuffer, options);
+  const safety = summarizeInspectionSafety(body.entries);
+  const entries = body.entries.map((entry, index) => {
+    const flag = safety.flags[index];
+    return {
+      ...entry,
+      ...(flag.kind !== undefined ? { kind: flag.kind } : {}),
+      ...(flag.unsafePath ? { unsafePath: true } : {}),
+      ...(flag.duplicate ? { duplicate: true } : {}),
+    };
+  });
+  return { ...body, entries, extractable: safety.extractable, unextractableReasons: safety.unextractableReasons };
+}
+
+async function inspectArchiveEntries(
+  archiveBuffer: Buffer,
+  options: { filename?: string; password?: string } = {}
+): Promise<InspectionBody> {
   if (!archiveBuffer || archiveBuffer.length === 0) {
     throw new ConversionFailedError('Archive buffer is empty.');
   }
@@ -4525,15 +4539,21 @@ export async function convertArchive(
 
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
+  let skippedLinks: string[] = [];
   if (src === 'zip') {
     const hasZipMagic =
       effectiveBuffer.length >= 4 &&
       effectiveBuffer[0] === 0x50 &&
       effectiveBuffer[1] === 0x4b;
     try {
-      files = await extractZipArchive(effectiveBuffer, options);
+      files = await extractZipArchive(effectiveBuffer, {
+        ...options,
+        onSkippedLinks: (names) => {
+          skippedLinks = names;
+        },
+      });
     } catch (err) {
-      if (isArchivePasswordError(err)) throw err;
+      if (isArchivePasswordError(err) || err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4542,6 +4562,7 @@ export async function convertArchive(
     try {
       files = extractTarArchive(effectiveBuffer, options);
     } catch (err) {
+      if (err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract TAR archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4834,6 +4855,10 @@ export async function convertArchive(
     throw new ConversionFailedError(
       `Unsupported archive target format '${targetFormat}': foreign formats must not silently fall back to ZIP.`
     );
+  }
+
+  if (skippedLinks.length > 0) {
+    result.skippedLinks = skippedLinks;
   }
 
   // 9. Split Archive Volume Generation (Multi-Volume)

@@ -30,6 +30,12 @@ import { oracleTest } from './helpers/oracle-test';
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
 const LARGE_FILE_BYTES = 150 * 1024 * 1024;
 const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
+/**
+ * Consecutive full-size chunks the proportionality test streams. Output that carried bytes over from earlier chunks
+ * would exceed twice the chunk size by the third chunk; more chunks only add CPU time (the parser handles roughly
+ * 12 MB/s, so a dozen 4 MiB chunks took 4 s of the 5 s test budget on an idle machine and failed under load).
+ */
+const PROPORTIONALITY_CHUNKS = 3;
 /** Generous bound for streaming 4 MiB of quoted CR-only records; a quadratic line count takes tens of seconds. */
 const LINEAR_TIME_BOUND_MS = 2000;
 
@@ -131,10 +137,9 @@ describe('streamed CSV <-> TSV applies the server output rules', () => {
     const record = 'id,value,=formula\n';
     const chunk = new TextEncoder().encode(record.repeat(Math.floor(STREAM_CHUNK_BYTES / record.length)));
     const transformer = resolveChunkTransformer('csv', 'tsv', {});
-    const chunks = 12;
-    const total = chunk.byteLength * chunks;
+    const total = chunk.byteLength * PROPORTIONALITY_CHUNKS;
     let largest = 0;
-    for (let index = 0; index < chunks; index++) {
+    for (let index = 0; index < PROPORTIONALITY_CHUNKS; index++) {
       const out = await transformer(chunk, index * chunk.byteLength, total);
       largest = Math.max(largest, out.byteLength);
     }

@@ -2,9 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   outputFileTracing: false,
-  experimental: {
-    serverComponentsExternalPackages: ['sharp', 'pdfkit'],
-  },
+  serverExternalPackages: ['sharp', 'pdfkit'],
 };
 
 export default nextConfig;

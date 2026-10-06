@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { OcrPreprocessError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
@@ -91,7 +91,7 @@ interface GrayPage {
 }
 
 /** Reads a pipeline's output as one 8-bit gray channel. */
-async function toGrayPage(pipeline: sharp.Sharp): Promise<GrayPage> {
+async function toGrayPage(pipeline: Sharp): Promise<GrayPage> {
   const { data, info } = await pipeline.toColourspace('b-w').raw().toBuffer({ resolveWithObject: true });
   if (info.channels !== GRAY_CHANNELS) {
     throw new OcrPreprocessError(`Expected one gray channel, decoded ${info.channels}.`);
@@ -99,7 +99,7 @@ async function toGrayPage(pipeline: sharp.Sharp): Promise<GrayPage> {
   return { data, width: info.width, height: info.height };
 }
 
-function fromGray(page: GrayPage): sharp.Sharp {
+function fromGray(page: GrayPage): Sharp {
   return sharp(page.data, { raw: { width: page.width, height: page.height, channels: GRAY_CHANNELS } });
 }
 

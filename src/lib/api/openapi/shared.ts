@@ -1,4 +1,5 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
+import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
   MAX_INPUT_PIXELS_CEILING,
@@ -17,6 +18,27 @@ export const createProblemResponse = (description: string) => ({
   },
 });
 
+/**
+ * What a PDF/A request adds to the problems of a convert route: a 422 problem that carries the
+ * requested profile and the failed veraPDF rule IDs, and a 503 when veraPDF is not installed.
+ */
+export const PDFA_PROBLEM_DESCRIPTION =
+  `A PDF/A output failed validation (problem type \`${PDFA_VALIDATION_PROBLEM_TYPE}\`, with the requested \`profile\` and the veraPDF \`failedRules\`), ` +
+  `or the PDF/A conversion could not complete on the document (problem type \`${PDF_POSTPROCESS_PROBLEM_TYPE}\`).`;
+export const PDFA_ENGINE_NOTE = ' A PDF/A request also needs veraPDF, which validates every PDF/A output.';
+
+const PDFA_PROBLEM_SCHEMA = {
+  oneOf: [{ $ref: '#/components/schemas/ProblemDetails' }, { $ref: '#/components/schemas/PdfaValidationProblem' }],
+};
+
+/** Problem response whose body is a plain problem or the PDF/A validation problem. */
+export const createPdfaProblemResponse = (description: string) => ({
+  description,
+  content: {
+    'application/problem+json': { schema: PDFA_PROBLEM_SCHEMA },
+    'application/json': { schema: PDFA_PROBLEM_SCHEMA },
+  },
+});
 const PIXELS_PER_MEGAPIXEL = 1_000_000;
 
 /** Description of the 413 answer for a picture that declares more pixels than the input limit. */
@@ -87,10 +109,16 @@ export const binaryBody = (mediaType: string, required: boolean) => ({
   content: { [mediaType]: { schema: { type: 'string', format: 'binary' } } },
 });
 
+/** The `options` form field of the convert routes, with the document options spelled out. */
+export const CONVERT_OPTIONS_DESCRIPTION =
+  'JSON-serialized conversion options (e.g. quality, resolution, delimiter). Document options: ' +
+  '`layout` (PDF to TXT: keep the physical layout), `imageDpi` and `jpegQuality` (Office to PDF: opt-in image compression), ' +
+  'and `pdfa` or `pdfStandard` (PDF/A output, validated with veraPDF; a request that names no level is answered at pdfa-2b).';
+
 /** Form fields of a single-file conversion request. */
 export const CONVERT_FORM_PROPERTIES = {
   file: { type: 'string', format: 'binary', description: 'Source input file binary (up to 100 MB).' },
   targetFormat: { type: 'string', description: 'Target format extension or identifier (e.g., "pdf", "step", "webp").' },
   sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
-  options: { type: 'string', description: 'JSON-serialized conversion options (e.g. quality, resolution, delimiter).' },
+  options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
 };

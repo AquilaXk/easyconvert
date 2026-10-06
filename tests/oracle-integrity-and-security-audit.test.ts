@@ -674,7 +674,7 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
     it('verifies archive security limits guard against 42.zip decompression bombs', () => {
       expect(ARCHIVE_SECURITY_LIMITS.MAX_RATIO).toBe(100);
       expect(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE).toBe(500 * 1024 * 1024);
-      expect(ARCHIVE_SECURITY_LIMITS.MAX_FILES).toBe(1000);
+      expect(ARCHIVE_SECURITY_LIMITS.MAX_FILES).toBe(50_000);
     });
 
     it('sanitizes XML DTD entity expansion (Billion Laughs) and script injection in SVG', () => {

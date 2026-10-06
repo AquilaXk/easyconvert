@@ -5,7 +5,7 @@
  * written from the file layouts, and the pixel oracle is the camera's own embedded preview JPEG,
  * rendered by the camera's firmware. A decoded image is compared with it region by region.
  */
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 
 const JPEG_SOI = [0xff, 0xd8, 0xff];
 
@@ -116,7 +116,7 @@ interface Rgb8 {
   height: number;
 }
 
-async function rgbPixels(image: sharp.Sharp): Promise<Rgb8> {
+async function rgbPixels(image: Sharp): Promise<Rgb8> {
   const { data, info } = await image.removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height };
 }
