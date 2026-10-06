@@ -41,6 +41,7 @@ const REDIS_URL = process.env.REDIS_URL;
 const PUBLIC_IP = '93.184.215.14';
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 const GRAPH_TIMEOUT_MS = 30_000;
+const DEAD_LETTER_WAIT_MS = 5_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const QUERY_TOKEN = 'qt-7f3a91c04be25d68';
 const PASSWORD = 'pw-4e8a1c7d93b2';
@@ -83,6 +84,12 @@ async function dumpKeyspace(redis: Redis): Promise<Map<string, string>> {
     }
   } while (cursor !== '0');
   return dump;
+}
+
+function deadLetterEntriesOf(dump: Map<string, string>): { jobId: string; failedReason: string }[] {
+  return [...dump]
+    .filter(([key]) => key.endsWith(':dlq'))
+    .flatMap(([, text]) => (JSON.parse(text) as string[]).map((raw) => JSON.parse(raw) as { jobId: string; failedReason: string }));
 }
 
 function expectNoSecretsInKeyspace(dump: Map<string, string>, secrets: readonly string[]): void {
@@ -202,13 +209,18 @@ describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
     expect(state.status).toBe('failed');
 
     const masked = 'upstream rejected https://***@h.example/obj?*** with Authorization: ***';
-    const dump = await dumpKeyspace(redis);
+    // The graph is marked failed by the node run; the queue moves the job to the dead-letter list just after.
+    let dump = await dumpKeyspace(redis);
+    await vi.waitFor(
+      async () => {
+        dump = await dumpKeyspace(redis);
+        expect(deadLetterEntriesOf(dump).filter((entry) => entry.jobId === `${graphId}:in`)).toHaveLength(1);
+      },
+      { timeout: DEAD_LETTER_WAIT_MS, interval: 50 }
+    );
     expectNoSecretsInKeyspace(dump, [PASSWORD, QUERY_TOKEN, BEARER]);
     // The dead-letter list is shared by every run, so pick this run's entry by its job id.
-    const deadLetterEntries = [...dump]
-      .filter(([key]) => key.endsWith(':dlq'))
-      .flatMap(([, text]) => (JSON.parse(text) as string[]).map((raw) => JSON.parse(raw) as { jobId: string; failedReason: string }));
-    expect(deadLetterEntries.filter((entry) => entry.jobId === `${graphId}:in`)).toEqual([
+    expect(deadLetterEntriesOf(dump).filter((entry) => entry.jobId === `${graphId}:in`)).toEqual([
       expect.objectContaining({ jobId: `${graphId}:in`, failedReason: masked }),
     ]);
     const jobKey = [...dump].find(([key]) => key.endsWith(`${graphId}:in`) && key.includes('job'));
