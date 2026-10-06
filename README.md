@@ -247,6 +247,8 @@ npm start
 
 ---
 
-## License
+## Licensing
 
-MIT License. See [LICENSE](LICENSE) for details.
+- **Project License**: EasyConvert is distributed under the [MIT License](LICENSE).
+- **Third-Party Open Source Notices**: Full attribution, copyright, and licence terms for all production dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **External Tools, Relinking & Patent Considerations**: Comprehensive legal and architecture guidelines covering external CLI tools (FFmpeg, Poppler, veraPDF), LGPL relinking, unRAR component restrictions, and codec patent considerations are available in [docs/licensing.md](docs/licensing.md).
