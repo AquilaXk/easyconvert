@@ -1,33 +1,19 @@
 import sharp from 'sharp';
 import { ConversionFailedError } from '../types';
+import {
+  DEFAULT_MAX_INPUT_PIXELS,
+  INPUT_PIXEL_LIMIT_HTTP_STATUS,
+  MAX_INPUT_PIXELS_CEILING,
+  MAX_INPUT_PIXELS_ENV,
+} from './image-input-limit-config';
 
 /**
  * Pixel budget for still-image inputs. The declared canvas is read from the container header before any pixel
  * is decoded, so a tiny file that declares a huge picture is refused instead of exhausting worker memory.
- * Output and animation budgets live in `image-limits.ts`; this module only guards what is read.
+ * The limit itself and its rationale are in `image-input-limit-config.ts`.
  */
 
-/** Environment variable that overrides the default input pixel limit (a whole number of pixels). */
-export const MAX_INPUT_PIXELS_ENV = 'EASYCONVERT_MAX_INPUT_PIXELS';
-
-/**
- * Most pixels a still image may declare by default (100 megapixels): a 400 MB raster as 8-bit RGBA. Measured as
- * peak RSS added by a 10000 x 10000 PNG on the sharp encoders: PNG 31 MB, TIFF 66 MB, WebP 480 MB, JPEG 664 MB,
- * which fits the worker budget of docker-compose.yml (10 GiB per container shared by 3 concurrent jobs). It
- * matches the output limit (`MAX_OUTPUT_PIXELS`), so anything accepted can be converted back at its own size,
- * and it covers camera and scanner formats. The per-pixel JavaScript quantizers (Oklab, Riemersma, blue noise)
- * hold far more per pixel (about 2.8 GB at 5000 x 5000) and need their own, tighter budget.
- */
-export const DEFAULT_MAX_INPUT_PIXELS = 100_000_000;
-
-/**
- * Hard ceiling for the override: 16383 x 16383 pixels, the largest canvas of a WebP and sharp's own default
- * limit. An operator cannot raise the limit past what the native decoder would accept anyway.
- */
-export const MAX_INPUT_PIXELS_CEILING = 268_402_689;
-
-/** HTTP status that a rejected input maps to (RFC 9110 section 15.5.14, Content Too Large). */
-export const INPUT_PIXEL_LIMIT_HTTP_STATUS = 413;
+export { DEFAULT_MAX_INPUT_PIXELS, INPUT_PIXEL_LIMIT_HTTP_STATUS, MAX_INPUT_PIXELS_CEILING, MAX_INPUT_PIXELS_ENV };
 
 /** Message sharp (libvips) raises when its own `limitInputPixels` check fails. */
 const NATIVE_PIXEL_LIMIT_MESSAGE = 'Input image exceeds pixel limit';
