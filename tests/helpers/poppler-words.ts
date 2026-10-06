@@ -84,7 +84,18 @@ export function intersectionOverUnion(a: WordBox, b: WordBox): number {
 }
 
 /**
- * Pairs every reference word with the unused word of the same page and text that overlaps it most,
+ * The extractor writes words as drawn: ligature glyphs keep their compatibility code points and
+ * right-to-left words come out in visual (reversed) character order. A candidate in logical order with
+ * plain letters is the same word when it equals either form after NFKC.
+ */
+export function sameWord(reference: string, candidate: string): boolean {
+  const drawn = reference.normalize('NFKC');
+  const logical = candidate.normalize('NFKC');
+  return drawn === logical || [...drawn].reverse().join('') === logical;
+}
+
+/**
+ * Pairs every reference word with the unused word of the same page and the same text (see sameWord) that overlaps it most,
  * and returns the IoU of each pair (0 when there is none).
  */
 export function matchedIou(reference: WordBox[], candidate: WordBox[]): number[] {
@@ -93,7 +104,7 @@ export function matchedIou(reference: WordBox[], candidate: WordBox[]): number[]
     let best = 0;
     let bestIndex = -1;
     candidate.forEach((actual, index) => {
-      if (used.has(index) || actual.page !== expected.page || actual.text !== expected.text) return;
+      if (used.has(index) || actual.page !== expected.page || !sameWord(expected.text, actual.text)) return;
       const iou = intersectionOverUnion(expected, actual);
       if (iou > best) {
         best = iou;
