@@ -342,9 +342,10 @@ describe('recognizeWithCli', () => {
 
     it('never runs more processes at once than the concurrency limit', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-conc-'));
+      // The stand-in prints one word, so the empty-result single-block retry does not run twice.
       const cliPath = writeScript(
         `touch "${dir}/$$"\nls "${dir}" | wc -l >> "${dir}.log"\nsleep 0.3\nrm "${dir}/$$"\n` +
-          `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n'`
+          `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t5\\t5\\t90\\tw\\n'`
       );
       const runs = OCR_CLI_MAX_CONCURRENCY * 3;
       const results = await Promise.all(Array.from({ length: runs }, () => recognizeWithCli({ ...common, cliPath })));
