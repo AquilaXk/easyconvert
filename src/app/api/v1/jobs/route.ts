@@ -739,6 +739,8 @@ export async function GET(req: NextRequest) {
       processedOn: j.processedOn,
       finishedOn: j.finishedOn,
       failedReason: j.failedReason,
+      failedCode: j.failedCode,
+      failedStatus: j.failedStatus,
       result: j.returnvalue,
     })),
   });

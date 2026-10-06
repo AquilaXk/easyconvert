@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Job } from './bullmq-engine';
+import { isFinalFailure } from './job-failure';
 import type {
   ConversionJobData,
   ConversionJobResult,
@@ -139,6 +140,7 @@ export async function processNodeJob(
   let inputPayload: Buffer | VfsPayload | undefined;
   let inputBufferForShredding: Buffer | null = null;
   let conversionSucceeded = false;
+  let failure: unknown;
   let lastProducedResult: EngineResult | undefined;
   const intermediateFilePaths: string[] = [];
 
@@ -344,6 +346,9 @@ export async function processNodeJob(
       durationMs,
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
     };
+  } catch (err) {
+    failure = err;
+    throw err;
   } finally {
     if (attemptSignal.aborted) {
       for (const p of intermediateFilePaths) {
@@ -358,8 +363,7 @@ export async function processNodeJob(
     if (inputBufferForShredding) {
       secureShredBuffer(inputBufferForShredding, 2);
     }
-    const isFinalAttempt = !job.opts?.attempts || job.attemptsMade >= job.opts.attempts;
-    if (job.data.storageKey && !conversionSucceeded && isFinalAttempt) {
+    if (job.data.storageKey && !conversionSucceeded && isFinalFailure(job, failure)) {
       await removeJobInput(job.id, job.data.storageKey, storage);
     }
     await scope.releaseAll();
