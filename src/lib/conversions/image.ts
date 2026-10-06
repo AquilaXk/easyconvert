@@ -1570,7 +1570,15 @@ export function demosaicBayerCfa(sensor: BayerSensorData): {
 /**
  * Decodes Lossless JPEG (ISO/IEC 10918-1 / ITU-T T.81 / LJ92) camera RAW sensor strips.
  */
-export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
+/**
+ * Decodes a single-component lossless JPEG (ITU-T T.81 SOF3) sensor strip. The frame header is untrusted: its
+ * size is checked against the input limit and the RAW sensor budget, and, when the container says how large the
+ * strip or tile is (`expected`), against that size, before any sample is allocated.
+ */
+export function decodeLosslessJpegStrip(
+  strip: Buffer | Uint8Array,
+  expected?: { width: number; height: number }
+): {
   width: number;
   height: number;
   data: Uint16Array;
@@ -1635,6 +1643,13 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
 
   if (width <= 0 || height <= 0 || scanStart < 0 || scanStart >= buf.length) {
     return null;
+  }
+  assertInputPixels(width, height);
+  assertPixelBudget(width, height, RAW_SENSOR_PIXEL_BUDGET);
+  if (expected && (width > expected.width || height > expected.height)) {
+    throw new InvalidRawSensorError(
+      `Lossless JPEG frame of ${width}x${height} pixels is larger than the ${expected.width}x${expected.height} strip it is stored in.`
+    );
   }
 
   // Build canonical Huffman decoding tree
@@ -1743,6 +1758,21 @@ export function decodeLosslessJpegStrip(strip: Buffer | Uint8Array): {
   }
 
   return { width, height, data: outputData, bpp };
+}
+
+/** Slack, in bytes, allowed above the sensor size when a deflate strip is inflated (predictor rows, padding). */
+const SENSOR_INFLATE_SLACK_BYTES = 1024 * 1024;
+
+/** Inflates a deflate-compressed sensor strip, refusing one that expands to much more than `expectedBytes`. */
+function inflateSensorChunk(chunk: Buffer, expectedBytes: number): Buffer {
+  try {
+    return zlib.inflateSync(chunk, { maxOutputLength: expectedBytes + SENSOR_INFLATE_SLACK_BYTES });
+  } catch (err) {
+    if (err instanceof RangeError) {
+      throw new InvalidRawSensorError(`Deflate sensor strip inflates to more than the ${expectedBytes} bytes its dimensions allow.`);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -2061,9 +2091,9 @@ export function decodeRawBayerSensor(
         const decodeSensorChunk = (chunk: Buffer, expW?: number, expH?: number) => {
           let activeChunk = chunk;
           if (chosen.compression === 8) {
-            activeChunk = zlib.inflateSync(chunk);
+            activeChunk = inflateSensorChunk(chunk, (expW || width) * (expH || height) * Math.ceil(bpp / 8));
           } else if (activeChunk.length >= 4 && activeChunk[0] === 0xff && activeChunk[1] === 0xd8) {
-            const lj92 = decodeLosslessJpegStrip(activeChunk);
+            const lj92 = decodeLosslessJpegStrip(activeChunk, { width: expW || width, height: expH || height });
             if (lj92) {
               return { data: lj92.data, width: lj92.width, height: lj92.height, bpp: lj92.bpp };
             }
