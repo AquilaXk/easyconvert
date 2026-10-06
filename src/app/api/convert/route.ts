@@ -6,7 +6,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
-  DecompressionLimitError,
+  PayloadLimitError,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
@@ -194,7 +194,7 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof DecompressionLimitError) {
+    if (error instanceof PayloadLimitError) {
       // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }

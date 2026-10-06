@@ -1,3 +1,4 @@
+import { PayloadLimitError } from '../types';
 import { PdfDocument } from './pdf-document';
 
 /**
@@ -237,7 +238,15 @@ export function recursiveXyCut(
   blocks: PdfTextBlock[],
   options: XyCutOptions = {}
 ): PdfTextBlock[] {
+  return xyCutGroup(blocks, options, 0);
+}
+
+/** Cut levels after which a group is ordered line by line instead of being cut further. */
+export const MAX_XY_CUT_DEPTH = 128;
+
+function xyCutGroup(blocks: PdfTextBlock[], options: XyCutOptions, depth: number): PdfTextBlock[] {
   if (blocks.length <= 1) return [...blocks];
+  const cutting = depth < MAX_XY_CUT_DEPTH;
 
   const minGapX = options.minGapX ?? 15; // Point width separating columns
   const minGapY = options.minGapY ?? 3; // Point height separating lines/paragraphs
@@ -257,14 +266,10 @@ export function recursiveXyCut(
   let bestXSplit = -1;
   let maxGapX = 0;
 
-  for (let i = 0; i < sortedByX.length - 1; i++) {
-    // Current rightmost boundary of left partition
-    let leftRightmost = -Infinity;
-    for (let j = 0; j <= i; j++) {
-      if (sortedByX[j].x + sortedByX[j].width > leftRightmost) {
-        leftRightmost = sortedByX[j].x + sortedByX[j].width;
-      }
-    }
+  // Rightmost boundary of the left partition, extended one block per step
+  let leftRightmost = -Infinity;
+  for (let i = 0; cutting && i < sortedByX.length - 1; i++) {
+    leftRightmost = Math.max(leftRightmost, sortedByX[i].x + sortedByX[i].width);
     // Next block leftmost boundary
     const rightLeftmost = sortedByX[i + 1].x;
     const gap = rightLeftmost - leftRightmost;
@@ -278,8 +283,8 @@ export function recursiveXyCut(
     const leftGroup = sortedByX.slice(0, bestXSplit + 1);
     const rightGroup = sortedByX.slice(bestXSplit + 1);
     return [
-      ...recursiveXyCut(leftGroup, options),
-      ...recursiveXyCut(rightGroup, options),
+      ...xyCutGroup(leftGroup, options, depth + 1),
+      ...xyCutGroup(rightGroup, options, depth + 1),
     ];
   }
 
@@ -289,14 +294,10 @@ export function recursiveXyCut(
   let bestYSplit = -1;
   let maxGapY = 0;
 
-  for (let i = 0; i < sortedByYDesc.length - 1; i++) {
-    // Current bottom boundary of top partition
-    let topBottom = Infinity;
-    for (let j = 0; j <= i; j++) {
-      if (sortedByYDesc[j].y < topBottom) {
-        topBottom = sortedByYDesc[j].y;
-      }
-    }
+  // Bottom boundary of the top partition, extended one block per step
+  let topBottom = Infinity;
+  for (let i = 0; cutting && i < sortedByYDesc.length - 1; i++) {
+    topBottom = Math.min(topBottom, sortedByYDesc[i].y);
     // Next block top boundary
     const nextTop = sortedByYDesc[i + 1].y + sortedByYDesc[i + 1].height;
     const gap = topBottom - nextTop;
@@ -310,8 +311,8 @@ export function recursiveXyCut(
     const topGroup = sortedByYDesc.slice(0, bestYSplit + 1);
     const bottomGroup = sortedByYDesc.slice(bestYSplit + 1);
     return [
-      ...recursiveXyCut(topGroup, options),
-      ...recursiveXyCut(bottomGroup, options),
+      ...xyCutGroup(topGroup, options, depth + 1),
+      ...xyCutGroup(bottomGroup, options, depth + 1),
     ];
   }
 
@@ -327,8 +328,234 @@ export function recursiveXyCut(
   });
 }
 
+/** Text blocks one document may yield, counting every drawing of a form XObject. */
+export const MAX_PDF_TEXT_BLOCKS = 100 * 1000;
+
+const CHAR_TAB = 9;
+const CHAR_LF = 10;
+const CHAR_FF = 12;
+const CHAR_CR = 13;
+const CHAR_NUL = 0;
+const CHAR_SPACE = 32;
+const CHAR_LEFT_PAREN = 40;
+const CHAR_RIGHT_PAREN = 41;
+const CHAR_PLUS = 43;
+const CHAR_MINUS = 45;
+const CHAR_DOT = 46;
+const CHAR_SLASH = 47;
+const CHAR_DIGIT_0 = 48;
+const CHAR_DIGIT_9 = 57;
+const CHAR_PERCENT = 37;
+const CHAR_LESS = 60;
+const CHAR_GREATER = 62;
+const CHAR_LEFT_BRACKET = 91;
+const CHAR_BACKSLASH = 92;
+const CHAR_RIGHT_BRACKET = 93;
+const CHAR_LEFT_BRACE = 123;
+const CHAR_RIGHT_BRACE = 125;
+
+/** Operands kept while looking for the operator that consumes them; text operators take at most six. */
+const MAX_TEXT_OPERANDS = 64;
+const DEFAULT_FONT_SIZE = 12;
+const TEXT_WIDTH_PER_POINT = 0.5;
+const MIN_TEXT_WIDTH = 10;
+
+const TEXT_DELIMITERS = new Set<number>([
+  CHAR_LEFT_PAREN,
+  CHAR_RIGHT_PAREN,
+  CHAR_LESS,
+  CHAR_GREATER,
+  CHAR_LEFT_BRACKET,
+  CHAR_RIGHT_BRACKET,
+  CHAR_LEFT_BRACE,
+  CHAR_RIGHT_BRACE,
+  CHAR_SLASH,
+  CHAR_PERCENT,
+]);
+
+/** One string operand: a literal with its escapes intact, or the digits of a hex string. */
+interface TextItem {
+  literal?: string;
+  hex?: string;
+}
+interface NameOperand {
+  name: string;
+}
+type TextOperand = number | NameOperand | TextItem | TextItem[];
+
+/** What one BT..ET block says, before fonts and CMaps turn its strings into text. */
+interface ScannedTextObject {
+  fontName: string;
+  fontSize: number;
+  x: number;
+  y: number;
+  arrays: TextItem[][];
+  shows: TextItem[];
+  quotes: TextItem[];
+}
+
+function isTextSpace(code: number): boolean {
+  return code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL;
+}
+
+function isTextRegular(code: number): boolean {
+  return !Number.isNaN(code) && !isTextSpace(code) && !TEXT_DELIMITERS.has(code);
+}
+
+function isNumberChar(code: number): boolean {
+  return (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || code === CHAR_DOT || code === CHAR_MINUS || code === CHAR_PLUS;
+}
+
+function isHexContent(text: string): boolean {
+  let digits = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    const isHexDigit =
+      (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
+    if (isHexDigit) digits++;
+    else if (!isTextSpace(code)) return false;
+  }
+  return digits > 0;
+}
+
+function isTextItem(operand: TextOperand | undefined): operand is TextItem {
+  return typeof operand === 'object' && operand !== null && !Array.isArray(operand) && !('name' in operand);
+}
+
+/**
+ * Reads the text operators of one BT..ET block in a single left-to-right pass: Tf, Tm and Td set the
+ * font and position, TJ, Tj, ' and " show strings. Every position is advanced by at least one
+ * character, so the cost is linear in the block whatever the operands look like.
+ */
+function scanTextObject(block: string): ScannedTextObject {
+  const result: ScannedTextObject = { fontName: '', fontSize: DEFAULT_FONT_SIZE, x: 0, y: 0, arrays: [], shows: [], quotes: [] };
+  let tmX = 0;
+  let tmY = 0;
+  let tdX = 0;
+  let tdY = 0;
+  let operands: TextOperand[] = [];
+  let arrayItems: TextItem[] | null = null;
+  const length = block.length;
+  let pos = 0;
+
+  const push = (operand: TextOperand): void => {
+    operands.push(operand);
+    if (operands.length >= 2 * MAX_TEXT_OPERANDS) operands = operands.slice(-MAX_TEXT_OPERANDS);
+  };
+  const addItem = (item: TextItem): void => {
+    if (arrayItems) arrayItems.push(item);
+    else push(item);
+  };
+  const lastNumbers = (count: number): number[] | null => {
+    const tail = operands.slice(-count);
+    return tail.length === count && tail.every((o) => typeof o === 'number') ? (tail as number[]) : null;
+  };
+
+  while (pos < length) {
+    const code = block.charCodeAt(pos);
+    if (isTextSpace(code)) {
+      pos++;
+    } else if (code === CHAR_PERCENT) {
+      while (pos < length && block.charCodeAt(pos) !== CHAR_LF && block.charCodeAt(pos) !== CHAR_CR) pos++;
+    } else if (code === CHAR_LEFT_PAREN) {
+      let depth = 0;
+      let i = pos;
+      while (i < length) {
+        const c = block.charCodeAt(i);
+        if (c === CHAR_BACKSLASH) {
+          i += 2;
+          continue;
+        }
+        if (c === CHAR_LEFT_PAREN) depth++;
+        if (c === CHAR_RIGHT_PAREN) {
+          depth--;
+          if (depth === 0) break;
+        }
+        i++;
+      }
+      if (i >= length) {
+        pos = length; // unterminated string: nothing after it can be read
+      } else {
+        addItem({ literal: block.slice(pos + 1, i) });
+        pos = i + 1;
+      }
+    } else if (code === CHAR_LESS) {
+      if (block.charCodeAt(pos + 1) === CHAR_LESS) {
+        pos += 2;
+      } else {
+        const close = block.indexOf('>', pos);
+        if (close === -1) {
+          pos = length;
+        } else {
+          const digits = block.slice(pos + 1, close);
+          if (isHexContent(digits)) addItem({ hex: digits });
+          pos = close + 1;
+        }
+      }
+    } else if (code === CHAR_LEFT_BRACKET) {
+      arrayItems = [];
+      pos++;
+    } else if (code === CHAR_RIGHT_BRACKET) {
+      if (arrayItems) push(arrayItems);
+      arrayItems = null;
+      pos++;
+    } else if (code === CHAR_SLASH) {
+      let end = pos + 1;
+      while (isTextRegular(block.charCodeAt(end))) end++;
+      if (!arrayItems) push({ name: block.slice(pos + 1, end) });
+      pos = end;
+    } else if (isNumberChar(code)) {
+      let end = pos + 1;
+      while (isNumberChar(block.charCodeAt(end))) end++;
+      if (!arrayItems) push(Number.parseFloat(block.slice(pos, end)) || 0);
+      pos = end;
+    } else if (isTextRegular(code)) {
+      let end = pos + 1;
+      while (isTextRegular(block.charCodeAt(end))) end++;
+      const operator = block.slice(pos, end);
+      pos = end;
+      const last = operands[operands.length - 1];
+
+      if (operator === 'Tf') {
+        const [fontName, size] = operands.slice(-2);
+        if (typeof fontName === 'object' && !Array.isArray(fontName) && 'name' in fontName && typeof size === 'number') {
+          result.fontName = fontName.name;
+          result.fontSize = size || DEFAULT_FONT_SIZE;
+        }
+      } else if (operator === 'Tm') {
+        const matrix = lastNumbers(6);
+        if (matrix) {
+          tmX = matrix[4];
+          tmY = matrix[5];
+        }
+      } else if (operator === 'Td') {
+        const offset = lastNumbers(2);
+        if (offset) {
+          tdX += offset[0];
+          tdY += offset[1];
+        }
+      } else if (operator === 'TJ') {
+        if (Array.isArray(last)) result.arrays.push(last);
+      } else if (operator === 'Tj') {
+        if (isTextItem(last)) result.shows.push(last);
+      } else if (operator === "'" || operator === '"') {
+        if (isTextItem(last)) result.quotes.push(last);
+      }
+      operands = [];
+      arrayItems = null;
+    } else {
+      pos++; // a stray delimiter such as ')', '>', '{' or '}'
+    }
+  }
+
+  result.x = tmX + tdX;
+  result.y = tmY + tdY;
+  return result;
+}
+
 /**
  * Appends the positioned text of every BT..ET block of one decoded content stream to `rawBlocks`.
+ * Past MAX_PDF_TEXT_BLOCKS blocks in the document it throws a PayloadLimitError.
  */
 function appendTextBlocks(
   content: string,
@@ -343,120 +570,34 @@ function appendTextBlocks(
     if (open === -1) break;
     const close = content.indexOf('ET', open + 2);
     if (close === -1) break;
-    const block = content.slice(open, close + 2);
+    const scanned = scanTextObject(content.slice(open, close + 2));
     searchFrom = close + 2;
 
-    // Track text state
-    let currX = 0;
-    let currY = 0;
-    let currFontSize = 12;
-    let currFontName = '';
-
-    // Font selection: /F1 12 Tf
-    const tfRegex = /\/([a-zA-Z0-9_+\-]+)\s+([0-9.]+)\s+Tf/g;
-    let tfMatch: RegExpExecArray | null;
-    while ((tfMatch = tfRegex.exec(block)) !== null) {
-      currFontName = tfMatch[1];
-      currFontSize = parseFloat(tfMatch[2]) || 12;
-    }
-
-    const activeCMap = cmaps.get(currFontName) || defaultCMap;
-
-    // Matrix operators: a b c d e f Tm
-    const tmRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+([0-9.\-]+)\s+Tm/g;
-    let tmMatch: RegExpExecArray | null;
-    while ((tmMatch = tmRegex.exec(block)) !== null) {
-      currX = parseFloat(tmMatch[5]) || 0;
-      currY = parseFloat(tmMatch[6]) || 0;
-    }
-
-    // Position operators: x y Td
-    const tdRegex = /([0-9.\-]+)\s+([0-9.\-]+)\s+Td/g;
-    let tdMatch: RegExpExecArray | null;
-    while ((tdMatch = tdRegex.exec(block)) !== null) {
-      currX += parseFloat(tdMatch[1]) || 0;
-      currY += parseFloat(tdMatch[2]) || 0;
-    }
-
-    // 1. Array text operator: [...] TJ
-    const tjRegex = /\[(.*?)\]\s*TJ/g;
-    let tjArrayMatch: RegExpExecArray | null;
-    while ((tjArrayMatch = tjRegex.exec(block)) !== null) {
-      const inner = tjArrayMatch[1];
-      const itemRegex = /\(((?:[^()\\]|\\.)*)\)|<([0-9a-fA-F\s]+)>/g;
-      let itemMatch: RegExpExecArray | null;
-      let line = '';
-      while ((itemMatch = itemRegex.exec(inner)) !== null) {
-        if (itemMatch[1] !== undefined) {
-          line += unescapePdfString(itemMatch[1]);
-        } else if (itemMatch[2] !== undefined) {
-          line += activeCMap
-            ? decodeWithCMap(itemMatch[2], activeCMap)
-            : decodePdfHexString(itemMatch[2]);
-        }
+    const activeCMap = cmaps.get(scanned.fontName) || defaultCMap;
+    const decode = (item: TextItem): string => {
+      if (item.literal !== undefined) return unescapePdfString(item.literal);
+      const hex = item.hex ?? '';
+      return activeCMap ? decodeWithCMap(hex, activeCMap) : decodePdfHexString(hex);
+    };
+    const emit = (text: string): void => {
+      if (!text.trim()) return;
+      if (rawBlocks.length >= MAX_PDF_TEXT_BLOCKS) {
+        throw new PayloadLimitError(`PDF yields more than ${MAX_PDF_TEXT_BLOCKS} text blocks.`);
       }
-      if (line.trim()) {
-        rawBlocks.push({
-          text: line.trim(),
-          x: currX,
-          y: currY,
-          width: Math.max(10, line.length * (currFontSize * 0.5)),
-          height: currFontSize,
-          fontName: currFontName,
-          fontSize: currFontSize,
-        });
-      }
-    }
+      rawBlocks.push({
+        text: text.trim(),
+        x: scanned.x,
+        y: scanned.y,
+        width: Math.max(MIN_TEXT_WIDTH, text.length * (scanned.fontSize * TEXT_WIDTH_PER_POINT)),
+        height: scanned.fontSize,
+        fontName: scanned.fontName,
+        fontSize: scanned.fontSize,
+      });
+    };
 
-    // 2. Single text operator: (...) Tj or <...> Tj
-    const singleTjRegex = /\(((?:[^()\\]|\\.)*)\)\s*Tj|<([0-9a-fA-F\s]+)>\s*Tj/g;
-    let sMatch: RegExpExecArray | null;
-    while ((sMatch = singleTjRegex.exec(block)) !== null) {
-      let text = '';
-      if (sMatch[1] !== undefined) {
-        text = unescapePdfString(sMatch[1]);
-      } else if (sMatch[2] !== undefined) {
-        text = activeCMap
-          ? decodeWithCMap(sMatch[2], activeCMap)
-          : decodePdfHexString(sMatch[2]);
-      }
-      if (text.trim()) {
-        rawBlocks.push({
-          text: text.trim(),
-          x: currX,
-          y: currY,
-          width: Math.max(10, text.length * (currFontSize * 0.5)),
-          height: currFontSize,
-          fontName: currFontName,
-          fontSize: currFontSize,
-        });
-      }
-    }
-
-    // 3. Prime operators
-    const primeRegex = /\(((?:[^()\\]|\\.)*)\)\s*['"]|<([0-9a-fA-F\s]+)>\s*['"]/g;
-    let pMatch: RegExpExecArray | null;
-    while ((pMatch = primeRegex.exec(block)) !== null) {
-      let text = '';
-      if (pMatch[1] !== undefined) {
-        text = unescapePdfString(pMatch[1]);
-      } else if (pMatch[2] !== undefined) {
-        text = activeCMap
-          ? decodeWithCMap(pMatch[2], activeCMap)
-          : decodePdfHexString(pMatch[2]);
-      }
-      if (text.trim()) {
-        rawBlocks.push({
-          text: text.trim(),
-          x: currX,
-          y: currY,
-          width: Math.max(10, text.length * (currFontSize * 0.5)),
-          height: currFontSize,
-          fontName: currFontName,
-          fontSize: currFontSize,
-        });
-      }
-    }
+    for (const array of scanned.arrays) emit(array.map(decode).join(''));
+    for (const item of scanned.shows) emit(decode(item));
+    for (const item of scanned.quotes) emit(decode(item));
   }
 }
 

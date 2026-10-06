@@ -573,11 +573,20 @@ export class GraphExportError extends ConversionFailedError {
 }
 
 /**
- * A compressed stream would decode past a per-stream or per-document byte limit. The routes answer
- * it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ * An input asks for more work or memory than the engine allows: a stream that would decode past a
+ * size limit, or a document that would produce more text blocks or character mappings than the caps.
+ * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
  */
-export class DecompressionLimitError extends ConversionFailedError {
+export class PayloadLimitError extends ConversionFailedError {
   readonly status = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PayloadLimitError';
+  }
+}
+
+/** A compressed stream would decode past a per-stream or per-document byte limit. */
+export class DecompressionLimitError extends PayloadLimitError {
   constructor(message: string) {
     super(message);
     this.name = 'DecompressionLimitError';

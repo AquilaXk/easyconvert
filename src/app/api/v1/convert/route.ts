@@ -13,7 +13,7 @@ import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempoten
 import {
   ArchiveEntryCollisionError,
   ConversionFailedError,
-  DecompressionLimitError,
+  PayloadLimitError,
   EngineUnavailableError,
 } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
@@ -417,7 +417,7 @@ export async function POST(req: NextRequest) {
         rateLimitHeaders
       );
     }
-    if (err instanceof DecompressionLimitError) {
+    if (err instanceof PayloadLimitError) {
       // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
