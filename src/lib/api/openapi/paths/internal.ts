@@ -19,6 +19,8 @@ import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 const INTERNAL = { 'x-internal': true };
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).`;
+const PAYLOAD_LIMIT_DESCRIPTION =
+  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -207,6 +209,7 @@ export const internalPaths = {
         '200': binaryResponse('Converted file.'),
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
+        '413': createProblemResponse(PAYLOAD_LIMIT_DESCRIPTION),
         '422': createErrorResponse('Page count exceeds the tier limit.'),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
@@ -237,6 +240,7 @@ export const internalPaths = {
           },
         },
         '401': createProblemResponse('Authentication required.'),
+        '413': createProblemResponse(PAYLOAD_LIMIT_DESCRIPTION),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
