@@ -28,14 +28,44 @@ RUN npm run build:worker
 RUN npm prune --omit=dev --ignore-scripts
 
 # ==============================================================================
-# Stage 2: Hardened Runtime Container
+# Stage 2: Pinned 7-Zip console build
+# ==============================================================================
+# The maintained upstream 7-Zip, not the legacy p7zip packages. Debian bookworm ships 7-Zip as the
+# `7zip` package without the RAR decoder (there is no `7zip-rar` on bookworm), so RAR input needs
+# the upstream build. The final grep fails the build if the RAR decoder is ever missing. Each
+# archive is pinned by SHA-256: bump SEVEN_ZIP_VERSION, SEVEN_ZIP_RELEASE and both digests together.
+FROM node:20-bookworm-slim AS sevenzip
+
+ARG SEVEN_ZIP_VERSION=26.01
+ARG SEVEN_ZIP_RELEASE=2601
+ARG SEVEN_ZIP_SHA256_X64=8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+ARG SEVEN_ZIP_SHA256_ARM64=39f8c9070c300a63c7484d9a983119ef3edf841e1ddf69f1affae29fdec5f612
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && case "$(dpkg --print-architecture)" in \
+        amd64) SEVEN_ZIP_ARCH=x64; SEVEN_ZIP_SHA256="${SEVEN_ZIP_SHA256_X64}" ;; \
+        arm64) SEVEN_ZIP_ARCH=arm64; SEVEN_ZIP_SHA256="${SEVEN_ZIP_SHA256_ARM64}" ;; \
+        *) echo "No pinned 7-Zip build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+        --output /tmp/7zip.tar.xz \
+        "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-${SEVEN_ZIP_ARCH}.tar.xz" \
+    && echo "${SEVEN_ZIP_SHA256}  /tmp/7zip.tar.xz" | sha256sum --check --strict - \
+    && mkdir /seven-zip \
+    && tar -xJf /tmp/7zip.tar.xz -C /seven-zip 7zzs License.txt \
+    && /seven-zip/7zzs i > /tmp/7zip-formats.txt \
+    && grep -q ' Rar5 ' /tmp/7zip-formats.txt
+
+# ==============================================================================
+# Stage 3: Hardened Runtime Container
 # ==============================================================================
 FROM node:20-bookworm-slim AS runner
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Tini Init, util-linux (prlimit), Native Conversion Engines, and CJK Font Packages
+# 1. Install Tini Init, util-linux (prlimit), Native Conversion Engines (7-Zip comes from the pinned stage), and CJK Font Packages
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
     && apt-get update \
     && EXTRA_PKGS="" \
@@ -63,8 +93,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libreoffice-nogpu \
         libreoffice-writer \
         libraw-bin \
-        p7zip-full \
-        p7zip-rar \
         poppler-utils \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -78,6 +106,12 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
     && groupadd -r -f video && groupadd -r -f render \
     && groupadd -g 10001 -r easyconvert \
     && useradd -u 10001 -r -g easyconvert -G video,render -m -d /home/easyconvert -s /bin/bash easyconvert
+
+# 7-Zip: the statically linked upstream build is installed as `7zz`, with `7z` as an alias so
+# operators and scripts find it under the usual name. The worker resolves either name.
+COPY --from=sevenzip /seven-zip/7zzs /usr/local/bin/7zz
+COPY --from=sevenzip /seven-zip/License.txt /usr/share/doc/7zip/License.txt
+RUN ln -s 7zz /usr/local/bin/7z
 
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
