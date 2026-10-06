@@ -30,6 +30,11 @@ const LANGUAGE_SEPARATOR = '+';
 
 export type OcrRecognizeResult = Awaited<ReturnType<TesseractWorker['recognize']>>;
 export type OcrRecognizeFn = TesseractWorker['recognize'];
+/** Recognizes with temporary parameter overrides; the job's own parameters are restored afterwards. */
+export type OcrRecognizeWithFn = (
+  overrides: Record<string, string>,
+  ...args: Parameters<OcrRecognizeFn>
+) => ReturnType<OcrRecognizeFn>;
 
 /** The subset of a Tesseract worker the pool relies on. */
 export interface OcrPooledWorker {
@@ -187,7 +192,10 @@ export class OcrWorkerPool {
     return worker as unknown as OcrPooledWorker;
   }
 
-  async run<T>(spec: OcrWorkerSpec, job: (recognize: OcrRecognizeFn) => Promise<T>): Promise<T> {
+  async run<T>(
+    spec: OcrWorkerSpec,
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
+  ): Promise<T> {
     const entry = await this.acquire(spec);
     if (!this.entries.has(entry)) {
       // A shutdown retired the worker between hand-out and start.
@@ -245,10 +253,20 @@ export class OcrWorkerPool {
   private async execute<T>(
     entry: PoolEntry,
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
   ): Promise<T> {
-    await entry.worker.setParameters(spec.parameters);
-    return job((image, options, output, jobId) => entry.worker.recognize(image, options, output, jobId));
+    const { worker } = entry;
+    await worker.setParameters(spec.parameters);
+    const recognizeWith: OcrRecognizeWithFn = async (overrides, image, options, output, jobId) => {
+      await worker.setParameters({ ...spec.parameters, ...overrides });
+      try {
+        return await worker.recognize(image, options, output, jobId);
+      } finally {
+        // Put the job's own parameters back whether or not the recognition worked.
+        await worker.setParameters(spec.parameters).catch(() => undefined);
+      }
+    };
+    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith);
   }
 
   private async acquire(spec: OcrWorkerSpec): Promise<PoolEntry> {
