@@ -1,0 +1,35 @@
+ALTO 4.4 schema fixtures
+========================
+
+These files let the OCR export tests validate generated ALTO with `xmllint --schema`.
+They are vendored unmodified; nothing in src/ reads them.
+
+NOTICE: alto-4-4.xsd and xlink.xsd are third-party schema documents, byte-for-byte as published
+(hashes below). They are used only by the test suite (tests/helpers/xml-oracle.ts) to validate
+generated ALTO and are not part of the shipped product or its build.
+
+alto-4-4.xsd
+  Source:   https://www.loc.gov/standards/alto/v4/alto-4-4.xsd (Library of Congress, ALTO Editorial Board)
+  Version:  4.4 (the file's own "Version 4.4" header and version="4.4" attribute)
+  Fetched:  2026-10-06
+  SHA-256:  5564fd29d2dd090d8102b8a0aa081906afd677cd5ecc632312e56f21ea14702b
+  License:  The file header states: "This document is available under the Creative Commons
+            Attribution-ShareAlike 4.0 International (CC BY-SA 4.0). The ALTO Editorial Board has
+            waived all rights to it worldwide under copyright law with confirmation of the original
+            creating authors, including all related and neighboring rights, to the extent allowed
+            by law." It is therefore not CC0 as such; the waiver plus the attribution below satisfy
+            the terms. Attribution: ALTO: Analyzed Layout and Text Object, ALTO Editorial Board,
+            Library of Congress.
+
+xlink.xsd
+  Source:   https://www.loc.gov/standards/mets/xlink.xsd (Library of Congress, "METS XLink Schema, v. 2,
+            Nov. 15, 2004")
+  Fetched:  2026-10-06
+  SHA-256:  f1f5bb6003165cdd8f6c1fcc32f8fd1f965e1681010f3b9806d9460bcffa8a3c
+  License:  Published by the Library of Congress, a U.S. government work with no license header
+            (public domain in the United States).
+  Why:      alto-4-4.xsd imports the XLink namespace from
+            http://www.loc.gov/standards/xlink/xlink.xsd, which now answers 404, and it references the
+            `xlink:simpleLink` attribute group. This is the Library of Congress schema that defines that
+            group in the same namespace. Tests map the dead URL to this file with an XML catalog
+            (XML_CATALOG_FILES) and run xmllint with --nonet, so no network access is needed.

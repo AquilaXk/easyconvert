@@ -115,6 +115,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
     finishedOn: job.finishedOn,
     attemptsMade: job.attemptsMade,
     failedReason: maskedText(graphState?.failedReason || job.failedReason),
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
     result: job.returnvalue,
     tasks: redactForOutput(job.data?.tasks),
     graph: redactForOutput(graphState?.graph || job.data?.graph),

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
 import {
   ConversionOptions,
@@ -184,6 +185,9 @@ export async function POST(req: NextRequest) {
     }
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
+    }
+    if (error instanceof InputPixelLimitError) {
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.

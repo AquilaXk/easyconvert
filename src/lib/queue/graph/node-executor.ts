@@ -9,6 +9,7 @@ import type { IStorageBackend } from '../../storage/oci-storage';
 import type { ConversionEnginePort } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
+import { isFinalFailure } from '../job-failure';
 import { safeFetch } from '../../security/safe-fetch';
 import { redactText, redactUrl, scrubError } from '../../security/redact';
 import { graphNodeJobId } from './node-jobs';
@@ -504,8 +505,9 @@ export async function processGraphNodeJob(
     // Whatever an SDK or a remote quoted into the error, it leaves this node run masked.
     scrubError(err);
     // A retry may still succeed, and a cancelled attempt is not a failure: only the last
-    // failed attempt fails the node (and, under fail_fast, the graph).
-    if (!attemptSignal.aborted && job.attemptsMade >= (job.opts?.attempts ?? 1)) {
+    // failed attempt fails the node (and, under fail_fast, the graph). A failure that cannot be
+    // retried is the last one.
+    if (!attemptSignal.aborted && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, err)) {
       const errorMsg = redactText(err instanceof Error ? err.message : String(err));
       await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
     }

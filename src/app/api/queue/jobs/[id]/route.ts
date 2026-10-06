@@ -106,6 +106,8 @@ export async function GET(
     },
     returnvalue: job.returnvalue,
     failedReason: job.failedReason === undefined ? undefined : redactText(job.failedReason),
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
     logs: job.logs.map(redactText),
   });
 }

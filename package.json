@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build && npm run build:raw-worker",
+    "build": "next build && npm run build:raw-worker && npm run build:pdf-text-worker",
     "start": "next start",
     "lint": "next lint",
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
@@ -17,10 +17,11 @@
     "test:redis": "vitest run tests/job-lifecycle-redis.test.ts && vitest run tests/job-graph-redis-e2e.test.ts && vitest run tests/byos-secret-sealing-redis.test.ts && vitest run tests/phase-1-queue-sandbox-lifecycle.test.ts -t \"pops waiting jobs|schedules delayed jobs\"",
     "bench:zstd": "PERF_BENCH=1 vitest run tests/zstd-streaming-dict.test.ts",
     "worker": "tsx src/worker/index.ts",
-    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && npm run build:raw-worker",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && npm run build:raw-worker && npm run build:pdf-text-worker",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
     "generate:sdk": "tsx scripts/generate-sdk.ts",
-    "build:raw-worker": "esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node20 --outfile=dist/raw-decode-worker.js --packages=external"
+    "build:raw-worker": "esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node20 --outfile=dist/raw-decode-worker.js --packages=external",
+    "build:pdf-text-worker": "esbuild src/lib/conversions/pdf-text-worker.ts --bundle --platform=node --target=node20 --outfile=dist/pdf-text-worker.js --packages=external"
   },
   "dependencies": {
     "@types/ioredis": "^4.28.10",

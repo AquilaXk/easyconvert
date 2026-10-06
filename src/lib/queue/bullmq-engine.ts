@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redactForOutput, redactText, scrubError } from '../security/redact';
+import { classifyJobFailure } from './job-failure';
 
 export interface JobOptions {
   jobId?: string;
@@ -90,6 +91,10 @@ export class Job<T = any, R = any> {
   progress: number = 0;
   returnvalue?: R;
   failedReason?: string;
+  /** Error class name of a typed failure (for example `InputPixelLimitError`). */
+  failedCode?: string;
+  /** HTTP status the same failure answers on the synchronous API (for example 413). */
+  failedStatus?: number;
   stacktrace: string[] = [];
   timestamp: number;
   processedOn?: number;
@@ -825,12 +830,15 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     scrubError(err);
     const errorMessage = redactText(err instanceof Error ? err.message : String(err));
     job.failedReason = errorMessage;
+    const failure = classifyJobFailure(err);
+    job.failedCode = failure.code;
+    job.failedStatus = failure.status;
     if (err instanceof Error && err.stack) {
       job.stacktrace.push(redactText(err.stack));
     }
 
     const maxAttempts = job.opts.attempts || 1;
-    if (job.attemptsMade < maxAttempts) {
+    if (failure.retryable && job.attemptsMade < maxAttempts) {
       const backoffCfg = job.opts.backoff || { type: 'exponential', delay: 1000 };
       const delay =
         backoffCfg.type === 'exponential'
@@ -1162,6 +1170,32 @@ end
 return 1
 `;
 
+/** Parses a JSON hash field; undefined when it is absent or damaged. */
+function parseStoredJson<V>(text: string | undefined): V | undefined {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text) as V;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Copies the state, outcome and failure fields of a stored job hash onto a job. */
+function applyStoredJobFields<T, R>(job: Job<T, R>, raw: Record<string, string>): void {
+  job.progress = Number(raw.progress || 0);
+  job.state = (raw.state as JobState) || 'waiting';
+  job.attemptsMade = Number(raw.attemptsMade || 0);
+  job.timestamp = Number(raw.timestamp || Date.now());
+  if (raw.processedOn) job.processedOn = Number(raw.processedOn);
+  if (raw.finishedOn) job.finishedOn = Number(raw.finishedOn);
+  if (raw.failedReason) job.failedReason = raw.failedReason;
+  if (raw.failedCode) job.failedCode = raw.failedCode;
+  if (raw.failedStatus) job.failedStatus = Number(raw.failedStatus);
+  if (raw.returnvalue) job.returnvalue = parseStoredJson<R>(raw.returnvalue) ?? job.returnvalue;
+  job.stacktrace = parseStoredJson<string[]>(raw.stacktrace) ?? job.stacktrace;
+  job.logs = parseStoredJson<string[]>(raw.logs) ?? job.logs;
+}
+
 export const FAIL_JOB_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- KEYS[2]: activeKey
@@ -1174,6 +1208,8 @@ export const FAIL_JOB_LUA_SCRIPT = `
 -- ARGV[5]: attemptsMade
 -- ARGV[6]: '1' to delete the job hash (removeOnFail)
 -- ARGV[7]: attempt token of the caller
+-- ARGV[8]: error class of a typed failure, or '' for an untyped one
+-- ARGV[9]: HTTP status of a typed failure, or ''
 -- Returns 1 after moving the job from active to failed, or 0 when it is no longer active
 -- or another attempt owns it.
 if redis.call('HGET', KEYS[1], 'state') ~= 'active' or redis.call('HGET', KEYS[1], 'attemptToken') ~= ARGV[7] then
@@ -1185,7 +1221,14 @@ if ARGV[6] == '1' then
   redis.call('DEL', KEYS[1])
 else
   redis.call('SADD', KEYS[3], ARGV[1])
-  redis.call('HSET', KEYS[1], 'state', 'failed', 'finishedOn', ARGV[2], 'failedReason', ARGV[3], 'stacktrace', ARGV[4], 'attemptsMade', ARGV[5])
+  local fields = { 'state', 'failed', 'finishedOn', ARGV[2], 'failedReason', ARGV[3], 'stacktrace', ARGV[4], 'attemptsMade', ARGV[5] }
+  if ARGV[8] ~= '' then
+    table.insert(fields, 'failedCode')
+    table.insert(fields, ARGV[8])
+    table.insert(fields, 'failedStatus')
+    table.insert(fields, ARGV[9])
+  end
+  redis.call('HSET', KEYS[1], unpack(fields))
 end
 return 1
 `;
@@ -1592,6 +1635,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       finishedOn: job.finishedOn ? String(job.finishedOn) : '',
       returnvalue: job.returnvalue !== undefined ? JSON.stringify(job.returnvalue) : '',
       failedReason: job.failedReason || '',
+      failedCode: job.failedCode || '',
+      failedStatus: job.failedStatus === undefined ? '' : String(job.failedStatus),
       stacktrace: JSON.stringify(job.stacktrace || []),
       logs: JSON.stringify(job.logs || []),
     };
@@ -1642,28 +1687,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       }
     );
 
-    job.progress = Number(raw.progress || 0);
-    job.state = (raw.state as JobState) || 'waiting';
-    job.attemptsMade = Number(raw.attemptsMade || 0);
-    job.timestamp = Number(raw.timestamp || Date.now());
-    if (raw.processedOn) job.processedOn = Number(raw.processedOn);
-    if (raw.finishedOn) job.finishedOn = Number(raw.finishedOn);
-    if (raw.failedReason) job.failedReason = raw.failedReason;
-    if (raw.returnvalue) {
-      try {
-        job.returnvalue = JSON.parse(raw.returnvalue);
-      } catch {}
-    }
-    if (raw.stacktrace) {
-      try {
-        job.stacktrace = JSON.parse(raw.stacktrace);
-      } catch {}
-    }
-    if (raw.logs) {
-      try {
-        job.logs = JSON.parse(raw.logs);
-      } catch {}
-    }
+    applyStoredJobFields(job, raw);
     return job;
   }
 
@@ -2328,7 +2352,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
         job.opts?.removeOnFail === true ? '1' : '0',
-        job._attemptToken ?? ''
+        job._attemptToken ?? '',
+        job.failedCode ?? '',
+        String(job.failedStatus ?? '')
       );
       if (Number(committed) !== 1) {
         console.warn(
