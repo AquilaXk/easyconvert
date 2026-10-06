@@ -1,9 +1,9 @@
 import zlib from 'node:zlib';
-import { ConversionFailedError, ConversionOptions, ConversionResult } from '../types';
+import { ConversionFailedError, ConversionOptions, ConversionResult, UnsupportedOptionError } from '../types';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
@@ -106,6 +106,14 @@ export async function convertFont(
     throw new Error('Font conversion payload is empty (0 bytes).');
   }
 
+  // Every target holds one font; a collection would silently lose all but its first face
+  if (looksLikeWoff2(inputBuffer, src)) {
+    const faces = countWoff2Fonts(inputBuffer);
+    if (faces > 1) {
+      throw new UnsupportedOptionError(`The WOFF2 file is a collection of ${faces} fonts, but ${tgt} holds a single font. Extract one font first.`);
+    }
+  }
+
   // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation
   const parsedFont = parseFontToSfnt(inputBuffer, src, baseName);
 
@@ -161,6 +169,13 @@ export async function convertFont(
   };
 }
 
+/** True for a WOFF2 file: declared as such, or carrying the 'wOF2' signature (Mac containers are chosen by declared format first). */
+function looksLikeWoff2(buffer: Buffer, format: string): boolean {
+  if (format === 'dfont' || format === 'bin') return false;
+  if (format === 'woff' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOFF')) return false;
+  return format === 'woff2' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOF2');
+}
+
 /**
  * Parses arbitrary input font stream (TTF, OTF, WOFF, WOFF2, EOT, SVG Font, DFONT, MacBinary) into canonical SFNT structure
  */
@@ -180,7 +195,7 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
   }
 
   // Check WOFF2 signature ('wOF2' = 0x774F4632)
-  if (format === 'woff2' || (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'wOF2')) {
+  if (looksLikeWoff2(buffer, format)) {
     return decodeWoff2(buffer, defaultName);
   }
 
