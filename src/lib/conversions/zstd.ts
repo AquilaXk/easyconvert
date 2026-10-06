@@ -384,10 +384,8 @@ const CONTENT_CHECKSUM_BYTES = 4;
 /** Largest input the encoder accepts: match positions are stored as signed 32-bit integers. */
 export const ZSTD_ENCODER_INPUT_MAX = 2 ** 30;
 
-function bombSizeError(): ConversionFailedError {
-  return new ConversionFailedError(
-    `Archive bomb detected: uncompressed size exceeds limit of ${ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-  );
+function bombSizeError(limit: number = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE): ConversionFailedError {
+  return new ConversionFailedError(`Archive bomb detected: uncompressed size exceeds limit of ${limit} bytes`);
 }
 
 function bombRatioError(uncompressed: number, compressed: number): ConversionFailedError {
@@ -478,12 +476,21 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
   };
 }
 
+export interface ZstdDecompressOptions {
+  /**
+   * The caller knows the exact output size it will accept (for example a container's declared page
+   * size). Output past this many bytes is rejected and the generic ratio guard is not applied, since
+   * the caller's bound already limits the expansion.
+   */
+  maxOutputBytes?: number;
+}
+
 /**
  * Decompresses an arbitrary RFC 8878 Zstandard stream with bomb safeguards.
  * Every failure surfaces as a ConversionFailedError; there is no fallback decoder.
  */
-export function decompressZstd(inputBuffer: Buffer): Buffer {
-  return decodeZstdFrames(inputBuffer, null);
+export function decompressZstd(inputBuffer: Buffer, options: ZstdDecompressOptions = {}): Buffer {
+  return decodeZstdFrames(inputBuffer, null, options.maxOutputBytes);
 }
 
 /**
@@ -495,14 +502,17 @@ export function decompressZstdWithDictionary(inputBuffer: Buffer, dictionary: Zs
   return decodeZstdFrames(inputBuffer, dictionary);
 }
 
-function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary | null): Buffer {
+function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary | null, callerBound?: number): Buffer {
+  // A caller that knows the exact size it accepts bounds the output itself, so the ratio guard is not applied.
+  const sizeLimit = callerBound ?? ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+  const ratioGuarded = callerBound === undefined;
   if (!inputBuffer || inputBuffer.length < 4) {
     throw new ConversionFailedError('Decompress error: input buffer too small for Zstandard stream.');
   }
 
   const src = inputBuffer;
   const dictionaryLength = dictionary === null ? 0 : dictionary.content.length;
-  const out = new ZstdOutputBuffer(ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE + ZSTD_BLOCK_SIZE_MAX + dictionaryLength);
+  const out = new ZstdOutputBuffer(sizeLimit + ZSTD_BLOCK_SIZE_MAX + dictionaryLength);
   let offset = 0;
 
   while (offset < src.length) {
@@ -554,8 +564,8 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
     const declaredSize = frameHeader.frameContentSize;
     if (declaredSize !== null) {
       // Reject a declared size that the guards would reject anyway before reserving memory for it.
-      if (out.length + declaredSize > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) throw bombSizeError();
-      if (exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
+      if (out.length + declaredSize > sizeLimit) throw bombSizeError(sizeLimit);
+      if (ratioGuarded && exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
         throw bombRatioError(out.length + declaredSize, src.length);
       }
       out.reserve(declaredSize + dictionaryLength);
@@ -620,10 +630,10 @@ function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary 
 
       // Cumulative security limits, on decoded bytes only (the dictionary prefix does not count)
       const produced = out.length - dictionaryLength;
-      if (produced > ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw bombSizeError();
+      if (produced > sizeLimit) {
+        throw bombSizeError(sizeLimit);
       }
-      if (exceedsZstdRatioGuard(produced, src.length)) {
+      if (ratioGuarded && exceedsZstdRatioGuard(produced, src.length)) {
         throw bombRatioError(produced, src.length);
       }
       out.projectedTotal = Math.ceil((produced * src.length) / offset) + dictionaryLength;

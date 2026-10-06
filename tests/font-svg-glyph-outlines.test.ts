@@ -34,6 +34,7 @@ import {
   type Cmd,
   type Pt,
 } from './helpers/font-oracles';
+import { readWoff2Reference } from './helpers/woff2-reference';
 import { buildGlyfFont } from './helpers/glyf-font-builder';
 
 /**
@@ -287,8 +288,12 @@ describe('SVG font to OTF, WOFF, WOFF2, EOT and SVG: the same real outlines', ()
     expectPolygonNear(glyphPolygons(tables, 2)[0], B_EXPECTED, 0.01, 'woff quadratic');
   });
 
-  it('WOFF2: glyf and loca are declared with the null transform and decode to the same outlines', async () => {
-    const tables = unwrapWoff2(await convertSvg('woff2'));
+  it('WOFF2: glyf and loca are transformed (version 0) and decode to the same outlines', async () => {
+    const file = await convertSvg('woff2');
+    const glyfRow = readWoff2Reference(file).directory.find((row) => row.tag === 'glyf');
+    expect(glyfRow?.version).toBe(0);
+    expect(glyfRow?.transformLength).toBeGreaterThan(0);
+    const tables = unwrapWoff2(file);
     expect(readGlyphCount(tables)).toBe(FIXTURE_GLYPH_COUNT);
     expect(readGlyf(tables, 1)!.contours[0]).toHaveLength(3);
     expectPolygonNear(glyphPolygons(tables, 2)[0], B_EXPECTED, 0.01, 'woff2 quadratic');

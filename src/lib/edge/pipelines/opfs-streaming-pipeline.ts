@@ -16,6 +16,7 @@ import {
   registerZeroRetentionLifecycleHooks,
 } from '../opfs/storage-gc';
 import { processOpfsStreaming } from '../workers/opfs-vfs.worker';
+import { rehydrateWorkerError } from '../workers/worker-errors';
 
 export interface OpfsPipelineResult {
   blob: Blob;
@@ -131,7 +132,8 @@ export async function streamConvertWithOpfs(
           cleanup();
           activePipelineSessions.delete(sessionId);
           destroySessionImmediately(sessionId).catch(() => {});
-          reject(new Error(data.message || 'OPFS streaming conversion failed'));
+          // Rebuild the worker's typed error (DataEncodingError, DataParseError, ...) from its data.
+          reject(rehydrateWorkerError(data.error ?? { name: 'Error', message: data.message || 'OPFS streaming conversion failed' }));
         }
       };
 
