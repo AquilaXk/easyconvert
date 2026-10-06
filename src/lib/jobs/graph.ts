@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
+import { OPTIMIZERS } from '../conversions/optimizers';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,
@@ -66,6 +67,7 @@ export interface GraphValidationErrorDetail {
   path: string;
   message: string;
   code: string;
+  node?: string;
 }
 
 export interface GraphValidationResult {
@@ -634,8 +636,31 @@ export function validateJobGraph(
         inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
         break;
       }
+      case 'optimize': {
+        const inputId = getTaskDependencies(node)[0];
+        const srcFmt = firstInputFormat(node);
+        if (srcFmt === UNKNOWN_FORMAT) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
+            code: 'SOURCE_FORMAT_UNKNOWN',
+            node: nodeId,
+          });
+        } else if (srcFmt !== DYNAMIC_FORMAT) {
+          if (!OPTIMIZERS.has(srcFmt.toLowerCase())) {
+            errors.push({
+              path: `nodes.${nodeId}`,
+              message: `optimize is not available for ${srcFmt.toLowerCase()}`,
+              code: 'UNSUPPORTED_TARGET_FORMAT',
+              node: nodeId,
+            });
+          }
+        }
+        inferredFormats[nodeId] = srcFmt;
+        break;
+      }
       default: {
-        // Pass-through operations (optimize, watermark, protect, export) keep their input format.
+        // Pass-through operations (watermark, protect, export) keep their input format.
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }

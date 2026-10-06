@@ -36,13 +36,14 @@ describe('POST /api/v1/jobs reports the format of the final legacy task', () => 
   it.each([
     ['a thumbnail after a top-level PDF target', { targetFormat: 'pdf', tasks: [{ name: 't', operation: 'media.thumbnail', targetFormat: 'jpg' }] }, 'jpg'],
     [
-      'a thumbnail followed by a pass-through optimize stage',
-      { tasks: [{ name: 't', operation: 'media.thumbnail', targetFormat: 'png' }, { name: 'o', operation: 'optimize' }] },
-      'png',
+      'a thumbnail followed by a metadata stage',
+      { tasks: [{ name: 't', operation: 'media.thumbnail', targetFormat: 'png' }, { name: 'o', operation: 'metadata' }] },
+      'json',
     ],
     ['an OCR stage after a top-level text target', { targetFormat: 'txt', tasks: [{ name: 'r', operation: 'ocr' }] }, 'pdf'],
   ])('reports the final output format for %s', async (_label, body, expected) => {
     const res = await submit(body);
+    if (res.status !== 202) console.error(await res.text());
     expect(res.status).toBe(202);
     const json = await res.json();
     expect(json.targetFormat).toBe(expected);

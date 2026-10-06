@@ -24,6 +24,7 @@ import {
   applyPdfWatermark,
   protectPdf,
 } from '../../conversions';
+import { getOptimizer } from '../../conversions/optimizers';
 import { ConversionFailedError, GraphExportError } from '../../types';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
@@ -169,17 +170,14 @@ export async function processGraphNodeJob(
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
           const srcExt = artifactExtension(stored.filename, inputKey);
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            srcExt,
-            node.options || {},
-            stored.filename
-          );
-          const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          const optimizer = getOptimizer(srcExt);
+          const optRes = await optimizer(stored.buffer, node.options || {});
+          const outFilename = stored.filename || path.basename(inputKey);
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          effectiveStorage.saveObject(outKey, optRes.buffer, stored.mimeType, outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
+        await job.log(`Node "${nodeId}" optimized ${inputArtifacts.length} artifact(s)`);
         break;
       }
 

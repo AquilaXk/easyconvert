@@ -703,5 +703,6 @@ export async function applyPdfPostProcessing(result: ConversionResult, options: 
 export * from './page-range';
 export * from './ctl';
 export * from './pdf-postprocess';
+export * from './optimizers';
 
 
