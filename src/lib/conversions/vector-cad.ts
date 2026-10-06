@@ -2,9 +2,10 @@ import sharp from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
-import { encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { openInputImage } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
   tessellateCadBuffer,
@@ -225,6 +226,7 @@ export async function convertVectorCad(
   const baseName = (originalFilename || 'model').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Vector/CAD conversion payload is empty (0 bytes).');
@@ -426,7 +428,7 @@ async function convertSvgSource(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       mimeType = 'image/avif';
       break;
 

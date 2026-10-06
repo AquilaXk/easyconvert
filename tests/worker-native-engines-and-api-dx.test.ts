@@ -11,6 +11,7 @@ import {
   assertNotSpoofedFileVfs,
 } from '../src/worker/engines';
 import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { withMissingBinary } from './helpers/native-tools';
 import { FileExtensionSpoofError } from '../src/lib/registry';
 import { convertArchive } from '../src/lib/conversions/archive';
 import { POST as convertRouteHandler } from '../src/app/api/v1/convert/route';
@@ -67,16 +68,21 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(typeof diagnostics.tesseract).toBe('boolean');
     });
 
-    it('gracefully handles missing 7z binary with fail-closed or pure TS fallback', async () => {
-      const sampleZip = Buffer.from('PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00');
-      const res = await convertWithNative7z(sampleZip, 'zip', 'tar', {}, 'archive.zip');
-      if (res !== null) {
-        expect(res.engineUsed).toBe('native-7z');
-        expect(res.filename).toBe('archive.tar');
-        expect(res.size).toBeGreaterThan(0);
-      } else {
-        expect(res).toBeNull();
-      }
+    const EMPTY_ZIP = Buffer.from('PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00');
+
+    it('reports a missing 7z binary as null so the caller can choose another engine', async () => {
+      const res = await withMissingBinary('P7ZIP_PATH', () =>
+        convertWithNative7z(EMPTY_ZIP, 'zip', 'tar', {}, 'archive.zip')
+      );
+
+      expect(res).toBeNull();
+    });
+
+    it.skipIf(!probeNativeEngines().p7zip)('throws a typed error for an archive without entries instead of returning null', async () => {
+      await expect(convertWithNative7z(EMPTY_ZIP, 'zip', 'tar', {}, 'archive.zip')).rejects.toMatchObject({
+        name: 'ConversionFailedError',
+        message: 'The archive contains no files to convert.',
+      });
     });
 
     it('gracefully handles missing Poppler binary with fail-closed return', async () => {

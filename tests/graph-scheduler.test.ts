@@ -446,7 +446,7 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         method: 'GET',
         headers: { Authorization: `Bearer ${key}` },
       });
-      const getRes = await getJobHandler(getReq, { params: { id: data.jobId } });
+      const getRes = await getJobHandler(getReq, { params: Promise.resolve({ id: data.jobId }) });
       expect(getRes.status).toBe(200);
       const getData = await getRes.json();
       expect(getData.jobId).toBe(data.jobId);
@@ -459,13 +459,13 @@ describe('JobGraph Scheduler: Atomic DAG Orchestration', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${key}` },
       });
-      const delRes = await cancelJobHandler(delReq, { params: { id: data.jobId } });
+      const delRes = await cancelJobHandler(delReq, { params: Promise.resolve({ id: data.jobId }) });
       expect(delRes.status).toBe(200);
       const delData = await delRes.json();
       expect(delData.status).toBe('cancelled');
 
       // Subsequent GET shows cancelled
-      const getAfterCancel = await getJobHandler(getReq, { params: { id: data.jobId } });
+      const getAfterCancel = await getJobHandler(getReq, { params: Promise.resolve({ id: data.jobId }) });
       const getAfterData = await getAfterCancel.json();
       expect(getAfterData.status).toBe('cancelled');
     });

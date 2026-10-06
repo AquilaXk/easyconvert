@@ -336,7 +336,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       expect(binariesSpawned(calls).has('pdftotext')).toBe(true);
       expect(result.engineUsed).toBe('native-poppler');
 
-      const oracleText = execFileSync(tool('pdftotext'), ['-layout', fixture.plainPath, '-'], { encoding: 'utf-8' });
+      const oracleText = execFileSync(tool('pdftotext'), [fixture.plainPath, '-'], { encoding: 'utf-8' });
       const text = result.buffer.toString('utf-8');
       expect(text).toBe(oracleText);
       for (let page = 1; page <= PAGE_COUNT; page++) {

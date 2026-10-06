@@ -6,7 +6,7 @@ import { s3Storage } from '@/lib/storage/s3-storage';
 export const dynamic = 'force-dynamic';
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
