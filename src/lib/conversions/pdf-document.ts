@@ -82,6 +82,21 @@ const CHAR_CR = 13;
 const CHAR_SPACE = 32;
 const CHAR_0 = 48;
 const CHAR_9 = 57;
+const CHAR_PERCENT = 37;
+const CHAR_LEFT_PAREN = 40;
+const CHAR_RIGHT_PAREN = 41;
+const CHAR_PLUS = 43;
+const CHAR_MINUS = 45;
+const CHAR_DOT = 46;
+const CHAR_SLASH = 47;
+const CHAR_LESS = 60;
+const CHAR_GREATER = 62;
+const CHAR_UPPER_R = 82;
+const CHAR_LEFT_BRACKET = 91;
+const CHAR_BACKSLASH = 92;
+const CHAR_RIGHT_BRACKET = 93;
+const CHAR_LEFT_BRACE = 123;
+const CHAR_RIGHT_BRACE = 125;
 
 type PdfValue = null | boolean | number | PdfName | PdfRef | PdfDict | PdfArray | PdfOpaque;
 interface PdfName {
@@ -133,7 +148,18 @@ function isWhite(code: number): boolean {
   );
 }
 
-const DELIMITER_CODES = new Set<number>([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]); // ( ) < > [ ] { } / %
+const DELIMITER_CODES = new Set<number>([
+  CHAR_LEFT_PAREN,
+  CHAR_RIGHT_PAREN,
+  CHAR_LESS,
+  CHAR_GREATER,
+  CHAR_LEFT_BRACKET,
+  CHAR_RIGHT_BRACKET,
+  CHAR_LEFT_BRACE,
+  CHAR_RIGHT_BRACE,
+  CHAR_SLASH,
+  CHAR_PERCENT,
+]);
 
 function isRegular(code: number): boolean {
   return !Number.isNaN(code) && !isWhite(code) && !DELIMITER_CODES.has(code);
@@ -149,7 +175,7 @@ function skipWhite(src: string, from: number): number {
     const code = src.charCodeAt(pos);
     if (isWhite(code)) {
       pos++;
-    } else if (code === 37) {
+    } else if (code === CHAR_PERCENT) {
       // % starts a comment that runs to the end of the line
       while (pos < src.length && src.charCodeAt(pos) !== CHAR_LF && src.charCodeAt(pos) !== CHAR_CR) pos++;
     } else {
@@ -169,12 +195,12 @@ function endOfLiteralString(src: string, pos: number): number {
   let i = pos;
   while (i < src.length) {
     const code = src.charCodeAt(i);
-    if (code === 92) {
+    if (code === CHAR_BACKSLASH) {
       i += 2;
       continue;
     }
-    if (code === 40) depth++;
-    if (code === 41) {
+    if (code === CHAR_LEFT_PAREN) depth++;
+    if (code === CHAR_RIGHT_PAREN) {
       depth--;
       if (depth === 0) return i + 1;
     }
@@ -192,24 +218,24 @@ function skipValue(src: string, from: number): number {
     pos = skipWhite(src, pos);
     if (pos >= src.length) return pos;
     const code = src.charCodeAt(pos);
-    if (code === 60 && src.charCodeAt(pos + 1) === 60) {
+    if (code === CHAR_LESS && src.charCodeAt(pos + 1) === CHAR_LESS) {
       depth++;
       pos += 2;
-    } else if (code === 62 && src.charCodeAt(pos + 1) === 62) {
+    } else if (code === CHAR_GREATER && src.charCodeAt(pos + 1) === CHAR_GREATER) {
       depth--;
       pos += 2;
-    } else if (code === 91) {
+    } else if (code === CHAR_LEFT_BRACKET) {
       depth++;
       pos++;
-    } else if (code === 93) {
+    } else if (code === CHAR_RIGHT_BRACKET) {
       depth--;
       pos++;
-    } else if (code === 40) {
+    } else if (code === CHAR_LEFT_PAREN) {
       pos = endOfLiteralString(src, pos);
-    } else if (code === 60) {
+    } else if (code === CHAR_LESS) {
       const close = src.indexOf('>', pos);
       pos = close === -1 ? src.length : close + 1;
-    } else if (code === 47) {
+    } else if (code === CHAR_SLASH) {
       pos++;
       while (isRegular(src.charCodeAt(pos))) pos++;
     } else if (isRegular(code)) {
@@ -229,7 +255,7 @@ function referenceTailEnd(src: string, from: number): number {
   while (isDigit(src.charCodeAt(pos)) && pos - genStart < MAX_GENERATION_DIGITS) pos++;
   if (pos === genStart) return -1;
   pos = skipWhite(src, pos);
-  if (src.charCodeAt(pos) === 82 && !isRegular(src.charCodeAt(pos + 1))) return pos + 1;
+  if (src.charCodeAt(pos) === CHAR_UPPER_R && !isRegular(src.charCodeAt(pos + 1))) return pos + 1;
   return -1;
 }
 
@@ -239,13 +265,13 @@ function parseValue(src: string, from: number, depth: number): { value: PdfValue
   if (pos >= src.length) return { value: null, end: pos };
   const code = src.charCodeAt(pos);
 
-  if (code === 60 && src.charCodeAt(pos + 1) === 60) {
+  if (code === CHAR_LESS && src.charCodeAt(pos + 1) === CHAR_LESS) {
     const entries = new Map<string, PdfValue>();
     let cursor = pos + 2;
     while (true) {
       cursor = skipWhite(src, cursor);
       if (cursor >= src.length) break;
-      if (src.charCodeAt(cursor) === 62 && src.charCodeAt(cursor + 1) === 62) {
+      if (src.charCodeAt(cursor) === CHAR_GREATER && src.charCodeAt(cursor + 1) === CHAR_GREATER) {
         cursor += 2;
         break;
       }
@@ -253,7 +279,7 @@ function parseValue(src: string, from: number, depth: number): { value: PdfValue
       cursor = key.end;
       if (isName(key.value)) {
         const valueAt = skipWhite(src, cursor);
-        if (src.charCodeAt(valueAt) === 62 && src.charCodeAt(valueAt + 1) === 62) {
+        if (src.charCodeAt(valueAt) === CHAR_GREATER && src.charCodeAt(valueAt + 1) === CHAR_GREATER) {
           entries.set(key.value.value, null);
         } else {
           const value = parseValue(src, valueAt, depth + 1);
@@ -264,13 +290,13 @@ function parseValue(src: string, from: number, depth: number): { value: PdfValue
     }
     return { value: { kind: 'dict', entries }, end: cursor };
   }
-  if (code === 91) {
+  if (code === CHAR_LEFT_BRACKET) {
     const items: PdfValue[] = [];
     let cursor = pos + 1;
     while (true) {
       cursor = skipWhite(src, cursor);
       if (cursor >= src.length) break;
-      if (src.charCodeAt(cursor) === 93) {
+      if (src.charCodeAt(cursor) === CHAR_RIGHT_BRACKET) {
         cursor++;
         break;
       }
@@ -281,23 +307,23 @@ function parseValue(src: string, from: number, depth: number): { value: PdfValue
     }
     return { value: { kind: 'array', items }, end: cursor };
   }
-  if (code === 40) {
+  if (code === CHAR_LEFT_PAREN) {
     const end = endOfLiteralString(src, pos);
     return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
   }
-  if (code === 60) {
+  if (code === CHAR_LESS) {
     const close = src.indexOf('>', pos);
     const end = close === -1 ? src.length : close + 1;
     return { value: { kind: 'string', value: src.slice(pos + 1, end - 1) }, end };
   }
-  if (code === 47) {
+  if (code === CHAR_SLASH) {
     let end = pos + 1;
     while (isRegular(src.charCodeAt(end))) end++;
     return { value: { kind: 'name', value: decodeNameEscapes(src.slice(pos + 1, end)) }, end };
   }
-  if (isDigit(code) || code === 43 || code === 45 || code === 46) {
+  if (isDigit(code) || code === CHAR_PLUS || code === CHAR_MINUS || code === CHAR_DOT) {
     let end = pos + 1;
-    while (isDigit(src.charCodeAt(end)) || src.charCodeAt(end) === 46) end++;
+    while (isDigit(src.charCodeAt(end)) || src.charCodeAt(end) === CHAR_DOT) end++;
     const text = src.slice(pos, end);
     const number = Number(text);
     if (/^\d+$/.test(text) && text.length <= MAX_OBJECT_NUMBER_DIGITS) {
@@ -476,7 +502,7 @@ export class PdfDocument {
     const entry: PdfObjectEntry = { num, source: src, start, end: valueEnd, seq };
 
     const afterValue = skipWhite(src, valueEnd);
-    const startsDict = src.charCodeAt(start) === 60 && src.charCodeAt(start + 1) === 60;
+    const startsDict = src.charCodeAt(start) === CHAR_LESS && src.charCodeAt(start + 1) === CHAR_LESS;
     if (!startsDict || !src.startsWith(STREAM_KEYWORD, afterValue)) {
       this.register(entry);
       return Math.max(valueEnd, bodyFrom);

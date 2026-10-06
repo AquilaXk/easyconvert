@@ -19,6 +19,13 @@ const CHAR_LOWER_U = 117;
 const CHAR_LOWER_Z = 122;
 const CHAR_TILDE = 126;
 const CHAR_GREATER = 62;
+const CHAR_DIGIT_0 = 48;
+const CHAR_DIGIT_9 = 57;
+const CHAR_UPPER_A = 65;
+const CHAR_UPPER_F = 70;
+const CHAR_LOWER_A = 97;
+const CHAR_LOWER_F = 102;
+const HEX_LETTER_OFFSET = 10;
 
 const ASCII85_BASE = 85;
 const ASCII85_GROUP_CHARS = 5;
@@ -60,9 +67,9 @@ function assertWithinLimit(size: number, label: string, budget: InflateBudget): 
 }
 
 function hexValue(code: number): number {
-  if (code >= 48 && code <= 57) return code - 48;
-  if (code >= 65 && code <= 70) return code - 55;
-  if (code >= 97 && code <= 102) return code - 87;
+  if (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) return code - CHAR_DIGIT_0;
+  if (code >= CHAR_UPPER_A && code <= CHAR_UPPER_F) return code - CHAR_UPPER_A + HEX_LETTER_OFFSET;
+  if (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F) return code - CHAR_LOWER_A + HEX_LETTER_OFFSET;
   return -1;
 }
 

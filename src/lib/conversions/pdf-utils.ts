@@ -389,6 +389,10 @@ const CHAR_LESS = 60;
 const CHAR_GREATER = 62;
 const CHAR_LEFT_BRACKET = 91;
 const CHAR_BACKSLASH = 92;
+const CHAR_UPPER_A = 65;
+const CHAR_UPPER_F = 70;
+const CHAR_LOWER_A = 97;
+const CHAR_LOWER_F = 102;
 const CHAR_RIGHT_BRACKET = 93;
 const CHAR_LEFT_BRACE = 123;
 const CHAR_RIGHT_BRACE = 125;
@@ -450,7 +454,7 @@ function isHexContent(text: string): boolean {
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
     const isHexDigit =
-      (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102);
+      (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || (code >= CHAR_UPPER_A && code <= CHAR_UPPER_F) || (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F);
     if (isHexDigit) digits++;
     else if (!isTextSpace(code)) return false;
   }
