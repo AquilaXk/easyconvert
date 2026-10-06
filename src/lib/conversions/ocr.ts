@@ -187,7 +187,7 @@ export async function performOcr(
       const meta = await sharp(ocrInput).metadata().catch(() => ({ width: 800, height: 600 }));
       const imgWidth = meta.width || 800;
       const imgHeight = meta.height || 600;
-      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight);
+      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight, tesseractLang);
 
       const words = fullText.split(/\s+/).filter(Boolean);
 
@@ -230,6 +230,7 @@ export async function performOcr(
         lineBlocks,
         imageWidth: imgWidth,
         imageHeight: imgHeight,
+        language: tesseractLang,
       };
     }
   } catch (err: any) {

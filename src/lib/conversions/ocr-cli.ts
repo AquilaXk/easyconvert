@@ -53,6 +53,8 @@ const TSV_HEADER = TSV_COLUMNS.join('\t');
 type TsvColumn = (typeof TSV_COLUMNS)[number];
 const COLUMN = Object.fromEntries(TSV_COLUMNS.map((name, index) => [name, index])) as Record<TsvColumn, number>;
 const TSV_LEVEL_PAGE = 1;
+const TSV_LEVEL_BLOCK = 2;
+const TSV_LEVEL_PARAGRAPH = 3;
 const TSV_LEVEL_LINE = 4;
 const TSV_LEVEL_WORD = 5;
 const CONFIDENCE_PERCENT_SCALE = 100;
@@ -104,8 +106,16 @@ function unionBox(words: TsvWord[]): TsvBox {
   return union;
 }
 
-/** Rebuilds an OCR result (text, line and word boxes, mean confidence) from `tessedit_create_tsv` output. */
-export function parseTesseractTsv(tsv: string): OcrResult {
+/** Key of a paragraph in `paragraphBoxes`; paragraph numbers restart in every block. */
+function paragraphKey(block: number, par: number): string {
+  return `${block}/${par}`;
+}
+
+/**
+ * Rebuilds an OCR result (text, block, paragraph, line and word boxes, mean confidence) from
+ * `tessedit_create_tsv` output. `language` is the recognition language, recorded on the result.
+ */
+export function parseTesseractTsv(tsv: string, language?: string): OcrResult {
   if (countDataRows(tsv) > OCR_CLI_MAX_TSV_ROWS) throw malformed(`more than ${OCR_CLI_MAX_TSV_ROWS} rows.`);
   const rows = tsv.split('\n');
   if (rows[0]?.replace(/\r$/, '') !== TSV_HEADER) throw malformed('the header row is missing.');
@@ -114,6 +124,8 @@ export function parseTesseractTsv(tsv: string): OcrResult {
   let pageHeight = 0;
   // block -> paragraph -> line, in the order Tesseract emitted them.
   const blocks = new Map<number, Map<number, Map<number, TsvLine>>>();
+  const blockBoxes = new Map<number, TsvBox>();
+  const paragraphBoxes = new Map<string, TsvBox>();
   const lineAt = (block: number, par: number, line: number): TsvLine => {
     const paragraphs = blocks.get(block) ?? new Map<number, Map<number, TsvLine>>();
     blocks.set(block, paragraphs);
@@ -142,6 +154,11 @@ export function parseTesseractTsv(tsv: string): OcrResult {
     if (level === TSV_LEVEL_PAGE) {
       pageWidth = width;
       pageHeight = height;
+    } else if (level === TSV_LEVEL_BLOCK) {
+      blockBoxes.set(integerField(fields[COLUMN.block_num], 'block_num', index), box);
+    } else if (level === TSV_LEVEL_PARAGRAPH) {
+      const block = integerField(fields[COLUMN.block_num], 'block_num', index);
+      paragraphBoxes.set(paragraphKey(block, integerField(fields[COLUMN.par_num], 'par_num', index)), box);
     } else if (level === TSV_LEVEL_LINE) {
       lineAt(
         integerField(fields[COLUMN.block_num], 'block_num', index),
@@ -168,10 +185,10 @@ export function parseTesseractTsv(tsv: string): OcrResult {
   let confidenceSum = 0;
   let confidenceCount = 0;
   let wordCount = 0;
-  for (const paragraphs of blocks.values()) {
+  for (const [blockNumber, paragraphs] of blocks) {
     const paragraphTexts: string[] = [];
     const parsedParagraphs: unknown[] = [];
-    for (const lines of paragraphs.values()) {
+    for (const [parNumber, lines] of paragraphs) {
       const lineTexts: string[] = [];
       const parsedLines: unknown[] = [];
       for (const line of lines.values()) {
@@ -189,17 +206,17 @@ export function parseTesseractTsv(tsv: string): OcrResult {
       }
       if (lineTexts.length > 0) {
         paragraphTexts.push(lineTexts.join('\n'));
-        parsedParagraphs.push({ lines: parsedLines });
+        parsedParagraphs.push({ bbox: paragraphBoxes.get(paragraphKey(blockNumber, parNumber)), lines: parsedLines });
       }
     }
     if (paragraphTexts.length > 0) {
       textBlocks.push(paragraphTexts.join('\n\n'));
-      parsedBlocks.push({ paragraphs: parsedParagraphs });
+      parsedBlocks.push({ bbox: blockBoxes.get(blockNumber), paragraphs: parsedParagraphs });
     }
   }
 
   const text = textBlocks.join('\n\n');
-  const { lines, lineBlocks } = parseTesseractBlocks(parsedBlocks, pageWidth, pageHeight);
+  const { lines, lineBlocks } = parseTesseractBlocks(parsedBlocks, pageWidth, pageHeight, language);
   return {
     text,
     confidence: confidenceCount > 0 ? confidenceSum / confidenceCount / CONFIDENCE_PERCENT_SCALE : null,
@@ -208,6 +225,7 @@ export function parseTesseractTsv(tsv: string): OcrResult {
     lineBlocks,
     imageWidth: pageWidth,
     imageHeight: pageHeight,
+    language,
   };
 }
 
@@ -339,5 +357,5 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
     logCliFailure('Tesseract CLI could not run', err instanceof Error ? err.message : String(err));
     throw new OcrEngineUnavailableError('Tesseract CLI could not be started.');
   }
-  return parseTesseractTsv(stdout.toString('utf-8'));
+  return parseTesseractTsv(stdout.toString('utf-8'), request.tesseractLang);
 }
