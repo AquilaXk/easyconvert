@@ -70,6 +70,11 @@ jobs:
           # Pre-stage Tesseract traineddata assets for offline inference
           find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
 
+      # Columnar-format oracles: the tests run python3 -I, which ignores user site-packages,
+      # so the pinned readers are installed for the system interpreter.
+      - name: Install Python format oracles
+        run: sudo python3 -m pip install --no-cache-dir --break-system-packages pyarrow==25.0.1 duckdb==1.5.6
+
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
 
