@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Sharp, type SharpOptions } from 'sharp';
 import { ConversionFailedError } from '../types';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
@@ -151,7 +151,7 @@ export function assertPixelBudget(width: number, height: number, budget: PixelBu
  * Opens an image for decoding with sharp's own pixel check set from the same limit, so the native decoder
  * enforces it even where the header could not be read in advance.
  */
-export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}): sharp.Sharp {
+export function openLimitedSharp(input: Buffer, options: SharpOptions = {}): Sharp {
   return sharp(input, { ...options, limitInputPixels: maxInputPixels() });
 }
 
@@ -161,7 +161,7 @@ export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}
  * `ConversionFailedError`: a lenient decoder (pdfkit, pdf-lib) may accept bytes that libvips rejects, so an
  * unreadable header proves nothing about the size.
  */
-export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: sharp.SharpOptions = {}): Promise<void> {
+export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: SharpOptions = {}): Promise<void> {
   let width: number | undefined;
   let height: number | undefined;
   try {
@@ -196,7 +196,7 @@ export async function assertEmbeddableImageWithinLimit(input: Buffer): Promise<v
 }
 
 /** Checks the declared dimensions of an encoded image, then opens it for decoding under the same limit. */
-export async function openInputImage(input: Buffer, options: sharp.SharpOptions = {}): Promise<sharp.Sharp> {
+export async function openInputImage(input: Buffer, options: SharpOptions = {}): Promise<Sharp> {
   await assertEncodedImageWithinLimit(input, undefined, options);
   return openLimitedSharp(input, options);
 }

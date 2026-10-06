@@ -111,7 +111,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
         }),
       });
 
-      const emptyRes = await updateKeyRoute(emptyReq, { params: { id: adminKeyId } });
+      const emptyRes = await updateKeyRoute(emptyReq, { params: Promise.resolve({ id: adminKeyId }) });
       expect(emptyRes.status).toBe(400);
       const emptyJson = await emptyRes.json();
       expect(emptyJson.error).toContain('scopes must be a non-empty array');
@@ -127,7 +127,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
         }),
       });
 
-      const invalidRes = await updateKeyRoute(invalidReq, { params: { id: adminKeyId } });
+      const invalidRes = await updateKeyRoute(invalidReq, { params: Promise.resolve({ id: adminKeyId }) });
       expect(invalidRes.status).toBe(400);
       const invalidJson = await invalidRes.json();
       expect(invalidJson.error).toContain("Invalid scope 'malicious:elevate'");
@@ -147,7 +147,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
         }),
       });
 
-      const res = await updateKeyRoute(patchReq, { params: { id: adminKeyId } });
+      const res = await updateKeyRoute(patchReq, { params: Promise.resolve({ id: adminKeyId }) });
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);
@@ -232,7 +232,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
         }),
       });
 
-      const rotateRes = await rotateKeyRoute(rotateReq, { params: { id: key.id } });
+      const rotateRes = await rotateKeyRoute(rotateReq, { params: Promise.resolve({ id: key.id }) });
       expect(rotateRes.status).toBe(200);
       const rotateJson = await rotateRes.json();
       expect(rotateJson.success).toBe(true);
@@ -279,7 +279,7 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
         }),
       });
 
-      const res = await rotateKeyRoute(req, { params: { id: adminKeyId } });
+      const res = await rotateKeyRoute(req, { params: Promise.resolve({ id: adminKeyId }) });
       expect(res.status).toBe(400);
       const json = await res.json();
       expect(json.error).toContain('gracePeriodSeconds must be a finite number between 0 and 604800');
