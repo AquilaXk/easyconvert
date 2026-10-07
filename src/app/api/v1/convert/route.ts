@@ -14,6 +14,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
@@ -255,6 +256,17 @@ export async function POST(req: NextRequest) {
         if (reservation?.reservationId) {
           await redisKeyStore.rollbackQuota(reservation.reservationId);
         }
+        const storageProblem = describeStorageError(err);
+        if (storageProblem) {
+          return reply(createProblemDetailsResponse(
+            storageProblem.status,
+            storageProblem.detail,
+            instanceUri,
+            storageProblem.title,
+            undefined,
+            { ...rateLimitHeaders, ...storageProblem.headers }
+          ));
+        }
         return reply(createProblemDetailsResponse(
           400,
           err.message || 'File upload or validation failed.',
@@ -341,21 +353,24 @@ export async function POST(req: NextRequest) {
       file.name
     );
 
-    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
-    if (reservation?.reservationId) {
-      await redisKeyStore.commitQuota(reservation.reservationId);
-    }
-
     const durationMs = Date.now() - startTime;
     const outputBuffer = conversionResult.buffer;
 
-    // Record in user's file conversion history
+    // Store the result before the quota unit is committed: a storage outage fails the request and
+    // rolls the reservation back, so the user is not charged for a result they cannot download.
     const baseName = file.name.replace(/\.[^/.]+$/, '');
     // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
     const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
     const outFileName = `${baseName}.${outExtension}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
+    await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
+
+    // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
+    if (reservation?.reservationId) {
+      await redisKeyStore.commitQuota(reservation.reservationId);
+    }
+
+    // Record in user's file conversion history
     const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
 
     const userFile = await redisKeyStore.recordUserFile({
@@ -424,6 +439,8 @@ export async function POST(req: NextRequest) {
     if (err instanceof PdfPostprocessError) {
       return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
     }
+    const storageProblem = storageErrorResponse(err, instanceUri, rateLimitHeaders);
+    if (storageProblem) return storageProblem;
     if (err instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(
         err.status,

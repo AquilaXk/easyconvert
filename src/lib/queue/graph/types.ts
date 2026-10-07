@@ -9,10 +9,15 @@ export interface ImportUploadNode {
   storageKey: string;
 }
 
+/**
+ * `url` and `headers` are bearer secrets. Submitted as plaintext, they are replaced by `sealed`
+ * before the node is stored or queued, and opened only by the worker that runs the node.
+ */
 export interface ImportUrlNode {
   op: 'import.url';
-  url: string;
+  url?: string;
   headers?: Record<string, string>;
+  sealed?: string;
 }
 
 export interface ConvertNode {
@@ -57,9 +62,11 @@ export interface ArchiveExtractNode {
 export interface ExportUrlNode {
   op: 'export.url';
   input: NodeId | NodeId[];
-  url: string;
+  /** Plaintext only on submission; see ImportUrlNode. */
+  url?: string;
   method?: 'PUT' | 'POST';
   headers?: Record<string, string>;
+  sealed?: string;
 }
 
 export interface WatermarkNode {

@@ -3,6 +3,8 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { inspectArchive } from '@/lib/conversions';
 import { storageProvider } from '@/lib/storage';
 import {
@@ -74,7 +76,13 @@ export async function POST(req: NextRequest) {
       filename = typeof body.filename === 'string' ? body.filename : undefined;
 
       if (body.storageKey) {
-        const stored = storageProvider.getObject(body.storageKey);
+        // Only the owner of a stored object may read it; every other caller is answered as if it did not exist.
+        const ownership =
+          typeof body.storageKey === 'string' ? await resolveObjectOwnership(body.storageKey) : ({ resolved: false } as const);
+        if (!ownership.resolved || ownership.ownerUserId !== auth.user.id) {
+          return createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found');
+        }
+        const stored = await storageProvider.getObject(body.storageKey);
         if (!stored) {
           return createProblemDetailsResponse(
             404,
@@ -124,6 +132,8 @@ export async function POST(req: NextRequest) {
       ...inspection,
     });
   } catch (err: any) {
+    const storageProblem = storageErrorResponse(err, instanceUri);
+    if (storageProblem) return storageProblem;
     if (err instanceof ArchiveEncryptedHeaderError) {
       return createProblemDetailsResponse(
         422,

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
   normalizeIp,
@@ -58,6 +58,10 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
   });
 
   describe('1. IP Normalization & Reverse Proxy Security (ip-utils.ts)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
     it('normalizes IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) to clean IPv4', () => {
       expect(normalizeIp('::ffff:192.168.1.50')).toBe('192.168.1.50');
       expect(normalizeIp('[::ffff:10.0.0.1]')).toBe('10.0.0.1');
@@ -79,25 +83,29 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
       expect(isIpAllowed(clientIp, ['10.0.0.0/8'])).toBe(false);
     });
 
-    it('prioritizes trusted CDN headers (cf-connecting-ip) over spoofed x-forwarded-for', () => {
+    it('prefers cf-connecting-ip over x-forwarded-for only for a verified CDN edge peer', () => {
+      vi.stubEnv('TRUSTED_CDN', 'cloudflare');
       const spoofedReq = new Request('http://localhost/api/v1/jobs', {
         headers: {
           'x-forwarded-for': '203.0.113.195, 198.51.100.1',
           'cf-connecting-ip': '::ffff:198.51.100.5',
         },
       });
-      // Should extract cf-connecting-ip and normalize from ::ffff:
-      expect(extractClientIp(spoofedReq)).toBe('198.51.100.5');
+      // Peer is a Cloudflare edge: header honoured and normalized from ::ffff:
+      expect(extractClientIp(spoofedReq, undefined, '173.245.48.5')).toBe('198.51.100.5');
+      // Peer is not a Cloudflare edge: the forged header is ignored and the peer itself is the client.
+      expect(extractClientIp(spoofedReq, undefined, '203.0.113.7')).toBe('203.0.113.7');
     });
 
-    it('extracts upstream reverse proxy header (x-real-ip) over x-forwarded-for chain', () => {
+    it('ignores x-real-ip and resolves the x-forwarded-for chain from the right behind a declared proxy', () => {
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const proxyReq = new Request('http://localhost/api/v1/jobs', {
         headers: {
           'x-forwarded-for': '1.2.3.4, 5.6.7.8',
           'x-real-ip': '10.20.30.40:9000',
         },
       });
-      expect(extractClientIp(proxyReq)).toBe('10.20.30.40');
+      expect(extractClientIp(proxyReq)).toBe('5.6.7.8');
     });
   });
 

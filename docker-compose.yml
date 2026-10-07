@@ -1,5 +1,14 @@
 version: '3.8'
 
+# Local development: `docker compose up` starts Redis and a worker that keeps objects on the shared
+# volume (STORAGE_DRIVER=local, NODE_ENV=development). It asks for no cloud setting and no secret.
+#
+# Production: add the overlay, which switches the workers to NODE_ENV=production and refuses to
+# start without a storage driver, a signing secret and a job sealing key (each secret >= 32 bytes,
+# `openssl rand -hex 32`):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# See docker-compose.prod.yml for the OCI_* / S3_* variables each driver needs.
+
 services:
   # 1. Distributed Queue Broker
   redis:
@@ -47,18 +56,18 @@ services:
     depends_on:
       - redis
     environment:
-      - NODE_ENV=production
+      # Local mode: no cloud account and no secret are needed. Production values live in
+      # docker-compose.prod.yml (see the note at the top of this file).
+      - NODE_ENV=development
+      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
+      # unset), required by docker-compose.prod.yml.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}
-      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
-      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
-      - OCI_ENDPOINT=${OCI_ENDPOINT:-https://local-dev-tenancy.compat.objectstorage.ap-seoul-1.oraclecloud.com}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local-dev-access-key}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-local-dev-access-key}
+      - STORAGE_DRIVER=local
+      # Optional: only needed to sign upload and download URLs. Unset, signing is refused, never faked.
+      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-}
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
@@ -105,18 +114,18 @@ services:
     depends_on:
       - redis
     environment:
-      - NODE_ENV=production
+      # Local mode: no cloud account and no secret are needed. Production values live in
+      # docker-compose.prod.yml (see the note at the top of this file).
+      - NODE_ENV=development
+      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
+      # unset), required by docker-compose.prod.yml.
+      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
+      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - OCI_NAMESPACE=${OCI_NAMESPACE:-local-dev-tenancy}
-      - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-easyconvert-transcode-bucket}
-      - OCI_REGION=${OCI_REGION:-ap-seoul-1}
-      - OCI_ENDPOINT=${OCI_ENDPOINT:-https://local-dev-tenancy.compat.objectstorage.ap-seoul-1.oraclecloud.com}
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - S3_SIGNING_SECRET=${S3_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - OCI_SIGNING_SECRET=${OCI_SIGNING_SECRET:-easyconvert-local-dev-signing-secret}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local-dev-access-key}
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-local-dev-access-key}
+      - STORAGE_DRIVER=local
+      # Optional: only needed to sign upload and download URLs. Unset, signing is refused, never faked.
+      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-}
       - WORKER_CONCURRENCY=3
       - EASYCONVERT_STORAGE_DIR=/shared/storage
       - STRICT_SANDBOX=true
