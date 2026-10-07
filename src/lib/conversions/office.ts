@@ -16,6 +16,7 @@ import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath }
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
 import { readPptSlides } from './office/ppt-reader';
+import { renderPdfTables } from './pdf-table-layout';
 
 export { buildOpenXpsPackage };
 
@@ -3157,6 +3158,9 @@ export function sanitizeWinAnsi(text: string): string {
   return out;
 }
 
+/** Documents whose text is drawn with an embedded Unicode font (an installed one was found). */
+const unicodeFontDocuments = new WeakSet<PDFKit.PDFDocument>();
+
 /** One Unicode text writer per pdfkit document, so each embedded font is registered once. */
 const unicodeTextWriters = new WeakMap<PDFKit.PDFDocument, PdfUnicodeTextWriter>();
 
@@ -3186,6 +3190,7 @@ export function configurePdfKitFontFallback(
 ): { hasUnicodeFont: boolean; fontName?: string } {
   const fontName = unicodeTextWriterFor(doc, customPath).usePrimaryFace();
   if (!fontName) return { hasUnicodeFont: false };
+  unicodeFontDocuments.add(doc);
   return { hasUnicodeFont: true, fontName };
 }
 
@@ -3217,6 +3222,18 @@ export function renderSafePdfText(
   return doc;
 }
 
+
+/**
+ * Height the text takes at the given options, measured with the fonts that renderSafePdfText draws it
+ * with: each run in its own embedded font, never the font that happens to be selected in the document.
+ */
+export function measurePdfTextHeight(doc: PDFKit.PDFDocument, text: string, options: PDFKit.Mixins.TextOptions): number {
+  if (!text) return 0;
+  if (!unicodeFontDocuments.has(doc) && !isNonWinAnsi(text)) {
+    return doc.heightOfString(text, options);
+  }
+  return unicodeTextWriterFor(doc).heightOf(text, options);
+}
 
 export function renderPdfChart(
   doc: PDFKit.PDFDocument,
@@ -3748,15 +3765,6 @@ async function generatePdfFromDocx(
 
     const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
 
-    // Accent header line in signature lavender
-    doc.rect(50, 40, doc.page.width - 100, 3).fill('#5C6BC0');
-    doc.moveDown(1.5);
-
-    // Title
-    doc.fillColor('#1F2340').fontSize(20);
-    renderSafePdfText(doc, title, hasUnicodeFont, { underline: false });
-    doc.moveDown(1);
-
     const renderTable = (tbl: DocxTable) => {
       if (tbl.rows.length === 0) return;
       doc.moveDown(0.8);
@@ -3814,7 +3822,7 @@ async function generatePdfFromDocx(
             const fontSize = cell.isHeader || rIdx === 0 ? 9 : 8.5;
             doc.fontSize(fontSize);
             const cellText = cell.text || '';
-            const textHeight = cellText.trim().length > 0 ? doc.heightOfString(cellText, { width: textWidth }) : 0;
+            const textHeight = cellText.trim().length > 0 ? measurePdfTextHeight(doc, cellText, { width: textWidth }) : 0;
             let requiredHeight = Math.ceil(textHeight + 10);
 
             const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
@@ -3838,7 +3846,7 @@ async function generatePdfFromDocx(
                   if (Array.isArray(rowItem)) {
                     for (const subCell of rowItem) {
                       const subText = typeof subCell === 'string' ? subCell : (subCell?.text || '');
-                      const subTh = doc.heightOfString(subText || ' ', { width: Math.max(5, nColW - 6) });
+                      const subTh = measurePdfTextHeight(doc, subText || ' ', { width: Math.max(5, nColW - 6) });
                       if (subTh + 6 > maxSubH) maxSubH = Math.ceil(subTh + 6);
                     }
                   }
@@ -3847,7 +3855,7 @@ async function generatePdfFromDocx(
                 requiredHeight += 4;
               }
             } else if (cell.fullCellText && cell.fullCellText !== cell.text) {
-              const fullH = doc.heightOfString(cell.fullCellText, { width: textWidth });
+              const fullH = measurePdfTextHeight(doc, cell.fullCellText, { width: textWidth });
               requiredHeight = Math.max(requiredHeight, Math.ceil(fullH + 10));
             }
             if (requiredHeight > maxCellHeight) {
@@ -3930,7 +3938,7 @@ async function generatePdfFromDocx(
                 x + 5,
                 textOffsetY
               );
-              const tH = doc.heightOfString(cell.text, { width: colWidth - 10 });
+              const tH = measurePdfTextHeight(doc, cell.text, { width: colWidth - 10 });
               textOffsetY += Math.ceil(tH + 4);
             }
 
@@ -3959,7 +3967,7 @@ async function generatePdfFromDocx(
                   doc.fontSize(7.5);
                   nRow.forEach((nCell) => {
                     const nText = nCell.text || '';
-                    const nTh = doc.heightOfString(nText || ' ', { width: Math.max(5, nColW - 6) });
+                    const nTh = measurePdfTextHeight(doc, nText || ' ', { width: Math.max(5, nColW - 6) });
                     if (nTh + 6 > nRowH) nRowH = Math.ceil(nTh + 6);
                   });
 
@@ -4008,7 +4016,7 @@ async function generatePdfFromDocx(
           const fontSize = rIdx === 0 ? 9 : 8.5;
           doc.fontSize(fontSize);
           row.forEach((cellText) => {
-            const textHeight = doc.heightOfString(cellText || ' ', { width: Math.max(10, colWidth - 10) });
+            const textHeight = measurePdfTextHeight(doc, cellText || ' ', { width: Math.max(10, colWidth - 10) });
             const reqH = Math.ceil(textHeight + 10);
             if (reqH > maxCellHeight) maxCellHeight = reqH;
           });
@@ -5527,6 +5535,13 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   return allSheets;
 }
 
+/** Columns above which a worksheet is drawn on a landscape page. */
+const WORKSHEET_LANDSCAPE_COLUMNS = 6;
+
+/**
+ * Draws worksheets as tables: the workbook title goes into the PDF metadata, each sheet name becomes an
+ * outline entry, and every row and column is drawn (see renderPdfTables).
+ */
 async function generatePdfFromWorksheets(
   sheets: OfficeWorksheet[],
   options: ConversionOptions,
@@ -5542,147 +5557,29 @@ async function generatePdfFromWorksheets(
     }
   }
 
-  return new Promise((resolve, reject) => {
-    let maxCols = 1;
-    sheets.forEach((s) => {
-      s.rows.forEach((r) => {
-        if (r.length > maxCols) maxCols = r.length;
-      });
-    });
-
-    const isLandscape = options.orientation === 'landscape' || maxCols > 6;
-    const doc = new PDFDocument({
-      size: 'A4',
-      layout: isLandscape ? 'landscape' : 'portrait',
-      margin: 36,
-      info: { Title: title, Creator: 'EasyConvert Spreadsheet Engine' },
-    });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    const pageWidth = doc.page.width;
-    const pageHeight = doc.page.height;
-    const margin = 36;
-    const availableWidth = pageWidth - margin * 2;
-
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-
-    sheets.forEach((sheet, sheetIdx) => {
-      if (sheetIdx > 0) doc.addPage();
-
-      // Top lavender brand accent bar
-      doc.rect(margin, 28, availableWidth, 3).fill('#5C6BC0');
-      doc.y = 40;
-
-      // Title & Sheet Name
-      doc.fillColor('#1F2340').fontSize(16);
-      renderSafePdfText(doc, title, hasUnicodeFont, {}, margin, doc.y);
-      if (sheets.length > 1) {
-        doc.fillColor('#5C6BC0').fontSize(11);
-        renderSafePdfText(doc, `Sheet: ${sheet.name}`, hasUnicodeFont, {}, margin, doc.y + 4);
-      }
-      doc.y += 12;
-
-      if (sheet.rows.length === 0) return;
-
-      const colCount = Math.max(1, ...sheet.rows.map((r) => r.length));
-
-      // Calculate dynamic column widths
-      const colWidths: number[] = new Array(colCount).fill(0);
-      let totalAssigned = 0;
-
-      for (let c = 0; c < colCount; c++) {
-        if (sheet.columnWidths && sheet.columnWidths[c] && sheet.columnWidths[c] > 20) {
-          colWidths[c] = sheet.columnWidths[c];
-        } else {
-          let maxLen = 4;
-          sheet.rows.forEach((r) => {
-            const val = r[c] || '';
-            if (val.length > maxLen) maxLen = Math.min(30, val.length);
-          });
-          colWidths[c] = maxLen * 7.5;
-        }
-        totalAssigned += colWidths[c];
-      }
-
-      const scale = availableWidth / Math.max(1, totalAssigned);
-      for (let c = 0; c < colCount; c++) {
-        colWidths[c] = Math.round(colWidths[c] * scale);
-      }
-
-      const rowHeight = 20;
-
-      const renderRow = (rIdx: number, isHeader = false) => {
-        const row = sheet.rows[rIdx] || [];
-        const structuredRow = sheet.structuredRows?.[rIdx] || [];
-        const curY = doc.y;
-
-        let curX = margin;
-        for (let cIdx = 0; cIdx < colCount; cIdx++) {
-          const colW = colWidths[cIdx];
-          const cell = structuredRow[cIdx];
-          const text = cell?.value ?? (row[cIdx] || '');
-
-          const isHdr = isHeader || rIdx === 0;
-          let fill = cell?.fillColor;
-          if (!fill) {
-            if (isHdr) fill = '#F0F2FE';
-            else if (rIdx % 2 === 1) fill = '#FAFAFE';
-            else fill = '#FFFFFF';
-          }
-          doc.rect(curX, curY, colW, rowHeight).fill(fill);
-
-          const borderCol = cell?.borderColor || (isHdr ? '#CCD2FC' : '#E1E4EE');
-          doc.rect(curX, curY, colW, rowHeight).strokeColor(borderCol).lineWidth(0.5).stroke();
-
-          if (text) {
-            const bold = isHdr || !!cell?.bold;
-            const italic = !!cell?.italic;
-            if (!hasUnicodeFont) {
-              const fontName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
-              doc.font(fontName);
-            }
-            const fontCol = cell?.fontColor || (isHdr ? '#1F2340' : '#4D536B');
-            const align = cell?.align || 'left';
-
-            doc.fontSize(isHdr ? 9 : 8.5).fillColor(fontCol);
-            renderSafePdfText(
-              doc,
-              text,
-              hasUnicodeFont,
-              {
-                width: Math.max(10, colW - 8),
-                height: rowHeight - 8,
-                align,
-                lineBreak: false,
-                ellipsis: true,
-              },
-              curX + 4,
-              curY + 5
-            );
-          }
-
-          curX += colW;
-        }
-
-        doc.y = curY + rowHeight;
-      };
-
-      sheet.rows.forEach((_, rIdx) => {
-        if (doc.y + rowHeight > pageHeight - margin) {
-          doc.addPage();
-          doc.y = margin;
-          renderRow(0, true);
-        }
-        renderRow(rIdx, rIdx === 0);
-      });
-    });
-
-    doc.end();
-  });
+  const widestRow = sheets.reduce((widest, sheet) => Math.max(widest, ...sheet.rows.map((row) => row.length)), 1);
+  const isLandscape = options.orientation === 'landscape' || widestRow > WORKSHEET_LANDSCAPE_COLUMNS;
+  return renderPdfTables(
+    sheets.map((sheet) => ({
+      name: sheet.name,
+      headerRows: 1,
+      widthHints: sheet.columnWidths,
+      rows: sheet.rows.map((row, r) => {
+        const structured = sheet.structuredRows?.[r] ?? [];
+        return Array.from({ length: Math.max(row.length, structured.length) }, (_, c) => {
+          const cell = structured[c];
+          return {
+            text: cell?.value ?? row[c] ?? '',
+            fill: cell?.fillColor,
+            fontColor: cell?.fontColor,
+            align: cell?.align,
+            borderColor: cell?.borderColor,
+          };
+        });
+      }),
+    })),
+    { title, orientation: isLandscape ? 'landscape' : 'portrait', customFontPath: (options as { fontPath?: string }).fontPath }
+  );
 }
 
 /**
@@ -7007,6 +6904,9 @@ ${svgElements}        </svg>
   )}</h1>${slidesHtml}</body></html>`;
 }
 
+/** Margin of the pages that hold slide text, in points. */
+const SLIDE_TEXT_MARGIN = 40;
+
 async function generatePdfFromSlides(
   slides: Array<{
     number: number;
@@ -7031,7 +6931,7 @@ async function generatePdfFromSlides(
     const width = firstSlide?.width || 960;
     const height = firstSlide?.height || 540;
 
-    const doc = new PDFDocument({ size: [width, height], margin: 0 });
+    const doc = new PDFDocument({ size: [width, height], margin: SLIDE_TEXT_MARGIN, info: { Title: title } });
     const chunks: Buffer[] = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -7042,7 +6942,7 @@ async function generatePdfFromSlides(
     slides.forEach((slide, idx) => {
       const sWidth = slide.width || width;
       const sHeight = slide.height || height;
-      if (idx > 0) doc.addPage({ size: [sWidth, sHeight], margin: 0 });
+      if (idx > 0) doc.addPage({ size: [sWidth, sHeight], margin: SLIDE_TEXT_MARGIN });
 
       // 1. Draw slide background
       if (slide.backgroundColor) {
@@ -7113,12 +7013,7 @@ async function generatePdfFromSlides(
                       doc,
                       cell.text,
                       hasUnicodeFont,
-                      {
-                        width: Math.max(10, colW - 8),
-                        height: rowHeight - 8,
-                        lineBreak: false,
-                        ellipsis: true,
-                      },
+                      { width: Math.max(10, colW - 8) },
                       curX + 4,
                       curY + 4
                     );
@@ -7157,15 +7052,12 @@ async function generatePdfFromSlides(
           }
         });
       } else {
-        // Fallback layout for text-only presentations
-        doc.rect(40, 40, sWidth - 80, 4).fill('#5C6BC0');
-        doc.fillColor('#1F2340').fontSize(20);
-        renderSafePdfText(doc, `${title} — Slide ${slide.number}`, hasUnicodeFont, undefined, 40, 55);
-        doc.moveDown(1.5);
-
+        // Text-only slide: the text itself, top to bottom, continuing on further pages when it is long.
+        doc.x = SLIDE_TEXT_MARGIN;
+        doc.y = SLIDE_TEXT_MARGIN;
         slide.texts.forEach((line) => {
-          doc.fillColor('#4D536B').fontSize(14).lineGap(6);
-          renderSafePdfText(doc, `• ${line}`, hasUnicodeFont);
+          doc.fillColor('#1F2340').fontSize(14).lineGap(6);
+          renderSafePdfText(doc, line, hasUnicodeFont, { width: sWidth - 2 * SLIDE_TEXT_MARGIN }, SLIDE_TEXT_MARGIN, doc.y);
           doc.moveDown(0.5);
         });
       }
@@ -7230,7 +7122,10 @@ async function convertEpubSource(
   }
 
   if (tgt === 'pdf') {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    if (extractedText.trim().length === 0) {
+      throw new ConversionFailedError('The EPUB holds no text to draw in a PDF.');
+    }
+    const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: baseName } });
     const chunks: Buffer[] = [];
     const p = new Promise<Buffer>((resolve, reject) => {
       doc.on('data', (c) => chunks.push(c));
@@ -7238,11 +7133,8 @@ async function convertEpubSource(
       doc.on('error', (err) => reject(err));
     });
     const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-    doc.fillColor('#1F2340').fontSize(18);
-    renderSafePdfText(doc, baseName, hasUnicodeFont);
-    doc.moveDown(1);
     doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, extractedText || 'Epub content', hasUnicodeFont);
+    renderSafePdfText(doc, extractedText, hasUnicodeFont);
     doc.end();
 
     const buffer = await p;
@@ -7372,7 +7264,10 @@ async function convertFb2Source(
   }
 
   if (tgt === 'pdf') {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    if (fullText.trim().length === 0) {
+      throw new ConversionFailedError('The FB2 book holds no text to draw in a PDF.');
+    }
+    const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: bookTitle } });
     const chunks: Buffer[] = [];
     const p = new Promise<Buffer>((resolve, reject) => {
       doc.on('data', (c) => chunks.push(c));
@@ -7389,7 +7284,7 @@ async function convertFb2Source(
     }
     doc.moveDown(1);
     doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, fullText || 'FB2 text content', hasUnicodeFont);
+    renderSafePdfText(doc, fullText, hasUnicodeFont);
     doc.end();
 
     const buffer = await p;

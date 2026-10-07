@@ -640,6 +640,29 @@ export class PdfUnicodeTextWriter {
   }
 
   /**
+   * Width of the widest line (text is not wrapped, only broken at newlines) and the tallest line
+   * height among the fonts that draw it, at the document's current font size. Each run is measured
+   * in the font that will draw it.
+   */
+  measure(content: string | readonly PdfTextSegment[]): { width: number; lineHeight: number } {
+    let widest = 0;
+    let lineWidth = 0;
+    let lineHeight = 0;
+    for (const run of this.runs(content)) {
+      this.useFace(run.face);
+      lineHeight = Math.max(lineHeight, this.doc.currentLineHeight(true));
+      run.text.split('\n').forEach((line, index) => {
+        if (index > 0) {
+          widest = Math.max(widest, lineWidth);
+          lineWidth = 0;
+        }
+        lineWidth += this.doc.widthOfString(line);
+      });
+    }
+    return { width: Math.max(widest, lineWidth), lineHeight };
+  }
+
+  /**
    * Height the text takes at the given width. Exact for single-font text; for mixed fonts each
    * run is measured on its own lines, which never underestimates.
    */
