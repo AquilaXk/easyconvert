@@ -660,6 +660,31 @@ export class UnknownArtifactFormatError extends ConversionFailedError {
   }
 }
 
+/**
+ * Redis is configured for the job queue but did not answer, so a job cannot be stored or read. Routes
+ * answer it with 503 and `Retry-After`; the in-memory queue is never a stand-in once Redis is configured.
+ * It is an `EngineUnavailableError`, so a worker that hits it retries the job instead of failing it.
+ */
+export class QueueUnavailableError extends EngineUnavailableError {
+  constructor(queueName: string, reason?: string) {
+    super(`queue:${queueName}`, reason ?? 'Redis is configured but not reachable');
+    this.name = 'QueueUnavailableError';
+  }
+}
+
+/**
+ * A persisted graph scheduler record is missing a field or holds a value of the wrong type. The
+ * record is never repaired or defaulted: the graph fails. A retry reads the same record, so it is
+ * not retryable; the status is a server fault (500), not a verdict on the caller's input.
+ */
+export class GraphStateCorruptError extends ConversionFailedError {
+  readonly status = 500;
+  constructor(message: string) {
+    super(message);
+    this.name = 'GraphStateCorruptError';
+  }
+}
+
 /** An `export.url` node could not deliver an artifact to the destination URL. */
 export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {

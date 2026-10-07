@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import Redis, { ReplyError } from 'ioredis';
 import type { GraphNode, JobGraph, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
@@ -23,6 +23,8 @@ import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { storageProvider } from '../../storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
+import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
+import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredList } from './redis-state-parsers';
 
 export interface RedisGraphSchedulerOptions {
   redisClient: Redis;
@@ -34,20 +36,31 @@ export interface RedisGraphSchedulerOptions {
   cancelNode?: typeof cancelGraphNodeJob;
 }
 
-/** Graph hash fields that hold the submission metadata needed to enqueue nodes later. */
-const META_FIELDS = ['owner', 'reservationId', 'webhookUrl', 'webhookSecret', 'originalFilename', 'sourceStorageKey'] as const;
+/** The Redis commands this scheduler sends. */
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem']);
+const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
 
-function toArray<T>(value: unknown): T[] {
-  // cjson encodes an empty table as `{}`; treat it as an empty list.
-  return Array.isArray(value) ? (value as T[]) : [];
-}
-
-function parseJsonArray<T>(raw: unknown): T[] {
-  try {
-    return toArray<T>(JSON.parse(String(raw ?? '[]')));
-  } catch {
-    return [];
-  }
+/**
+ * Fails closed when Redis does not answer: a rejected command becomes `QueueUnavailableError` (503
+ * at the API). A reply error is Redis answering (a script refusing a duplicate graph, for example)
+ * and propagates unchanged.
+ */
+function failClosedRedis(client: Redis): Redis {
+  return new Proxy(client, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target);
+      if (typeof value !== 'function' || !SCHEDULER_REDIS_COMMANDS.has(prop)) {
+        return value;
+      }
+      return (...args: unknown[]) =>
+        Promise.resolve(value.apply(target, args)).catch((err: unknown) => {
+          if (err instanceof ReplyError) {
+            throw err;
+          }
+          throw new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
+        });
+    },
+  });
 }
 
 export class RedisGraphScheduler implements IGraphScheduler {
@@ -57,7 +70,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
   private readonly cancelNode: typeof cancelGraphNodeJob;
 
   constructor(options: RedisGraphSchedulerOptions) {
-    this.redisClient = options.redisClient;
+    this.redisClient = failClosedRedis(options.redisClient);
     this.keyPrefix = options.keyPrefix ?? DEFAULT_QUEUE_KEY_PREFIX;
     this.enqueueNode = options.enqueueNode ?? enqueueGraphNodeJob;
     this.cancelNode = options.cancelNode ?? cancelGraphNodeJob;
@@ -141,25 +154,23 @@ export class RedisGraphScheduler implements IGraphScheduler {
     if (ready.length === 0) {
       return 0;
     }
-    const [graphJson, ...metaValues] = await this.redisClient.hmget(k.graph, 'graph', ...META_FIELDS);
-    const graph = JSON.parse(graphJson || '{"nodes":{}}') as JobGraph;
-    const meta = Object.fromEntries(META_FIELDS.map((f, i) => [f, metaValues[i] || undefined])) as Record<
-      (typeof META_FIELDS)[number],
-      string | undefined
-    >;
+    // A damaged record fails the graph here; a ready node is never skipped or dropped from the outbox.
+    const record = parseGraphMeta(graphId, await this.redisClient.hgetall(k.graph));
+    const graph = record.graph;
     const graphMeta: GraphMetadata = {
-      ownerUserId: meta.owner,
-      reservationId: meta.reservationId,
-      originalFilename: meta.originalFilename,
-      sourceStorageKey: meta.sourceStorageKey,
+      ownerUserId: record.ownerUserId,
+      reservationId: record.reservationId,
+      originalFilename: record.originalFilename,
+      sourceStorageKey: record.sourceStorageKey,
     };
 
     for (const nodeId of ready) {
-      const node = graph.nodes[nodeId];
-      if (node) {
-        const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
-        await this.enqueueNode(graphId, nodeId, node, graphMeta, inputArtifacts);
+      const node = Object.hasOwn(graph.nodes, nodeId) ? graph.nodes[nodeId] : undefined;
+      if (!node) {
+        throw new GraphStateCorruptError(`Graph ${graphId} has a corrupt scheduler record: the outbox names node "${nodeId}", which the graph does not define.`);
       }
+      const inputArtifacts = await this.getNodeOutputs(graphId, getNodeInputs(node));
+      await this.enqueueNode(graphId, nodeId, node, graphMeta, inputArtifacts);
       await this.redisClient.lrem(k.outbox, 1, nodeId);
     }
     return ready.length;
@@ -193,8 +204,8 @@ export class RedisGraphScheduler implements IGraphScheduler {
     )) as [number, string, string, string];
 
     const applied = Number(raw[0]) === 1;
-    const graphStatus = (raw[1] || 'running') as GraphExecutionState['status'];
-    const readyNodeIds = parseJsonArray<NodeId>(raw[2]);
+    const graphStatus = parseGraphStatus(graphId, raw[1]);
+    const readyNodeIds = parseStoredList<NodeId>(graphId, 'the ready node list', raw[2]);
     await this.drainOutbox(graphId);
 
     const graphCompleted = applied && graphStatus === 'completed';
@@ -237,9 +248,9 @@ export class RedisGraphScheduler implements IGraphScheduler {
     )) as [number, string, string, string];
 
     const applied = Number(raw[0]) === 1;
-    const graphStatus = (raw[1] || 'failed') as GraphExecutionState['status'];
-    const cancelledNodeIds = parseJsonArray<NodeId>(raw[2]);
-    const skippedNodeIds = parseJsonArray<NodeId>(raw[3]);
+    const graphStatus = parseGraphStatus(graphId, raw[1]);
+    const cancelledNodeIds = parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2]);
+    const skippedNodeIds = parseStoredList<NodeId>(graphId, 'the skipped node list', raw[3]);
     const state = await this.getGraphState(graphId);
     const reason = `Graph failed due to node ${nodeId}`;
     for (const nid of [...cancelledNodeIds, ...skippedNodeIds]) {
@@ -280,34 +291,9 @@ export class RedisGraphScheduler implements IGraphScheduler {
       return undefined;
     }
 
-    const rawNodes = await this.redisClient.hgetall(k.nodes);
-    const nodes: Record<NodeId, GraphNodeState> = {};
-    for (const [nid, json] of Object.entries(rawNodes)) {
-      const parsed = JSON.parse(json) as GraphNodeState;
-      nodes[nid] = { ...parsed, outputs: toArray<string>(parsed.outputs) };
-    }
-
-    return {
-      graphId: rawGraph.graphId || graphId,
-      status: (rawGraph.status || 'running') as GraphExecutionState['status'],
-      policy: (rawGraph.policy || 'fail_fast') as GraphExecutionState['policy'],
-      ownerUserId: rawGraph.owner || undefined,
-      reservationId: rawGraph.reservationId || undefined,
-      webhookUrl: rawGraph.webhookUrl || undefined,
-      webhookSecret: rawGraph.webhookSecret || undefined,
-      originalFilename: rawGraph.originalFilename || undefined,
-      sourceFormat: rawGraph.sourceFormat || undefined,
-      targetFormat: rawGraph.targetFormat || undefined,
-      tasks: rawGraph.tasks ? (JSON.parse(rawGraph.tasks) as unknown[]) : undefined,
-      createdAt: Number(rawGraph.createdAt || 0),
-      finishedAt: rawGraph.finishedOn ? Number(rawGraph.finishedOn) : undefined,
-      failedReason: rawGraph.failedReason || undefined,
-      totalNodes: Number(rawGraph.totalNodes || 0),
-      completedNodes: Number(rawGraph.completedNodes || 0),
-      failedNodes: Number(rawGraph.failedNodes || 0),
-      nodes,
-      graph: JSON.parse(rawGraph.graph || '{"nodes":{}}') as JobGraph,
-    };
+    const meta = parseGraphMeta(graphId, rawGraph);
+    const nodes = parseNodeStates(graphId, await this.redisClient.hgetall(k.nodes), meta.totalNodes);
+    return { ...meta, nodes };
   }
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
@@ -326,7 +312,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
       return false;
     }
     const state = await this.getGraphState(graphId);
-    for (const nid of parseJsonArray<NodeId>(raw[2])) {
+    for (const nid of parseStoredList<NodeId>(graphId, 'the cancelled node list', raw[2])) {
       await this.cancelNode(graphId, nid, state?.graph.nodes[nid] as GraphNode | undefined, reason).catch(() => false);
     }
     await this.cleanupIntermediates(graphId);
@@ -340,7 +326,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
     const targetIds = Array.isArray(nodeIds) ? nodeIds : [nodeIds];
     if (targetIds.length === 0) return [];
     const values = await this.redisClient.hmget(this.graphKeys(graphId).outputs, ...targetIds);
-    return values.flatMap((v) => (v ? parseJsonArray<string>(v) : []));
+    return values.flatMap((v) => (v ? parseStoredList<string>(graphId, 'a node output list', v) : []));
   }
 
   async cleanupIntermediates(graphId: string): Promise<number> {

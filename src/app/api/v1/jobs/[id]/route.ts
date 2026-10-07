@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { engineTraceFields } from '@/lib/api/engine-trace';
 import type { ConversionJobResult } from '@/lib/types';
@@ -10,6 +11,7 @@ import type { ConversionJobResult } from '@/lib/types';
 export const dynamic = 'force-dynamic';
 
 const PERCENT = 100;
+const JOBS_PATH = '/api/v1/jobs';
 const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>([
   'completed',
   'failed',
@@ -36,6 +38,10 @@ interface RouteContext {
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOBS_PATH, () => readJob(req, context));
+}
+
+async function readJob(req: NextRequest, context: RouteContext) {
   const resolvedParams = await Promise.resolve(context.params);
   const jobId = resolvedParams.id;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;
@@ -138,6 +144,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOBS_PATH, () => cancelJobRequest(req, context));
+}
+
+async function cancelJobRequest(req: NextRequest, context: RouteContext) {
   const resolvedParams = await Promise.resolve(context.params);
   const jobId = resolvedParams.id;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;

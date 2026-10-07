@@ -241,6 +241,21 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       expect(args[args.indexOf('-master_pl_name') + 1]).toBe('custom_index.m3u8');
       expect(args[args.indexOf('-var_stream_map') + 1]).toBe('v:0,a:0,name:720p v:1,a:1,name:360p');
     });
+
+    it('treats h265 as an alias of hevc and still rejects prores', () => {
+      const args = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out_h265', {
+        format: 'hls',
+        videoCodec: 'h265' as any,
+      });
+      expect(args[args.indexOf('-c:v:0') + 1]).toBe('libx265');
+
+      expect(() => {
+        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+          format: 'hls',
+          videoCodec: 'prores' as any,
+        });
+      }).toThrowError(InvalidMediaOptionError);
+    });
   });
 
   describe('3. MPEG-DASH ABR Packaging Command Generation', () => {

@@ -28,8 +28,9 @@ function run(bin: string, args: string[]): string {
 }
 
 /**
- * Stand-in ffmpeg that advertises h264_nvenc and fails every run that selects it. Runs that
- * select libx264 fail too when `failSoftware`; all other runs are handed to the real ffmpeg.
+ * Stand-in ffmpeg that advertises h264_nvenc, opens a one-shot probe session, and fails every
+ * transcode that selects it. Runs that select libx264 fail too when `failSoftware`; all other
+ * runs are handed to the real ffmpeg.
  */
 function makeFfmpeg(name: string, failSoftware: boolean): { bin: string; log: string } {
   const real = getOracleToolPath('ffmpeg');
@@ -43,10 +44,14 @@ function makeFfmpeg(name: string, failSoftware: boolean): { bin: string; log: st
   const softwareResult = failSoftware ? `echo "${SW_ERROR}" >&2; exit 1` : ':';
   const script = [
     '#!/bin/sh',
+    'PROBE=0',
     'for a in "$@"; do',
     '  case "$a" in',
-    "    -encoders) printf ' V..... h264_nvenc  NVIDIA NVENC H.264\\n'; exit 0;;",
-    `    h264_nvenc) echo "h264_nvenc" >> "${log}"; echo "[h264_nvenc] ${HW_ERROR}" >&2; exit 1;;`,
+    "    -encoders) printf ' V....D h264_nvenc  NVIDIA NVENC H.264\\n'; exit 0;;",
+    // The capability probe encodes a lavfi test frame and succeeds, so the encoder is selected;
+    // only the real transcode (a file input) fails, which is what the software retry covers.
+    '    lavfi) PROBE=1;;',
+    `    h264_nvenc) if [ "$PROBE" = 1 ]; then exit 0; fi; echo "h264_nvenc" >> "${log}"; echo "[h264_nvenc] ${HW_ERROR}" >&2; exit 1;;`,
     `    libx264) echo "libx264" >> "${log}"; ${softwareResult};;`,
     '  esac',
     'done',

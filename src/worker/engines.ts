@@ -43,6 +43,7 @@ import {
   buildFfmpegArguments,
   buildHlsDashArguments,
   probeHardwareAcceleration,
+  usesHardwareVideoEncoder,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
@@ -589,14 +590,34 @@ export async function convertWithNativeFfmpeg(
       }
 
       const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
+      const runFfmpeg = (ffmpegArgs: string[]) =>
+        executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
+          cwd: tempDir,
+          timeoutMs: timeout,
+          maxBuffer,
+          networkIsolated: true,
+          signal: options.signal,
+        });
 
-      await executeSandboxedBinary(ffmpegBin, args, {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        signal: options.signal,
-      });
+      try {
+        await runFfmpeg(args);
+      } catch (err) {
+        // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
+        // driver error). Retry exactly once in software; a failed retry reports the original error,
+        // and a cancelled job is never retried.
+        const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+        if (!hardwareEncoderFailed || options.signal?.aborted) {
+          throw err;
+        }
+        const softwareArgs = buildFfmpegArguments(
+          inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
+        );
+        try {
+          await runFfmpeg(softwareArgs);
+        } catch {
+          throw err;
+        }
+      }
 
       if (!fs.existsSync(tempOutputPath)) {
         throw new Error(`FFmpeg execution completed without producing expected output file "${tempOutputPath}"`);

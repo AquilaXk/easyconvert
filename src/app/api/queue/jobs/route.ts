@@ -7,6 +7,7 @@ import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from 
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
@@ -142,6 +143,8 @@ export async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
+    const queueProblem = queueErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
     if (storageProblem) return storageProblem;
     return NextResponse.json(
@@ -164,6 +167,10 @@ function isListableJobState(value: string): value is JobState {
  * anonymous jobs are reachable only through their capability URL and are never listed.
  */
 export async function GET(req: NextRequest) {
+  return withQueueErrors(req.nextUrl?.pathname || '/api/queue/jobs', () => listOwnJobs(req));
+}
+
+async function listOwnJobs(req: NextRequest) {
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
