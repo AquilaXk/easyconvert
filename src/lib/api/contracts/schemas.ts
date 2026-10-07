@@ -1,6 +1,7 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 
+import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
 
 export const PdfWatermarkOptionsSchema = {
@@ -1036,6 +1037,20 @@ export const PdfaValidationProblemSchema = {
   },
 } as const;
 
+/** Which engine ran and, only after a fallback, why; shared by every response that reports a conversion. */
+export const EngineTraceProperties = {
+  engineUsed: {
+    type: 'string',
+    description: 'Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`.',
+  },
+  fallbackReason: {
+    type: 'string',
+    maxLength: MAX_FALLBACK_REASON_CHARS,
+    description:
+      'Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths.',
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
@@ -1105,10 +1120,12 @@ export const JobResourceSchema = {
       type: 'integer',
       description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
     },
+    ...EngineTraceProperties,
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
       properties: {
+        ...EngineTraceProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

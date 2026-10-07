@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { StorageConfigError } from './errors';
 import { SigV4SigningError, assertValidBucketName, type BucketNameRules } from './s3-sigv4';
 
@@ -130,6 +131,14 @@ function firstVar(env: Env, names: readonly string[]): { name: string; value: st
     if (value !== undefined) return { name, value };
   }
   return undefined;
+}
+
+/** Where local-driver objects live when EASYCONVERT_STORAGE_DIR is not set, relative to the working directory. */
+const DEFAULT_LOCAL_STORAGE_SUBDIR = '.easyconvert/storage';
+
+/** Directory of the local-driver object store: EASYCONVERT_STORAGE_DIR, else a folder under the working directory. */
+export function resolveLocalStorageDir(env: Env = process.env): string {
+  return readVar(env, 'EASYCONVERT_STORAGE_DIR') ?? path.resolve(process.cwd(), DEFAULT_LOCAL_STORAGE_SUBDIR);
 }
 
 /** `next build` imports route modules without a runtime environment, so nothing may be enforced then. */

@@ -35,6 +35,7 @@ import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
+import { readPersistedOutput } from './persisted-output';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
@@ -138,6 +139,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
     ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr')),
   ],
+  ffprobe: [
+    ...(process.env.FFPROBE_PATH ? [process.env.FFPROBE_PATH] : []),
+    '/usr/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
+  ],
   pdfinfo: [
     ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),
     '/usr/bin/pdfinfo',
@@ -199,6 +206,37 @@ function resolveBinary(candidates: string[], envOverride?: string): string | nul
     }
   }
   return null;
+}
+
+/** Native CLIs a health check can ask about, keyed as in BINARY_PATHS. */
+export type NativeBinaryName =
+  | 'soffice'
+  | 'ffmpeg'
+  | 'ffprobe'
+  | 'p7zip'
+  | 'pdftoppm'
+  | 'pdftotext'
+  | 'tesseract'
+  | 'dcrawEmu';
+
+/** The environment variable that overrides each native CLI's location. */
+const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
+  soffice: 'SOFFICE_PATH',
+  ffmpeg: 'FFMPEG_PATH',
+  ffprobe: 'FFPROBE_PATH',
+  p7zip: 'P7ZIP_PATH',
+  pdftoppm: 'PDFTOPPM_PATH',
+  pdftotext: 'PDFTOTEXT_PATH',
+  tesseract: 'TESSERACT_PATH',
+  dcrawEmu: 'DCRAW_EMU_PATH',
+};
+
+/**
+ * Where the worker finds a native CLI: the environment override when one is set, otherwise the
+ * fixed install locations, or null. Reads the environment on every call and runs nothing.
+ */
+export function resolveNativeBinary(name: NativeBinaryName): string | null {
+  return resolveBinary(BINARY_PATHS[name], process.env[NATIVE_BINARY_ENV_VARS[name]]);
 }
 
 /**
@@ -350,18 +388,8 @@ export function createConversionResult(
     engineUsed,
     executionTimeMs,
     get buffer(): Buffer {
-      if (cachedBuffer) return cachedBuffer;
-      // V8 Buffer max size is 2GB - 1 byte (2147483647)
-      if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
-        throw new RangeError(
-          `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
-        );
-      }
-      if (fs.existsSync(persistedFilePath)) {
-        cachedBuffer = fs.readFileSync(persistedFilePath);
-        return cachedBuffer;
-      }
-      return Buffer.alloc(0);
+      cachedBuffer ??= readPersistedOutput(persistedFilePath, stat.size);
+      return cachedBuffer;
     },
     set buffer(b: Buffer) {
       cachedBuffer = b;
