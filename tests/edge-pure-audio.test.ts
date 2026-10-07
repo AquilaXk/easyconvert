@@ -2,8 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
+import { tryProcessClientEdge } from '../src/lib/client-converter';
+import { vi } from 'vitest';
 import {
   convertPureAudio,
   encodePcmToWav,
@@ -141,10 +144,10 @@ describe('pure audio takes raw PCM only when it is described (issue #480)', () =
   });
 
   it('is convertible, and routed to the edge, only for raw sources that describe themselves', () => {
-    expect(isPureAudioConvertible('wav', 'mp3')).toBe(true);
+    expect(isPureAudioConvertible('wav', 'mp3')).toBe(false);
     expect(isPureAudioConvertible('wav', 'wav')).toBe(true);
     expect(isPureAudioConvertible('pcm', 'wav')).toBe(false);
-    expect(isPureAudioConvertible('raw', 'mp3', { source: SOURCE })).toBe(true);
+    expect(isPureAudioConvertible('raw', 'wav', { source: SOURCE })).toBe(true);
     expect(isPureAudioConvertible('wav', 'flac')).toBe(false);
     expect(resolveConversionTier('pcm', 'wav', 1_000_000).tier).toBe('L4');
     expect(resolveConversionTier('wav', 'wav', 1_000_000).tier).toBe('L0');
@@ -234,7 +237,7 @@ describe('pure audio resamples and remixes for real (issue #480)', () => {
     const surround = craftWav({ sampleRate: RATE, channels: 6, bitsPerSample: 16, data: new Uint8Array(6 * 2 * 100) });
     const error = failureOf(() => convertPureAudio(surround, 'wav', 'wav', { channels: 2 }));
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
-    expect(error.message).toMatch(/remixing 6 channels to 2 channels is not done on the edge/);
+    expect(error.message).toMatch(/1 or 2 channels, and the audio has 6/);
   });
 
   it.each([0, -1, 1.5, 500, 5_000_000])('refuses the sample rate %s', (sampleRate) => {
@@ -261,5 +264,190 @@ describe('pure audio resamples and remixes for real (issue #480)', () => {
 
   it('writes a sample count that is a whole number of frames', () => {
     expect(failureOf(() => encodePcmToWav(new Int16Array(5), 44_100, 2)).message).toMatch(/whole number of frames/);
+  });
+});
+
+describe('pure audio keeps the sample format of its source (issue #480)', () => {
+  const RATE = 48_000;
+
+  /** Interleaved little-endian bytes of `values` at 24 bits. */
+  function int24Bytes(values: ArrayLike<number>): Uint8Array {
+    const out = new Uint8Array(values.length * 3);
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i] & 0xff_ffff;
+      out.set([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff], i * 3);
+    }
+    return out;
+  }
+
+  function int32Bytes(values: ArrayLike<number>): Uint8Array {
+    const out = new Uint8Array(values.length * 4);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < values.length; i++) view.setInt32(i * 4, values[i], true);
+    return out;
+  }
+
+  function float32Bytes(values: ArrayLike<number>): Uint8Array {
+    const out = new Uint8Array(values.length * 4);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < values.length; i++) view.setFloat32(i * 4, values[i], true);
+    return out;
+  }
+
+  /** A two-tone signal as fractions of full scale, so every depth can be built from the same values. */
+  const FRACTIONS = Array.from({ length: 600 }, (_, i) =>
+    0.6 * Math.sin((2 * Math.PI * 440 * i) / RATE) + 0.25 * Math.sin((2 * Math.PI * 1_800 * i) / RATE)
+  );
+  const SOURCES = [
+    { name: '8-bit PCM', bits: 8, tag: 1, bytes: Uint8Array.from(FRACTIONS, (f) => Math.round(f * 127) + 128) },
+    { name: '24-bit PCM', bits: 24, tag: 1, bytes: int24Bytes(FRACTIONS.map((f) => Math.round(f * 8_388_607))) },
+    { name: '32-bit PCM', bits: 32, tag: 1, bytes: int32Bytes(FRACTIONS.map((f) => Math.round(f * 2_147_483_647))) },
+    { name: '32-bit float', bits: 32, tag: 3, bytes: float32Bytes(FRACTIONS) },
+  ];
+
+  it.each(SOURCES)('writes $name back as $bits-bit samples with every sample byte unchanged', ({ bits, tag, bytes }) => {
+    const source = craftWav({ sampleRate: RATE, channels: 1, bitsPerSample: bits, formatTag: tag, data: bytes });
+    const res = convertPureAudio(source, 'wav', 'wav');
+    const wav = walkWav(res.data);
+
+    expect([wav.formatTag, wav.bitsPerSample, wav.channels, wav.sampleRate]).toEqual([tag, bits, 1, RATE]);
+    expect(wav.dataSize).toBe(bytes.length);
+    expect(Buffer.from(res.data.subarray(wav.dataOffset, wav.dataOffset + wav.dataSize)).equals(Buffer.from(bytes))).toBe(true);
+    // A float file states its sample count in a fact chunk (RIFF WAVE, non-PCM formats).
+    if (tag === 3) expect([wav.chunkIds, wav.factSamples]).toEqual([['fmt ', 'fact', 'data'], FRACTIONS.length]);
+  });
+
+  it('writes a 24-bit stereo downmix as the rounded mean of the two 24-bit samples', () => {
+    const left = FRACTIONS.map((f) => Math.round(f * 8_388_607));
+    const right = FRACTIONS.map((f) => Math.round(-f * 4_000_000) + 3);
+    const interleaved = left.flatMap((l, i) => [l, right[i]]);
+    const source = craftWav({ sampleRate: RATE, channels: 2, bitsPerSample: 24, data: int24Bytes(interleaved) });
+    const res = convertPureAudio(source, 'wav', 'wav', { channels: 1 });
+    const wav = walkWav(res.data);
+    expect([wav.channels, wav.bitsPerSample, wav.dataSize]).toEqual([1, 24, left.length * 3]);
+    const expected = left.map((l, i) => Math.round((l + right[i]) / 2));
+    expect(Buffer.from(res.data.subarray(wav.dataOffset, wav.dataOffset + wav.dataSize)).equals(Buffer.from(int24Bytes(expected)))).toBe(true);
+  });
+
+  it('resamples 24-bit audio at 24 bits with a signal to noise ratio of at least 80 dB', () => {
+    const tone = Array.from({ length: RATE }, (_, i) => Math.round(0.5 * 8_388_607 * Math.sin((2 * Math.PI * 1_000 * i) / RATE)));
+    const source = craftWav({ sampleRate: RATE, channels: 1, bitsPerSample: 24, data: int24Bytes(tone) });
+    const res = convertPureAudio(source, 'wav', 'wav', { sampleRate: 32_000 });
+    const wav = walkWav(res.data);
+    expect([wav.bitsPerSample, wav.sampleRate]).toEqual([24, 32_000]);
+    const frames = wav.dataSize / 3;
+    const view = new DataView(res.data.buffer, res.data.byteOffset + wav.dataOffset, wav.dataSize);
+    const out = Float64Array.from({ length: frames }, (_, i) => (view.getUint8(i * 3) | (view.getUint8(i * 3 + 1) << 8) | (view.getInt8(i * 3 + 2) << 16)));
+    const ideal = synthesizeTones([{ freq: 1_000, amp: 0.5 * 8_388_607, phase: 0 }], 32_000, frames);
+    expect(snrDb(ideal, out, 2_000, frames - 4_000)).toBeGreaterThanOrEqual(80);
+  });
+
+  it('resamples float audio as float', () => {
+    const tone = Array.from({ length: RATE }, (_, i) => 0.5 * Math.sin((2 * Math.PI * 1_000 * i) / RATE));
+    const source = craftWav({ sampleRate: RATE, channels: 1, bitsPerSample: 32, formatTag: 3, data: float32Bytes(tone) });
+    const res = convertPureAudio(source, 'wav', 'wav', { sampleRate: 32_000 });
+    const wav = walkWav(res.data);
+    expect([wav.formatTag, wav.bitsPerSample, wav.sampleRate]).toEqual([3, 32, 32_000]);
+    const frames = wav.dataSize / 4;
+    const view = new DataView(res.data.buffer, res.data.byteOffset + wav.dataOffset, wav.dataSize);
+    const out = Float64Array.from({ length: frames }, (_, i) => view.getFloat32(i * 4, true));
+    const ideal = synthesizeTones([{ freq: 1_000, amp: 0.5, phase: 0 }], 32_000, frames);
+    expect(snrDb(ideal, out, 2_000, frames - 4_000)).toBeGreaterThanOrEqual(80);
+  });
+
+  it('keeps described raw 24-bit PCM at 24 bits', () => {
+    const raw = int24Bytes(FRACTIONS.map((f) => Math.round(f * 8_388_607)));
+    const res = convertPureAudio(raw, 'pcm', 'wav', { source: { sampleRate: RATE, channels: 1, bitDepth: 24 } });
+    const wav = walkWav(res.data);
+    expect([wav.bitsPerSample, wav.dataSize]).toEqual([24, raw.length]);
+    expect(Buffer.from(res.data.subarray(wav.dataOffset)).equals(Buffer.from(raw))).toBe(true);
+  });
+
+  it.each([3, 6])('refuses a %i-channel source instead of writing a layout it cannot describe', (channels) => {
+    const source = craftWav({ sampleRate: RATE, channels, bitsPerSample: 24, data: new Uint8Array(channels * 3 * 50) });
+    const error = failureOf(() => convertPureAudio(source, 'wav', 'wav'));
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect(error.message).toMatch(/1 or 2 channels/);
+  });
+
+  oracleTest('decodes to the same samples as the source according to ffmpeg', ['ffmpeg'], () => {
+    const decode = (bytes: Uint8Array, format: string): Buffer => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'pure-audio-keep-'));
+      try {
+        const file = path.join(dir, 'in.wav');
+        writeFileSync(file, bytes);
+        const run = spawnSync(getOracleToolPath('ffmpeg') as string, ['-v', 'error', '-i', file, '-f', format, '-'], { maxBuffer: 1 << 26 });
+        expect(run.status).toBe(0);
+        return run.stdout;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    for (const [source, format] of [
+      [SOURCES[1], 's32le'],
+      [SOURCES[3], 'f32le'],
+    ] as const) {
+      const wav = craftWav({ sampleRate: RATE, channels: 1, bitsPerSample: source.bits, formatTag: source.tag, data: source.bytes });
+      expect(decode(convertPureAudio(wav, 'wav', 'wav').data, format).equals(decode(wav, format))).toBe(true);
+    }
+  });
+});
+
+describe('no MP3 conversion reaches the pure engine (issue #480)', () => {
+  const wav = craftWav({ sampleRate: 44_100, channels: 2, bitsPerSample: 16, data: int16Bytes(sineSamples(2_304, 2, 44_100, 440, 8_000)) });
+
+  it.each([
+    ['no capabilities named', undefined],
+    ['every capability present', { hasCanvas: true, hasWebCodecsAudio: true, hasWebCodecsVideo: true, hasOpfsSyncAccess: true, hasWasmSimd: true }],
+  ])('routes wav to mp3 to the server tier with %s', (_name, capabilities) => {
+    const resolution = resolveConversionTier('wav', 'mp3', 200_000, {}, capabilities);
+    expect(resolution.tier).toBe('L4');
+    expect(resolution.isClientEdge).toBe(false);
+  });
+
+  it('refuses an MP3 target at the L0 entry with EdgeUnsupportedError', () => {
+    const error = failureOf(() => convertPureAudio(wav, 'wav', 'mp3', { title: 'x' }));
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect(error.message).toMatch(/does not support conversion from 'wav' to 'mp3'/);
+  });
+
+  it('leaves an MP3 request to the server in the client converter, with nothing converted on the edge', async () => {
+    vi.stubGlobal('window', globalThis);
+    try {
+      const file = new File([wav as BlobPart], 'song.wav', { type: 'audio/wav' });
+      const result = await tryProcessClientEdge({
+        id: 'mp3',
+        file,
+        name: 'song.wav',
+        size: file.size,
+        sourceFormat: 'wav',
+        targetFormat: 'mp3',
+        status: 'ready',
+        progress: 0,
+        options: {},
+      });
+      expect(result).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('has no call of the pure MP3 encoder in src besides the exported wrapper that delegates to it', () => {
+    const callers = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(ts|tsx)$/.test(entry.name)) {
+          for (const line of readFileSync(full, 'utf8').split('\n')) {
+            const isCall = /\b(encodePureMp3|pureEncodeMp3)\(/.test(line) && !/export function encodePureMp3\(/.test(line);
+            if (isCall && !/^\s*(\*|\/\/|\/\*)/.test(line)) callers.add(path.relative(process.cwd(), full));
+          }
+        }
+      }
+    };
+    walk(path.join(process.cwd(), 'src'));
+    // media-encoder.ts is a public wrapper that nothing in src calls; the router and the L0 entry never reach it.
+    expect([...callers]).toEqual(['src/lib/conversions/media-encoder.ts']);
   });
 });

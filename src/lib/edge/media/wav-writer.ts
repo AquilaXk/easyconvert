@@ -73,3 +73,44 @@ export function writePcmWavHeader(format: PcmWavFormat, dataBytes: number): Uint
   view.setUint32(40, dataBytes, true);
   return out;
 }
+
+const FORMAT_TAG_FLOAT = 3;
+const FLOAT_BITS = 32;
+const FLOAT_FMT_BODY_BYTES = 18;
+const FACT_BODY_BYTES = 4;
+/** Bytes of RIFF body besides the data in a float file: WAVE, the fmt chunk (8 + 18), the fact chunk (8 + 4), the data header (8). */
+const FLOAT_RIFF_OVERHEAD_BYTES = 50;
+export const WAV_FLOAT_HEADER_BYTES = 58;
+
+/**
+ * The 58-byte header (RIFF, fmt, fact, data) of a 32-bit IEEE float WAV of `frames` frames. A non-PCM format
+ * states its sample count in a fact chunk, and its fmt chunk carries the cbSize field (0).
+ */
+export function writeFloatWavHeader(format: { sampleRate: number; channels: number }, frames: number): Uint8Array {
+  assertWritablePcmFormat({ ...format, bitDepth: FLOAT_BITS });
+  const blockAlign = (format.channels * FLOAT_BITS) / BITS_PER_BYTE;
+  const dataBytes = frames * blockAlign;
+  const riffSize = FLOAT_RIFF_OVERHEAD_BYTES + dataBytes;
+  if (riffSize > UINT32_MAX || frames > UINT32_MAX) {
+    throw new EdgeUnsupportedError('The audio is too long for a 32-bit RIFF size (RF64 is not written).');
+  }
+  const out = new Uint8Array(WAV_FLOAT_HEADER_BYTES);
+  const view = new DataView(out.buffer);
+  writeAscii(out, 0, 'RIFF');
+  view.setUint32(4, riffSize, true);
+  writeAscii(out, 8, 'WAVEfmt ');
+  view.setUint32(16, FLOAT_FMT_BODY_BYTES, true);
+  view.setUint16(20, FORMAT_TAG_FLOAT, true);
+  view.setUint16(22, format.channels, true);
+  view.setUint32(24, format.sampleRate, true);
+  view.setUint32(28, format.sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, FLOAT_BITS, true);
+  view.setUint16(36, 0, true);
+  writeAscii(out, 38, 'fact');
+  view.setUint32(42, FACT_BODY_BYTES, true);
+  view.setUint32(46, frames, true);
+  writeAscii(out, 50, 'data');
+  view.setUint32(54, dataBytes, true);
+  return out;
+}

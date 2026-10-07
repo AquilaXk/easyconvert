@@ -639,7 +639,7 @@ export function resolveConversionTier(
       tier: 'L0',
       tierName: 'Edge L0 (Instant)',
       isClientEdge: true,
-      reason: 'Pure TypedArray WAV/PCM/MP3 audio encoding',
+      reason: 'Pure TypedArray WAV audio conversion (source sample format kept)',
     };
   }
 

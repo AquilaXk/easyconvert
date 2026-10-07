@@ -285,7 +285,9 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   // ==========================================================================
   describe('Pure Audio Engine (pure-audio.ts)', () => {
     it('correctly reports audio format capability', () => {
-      expect(isPureAudioConvertible('wav', 'mp3')).toBe(true);
+      // MP3 is not a pure target: the server engine encodes it.
+      expect(isPureAudioConvertible('wav', 'mp3')).toBe(false);
+      expect(isPureAudioConvertible('wav', 'wav')).toBe(true);
       // Raw PCM has no header: it is convertible only when the options describe it.
       expect(isPureAudioConvertible('pcm', 'wav')).toBe(false);
       expect(isPureAudioConvertible('raw', 'mp3')).toBe(false);
@@ -363,16 +365,14 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(foundSyncWord).toBe(true);
     });
 
-    it('executes end-to-end convertPureAudio for WAV to MP3', () => {
-      const samples = new Int16Array(1152 * 2);
+    it('executes end-to-end convertPureAudio for WAV to WAV', () => {
+      const samples = Int16Array.from({ length: 1152 * 2 }, (_, i) => (i % 200) - 100);
       const wavBytes = encodePcmToWav(samples, 44100, 2);
 
-      const res = convertPureAudio(wavBytes, 'wav', 'mp3', {
-        title: 'Isomorphic Edge Song',
-      });
-      expect(res.mimeType).toBe('audio/mpeg');
-      expect(res.extension).toBe('mp3');
-      expect(res.data.length).toBeGreaterThan(0);
+      const res = convertPureAudio(wavBytes, 'wav', 'wav');
+      expect(res.mimeType).toBe('audio/wav');
+      expect(res.extension).toBe('wav');
+      expect(Buffer.from(res.data).equals(Buffer.from(wavBytes))).toBe(true);
     });
 
     it('parses WAV with odd-length metadata chunk preceding data chunk', () => {
@@ -594,7 +594,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     });
 
     it('routes pure Audio pairs to Level 0 (Instant)', () => {
-      const res = resolveConversionTier('wav', 'mp3', 44100);
+      const res = resolveConversionTier('wav', 'wav', 44100);
       expect(res.tier).toBe('L0');
       expect(res.tierName).toBe('Edge L0 (Instant)');
       expect(res.isClientEdge).toBe(true);
