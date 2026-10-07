@@ -115,8 +115,8 @@ describe('parseHocr', () => {
 
   it('reads words with nested markup, entities and confidence; a word without x_wconf has none', () => {
     expect(lines[0].words.map((w) => [w.text, w.confidence, w.bbox.x, w.bbox.width])).toEqual([
-      ['Tom', 96, 100, 100],
-      ['& Jerry', 80, 210, 90],
+      ['Tom', 0.96, 100, 100],
+      ['& Jerry', 0.8, 210, 90],
     ]);
     expect(lines[2].words[0].confidence).toBeUndefined();
   });
@@ -144,16 +144,16 @@ describe('parseAlto', () => {
   const parsed = parseAlto(ALTO);
   const lines = parsed.lineBlocks ?? [];
 
-  it('reads pages, text and word confidence on a 0..100 scale', () => {
+  it('reads pages, text and word confidence as fractions of one', () => {
     expect(parsed.pages).toHaveLength(1);
     expect([parsed.pages![0].pageNumber, parsed.pages![0].width, parsed.pages![0].height]).toEqual([3, 1000, 800]);
     expect(parsed.text).toBe('Tom &Jerry\nsecond\nright');
     expect(lines[0].words.map((w) => [w.text, w.confidence])).toEqual([
-      ['Tom', 96],
-      ['&Jerry', 80],
+      ['Tom', 0.96],
+      ['&Jerry', 0.8],
     ]);
     expect(lines[1].words[0].confidence).toBeUndefined();
-    expect(lines[2].words[0].confidence).toBe(99);
+    expect(lines[2].words[0].confidence).toBe(0.99);
   });
 
   it('maps ComposedBlock to a block and TextBlock to a paragraph', () => {
@@ -208,7 +208,7 @@ function groupedResult(): OcrResult {
     {
       text: 'one two',
       bbox: { x: 100, y: 100, width: 400, height: 50 },
-      words: [word('one', 100, 100, 100, 90), word('two', 210, 100, 90, 95)],
+      words: [word('one', 100, 100, 100, 0.9), word('two', 210, 100, 90, 0.95)],
       block: left,
       paragraph: leftFirst,
       baseline: { x0: 100, y0: 146, x1: 500, y1: 148 },
@@ -219,21 +219,21 @@ function groupedResult(): OcrResult {
     {
       text: 'right',
       bbox: { x: 600, y: 100, width: 300, height: 50 },
-      words: [word('right', 600, 100, 300, 70)],
+      words: [word('right', 600, 100, 300, 0.7)],
       block: right,
       paragraph: right,
     },
     {
       text: 'three',
       bbox: { x: 100, y: 220, width: 400, height: 40 },
-      words: [word('three', 100, 220, 400, 60)],
+      words: [word('three', 100, 220, 400, 0.6)],
       block: left,
       paragraph: leftSecond,
     },
     {
       text: 'four',
       bbox: { x: 100, y: 160, width: 400, height: 40 },
-      words: [word('four', 100, 160, 400, 80)],
+      words: [word('four', 100, 160, 400, 0.8)],
       block: left,
       paragraph: leftFirst,
     },
@@ -269,7 +269,7 @@ function oneLineResult(): OcrResult {
       {
         text: 'one two',
         bbox: { x: 100, y: 100, width: 400, height: 50 },
-        words: [word('one', 100, 90), word('two', 210, 95)],
+        words: [word('one', 100, 0.9), word('two', 210, 0.95)],
         block: { bbox: { x: 100, y: 100, width: 400, height: 200 } },
         paragraph: { language: 'eng' },
         baseline: { x0: 100, y0: 146, x1: 500, y1: 148 },
@@ -388,8 +388,8 @@ describe('exportHocr structure', () => {
         imageWidth: 100,
         imageHeight: 100,
         lineBlocks: [
-          { text: 'a', bbox: { x: 1, y: 1, width: 20, height: 10 }, words: [{ text: 'a', bbox: { x: 1, y: 1, width: 20, height: 10 }, confidence: 90 }] },
-          { text: 'b', bbox: { x: 1, y: 30, width: 20, height: 10 }, words: [{ text: 'b', bbox: { x: 1, y: 30, width: 20, height: 10 }, confidence: 90 }] },
+          { text: 'a', bbox: { x: 1, y: 1, width: 20, height: 10 }, words: [{ text: 'a', bbox: { x: 1, y: 1, width: 20, height: 10 }, confidence: 0.9 }] },
+          { text: 'b', bbox: { x: 1, y: 30, width: 20, height: 10 }, words: [{ text: 'b', bbox: { x: 1, y: 30, width: 20, height: 10 }, confidence: 0.9 }] },
         ],
       },
       {}
@@ -647,8 +647,8 @@ describe('exporter output read by the reference XML tools', () => {
         imageWidth: 100,
         imageHeight: 100,
         lineBlocks: [
-          { text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, words: [{ text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, confidence: 90 }] },
-          { text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, words: [{ text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, confidence: 80 }] },
+          { text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, words: [{ text: 'first', bbox: { x: 1, y: 1, width: 40, height: 10 }, confidence: 0.9 }] },
+          { text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, words: [{ text: 'second', bbox: { x: 1, y: 30, width: 40, height: 10 }, confidence: 0.8 }] },
         ],
       };
       const alto = exportAlto([flat, groupedResult()], { filename: 'mixed.pdf' });

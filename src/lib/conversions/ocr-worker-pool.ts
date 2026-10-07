@@ -30,6 +30,8 @@ const LANGUAGE_SEPARATOR = '+';
 
 export type OcrRecognizeResult = Awaited<ReturnType<TesseractWorker['recognize']>>;
 export type OcrRecognizeFn = TesseractWorker['recognize'];
+/** Orientation and script detection; needs a worker started with the legacy engine and `osd` data. */
+export type OcrDetectFn = TesseractWorker['detect'];
 /** Recognizes with temporary parameter overrides; the job's own parameters are restored afterwards. */
 export type OcrRecognizeWithFn = (
   overrides: Record<string, string>,
@@ -40,6 +42,8 @@ export type OcrRecognizeWithFn = (
 export interface OcrPooledWorker {
   setParameters(params: Record<string, string>): Promise<unknown>;
   recognize: OcrRecognizeFn;
+  /** Present on real workers; a worker without it cannot run a detection job. */
+  detect?: OcrDetectFn;
   terminate(): Promise<unknown>;
   /** The underlying thread, when available; it is ref'd only while a job runs. */
   worker?: { ref?: () => void; unref?: () => void };
@@ -194,7 +198,7 @@ export class OcrWorkerPool {
 
   async run<T>(
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
   ): Promise<T> {
     const entry = await this.acquire(spec);
     if (!this.entries.has(entry)) {
@@ -253,7 +257,7 @@ export class OcrWorkerPool {
   private async execute<T>(
     entry: PoolEntry,
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
   ): Promise<T> {
     const { worker } = entry;
     await worker.setParameters(spec.parameters);
@@ -266,7 +270,11 @@ export class OcrWorkerPool {
         await worker.setParameters(spec.parameters).catch(() => undefined);
       }
     };
-    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith);
+    const detect: OcrDetectFn = (image, jobId) => {
+      if (!worker.detect) throw new OcrEngineUnavailableError('This OCR worker cannot detect orientation.');
+      return worker.detect(image, jobId);
+    };
+    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith, detect);
   }
 
   private async acquire(spec: OcrWorkerSpec): Promise<PoolEntry> {

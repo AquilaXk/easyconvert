@@ -6,10 +6,22 @@ import type { OcrBaseline, OcrBBox, OcrLayoutGroup, OcrLineBlock, OcrResult, Ocr
  * original image, so every box is mapped back before a result leaves `performOcr`.
  */
 
-/** How the prepared image was made from the upright source image: resized, then turned. */
+/** Quarter turns the page can be given before recognition, in degrees clockwise. */
+export type OcrQuarterTurn = 0 | 90 | 180 | 270;
+
+/**
+ * How the prepared image was made from the upright source image: turned by a multiple of 90
+ * degrees when the page was scanned sideways or upside down, resized, then levelled by a small turn.
+ */
 export interface OcrGeometry {
   sourceWidth: number;
   sourceHeight: number;
+  /**
+   * Clockwise turn of 0, 90, 180 or 270 degrees applied to the source before everything else;
+   * absent when the page was not turned. After a 90 or 270 degree turn the page is `sourceHeight`
+   * wide and `sourceWidth` tall.
+   */
+  quarterTurnDegrees?: OcrQuarterTurn;
   /** Size after the rescale step, before the turn. */
   scaledWidth: number;
   scaledHeight: number;
@@ -34,8 +46,37 @@ export function identityGeometry(width: number, height: number): OcrGeometry {
   };
 }
 
+function quarterTurnOf(g: OcrGeometry): OcrQuarterTurn {
+  return g.quarterTurnDegrees ?? 0;
+}
+
 function isIdentity(g: OcrGeometry): boolean {
-  return g.rotationDegrees === 0 && g.sourceWidth === g.outputWidth && g.sourceHeight === g.outputHeight;
+  return (
+    g.rotationDegrees === 0 &&
+    quarterTurnOf(g) === 0 &&
+    g.sourceWidth === g.outputWidth &&
+    g.sourceHeight === g.outputHeight
+  );
+}
+
+/** Size of the source after its quarter turn, before rescaling. */
+export function orientedSize(g: OcrGeometry): [number, number] {
+  const sideways = quarterTurnOf(g) === 90 || quarterTurnOf(g) === 270;
+  return sideways ? [g.sourceHeight, g.sourceWidth] : [g.sourceWidth, g.sourceHeight];
+}
+
+/** Maps a point of the quarter-turned page back to the page as it was scanned (continuous coordinates). */
+function undoQuarterTurn(x: number, y: number, g: OcrGeometry): [number, number] {
+  switch (quarterTurnOf(g)) {
+    case 90:
+      return [y, g.sourceHeight - x];
+    case 180:
+      return [g.sourceWidth - x, g.sourceHeight - y];
+    case 270:
+      return [g.sourceWidth - y, x];
+    default:
+      return [x, y];
+  }
 }
 
 /** Maps a point from prepared-image pixels to source-image pixels (unclamped). */
@@ -48,7 +89,12 @@ function mapPointToSource(x: number, y: number, g: OcrGeometry): [number, number
   const dy = y - g.outputHeight / 2;
   const scaledX = dx * cos + dy * sin + g.scaledWidth / 2;
   const scaledY = -dx * sin + dy * cos + g.scaledHeight / 2;
-  return [scaledX / (g.scaledWidth / g.sourceWidth), scaledY / (g.scaledHeight / g.sourceHeight)];
+  const [orientedWidth, orientedHeight] = orientedSize(g);
+  return undoQuarterTurn(
+    scaledX / (g.scaledWidth / orientedWidth),
+    scaledY / (g.scaledHeight / orientedHeight),
+    g
+  );
 }
 
 /**
@@ -106,15 +152,35 @@ function mapBaseline(baseline: OcrBaseline | undefined, g: OcrGeometry): OcrBase
   return { x0, y0, x1, y1 };
 }
 
-/** A vertical text measure (row height, ascenders, descenders) in source pixels. */
+/** A text measure across the rows (row height, ascenders, descenders) in source pixels; the rescale is uniform. */
 function mapRowMeasure(value: number | undefined, g: OcrGeometry): number | undefined {
   if (value === undefined) return value;
-  return value * (g.sourceHeight / g.scaledHeight);
+  const [, orientedHeight] = orientedSize(g);
+  return value * (orientedHeight / g.scaledHeight);
+}
+
+/** Length of the probe that finds the direction text runs in after mapping, in prepared-image pixels. */
+const DIRECTION_PROBE_PX = 100;
+const ANGLE_DECIMALS = 2;
+
+/**
+ * The direction the text of a line runs in on the source page, in degrees clockwise from the x
+ * axis (y down), or undefined when it is horizontal. The recognizer reads its lines left to right
+ * in the prepared image, so the direction is where a step to the right there lands on the source.
+ */
+function mapLineAngle(block: OcrLineBlock, g: OcrGeometry): number | undefined {
+  const centerX = block.bbox.x + block.bbox.width / 2;
+  const centerY = block.bbox.y + block.bbox.height / 2;
+  const [x0, y0] = mapPointToSource(centerX, centerY, g);
+  const [x1, y1] = mapPointToSource(centerX + DIRECTION_PROBE_PX, centerY, g);
+  const degrees = Number(((Math.atan2(y1 - y0, x1 - x0) / DEGREES_TO_RADIANS)).toFixed(ANGLE_DECIMALS));
+  return degrees === 0 ? undefined : degrees;
 }
 
 function mapLineBlock(block: OcrLineBlock, g: OcrGeometry, cache: GroupCache): OcrLineBlock {
   return {
     ...block,
+    angleDegrees: mapLineAngle(block, g),
     bbox: mapBoxToSource(block.bbox, g),
     words: block.words.map((word) => mapWord(word, g)),
     block: mapLayoutGroup(block.block, g, cache),

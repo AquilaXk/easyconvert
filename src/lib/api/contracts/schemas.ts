@@ -286,6 +286,11 @@ export const ConversionOptionsSchema = {
       enum: ['skip_text', 'skip-text', 'force', 'redo'],
       description: 'OCR multi-page processing strategy: skip digital text pages or force full OCR.',
     },
+    ocrDetectOrientation: {
+      type: 'boolean',
+      description:
+        'Detect the page orientation and script of scans that read badly, and read them again turned upright. Omit it to detect when the OCR orientation data is installed; true requires it and fails with 503 when it is missing; false never detects.',
+    },
     ocrDensityThreshold: {
       type: 'number',
       minimum: 0,

@@ -19,7 +19,7 @@ const PERCENT_SCALE = 100;
 /** Largest coordinate, size or baseline offset accepted, in pixels; a 1 m scan at 1200 dpi is about 47,000. */
 export const OCR_MARKUP_MAX_COORDINATE_PX = 1_000_000;
 const MAX_CONFIDENCE_PERCENT = 100;
-/** Sub-percent noise from scaling a 0..1 confidence (0.57 * 100 is 56.99999999999999) is rounded off. */
+/** Sub-percent noise from scaling a percentage to a fraction (96.5 / 100) is rounded off. */
 const CONFIDENCE_PRECISION_DIGITS = 12;
 /** Decimal integers and numbers of at most nine digits per part; no sign other than `-`, no exponent, no hex. */
 const DECIMAL_INTEGER = /^-?\d{1,9}$/;
@@ -348,7 +348,9 @@ class HocrReader implements MarkupHandler {
       const box = word.props.bbox;
       if (!box) throw new OcrMarkupError(`The hOCR word '${text}' has no bbox.`);
       const finished: OcrWord = { text, bbox: toBBox(box) };
-      if (word.props.xWconf !== undefined) finished.confidence = word.props.xWconf;
+      if (word.props.xWconf !== undefined) {
+        finished.confidence = Number((word.props.xWconf / PERCENT_SCALE).toPrecision(CONFIDENCE_PRECISION_DIGITS));
+      }
       line.words.push(finished);
     }
     this.word = null;
@@ -401,7 +403,7 @@ function buildOcrPage(
     width,
     height,
     text: pageLines.join('\n'),
-    confidence: pageWordCount > 0 ? pageWordConfSum / pageWordCount / PERCENT_SCALE : null,
+    confidence: pageWordCount > 0 ? pageWordConfSum / pageWordCount : null,
     lineBlocks,
     lines: pageLines,
   };
@@ -428,7 +430,7 @@ function assembleParsedOcrResult(pages: OcrPageResult[]): OcrResult {
   const firstPage = pages[0];
   const result: OcrResult = {
     text: allTexts.join('\n\n').trim(),
-    confidence: totalWordCount > 0 ? totalWordConf / totalWordCount / PERCENT_SCALE : null,
+    confidence: totalWordCount > 0 ? totalWordConf / totalWordCount : null,
     wordCount,
     lines: pages.flatMap((p) => p.lines ?? []),
     lineBlocks: pages.flatMap((p) => p.lineBlocks),
@@ -583,7 +585,7 @@ class AltoReader implements MarkupHandler {
     const word: OcrWord = { text, bbox: toBBox(box) };
     const wc = altoNumber(attributes, 'WC');
     if (wc !== undefined) {
-      word.confidence = Number((inRange(wc, 0, 1, 'ALTO WC') * PERCENT_SCALE).toPrecision(CONFIDENCE_PRECISION_DIGITS));
+      word.confidence = inRange(wc, 0, 1, 'ALTO WC');
     }
     this.line.words.push(word);
   }

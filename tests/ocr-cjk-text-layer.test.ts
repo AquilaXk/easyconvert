@@ -95,7 +95,7 @@ describe('OCR CJK text layer composite font', () => {
     const [{ key, dict: type0 }] = fonts;
 
     const usedFonts = [...pageContent(doc).matchAll(/\/([^\s/]+)\s+[\d.]+\s+Tf/g)].map((m) => m[1]);
-    expect(usedFonts).toEqual([key, key]);
+    expect(usedFonts).toEqual(OCR_RESULT.lineBlocks!.flatMap((block) => block.words).map(() => key));
 
     expect(type0.get(PDFName.of('Encoding'))?.toString()).toBe('/Identity-H');
     const descendants = type0.lookup(PDFName.of('DescendantFonts'), PDFArray);

@@ -53,6 +53,9 @@ async function failureOf(work: () => Promise<unknown>): Promise<unknown> {
   return undefined;
 }
 
+/** The page-bound walk answers S3_LIST_MAX_PAGES scripted pages: about 5 s alone, more on a shared runner. */
+const PAGE_BOUND_TIMEOUT_MS = 30_000;
+
 describe('answers scripted at the HTTP level', () => {
   let original: Dispatcher;
   let agent: MockAgent;
@@ -176,7 +179,7 @@ describe('answers scripted at the HTTP level', () => {
       expect(err).toBeInstanceOf(StorageAdapterError);
       expect((err as Error).message).toBe(`Listing "walk/" did not finish within ${S3_LIST_MAX_PAGES} pages`);
       expect(pages).toBe(S3_LIST_MAX_PAGES);
-    });
+    }, PAGE_BOUND_TIMEOUT_MS);
   });
 });
 

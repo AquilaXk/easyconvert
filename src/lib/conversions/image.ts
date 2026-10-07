@@ -2592,7 +2592,7 @@ export async function convertImage(
   // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
   if (fmt === 'hocr' || fmt === 'alto') {
     await assertEncodedImageWithinLimit(inputBuffer);
-    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage, undefined, options.ocrDetectOrientation);
     const isHocr = fmt === 'hocr';
     const xml = isHocr
       ? exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename })
@@ -3398,7 +3398,7 @@ async function convertImageToPdf(
         `OCR reads one page at a time but this image has ${pages.length} pages: select one with the "page" option`
       );
     }
-    const ocrResult = await performOcr(pages[0].png, options.ocrLanguage);
+    const ocrResult = await performOcr(pages[0].png, options.ocrLanguage, undefined, options.ocrDetectOrientation);
     const searchablePdf = await generateSearchablePdf(pages[0].png, ocrResult, options, baseName);
     return {
       buffer: searchablePdf,
