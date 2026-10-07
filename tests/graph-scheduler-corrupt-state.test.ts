@@ -214,6 +214,7 @@ describe('parseNodeStates and parseStoredList', () => {
 
 const REDIS_URL = process.env.REDIS_URL;
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('RedisGraphScheduler on a record damaged in a real Redis server', () => {
   let redis: Redis;
   let scheduler: RedisGraphScheduler;

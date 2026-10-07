@@ -620,6 +620,7 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(() => encodeParquet(rows, { codec: CompressionCodec.BROTLI })).toThrow(ParquetCodecUnavailableError);
     });
 
+    // skip-ok: runtime capability: whether this Node build has zstd in node:zlib.
     it.skipIf(ZSTD_WRITE_AVAILABLE)('reports ZSTD as unavailable with a typed error on runtimes without node:zlib zstd', () => {
       expect(() => encodeParquet([{ a: 1 }], { codec: CompressionCodec.ZSTD })).toThrow(ParquetCodecUnavailableError);
     });
@@ -667,6 +668,7 @@ describe('Parquet writer conformance (issue 526)', () => {
     });
   });
 
+  // skip-ok: runtime capability: whether this Node build has zstd in node:zlib.
   describe.skipIf(!ZSTD_WRITE_AVAILABLE)('ZSTD output', () => {
     oracleTest('pyarrow and the reader agree on ZSTD pages with dictionary and plain columns', ['python3'], () => {
       const fixture = sizeFixture();

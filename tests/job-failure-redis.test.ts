@@ -13,6 +13,7 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 const OVER_LIMIT_SIDE = 15_000;
 const INPUT_LIMIT = 100_000_000;
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('typed job failures on a real Redis server', () => {
   let keyPrefix: string;
   let admin: Redis;

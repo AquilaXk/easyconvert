@@ -26,6 +26,7 @@ import {
   createHostileWorkspace,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
+import { skipUnless } from './helpers/strict-skip';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -477,7 +478,7 @@ describe('assertExtractionContained', () => {
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('link-entry');
   });
 
-  it.skipIf(!fs.existsSync('/usr/bin/mkfifo'))('rejects a FIFO', () => {
+  it.skipIf(skipUnless('mkfifo', fs.existsSync('/usr/bin/mkfifo')))('rejects a FIFO', () => {
     execFileSync('/usr/bin/mkfifo', [path.join(root, 'pipe')]);
 
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('special-entry');

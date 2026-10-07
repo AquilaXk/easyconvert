@@ -14,8 +14,14 @@ import { readWoff2Reference } from './woff2-reference';
 const ORACLE_BIN_DIRS = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/bin'];
 const FREETYPE_OTF_FORMAT = /OTF\*?\s+.*Freetype/;
 
+/** ORACLE_TOOL_DIRS narrows the search the same way it does for getOracleToolPath (empty: nothing is found). */
+function searchedDirs(): string[] {
+  const restricted = process.env.ORACLE_TOOL_DIRS;
+  return restricted === undefined ? ORACLE_BIN_DIRS : restricted.split(path.delimiter).filter(Boolean);
+}
+
 function resolveOracleBinary(name: string): string | null {
-  for (const dir of ORACLE_BIN_DIRS) {
+  for (const dir of searchedDirs()) {
     const candidate = path.join(dir, name);
     if (fs.existsSync(candidate)) return candidate;
   }

@@ -36,6 +36,7 @@ describe('demosaic speed against the replaced implementation', () => {
     expect(path.basename(IMX477_SAMPLE_PATH)).toBe('raw-imx477.raw');
   });
 
+  // skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
   it.skipIf(SKIP_TIMING || !SAMPLE_PRESENT)(
     'AHD and AMaZE stay well ahead of the replaced implementation with identical float output',
     async () => {

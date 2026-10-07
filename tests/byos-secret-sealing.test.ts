@@ -143,6 +143,7 @@ afterEach(async () => {
 
 // Redis keeps jobs between test files, and a worker would run another file's leftovers: this file
 // covers the in-memory queue, and byos-secret-sealing-redis.test.ts covers Redis.
+// skip-ok: mode selection; the shards run without REDIS_URL, which is the mode this file covers.
 describe.skipIf(!IN_MEMORY_MODE)('sealing of BYOS secrets in queued job data', () => {
   it('keeps signed URLs, userinfo and headers out of job data and scheduler state', async () => {
     const graphId = uniqueId('seal');
@@ -186,6 +187,7 @@ describe.skipIf(!IN_MEMORY_MODE)('sealing of BYOS secrets in queued job data', (
   });
 });
 
+// skip-ok: mode selection (see above).
 describe.skipIf(!IN_MEMORY_MODE)('unsealing in the worker', () => {
   function recordingStorage(): IStorageBackend {
     return {
@@ -263,6 +265,7 @@ describe.skipIf(!IN_MEMORY_MODE)('unsealing in the worker', () => {
   });
 });
 
+// skip-ok: mode selection (see above).
 describe.skipIf(!IN_MEMORY_MODE)('import -> convert -> export against customer storage', () => {
   let customer: CustomerStorage;
   let stub: CustomerStorage['stub'];

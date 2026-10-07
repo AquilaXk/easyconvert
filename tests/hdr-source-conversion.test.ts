@@ -3,7 +3,8 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { decodeUltraHdrJpeg } from '../src/lib/conversions/raw-hdr';
 import { ConversionFailedError } from '../src/lib/types';
-import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR, probeExr } from './helpers/ffmpeg-exr';
+import { decodeExrWithFfmpeg, probeExr } from './helpers/ffmpeg-exr';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { floatToHalfBits, halfBitsToFloat } from './helpers/openexr-writer';
 import {
   GAIN_MAP_ENTRY_INDEX_WITH_DEPTH_MAP,
@@ -25,6 +26,9 @@ import {
   ultraHdrExpectedLinear,
   ultraHdrSdrPatch,
 } from './helpers/hdr-test-images';
+
+/** FFmpeg decodes the OpenEXR files these suites write; both tools are needed. */
+const SKIP_WITHOUT_FFMPEG_EXR = skipWithoutTools('ffmpeg', 'ffprobe');
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -192,7 +196,7 @@ describe('OpenEXR source conversions', () => {
     }
   );
 
-  it.skipIf(!HAS_FFMPEG_EXR)('exr -> exr is a 16-bit float OpenEXR whose decoded samples equal the half-quantised input', () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('exr -> exr is a 16-bit float OpenEXR whose decoded samples equal the half-quantised input', () => {
     const output = outputs.get('exr')!;
     expect(output.subarray(0, 4).equals(Buffer.from([0x76, 0x2f, 0x31, 0x01]))).toBe(true);
     expect(probeExr(output)).toMatchObject({ codec: 'exr', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT, pixFmt: 'gbrpf32le' });
@@ -208,7 +212,7 @@ describe('OpenEXR source conversions', () => {
     expect(patchCentreMean(decoded.rgb, 3, decoded.width, SUPER_WHITE_PATCH)[0]).toBeCloseTo(4, 3);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('exr -> exr with outputDepth 32 stores FLOAT samples that decode to the input values', async () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('exr -> exr with outputDepth 32 stores FLOAT samples that decode to the input values', async () => {
     const result = await convertFile(exr, 'exr', 'exr', { outputDepth: 32 }, 'patches.exr');
     const decoded = decodeExrWithFfmpeg(result.buffer);
     expect(decoded.width).toBe(HDR_IMAGE_WIDTH);
@@ -292,7 +296,7 @@ describe.each([false, true])('Ultra HDR source conversions (GainMapMax mirrored 
     }
   );
 
-  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr reconstructs linear HDR radiance from the gain map', () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('ultrahdr -> exr reconstructs linear HDR radiance from the gain map', () => {
     expectHdrReconstruction(outputs.get('exr')!, ULTRA_HDR_METADATA);
     // The boosted patch is brighter than the SDR white point, which only the gain map can supply.
     const decoded = decodeExrWithFfmpeg(outputs.get('exr')!);
@@ -300,7 +304,7 @@ describe.each([false, true])('Ultra HDR source conversions (GainMapMax mirrored 
     expect(ULTRA_HDR_GAIN_BYTES[SUPER_WHITE_PATCH]).toBe(BYTE_MAX);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr applies GainMapMin, Gamma and the offsets declared in the gain map XMP', async () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('ultrahdr -> exr applies GainMapMin, Gamma and the offsets declared in the gain map XMP', async () => {
     const custom: UltraHdrGainMapMetadata = { gainMapMin: -1, gainMapMax: 2.5, gamma: 2, offsetSdr: 0.004, offsetHdr: 0.002 };
     const source = await buildPatchUltraHdr(mirrored, custom);
     const result = await convertFile(source, 'ultrahdr', 'exr', {}, 'patches.jpg');
@@ -343,7 +347,7 @@ describe('malformed HDR sources fail closed', () => {
     await expect(run).rejects.toThrow(message);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR).each([
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR).each([
     ['single-quoted attributes', (xmp: string) => xmp.replace(/hdrgm:(\w+)="([^"]*)"/g, "hdrgm:$1='$2'")],
     ['element-form values', (xmp: string) => {
       const max = /hdrgm:GainMapMax="([^"]*)"/.exec(xmp)![1];
@@ -459,7 +463,7 @@ describe('Ultra HDR container split follows the MPF index', () => {
     expect(decoded.gainMapParams).toMatchObject(ULTRA_HDR_METADATA);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula for a primary with an EXIF thumbnail', async () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula for a primary with an EXIF thumbnail', async () => {
     const result = await convertFile(trapFile, 'ultrahdr', 'exr', {}, 'patches.jpg');
     expectHdrReconstruction(result.buffer, ULTRA_HDR_METADATA);
   });
@@ -573,7 +577,7 @@ describe('Ultra HDR gain map selection among several MPF images', () => {
     expect(decoded.gainMapParams).toMatchObject(ULTRA_HDR_METADATA);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula with a depth map ahead of the gain map', async () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('ultrahdr -> exr reconstructs the spec formula with a depth map ahead of the gain map', async () => {
     const result = await convertFile(depthFile, 'ultrahdr', 'exr', {}, 'patches.jpg');
     expectHdrReconstruction(result.buffer, ULTRA_HDR_METADATA);
   });

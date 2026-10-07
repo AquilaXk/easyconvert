@@ -270,6 +270,7 @@ describe('recognizeWithCli', () => {
     const common = { tessdataDir: '/tessdata', tesseractLang: 'eng', image };
 
     // Zombie detection reads /proc, which only Linux provides.
+    // skip-ok: platform capability: the process-group check reads /proc, which exists on Linux only.
     it.skipIf(!fs.existsSync(PROC_STAT_PROBE))('kills the whole process group when the timeout expires', async () => {
       const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-pid-')), 'child.pid');
       const cliPath = writeScript(`sleep 300 &\necho $! > "${pidFile}"\nwait`);

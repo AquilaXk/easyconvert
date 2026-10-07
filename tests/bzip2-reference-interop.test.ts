@@ -8,6 +8,7 @@ import { compressBzip2, decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { convertFile } from '../src/lib/conversions';
 import { ConversionFailedError } from '../src/lib/types';
 import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { skipUnless } from './helpers/strict-skip';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -25,8 +26,8 @@ const BZIP2_MAX_BLOCK_BYTES = 900_000;
 const HOSTILE_HANG_GUARD_MS = 10_000;
 const BZIP2_FIXTURE_TAR = path.resolve(__dirname, 'fixtures', 'sample.tar');
 
-const HAS_BZIP2 = cp.spawnSync('bzip2', ['--help'], { stdio: 'ignore' }).error === undefined;
-const HAS_TAR = cp.spawnSync('tar', ['--version'], { stdio: 'ignore' }).error === undefined;
+const SKIP_WITHOUT_BZIP2 = skipUnless('bzip2', cp.spawnSync('bzip2', ['--help'], { stdio: 'ignore' }).error === undefined);
+const SKIP_WITHOUT_TAR = skipUnless('tar', cp.spawnSync('tar', ['--version'], { stdio: 'ignore' }).error === undefined);
 
 function sha256(buf: Uint8Array): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
@@ -101,7 +102,7 @@ const CASES: Array<[string, () => Buffer]> = [
 
 describe('bzip2 encoder output is accepted by the reference decoder', () => {
   for (const [name, make] of CASES) {
-    it.skipIf(!HAS_BZIP2)(`round-trips ${name} through system bzip2 -dc`, () => {
+    it.skipIf(SKIP_WITHOUT_BZIP2)(`round-trips ${name} through system bzip2 -dc`, () => {
       const input = make();
       const compressed = compressBzip2(input);
       expect(compressed.subarray(0, 3).toString('latin1')).toBe('BZh');
@@ -109,7 +110,7 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     });
   }
 
-  it.skipIf(!HAS_BZIP2)('emits a stream that passes bzip2 -t with level-9 block size and valid trailer', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('emits a stream that passes bzip2 -t with level-9 block size and valid trailer', () => {
     const input = Buffer.alloc(100);
     const compressed = compressBzip2(input);
     expect(compressed[3]).toBe('9'.charCodeAt(0));
@@ -117,7 +118,7 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     expectSameBytes(systemBzip2(['-dc'], compressed), input);
   });
 
-  it.skipIf(!HAS_BZIP2)('splits multi-block input without crossing the 900k block limit', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('splits multi-block input without crossing the 900k block limit', () => {
     const input = mixedInput();
     const compressed = compressBzip2(input);
     // Each block starts with the 48-bit block magic; count occurrences on the byte-unaligned bit stream.
@@ -143,7 +144,7 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     ],
   ];
   for (const [name, make] of timingCases) {
-    it.skipIf(!HAS_BZIP2)(`compresses a 900 kB block of ${name} in linear time`, async () => {
+    it.skipIf(SKIP_WITHOUT_BZIP2)(`compresses a 900 kB block of ${name} in linear time`, async () => {
       const input = make(BZIP2_MAX_BLOCK_BYTES);
       const { largeResult: compressed } = await expectLinearOnInputs('compressBzip2', (data: Buffer) => compressBzip2(data), {
         small: make(BZIP2_MAX_BLOCK_BYTES / SCALING_FACTOR),
@@ -157,7 +158,7 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
 describe('bzip2 decoder consumes reference encoder output', () => {
   for (const level of ['-1', '-9']) {
     for (const [name, make] of CASES) {
-      it.skipIf(!HAS_BZIP2)(`decodes system bzip2 ${level} output for ${name}`, () => {
+      it.skipIf(SKIP_WITHOUT_BZIP2)(`decodes system bzip2 ${level} output for ${name}`, () => {
         const input = make();
         const reference = systemBzip2(['-c', level], input);
         expectSameBytes(decompressBzip2(reference), input);
@@ -165,14 +166,14 @@ describe('bzip2 decoder consumes reference encoder output', () => {
     }
   }
 
-  it.skipIf(!HAS_BZIP2)('decodes a 1000-byte run compressed by system bzip2 (inverse RLE1)', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('decodes a 1000-byte run compressed by system bzip2 (inverse RLE1)', () => {
     const input = Buffer.alloc(1000);
     const decoded = decompressBzip2(systemBzip2(['-c'], input));
     expect(decoded.length).toBe(1000);
     expectSameBytes(decoded, input);
   });
 
-  it.skipIf(!HAS_BZIP2)('decodes concatenated streams like bzip2 -dc', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('decodes concatenated streams like bzip2 -dc', () => {
     const first = Buffer.from('first stream payload ');
     const second = Buffer.from('second stream payload aaaaaaaaaa');
     const joined = Buffer.concat([systemBzip2(['-c'], first), systemBzip2(['-c', '-1'], second)]);
@@ -273,7 +274,7 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
   const payload = Buffer.from('hostile input corpus: the quick brown fox jumps over the lazy dog');
   const BLOCK_CRC_OFFSET = 10;
 
-  it.skipIf(!HAS_BZIP2)('accepts the hand-assembled single-byte control stream', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('accepts the hand-assembled single-byte control stream', () => {
     const referenceA = systemBzip2(['-c'], Buffer.from('A'));
     const crc = referenceA.readUInt32BE(BLOCK_CRC_OFFSET);
     const control = handAssemble({ blockCrc: crc, symbols: 'AE' });
@@ -281,35 +282,35 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
     expect(decompressBzip2(control).toString('latin1')).toBe('A');
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects a truncated stream', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects a truncated stream', () => {
     const reference = systemBzip2(['-c'], payload);
     expectFastTypedFailure(reference.subarray(0, reference.length - 10), /truncat|end of|EOF/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects a flipped block CRC byte', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects a flipped block CRC byte', () => {
     const reference = Buffer.from(systemBzip2(['-c'], payload));
     reference[BLOCK_CRC_OFFSET] ^= 0xff;
     expectFastTypedFailure(reference, /CRC/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects a flipped combined stream CRC byte', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects a flipped combined stream CRC byte', () => {
     const reference = Buffer.from(systemBzip2(['-c'], payload));
     reference[reference.length - 1] ^= 0xff;
     expectFastTypedFailure(reference, /CRC/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects trailing garbage after the end-of-stream marker', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects trailing garbage after the end-of-stream marker', () => {
     const reference = systemBzip2(['-c'], payload);
     expectFastTypedFailure(Buffer.concat([reference, Buffer.from('garbage')]), /trailing/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('accepts zero padding after the last stream', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('accepts zero padding after the last stream', () => {
     const reference = systemBzip2(['-c'], payload);
     const padded = Buffer.concat([reference, Buffer.alloc(512)]);
     expectSameBytes(decompressBzip2(padded), payload);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects a block-size digit outside 1..9', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects a block-size digit outside 1..9', () => {
     for (const digit of ['0', 'A', '/']) {
       const reference = Buffer.from(systemBzip2(['-c'], payload));
       reference[3] = digit.charCodeAt(0);
@@ -317,38 +318,38 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
     }
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects numTrees outside 2..6', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects numTrees outside 2..6', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, numTrees: 7, symbols: 'AE' }), /tree/i);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, numTrees: 1, symbols: 'AE' }), /tree/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects zero selectors and selector indices beyond numTrees', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects zero selectors and selector indices beyond numTrees', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, selectors: [], symbols: 'AE' }), /selector/i);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, selectors: [2], symbols: 'AE' }), /selector/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects a zero run longer than the declared block size', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects a zero run longer than the declared block size', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     // Twenty RUNB symbols encode a run of 2 * (2^20 - 1) bytes, far above the 100 kB block of level 1.
     const hostile = handAssemble({ digit: 1, blockCrc: crc, symbols: `${'B'.repeat(20)}E` });
     expectFastTypedFailure(hostile, /block size|exceeds/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects an unbounded RUNB run without allocating or looping', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects an unbounded RUNB run without allocating or looping', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     const hostile = handAssemble({ digit: 9, blockCrc: crc, symbols: `${'B'.repeat(40)}E` });
     expectFastTypedFailure(hostile, /block size|exceeds/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects an origPtr beyond the decoded block length', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects an origPtr beyond the decoded block length', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, origPtr: 1, symbols: 'AE' }), /origPtr|pointer/i);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, origPtr: 0xffffff, symbols: 'AE' }), /origPtr|pointer/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('rejects an empty block (no symbols before end-of-block)', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('rejects an empty block (no symbols before end-of-block)', () => {
     const crc = systemBzip2(['-c'], Buffer.from('A')).readUInt32BE(BLOCK_CRC_OFFSET);
     expectFastTypedFailure(handAssemble({ blockCrc: crc, symbols: 'E' }), /origPtr|pointer|empty/i);
   });
@@ -358,7 +359,7 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
     expectFastTypedFailure(Buffer.from('BZh9'), /short|truncat|EOF|end of/i);
   });
 
-  it.skipIf(!HAS_BZIP2)('fails closed when the output would exceed maxOutputBytes', () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2)('fails closed when the output would exceed maxOutputBytes', () => {
     const bomb = systemBzip2(['-c'], Buffer.alloc(2_000_000));
     const started = performance.now();
     let caught: unknown;
@@ -376,7 +377,7 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
 });
 
 describe('archive-level bzip2 output', () => {
-  it.skipIf(!HAS_BZIP2 || !HAS_TAR)('convertFile(sample.tar -> tar.bz2) passes bzip2 -t and lists the same entries', async () => {
+  it.skipIf(SKIP_WITHOUT_BZIP2 || SKIP_WITHOUT_TAR)('convertFile(sample.tar -> tar.bz2) passes bzip2 -t and lists the same entries', async () => {
     const tarBytes = fs.readFileSync(BZIP2_FIXTURE_TAR);
     const result = await convertFile(tarBytes, 'tar', 'tar.bz2', {}, 'sample.tar');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bzip2-archive-'));

@@ -950,6 +950,7 @@ function fcScan(font: Buffer, extension: string): Record<string, string> {
   }
 }
 
+// skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
 describe.skipIf(!HAS_FC_SCAN)('CFF to TrueType: fontconfig reads the output as the same face (needs fc-scan)', () => {
   it('keeps family, style, names and character set and reports a TrueType face', async () => {
     const otf = fixtureFont(BASIC_FIXTURES);
@@ -995,6 +996,7 @@ function renderGlyph(fontFile: string, char: string): Buffer {
   return pgm.subarray(at);
 }
 
+// skip-ok: requireStrictFreeType / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when FreeType is missing.
 describe.skipIf(!HAS_FREETYPE)('CFF to TrueType: FreeType renders the output like the input (needs ImageMagick with FreeType)', () => {
   it('draws the same ink for every fixture glyph before and after conversion', async () => {
     const fixtures = BASIC_FIXTURES.filter((f) => f.codePoint !== 0x4a);

@@ -424,6 +424,7 @@ describe('cost', () => {
     ['tesseract'],
     async (ctx) => {
       if (SLOW_RUNNER) {
+        // skip-ok: explicit opt-out on a slow runner (EASYCONVERT_SLOW_RUNNER=1), never set in CI.
         ctx.skip();
         return;
       }

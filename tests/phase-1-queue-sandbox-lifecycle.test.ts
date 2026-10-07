@@ -284,6 +284,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
     });
 
     // Pop and completion are atomic Lua scripts, which InMemoryRedisMock cannot execute.
+    // skip-ok: mode selection; runs in the Redis-mode CI step (npm run test:redis).
     it.skipIf(!process.env.REDIS_URL)('pops waiting jobs and tracks active, completed, and failed counts accurately', async () => {
       const { adapter, cleanup } = createRealRedisAdapter('analytics-queue');
 
@@ -324,6 +325,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
       await cleanup();
     });
 
+    // skip-ok: mode selection; runs in the Redis-mode CI step (npm run test:redis).
     it.skipIf(!process.env.REDIS_URL)('schedules delayed jobs in sorted sets and promotes them when due', async () => {
       const { adapter, cleanup } = createRealRedisAdapter('delayed-queue');
 

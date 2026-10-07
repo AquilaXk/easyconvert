@@ -227,6 +227,7 @@ describe('Mac font container helpers', () => {
     expect(crc16Xmodem(sample)).toBe(CRC16_XMODEM_CHECK_VALUE);
   });
 
+  // skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
   it.skipIf(!HAS_FC_SCAN)('writes a resource fork that fontconfig itself opens as the wrapped font (needs fc-scan)', () => {
     const direct = fcScan(ALPHA_TTF, 'ttf');
     expect(direct.family).toBe('Alpha Sans');
@@ -299,6 +300,7 @@ describe('dfont and MacBinary font containers convert through convertFile', () =
     expect(tables.get('maxp')!.readUInt16BE(4)).toBe(originalNumGlyphs);
   });
 
+  // skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
   it.skipIf(!HAS_FC_SCAN).each(PAIRS)(
     '%s -> %s is read by fontconfig as the same face as the original TrueType font (needs fc-scan)',
     async (source, target) => {

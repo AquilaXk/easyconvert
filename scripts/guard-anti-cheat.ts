@@ -8,7 +8,8 @@ import ts from 'typescript';
  *
  * Deterministically scans the codebase using whole-file regex and TypeScript AST analysis:
  * 1. Circular Mocking (G1, G1b): Independent test oracles importing production modules or self-validating inverse pairs.
- * 2. Silent Passes & Positive Guards (G2, G2b): Bypasses on missing CLI tools or positive guards skipping verifications.
+ * 2. Silent Passes & Positive Guards (G2, G2b, G2c): Bypasses on missing CLI tools, positive guards skipping verifications,
+ *    and skips that stay silent under ORACLE_STRICT_MODE=1.
  * 3. Production Hardcoded Cheats (G3, G3b, G3c): Dummy string placeholders, fixed truncations, and unreferenced inputs.
  * 4. Hollow & Weak Assertions (G4, G4b, G4c): Tautologies, tests composed exclusively of weak assertions, and
  *    `toBeDefined()` on lookups that return `null` (not `undefined`) when the entry is missing.
@@ -644,6 +645,96 @@ function checkHollowNullChecks(sf: ts.SourceFile, file: string): Violation[] {
   return violations;
 }
 
+/**
+ * G2c: a skip must fail where a skip would hide a gap. A test or suite skipped because a tool, service or sample is
+ * missing passes silently on CI unless the condition fails under ORACLE_STRICT_MODE=1. A skip is accepted when its
+ * condition goes through the strict-aware helpers (`skipUnless`, `skipWithoutTools`, `skipWithoutRawSamples`, a
+ * `SKIP_WITHOUT_*` constant), tests the strict flag itself, tests the platform, or carries a `skip-ok: <reason>` comment on
+ * the same line or within the three lines above (an environment capability, a mode selection or an opt-in). An
+ * unconditional `it.skip` / `describe.skip` is always dead code and needs the same comment.
+ */
+const STRICT_AWARE_SKIP_CONDITION =
+  /skipUnless\(|skipWithoutTools\(|skipWithoutRawSamples\(|\bSKIP_WITHOUT_\w+|STRICT|[Ii]sStrict|ORACLE_STRICT_MODE|process\.platform/;
+const SKIP_OK_MARKER = /skip-ok:\s*\S/;
+const SKIP_MARKER_LOOKBACK_LINES = 3;
+const TEST_API_RECEIVERS = new Set(['it', 'test', 'describe', 'suite']);
+const TEST_CONTEXT_RECEIVERS = new Set(['ctx', 'context', 't']);
+const SKIP_GATE_EXEMPT_FILES = new Set(['tests/helpers/oracle-test.ts', 'tests/helpers/strict-skip.ts', 'tests/guard-anti-cheat-rules.test.ts']);
+
+function hasSkipOkMarker(content: string, line: number): boolean {
+  const lines = content.split('\n');
+  const from = Math.max(0, line - 1 - SKIP_MARKER_LOOKBACK_LINES);
+  return lines.slice(from, line).some((candidate) => SKIP_OK_MARKER.test(candidate));
+}
+
+const MAX_CONDITION_EXPANSION_DEPTH = 3;
+
+/** The condition text with the initializers of the file's `const` bindings it names, a few levels deep (`SKIP` -> `skipWithoutTools(...)`). */
+function expandedCondition(condition: ts.Node, sf: ts.SourceFile, depth = 0): string {
+  let text = condition.getText(sf);
+  if (depth >= MAX_CONDITION_EXPANSION_DEPTH) return text;
+  const initializers = new Map<string, ts.Expression>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) initializers.set(node.name.text, node.initializer);
+    ts.forEachChild(node, collect);
+  };
+  collect(sf);
+  const names = new Set<string>();
+  const gather = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) names.add(node.text);
+    ts.forEachChild(node, gather);
+  };
+  gather(condition);
+  for (const name of names) {
+    const initializer = initializers.get(name);
+    if (initializer) text += ` ${expandedCondition(initializer, sf, depth + 1)}`;
+  }
+  return text;
+}
+
+function enclosingFunctionText(node: ts.Node, sf: ts.SourceFile): string {
+  let scope: ts.Node | undefined = node.parent;
+  while (scope && !ts.isFunctionLike(scope)) scope = scope.parent;
+  return (scope ?? sf).getText(sf);
+}
+
+function checkSkipsFailUnderStrictMode(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const testFiles = scanDirectory(targetDir ? path.join(targetDir, 'tests') : TESTS_DIR, SUPPORTED_EXTENSIONS);
+  for (const file of testFiles) {
+    const relative = path.relative(ROOT_DIR, file).split(path.sep).join('/');
+    if (SKIP_GATE_EXEMPT_FILES.has(relative)) continue;
+    const content = fs.readFileSync(file, 'utf-8');
+    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+    const report = (node: ts.Node, message: string): void => {
+      const { line, snippet } = getNodeSnippet(sf, node);
+      violations.push({ file: path.relative(ROOT_DIR, file), line, rule: 'G2c-SKIP-SILENT-UNDER-STRICT', snippet, message });
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const method = node.expression.name.text;
+        const receiver = node.expression.expression.getText(sf);
+        const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+        if ((method === 'skipIf' || method === 'runIf') && node.arguments.length > 0) {
+          const condition = node.arguments[0].getText(sf);
+          if (!STRICT_AWARE_SKIP_CONDITION.test(expandedCondition(node.arguments[0], sf)) && !hasSkipOkMarker(content, line)) {
+            report(node, `${method}(${condition}) skips silently under ORACLE_STRICT_MODE=1. Build the condition with skipUnless / skipWithoutTools (tests/helpers/strict-skip.ts), or explain a legitimate skip with a "skip-ok: <reason>" comment.`);
+          }
+        } else if (method === 'skip' && TEST_API_RECEIVERS.has(receiver) && !hasSkipOkMarker(content, line)) {
+          report(node, `${receiver}.skip() is a permanently skipped test. Delete it, or explain it with a "skip-ok: <reason>" comment.`);
+        } else if (method === 'skip' && TEST_CONTEXT_RECEIVERS.has(receiver) && node.arguments.length === 0) {
+          if (!STRICT_AWARE_SKIP_CONDITION.test(enclosingFunctionText(node, sf)) && !hasSkipOkMarker(content, line)) {
+            report(node, `${receiver}.skip() skips silently under ORACLE_STRICT_MODE=1. Throw when strict, use oracleTest, or explain it with a "skip-ok: <reason>" comment.`);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return violations;
+}
+
 // ============================================================================
 // Gate 5: Governance (AST G5 external navigation + AST G6 built-in specifier)
 //
@@ -1137,6 +1228,7 @@ export function runAntiCheatGuard(options: {
   const allViolations: Violation[] = [
     ...checkCircularMocking(options.targetDir),
     ...checkSilentPassBypasses(options.targetDir),
+    ...checkSkipsFailUnderStrictMode(options.targetDir),
     ...checkProductionCheats(options.targetDir),
     ...checkHollowAssertions(options.targetDir),
     ...checkGovernance(options.targetDir),

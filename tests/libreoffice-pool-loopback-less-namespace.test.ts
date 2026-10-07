@@ -12,7 +12,7 @@ import {
 import { getUnshareCapability, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { EngineUnavailableError } from '../src/lib/types';
 import { extractTextWithExternalPdftotext, getOracleToolPath } from './helpers/differential-oracle';
-import { HAS_PDFTOTEXT, HAS_SOFFICE } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -62,7 +62,8 @@ function okResult() {
   };
 }
 
-describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT || !HAS_NET_NAMESPACE)(
+// skip-ok: an unprivileged network namespace is a kernel setting some hosts forbid, not a missing tool.
+describe.skipIf(skipWithoutTools('soffice', 'pdftotext', 'unshare') || !HAS_NET_NAMESPACE)(
   'pooled LibreOffice inside the loopback-less sandbox namespace (needs soffice, pdftotext, unshare -n)',
   () => {
     it(

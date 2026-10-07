@@ -180,12 +180,14 @@ describe('recognizing the pages of a scanned PDF', () => {
     ['tesseract'],
     async (ctx) => {
       if (SLOW_RUNNER) {
+        // skip-ok: explicit opt-out on a slow runner, or hardware capability: the speedup ratio is defined for a 4-CPU runner, and /proc is Linux only.
         ctx.skip();
         return;
       }
       requireTessdata('eng');
       // The ratio is defined for a 4-vCPU runner; on fewer CPUs two workers and the main thread compete.
       if (os.availableParallelism() < MIN_CPUS_FOR_TIMING) {
+        // skip-ok: explicit opt-out on a slow runner, or hardware capability: the speedup ratio is defined for a 4-CPU runner, and /proc is Linux only.
         ctx.skip();
         return;
       }
@@ -215,6 +217,7 @@ describe('recognizing the pages of a scanned PDF', () => {
     ['tesseract'],
     async (ctx) => {
       if (!HAS_PROC || SLOW_RUNNER) {
+        // skip-ok: explicit opt-out on a slow runner, or hardware capability: the speedup ratio is defined for a 4-CPU runner, and /proc is Linux only.
         ctx.skip();
         return;
       }

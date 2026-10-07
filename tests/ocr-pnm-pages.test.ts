@@ -248,6 +248,7 @@ describe('hand-over cost', () => {
     return best / 1000;
   }
 
+  // skip-ok: explicit opt-out on a slow runner (EASYCONVERT_SLOW_RUNNER=1), never set in CI.
   it.skipIf(SLOW_RUNNER)(
     `a noisy 2550x2000 colour page costs at least ${MIN_ENCODE_SAVING_SECONDS} s less to hand over as PNM than as PNG`,
     async () => {

@@ -182,6 +182,7 @@ const WRITER_FILES = [
 function writerOracleSuite(label: string, resolveBin: () => string, wrap: typeof oracleTest | null) {
   const register = (name: string, fn: () => void | Promise<void>) => {
     if (wrap) wrap(name, ['tar'], fn);
+    // skip-ok: bsdtar is a second, optional reference reader that CI does not install; the GNU tar run of this suite makes the same assertions.
     else it.skipIf(!BSDTAR_AVAILABLE)(name, fn);
   };
 
@@ -677,6 +678,7 @@ describe('TAR reader: typeflag policy and link containment', () => {
 
 describe('TAR reader: bsdtar', () => {
   for (const format of ['pax', 'ustar', 'gnutar']) {
+    // skip-ok: bsdtar is a second, optional reference writer that CI does not install; the GNU tar suite above reads archives written by GNU tar.
     it.skipIf(!BSDTAR_AVAILABLE)(`reads --format=${format} archives written by bsdtar`, () => {
       const tree = buildSourceTree(format === 'ustar' ? 'ustar' : 'any');
       const names = fs.readdirSync(tree.root).sort();

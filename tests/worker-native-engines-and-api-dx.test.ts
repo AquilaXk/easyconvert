@@ -22,6 +22,7 @@ import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { buildRateLimitHeaders } from '../src/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
 import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
+import { skipUnless } from './helpers/strict-skip';
 
 /** Daily quotas of the account tiers (hand-written from the pricing table: free 25, pro 500, enterprise 10,000). */
 const FREE_DAILY_LIMIT = 25;
@@ -83,7 +84,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res).toBeNull();
     });
 
-    it.skipIf(!probeNativeEngines().p7zip)('throws a typed error for an archive without entries instead of returning null', async () => {
+    it.skipIf(skipUnless('7z (p7zip)', Boolean(probeNativeEngines().p7zip)))('throws a typed error for an archive without entries instead of returning null', async () => {
       await expect(convertWithNative7z(EMPTY_ZIP, 'zip', 'tar', {}, 'archive.zip')).rejects.toMatchObject({
         name: 'ConversionFailedError',
         message: 'The archive contains no files to convert.',

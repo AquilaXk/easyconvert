@@ -16,9 +16,9 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
-import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
-const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
+import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
@@ -698,6 +698,7 @@ function buildShortMediaSample(dir: string, source: string): Buffer | null {
   }
 }
 
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
 describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
@@ -729,6 +730,7 @@ describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   });
 });
 
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
 describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
@@ -849,6 +851,7 @@ describe('every advertised registry pair has an engine path', () => {
     RAW_SOURCE_TIMEOUT_MS
   );
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('converts every toml pair, as source or target, through a real engine run', async () => {
     const tomlPairs = allPairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
     expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
@@ -878,6 +881,7 @@ describe('every advertised registry pair has an engine path', () => {
 
   // The media transcoder hands every non-archive target to FFmpeg without a routing table, so
   // these pairs carry no routing signal and cost one FFmpeg spawn each. Opt in explicitly.
+  // skip-ok: opt-in selection: the transcoder pairs run only with RUN_MEDIA_TRANSCODER_PAIRS; the strict-mode test that follows covers the audio pairs.
   it.skipIf(!HAS_FFMPEG || !RUN_MEDIA_TRANSCODER_PAIRS)(
     'audio and video sources routed through the media transcoder (REGISTRY_CONFORMANCE_MEDIA=1, needs ffmpeg)',
     async () => {
@@ -953,6 +957,7 @@ describe('every advertised registry pair has an engine path', () => {
 describe('inconclusive pairs ratchet', () => {
   // Pairs whose every probe input is rejected before the engine's routing step. They are not
   // proven routable, so each one is listed explicitly; the list may only shrink.
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('lists the allowlist sorted and without duplicates', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
@@ -1183,6 +1188,7 @@ describe('real camera RAW samples', () => {
     expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
   });
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('has a validator for every target the RAW sources advertise', () => {
     expect(allRawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
@@ -1249,8 +1255,6 @@ describe('native-engine pairs route through the dispatcher', () => {
   const NO_AUTHORABLE_INPUT = new Set(['key']);
   /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
   const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
-  const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
-  const HAS_PDFTOPS = isOracleToolAvailable('pdftops');
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1421,6 +1425,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('lists only pairs the registry advertises', () => {
     expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
@@ -1433,7 +1438,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     await expect(run).rejects.toMatchObject({ engineName });
   });
 
-  it.skipIf(!HAS_SOFFICE).each(officeToOffice)(
+  it.skipIf(skipWithoutTools('soffice')).each(officeToOffice)(
     '%s -> %s converts with LibreOffice (needs soffice)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
@@ -1443,7 +1448,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToImage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToImage)(
     '%s -> %s renders with LibreOffice and Poppler (needs soffice, pdftoppm)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1453,7 +1458,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToEncodedPage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToEncodedPage)(
     '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1463,7 +1468,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPS).each(officeToPostscriptPage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftops')).each(officeToPostscriptPage)(
     '%s -> %s writes the rendered pages with LibreOffice and pdftops (needs soffice, pdftops)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1473,7 +1478,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_PS2PDF || !HAS_PDFTOPPM || !HAS_PDFTOPS || !HAS_PDFTOCAIRO).each(postscriptPairs)(
+  it.skipIf(skipWithoutTools('ps2pdf', 'pdftoppm', 'pdftops', 'pdftocairo')).each(postscriptPairs)(
     '%s -> %s draws the PostScript page with the interpreter and the page tools (needs ps2pdf; Ghostscript is not in the CI image)',
     async (source, target) => {
       if (target === 'pdf') {
@@ -1516,7 +1521,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
-  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO || !HAS_PDFINFO).each(pdfToImage)(
+  it.skipIf(skipWithoutTools('pdftoppm', 'pdftocairo', 'pdfinfo')).each(pdfToImage)(
     '%s -> %s renders the page with Poppler (needs pdftoppm, pdftocairo, pdfinfo)',
     async (source, target) => {
       const pdf = realInput(source);
@@ -1546,7 +1551,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_PDFTOCAIRO).each(pdfToSvg)(
+  it.skipIf(skipWithoutTools('pdftocairo')).each(pdfToSvg)(
     '%s -> %s renders with Poppler (needs pdftocairo)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);

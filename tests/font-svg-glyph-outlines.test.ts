@@ -357,6 +357,7 @@ describe('SVG font to OTF, WOFF, WOFF2, EOT and SVG: the same real outlines', ()
 // External oracles
 // ---------------------------------------------------------------------------
 
+// skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
 describe.skipIf(!HAS_FC_SCAN)('SVG font: fontconfig reads the TTF and OTF output (needs fc-scan)', () => {
   it.each([
     ['ttf', 'TrueType'],
@@ -369,6 +370,7 @@ describe.skipIf(!HAS_FC_SCAN)('SVG font: fontconfig reads the TTF and OTF output
   });
 });
 
+// skip-ok: requireStrictFreeType / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when FreeType is missing.
 describe.skipIf(!HAS_FREETYPE)('SVG font: FreeType renders the output like a reference font (needs ImageMagick with FreeType)', () => {
   it('draws the same ink as a reference TrueType font written from the hand-written outlines', async () => {
     const reference = buildGlyfFont({

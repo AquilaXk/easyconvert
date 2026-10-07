@@ -48,6 +48,7 @@ function createGate() {
   return { promise, release };
 }
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () => {
   let keyPrefix: string;
   let admin: Redis;

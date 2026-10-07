@@ -769,6 +769,7 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
 // External oracles
 // ---------------------------------------------------------------------------
 
+// skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
 describe.skipIf(!HAS_FC_SCAN)('TrueType to CFF: fontconfig reads the output as the same face (needs fc-scan)', () => {
   it('reports a CFF face with the family, names and character set of the source', async () => {
     const ttf = buildGlyfFont(fixtureSpec());
@@ -785,6 +786,7 @@ describe.skipIf(!HAS_FC_SCAN)('TrueType to CFF: fontconfig reads the output as t
   });
 });
 
+// skip-ok: requireStrictFreeType / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when FreeType is missing.
 describe.skipIf(!HAS_FREETYPE)('TrueType to CFF: FreeType renders the output like the input (needs ImageMagick with FreeType)', () => {
   it('draws the same ink for every glyph before and after conversion', async () => {
     const ttf = buildGlyfFont(fixtureSpec());

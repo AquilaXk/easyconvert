@@ -311,6 +311,78 @@ it('checks a Map lookup, which answers undefined for a missing key', () => {
   });
 
   // =========================================================================
+  // 4c. G2c: skips that stay silent under ORACLE_STRICT_MODE=1
+  // =========================================================================
+  describe('Rule G2c: a skip must fail under ORACLE_STRICT_MODE=1', () => {
+    function guardOutputFor(source: string): { status: number; output: string } {
+      let result = { status: -1, output: '' };
+      withTempDir((dir) => {
+        const testsDir = path.join(dir, 'tests');
+        fs.mkdirSync(testsDir, { recursive: true });
+        fs.writeFileSync(path.join(testsDir, 'skips.test.ts'), source);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        result = { status: res.status, output: res.stderr + res.stdout };
+      });
+      return result;
+    }
+
+    it('flags a skip on a missing tool, an unconditional skip and a context skip (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const HAS_BZIP2 = true;
+it.skipIf(!HAS_BZIP2)('round-trips through bzip2', () => {});
+describe.runIf(process.env.PERF_BENCH === '1')('benchmark', () => {});
+it.skip('retired', () => {});
+it('skips from inside', (ctx) => {
+  if (!HAS_BZIP2) ctx.skip();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G2c-SKIP-SILENT-UNDER-STRICT/g)).toHaveLength(4);
+      expect(output).toContain('it.skipIf(!HAS_BZIP2)');
+      expect(output).toContain('permanently skipped test');
+    });
+
+    it('follows a constant to the strict-aware helper it is built from (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const SKIP = skipWithoutTools('bzip2');
+const HAS_X = skipUnless('x', false);
+const NEEDS_SAMPLES = skipWithoutRawSamples('x3f');
+it.skipIf(SKIP)('uses a helper constant', () => {});
+it.skipIf(!HAS_X)('uses another helper constant', () => {});
+describe.skipIf(NEEDS_SAMPLES)('samples', () => {});
+          `);
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
+    });
+
+    it('permits strict-flag, platform and explained skips (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const ENABLED = STRICT_MODE || Boolean(process.env.SAMPLES);
+it.skipIf(!ENABLED)('runs under strict mode', () => {});
+it.skipIf(process.platform !== 'linux')('reads /proc', () => {});
+// skip-ok: the Redis-mode CI step sets REDIS_URL and runs this file.
+describe.skipIf(!process.env.REDIS_URL)('redis', () => {});
+it('opts out on a slow runner', (ctx) => {
+  // skip-ok: explicit opt-out, never set in CI.
+  if (process.env.SLOW === '1') ctx.skip();
+});
+it('throws when strict, skips otherwise', (ctx) => {
+  if (!process.env.TOOL) {
+    if (process.env.ORACLE_STRICT_MODE === '1') throw new Error('tool required');
+    ctx.skip();
+  }
+});
+          `);
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
+    });
+  });
+
+  // =========================================================================
   // 5. Ratchet Baseline Enforcement
   // =========================================================================
   describe('Ratchet Baseline Mechanism', () => {

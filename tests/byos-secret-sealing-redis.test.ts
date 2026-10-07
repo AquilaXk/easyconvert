@@ -100,6 +100,7 @@ function expectNoSecretsInKeyspace(dump: Map<string, string>, secrets: readonly 
   }
 }
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('BYOS secrets on a real Redis server', () => {
   let redis: Redis;
   let customer: CustomerStorage;
