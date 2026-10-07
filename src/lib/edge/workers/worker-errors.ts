@@ -20,6 +20,18 @@ export interface SerializedWorkerError {
   column?: number;
 }
 
+/**
+ * The browser edge tier cannot convert this input or target: a container it has no demuxer for, a codec the
+ * platform has no decoder or encoder for, or a configuration the muxers cannot describe truthfully. The tier
+ * router answers it by running the server tier; it is never an invitation to produce substitute output.
+ */
+export class EdgeUnsupportedError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EdgeUnsupportedError';
+  }
+}
+
 type MessageOnlyError = new (message: string) => ConversionFailedError;
 
 /** Typed errors rebuilt by name; DataParseError is handled separately for its location. */
@@ -28,6 +40,7 @@ const MESSAGE_ONLY_ERRORS: ReadonlyMap<string, MessageOnlyError> = new Map<strin
   ['DataEncodingError', DataEncodingError],
   ['DataLimitExceededError', DataLimitExceededError],
   ['DataRepresentationError', DataRepresentationError],
+  ['EdgeUnsupportedError', EdgeUnsupportedError],
   ['UnsupportedOptionError', UnsupportedOptionError],
 ]);
 

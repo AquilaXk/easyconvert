@@ -14,6 +14,22 @@
  * 6. Zero-copy IPC using Transferable Objects (postMessage([buffer])).
  */
 
+import { EdgeUnsupportedError, serializeWorkerError, type SerializedWorkerError } from './worker-errors';
+
+/** Target bitrates used when the request does not name one; they are an encoder choice, not stream metadata. */
+const DEFAULT_VIDEO_BITRATE_BPS = 2_000_000;
+const DEFAULT_AUDIO_BITRATE_BPS = 128_000;
+/** Distance between forced key frames in the re-encoded video, in frames. */
+const OUTPUT_KEYFRAME_INTERVAL_FRAMES = 15;
+const MICROS_PER_SECOND = 1_000_000;
+
+/** Progress milestones, in percent: input read, encoding finished, container written. */
+const PROGRESS_INPUT_READ = 25;
+const PROGRESS_VIDEO_ENCODED_WITH_AUDIO = 70;
+const PROGRESS_ENCODED = 85;
+const PROGRESS_MUXING = 90;
+const PROGRESS_DONE = 100;
+
 export interface WebCodecsConversionRequest {
   jobId: string;
   sourceFormat: string;
@@ -48,6 +64,8 @@ export interface WebCodecsWorkerError {
   type: 'ERROR';
   jobId: string;
   message: string;
+  /** The typed error as plain data, so the main thread can rebuild its class. */
+  error?: SerializedWorkerError;
 }
 
 export type WebCodecsWorkerMessage =
@@ -204,11 +222,13 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
       if (userCodec === 'opus') {
         return { codec: 'opus', mimeType: 'audio/ogg; codecs=opus', isVideo: false };
       }
-      throw new Error(
+      throw new EdgeUnsupportedError(
         'Ogg Vorbis encoding is not supported by WebCodecs hardware encoder. Native FFmpeg engine is required for authentic lossy Vorbis compression (Fail-Closed).'
       );
     default:
-      return { codec: 'avc1.4d002a', mimeType: 'video/mp4', isVideo: true };
+      throw new EdgeUnsupportedError(
+        `The edge WebCodecs worker has no muxer for the "${targetFormat}" target; the server engine converts it.`
+      );
   }
 }
 
@@ -327,6 +347,10 @@ function parseStsd(view: DataView, payloadOffset: number, maxOffset: number, res
           descBuf[d] = view.getUint8(subCur + 8 + d);
         }
         res.description = descBuf;
+        // ISO/IEC 14496-15 5.4.2.1: profile_idc, constraint flags and level_idc follow the version byte
+        if (descBuf.length >= 4) {
+          res.codec = `${entryCodec}.${[1, 2, 3].map((i) => descBuf[i].toString(16).padStart(2, '0')).join('')}`;
+        }
         break;
       }
       subCur += subSize > 0 ? subSize : 8;
@@ -491,13 +515,12 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
   if (totalLen < 8) return null;
 
   let offset = 0;
-  let timescale = 90000;
   const tracks: Array<{
     type: 'video' | 'audio';
     codec: string;
     timescale: number;
-    width: number;
-    height: number;
+    width?: number;
+    height?: number;
     sampleRate?: number;
     channels?: number;
     description?: Uint8Array;
@@ -505,8 +528,6 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
   }> = [];
 
   // Parse top-level boxes
-  let mdatOffset = -1;
-  let mdatSize = 0;
 
   while (offset + 8 <= totalLen) {
     const boxSize = view.getUint32(offset);
@@ -523,10 +544,7 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
       break;
     }
 
-    if (boxType === 'mdat') {
-      mdatOffset = offset + (boxSize === 1 ? 16 : 8);
-      mdatSize = actualSize - (boxSize === 1 ? 16 : 8);
-    } else if (boxType === 'moov') {
+    if (boxType === 'moov') {
       let moovOffset = offset + (boxSize === 1 ? 16 : 8);
       const moovEnd = offset + actualSize;
 
@@ -535,16 +553,12 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
         const subType = readFourCC(view, moovOffset + 4);
         const subActual = subSize === 0 ? moovEnd - moovOffset : subSize;
 
-        if (subType === 'mvhd' && moovOffset + 20 <= moovEnd) {
-          const version = view.getUint8(moovOffset + 8);
-          timescale = version === 0 ? view.getUint32(moovOffset + 20) : view.getUint32(moovOffset + 28);
-          if (timescale <= 0) timescale = 90000;
-        } else if (subType === 'trak') {
+        if (subType === 'trak') {
           const trakEnd = moovOffset + subActual;
           let trakCur = moovOffset + 8;
-          let trakW = 1280;
-          let trakH = 720;
-          let trakTimescale = timescale;
+          let trakW = 0;
+          let trakH = 0;
+          let trakTimescale = 0;
           let trakIsVideo = true;
           let trakCodec = '';
           let trakSampleRate: number | undefined;
@@ -581,10 +595,8 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
                   const handler = readFourCC(view, mdiaCur + 16);
                   if (handler === 'soun') {
                     trakIsVideo = false;
-                    trakCodec = 'mp4a.40.2';
                   } else if (handler === 'vide') {
                     trakIsVideo = true;
-                    trakCodec = 'avc1.4d002a';
                   }
                 } else if (mType === 'minf') {
                   const minfEnd = Math.min(mdiaEnd, mdiaCur + Math.max(8, mSize));
@@ -615,12 +627,17 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
             trakCur += tSize >= 8 ? tSize : 8;
           }
 
+          if (trakCodec === '' || trakTimescale <= 0) {
+            moovOffset += subActual > 0 ? subActual : 8;
+            continue;
+          }
+
           tracks.push({
             type: trakIsVideo ? 'video' : 'audio',
-            codec: trakCodec || (trakIsVideo ? 'avc1.4d002a' : 'mp4a.40.2'),
+            codec: trakCodec,
             timescale: trakTimescale,
-            width: trakW,
-            height: trakH,
+            width: trakW > 0 ? trakW : undefined,
+            height: trakH > 0 ? trakH : undefined,
             sampleRate: trakSampleRate,
             channels: trakChannels,
             description: trakDescription,
@@ -677,167 +694,59 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
     };
   }
 
-  // If tracks were parsed but samples were empty
-  if (tracks.length > 0) {
-    const primary = tracks[0];
-    return {
-      type: primary.type,
-      codec: primary.codec,
-      timescale: primary.timescale,
-      width: primary.width,
-      height: primary.height,
-      sampleRate: primary.sampleRate,
-      channels: primary.channels,
-      description: primary.description,
-      samples: primary.samples,
-    };
-  }
-
-  // Fallback for minimal containers without stbl (e.g. raw synthetic test streams)
-  if (mdatOffset > 0 && mdatSize > 0) {
-    const chunkCount = Math.min(30, Math.max(1, Math.floor(mdatSize / 1024)));
-    const sampleSize = Math.floor(mdatSize / chunkCount);
-    const samples: DemuxedMediaSample[] = [];
-    for (let i = 0; i < chunkCount; i++) {
-      const sOffset = mdatOffset + i * sampleSize;
-      const sSize = i === chunkCount - 1 ? mdatOffset + mdatSize - sOffset : sampleSize;
-      const sampleData = new Uint8Array(buffer, sOffset, sSize);
-      const ptsMicros = normalizeTimestampToMicros(i * 3000, timescale);
-      samples.push({
-        data: sampleData,
-        timestampMicros: ptsMicros,
-        durationMicros: normalizeTimestampToMicros(3000, timescale),
-        isKeyFrame: i % 15 === 0,
-        type: 'video',
-      });
-    }
-    return {
-      type: 'video',
-      codec: 'avc1.4d002a',
-      timescale,
-      width: 1280,
-      height: 720,
-      samples,
-    };
-  }
-
   return null;
 }
 
-/**
- * Demuxes a WebM/EBML container.
- */
-export function demuxWebm(buffer: ArrayBuffer): DemuxedTrackInfo | null {
-  const bytes = new Uint8Array(buffer);
-  if (bytes.length < 4) return null;
-  // EBML magic: 0x1A 0x45 0xDF 0xA3
-  if (bytes[0] !== 0x1a || bytes[1] !== 0x45 || bytes[2] !== 0xdf || bytes[3] !== 0xa3) {
-    return null;
-  }
-
-  const videoSamples: DemuxedMediaSample[] = [];
-  const audioSamples: DemuxedMediaSample[] = [];
-  const timescale = 1000; // WebM default timecode scale (ms)
-  let width = 1280;
-  let height = 720;
-
-  // Search for SimpleBlock (0xA3)
-  for (let i = 0; i < bytes.length - 8; i++) {
-    if (bytes[i] === 0xa3) {
-      const sizeByte = bytes[i + 1];
-      let blockSize = sizeByte & 0x7f;
-      let headerLen = 2;
-      if ((sizeByte & 0x80) === 0 && i + 2 < bytes.length) {
-        blockSize = ((sizeByte & 0x3f) << 8) | bytes[i + 2];
-        headerLen = 3;
-      }
-      if (i + headerLen + 4 <= bytes.length && blockSize > 4) {
-        const trackByte = bytes[i + headerLen];
-        const isAudio = trackByte === 0x82 || (trackByte & 0x0f) === 2;
-        const timeMs = (bytes[i + headerLen + 1] << 8) | bytes[i + headerLen + 2];
-        const flags = bytes[i + headerLen + 3];
-        const isKeyFrame = (flags & 0x80) !== 0;
-        const payloadOffset = i + headerLen + 4;
-        const payloadLen = Math.min(blockSize - 4, bytes.length - payloadOffset);
-        if (payloadLen > 0) {
-          const sample: DemuxedMediaSample = {
-            data: bytes.slice(payloadOffset, payloadOffset + payloadLen),
-            timestampMicros: timeMs * 1000,
-            isKeyFrame,
-            type: isAudio ? 'audio' : 'video',
-          };
-          if (isAudio) {
-            audioSamples.push(sample);
-          } else {
-            videoSamples.push(sample);
-          }
-          i += headerLen + blockSize - 1;
-        }
-      }
-    }
-  }
-
-  const audioTrack: DemuxedTrackInfo | undefined =
-    audioSamples.length > 0
-      ? {
-          type: 'audio',
-          codec: 'opus',
-          timescale,
-          sampleRate: 48000,
-          channels: 2,
-          samples: audioSamples,
-        }
-      : undefined;
-
-  return {
-    type: 'video',
-    codec: 'vp09.00.10.08',
-    timescale,
-    width,
-    height,
-    samples: videoSamples,
-    audioTrack,
-  };
-}
+/** Canonical RIFF/WAVE header of a 16-bit PCM file: 'fmt ' directly after the RIFF header, 'data' after it. */
+const WAV_CANONICAL_HEADER_BYTES = 44;
+const WAV_FMT_PCM = 1;
+const WAV_BITS_16 = 16;
+const WAV_FRAME_CHUNK_TARGET_MS = 20;
+const MS_PER_SECOND = 1000;
 
 /**
- * Demuxes a WAV container into audio track and samples.
+ * Demuxes a canonical 16-bit PCM WAV container into an audio track; any other WAV layout is not understood.
  */
 export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo | null {
   const bytes = new Uint8Array(buffer);
-  if (bytes.length < 44) return null;
-  const header = String.fromCharCode(...bytes.slice(0, 4));
-  const wave = String.fromCharCode(...bytes.slice(8, 12));
-  if (header !== 'RIFF' || wave !== 'WAVE') return null;
-
+  if (bytes.length < WAV_CANONICAL_HEADER_BYTES) return null;
   const view = new DataView(buffer);
+  const isCanonical =
+    view.getUint32(0, false) === 0x52494646 && // 'RIFF'
+    view.getUint32(8, false) === 0x57415645 && // 'WAVE'
+    view.getUint32(12, false) === 0x666d7420 && // 'fmt '
+    view.getUint32(16, true) === 16 &&
+    view.getUint16(20, true) === WAV_FMT_PCM &&
+    view.getUint16(34, true) === WAV_BITS_16 &&
+    view.getUint32(36, false) === 0x64617461; // 'data'
+  if (!isCanonical) return null;
+
   const channels = view.getUint16(22, true);
   const sampleRate = view.getUint32(24, true);
   const dataLen = view.getUint32(40, true);
+  if (channels === 0 || sampleRate === 0) return null;
+
+  const bytesPerFrame = channels * (WAV_BITS_16 / 8);
+  const usableBytes = Math.min(dataLen, bytes.length - WAV_CANONICAL_HEADER_BYTES);
+  const framesPerChunk = Math.max(1, Math.floor((sampleRate * WAV_FRAME_CHUNK_TARGET_MS) / MS_PER_SECOND));
+  const totalFrames = Math.floor(usableBytes / bytesPerFrame);
 
   const samples: DemuxedMediaSample[] = [];
-  const pcmOffset = 44;
-  const actualDataLen = Math.min(dataLen, bytes.length - pcmOffset);
-  const chunkSize = Math.max(1024, Math.floor(sampleRate * channels * 2 / 50)); // ~20ms frames
-  const count = Math.ceil(actualDataLen / chunkSize);
-
-  for (let i = 0; i < count; i++) {
-    const start = pcmOffset + i * chunkSize;
-    const len = Math.min(chunkSize, pcmOffset + actualDataLen - start);
-    if (len > 0) {
-      const samplePts = Math.round((i * 1024 * 1_000_000) / sampleRate);
-      samples.push({
-        data: bytes.slice(start, start + len),
-        timestampMicros: samplePts,
-        isKeyFrame: true,
-        type: 'audio',
-      });
-    }
+  for (let frame = 0; frame < totalFrames; frame += framesPerChunk) {
+    const frames = Math.min(framesPerChunk, totalFrames - frame);
+    const start = WAV_CANONICAL_HEADER_BYTES + frame * bytesPerFrame;
+    samples.push({
+      data: bytes.slice(start, start + frames * bytesPerFrame),
+      timestampMicros: Math.round((frame * MICROS_PER_SECOND) / sampleRate),
+      durationMicros: Math.round((frames * MICROS_PER_SECOND) / sampleRate),
+      isKeyFrame: true,
+      type: 'audio',
+    });
   }
 
   return {
     type: 'audio',
-    codec: 'mp4a.40.2',
+    codec: 'pcm-s16',
     timescale: sampleRate,
     sampleRate,
     channels,
@@ -846,28 +755,23 @@ export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo | null {
 }
 
 /**
- * Universal container demuxer.
+ * Container demuxer for the formats the edge worker reads. Any other container (AVI, MKV, WebM, ...) is
+ * unsupported here and is converted by the server tier; no container is guessed from its bytes.
  */
-export function demuxMedia(buffer: ArrayBuffer, format: string): DemuxedTrackInfo | null {
+export function demuxMedia(buffer: ArrayBuffer, format: string): DemuxedTrackInfo {
   const fmt = format.toLowerCase();
+  let track: DemuxedTrackInfo | null = null;
   if (fmt === 'mp4' || fmt === 'm4v' || fmt === 'mov') {
-    return demuxMp4(buffer);
+    track = demuxMp4(buffer);
+  } else if (fmt === 'wav') {
+    track = demuxWav(buffer);
+  } else {
+    throw new EdgeUnsupportedError(`The edge WebCodecs worker has no demuxer for ${fmt || 'unknown'} input.`);
   }
-  if (fmt === 'webm' || fmt === 'mkv') {
-    return demuxWebm(buffer);
+  if (!track || track.samples.length === 0) {
+    throw new EdgeUnsupportedError(`The edge WebCodecs worker could not read any media samples from the ${fmt} input.`);
   }
-  if (fmt === 'wav') {
-    return demuxWav(buffer);
-  }
-  // Try probing magic bytes
-  const mp4Check = demuxMp4(buffer);
-  if (mp4Check && mp4Check.samples.length > 0) return mp4Check;
-  const webmCheck = demuxWebm(buffer);
-  if (webmCheck && webmCheck.samples.length > 0) return webmCheck;
-  const wavCheck = demuxWav(buffer);
-  if (wavCheck && wavCheck.samples.length > 0) return wavCheck;
-
-  return null;
+  return track;
 }
 
 /**
@@ -1817,9 +1721,13 @@ export function muxFmp4Stream(
   return concatUint8Arrays(...segments);
 }
 
+/** Codec strings the demuxer hands to VideoDecoder: an RFC 6381 string, never a bare sample entry name. */
+const WEBCODECS_VIDEO_CODEC_PATTERN = /^(avc1|avc3|hvc1|hev1|vp09|av01)\.[0-9a-zA-Z.]+$/;
+
 /**
- * Decodes and encodes video frames with WebCodecs hardware pipeline.
- * Guarantees VideoFrame.close() in try ... finally on every frame.
+ * Decodes the demuxed video samples and re-encodes them with the WebCodecs hardware pipeline.
+ * Guarantees VideoFrame.close() in try ... finally on every frame. Every frame comes from the input; a
+ * missing decoder or an undecodable track throws EdgeUnsupportedError instead of producing substitute frames.
  */
 async function encodeFramesHardware(
   codec: string,
@@ -1829,12 +1737,24 @@ async function encodeFramesHardware(
   videoBitrate: number,
   flowController: WatermarkFlowController,
   encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
-  demuxedTrack?: DemuxedTrackInfo | null,
-  onProgress?: (progress: number) => void
+  demuxedTrack: DemuxedTrackInfo,
+  onFraction?: (fraction: number) => void
 ): Promise<void> {
+  const VideoFrameClass = (globalThis as any).VideoFrame;
+  const VideoDecoderClass = (globalThis as any).VideoDecoder;
+  const EncodedChunkClass = (globalThis as any).EncodedVideoChunk;
+  if (typeof VideoDecoderClass === 'undefined' || typeof EncodedChunkClass === 'undefined') {
+    throw new EdgeUnsupportedError('WebCodecs VideoDecoder or EncodedVideoChunk is not supported in this browser environment');
+  }
+  if (demuxedTrack.type !== 'video' || demuxedTrack.samples.length === 0) {
+    throw new EdgeUnsupportedError('The input has no video track the edge worker can decode.');
+  }
+  if (!WEBCODECS_VIDEO_CODEC_PATTERN.test(demuxedTrack.codec)) {
+    throw new EdgeUnsupportedError(`The edge worker cannot decode the "${demuxedTrack.codec}" video track.`);
+  }
+
   let encoderError: Error | null = null;
-  let encoderClosed = false;
-  const frameDurationMicros = Math.round(1_000_000 / framerate);
+  const frameDurationMicros = Math.round(MICROS_PER_SECOND / framerate);
 
   const encoder = new (globalThis as any).VideoEncoder({
     output: (chunk: any) => {
@@ -1856,142 +1776,89 @@ async function encodeFramesHardware(
     flowController.onDequeue(encoder.encodeQueueSize);
   };
 
-  encoder.configure({
-    codec,
-    width,
-    height,
-    bitrate: videoBitrate,
-    framerate,
-  });
-
   try {
-    const VideoFrameClass = (globalThis as any).VideoFrame;
-    const VideoDecoderClass = (globalThis as any).VideoDecoder;
+    encoder.configure({
+      codec,
+      width,
+      height,
+      bitrate: videoBitrate,
+      framerate,
+    });
 
-    // Check if we have demuxed samples and VideoDecoder to run full Demux -> Decode -> Canvas -> Encode
-    if (
-      demuxedTrack &&
-      demuxedTrack.samples.length > 0 &&
-      typeof VideoDecoderClass !== 'undefined'
-    ) {
-      let decoderError: Error | null = null;
-      let frameIdx = 0;
-      const totalSamples = demuxedTrack.samples.length;
+    let decoderError: Error | null = null;
+    let frameIdx = 0;
+    const totalSamples = demuxedTrack.samples.length;
 
-      const decoder = new VideoDecoderClass({
-        output: async (decodedFrame: any) => {
-          let canvasFrame: any = null;
-          try {
-            await flowController.checkBackpressure(encoder.encodeQueueSize);
-            let frameToEncode = decodedFrame;
-
-            // OffscreenCanvas step for resizing or filtering
-            if (
-              typeof OffscreenCanvas !== 'undefined' &&
-              (decodedFrame.displayWidth !== width || decodedFrame.displayHeight !== height)
-            ) {
-              const canvas = new OffscreenCanvas(width, height);
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(decodedFrame, 0, 0, width, height);
-                canvasFrame = new VideoFrameClass(canvas, {
-                  timestamp: decodedFrame.timestamp,
-                  duration: decodedFrame.duration ?? frameDurationMicros,
-                });
-                frameToEncode = canvasFrame;
-              }
-            }
-
-            encoder.encode(frameToEncode, { keyFrame: frameIdx % 15 === 0 });
-            frameIdx++;
-            onProgress?.(10 + Math.round((frameIdx / totalSamples) * 75));
-          } catch (err: any) {
-            decoderError = err;
-          } finally {
-            if (canvasFrame) {
-              canvasFrame.close();
-            }
-            decodedFrame.close(); // Deterministic VRAM cleanup
-          }
-        },
-        error: (err: any) => {
-          decoderError = err instanceof Error ? err : new Error(String(err));
-        },
-      });
-
-      try {
-        decoder.configure({
-          codec: demuxedTrack.codec || 'avc1.4d002a',
-          description: demuxedTrack.description,
-        });
-
-        for (const sample of demuxedTrack.samples) {
-          if (decoderError) throw decoderError;
-          if (encoderError) throw encoderError;
-
-          const EncodedChunkClass = (globalThis as any).EncodedVideoChunk;
-          if (typeof EncodedChunkClass !== 'undefined') {
-            const chunk = new EncodedChunkClass({
-              type: sample.isKeyFrame ? 'key' : 'delta',
-              timestamp: sample.timestampMicros,
-              duration: sample.durationMicros,
-              data: sample.data,
-            });
-            decoder.decode(chunk);
-          }
-        }
-        await decoder.flush();
-      } finally {
-        decoder.close();
-      }
-    } else {
-      // Fallback: Generate frames via Canvas with backpressure flow control
-      const numFrames = 30;
-      for (let i = 0; i < numFrames; i++) {
-        if (encoderError) throw encoderError;
-
-        await flowController.checkBackpressure(encoder.encodeQueueSize);
-
-        const timestamp = i * frameDurationMicros;
-        const isKeyFrame = i % 15 === 0;
-
-        let inputFrame: any = null;
+    const decoder = new VideoDecoderClass({
+      output: async (decodedFrame: any) => {
+        let canvasFrame: any = null;
         try {
-          if (typeof OffscreenCanvas !== 'undefined') {
+          await flowController.checkBackpressure(encoder.encodeQueueSize);
+          let frameToEncode = decodedFrame;
+
+          // OffscreenCanvas step for resizing
+          if (decodedFrame.displayWidth !== width || decodedFrame.displayHeight !== height) {
+            if (typeof OffscreenCanvas === 'undefined') {
+              throw new EdgeUnsupportedError('Resizing video needs OffscreenCanvas, which this browser lacks.');
+            }
             const canvas = new OffscreenCanvas(width, height);
             const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.fillStyle = `rgb(${(i * 8) % 255}, 128, 200)`;
-              ctx.fillRect(0, 0, width, height);
+            if (!ctx) {
+              throw new EdgeUnsupportedError('The browser refused a 2D canvas context for resizing the video.');
             }
-            inputFrame = new VideoFrameClass(canvas, { timestamp, duration: frameDurationMicros });
-          } else {
-            const planeData = new Uint8Array(width * height * 4);
-            inputFrame = new VideoFrameClass(planeData, {
-              format: 'RGBA',
-              codedWidth: width,
-              codedHeight: height,
-              timestamp,
-              duration: frameDurationMicros,
+            ctx.drawImage(decodedFrame, 0, 0, width, height);
+            canvasFrame = new VideoFrameClass(canvas, {
+              timestamp: decodedFrame.timestamp,
+              duration: decodedFrame.duration ?? frameDurationMicros,
             });
+            frameToEncode = canvasFrame;
           }
-          encoder.encode(inputFrame, { keyFrame: isKeyFrame });
-        } finally {
-          if (inputFrame) {
-            inputFrame.close(); // Deterministic VRAM cleanup
-          }
-        }
 
-        onProgress?.(10 + Math.round((i / numFrames) * 75));
+          encoder.encode(frameToEncode, { keyFrame: frameIdx % OUTPUT_KEYFRAME_INTERVAL_FRAMES === 0 });
+          frameIdx++;
+          onFraction?.(frameIdx / totalSamples);
+        } catch (err: any) {
+          decoderError = err;
+        } finally {
+          if (canvasFrame) {
+            canvasFrame.close();
+          }
+          decodedFrame.close(); // Deterministic VRAM cleanup
+        }
+      },
+      error: (err: any) => {
+        decoderError = err instanceof Error ? err : new Error(String(err));
+      },
+    });
+
+    try {
+      decoder.configure({
+        codec: demuxedTrack.codec,
+        description: demuxedTrack.description,
+      });
+
+      for (const sample of demuxedTrack.samples) {
+        if (decoderError) throw decoderError;
+        if (encoderError) throw encoderError;
+        decoder.decode(
+          new EncodedChunkClass({
+            type: sample.isKeyFrame ? 'key' : 'delta',
+            timestamp: sample.timestampMicros,
+            duration: sample.durationMicros,
+            data: sample.data,
+          })
+        );
       }
+      await decoder.flush();
+      if (decoderError) throw decoderError;
+    } finally {
+      decoder.close();
     }
 
     await encoder.flush();
+    if (encoderError) throw encoderError;
   } finally {
-    if (!encoderClosed) {
-      encoder.close();
-      encoderClosed = true;
-    }
+    encoder.close();
   }
 }
 
@@ -2143,9 +2010,14 @@ export function muxOggOpus(
   return result;
 }
 
+/** Demuxer codec label of 16-bit little-endian PCM, which WebCodecs takes as `AudioData` format `s16`. */
+const PCM_S16_CODEC = 'pcm-s16';
+const BYTES_PER_S16_SAMPLE = 2;
+
 /**
- * Decodes and encodes audio frames with WebCodecs AudioEncoder/AudioDecoder.
- * Guarantees AudioData.close() in try ... finally on every frame.
+ * Encodes the demuxed audio samples with WebCodecs AudioEncoder.
+ * Guarantees AudioData.close() in try ... finally on every frame. Only samples that already are PCM become
+ * `AudioData`; compressed audio throws EdgeUnsupportedError rather than being reinterpreted as PCM.
  */
 async function encodeAudioHardware(
   codec: string,
@@ -2154,17 +2026,24 @@ async function encodeAudioHardware(
   audioBitrate: number,
   flowController: WatermarkFlowController,
   encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
-  demuxedTrack?: DemuxedTrackInfo | null,
-  onProgress?: (progress: number) => void
+  demuxedTrack: DemuxedTrackInfo,
+  onFraction?: (fraction: number) => void
 ): Promise<void> {
   let encoderError: Error | null = null;
-  let encoderClosed = false;
 
   const AudioEncoderClass = (globalThis as any).AudioEncoder;
   const AudioDataClass = (globalThis as any).AudioData;
 
   if (typeof AudioEncoderClass === 'undefined' || typeof AudioDataClass === 'undefined') {
-    throw new Error('WebCodecs AudioEncoder or AudioData is not supported in this browser environment');
+    throw new EdgeUnsupportedError('WebCodecs AudioEncoder or AudioData is not supported in this browser environment');
+  }
+  if (demuxedTrack.type !== 'audio' || demuxedTrack.samples.length === 0) {
+    throw new EdgeUnsupportedError('The input has no audio track the edge worker can encode.');
+  }
+  if (demuxedTrack.codec !== PCM_S16_CODEC) {
+    throw new EdgeUnsupportedError(
+      `The edge worker cannot decode "${demuxedTrack.codec}" audio, so the server engine converts it.`
+    );
   }
 
   const audioEncoder = new AudioEncoderClass({
@@ -2187,92 +2066,53 @@ async function encodeAudioHardware(
     flowController.onDequeue(audioEncoder.encodeQueueSize);
   };
 
-  audioEncoder.configure({
-    codec,
-    sampleRate,
-    numberOfChannels: channels,
-    bitrate: audioBitrate,
-  });
-
   try {
-    if (demuxedTrack && demuxedTrack.samples && demuxedTrack.samples.length > 0) {
-      const totalSamples = demuxedTrack.samples.length;
-      for (let i = 0; i < totalSamples; i++) {
-        if (encoderError) throw encoderError;
-        await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
+    audioEncoder.configure({
+      codec,
+      sampleRate,
+      numberOfChannels: channels,
+      bitrate: audioBitrate,
+    });
 
-        const sample = demuxedTrack.samples[i];
-        const rawBytes = sample.data;
-        const int16Count = Math.floor(rawBytes.byteLength / 2);
-        const frameCount = Math.floor(int16Count / channels);
+    const totalSamples = demuxedTrack.samples.length;
+    for (let i = 0; i < totalSamples; i++) {
+      if (encoderError) throw encoderError;
+      await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
 
-        if (frameCount > 0) {
-          const int16Samples = new Int16Array(
-            rawBytes.buffer,
-            rawBytes.byteOffset,
-            int16Count
-          );
-
-          let audioData: any = null;
-          try {
-            audioData = new AudioDataClass({
-              format: 's16',
-              sampleRate,
-              numberOfFrames: frameCount,
-              numberOfChannels: channels,
-              timestamp: sample.timestampMicros,
-              data: int16Samples,
-            });
-            audioEncoder.encode(audioData);
-          } finally {
-            if (audioData) {
-              audioData.close();
-            }
-          }
-        }
-
-        onProgress?.(10 + Math.round(((i + 1) / totalSamples) * 75));
+      const sample = demuxedTrack.samples[i];
+      const frameCount = Math.floor(sample.data.byteLength / (BYTES_PER_S16_SAMPLE * channels));
+      if (frameCount === 0) {
+        throw new EdgeUnsupportedError('The PCM audio holds a sample shorter than one frame.');
       }
-    } else {
-      // Fallback for synthetic / stream generation tests
-      const numFrames = 20;
-      const samplesPerFrame = 1024;
-      const frameDurationMicros = Math.round((samplesPerFrame * 1_000_000) / sampleRate);
 
-      for (let i = 0; i < numFrames; i++) {
-        if (encoderError) throw encoderError;
-        await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
+      // A copy keeps the Int16Array aligned however the demuxed slice sits in its buffer.
+      const pcm = new Int16Array(frameCount * channels);
+      new Uint8Array(pcm.buffer).set(sample.data.subarray(0, pcm.byteLength));
 
-        const timestamp = i * frameDurationMicros;
-        const pcmData = new Float32Array(samplesPerFrame * channels);
-
-        let audioData: any = null;
-        try {
-          audioData = new AudioDataClass({
-            format: 'f32',
-            sampleRate,
-            numberOfFrames: samplesPerFrame,
-            numberOfChannels: channels,
-            timestamp,
-            data: pcmData,
-          });
-          audioEncoder.encode(audioData);
-        } finally {
-          if (audioData) {
-            audioData.close();
-          }
+      let audioData: any = null;
+      try {
+        audioData = new AudioDataClass({
+          format: 's16',
+          sampleRate,
+          numberOfFrames: frameCount,
+          numberOfChannels: channels,
+          timestamp: sample.timestampMicros,
+          data: pcm,
+        });
+        audioEncoder.encode(audioData);
+      } finally {
+        if (audioData) {
+          audioData.close();
         }
-
-        onProgress?.(10 + Math.round((i / numFrames) * 75));
       }
+
+      onFraction?.((i + 1) / totalSamples);
     }
 
     await audioEncoder.flush();
+    if (encoderError) throw encoderError;
   } finally {
-    if (!encoderClosed) {
-      audioEncoder.close();
-      encoderClosed = true;
-    }
+    audioEncoder.close();
   }
 }
 
@@ -2284,8 +2124,8 @@ function muxFinalMedia(
   encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
   width: number,
   height: number,
-  sampleRate: number = 44100,
-  channels: number = 2,
+  sampleRate: number | undefined,
+  channels: number | undefined,
   audioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [],
   userCodec?: string
 ): Uint8Array {
@@ -2293,6 +2133,9 @@ function muxFinalMedia(
     return muxWebmVideo(encodedChunks, width, height, audioChunks, sampleRate, channels);
   }
   if (targetFormat === 'aac' || targetFormat === 'm4a') {
+    if (sampleRate === undefined || channels === undefined) {
+      throw new EdgeUnsupportedError('AAC output needs the sample rate and channel count of the source audio.');
+    }
     const parts = encodedChunks.map((c) => wrapAacWithAdts(c.data, sampleRate, channels));
     const total = parts.reduce((acc, p) => acc + p.byteLength, 0);
     const finalBytes = new Uint8Array(total);
@@ -2304,6 +2147,9 @@ function muxFinalMedia(
     return finalBytes;
   }
   if (targetFormat === 'opus' || (targetFormat === 'ogg' && userCodec === 'opus')) {
+    if (sampleRate === undefined || channels === undefined) {
+      throw new EdgeUnsupportedError('Opus output needs the sample rate and channel count of the source audio.');
+    }
     return muxOggOpus(encodedChunks, sampleRate, channels);
   }
   return muxMp4Media(encodedChunks, width, height, {
@@ -2314,11 +2160,200 @@ function muxFinalMedia(
   });
 }
 
+/** Encoder and decoder classes a video conversion needs; each missing one makes the edge tier step aside. */
+function assertVideoPlatformSupport(): void {
+  const g = globalThis as any;
+  if (typeof g.VideoEncoder === 'undefined' || typeof g.VideoFrame === 'undefined') {
+    throw new EdgeUnsupportedError('WebCodecs VideoEncoder or VideoFrame is not supported in this browser environment');
+  }
+  if (typeof g.VideoDecoder === 'undefined' || typeof g.EncodedVideoChunk === 'undefined') {
+    throw new EdgeUnsupportedError('WebCodecs VideoDecoder or EncodedVideoChunk is not supported in this browser environment');
+  }
+}
+
+function assertAudioPlatformSupport(): void {
+  const g = globalThis as any;
+  if (typeof g.AudioEncoder === 'undefined' || typeof g.AudioData === 'undefined') {
+    throw new EdgeUnsupportedError('WebCodecs AudioEncoder or AudioData is not supported in this browser environment');
+  }
+}
+
+/**
+ * Average frame rate of the demuxed video samples, from their presentation span. A track whose timing cannot
+ * give one (a single sample without a duration, or all samples at one instant) has none and throws.
+ */
+export function deriveFrameRate(samples: ReadonlyArray<DemuxedMediaSample>): number {
+  if (samples.length >= 2) {
+    let first = Number.POSITIVE_INFINITY;
+    let last = Number.NEGATIVE_INFINITY;
+    for (const sample of samples) {
+      first = Math.min(first, sample.timestampMicros);
+      last = Math.max(last, sample.timestampMicros);
+    }
+    if (last > first) {
+      return ((samples.length - 1) * MICROS_PER_SECOND) / (last - first);
+    }
+  } else if (samples.length === 1 && (samples[0].durationMicros ?? 0) > 0) {
+    return MICROS_PER_SECOND / (samples[0].durationMicros as number);
+  }
+  throw new EdgeUnsupportedError('The video track carries no timing the edge worker can derive a frame rate from.');
+}
+
+interface ResolvedAudioParams {
+  sampleRate: number;
+  channels: number;
+}
+
+/**
+ * Sample rate and channel count come from the demuxed audio. The edge encoders neither resample nor mix
+ * channels, so a request for different values is left to the server engine.
+ */
+function resolveAudioParams(track: DemuxedTrackInfo, options: WebCodecsConversionRequest['options'] = {}): ResolvedAudioParams {
+  const { sampleRate, channels } = track;
+  if (!sampleRate || !channels) {
+    throw new EdgeUnsupportedError('The audio track does not state its sample rate and channel count.');
+  }
+  if (options.audioSampleRate !== undefined && options.audioSampleRate !== sampleRate) {
+    throw new EdgeUnsupportedError(
+      `Resampling ${sampleRate} Hz audio to ${options.audioSampleRate} Hz is not available at the edge.`
+    );
+  }
+  if (options.audioChannels !== undefined && options.audioChannels !== channels) {
+    throw new EdgeUnsupportedError(
+      `Changing ${channels} audio channels to ${options.audioChannels} is not available at the edge.`
+    );
+  }
+  return { sampleRate, channels };
+}
+
+/** Maps an encoder's 0..1 fraction onto the percent range `from`..`to` of the whole conversion. */
+function scaledProgress(
+  onProgress: ((progress: number) => void) | undefined,
+  from: number,
+  to: number
+): (fraction: number) => void {
+  return (fraction) => onProgress?.(from + Math.round(fraction * (to - from)));
+}
+
+function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
+async function convertVideoTrack(
+  request: WebCodecsConversionRequest,
+  config: ReturnType<typeof resolveWebCodecsConfig>,
+  demuxedTrack: DemuxedTrackInfo,
+  flowController: WatermarkFlowController,
+  onProgress?: (progress: number) => void
+): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
+  const { targetFormat, options = {} } = request;
+  if (demuxedTrack.type !== 'video') {
+    throw new EdgeUnsupportedError('The input has no video track to convert to a video container.');
+  }
+  const width = options.width || demuxedTrack.width;
+  const height = options.height || demuxedTrack.height;
+  if (!width || !height) {
+    throw new EdgeUnsupportedError('The video track does not state its frame size.');
+  }
+  const framerate = options.framerate || deriveFrameRate(demuxedTrack.samples);
+
+  const audioTrack = demuxedTrack.audioTrack;
+  const hasAudio = Boolean(audioTrack && audioTrack.samples.length > 0);
+  const videoEnd = hasAudio ? PROGRESS_VIDEO_ENCODED_WITH_AUDIO : PROGRESS_ENCODED;
+  const encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
+  await encodeFramesHardware(
+    config.codec,
+    width,
+    height,
+    framerate,
+    options.videoBitrate || DEFAULT_VIDEO_BITRATE_BPS,
+    flowController,
+    encodedChunks,
+    demuxedTrack,
+    scaledProgress(onProgress, PROGRESS_INPUT_READ, videoEnd)
+  );
+
+  // Audio track preservation during video transcoding
+  const encodedAudioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
+  let audioParams: ResolvedAudioParams | undefined;
+
+  if (audioTrack && hasAudio) {
+    assertAudioPlatformSupport();
+    audioParams = resolveAudioParams(audioTrack, options);
+    const audioCodec = targetFormat === 'webm' ? 'opus' : 'mp4a.40.2';
+    await encodeAudioHardware(
+      audioCodec,
+      audioParams.sampleRate,
+      audioParams.channels,
+      options.audioBitrate || DEFAULT_AUDIO_BITRATE_BPS,
+      flowController,
+      encodedAudioChunks,
+      audioTrack,
+      scaledProgress(onProgress, PROGRESS_VIDEO_ENCODED_WITH_AUDIO, PROGRESS_ENCODED)
+    );
+  }
+
+  onProgress?.(PROGRESS_MUXING);
+
+  const finalBytes = muxFinalMedia(
+    targetFormat,
+    encodedChunks,
+    width,
+    height,
+    audioParams?.sampleRate,
+    audioParams?.channels,
+    encodedAudioChunks,
+    options.codec
+  );
+
+  onProgress?.(PROGRESS_DONE);
+  return { buffer: copyToArrayBuffer(finalBytes), mimeType: config.mimeType };
+}
+
+async function convertAudioTrack(
+  request: WebCodecsConversionRequest,
+  config: ReturnType<typeof resolveWebCodecsConfig>,
+  demuxedTrack: DemuxedTrackInfo,
+  flowController: WatermarkFlowController,
+  onProgress?: (progress: number) => void
+): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
+  const { targetFormat, options = {} } = request;
+  // The audio of a video file converts to an audio target as well.
+  const audioTrack = demuxedTrack.type === 'audio' ? demuxedTrack : demuxedTrack.audioTrack;
+  if (!audioTrack || audioTrack.samples.length === 0) {
+    throw new EdgeUnsupportedError('The input has no audio track to convert to an audio container.');
+  }
+  const { sampleRate, channels } = resolveAudioParams(audioTrack, options);
+
+  const encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
+  await encodeAudioHardware(
+    config.codec,
+    sampleRate,
+    channels,
+    options.audioBitrate || DEFAULT_AUDIO_BITRATE_BPS,
+    flowController,
+    encodedChunks,
+    audioTrack,
+    scaledProgress(onProgress, PROGRESS_INPUT_READ, PROGRESS_ENCODED)
+  );
+
+  onProgress?.(PROGRESS_MUXING);
+
+  // Audio-only targets carry no picture, so the frame size is not used.
+  const finalBytes = muxFinalMedia(targetFormat, encodedChunks, 0, 0, sampleRate, channels, [], options.codec);
+
+  onProgress?.(PROGRESS_DONE);
+  return { buffer: copyToArrayBuffer(finalBytes), mimeType: config.mimeType };
+}
+
 /**
  * Core Media Processing Engine for WebCodecs Pipeline.
  * Demuxer -> Decoder -> Canvas (optional) -> Encoder -> Muxer.
  * Guarantees deterministic resource release in all conditions.
- * Strict Fail-Closed: throws when required encoders are missing.
+ * Strict Fail-Closed: every missing demuxer, decoder or encoder throws EdgeUnsupportedError, which the tier
+ * router answers by running the server tier. No frame, sample or metadata is ever invented.
  */
 export async function processWebCodecsConversion(
   request: WebCodecsConversionRequest,
@@ -2328,141 +2363,24 @@ export async function processWebCodecsConversion(
   const config = resolveWebCodecsConfig(targetFormat, options.codec);
   const flowController = new WatermarkFlowController(6, 2);
 
+  // Audio processing never invokes VideoEncoder with an audio codec.
+  if (config.isVideo) {
+    assertVideoPlatformSupport();
+  } else {
+    assertAudioPlatformSupport();
+  }
+
   onProgress?.(10);
 
   // 1. Demux input container
   const demuxedTrack = demuxMedia(fileBuffer, sourceFormat);
 
-  onProgress?.(25);
-
-  const encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
-  const width = options.width || demuxedTrack?.width || 1280;
-  const height = options.height || demuxedTrack?.height || 720;
-  const framerate = options.framerate || 30;
-  const sampleRate = options.audioSampleRate || demuxedTrack?.sampleRate || 44100;
-  const channels = options.audioChannels || demuxedTrack?.channels || 2;
+  onProgress?.(PROGRESS_INPUT_READ);
 
   if (config.isVideo) {
-    if (
-      typeof (globalThis as any).VideoEncoder === 'undefined' ||
-      typeof (globalThis as any).VideoFrame === 'undefined'
-    ) {
-      throw new Error(
-        'WebCodecs VideoEncoder or VideoFrame is not supported in this browser environment'
-      );
-    }
-
-    await encodeFramesHardware(
-      config.codec,
-      width,
-      height,
-      framerate,
-      options.videoBitrate || 2_000_000,
-      flowController,
-      encodedChunks,
-      demuxedTrack,
-      onProgress
-    );
-
-    // Audio track preservation during video transcoding
-    const audioTrack = demuxedTrack?.audioTrack || (demuxedTrack?.type === 'audio' ? demuxedTrack : null);
-    const encodedAudioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
-
-    if (audioTrack && audioTrack.samples.length > 0) {
-      if (
-        typeof (globalThis as any).AudioEncoder !== 'undefined' &&
-        typeof (globalThis as any).AudioData !== 'undefined'
-      ) {
-        const audioCodec = targetFormat === 'webm' ? 'opus' : 'mp4a.40.2';
-        await encodeAudioHardware(
-          audioCodec,
-          sampleRate,
-          channels,
-          options.audioBitrate || 128_000,
-          flowController,
-          encodedAudioChunks,
-          audioTrack,
-          onProgress
-        );
-      } else {
-        // Passthrough demuxed audio samples to preserve audio track in muxer
-        for (const sample of audioTrack.samples) {
-          encodedAudioChunks.push({
-            data: sample.data,
-            timestampMicros: sample.timestampMicros,
-            isKeyFrame: true,
-          });
-        }
-      }
-    }
-
-    onProgress?.(90);
-
-    const finalBytes = muxFinalMedia(
-      targetFormat,
-      encodedChunks,
-      width,
-      height,
-      sampleRate,
-      channels,
-      encodedAudioChunks,
-      options.codec
-    );
-
-    onProgress?.(100);
-
-    const outBuffer = new ArrayBuffer(finalBytes.byteLength);
-    new Uint8Array(outBuffer).set(finalBytes);
-
-    return {
-      buffer: outBuffer,
-      mimeType: config.mimeType,
-    };
-  } else {
-    // Audio processing: never invoke VideoEncoder with an audio codec!
-    if (
-      typeof (globalThis as any).AudioEncoder === 'undefined' ||
-      typeof (globalThis as any).AudioData === 'undefined'
-    ) {
-      throw new Error(
-        'WebCodecs AudioEncoder or AudioData is not supported in this browser environment'
-      );
-    }
-
-    await encodeAudioHardware(
-      config.codec,
-      sampleRate,
-      channels,
-      options.audioBitrate || 128_000,
-      flowController,
-      encodedChunks,
-      demuxedTrack,
-      onProgress
-    );
-
-    onProgress?.(90);
-
-    const finalBytes = muxFinalMedia(
-      targetFormat,
-      encodedChunks,
-      width,
-      height,
-      sampleRate,
-      channels,
-      [],
-      options.codec
-    );
-
-    onProgress?.(100);
-
-    const outBuffer = new ArrayBuffer(finalBytes.byteLength);
-    new Uint8Array(outBuffer).set(finalBytes);
-
-    return {
-      buffer: outBuffer,
-      mimeType: config.mimeType,
-    };
+    return convertVideoTrack(request, config, demuxedTrack, flowController, onProgress);
   }
+  return convertAudioTrack(request, config, demuxedTrack, flowController, onProgress);
 }
 
 // Attach worker listener if running inside dedicated Worker environment
@@ -2488,11 +2406,13 @@ if (typeof self !== 'undefined' && typeof (self as any).postMessage === 'functio
           },
           [result.buffer]
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const error = serializeWorkerError(err);
         (self as any).postMessage({
           type: 'ERROR',
           jobId,
-          message: err.message || 'WebCodecs media transcoding failed',
+          message: error.message,
+          error,
         });
       }
     }
