@@ -287,12 +287,5 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
       }
     });
 
-    it('streams archive chunks without memory buffering', () => {
-      const tarGzTransformer = resolveChunkTransformer('tar', 'tar_gz');
-      const chunk = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
-      const out = tarGzTransformer(chunk);
-      expect(out.byteLength).toBe(4);
-      expect(out[0]).toBe(0x1f);
-    });
   });
 });

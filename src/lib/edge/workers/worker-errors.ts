@@ -1,9 +1,11 @@
 import {
   ConversionFailedError,
+  CorruptStreamError,
   DataEncodingError,
   DataLimitExceededError,
   DataParseError,
   DataRepresentationError,
+  DecompressionLimitError,
   UnsupportedOptionError,
 } from '../../types';
 
@@ -37,9 +39,11 @@ type MessageOnlyError = new (message: string) => ConversionFailedError;
 /** Typed errors rebuilt by name; DataParseError is handled separately for its location. */
 const MESSAGE_ONLY_ERRORS: ReadonlyMap<string, MessageOnlyError> = new Map<string, MessageOnlyError>([
   ['ConversionFailedError', ConversionFailedError],
+  ['CorruptStreamError', CorruptStreamError],
   ['DataEncodingError', DataEncodingError],
   ['DataLimitExceededError', DataLimitExceededError],
   ['DataRepresentationError', DataRepresentationError],
+  ['DecompressionLimitError', DecompressionLimitError],
   ['EdgeUnsupportedError', EdgeUnsupportedError],
   ['UnsupportedOptionError', UnsupportedOptionError],
 ]);
