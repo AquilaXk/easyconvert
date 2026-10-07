@@ -9,7 +9,10 @@ import { decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { ConversionFailedError } from '../src/lib/types';
+import { parseCsvWithPython } from './helpers/sheet-rows';
+import { sofficeConvert } from './helpers/soffice-office';
+import sharp from 'sharp';
+import { CadGeometryUnavailableError, ConversionFailedError, CorruptStreamError } from '../src/lib/types';
 import { FileExtensionSpoofError } from '../src/lib/registry';
 import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive } from '../src/lib/conversions/archive';
 import { buildStoredRar4 } from './helpers/rar4-stored';
@@ -134,10 +137,18 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res1.filename).toBe('drawing.dxf');
     expect(res1.buffer.toString('utf-8')).toContain('SECTION');
 
-    // cdr -> svg
-    const res2 = await convertFile(svgBuffer, 'cdr', 'svg', {}, 'design.cdr');
-    expect(res2.filename).toBe('design.svg');
-    expect(res2.buffer.toString('utf-8')).toContain('<svg');
+    // cdr: an SVG document under a CorelDRAW name is refused by the magic-byte gate, and a genuine CorelDRAW RIFF
+    // container (form type CDR6) has no vector reader, so it is refused with the typed engine error, never answered with a drawing
+    const spoofedCdr = await convertFile(svgBuffer, 'cdr', 'svg', { validateMagicBytes: true }, 'design.cdr').catch((err: unknown) => err);
+    expect(spoofedCdr).toBeInstanceOf(FileExtensionSpoofError);
+    expect((spoofedCdr as Error).message).toMatch(/incompatible with declared format "\.cdr"/);
+    const riffCdr = Buffer.alloc(64);
+    riffCdr.write('RIFF', 0, 'latin1');
+    riffCdr.writeUInt32LE(riffCdr.length - 8, 4);
+    riffCdr.write('CDR6', 8, 'latin1');
+    const genuineCdr = await convertFile(riffCdr, 'cdr', 'svg', { validateMagicBytes: true }, 'design.cdr').catch((err: unknown) => err);
+    expect(genuineCdr).toBeInstanceOf(CadGeometryUnavailableError);
+    expect((genuineCdr as Error).message).toBe('Unsupported or unparseable .cdr vector format: fail-closed against dummy placeholder synthesis.');
 
     // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
     await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
@@ -207,39 +218,42 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.isEmbeddedPreview).toBe(true);
   });
 
-  it('converts document, ebook, and spreadsheet formats (hwp, azw4, et) without disguised PDFs', async () => {
-    const docData = Buffer.from('Hangul Word Processor text sample', 'utf-8');
-
-    // hwp -> pdf
-    const res1 = await convertFile(docData, 'hwp', 'pdf', {}, 'document.hwp');
+  it('converts a real HWP document to a PDF, and refuses text under an .hwp name', async () => {
+    const hwp = readFileSync(path.join(__dirname, 'fixtures', 'hwp', 'changing-paragraph-text.hwp'));
+    const res1 = await convertFile(hwp, 'hwp', 'pdf', { validateMagicBytes: true }, 'document.hwp');
     expect(res1.filename).toBe('document.pdf');
     expect(res1.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
 
+    const docData = Buffer.from('Hangul Word Processor text sample', 'utf-8');
+    const spoofed = await convertFile(docData, 'hwp', 'pdf', {}, 'document.hwp').catch((err: unknown) => err);
+    expect(spoofed).toBeInstanceOf(CorruptStreamError);
+    expect((spoofed as Error).message).toBe('Invalid HWP document: the file is not an OLE2 compound file.');
+  });
+
+  it('refuses a text file under an .azw4 name, which must be a PDF inside a PalmDB container', async () => {
     // azw4 -> epub: a Print Replica book is a PDF inside a PalmDB container, not text. Plain text under the .azw4
     // name is refused with a typed error instead of becoming an EPUB of that text.
-    await expect(convertFile(docData.length < 78 ? Buffer.concat([docData, Buffer.alloc(80)]) : docData, 'azw4', 'epub', {}, 'book.azw4')).rejects.toMatchObject({
+    const docData = Buffer.from('Hangul Word Processor text sample', 'utf-8');
+    await expect(convertFile(Buffer.concat([docData, Buffer.alloc(80)]), 'azw4', 'epub', {}, 'book.azw4')).rejects.toMatchObject({
       name: 'ConversionFailedError',
       message: expect.stringMatching(/not a readable MOBI file/),
     });
+  });
 
-    // et -> csv
-    const csvData = Buffer.from('Name,Value\nItemA,100\nItemB,200', 'utf-8');
-    const res3 = await convertFile(csvData, 'et', 'csv', {}, 'table.et');
-    expect(res3.filename).toBe('table.csv');
-    expect(res3.buffer.toString('utf-8')).toContain('ItemA');
+  // et: a Kingsoft workbook is an OOXML package (read here) or a BIFF8 compound file; the rows are what an office suite reads from it.
+  oracleTest('converts a real .et workbook to csv, png and jpg', ['soffice', 'python3'], async () => {
+    const expectedRows = [['Name', 'Value'], ['ItemA', '100'], ['ItemB', '200']];
+    const workbook = sofficeConvert(Buffer.from('Name,Value\nItemA,100\nItemB,200\n'), 'csv', 'xlsx', 'xlsx');
+    const asCsv = await convertFile(workbook, 'et', 'csv', { validateMagicBytes: true }, 'table.et');
+    expect(asCsv.filename).toBe('table.csv');
+    expect(parseCsvWithPython(asCsv.buffer.toString('utf-8'))).toEqual(expectedRows);
 
-    // et -> png (must be REAL PNG image, not PDF disguised as PNG!)
-    const resEtPng = await convertFile(csvData, 'et', 'png', {}, 'table.et');
-    expect(resEtPng.filename).toBe('table.png');
-    expect(resEtPng.mimeType).toBe('image/png');
-    expect(resEtPng.buffer.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-
-    // et -> jpg (must be REAL JPEG image, not PDF!)
-    const resEtJpg = await convertFile(csvData, 'et', 'jpg', {}, 'table.et');
-    expect(resEtJpg.filename).toBe('table.jpg');
-    expect(resEtJpg.mimeType).toBe('image/jpeg');
-    expect(resEtJpg.buffer[0]).toBe(0xff);
-    expect(resEtJpg.buffer[1]).toBe(0xd8);
+    const asPng = await convertFile(workbook, 'et', 'png', {}, 'table.et');
+    expect(asPng.mimeType).toBe('image/png');
+    expect(await sharp(asPng.buffer).metadata()).toMatchObject({ format: 'png', width: expect.any(Number) });
+    const asJpg = await convertFile(workbook, 'et', 'jpg', {}, 'table.et');
+    expect(asJpg.mimeType).toBe('image/jpeg');
+    expect(await sharp(asJpg.buffer).metadata()).toMatchObject({ format: 'jpeg', width: expect.any(Number) });
   });
 
   // odg -> bmp: LibreOffice Draw draws the page, Poppler renders it and the BMP encoder writes the picture.

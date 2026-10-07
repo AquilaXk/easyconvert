@@ -15,6 +15,7 @@ import {
 import { oracleTest } from './helpers/oracle-test';
 import { dxfFacts, packageFacts, parquetFacts, pdfFacts, pngFacts, sevenZipFacts, tarFacts, xpathNames, zstdFacts } from './helpers/corpus-facts';
 import { compareImages } from './helpers/vrt-engine';
+import { readHwpWithReference } from './helpers/hwp-reference';
 import { decodeParquet } from '../src/lib/conversions/parquet';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { synthesizeGradientStressCard } from './helpers/golden-corpus-suite';
@@ -172,9 +173,18 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
           codec: 'SNAPPY',
         });
 
-        // Raw sensor frame: 64 x 64 samples of 16 bits; HWP: the CFBF signature (no standard tool reads HWP).
+        // Raw sensor frame: 64 x 64 samples of 16 bits; HWP: 7-Zip opens the compound file and lists its HWP streams.
         expect(bytesOf('sensor-raw-frame.raw').length).toBe(64 * 64 * 2);
-        expect([...bytesOf('enterprise-compound-document.hwp').subarray(0, 8)]).toEqual([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+        expect(readHwpWithReference(bytesOf('enterprise-compound-document.hwp'))).toMatchObject({
+          streamPaths: ['BodyText/Section0', 'DocInfo', 'FileHeader'],
+          version: '5.0.3.0',
+          paragraphs: [
+            'HWP 5.0 Enterprise Financial & Technical Architecture Specification',
+            'This document validates KS C 5601 binary stream extraction and EqEdit math transpilation.',
+            'Mathematical formulations are parsed from HWPTAG_EQEDIT records into clean MathML and LaTeX representations.',
+          ],
+          tables: [[['Metric Name', 'Observed Value', 'Compliance Target'], ['Tessellation Delta Ratio', '0.0002', '< 0.0005'], ['Memory Shredding Cycles', '3 Passes', 'DoD 5220.22-M']]],
+        });
       }
     );
   });

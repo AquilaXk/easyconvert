@@ -533,6 +533,8 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
 
   oracleTest('renders the golden HWP fixture with its paragraphs and table rows in order', POPPLER_TOOLS, async () => {
     const corpus = synthesizeHwp5CompoundCorpus();
+    // What was written into the file (record by record, by the independent test writer), paragraphs then table cells;
+    // the equations are not drawn.
     const expected = [
       ...corpus.doc.paragraphs.map((paragraph) => paragraph.text),
       ...(corpus.doc.tables ?? []).flatMap((table) => table.rows.flat()),

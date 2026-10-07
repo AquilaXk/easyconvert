@@ -136,7 +136,7 @@ async function buildRawCorpus(): Promise<RawCorpusItem[]> {
     category: 'document',
     format: 'hwp',
     buffer: hwp.buffer,
-    description: 'Hancom HWP 5.0 CFBF compound binary file with DocInfo, FileHeader, and paragraph text streams',
+    description: 'HWP 5.0 document written record by record: FileHeader, DocInfo, three paragraphs, three EqEdit equations and a 3 x 3 table',
   });
 
   // 7. CAD: STEP AP214 B-Rep Manifold Solid

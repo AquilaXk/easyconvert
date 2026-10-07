@@ -12,7 +12,9 @@ import {
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
 import { evaluateBSplineCurve, evaluateBSplineSurface, evaluateSurfaceCurvature } from '../src/lib/conversions/cad-nurbs';
-import { CadGeometryError } from '../src/lib/types';
+import { CadGeometryError, CorruptStreamError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import { parseToUnicodeCMap, recursiveXyCut } from '../src/lib/conversions/pdf-utils';
 import { parseHwpDocument, hwpEquationToMathML, hwpEquationToLaTeX } from '../src/lib/conversions/hwp';
 import sharp from 'sharp';
@@ -117,41 +119,48 @@ describe('Phase 4: Universal Golden Binary Corpus & Visual Regression CI Gate (#
   // 3. HWP 5.0 CFBF Compound File Binary & EqEdit MathML Corpus
   // =========================================================================
   describe('3. HWP 5.0 CFBF Compound File Binary & EqEdit MathML Corpus', () => {
-    it('packages valid HWP 5.0 CFBF compound binary and parses paragraphs, tables, and metadata', () => {
+    it('reads the independently written HWP 5.0 compound file back to the paragraphs and table that were written', () => {
       const corpus = synthesizeHwp5CompoundCorpus();
 
-      expect(corpus.buffer.length).toBeGreaterThan(1024);
       // Check CFBF magic bytes
       expect(corpus.buffer.readUInt32LE(0)).toBe(0xe011cfd0);
       expect(corpus.buffer.readUInt32LE(4)).toBe(0xe11ab1a1);
 
-      // Parsed document checks
-      expect(corpus.doc.paragraphs.length).toBeGreaterThanOrEqual(3);
-      expect(corpus.doc.tables.length).toBeGreaterThanOrEqual(1);
-      expect(corpus.doc.tables[0].rows.length).toBe(3);
-      expect(corpus.doc.tables[0].rows[0][0]).toBe('Metric Name');
+      const doc = parseHwpDocument(corpus.buffer);
+      expect(doc.version).toBe('5.0.3.0');
+      expect(doc.paragraphs.map((paragraph) => paragraph.text)).toEqual(corpus.doc.paragraphs.map((paragraph) => paragraph.text));
+      expect(doc.tables.map((table) => table.rows)).toEqual((corpus.doc.tables ?? []).map((table) => table.rows));
+      expect(doc.equations?.map((equation) => equation.script)).toEqual(corpus.rawEquations);
     });
 
-    it('transpiles HWP EqEdit equations to standards-compliant MathML and LaTeX', () => {
+    oracleTest('transpiles the equations of the compound file to MathML that reads as the equations do', ['xmllint'], () => {
       const corpus = synthesizeHwp5CompoundCorpus();
+      const [summation, density, energy] = (parseHwpDocument(corpus.buffer).equations ?? []).map((equation) => equation.mathml);
 
-      expect(corpus.transpiledEquations.length).toBe(3);
+      // sum_{i=1}^{n} i = {n(n+1)} over {2}: a sum with limits, then i = n(n+1)/2
+      expect(xmlWellFormed(summation).ok).toBe(true);
+      expect(xpathString(summation, 'name(/math/*[1])')).toBe('munderover');
+      expect(xpathString(summation, 'string(/math/munderover/*[2])')).toBe('i=1');
+      expect(xpathString(summation, 'string(/math/mfrac/*[1])')).toBe('n(n+1)');
 
-      const eq1 = corpus.transpiledEquations[0];
-      expect(eq1.script).toContain('sum_{i=1}^{n}');
-      expect(eq1.mathml).toContain('<mrow>');
-      expect(eq1.mathml).toContain('<mfrac>');
-      expect(eq1.latex).toContain('\\sum');
-      expect(eq1.latex).toContain('\\frac');
+      // f(x) = {1} over {sqrt{2 pi}} e^{-{x^2} over {2}}: a fraction over a square root, then e to a fraction
+      expect(xmlWellFormed(density).ok).toBe(true);
+      expect(xpathString(density, 'string(/math/mfrac/*[2]/self::msqrt)')).toBe('2π');
+      expect(xpathString(density, 'name(/math/msup/*[2]/*[2])')).toBe('mfrac');
 
-      const eq2 = corpus.transpiledEquations[1];
-      expect(eq2.script).toContain('sqrt{2 pi}');
-      expect(eq2.mathml).toContain('<msqrt>');
-      expect(eq2.latex).toContain('\\sqrt');
+      // E = m c^2: the exponent sits on c
+      expect(xmlWellFormed(energy).ok).toBe(true);
+      expect(xpathString(energy, 'string(/math/msup/*[1])')).toBe('c');
+      expect(xpathString(energy, 'string(/math/msup/*[2])')).toBe('2');
+    });
 
-      const eq3 = corpus.transpiledEquations[2];
-      expect(eq3.script).toBe('E = m c^2');
-      expect(eq3.latex).toBe('E = m c^2');
+    it('transpiles the equations of the compound file to LaTeX', () => {
+      const corpus = synthesizeHwp5CompoundCorpus();
+      expect((parseHwpDocument(corpus.buffer).equations ?? []).map((equation) => equation.latex)).toEqual([
+        '\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}',
+        'f(x) = \\frac{1}{\\sqrt{2 \\pi}} e^{-\\frac{x^2}{2}}',
+        'E = m c^2',
+      ]);
     });
   });
 
@@ -272,23 +281,17 @@ endcmap`;
       expect(parsed.charMap instanceof Map).toBe(true);
     });
 
-    it('resiliently handles malformed EqEdit math scripts without throwing unhandled exceptions', () => {
-      const malformedScripts = [
-        '{ { { { unclosed braces',
-        'over over over',
-        'sqrt{ } over { }',
-        '\\\\\\\\\\ non_ascii_µ_∂_∑',
-        '',
-      ];
-
-      for (const script of malformedScripts) {
-        expect(() => {
-          const mathml = hwpEquationToMathML(script);
-          const latex = hwpEquationToLaTeX(script);
-          expect(typeof mathml).toBe('string');
-          expect(typeof latex).toBe('string');
-        }).not.toThrow();
+    it('refuses malformed EqEdit scripts with a typed error and transpiles odd but valid ones to well-formed MathML', () => {
+      for (const script of ['{ { { { unclosed braces', 'over over over']) {
+        expect(() => hwpEquationToMathML(script), script).toThrow(CorruptStreamError);
+        expect(() => hwpEquationToLaTeX(script), script).toThrow(CorruptStreamError);
       }
+      // An empty radicand and an empty fraction operand are valid scripts; so are symbols the editor has no keyword for.
+      expect(hwpEquationToMathML('sqrt{ } over { }')).toBe('<math><mfrac><msqrt><mrow></mrow></msqrt><mrow></mrow></mfrac></math>');
+      expect(hwpEquationToLaTeX('sqrt{ } over { }')).toBe('\\frac{\\sqrt{}}{}');
+      expect(hwpEquationToMathML('')).toBe('<math></math>');
+      expect(hwpEquationToLaTeX('')).toBe('');
+      expect(hwpEquationToMathML('µ_∂_∑')).toBe('<math><msub><msub><mi>µ</mi><mo>∂</mo></msub><mo>∑</mo></msub></math>');
     });
   });
 });

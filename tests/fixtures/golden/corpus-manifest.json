@@ -60,9 +60,9 @@
       "format": "hwp",
       "relativePath": "tests/fixtures/golden/document/enterprise-compound-document.hwp",
       "sizeBytes": 3584,
-      "sha256": "8448db27603ca63684b3b86a2769c4e17b599b96ca26d4b730801de11a8c27ab",
+      "sha256": "5b5865ab60f799d5aaffec3c427c98154c36ab8609d6816d5eff42f89ffdbddc",
       "verified": true,
-      "description": "Hancom HWP 5.0 CFBF compound binary file with DocInfo, FileHeader, and paragraph text streams"
+      "description": "HWP 5.0 document written record by record: FileHeader, DocInfo, three paragraphs, three EqEdit equations and a 3 x 3 table"
     },
     {
       "name": "brep-solid.step",

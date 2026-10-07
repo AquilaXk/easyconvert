@@ -250,12 +250,12 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
 
       const doc = parseHwpDocument(corpus.buffer);
       expect(doc.version).toBe('5.0.3.0');
-      expect(doc.paragraphs.length).toBeGreaterThan(0);
+      expect(doc.paragraphs.map((paragraph) => paragraph.text)).toEqual(corpus.doc.paragraphs.map((paragraph) => paragraph.text));
 
-      // Verify MathML equations
-      expect(corpus.transpiledEquations.length).toBeGreaterThanOrEqual(3);
-      expect(corpus.transpiledEquations[0].mathml).toContain('<mfrac>');
-      expect(corpus.transpiledEquations[1].mathml).toContain('<msqrt>');
+      // The three equations written into the file come back as their scripts, with a fraction and a root among the MathML
+      expect(doc.equations?.map((equation) => equation.script)).toEqual(corpus.rawEquations);
+      expect(doc.equations?.[0].mathml).toContain('<mfrac>');
+      expect(doc.equations?.[1].mathml).toContain('<msqrt>');
     });
 
     it('1.12 synthesizes audio bitstream corpus with WAV, MP3, and FLAC containers', () => {
