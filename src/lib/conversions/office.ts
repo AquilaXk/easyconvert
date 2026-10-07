@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -546,6 +546,9 @@ const UTF16LE_BOM = [0xff, 0xfe];
 const UTF16BE_BOM = [0xfe, 0xff];
 const XML_DECLARATION_SCAN_BYTES = 200;
 const XML_ENCODING_PATTERN = /<\?xml[^>]*\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']/;
+
+/** PK\x03\x04: the local file header every ZIP-based package starts with. */
+const ZIP_LOCAL_HEADER_SIGNATURE = [0x50, 0x4b, 0x03, 0x04];
 
 function startsWithBytes(buffer: Buffer, prefix: readonly number[]): boolean {
   return prefix.every((byte, index) => buffer[index] === byte);
@@ -8330,6 +8333,30 @@ export function getExcelColumnIndex(colLetters: string): number {
   return Math.max(0, idx - 1);
 }
 
+const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
+
+/**
+ * The table a JSON document holds: an array of objects becomes a header row (the keys of the first record) and one
+ * row per record; an array of plain values becomes a single "Value" column. Anything else is not a table and is
+ * refused, as is text that is not JSON: a sheet holding the document's own text would be a substitute result.
+ */
+function parseJsonTableRows(text: string): string[][] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new DataParseError(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  const first: unknown = parsed[0];
+  if (typeof first === 'object' && first !== null && !Array.isArray(first)) {
+    const headers = Object.keys(first);
+    return [headers, ...parsed.map((item) => headers.map((header) => String((item as Record<string, unknown>)[header] ?? '')))];
+  }
+  if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  return [['Value'], ...parsed.map((item) => [String(item)])];
+}
+
 /**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
@@ -8344,18 +8371,7 @@ export async function generateXlsxFromData(
 
   let rows: string[][] = [];
   if (sourceType === 'json') {
-    try {
-      const parsed = JSON.parse(rawText);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        rows.push(headers);
-        parsed.forEach((item) => rows.push(headers.map((h) => String(item[h] ?? ''))));
-      } else {
-        rows = [['Value'], ...parsed.map((p: any) => [String(p)])];
-      }
-    } catch {
-      rows = [['Data'], [rawText]];
-    }
+    rows = parseJsonTableRows(rawText);
   } else {
     // Delimited (CSV or TSV) using Papa.parse for RFC 4180 compliance
     const delim = sourceType === 'tsv' ? '\t' : options.delimiter || ',';
@@ -9125,6 +9141,26 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
   return rows;
 }
 
+/** The cell rows of the BIFF8 workbook stream inside a CFBF container (an Excel 97-2003 or Kingsoft workbook). */
+function readCfbfWorkbookRows(inputBuffer: Buffer): string[][] {
+  const cfbf = parseCfbf(inputBuffer);
+  let workbookStream: Buffer | undefined;
+  for (const [name, buf] of cfbf.streams.entries()) {
+    if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
+      workbookStream = buf;
+      break;
+    }
+  }
+  if (!workbookStream) {
+    throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
+  }
+  const parsed = parseBiff8Workbook(workbookStream);
+  if (parsed.length === 0) {
+    throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
+  }
+  return parsed;
+}
+
 /**
  * Excel XLS Parser & Converter
  */
@@ -9138,22 +9174,7 @@ export async function convertXlsSource(
 
   // 1. CFBF Compound File Binary Format containing Workbook stream
   if (isCfbfContainer(inputBuffer)) {
-    const cfbf = parseCfbf(inputBuffer);
-    let workbookStream: Buffer | undefined;
-    for (const [name, buf] of cfbf.streams.entries()) {
-      if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
-        workbookStream = buf;
-        break;
-      }
-    }
-    if (!workbookStream) {
-      throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
-    }
-    const parsed = parseBiff8Workbook(workbookStream);
-    if (parsed.length === 0) {
-      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
-    }
-    rows.push(...parsed);
+    rows.push(...readCfbfWorkbookRows(inputBuffer));
   }
   // 2. Raw BIFF stream (without CFBF container)
   else if (
@@ -9528,18 +9549,14 @@ async function extractRowsForOffice(
     return merged;
   }
 
-  const text = inputBuffer.toString('utf-8');
-  if (src === 'json') {
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        return [headers, ...parsed.map((item) => headers.map((h) => String(item[h] ?? '')))];
-      }
-    } catch {
-      // fallback
-    }
+  if (src === 'et') {
+    // A Kingsoft workbook is an OOXML package or a BIFF8 compound file; neither is CSV text.
+    if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
+    if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookRows(inputBuffer);
   }
+
+  const text = inputBuffer.toString('utf-8');
+  if (src === 'json') return parseJsonTableRows(text);
 
   const delim = src === 'tsv' ? '\t' : options.delimiter || ',';
   const parsedCsv = Papa.parse<string[]>(text, {
@@ -9593,7 +9610,7 @@ async function convertEtSource(
   }
 
   if (tgt === 'xlsx') {
-    const buffer = await generateXlsxFromData(inputBuffer, 'et', options, baseName);
+    const buffer = await generateXlsxFromData(Buffer.from(Papa.unparse(rows), 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
   }
 
