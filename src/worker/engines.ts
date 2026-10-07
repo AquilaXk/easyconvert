@@ -110,7 +110,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-postscript' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
   executionTimeMs: number;
   filePath?: string;
   metadata?: Record<string, unknown>;
@@ -175,6 +175,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/dcraw_emu',
     '/opt/homebrew/bin/dcraw_emu',
   ],
+  ps2pdf: [
+    ...(process.env.PS2PDF_PATH ? [process.env.PS2PDF_PATH] : []),
+    '/usr/bin/ps2pdf',
+    '/usr/local/bin/ps2pdf',
+    '/opt/homebrew/bin/ps2pdf',
+  ],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
     '/usr/bin/tesseract',
@@ -217,6 +223,7 @@ export type NativeBinaryName =
   | 'pdftoppm'
   | 'pdftotext'
   | 'tesseract'
+  | 'ps2pdf'
   | 'dcrawEmu';
 
 /** The environment variable that overrides each native CLI's location. */
@@ -228,6 +235,7 @@ const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
   pdftoppm: 'PDFTOPPM_PATH',
   pdftotext: 'PDFTOTEXT_PATH',
   tesseract: 'TESSERACT_PATH',
+  ps2pdf: 'PS2PDF_PATH',
   dcrawEmu: 'DCRAW_EMU_PATH',
 };
 
@@ -1593,6 +1601,82 @@ export async function convertWithNativeRaw(
   });
 }
 
+/** PostScript sources: only an interpreter can draw them, so the worker runs ps2pdf and then Poppler. */
+const POSTSCRIPT_SOURCES: ReadonlySet<string> = new Set(['eps', 'ps']);
+const POSTSCRIPT_DEFAULT_TIMEOUT_MS = 120_000;
+const POSTSCRIPT_MAX_TIMEOUT_MS = 600_000;
+const POSTSCRIPT_MEMORY_LIMIT_MB = 2048;
+const POSTSCRIPT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+const POSTSCRIPT_MAX_STDERR_CHARS = 300;
+/** The interpreter runs in its safe mode: the file cannot read or write other files or start programs. */
+const POSTSCRIPT_INTERPRETER_FLAGS: readonly string[] = ['-dSAFER'];
+
+/**
+ * Renders PostScript (EPS, PS) with `ps2pdf` and, for targets other than PDF, hands the PDF to Poppler (the
+ * same raster and SVG route PDF sources take). Returns null when `ps2pdf` is missing and the caller did not
+ * ask for an error; with `throwOnUnavailable` a missing interpreter is an EngineUnavailableError.
+ */
+export async function convertWithNativePostScript(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (!POSTSCRIPT_SOURCES.has(src)) return null;
+  const interpreter = resolveBinary(BINARY_PATHS.ps2pdf, process.env.PS2PDF_PATH);
+  if (!interpreter) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('ps2pdf', 'ps2pdf (Ghostscript) is not installed or not in PATH');
+    }
+    return null;
+  }
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const startTime = Date.now();
+  const timeout = Math.min(options.timeoutMs || POSTSCRIPT_DEFAULT_TIMEOUT_MS, POSTSCRIPT_MAX_TIMEOUT_MS);
+
+  const pdf = await withSandboxDir('easyconvert-postscript-', async (tempDir) => {
+    const { inputPath } = resolveInputContext(input, src, tempDir);
+    const pdfPath = path.join(tempDir, 'rendered.pdf');
+    try {
+      await executeSandboxedBinary(interpreter, [...POSTSCRIPT_INTERPRETER_FLAGS, inputPath, pdfPath], {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        maxFileSize: POSTSCRIPT_MAX_OUTPUT_BYTES,
+        memoryLimitMb: POSTSCRIPT_MEMORY_LIMIT_MB,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+    } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        throw new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
+      }
+      if (err instanceof SandboxedProcessError) {
+        const detail = err.stderr.trim().slice(0, POSTSCRIPT_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        throw new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
+      }
+      throw err;
+    }
+    if (!fs.existsSync(pdfPath) || fs.statSync(pdfPath).size === 0) {
+      throw new ConversionFailedError(`The PostScript interpreter drew no page from the .${src} file.`);
+    }
+    return fs.readFileSync(pdfPath);
+  });
+
+  if (tgt === 'pdf') {
+    return withSandboxDir('easyconvert-postscript-out-', async (tempDir) => {
+      const outputPath = path.join(tempDir, 'output.pdf');
+      fs.writeFileSync(outputPath, pdf);
+      const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
+      return createConversionResult(persistedPath, 'pdf', baseName, 'native-postscript', Date.now() - startTime);
+    });
+  }
+  return convertWithNativePoppler(pdf, 'pdf', tgt, options, originalFilename);
+}
+
 /**
  * Camera RAW formats LibRaw's distribution build cannot open and that are decoded in-process from the
  * real sensor data instead: Sigma X3F (Foveon) and Raspberry Pi frames (a JPEG followed by a "BRCM" Bayer dump).
@@ -1982,6 +2066,27 @@ export async function executeWorkerConversion(
       if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
         fallbackChain.push(`native-raw: ${err.message}`);
         fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 1c'. PostScript sources: ps2pdf, then Poppler for raster and SVG targets.
+  if (POSTSCRIPT_SOURCES.has(src) && (tgt === 'pdf' || tgt === 'svg' || POPPLER_IMAGE_FORMATS.has(tgt))) {
+    try {
+      const psRes = await convertWithNativePostScript(input, src, tgt, nativeOptions, originalFilename);
+      if (psRes) {
+        return {
+          ...psRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-postscript: ${err.message}`);
+        fallbackReason = err.message;
+        lastUnavailable = err;
       } else {
         throw err;
       }

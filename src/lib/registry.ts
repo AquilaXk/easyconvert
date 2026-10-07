@@ -1721,7 +1721,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'tiff'],
   },
   tga: {
     id: 'tga',
@@ -2624,7 +2624,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
+    targetFormats: ['pdf', 'jpg', 'png', 'tiff', 'svg'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {

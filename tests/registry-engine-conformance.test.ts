@@ -385,6 +385,7 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
+  eps: ['jpg', 'pdf', 'png', 'svg', 'tiff'],
   key: ['pdf', 'pptx'],
   odd: ['jpg', 'pdf', 'png'],
   odg: ['jpg', 'pdf', 'png'],
@@ -393,6 +394,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   odt: ['doc', 'jpg', 'png', 'rtf'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   ppt: ['jpg', 'odp', 'png'],
+  ps: ['jpg', 'pdf', 'png', 'svg', 'tiff'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
@@ -681,7 +683,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     emf: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'wmf'],
-    eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    eps: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
@@ -715,7 +717,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     pptx: ['emf', 'eps', 'key', 'md', 'swf', 'xps'],
     prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
-    ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
+    ps: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'wmf'],
     qpw: ['tsv'],
     rst: ['rtf'],
     sk: ['emf', 'wmf'],
@@ -1164,6 +1166,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   };
   /** Sources whose real input no installed tool can author (Keynote has no writer); their pairs prove only the missing-engine answer. */
   const NO_AUTHORABLE_INPUT = new Set(['key']);
+  /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders are checked in tests/postscript-native-route.test.ts. */
+  const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   const PDF_SOURCE = 'pdf';
@@ -1177,13 +1181,14 @@ describe('native-engine pairs route through the dispatcher', () => {
   const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source));
-  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source));
+  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source));
+  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
+    if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
@@ -1244,6 +1249,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
     if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
     if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
+    if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
   }
 
