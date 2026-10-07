@@ -25,6 +25,7 @@ const TRIANGLE: TessellatedMesh = {
     [1, 0, 0],
     [0, 1, 0],
   ],
+  normals: [],
   faces: [[0, 1, 2]],
 };
 
@@ -68,7 +69,7 @@ describe('pure CAD encoders refuse a face that points at no vertex (issue #480)'
   });
 
   it('refuses a dangling index in the first corner of a polygon fan too', () => {
-    const quad: TessellatedMesh = { ...TRIANGLE, faces: [[7, 0, 1, 2]] };
+    const quad = { ...TRIANGLE, faces: [[7, 0, 1, 2]] } as unknown as TessellatedMesh;
     const error = failureOf(() => encodeStl(quad));
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
     expect(error.message).toMatch(/face 0 has vertex index 7, but the mesh has 3 vertices/);
@@ -89,7 +90,7 @@ describe('pure CAD encoders refuse a face that points at no vertex (issue #480)'
   });
 
   it('still skips a face of fewer than three corners, which has no area to write', () => {
-    const mesh: TessellatedMesh = { ...TRIANGLE, faces: [[0, 1], [0, 1, 2]] };
+    const mesh = { ...TRIANGLE, faces: [[0, 1], [0, 1, 2]] } as unknown as TessellatedMesh;
     expect(encodeStl(mesh).match(/facet normal/g)).toHaveLength(1);
   });
 

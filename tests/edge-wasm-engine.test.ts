@@ -11,6 +11,7 @@ import {
   WasmEngine,
   type WasmTaskRequest,
 } from '../src/lib/edge/workers/wasm-engine.worker';
+import { deriveQuantizerLevels } from '../src/lib/edge/quantizer-levels';
 import { executeWasmTask } from '../src/lib/edge/pipelines/wasm-simd-pipeline';
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { mulberry32 } from './helpers/audio-signals';
@@ -54,7 +55,7 @@ describe('custom Wasm task (issue #480)', () => {
   });
 
   it('returns what the module wrote, not the input it was given', async () => {
-    expect(WebAssembly.validate(INCREMENT)).toBe(true);
+    expect(WebAssembly.validate(asArrayBuffer(INCREMENT))).toBe(true);
     const output = await runCustom(INPUT, INCREMENT);
     // Each byte plus one, wrapping at 256: computed here, not by the module under test.
     expect(Array.from(output)).toEqual(Array.from(INPUT, (byte) => (byte + 1) % 256));
@@ -312,7 +313,7 @@ describe('quantiser levels follow maxColors (issue #480)', () => {
     expect(Array.from(applyRgbaQuantize(pixel, 0, 0, 3_375, false))).toEqual([128, 128, 128, 255]);
   });
 
-  it.each(MAX_COLORS_CASES)('gives the same pixels from the engine as from the JS path for maxColors %i', async (maxColors) => {
+  it.each(MAX_COLORS_CASES)('quantises the engine task to the nearest levels of maxColors %i, by the reference rounding', async (maxColors) => {
     const next = mulberry32(maxColors);
     const pixels = new Uint8Array(4 * 4_096);
     for (let i = 0; i < pixels.length; i++) pixels[i] = Math.floor(next() * 256);
@@ -325,7 +326,15 @@ describe('quantiser levels follow maxColors (issue #480)', () => {
       buffer: asArrayBuffer(pixels),
       options: { colors: maxColors, width: 0, height: 0, dither: false },
     });
-    expect(Buffer.from(result.buffer).equals(Buffer.from(applyRgbaQuantize(pixels, 0, 0, maxColors, false)))).toBe(true);
+    // The levels are the ones the colour budget derives; the pixels are what the exact reference rounding gives for them.
+    const { r, g, b } = deriveQuantizerLevels(maxColors);
+    const out = new Uint8Array(result.buffer);
+    const mismatches: string[] = [];
+    for (let at = 0; at < pixels.length; at += 4) {
+      const expected = [referenceQuantize(pixels[at], r), referenceQuantize(pixels[at + 1], g), referenceQuantize(pixels[at + 2], b), pixels[at + 3]];
+      if (expected.some((value, i) => value !== out[at + i])) mismatches.push(`pixel ${at / 4}`);
+    }
+    expect(mismatches).toEqual([]);
     // One definition on every runtime: the SIMD kernel does not compute these pixels.
     expect(result.simdUsed).toBe(false);
   });

@@ -446,6 +446,27 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS IMA ADPCM, %s (issue #480)', (route)
       expect(snrDb(tone, decoded, 0, frames * channels)).toBeGreaterThanOrEqual(SNR_FLOOR_DB);
     });
 
+    it('pads the last block with silence, not with a repeat of the last frame', async () => {
+      const { bytes } = await runOpfsConversion(
+        route,
+        'wav',
+        'adpcm',
+        craftWav({ sampleRate: rate, channels, bitsPerSample: 16, data: int16Bytes(tone) })
+      );
+      const wav = walkWav(bytes);
+      expect(frames % spb).not.toBe(0);
+      const decoded = referenceDecodeIma(bytes.subarray(wav.dataOffset, wav.dataOffset + wav.dataSize), channels, blockAlign, spb);
+      const padded = decoded.length / channels - frames;
+      expect(padded).toBeGreaterThan(8);
+      // The padding decodes towards zero: the last frames of the file are near silence, where a repeat of the
+      // last frame would hold it at the level the tone had there.
+      const lastPadding = Array.from(decoded.subarray(decoded.length - 4 * channels), Math.abs);
+      expect(Math.max(...lastPadding)).toBeLessThanOrEqual(240);
+      // The fact chunk still states the real length, and the real samples are unchanged in quality.
+      expect(wav.factSamples).toBe(frames);
+      expect(snrDb(tone, decoded, 0, frames * channels)).toBeGreaterThanOrEqual(SNR_FLOOR_DB);
+    });
+
     it('takes raw 16-bit PCM with explicit parameters and writes the same ADPCM as the WAV source', async () => {
       const raw = await runOpfsConversion(route, 'pcm', 'adpcm', int16Bytes(tone), { sampleRate: rate, channels, bitDepth: 16 });
       const fromWav = await runOpfsConversion(

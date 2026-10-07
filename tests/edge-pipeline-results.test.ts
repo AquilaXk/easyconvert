@@ -38,7 +38,7 @@ afterEach(() => {
 async function blobOfUrl(url: string): Promise<Blob> {
   const blob = resolveObjectURL(url);
   if (!blob) throw new Error(`${url} does not resolve to a Blob`);
-  return blob;
+  return blob as unknown as Blob;
 }
 
 describe('no fabricated result URLs (issue #480)', () => {
@@ -246,6 +246,7 @@ describe('the L0 CAD path hands a broken mesh to the server tier (issue #480)', 
         [1, 0, 0],
         [0, 1, 0],
       ],
+      normals: [],
       faces: [[0, 1, 3]],
     });
     const error = await tryProcessClientEdge(stepItem()).then(

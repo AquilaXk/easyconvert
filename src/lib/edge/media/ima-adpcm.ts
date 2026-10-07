@@ -126,7 +126,7 @@ function decodeSample(code: number, state: ImaChannelState): number {
 
 /**
  * Encodes one block. `pcm` holds `count` interleaved frames (at most `samplesPerBlock`); a short last block is
- * completed by holding its final frame, so the padding decodes to a steady tail that `fact` excludes.
+ * completed with silent frames, which the `fact` chunk excludes from the audio.
  */
 export function encodeImaBlock(
   pcm: Int16Array,
@@ -148,9 +148,8 @@ export function encodeImaBlock(
   for (let n = 1; n < samplesPerBlock; n++) {
     const group = Math.floor((n - 1) / IMA_SAMPLES_PER_GROUP);
     const within = (n - 1) % IMA_SAMPLES_PER_GROUP;
-    const source = Math.min(n, count - 1);
     for (let c = 0; c < channels; c++) {
-      const code = encodeSample(pcm[source * channels + c], states[c]);
+      const code = encodeSample(n < count ? pcm[n * channels + c] : 0, states[c]);
       const at = codesStart + (group * channels + c) * IMA_GROUP_BYTES + (within >> 1);
       out[at] |= within % 2 === 0 ? code : code << IMA_BITS_PER_SAMPLE;
     }

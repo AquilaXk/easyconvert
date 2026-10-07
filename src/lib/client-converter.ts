@@ -9,7 +9,7 @@ import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { canvasToBlob } from './edge/pipelines/canvas-blob';
 import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
-import { deriveQuantizerLevels } from './edge/workers/wasm-engine.worker';
+import { deriveQuantizerLevels } from './edge/quantizer-levels';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import {

@@ -25,6 +25,8 @@ const GZIP_FEED_SLICE_BYTES = 64 * 1024;
 /** Output the pump keeps queued before it stops reading, so a slow writer applies backpressure. */
 const PUMP_QUEUE_LIMIT_BYTES = 1024 * 1024;
 
+/** Prefix of the error codes Node's zlib gives a malformed or truncated stream (Z_DATA_ERROR, Z_BUF_ERROR). */
+const ZLIB_ERROR_CODE_PREFIX = 'Z_';
 const TAR_BLOCK_BYTES = 512;
 const TAR_SIZE_START = 124;
 const TAR_SIZE_END = 136;
@@ -38,8 +40,11 @@ const ASCII_ZERO = 0x30;
 const ASCII_SEVEN = 0x37;
 const OCTAL_RADIX = 8;
 const BYTE_RADIX = 256;
+/** High bit of the first size byte: the size is a base-256 number in the rest of the field (pax and GNU writers). */
 const BASE256_MARKER = 0x80;
 const BASE256_VALUE_MASK = 0x7f;
+/** Largest byte that is a non-negative signed char; a header checksum may be summed over signed chars. */
+const SIGNED_CHAR_MAX = 0x7f;
 const END_MARKER_BLOCKS = 2;
 /** Entry types that carry no body even when the size field is not zero (hard link, symlink, devices, directory, FIFO). */
 /** Typeflag of an old-format GNU sparse file entry. */
@@ -93,7 +98,7 @@ function hasValidChecksum(block: Uint8Array): boolean {
   for (let i = 0; i < TAR_BLOCK_BYTES; i++) {
     const byte = i >= TAR_CHECKSUM_START && i < TAR_CHECKSUM_END ? ASCII_SPACE : block[i];
     unsigned += byte;
-    signed += byte > 0x7f ? byte - BYTE_RADIX : byte;
+    signed += byte > SIGNED_CHAR_MAX ? byte - BYTE_RADIX : byte;
   }
   return stored === unsigned || stored === signed;
 }
@@ -288,8 +293,19 @@ function requireGzipStreams(): void {
   }
 }
 
-function asCorruptGzip(error: unknown): Error {
-  if (error instanceof ConversionFailedError) return error;
+/** Whether `error` is the platform saying the gzip stream itself is malformed or cut short (not a fault of this runtime). */
+function isGzipFormatError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith(ZLIB_ERROR_CODE_PREFIX);
+}
+
+/**
+ * A stream-format error is damaged data; a typed conversion error stays as it is, and so does any other fault
+ * (a RangeError from running out of memory, say), which says nothing about the file.
+ */
+function asCorruptGzip(error: unknown): unknown {
+  if (error instanceof ConversionFailedError || !isGzipFormatError(error)) return error;
   const detail = error instanceof Error ? error.message : String(error);
   return new CorruptStreamError(`The gzip stream is damaged: ${detail}.`);
 }

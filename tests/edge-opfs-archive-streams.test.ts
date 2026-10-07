@@ -233,3 +233,44 @@ describe('OPFS archive streams against the reference tools (issue #480)', () => 
     }
   });
 });
+
+describe('OPFS inflate failures that are not damaged data keep their own class (issue #480)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** A DecompressionStream stand-in whose transform fails with `error`, as the platform's does for that fault. */
+  function failingInflater(error: Error): typeof DecompressionStream {
+    return class extends TransformStream<Uint8Array, Uint8Array> {
+      constructor() {
+        super({
+          transform() {
+            throw error;
+          },
+        });
+      }
+    } as unknown as typeof DecompressionStream;
+  }
+
+  it('lets an allocation failure through as the RangeError it is, not as a damaged gzip stream', async () => {
+    vi.stubGlobal('DecompressionStream', failingInflater(new RangeError('Array buffer allocation failed')));
+    const error = await failure(runOpfsConversion('sync-access-handle', 'gz', 'tar', gzipSync(SMALL_TAR)));
+    expect(error).toBeInstanceOf(RangeError);
+    expect(error.message).toBe('Array buffer allocation failed');
+  });
+
+  it('still reports the stream-format error of the platform as a damaged gzip stream', async () => {
+    vi.stubGlobal('DecompressionStream', failingInflater(new TypeError('incorrect header check')));
+    const error = await failure(runOpfsConversion('sync-access-handle', 'gz', 'tar', gzipSync(SMALL_TAR)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect(error.message).toBe('The gzip stream is damaged: incorrect header check.');
+  });
+
+  it('reports a zlib error code as a damaged gzip stream', async () => {
+    const zlibError = Object.assign(new Error('unexpected end of file'), { code: 'Z_BUF_ERROR' });
+    vi.stubGlobal('DecompressionStream', failingInflater(zlibError));
+    const error = await failure(runOpfsConversion('sync-access-handle', 'gz', 'tar', gzipSync(SMALL_TAR)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect(error.message).toBe('The gzip stream is damaged: unexpected end of file.');
+  });
+});

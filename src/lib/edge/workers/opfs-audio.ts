@@ -6,6 +6,9 @@
  * samples. A WAV source is read with the strict RIFF walker, so its header gives the rate, channels and sample
  * size and the audio is exactly the data chunk (a LIST chunk before it or a trailer after it is not audio).
  *
+ * Target names say the container: `u8` and `wav` write a WAV file (so `pcm:u8` is a WAV with 8-bit samples),
+ * `pcm_u8`, `pcm_be` and `pcm` write raw samples with no header, and `adpcm` is an IMA ADPCM WAV file.
+ *
  * The output length of every conversion here follows from the input length, so each WAV header is written once,
  * complete, ahead of the audio, and a stream that ends with another length is refused instead of repaired. A
  * trailing partial sample or frame is never dropped: input that is not a whole number of samples (frames,

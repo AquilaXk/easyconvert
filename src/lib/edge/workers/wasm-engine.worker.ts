@@ -42,6 +42,7 @@ export interface WasmWorkerStats {
 import { UnsupportedOptionError } from '../../types';
 import { checkWasmSimdSupport } from '../tier-router';
 import { instantiateSimdEngine, WasmSimdExports } from './simd-bytecode';
+import { deriveQuantizerLevels } from '../quantizer-levels';
 import { EdgeUnsupportedError, serializeWorkerError } from './worker-errors';
 
 const WASM_PAGE_BYTES = 65_536;
@@ -50,12 +51,6 @@ const WASM_MAX_PAGES = 16_384;
 const WASM_ENGINE_INITIAL_PAGES = 64;
 const MAX_CHANNEL_VALUE = 255;
 const DEFAULT_QUANTIZE_COLORS = 256;
-/** Fewest colours uniform levels can describe: two levels in each of three channels. */
-const MIN_QUANTIZE_COLORS = 8;
-const MAX_CHANNEL_LEVELS = 256;
-/** Largest ratio between the finest and the coarsest channel of the levels derived for a colour count. */
-const MAX_LEVEL_RATIO = 2;
-const MIN_CHANNEL_LEVELS = 2;
 
 /** Largest module a custom task compiles. */
 export const WASM_MAX_MODULE_BYTES = 8 * 1024 * 1024;
@@ -141,41 +136,6 @@ export function applyRgbaBrightness(input: Uint8Array, delta: number = 20): Uint
     output[i + 3] = input[i + 3];
   }
   return output;
-}
-
-export interface QuantizerLevels {
-  r: number;
-  g: number;
-  b: number;
-}
-
-/**
- * The per-channel level counts that keep at most `maxColors` colours: the largest product of three counts
- * (each 2..256, the finest at most twice the coarsest) that does not exceed `maxColors`, the finest going to
- * green and the coarsest to blue, as the eye resolves them. 256 colours give 8 x 8 x 4 levels, 64 give 4 x 4 x 4.
- */
-export function deriveQuantizerLevels(maxColors: number): QuantizerLevels {
-  if (!Number.isInteger(maxColors) || maxColors < MIN_QUANTIZE_COLORS) {
-    throw new EdgeUnsupportedError(
-      `The edge quantiser keeps whole numbers of colours from ${MIN_QUANTIZE_COLORS} up (colors ${maxColors}); the server engine builds smaller palettes.`
-    );
-  }
-  // More colours than three full channels hold change nothing; the cap also bounds the search below.
-  const allowance = Math.min(maxColors, MAX_CHANNEL_LEVELS ** 3);
-  let best = { product: 0, spread: 0, levels: [MIN_CHANNEL_LEVELS, MIN_CHANNEL_LEVELS, MIN_CHANNEL_LEVELS] };
-  for (let coarse = MIN_CHANNEL_LEVELS; coarse * coarse * coarse <= allowance; coarse++) {
-    for (let middle = coarse; middle * middle * coarse <= allowance; middle++) {
-      const fine = Math.min(MAX_CHANNEL_LEVELS, MAX_LEVEL_RATIO * coarse, Math.floor(allowance / (middle * coarse)));
-      if (fine < middle) continue;
-      const product = fine * middle * coarse;
-      const spread = fine - coarse;
-      if (product > best.product || (product === best.product && spread < best.spread)) {
-        best = { product, spread, levels: [fine, middle, coarse] };
-      }
-    }
-  }
-  const [fine, middle, coarse] = best.levels;
-  return { g: fine, r: middle, b: coarse };
 }
 
 /**
