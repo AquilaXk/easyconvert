@@ -877,6 +877,11 @@ export async function convertWithNative7z(
   }
   if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
+  // Stock 7-Zip builds cannot open or create Zstandard streams; the in-process zstd engine owns them.
+  if (src.includes('zst') || tgt.includes('zst')) {
+    return null;
+  }
+
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
   if (!p7zBin) {
     if (options.password) {

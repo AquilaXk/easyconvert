@@ -6,10 +6,10 @@ import {
   ZSTD_DICT_MAGIC,
   ZSTD_OFFICE_DICT_MAGIC,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
+  decompressWithZstdDict,
 } from '../src/lib/conversions/zstd-dict';
+import { ConversionFailedError } from '../src/lib/types';
 
 describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', () => {
   // Helper: Generates realistic repetitive JSON/CSV payload
@@ -135,16 +135,12 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
         },
       });
 
-      // Pipe through W3C Compress and Decompress TransformStreams
+      // Pipe through the W3C compress TransformStream; the bounded frame decoder restores it
       const compressedStream = rawStream.pipeThrough(
         createZstdDictionaryTransformStream({ dictionary: DATA_DICTIONARY_JSON_CSV })
       );
 
-      const decompressedStream = compressedStream.pipeThrough(
-        createZstdDictionaryDecompressTransformStream({ dictionary: DATA_DICTIONARY_JSON_CSV })
-      );
-
-      const restoredBuffer = await streamToBuffer(decompressedStream);
+      const restoredBuffer = decompressWithZstdDict(await streamToBuffer(compressedStream), DATA_DICTIONARY_JSON_CSV);
       const restoredHash = crypto.createHash('sha256').update(restoredBuffer).digest('hex');
 
       expect(restoredBuffer.length).toBe(originalPayload.length);
@@ -173,11 +169,7 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
         createZstdDictionaryTransformStream({ dictionary: OFFICE_XML_DICTIONARY })
       );
 
-      const decompressedStream = compressedStream.pipeThrough(
-        createZstdDictionaryDecompressTransformStream({ dictionary: OFFICE_XML_DICTIONARY })
-      );
-
-      const restoredBuffer = await streamToBuffer(decompressedStream);
+      const restoredBuffer = decompressWithZstdDict(await streamToBuffer(compressedStream), OFFICE_XML_DICTIONARY);
       const restoredHash = crypto.createHash('sha256').update(restoredBuffer).digest('hex');
 
       expect(restoredBuffer.length).toBe(originalPayload.length);
@@ -212,8 +204,7 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
       // Acceptance Criteria: Network bandwidth reduction >= 70%
       expect(1.0 - compressed.length / payload.length).toBeGreaterThanOrEqual(MIN_BANDWIDTH_REDUCTION);
 
-      const decompressor = new ZstdDictionaryStreamDecompressor({ dictionary: DATA_DICTIONARY_JSON_CSV });
-      const restored = Buffer.concat([decompressor.write(compressed), decompressor.end()]);
+      const restored = decompressWithZstdDict(compressed, DATA_DICTIONARY_JSON_CSV);
       expect(restored.equals(payload)).toBe(true);
     });
 
@@ -248,25 +239,17 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
       ]);
 
       // Attempt to decompress expecting OFFICE_XML_DICTIONARY (0xEC012027)
-      const decompressor = new ZstdDictionaryStreamDecompressor({
-        dictionary: OFFICE_XML_DICTIONARY,
-        expectedDictId: ZSTD_OFFICE_DICT_MAGIC,
-      });
-
-      expect(() => {
-        decompressor.write(compressed);
-      }).toThrow(/dictionary ID mismatch/i);
+      expect(compressed.readUInt32LE(6)).toBe(ZSTD_DICT_MAGIC);
+      expect(() => decompressWithZstdDict(compressed, OFFICE_XML_DICTIONARY)).toThrow(ConversionFailedError);
+      expect(() => decompressWithZstdDict(compressed, OFFICE_XML_DICTIONARY)).toThrow(
+        /Dictionary mismatch: frame requires dictionary ID 0xec012026, but provided dictionary has ID 0xec012027/
+      );
     });
 
     it('rejects corrupted magic bytes fail-closed', () => {
-      const decompressor = new ZstdDictionaryStreamDecompressor({
-        dictionary: DATA_DICTIONARY_JSON_CSV,
-      });
-
       const invalidBuffer = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x07, 0x50, 0x26, 0x20, 0x01, 0xec, 0x01, 0x00, 0x00]);
-      expect(() => {
-        decompressor.write(invalidBuffer);
-      }).toThrow(/missing magic number/i);
+      expect(() => decompressWithZstdDict(invalidBuffer, DATA_DICTIONARY_JSON_CSV)).toThrow(ConversionFailedError);
+      expect(() => decompressWithZstdDict(invalidBuffer, DATA_DICTIONARY_JSON_CSV)).toThrow(/magic number mismatch/i);
     });
   });
 });
