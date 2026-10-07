@@ -3287,9 +3287,9 @@ export function isFormatCompatibleWithMagicBytes(
   const webmFormats = new Set(['webm', 'weba']);
   const aviFormats = new Set(['avi']);
   const sevenZipFormats = new Set(['7z', 'cb7']);
-  const gzipFormats = new Set(['gz', 'tgz', 'gzip']);
-  const bzipFormats = new Set(['bz2', 'tbz', 'tbz2']);
-  const zstdFormats = new Set(['zst', 'zstd']);
+  const gzipFormats = new Set(['gz', 'tgz', 'gzip', 'tar.gz']);
+  const bzipFormats = new Set(['bz2', 'bz', 'tbz', 'tbz2', 'tar.bz2', 'tar.bz']);
+  const zstdFormats = new Set(['zst', 'zstd', 'tar.zst']);
   const rarFormats = new Set(['rar', 'cbr']);
 
   // Reject executable binaries immediately (Security Gate)

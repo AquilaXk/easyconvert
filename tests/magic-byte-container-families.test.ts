@@ -130,3 +130,33 @@ describe('ZIP-based, OLE2-based and renamed archive formats', () => {
     expect(isFormatCompatibleWithMagicBytes(COMPOUND_FILE_HEADER, extension)).toBe(false);
   });
 });
+
+/**
+ * Compressed tar archives keep the compression wrapper's magic: a .tar.gz starts with the gzip header (RFC 1952: ID1 ID2
+ * 0x1f 0x8b, method 8), a .tar.bz2 or .bz with "BZh" and a block size digit then the block magic 0x314159265359 (the
+ * bzip2 format), a .tar.zst with the Zstandard magic number 0xFD2FB528 little-endian (RFC 8878 section 3.1.1).
+ */
+const GZIP_HEADER = Buffer.from([0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 3, 0, 0]);
+const BZIP2_HEADER = Buffer.concat([Buffer.from('BZh9', 'ascii'), Buffer.from([0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0, 0])]);
+const ZSTD_HEADER = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x00, 0x01, 0x00, 0x00]);
+
+describe('compressed tar archives and bzip2 streams under their registry names', () => {
+  it.each([
+    ['tar.gz', GZIP_HEADER],
+    ['tar.bz2', BZIP2_HEADER],
+    ['tar.bz', BZIP2_HEADER],
+    ['bz', BZIP2_HEADER],
+    ['tar.zst', ZSTD_HEADER],
+  ] as const)('a genuine stream under the .%s name passes the gate', (extension, header) => {
+    expect(FORMAT_REGISTRY[extension]?.extension).toBe(extension);
+    expect(isFormatCompatibleWithMagicBytes(header, extension)).toBe(true);
+  });
+
+  it.each(['tar.gz', 'tar.bz2', 'tar.zst'])('a PNG image under the .%s name is still refused', (extension) => {
+    expect(isFormatCompatibleWithMagicBytes(PNG_HEADER, extension)).toBe(false);
+  });
+
+  it('a gzip stream under a bzip2 name is still refused', () => {
+    expect(isFormatCompatibleWithMagicBytes(GZIP_HEADER, 'tar.bz2')).toBe(false);
+  });
+});
