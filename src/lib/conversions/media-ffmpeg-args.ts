@@ -26,6 +26,7 @@ import {
   FfprobePath,
   InputStream,
   probeInputStreams,
+  probeInputTimeline,
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
@@ -97,6 +98,9 @@ export function escapeFfmpegFilterPath(filePath: string): string {
     .replace(/:/g, '\\:')
     .replace(/'/g, "'\\\\''");
 }
+
+/** Decimals of the input start offset passed to ffmpeg: microseconds, the precision of its timeline. */
+const CHAPTER_OFFSET_DECIMALS = 6;
 
 /** Transfer characteristics of HDR video (SMPTE ST 2084 PQ and ARIB STD-B67 HLG). */
 const HDR_TRANSFERS: ReadonlySet<string> = new Set(['smpte2084', 'arib-std-b67']);
@@ -883,11 +887,13 @@ export function buildFfmpegArguments(
     audioOnlyMapArgs = audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin);
     outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
+    const timeline = probeInputTimeline(inputPath, resolveFfprobeBinary(ffmpegBin));
     streamPlan = planStreamMapping({
       streams: inputStreams,
       container: tgt as VideoContainer,
       audioTrack: options.audio?.track,
       burnSubtitles: burnRequested,
+      hasChapters: timeline.chapterCount > 0,
     });
     // The analysing pass of a two-pass encode reads the picture only.
     const analysisOnly = passStage?.pass === 1;
@@ -901,7 +907,17 @@ export function buildFfmpegArguments(
       outputArgs.push('-map', '1:0');
     }
     if (CHAPTER_CONTAINERS.has(tgt) && !analysisOnly) {
-      outputArgs.push('-map_metadata', '0', '-map_chapters', '0');
+      let chapterInput = 0;
+      if (timeline.chapterCount > 0 && timeline.startTimeSec < 0) {
+        // A track that starts before zero (AAC encoder delay) makes ffmpeg move the chapters later by that
+        // amount, while the picture keeps its place. The chapters are read through a second open of the input
+        // that is offset back by the start, which leaves each chapter on the frame it marked.
+        chapterInput = inputArgs.filter((arg) => arg === '-i').length;
+        inputArgs.push('-itsoffset', timeline.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
+        if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
+        inputArgs.push('-i', inputPath);
+      }
+      outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));
     }
     for (const { outputIndex, name } of analysisOnly ? [] : streamPlan.handlerNames) {
       outputArgs.push(`-metadata:s:${outputIndex}`, `handler_name=${name}`);

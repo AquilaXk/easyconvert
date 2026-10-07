@@ -6,6 +6,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
 import { engineTraceFields } from '@/lib/api/engine-trace';
+import { droppedStreamsFields } from '@/lib/api/dropped-streams';
 import type { ConversionJobResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +31,8 @@ function publicResult(result: ConversionJobResult | undefined): ConversionJobRes
   const view: ConversionJobResult = { ...result };
   delete view.engineUsed;
   delete view.fallbackReason;
-  return { ...view, ...engineTraceFields(result) };
+  delete view.droppedStreams;
+  return { ...view, ...engineTraceFields(result), ...droppedStreamsFields(result) };
 }
 
 interface RouteContext {
@@ -135,6 +137,7 @@ async function readJob(req: NextRequest, context: RouteContext) {
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,
     ...engineTraceFields(job.returnvalue ?? {}),
+    ...droppedStreamsFields(job.returnvalue ?? {}),
     result: publicResult(job.returnvalue),
     tasks: redactForOutput(job.data?.tasks),
     graph: redactForOutput(graphState?.graph || job.data?.graph),

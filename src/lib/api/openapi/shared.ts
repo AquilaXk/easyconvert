@@ -1,5 +1,6 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { ENGINE_USED_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS } from '@/lib/api/engine-trace';
+import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
@@ -34,6 +35,15 @@ export const ENGINE_RESPONSE_HEADERS = {
     description:
       'Why a first-choice engine did not produce the output. Sent only when a fallback happened; redacted, one line, printable ASCII.',
     schema: { type: 'string', maxLength: MAX_FALLBACK_REASON_CHARS },
+  },
+} as const;
+
+/** Response header listing the input streams a media conversion left out (raw binary responses). */
+export const DROPPED_STREAMS_RESPONSE_HEADERS = {
+  [DROPPED_STREAMS_HEADER]: {
+    description:
+      'Streams of the input the output lacks, as comma-separated `kind[#index]:reason` entries, for example `subtitle#3:container_unsupported,chapters:container_unsupported`. Sent only when something was left out; the JSON response lists the same streams as `droppedStreams`.',
+    schema: { type: 'string' },
   },
 } as const;
 

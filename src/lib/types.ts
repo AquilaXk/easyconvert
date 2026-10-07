@@ -394,6 +394,28 @@ export interface ConversionQueueItem {
   edgeTier?: string;
 }
 
+/** What a stream a conversion left out was. `chapters` is the chapter list, which has no stream index. */
+export type DroppedStreamKind = 'video' | 'subtitle' | 'attachment' | 'data' | 'attached_picture' | 'chapters';
+
+/**
+ * Why a stream was left out:
+ * - `container_unsupported`: the target container cannot carry it (subtitles in avi, attachments outside mkv).
+ * - `stream_type_unsupported`: no conversion to a video container carries this kind of stream (data, cover art).
+ * - `additional_video_track`: a video container output holds one video track; only the first was kept.
+ */
+export type DroppedStreamReason = 'container_unsupported' | 'stream_type_unsupported' | 'additional_video_track';
+
+/** A stream of the input that the output does not contain. The conversion itself succeeded. */
+export interface DroppedStream {
+  /** Absolute stream index in the input; absent for the chapter list. */
+  index?: number;
+  kind: DroppedStreamKind;
+  codec?: string;
+  language?: string;
+  title?: string;
+  reason: DroppedStreamReason;
+}
+
 export interface ConversionResult {
   buffer: Buffer;
   mimeType: string;
@@ -411,7 +433,10 @@ export interface ConversionResult {
   frameUsed?: number;
   /** Link entries left out of an extraction because `skipLinks` was set. */
   skippedLinks?: string[];
-  /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
+  /**
+   * Engine and post-processing facts about the result, such as the PDF/A verdict. A media conversion lists the
+   * input streams the output lacks as `droppedStreams` (see DroppedStream).
+   */
   metadata?: Record<string, unknown>;
 }
 
@@ -500,6 +525,8 @@ export interface ConversionJobResult {
   engineUsed?: string;
   /** Public, redacted reason a fallback happened; absent when the first-choice engine ran. */
   fallbackReason?: string;
+  /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
+  droppedStreams?: DroppedStream[];
 }
 
 export class ConversionFailedError extends Error {

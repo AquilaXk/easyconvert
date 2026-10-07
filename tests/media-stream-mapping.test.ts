@@ -126,7 +126,7 @@ interface MultiTrackFixture {
 /**
  * 3 s of 320x180 25 fps H.264 with two PCM tracks (English 440 Hz default, Korean 880 Hz), two SubRip tracks,
  * three chapters and one attachment: the shape of a media-library file. The audio is PCM so that the source has
- * no encoder-delay start offset, which ffmpeg would otherwise add to every chapter time it copies.
+ * no encoder-delay start offset; chapters of a source with one are covered in media-dropped-streams.test.ts.
  */
 function multiTrackMkv(dir: string): MultiTrackFixture {
   requireEncoders('libx264');

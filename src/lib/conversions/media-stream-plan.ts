@@ -1,4 +1,4 @@
-import { InvalidMediaOptionError } from '../types';
+import { InvalidMediaOptionError, type DroppedStream } from '../types';
 import { firstVideoStream, type InputStream } from './media-ffprobe';
 
 /**
@@ -51,6 +51,11 @@ export interface StreamMapPlan {
   subtitleCount: number;
   /** Codec for `-c:s` of the mapped input subtitle streams; undefined when none is mapped. */
   subtitleCodec?: string;
+  /**
+   * Input streams (and the chapter list) the output cannot carry. Streams the request left out on purpose are
+   * not listed: the audio tracks `audio.track` did not choose, and subtitles that are burned into the picture.
+   */
+  dropped: DroppedStream[];
 }
 
 export interface StreamPlanInput {
@@ -60,6 +65,8 @@ export interface StreamPlanInput {
   audioTrack?: number | 'all';
   /** Subtitles are rendered into the picture, so none is carried as a stream. */
   burnSubtitles: boolean;
+  /** The input has a chapter list; one the container cannot hold is reported as dropped. */
+  hasChapters?: boolean;
 }
 
 function selectAudio(audio: readonly InputStream[], track: number | 'all' | undefined): InputStream[] {
@@ -85,6 +92,43 @@ function carriableSubtitles(subtitles: readonly InputStream[], container: VideoC
     }
   }
   return [...subtitles];
+}
+
+function droppedEntry(stream: InputStream, kind: DroppedStream['kind'], reason: DroppedStream['reason']): DroppedStream {
+  const entry: DroppedStream = { index: stream.index, kind, reason };
+  if (stream.codecName !== 'unknown') entry.codec = stream.codecName;
+  if (stream.language) entry.language = stream.language;
+  if (stream.title) entry.title = stream.title;
+  return entry;
+}
+
+/** The streams no mapping of this target carries, in input order, with the reason each is left out. */
+function droppedStreams(
+  streams: readonly InputStream[],
+  container: VideoContainer,
+  video: InputStream | undefined,
+  hasSubtitleCodecs: boolean,
+  burnSubtitles: boolean,
+  hasChapters: boolean
+): DroppedStream[] {
+  const dropped: DroppedStream[] = [];
+  for (const stream of streams) {
+    if (stream.type === 'video' && stream.attachedPicture) {
+      dropped.push(droppedEntry(stream, 'attached_picture', 'stream_type_unsupported'));
+    } else if (stream.type === 'video' && stream !== video) {
+      dropped.push(droppedEntry(stream, 'video', 'additional_video_track'));
+    } else if (stream.type === 'data') {
+      dropped.push(droppedEntry(stream, 'data', 'stream_type_unsupported'));
+    } else if (stream.type === 'subtitle' && !burnSubtitles && !hasSubtitleCodecs) {
+      dropped.push(droppedEntry(stream, 'subtitle', 'container_unsupported'));
+    } else if (stream.type === 'attachment' && !ATTACHMENT_CONTAINERS.has(container)) {
+      dropped.push(droppedEntry(stream, 'attachment', 'container_unsupported'));
+    }
+  }
+  if (hasChapters && !CHAPTER_CONTAINERS.has(container)) {
+    dropped.push({ kind: 'chapters', reason: 'container_unsupported' });
+  }
+  return dropped;
 }
 
 /**
@@ -113,6 +157,7 @@ export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
     videoIndex: video?.index,
     subtitleCount: subtitles.length,
     subtitleCodec: subtitles.length > 0 && codecs ? codecs.text : undefined,
+    dropped: droppedStreams(streams, container, video, codecs !== undefined, input.burnSubtitles, input.hasChapters === true),
   };
 }
 

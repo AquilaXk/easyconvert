@@ -151,6 +151,8 @@ export interface InputStream {
   bitRateK?: number;
   /** Track title from the stream's tags, when it has one. */
   title?: string;
+  /** Language tag (usually ISO 639-2, such as `eng`), when the stream has one. */
+  language?: string;
 }
 
 interface RawStream {
@@ -163,7 +165,7 @@ interface RawStream {
   avg_frame_rate?: unknown;
   bit_rate?: unknown;
   disposition?: { attached_pic?: unknown };
-  tags?: { title?: unknown };
+  tags?: { title?: unknown; language?: unknown };
   side_data_list?: Array<{ rotation?: unknown }>;
 }
 
@@ -219,6 +221,7 @@ function toInputStream(raw: RawStream): InputStream {
     averageFrameRate: parseFrameRate(raw.avg_frame_rate),
     bitRateK: Number.isFinite(bitRate) && bitRate > 0 ? Math.round(bitRate / BITS_PER_KILOBIT) : undefined,
     title: typeof raw.tags?.title === 'string' && raw.tags.title !== '' ? raw.tags.title : undefined,
+    language: typeof raw.tags?.language === 'string' && raw.tags.language !== '' ? raw.tags.language : undefined,
   };
 }
 
@@ -254,6 +257,42 @@ export function probeInputStreams(filePath: string, ffprobe: FfprobePath): Input
     );
   }
   return (parsed.streams as RawStream[]).map(toInputStream);
+}
+
+export interface InputTimeline {
+  /** Start of the container's timeline in seconds: the earliest stream start, negative for an encoder-delay audio track. */
+  startTimeSec: number;
+  chapterCount: number;
+}
+
+/**
+ * Start time and chapter count of the input. The chapter list is probed by id only, so a file with thousands of
+ * chapters stays within the JSON limit; a larger report is not a media file.
+ */
+export function probeInputTimeline(filePath: string, ffprobe: FfprobePath): InputTimeline {
+  let stdout: string;
+  try {
+    stdout = execFileSync(ffprobe, ['-v', 'error', '-show_entries', 'format=start_time:chapter=id', '-of', 'json', filePath], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: FFPROBE_TIMEOUT_MS,
+      maxBuffer: MAX_FFPROBE_JSON_BYTES,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+  }
+  let parsed: { format?: { start_time?: unknown }; chapters?: unknown };
+  try {
+    parsed = JSON.parse(stdout) as typeof parsed;
+  } catch {
+    throw new MediaProbeError('ffprobe did not return valid JSON for the input media.');
+  }
+  const start = typeof parsed.format?.start_time === 'string' ? Number(parsed.format.start_time) : 0;
+  return {
+    startTimeSec: Number.isFinite(start) ? start : 0,
+    chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,
+  };
 }
 
 /** The first video stream that is a real video track, not cover art; undefined when the input has none. */

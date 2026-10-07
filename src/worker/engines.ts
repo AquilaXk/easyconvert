@@ -60,6 +60,7 @@ import {
   DEFAULT_MEDIA_TIER_MAX_MS,
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
+import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
@@ -712,7 +713,10 @@ export async function convertWithNativeFfmpeg(
         'native-ffmpeg',
         Date.now() - startTime
       );
-      transcoded.metadata = describeAudioProcessing(options, ffmpegBin, loudnessStage);
+      transcoded.metadata = {
+        ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
+        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+      };
       return transcoded;
     });
   } catch (err) {

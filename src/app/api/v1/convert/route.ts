@@ -5,6 +5,7 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
+import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
@@ -403,6 +404,7 @@ export async function POST(req: NextRequest) {
           'X-File-Id': userFile.id,
           ...frameMetadataHeaders(conversionResult),
           ...engineTraceHeaders(conversionResult),
+          ...droppedStreamsHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -431,6 +433,7 @@ export async function POST(req: NextRequest) {
         expiresAt: userFile.expiresAt,
         ...frameMetadataFields(conversionResult),
         ...engineTraceFields(conversionResult),
+        ...droppedStreamsFields(conversionResult),
       },
       {
         status: 200,

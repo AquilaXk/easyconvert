@@ -1,6 +1,7 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 
+import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
 import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
 
@@ -1107,6 +1108,38 @@ export const EngineTraceProperties = {
   },
 } as const;
 
+/** Input streams a media conversion left out because the target container cannot carry them; absent when none. */
+export const DroppedStreamsProperties = {
+  droppedStreams: {
+    type: 'array',
+    maxItems: MAX_DROPPED_STREAMS,
+    description:
+      'Streams of the input that the output does not contain, for example the subtitle tracks of an mkv converted to avi. The conversion succeeded; this lists what it could not carry. Present only when something was left out. Audio tracks `audio.track` did not choose and subtitles burned into the picture are not listed.',
+    items: {
+      type: 'object',
+      required: ['kind', 'reason'],
+      additionalProperties: false,
+      properties: {
+        index: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Stream index in the input; absent for the chapter list.',
+        },
+        kind: { type: 'string', enum: [...DROPPED_STREAM_KINDS] },
+        codec: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Codec name of the stream, when known.' },
+        language: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Language tag of the stream, when it has one.' },
+        title: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Title of the stream, when it has one.' },
+        reason: {
+          type: 'string',
+          enum: [...DROPPED_STREAM_REASONS],
+          description:
+            '`container_unsupported`: the target container cannot carry this stream. `stream_type_unsupported`: no video-container output carries this kind of stream (data, cover art). `additional_video_track`: only the first video track is kept.',
+        },
+      },
+    },
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
@@ -1177,11 +1210,13 @@ export const JobResourceSchema = {
       description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
     },
     ...EngineTraceProperties,
+    ...DroppedStreamsProperties,
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
       properties: {
         ...EngineTraceProperties,
+        ...DroppedStreamsProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

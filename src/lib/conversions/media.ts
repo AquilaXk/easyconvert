@@ -26,6 +26,7 @@ import {
 } from './media-ffmpeg-args';
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
+import { describeDroppedStreams } from './media-dropped-streams';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStream } from './media-encoder';
 import {
@@ -452,7 +453,10 @@ async function executeFfmpegTranscode(
       mimeType: getMimeTypeForMedia(tgt),
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
-      metadata: describeAudioProcessing(options, ffmpegBin, loudnessStage),
+      metadata: {
+        ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
+        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+      },
     };
   } finally {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
