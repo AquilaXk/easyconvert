@@ -29,6 +29,7 @@ export const MP4_MAX_CONFIG_BYTES = 64 * 1024;
 export const MP4_MAX_ESDS_DESCRIPTORS = 32;
 
 const MICROS_PER_SECOND = 1_000_000;
+const MICROS_PER_MS = 1_000;
 const BOX_HEADER_BYTES = 8;
 const LARGE_BOX_HEADER_BYTES = 16;
 const FULL_BOX_HEADER_BYTES = 4;
@@ -549,6 +550,8 @@ interface EditTiming {
   mediaTime: number;
   /** Delay before the media starts, in microseconds (leading empty edit). */
   delayMicros: number;
+  /** Length the media edit presents, in microseconds, or undefined when the track has no edit list. */
+  presentedMicros?: number;
 }
 
 /** Leading empty edit plus at most one media edit at rate 1.0; any other edit list cuts or repeats media. */
@@ -562,6 +565,7 @@ function readEditTiming(view: DataView, edts: Mp4Box | undefined, movieTimescale
   let emptyTicks = 0;
   let mediaEdits = 0;
   let mediaTime = 0;
+  let presentedTicks = 0;
   for (let i = 0; i < entries; i++) {
     const segmentDuration = version === 1 ? cursor.u64() : cursor.u32();
     const time = version === 1 ? cursor.i64() : cursor.i32();
@@ -576,10 +580,49 @@ function readEditTiming(view: DataView, edts: Mp4Box | undefined, movieTimescale
     } else {
       mediaEdits++;
       mediaTime = time;
+      presentedTicks = segmentDuration;
     }
   }
   if (mediaEdits !== 1) throw refuse('the edit list does not present exactly one stretch of media');
-  return { mediaTime, delayMicros: Math.round((emptyTicks * MICROS_PER_SECOND) / movieTimescale) };
+  return {
+    mediaTime,
+    delayMicros: Math.round((emptyTicks * MICROS_PER_SECOND) / movieTimescale),
+    presentedMicros: Math.round((presentedTicks * MICROS_PER_SECOND) / movieTimescale),
+  };
+}
+
+function hiddenFrames(decodeTimes: Float64Array, compositionOffsets: Float64Array | undefined, mediaTime: number): number {
+  let hidden = 0;
+  for (let i = 0; i < decodeTimes.length; i++) {
+    if (decodeTimes[i] + (compositionOffsets ? compositionOffsets[i] : 0) - mediaTime < 0) hidden++;
+  }
+  return hidden;
+}
+
+/**
+ * The media edit must present the whole of the media after its start, give or take one sample: a shorter edit
+ * cuts the track, and the edge does not cut. The movie timescale's own tick and the rounding of the conversion
+ * to microseconds are allowed for.
+ */
+function assertEditCoversMedia(
+  edit: EditTiming,
+  decodeTimes: Float64Array,
+  deltas: Uint32Array,
+  timescale: number,
+  movieTimescale: number,
+  what: string
+): void {
+  if (edit.presentedMicros === undefined) return;
+  const last = decodeTimes.length - 1;
+  const remainingMicros = ((decodeTimes[last] + deltas[last] - edit.mediaTime) * MICROS_PER_SECOND) / timescale;
+  let longestSample = 0;
+  for (const delta of deltas) longestSample = Math.max(longestSample, delta);
+  const slackMicros = (longestSample * MICROS_PER_SECOND) / timescale + MICROS_PER_SECOND / movieTimescale + 1;
+  if (edit.presentedMicros + slackMicros < remainingMicros) {
+    throw refuse(
+      `the edit list presents ${Math.round(edit.presentedMicros / MICROS_PER_MS)} ms of a ${what} that has ${Math.round(remainingMicros / MICROS_PER_MS)} ms`
+    );
+  }
 }
 
 interface ParsedTrack {
@@ -693,12 +736,19 @@ function parseTrack(view: DataView, trak: Mp4Box, buffer: ArrayBuffer, movieTime
   const offsets = mapSamplesToOffsets(view, stsc, readChunkOffsets(view, chunkBox), sizes);
   const edit = readEditTiming(view, optionalChild(parts, 'edts'), movieTimescale);
 
+  assertEditCoversMedia(edit, decodeTimes, deltas, timescale, movieTimescale, what);
+
   const samples: DemuxedMediaSample[] = [];
   for (let i = 0; i < sampleCount; i++) {
     const size = sizes[i];
     if (size === 0) throw refuse(`${what} has an empty sample`);
     if (offsets[i] + size > buffer.byteLength) throw refuse(`sample ${i} of the ${what} lies outside the file`);
     const presentation = decodeTimes[i] + (compositionOffsets ? compositionOffsets[i] : 0) - edit.mediaTime;
+    // Audio before time zero is encoder delay, which the worker cuts after decoding. A video frame before zero
+    // is a frame the edit list hides; dropping it would break the decode order of the frames after it.
+    if (kind === 'video' && presentation < 0) {
+      throw refuse(`the edit list starts inside the video track and hides ${hiddenFrames(decodeTimes, compositionOffsets, edit.mediaTime)} leading video frames`);
+    }
     samples.push({
       data: new Uint8Array(buffer, offsets[i], size),
       timestampMicros: Math.round((presentation * MICROS_PER_SECOND) / timescale) + edit.delayMicros,

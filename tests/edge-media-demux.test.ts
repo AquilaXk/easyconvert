@@ -24,6 +24,7 @@ import {
   type FfprobeStream,
 } from './helpers/ffprobe-json';
 import { findPath, listBoxes, payloadOf, walkTracks, type IsoBox } from './helpers/iso-bmff-walker';
+import { ffprobeFrameCount } from './helpers/ffprobe-frames';
 import { oracleTest } from './helpers/oracle-test';
 
 const MICROS = 1_000_000;
@@ -282,6 +283,25 @@ describe('demuxMp4 against ffprobe -show_packets -show_streams', () => {
 
     expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(EdgeUnsupportedError);
     expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(/Opus/);
+  });
+
+  oracleTest('refuses an edit list that cuts the media short, which the reference presents as fewer frames', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = new Uint8Array(h264AacMp4());
+    const full = ffprobeFrameCount(Buffer.from(mp4), 'mp4');
+    const elst = findPath(mp4, listBoxes(mp4), ['moov', 'trak', 'edts', 'elst'])[0];
+    // elst version 0: version/flags, entry_count, then (segment_duration, media_time, rate) per entry; the movie
+    // timescale is 1000, so 500 cuts the 2 s video track to its first half second
+    const view = new DataView(mp4.buffer, mp4.byteOffset, mp4.byteLength);
+    expect(view.getUint32(elst.payloadStart + 4)).toBe(1);
+    view.setUint32(elst.payloadStart + 8, 500);
+
+    expect(ffprobeFrameCount(Buffer.from(mp4), 'mp4')).toBeLessThan(full / 2);
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(EdgeUnsupportedError);
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(/edit list presents 500 ms of a video track that has \d+ ms/);
+  });
+
+  oracleTest('reads an unpatched file whose edit list covers the media, audio padding included', ['ffmpeg', 'ffprobe'], () => {
+    expect(demuxMp4(toArrayBuffer(h264AacMp4())).samples).toHaveLength(50);
   });
 
   oracleTest('refuses a rotated video, whose display transform the edge would drop', ['ffmpeg', 'ffprobe'], () => {
@@ -680,6 +700,27 @@ describe('demuxMp4 refuses what it cannot read truthfully', () => {
       be32(100), be32(500), be16(1), be16(0)
     );
     expectRefusal(handMp4([videoTrack({ edts: box('edts', elst) })]), /edit list/);
+  });
+
+  it('throws for an edit list whose media edit is shorter than the media, or has no length', () => {
+    // 5 samples of 40 ms are 200 ms of media; the edit presents 100 ms of it
+    const cut = fullBox('elst', 0, 0, be32(1), be32(100), be32(0), be16(1), be16(0));
+    expectRefusal(handMp4([videoTrack({ edts: box('edts', cut) })]), /edit list presents 100 ms of a video track that has 200 ms/);
+    const empty = fullBox('elst', 0, 0, be32(1), be32(0), be32(0), be16(1), be16(0));
+    expectRefusal(handMp4([videoTrack({ edts: box('edts', empty) })]), /edit list presents 0 ms/);
+  });
+
+  it('reads an edit that is longer than the media, or shorter by less than one sample', () => {
+    const longer = fullBox('elst', 0, 0, be32(1), be32(5000), be32(0), be16(1), be16(0));
+    expect(demux(handMp4([videoTrack({ edts: box('edts', longer) })])).samples).toHaveLength(5);
+    const nearly = fullBox('elst', 0, 0, be32(1), be32(170), be32(0), be16(1), be16(0));
+    expect(demux(handMp4([videoTrack({ edts: box('edts', nearly) })])).samples).toHaveLength(5);
+  });
+
+  it('throws when the edit starts inside a video track and hides its leading frames', () => {
+    // No composition offsets: the first two frames (dts 0 and 40 ms) would present before time zero
+    const hiding = fullBox('elst', 0, 0, be32(1), be32(200), be32(80), be16(1), be16(0));
+    expectRefusal(handMp4([videoTrack({ edts: box('edts', hiding) })]), /hides 2 leading video frames/);
   });
 
   it('throws for an edit list that changes the playback rate', () => {
