@@ -1,4 +1,4 @@
-import { ConversionFailedError } from '../../types';
+import { EdgeUnsupportedError } from '../workers/worker-errors';
 
 /** The slice of a canvas this needs: an OffscreenCanvas has convertToBlob, an HTMLCanvasElement has toBlob. */
 export interface BlobCanvas {
@@ -8,7 +8,8 @@ export interface BlobCanvas {
 
 /**
  * Encodes a canvas to an image Blob. A canvas that yields nothing (toBlob calls back with null, or the bytes are
- * empty) is a failure: an empty file is never a converted result.
+ * empty) is a failure: an empty file is never a converted result. The failure is an EdgeUnsupportedError, so the tier
+ * router runs the server tier on the original file.
  */
 export async function canvasToBlob(canvas: BlobCanvas, mimeType: string, quality: number): Promise<Blob> {
   let blob: Blob | null;
@@ -18,10 +19,10 @@ export async function canvasToBlob(canvas: BlobCanvas, mimeType: string, quality
     const encode = canvas.toBlob.bind(canvas);
     blob = await new Promise<Blob | null>((resolve) => encode(resolve, mimeType, quality));
   } else {
-    throw new ConversionFailedError('The canvas cannot encode an image.');
+    throw new EdgeUnsupportedError('The canvas cannot encode an image.');
   }
   if (!blob || blob.size === 0) {
-    throw new ConversionFailedError(`The canvas produced no image data for ${mimeType}.`);
+    throw new EdgeUnsupportedError(`The canvas produced no image data for ${mimeType}.`);
   }
   return blob;
 }
