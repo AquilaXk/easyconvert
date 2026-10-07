@@ -175,7 +175,8 @@ EasyConvert provides synchronous REST endpoints, an asynchronous job queue for l
 
 ### 7. Service Health & Diagnostics
 - **Endpoint**: `GET /api/health`
-- **Response**: System uptime, available engines, memory usage, and queue health.
+- **Response**: `{"status": "healthy" | "unhealthy"}` with `200` or `503`. Readiness depends on live probes of Redis (when configured) and storage. The native tools (soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z, dcraw_emu) are probed too but are advisory: a missing tool fails only the conversions that need it. Results are cached for a few seconds.
+- **Admin view**: an API key with the wildcard (`*`) scope also receives the per-component status; paths, hosts, and credentials are never included.
 
 ---
 

@@ -30,6 +30,31 @@ const PAYLOAD_LIMIT_DESCRIPTION =
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
+const HEALTH_COMPONENT_SCHEMA = {
+  type: 'object',
+  required: ['status', 'required'],
+  properties: {
+    status: { type: 'string', enum: ['ok', 'failed', 'not_configured'] },
+    required: {
+      type: 'boolean',
+      description: 'True for components whose failure makes the service unhealthy (redis, storage); false for advisory native tools.',
+    },
+    reason: { type: 'string', enum: ['timeout', 'unreachable', 'missing', 'not_writable', 'misconfigured'] },
+    driver: { type: 'string', enum: ['local', 'oci', 's3'], description: 'Storage only: the configured driver.' },
+  },
+};
+
+const healthResponse = (description: string) =>
+  createJsonResponse(description, {
+    status: { type: 'string', enum: ['healthy', 'unhealthy'] },
+    checkedAt: { type: 'string', format: 'date-time', description: 'Admin view only: when the probes ran.' },
+    components: {
+      type: 'object',
+      description: 'Admin view only: one entry per probed component (redis, storage and each native tool).',
+      additionalProperties: HEALTH_COMPONENT_SCHEMA,
+    },
+  });
+
 const binaryResponse = (description: string, mediaType = 'application/octet-stream') => ({
   description,
   content: { [mediaType]: { schema: { type: 'string', format: 'binary' } } },
@@ -292,18 +317,17 @@ export const internalPaths = {
     get: {
       ...INTERNAL,
       summary: 'Health Check',
+      description:
+        'Readiness probe built from live checks: Redis PING (only when Redis is configured) and storage reachability decide the status; a failure of either makes the service unhealthy (503). ' +
+        'The native tools soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z and dcraw_emu are probed as advisory components: a missing tool fails only the conversions that need it. Results are cached for a few seconds. ' +
+        'Anonymous callers receive only `status`. A request with an API key holding the admin wildcard (*) scope also receives the per-component view; the view names components and coarse reasons, never paths, hosts or credentials.',
       operationId: 'getHealth',
-      security: PUBLIC_ACCESS,
+      security: ANONYMOUS_OR_SCOPE('*'),
       responses: {
-        '200': createJsonResponse('Service is running.', {
-          status: { type: 'string' },
-          service: { type: 'string' },
-          version: { type: 'string' },
-          timestamp: { type: 'string' },
-          supportedFormatsCount: { type: 'integer' },
-          domainsCount: { type: 'integer' },
-          features: { type: 'object' },
-        }),
+        '200': healthResponse('Redis (when configured) and storage are available.'),
+        '401': createProblemResponse('The API key is invalid.'),
+        '403': createProblemResponse('The API key lacks the admin wildcard (*) scope.'),
+        '503': healthResponse('Redis or storage is unavailable.'),
       },
     },
   },

@@ -9,6 +9,8 @@ import {
   ArchiveEntryCollisionError,
   PayloadLimitError,
   PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
@@ -20,6 +22,7 @@ import {
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -137,6 +140,13 @@ export async function POST(req: NextRequest) {
         return await failWithRollback(400, 'The "options" field must be a JSON object.');
       }
       options = parsed;
+      const optionsProblem = legacyOptionsProblem(options, instanceUri);
+      if (optionsProblem) {
+        if (reservationId) {
+          await rollbackQuota(reservationId);
+        }
+        return optionsProblem;
+      }
     }
 
     if (options) {
@@ -209,6 +219,11 @@ export async function POST(req: NextRequest) {
     if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
       // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert] Worker output vanished before it was read:', error);
+      return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

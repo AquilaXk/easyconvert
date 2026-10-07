@@ -1145,7 +1145,10 @@ describe('archive password delivery to the real 7z binary', () => {
         const res = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', body: form }));
         const body = await res.json();
         expect(res.status, `${JSON.stringify(password)} -> ${JSON.stringify(body)}`).toBe(400);
-        expect(body.error).toBe('Archive password must be a string.');
+        // The route checks the options against ConversionOptionsSchema before any engine runs; the
+        // engine's own 'Archive password must be a string.' is asserted on the direct calls above.
+        expect(body.error).toBe('Request validation failed: password must be string');
+        expect(body.invalidParams).toEqual([{ name: 'password', reason: 'must be string' }]);
       }
     });
 

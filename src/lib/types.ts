@@ -449,6 +449,10 @@ export interface ConversionJobResult {
   ocrExtracted?: boolean;
   sourceFrameCount?: number;
   frameUsed?: number;
+  /** Engine that produced the output (for example `native-ffmpeg` or `internal-fallback`). */
+  engineUsed?: string;
+  /** Public, redacted reason a fallback happened; absent when the first-choice engine ran. */
+  fallbackReason?: string;
 }
 
 export class ConversionFailedError extends Error {
@@ -624,6 +628,35 @@ export class EngineUnavailableError extends EngineMissingError {
     this.name = 'EngineUnavailableError';
     this.engineName = engineName;
     this.reason = reason || msg;
+  }
+}
+
+/** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
+const WORKER_OUTPUT_MISSING_STATUS = 500;
+
+/** What an API answers for a vanished output; the worker's file name stays in the server log. */
+export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
+
+/**
+ * A conversion produced its output, but the persisted file is gone when the result is read (a swept scratch
+ * directory, a deleted volume). It is a server fault: the job fails with 500, never with an empty artifact.
+ * It is not an `EngineMissingError`, so the queue does not retry it on another worker; a retry would only
+ * redo a conversion whose storage is failing. The message names the output, never its location on disk.
+ */
+export class WorkerOutputMissingError extends ConversionFailedError {
+  readonly status = WORKER_OUTPUT_MISSING_STATUS;
+
+  constructor(outputName: string) {
+    super(`The persisted conversion output "${outputName}" is no longer available`);
+    this.name = 'WorkerOutputMissingError';
+  }
+}
+
+/** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named. */
+export class UnknownArtifactFormatError extends ConversionFailedError {
+  constructor(artifactName: string) {
+    super(`Artifact "${artifactName}" has no format registered, so its MIME type is unknown`);
+    this.name = 'UnknownArtifactFormatError';
   }
 }
 

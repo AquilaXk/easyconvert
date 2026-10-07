@@ -97,10 +97,17 @@ describe('every route refuses an oversized resize with a client error', () => {
     return new NextRequest('http://localhost/api/test', { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body });
   };
 
-  it('POST /api/convert', async () => {
+  it('POST /api/convert rejects it in the request schema', async () => {
     const response = await convertPost(request('file', { width: 1e9 }));
     expect(response.status).toBe(HTTP_BAD_REQUEST);
-    expect(JSON.stringify(await response.json())).toContain('Unsupported width');
+    const body = await response.json();
+    expect(body.invalidParams).toEqual([{ name: 'width', reason: 'must be <= 65535' }]);
+  });
+
+  it('POST /api/convert refuses a box over the pixel limit that the schema allows', async () => {
+    const response = await convertPost(request('file', { width: 20000, height: 20000, fit: 'fill' }));
+    expect(response.status).toBe(HTTP_BAD_REQUEST);
+    expect(JSON.stringify(await response.json())).toContain('limit of 100000000 pixels');
   });
 
   it('POST /api/convert/batch', async () => {

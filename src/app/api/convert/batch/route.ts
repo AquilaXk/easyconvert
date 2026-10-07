@@ -11,6 +11,8 @@ import {
   ArchiveEntryCollisionError,
   PayloadLimitError,
   PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import {
@@ -199,6 +201,11 @@ export async function POST(req: NextRequest) {
     if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
       // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert/batch] Worker output vanished before it was read:', error);
+      return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.

@@ -5,6 +5,8 @@ import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } fr
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
+import { engineTraceFields } from '@/lib/api/engine-trace';
+import type { ConversionJobResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +22,15 @@ const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExe
 /** Stored text is masked again on the way out: rows written by older versions may still quote a secret. */
 function maskedText(text: string | undefined): string | undefined {
   return text === undefined ? undefined : redactText(text);
+}
+
+/** The stored result with its engine fields in the public form: a result written by another version is not trusted. */
+function publicResult(result: ConversionJobResult | undefined): ConversionJobResult | undefined {
+  if (!result) return result;
+  const view: ConversionJobResult = { ...result };
+  delete view.engineUsed;
+  delete view.fallbackReason;
+  return { ...view, ...engineTraceFields(result) };
 }
 
 interface RouteContext {
@@ -123,7 +134,8 @@ async function readJob(req: NextRequest, context: RouteContext) {
     failedReason: maskedText(graphState?.failedReason || job.failedReason),
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,
-    result: job.returnvalue,
+    ...engineTraceFields(job.returnvalue ?? {}),
+    result: publicResult(job.returnvalue),
     tasks: redactForOutput(job.data?.tasks),
     graph: redactForOutput(graphState?.graph || job.data?.graph),
     nodes: nodesResponse,

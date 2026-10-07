@@ -229,18 +229,26 @@ describe('graph URL nodes', () => {
   /** Minimal storage that consumes the stream the way the real backends do (data/end/error). */
   function recordingStorage() {
     const saved = new Map<string, Buffer>();
+    const filenames = new Map<string, string>();
     const storage = {
       providerName: 'test-recording',
-      saveObjectFromStream(key: string, stream: NodeJS.ReadableStream) {
+      saveObjectFromStream(key: string, stream: NodeJS.ReadableStream, meta: { filename: string }) {
         return new Promise((resolve, reject) => {
           const chunks: Buffer[] = [];
           stream.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
           stream.on('end', () => {
             saved.set(key, Buffer.concat(chunks));
+            filenames.set(key, meta.filename);
             resolve({ key });
           });
           stream.on('error', reject);
         });
+      },
+      // The node reports the size and name of what was stored, so the fake answers like a backend does.
+      stat(key: string) {
+        const body = saved.get(key);
+        const filename = filenames.get(key);
+        return body && filename ? { size: body.length, etag: '', mimeType: '', filename } : null;
       },
     } as unknown as IStorageBackend;
     return { storage, saved };
@@ -287,9 +295,11 @@ describe('graph URL nodes', () => {
     const dispatchSpy = vi.spyOn(agent, 'dispatch');
     agent.get(ORIGIN).intercept({ path: '/data.csv', method: 'GET' }).reply(200, 'a,b\n1,2\n');
     const { storage, saved } = recordingStorage();
-    await processGraphNodeJob(nodeJob({ op: 'import.url', url: `${ORIGIN}/data.csv` }), undefined, storage);
+    const result = await processGraphNodeJob(nodeJob({ op: 'import.url', url: `${ORIGIN}/data.csv` }), undefined, storage);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
     expect(saved.get('intermediate/g_ssrf/n1/data.csv')?.toString()).toBe('a,b\n1,2\n');
+    expect(result.mimeType).toBe('text/csv');
+    expect(result.size).toBe('a,b\n1,2\n'.length);
   });
 
   it(
