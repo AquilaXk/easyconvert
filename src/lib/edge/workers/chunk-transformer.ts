@@ -38,6 +38,17 @@ export async function forEachOutputPiece(
   await sink(await result);
 }
 
+/** One array holding `pieces` end to end. */
+export function concatBytes(pieces: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(pieces.reduce((total, piece) => total + piece.byteLength, 0));
+  let at = 0;
+  for (const piece of pieces) {
+    out.set(piece, at);
+    at += piece.byteLength;
+  }
+  return out;
+}
+
 /** Collects every output piece of one transformer call into one array. */
 export async function collectOutput(
   result: Uint8Array | Promise<Uint8Array> | AsyncIterable<Uint8Array>
@@ -46,11 +57,5 @@ export async function collectOutput(
   await forEachOutputPiece(result, (piece) => {
     pieces.push(piece);
   });
-  const out = new Uint8Array(pieces.reduce((total, piece) => total + piece.byteLength, 0));
-  let at = 0;
-  for (const piece of pieces) {
-    out.set(piece, at);
-    at += piece.byteLength;
-  }
-  return out;
+  return concatBytes(pieces);
 }

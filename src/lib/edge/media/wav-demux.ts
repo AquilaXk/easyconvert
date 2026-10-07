@@ -7,6 +7,9 @@
  * WAVE_FORMAT_EXTENSIBLE header. Everything else (other tags, 8-bit, 64-bit float, RF64, RIFX) throws
  * EdgeUnsupportedError, as does any chunk that runs past the file. Timestamps are computed from the frame
  * index, never from the sample bytes.
+ *
+ * `walkWavChunks` is the same walk over the first bytes of a file, so the OPFS streams read the header of a
+ * file they cannot hold whole with the very rules that read it here.
  */
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
@@ -43,11 +46,11 @@ const FLOAT_BIT_DEPTH = 32;
 const SUBFORMAT_TAIL_OFFSET = 26;
 const SUBFORMAT_GUID_TAIL =[0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71];
 
-function refuse(message: string): EdgeUnsupportedError {
+export function refuse(message: string): EdgeUnsupportedError {
   return new EdgeUnsupportedError(`WAV: ${message}; the server engine converts this file.`);
 }
 
-interface WavFormat {
+export interface WavFormat {
   isFloat: boolean;
   bitsPerSample: number;
   channels: number;
@@ -55,11 +58,16 @@ interface WavFormat {
   blockAlign: number;
 }
 
-function fourcc(bytes: Uint8Array, offset: number): string {
+export function fourcc(bytes: Uint8Array, offset: number): string {
   return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
 }
 
-function parseFormat(view: DataView, start: number, size: number): WavFormat {
+export function parseFormat(
+  view: DataView,
+  start: number,
+  size: number,
+  pcmBitDepths: ReadonlySet<number> = PCM_BIT_DEPTHS
+): WavFormat {
   if (size < FMT_MIN_BYTES) throw refuse('the fmt chunk is too short');
   let tag = view.getUint16(start, true);
   const channels = view.getUint16(start + 2, true);
@@ -81,7 +89,7 @@ function parseFormat(view: DataView, start: number, size: number): WavFormat {
   const isFloat = tag === FORMAT_FLOAT;
   if (tag !== FORMAT_PCM && !isFloat) throw refuse(`format tag 0x${tag.toString(16)} is not PCM or IEEE float`);
   if (isFloat && bitsPerSample !== FLOAT_BIT_DEPTH) throw refuse(`${bitsPerSample}-bit float is not read`);
-  if (!isFloat && !PCM_BIT_DEPTHS.has(bitsPerSample)) throw refuse(`${bitsPerSample}-bit PCM is not read`);
+  if (!isFloat && !pcmBitDepths.has(bitsPerSample)) throw refuse(`${bitsPerSample}-bit PCM is not read`);
   if (channels < 1 || channels > WAV_MAX_CHANNELS) throw refuse(`${channels} is not a supported channel count`);
   if (sampleRate < 1 || sampleRate > WAV_MAX_SAMPLE_RATE) throw refuse(`${sampleRate} Hz is not a supported sample rate`);
   const expectedAlign = (channels * bitsPerSample) / BITS_PER_BYTE;
@@ -96,44 +104,78 @@ function codecLabel(format: WavFormat): string {
   return `pcm-s${format.bitsPerSample}`;
 }
 
-/** Demuxes a RIFF/WAVE file into one PCM audio track cut into 20 ms samples. */
-export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
-  if (bytes.byteLength < RIFF_HEADER_BYTES || fourcc(bytes, 0) !== 'RIFF' || fourcc(bytes, 8) !== 'WAVE') {
+export interface WavChunkWalk<F> {
+  format: F;
+  /** Byte offset of the first audio byte. */
+  dataStart: number;
+  /** Bytes of audio the data chunk states (or, for an unknown length, that run to the end of the file). */
+  dataBytes: number;
+}
+
+/**
+ * Walks the chunks of a RIFF/WAVE file up to its data chunk. `bytes` is the file or its first bytes and
+ * `fileSize` the length of the whole file; the fmt body is read by `parseFormat`. With `onChunk`, every chunk
+ * between fmt and data is handed over and has to lie inside `bytes`; without it, chunks are skipped by size.
+ */
+export function walkWavChunks<F>(
+  bytes: Uint8Array,
+  fileSize: number,
+  parseFormatBody: (view: DataView, start: number, size: number) => F,
+  onChunk?: (id: string, view: DataView, bodyStart: number, size: number) => void
+): WavChunkWalk<F> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.byteLength < RIFF_HEADER_BYTES || fileSize < RIFF_HEADER_BYTES || fourcc(bytes, 0) !== 'RIFF' || fourcc(bytes, 8) !== 'WAVE') {
     throw refuse('the file is not a RIFF/WAVE file (RF64 and RIFX are not read)');
   }
 
-  let format: WavFormat | undefined;
-  let dataStart = -1;
-  let dataBytes = 0;
+  let format: F | undefined;
   let offset = RIFF_HEADER_BYTES;
-  for (let chunks = 0; dataStart < 0 && offset < bytes.byteLength; chunks++) {
+  for (let chunks = 0; offset < fileSize; chunks++) {
     if (chunks >= WAV_MAX_CHUNKS) throw refuse(`more than ${WAV_MAX_CHUNKS} chunks before the audio data (chunk limit)`);
-    if (bytes.byteLength - offset < CHUNK_HEADER_BYTES) throw refuse('the file ends inside a truncated chunk header');
+    if (fileSize - offset < CHUNK_HEADER_BYTES) throw refuse('the file ends inside a truncated chunk header');
+    if (bytes.byteLength - offset < CHUNK_HEADER_BYTES) throw refuse('the header chunks run past the bytes read from the start of the file');
     const id = fourcc(bytes, offset);
     const size = view.getUint32(offset + 4, true);
     const bodyStart = offset + CHUNK_HEADER_BYTES;
-    const available = bytes.byteLength - bodyStart;
+    const available = fileSize - bodyStart;
 
     if (id === 'data') {
-      if (!format) throw refuse('the data chunk comes before the fmt chunk');
+      if (format === undefined) throw refuse('the data chunk comes before the fmt chunk');
       // A streamed file states 0xFFFFFFFF when the length was unknown; its data then runs to the end.
-      dataBytes = size === UNKNOWN_DATA_SIZE ? available : size;
+      const dataBytes = size === UNKNOWN_DATA_SIZE ? available : size;
       if (dataBytes > available) throw refuse(`the data chunk of ${dataBytes} bytes runs past the end of the file`);
-      dataStart = bodyStart;
-      break;
+      return { format, dataStart: bodyStart, dataBytes };
     }
     if (size > available) throw refuse(`the ${id.trim()} chunk of ${size} bytes runs past the end of the file`);
+    const insideBytes = bodyStart + size <= bytes.byteLength;
     if (id === 'fmt ') {
-      if (format) throw refuse('the file has more than one fmt chunk');
-      format = parseFormat(view, bodyStart, size);
+      if (format !== undefined) throw refuse('the file has more than one fmt chunk');
+      if (!insideBytes) throw refuse('the fmt chunk runs past the bytes read from the start of the file');
+      format = parseFormatBody(view, bodyStart, size);
+    } else if (onChunk) {
+      if (!insideBytes) throw refuse(`the ${id.trim()} chunk runs past the bytes read from the start of the file`);
+      onChunk(id, view, bodyStart, size);
     }
     // Chunks are padded to an even length (RIFF); the pad byte is not part of the size.
     offset = bodyStart + size + (size % 2);
   }
-  if (!format) throw refuse('the file has no fmt chunk');
-  if (dataStart < 0) throw refuse('the file has no data chunk');
+  if (format === undefined) throw refuse('the file has no fmt chunk');
+  throw refuse('the file has no data chunk');
+}
+
+/** Reads the PCM or IEEE float layout of a WAV file (or of its first bytes, with the length of the whole file). */
+export function readWavLayout(
+  bytes: Uint8Array,
+  fileSize: number = bytes.byteLength,
+  pcmBitDepths: ReadonlySet<number> = PCM_BIT_DEPTHS
+): WavChunkWalk<WavFormat> {
+  return walkWavChunks(bytes, fileSize, (view, start, size) => parseFormat(view, start, size, pcmBitDepths));
+}
+
+/** Demuxes a RIFF/WAVE file into one PCM audio track cut into 20 ms samples. */
+export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo {
+  const bytes = new Uint8Array(buffer);
+  const { format, dataStart, dataBytes } = readWavLayout(bytes);
 
   // The data is a whole number of frames; a trailing partial frame is not audio.
   const frames = Math.floor(dataBytes / format.blockAlign);

@@ -5,15 +5,11 @@ import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CorruptStreamError, DecompressionLimitError } from '../src/lib/types';
-import {
-  OPFS_CHUNK_SIZE,
-  processOpfsStreaming,
-  runOpfsWorkerJob,
-} from '../src/lib/edge/workers/opfs-vfs.worker';
+import { OPFS_CHUNK_SIZE, runOpfsWorkerJob } from '../src/lib/edge/workers/opfs-vfs.worker';
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { isOpfsStreamingSupported, resolveConversionTier } from '../src/lib/edge/tier-router';
 import { oracleTest } from './helpers/oracle-test';
-import { createFakeOpfs } from './helpers/opfs-fake';
+import { failure, OPFS_ROUTES, runOpfsConversion, type OpfsRoute } from './helpers/opfs-run';
 import { mulberry32 } from './helpers/audio-signals';
 import { craftEntry, END_OF_ARCHIVE, craftHeader } from './helpers/tar-craft';
 import { walkTar } from './helpers/tar-walker';
@@ -43,43 +39,13 @@ const LARGE_TAR = makeTar([
   ['c.bin', compressibleBytes(3 * MIB, 3)],
 ]);
 
-type Path = 'chunk-fallback' | 'sync-access-handle';
-
-async function convert(
-  route: Path,
-  source: string,
-  target: string,
-  input: Uint8Array
-): Promise<{ bytes: Buffer; maxWrite: number }> {
-  const fake = createFakeOpfs();
-  if (route === 'sync-access-handle') vi.stubGlobal('navigator', fake.navigator);
-  const blob = new Blob([input as BlobPart]);
-  const result = await processOpfsStreaming(
-    { jobId: `job-${source}-${target}`, sourceFormat: source, targetFormat: target, totalSize: blob.size },
-    blob
-  );
-  const outBlob = result.blob ?? new Blob([result.buffer as ArrayBuffer]);
-  if (route === 'sync-access-handle' && fake.writes.sizes.length === 0) {
-    throw new Error('the conversion fell back to the in-memory path instead of the OPFS sync access handle');
-  }
-  return { bytes: Buffer.from(await outBlob.arrayBuffer()), maxWrite: fake.writes.maxWrite };
-}
-
-/** The error a conversion rejects with; a conversion that resolves is a test failure. */
-async function failure(conversion: Promise<unknown>): Promise<Error> {
-  try {
-    await conversion;
-  } catch (error) {
-    return error as Error;
-  }
-  throw new Error('the conversion resolved but was expected to fail');
-}
+const convert = runOpfsConversion;
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe.each<Path>(['chunk-fallback', 'sync-access-handle'])('OPFS archive streams, %s (issue #480)', (route) => {
+describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (route) => {
   it.each([
     ['tar', 'tar_gz'],
     ['tar', 'gz'],
