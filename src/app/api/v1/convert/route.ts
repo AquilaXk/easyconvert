@@ -113,8 +113,13 @@ export async function POST(req: NextRequest) {
     // daily-quota headers report the real remaining quota and the burst Retry-After takes precedence.
     let headers = authErrorHeaders(auth);
     if (auth.user) {
-      const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      headers = { ...buildRateLimitHeaders(userQuota), ...headers };
+      try {
+        const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
+        headers = { ...buildRateLimitHeaders(userQuota), ...headers };
+      } catch (quotaError) {
+        // The quota headers are a courtesy: the guard's rejection stands without them.
+        console.error('[v1/convert] Quota headers left out of a rejection, the quota lookup failed:', quotaError);
+      }
     }
     return createProblemDetailsResponse(
       auth.status ?? 401,
