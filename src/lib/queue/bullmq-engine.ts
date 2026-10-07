@@ -1343,6 +1343,30 @@ function flatHashToRecord(flat: string[]): Record<string, string> {
 
 const REDIS_WRONGTYPE_PREFIX = 'WRONGTYPE';
 
+/** ioredis states of a client that has not finished connecting yet (`wait`: lazy, not started). */
+const REDIS_HANDSHAKE_STATUSES: ReadonlySet<string> = new Set(['wait', 'connecting', 'connect']);
+/** Longest a request waits for a starting Redis connection before the queue answers unavailable. */
+export const REDIS_READY_WAIT_MS = 1_000;
+
+/** Resolves true once the client is ready, false on close/end or after `timeoutMs`. */
+function waitForRedisReady(client: Redis, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const finish = (ready: boolean) => {
+      clearTimeout(timer);
+      client.off('ready', onReady);
+      client.off('end', onDown);
+      client.off('close', onDown);
+      resolve(ready);
+    };
+    const onReady = () => finish(true);
+    const onDown = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    client.once('ready', onReady);
+    client.once('end', onDown);
+    client.once('close', onDown);
+  });
+}
+
 /**
  * The waiting key is a sorted set, or a list on data written by an older version; a command for the
  * other type answers WRONGTYPE and the caller tries the other command. Any other failure is Redis
@@ -1586,7 +1610,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
    * Fails closed once Redis is configured: a client that is not connected is a queue that cannot
    * answer. Only the no-Redis configuration (local development) may use the in-memory engine.
    */
-  private assertRedisConnected(): void {
+  private async assertRedisConnected(): Promise<void> {
+    const client = this.redisClient;
+    const status = (client as { status?: unknown } | null)?.status;
+    if (client && typeof status === 'string' && REDIS_HANDSHAKE_STATUSES.has(status)) {
+      // A client still completing its handshake (the offline queue is off) would reject the
+      // command; wait for it, bounded, so a request right after start-up is not refused.
+      if (!(await waitForRedisReady(client, REDIS_READY_WAIT_MS))) {
+        throw new QueueUnavailableError(this.name);
+      }
+      return;
+    }
     if (!this.redisConnected) {
       throw new QueueUnavailableError(this.name);
     }
@@ -1735,7 +1769,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       const redis = this.redisClient;
       const id = opts.jobId || generateJobId();
       const userId = (data as any)?.userId ? String((data as any).userId) : '';
@@ -1861,7 +1895,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async getJob(id: string): Promise<Job<T, R> | undefined> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       const redis = this.redisClient;
       const raw = await this.redisOp(() => redis.hgetall(this.getJobKey(id)));
       if (!raw || !raw.id) {
@@ -1874,7 +1908,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const ids: string[] = [];
         for (const type of types) {
@@ -1931,7 +1965,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async getJobCounts(): Promise<JobCounts> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const getWaitingCount = async (): Promise<number> => {
           if (!this.redisClient) return 0;
@@ -1984,7 +2018,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     offset: number = 0
   ): Promise<Job<T, R>[]> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const userKey = this.getUserJobsKey(userId);
         const allJobIds = await this.redisClient.zrevrange(userKey, 0, -1);
@@ -2030,7 +2064,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const setKeysByType = {
           completed: this.completedKey,
@@ -2074,7 +2108,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (!client) {
       return this.memoryFallback.cancelJob(id, reason);
     }
-    this.assertRedisConnected();
+    await this.assertRedisConnected();
 
     // Fail closed: a Redis error propagates instead of reporting a cancel that did not happen.
     const finishedOn = Date.now();
@@ -2110,7 +2144,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const raws = await this.redisClient.lrange(this.dlqKey, 0, -1);
         return raws.map((r: string) => {
@@ -2151,7 +2185,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async purgeDlq(): Promise<number> {
     if (this.redisClient) {
-      this.assertRedisConnected();
+      await this.assertRedisConnected();
       try {
         const count = await this.redisClient.llen(this.dlqKey);
         await this.redisClient.del(this.dlqKey);

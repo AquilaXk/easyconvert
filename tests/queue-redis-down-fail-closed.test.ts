@@ -283,6 +283,26 @@ describe('HTTP routes with an unreachable Redis', () => {
     await expectNoMemoryJobs();
   });
 
+  it('POST /api/v1/jobs with a graph answers 503 with Retry-After, not a 500', async () => {
+    const started = Date.now();
+    const res = await routes.v1Jobs.POST(
+      request('/api/v1/jobs', {
+        method: 'POST',
+        body: {
+          targetFormat: 'json',
+          graph: {
+            nodes: {
+              in: { op: 'import.url', url: 'https://files.example.org/in/data.csv' },
+              out: { op: 'export.internal', input: 'in' },
+            },
+          },
+        },
+      })
+    );
+    await expectServiceUnavailable(res, started);
+    await expectNoMemoryJobs();
+  });
+
   it('POST /api/queue/jobs answers 503 with Retry-After and enqueues nothing in memory', async () => {
     const started = Date.now();
     const res = await routes.queueJobs.POST(
@@ -357,4 +377,71 @@ describe('HTTP routes with an unreachable Redis', () => {
       expect(Object.values(counts).reduce((sum, n) => sum + n, 0)).toBe(0);
     }
   }
+});
+
+/** Command names of the RESP arrays in one chunk: an array header, then the bulk string of the name. */
+function respCommandNames(text: string): string[] {
+  const lines = text.split('\r\n');
+  const names: string[] = [];
+  for (let i = 0; i + 2 < lines.length; i++) {
+    if (lines[i].startsWith('*') && lines[i + 1].startsWith('$')) {
+      names.push(lines[i + 2].toUpperCase());
+    }
+  }
+  return names;
+}
+
+describe('DistributedBullMQAdapter while its Redis connection is starting', () => {
+  /** How long the test server holds the connection handshake before answering it. */
+  const HANDSHAKE_DELAY_MS = 300;
+  const READY_INFO = '# Server\r\nloading:0\r\n';
+  let server: net.Server;
+  let port: number;
+  const sockets = new Set<net.Socket>();
+
+  beforeAll(async () => {
+    // A minimal RESP server (Redis serialization protocol, RESP2): it refuses HELLO so the client
+    // stays on RESP2, delays the INFO ready check, answers HGETALL with an empty array and every
+    // other command with +OK. One reply per command, since the client pipelines its handshake.
+    server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('data', (chunk) => {
+        for (const command of respCommandNames(chunk.toString('latin1'))) {
+          if (command === 'HELLO') {
+            socket.write("-ERR unknown command 'hello'\r\n");
+          } else if (command === 'INFO') {
+            setTimeout(() => socket.write(`$${Buffer.byteLength(READY_INFO)}\r\n${READY_INFO}\r\n`), HANDSHAKE_DELAY_MS);
+          } else if (command === 'HGETALL') {
+            socket.write('*0\r\n');
+          } else {
+            socket.write('+OK\r\n');
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, LOCALHOST, resolve));
+    const address = server.address();
+    port = typeof address === 'object' && address ? address.port : 0;
+  });
+
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('waits for the handshake instead of refusing a request made right after start-up', async () => {
+    vi.stubEnv('REDIS_URL', `redis://${LOCALHOST}:${port}`);
+    const adapter = new DistributedBullMQAdapter<ConversionJobData, unknown>('starting-queue');
+    try {
+      const started = Date.now();
+      const job = await adapter.getJob('job_absent');
+      expect(job).toBeUndefined();
+      expect(Date.now() - started).toBeGreaterThanOrEqual(HANDSHAKE_DELAY_MS - 50);
+      expect((await memoryEngineOf(adapter).getJobCounts()).waiting).toBe(0);
+    } finally {
+      await adapter.close();
+    }
+  });
 });

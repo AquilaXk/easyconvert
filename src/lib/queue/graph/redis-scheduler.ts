@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import Redis, { ReplyError } from 'ioredis';
 import type { GraphNode, JobGraph, NodeId } from './types';
 import { getNodeInputs } from './validate-graph';
 import type {
@@ -23,7 +23,7 @@ import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
 import { storageProvider } from '../../storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
-import { GraphStateCorruptError } from '../../types';
+import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { parseGraphMeta, parseGraphStatus, parseNodeStates, parseStoredList } from './redis-state-parsers';
 
 export interface RedisGraphSchedulerOptions {
@@ -36,6 +36,33 @@ export interface RedisGraphSchedulerOptions {
   cancelNode?: typeof cancelGraphNodeJob;
 }
 
+/** The Redis commands this scheduler sends. */
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem']);
+const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
+
+/**
+ * Fails closed when Redis does not answer: a rejected command becomes `QueueUnavailableError` (503
+ * at the API). A reply error is Redis answering (a script refusing a duplicate graph, for example)
+ * and propagates unchanged.
+ */
+function failClosedRedis(client: Redis): Redis {
+  return new Proxy(client, {
+    get(target, prop) {
+      const value: unknown = Reflect.get(target, prop, target);
+      if (typeof value !== 'function' || !SCHEDULER_REDIS_COMMANDS.has(prop)) {
+        return value;
+      }
+      return (...args: unknown[]) =>
+        Promise.resolve(value.apply(target, args)).catch((err: unknown) => {
+          if (err instanceof ReplyError) {
+            throw err;
+          }
+          throw new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
+        });
+    },
+  });
+}
+
 export class RedisGraphScheduler implements IGraphScheduler {
   private readonly redisClient: Redis;
   private readonly keyPrefix: string;
@@ -43,7 +70,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
   private readonly cancelNode: typeof cancelGraphNodeJob;
 
   constructor(options: RedisGraphSchedulerOptions) {
-    this.redisClient = options.redisClient;
+    this.redisClient = failClosedRedis(options.redisClient);
     this.keyPrefix = options.keyPrefix ?? DEFAULT_QUEUE_KEY_PREFIX;
     this.enqueueNode = options.enqueueNode ?? enqueueGraphNodeJob;
     this.cancelNode = options.cancelNode ?? cancelGraphNodeJob;
