@@ -120,10 +120,12 @@ describe('webhook target ids are explicit', () => {
   describe('secret store', () => {
     it.each(['', '   '])('refuses target id %j with the typed error on every operation', async (targetId) => {
       const store = getWebhookSecretStore();
-      await expect(store.getSecretRecord(user.id, targetId)).rejects.toBeInstanceOf(WebhookTargetRequiredError);
-      await expect(store.setPrimarySecret(user.id, targetId, CALLER_SECRET)).rejects.toBeInstanceOf(WebhookTargetRequiredError);
-      await expect(store.rotateSecret(user.id, targetId, GRACE_SECONDS)).rejects.toBeInstanceOf(WebhookTargetRequiredError);
-      await expect(store.deleteSecretRecord(user.id, targetId)).rejects.toBeInstanceOf(WebhookTargetRequiredError);
+      const typed = { name: 'WebhookTargetRequiredError', status: HTTP_BAD_REQUEST };
+      await expect(store.getSecretRecord(user.id, targetId)).rejects.toMatchObject(typed);
+      await expect(store.setPrimarySecret(user.id, targetId, CALLER_SECRET)).rejects.toMatchObject(typed);
+      await expect(store.rotateSecret(user.id, targetId, GRACE_SECONDS)).rejects.toMatchObject(typed);
+      await expect(store.deleteSecretRecord(user.id, targetId)).rejects.toMatchObject(typed);
+      expect(await store.getSecretRecord(user.id, DEFAULT_SLOT)).toBeNull();
     });
 
     it('carries HTTP status 400', () => {
@@ -203,7 +205,7 @@ describe('webhook target ids are explicit', () => {
           ownerUserId: user.id,
           targetId,
         })
-      ).rejects.toBeInstanceOf(WebhookTargetRequiredError);
+      ).rejects.toMatchObject({ name: 'WebhookTargetRequiredError', status: HTTP_BAD_REQUEST });
       expect(received).toHaveLength(0);
     });
   });
