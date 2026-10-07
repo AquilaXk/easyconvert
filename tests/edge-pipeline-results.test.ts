@@ -1,5 +1,14 @@
 import { resolveObjectURL } from 'node:buffer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The tessellator is replaced by a pass-through spy so one test can hand the CAD engine a broken mesh; every
+// other call runs the real tessellator.
+vi.mock('../src/lib/conversions/cad-nurbs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/lib/conversions/cad-nurbs')>();
+  return { ...actual, tessellateCadText: vi.fn(actual.tessellateCadText) };
+});
+
+import { tessellateCadText } from '../src/lib/conversions/cad-nurbs';
 import type { ConversionQueueItem } from '../src/lib/types';
 import { ConversionFailedError } from '../src/lib/types';
 import { ClientEdgeEscalationError, executeItemConversion, tryProcessClientEdge } from '../src/lib/client-converter';
@@ -206,5 +215,45 @@ describe('the L0 audio path keeps the source layout (issue #480)', () => {
     const [, , edgeProcessed, tierName, fallback] = onSuccess.mock.calls[0];
     expect([edgeProcessed, tierName]).toEqual([false, 'Cloud (Zero-Retention)']);
     expect(fallback).toMatchObject({ fallbackFrom: 'L0', escalationReason: expect.stringMatching(/cannot write 5\.1/) });
+  });
+});
+
+describe('the L0 CAD path hands a broken mesh to the server tier (issue #480)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis);
+  });
+
+  function stepItem(): ConversionQueueItem {
+    const file = new File(['ISO-10303-21;'], 'part.step', { type: 'model/step' });
+    return {
+      id: 'cad-dangling',
+      file,
+      name: 'part.step',
+      size: file.size,
+      sourceFormat: 'step',
+      targetFormat: 'stl',
+      status: 'ready',
+      progress: 0,
+      options: {},
+    };
+  }
+
+  it('escalates from L0 with the reason when a face names a vertex that does not exist', async () => {
+    vi.mocked(tessellateCadText).mockReturnValueOnce({
+      name: 'part',
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      faces: [[0, 1, 3]],
+    });
+    const error = await tryProcessClientEdge(stepItem()).then(
+      () => undefined,
+      (caught: unknown) => caught as Error
+    );
+    expect(error).toBeInstanceOf(ClientEdgeEscalationError);
+    expect((error as ClientEdgeEscalationError).fallbackFrom).toBe('L0');
+    expect(error?.message).toMatch(/face 0 has vertex index 3, but the mesh has 3 vertices/);
   });
 });

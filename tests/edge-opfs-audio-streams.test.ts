@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CorruptStreamError } from '../src/lib/types';
 import { OPFS_CHUNK_SIZE, resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
-import { isOpfsStreamingSupported, resolveConversionTier } from '../src/lib/edge/tier-router';
+import {
+  isOpfsStreamingSupported,
+  resolveConversionTier,
+  SUPPORTED_OPFS_STREAMING_CONVERSIONS,
+} from '../src/lib/edge/tier-router';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { mulberry32 } from './helpers/audio-signals';
@@ -594,6 +598,59 @@ describe('OPFS audio escape hatches and routing (issue #480)', () => {
     ['adpcm', 'pcm'],
   ])('routes self-describing %s to %s to the OPFS tier', (source, target) => {
     expect(resolveConversionTier(source, target, LARGE, {}, caps).tier).toBe('L3');
+  });
+
+  it('lists exactly the pairs that have a real transformation', () => {
+    // A hand-written list: a pair added to the router without a transformation and a test has to change this.
+    expect([...SUPPORTED_OPFS_STREAMING_CONVERSIONS].sort()).toEqual(
+      [
+        'adpcm:pcm',
+        'adpcm:wav',
+        'csv:tab',
+        'csv:tsv',
+        'gz:tar',
+        'pcm:adpcm',
+        'pcm:pcm_be',
+        'pcm:pcm_u8',
+        'pcm:u8',
+        'pcm:wav',
+        'pcm_be:pcm',
+        'pcm_be:pcm_le',
+        'pcm_le:pcm_be',
+        'raw:gray',
+        'raw:grayscale',
+        'rgba:gray',
+        'rgba:grayscale',
+        'tab:csv',
+        'tar:gz',
+        'tar:tar_gz',
+        'tar_gz:tar',
+        'tsv:csv',
+        'wav:adpcm',
+        'wav:pcm',
+        'wav:pcm_u8',
+        'wav:u8',
+      ].sort()
+    );
+  });
+
+  it.each([
+    ['tar', 'tar_gz'],
+    ['gz', 'tar'],
+    ['csv', 'tsv'],
+    ['rgba', 'grayscale'],
+  ])('routes the listed pair %s to %s to the OPFS tier', (source, target) => {
+    expect(resolveConversionTier(source, target, LARGE, {}, caps).tier).toBe('L3');
+  });
+
+  it.each([
+    ['tar_gz', 'gz'],
+    ['grayscale', 'rgba'],
+    ['tsv', 'tar'],
+    ['wav', 'wav'],
+    ['mp4', 'webm'],
+  ])('routes the unlisted pair %s to %s to the server tier', (source, target) => {
+    expect(resolveConversionTier(source, target, LARGE, {}, caps).tier).toBe('L4');
   });
 
   it('no longer lets an option turn an identity copy into a streaming conversion', () => {
