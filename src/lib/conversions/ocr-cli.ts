@@ -1,4 +1,6 @@
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { OcrEngineUnavailableError } from '../types';
 import {
   executeSandboxedBinary,
@@ -8,13 +10,14 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { parseTesseractBlocks, type OcrResult } from './ocr-pdf-combiner';
+import { groupAtBoundaries, wordBoundariesAfter, type OcrWordMerge } from './ocr-word-merge';
 import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
 
 /** Wall-clock limit for one native Tesseract run. */
 export const OCR_CLI_TIMEOUT_MS = 15_000;
 /** The sandbox's own timer fires this much later than the abort signal, as a backstop. */
 const OCR_CLI_TIMER_BACKSTOP_MS = 2_000;
-/** Largest TSV (plus diagnostics) accepted from the CLI; larger output kills the process. */
+/** Largest output file (and diagnostics) accepted from the CLI; larger output kills the process. */
 export const OCR_CLI_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 /** Most TSV data rows parsed from one run; a dense page has a few thousand. */
 export const OCR_CLI_MAX_TSV_ROWS = 100_000;
@@ -26,6 +29,10 @@ export const OCR_CLI_MAX_QUEUED = 64;
 export const OCR_CLI_MEMORY_LIMIT_MB = 2048;
 /** Characters of CLI diagnostics written to the server log; they are never sent to clients. */
 export const OCR_CLI_LOGGED_STDERR_CHARS = 500;
+
+/** Prefix of the private directory each run writes its output files to; removed when the run ends. */
+const OCR_CLI_JOB_DIR_PREFIX = 'easyconvert-ocr-';
+const OCR_CLI_OUTPUT_BASENAME = 'page';
 
 /**
  * Tesseract starts one OpenMP thread per CPU in every process. With several runs in flight those
@@ -106,6 +113,42 @@ function unionBox(words: TsvWord[]): TsvBox {
   return union;
 }
 
+/** One word from consecutive rows: joined text, union box, and the lowest confidence of its parts. */
+function joinTsvWords(group: readonly TsvWord[]): TsvWord {
+  let confidence: number | undefined;
+  for (const word of group) {
+    if (word.confidence !== undefined && (confidence === undefined || word.confidence < confidence)) {
+      confidence = word.confidence;
+    }
+  }
+  return { text: group.map((word) => word.text).join(''), confidence, bbox: unionBox([...group]) };
+}
+
+/**
+ * Merges the rows of every line into whole words, in place, using the spacing of `pageText`.
+ * Rows that do not spell out the page text are left as they are; no text is invented.
+ */
+function mergeTsvWords(blocks: Map<number, Map<number, Map<number, TsvLine>>>, pageText: string): OcrWordMerge | undefined {
+  const lines: TsvLine[] = [];
+  for (const paragraphs of blocks.values()) {
+    for (const paragraphLines of paragraphs.values()) lines.push(...paragraphLines.values());
+  }
+  const rows = lines.flatMap((line) => line.words);
+  if (rows.length === 0) return undefined;
+  const boundaryAfter = wordBoundariesAfter(
+    pageText,
+    rows.map((row) => row.text)
+  );
+  if (boundaryAfter === null) return 'unaligned';
+  let offset = 0;
+  for (const line of lines) {
+    const rowCount = line.words.length;
+    line.words = groupAtBoundaries(line.words, boundaryAfter.slice(offset, offset + rowCount), joinTsvWords);
+    offset += rowCount;
+  }
+  return 'aligned';
+}
+
 /** Key of a paragraph in `paragraphBoxes`; paragraph numbers restart in every block. */
 function paragraphKey(block: number, par: number): string {
   return `${block}/${par}`;
@@ -114,8 +157,13 @@ function paragraphKey(block: number, par: number): string {
 /**
  * Rebuilds an OCR result (text, block, paragraph, line and word boxes, mean confidence) from
  * `tessedit_create_tsv` output. `language` is the recognition language, recorded on the result.
+ *
+ * `pageText` is the engine's own text of the same page (`tessedit_create_txt`). TSV carries one
+ * row per recognized word, which for Korean, Japanese and Chinese is one character, and no
+ * spacing; the page text keeps the original spacing, so boxes with no whitespace between them in
+ * it are merged into one word. Without `pageText` the rows are used as they are.
  */
-export function parseTesseractTsv(tsv: string, language?: string): OcrResult {
+export function parseTesseractTsv(tsv: string, language?: string, pageText?: string): OcrResult {
   if (countDataRows(tsv) > OCR_CLI_MAX_TSV_ROWS) throw malformed(`more than ${OCR_CLI_MAX_TSV_ROWS} rows.`);
   const rows = tsv.split('\n');
   if (rows[0]?.replace(/\r$/, '') !== TSV_HEADER) throw malformed('the header row is missing.');
@@ -180,6 +228,8 @@ export function parseTesseractTsv(tsv: string, language?: string): OcrResult {
   }
   if (pageWidth === null) throw malformed('the page row is missing.');
 
+  const mergeOutcome = pageText === undefined ? undefined : mergeTsvWords(blocks, pageText);
+
   const textBlocks: string[] = [];
   const parsedBlocks: unknown[] = [];
   let confidenceSum = 0;
@@ -218,6 +268,7 @@ export function parseTesseractTsv(tsv: string, language?: string): OcrResult {
   const text = textBlocks.join('\n\n');
   const { lines, lineBlocks } = parseTesseractBlocks(parsedBlocks, pageWidth, pageHeight, language);
   return {
+    wordMerge: mergeOutcome,
     text,
     confidence: confidenceCount > 0 ? confidenceSum / confidenceCount / CONFIDENCE_PERCENT_SCALE : null,
     wordCount,
@@ -269,7 +320,7 @@ export interface CliOcrRequest {
   cliPath: string;
   tessdataDir: string;
   tesseractLang: string;
-  /** An image the CLI can read; passed on stdin, so no temporary files are written. */
+  /** An image the CLI can read; passed on stdin. */
   image: Buffer;
   timeoutMs?: number;
   maxOutputBytes?: number;
@@ -313,51 +364,81 @@ export async function recognizeWithCli(request: CliOcrRequest): Promise<OcrResul
   return fallbackReadsMore(first.wordCount, retry.wordCount) ? retry : first;
 }
 
+/**
+ * Reads one output file of a run. A file at the cap is refused as well as a larger one: the
+ * file-size limit stops a writer at exactly that many bytes, so such a file may be cut short.
+ */
+async function readJobOutput(file: string, maxBytes: number, what: string): Promise<string> {
+  let size: number;
+  try {
+    size = (await fs.promises.stat(file)).size;
+  } catch {
+    throw malformed(`the ${what} output is missing.`);
+  }
+  if (size >= maxBytes) throw new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');
+  return fs.promises.readFile(file, 'utf-8');
+}
+
+/** The error a caller sees for a failed run; the CLI's own diagnostics go to the server log only. */
+function describeCliFailure(err: unknown, timeoutMs: number, memoryLimitMb: number): Error {
+  if (err instanceof OcrEngineUnavailableError) return err;
+  if (isTimeout(err)) return new OcrEngineUnavailableError(`Tesseract CLI did not finish within ${timeoutMs} ms.`);
+  if (err instanceof SandboxedBufferLimitError) {
+    return new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');
+  }
+  if (err instanceof SandboxedMemoryLimitError) {
+    return new OcrEngineUnavailableError(`Tesseract CLI exceeded its ${memoryLimitMb} MB memory limit.`);
+  }
+  if (err instanceof SandboxedProcessError) {
+    logCliFailure('Tesseract CLI failed', err.stderr);
+    const reason = err.signal ? `terminated by signal ${err.signal}` : `failed with exit code ${err.exitCode}`;
+    return new OcrEngineUnavailableError(`Tesseract CLI ${reason}.`);
+  }
+  logCliFailure('Tesseract CLI could not run', err instanceof Error ? err.message : String(err));
+  return new OcrEngineUnavailableError('Tesseract CLI could not be started.');
+}
+
 async function runCli(request: CliOcrRequest): Promise<OcrResult> {
   const timeoutMs = request.timeoutMs ?? OCR_CLI_TIMEOUT_MS;
   const memoryLimitMb = request.memoryLimitMb ?? OCR_CLI_MEMORY_LIMIT_MB;
+  const maxOutputBytes = request.maxOutputBytes ?? OCR_CLI_MAX_OUTPUT_BYTES;
   const segmentation = ocrSegmentationFor(request.tesseractLang);
   const pageSegMode = request.pageSegMode ?? segmentation.pageSegMode;
   const { engineMode } = segmentation;
+  // TSV holds the boxes and the page text holds the spacing, which one stream on stdout cannot
+  // carry together, so both go to a private directory that is removed when the run ends.
+  const jobDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), OCR_CLI_JOB_DIR_PREFIX));
+  const outputBase = path.join(jobDir, OCR_CLI_OUTPUT_BASENAME);
   const args = [
     '--tessdata-dir', request.tessdataDir,
-    'stdin', 'stdout',
+    'stdin', outputBase,
     '-l', request.tesseractLang,
     '--psm', pageSegMode,
     '--oem', String(engineMode),
     '-c', 'tessedit_create_tsv=1',
+    '-c', 'tessedit_create_txt=1',
   ];
-  let stdout: Buffer;
   try {
-    // The timeout starts when the process does, not while the request waits for a slot.
-    ({ stdout } = await cliSemaphore.run(() =>
-      executeSandboxedBinary(request.cliPath, args, {
-        stdin: request.image,
-        env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
-        signal: AbortSignal.timeout(timeoutMs),
-        timeoutMs: timeoutMs + OCR_CLI_TIMER_BACKSTOP_MS,
-        maxBuffer: request.maxOutputBytes ?? OCR_CLI_MAX_OUTPUT_BYTES,
-        memoryLimitMb,
-      })
-    ));
-  } catch (err) {
-    if (err instanceof OcrEngineUnavailableError) throw err;
-    if (isTimeout(err)) {
-      throw new OcrEngineUnavailableError(`Tesseract CLI did not finish within ${timeoutMs} ms.`);
+    try {
+      // The timeout starts when the process does, not while the request waits for a slot.
+      await cliSemaphore.run(() =>
+        executeSandboxedBinary(request.cliPath, args, {
+          stdin: request.image,
+          env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
+          signal: AbortSignal.timeout(timeoutMs),
+          timeoutMs: timeoutMs + OCR_CLI_TIMER_BACKSTOP_MS,
+          maxBuffer: maxOutputBytes,
+          maxFileSize: maxOutputBytes,
+          memoryLimitMb,
+        })
+      );
+    } catch (err) {
+      throw describeCliFailure(err, timeoutMs, memoryLimitMb);
     }
-    if (err instanceof SandboxedBufferLimitError) {
-      throw new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');
-    }
-    if (err instanceof SandboxedMemoryLimitError) {
-      throw new OcrEngineUnavailableError(`Tesseract CLI exceeded its ${memoryLimitMb} MB memory limit.`);
-    }
-    if (err instanceof SandboxedProcessError) {
-      logCliFailure('Tesseract CLI failed', err.stderr);
-      const reason = err.signal ? `terminated by signal ${err.signal}` : `failed with exit code ${err.exitCode}`;
-      throw new OcrEngineUnavailableError(`Tesseract CLI ${reason}.`);
-    }
-    logCliFailure('Tesseract CLI could not run', err instanceof Error ? err.message : String(err));
-    throw new OcrEngineUnavailableError('Tesseract CLI could not be started.');
+    const tsv = await readJobOutput(`${outputBase}.tsv`, maxOutputBytes, 'TSV');
+    const pageText = await readJobOutput(`${outputBase}.txt`, maxOutputBytes, 'text');
+    return parseTesseractTsv(tsv, request.tesseractLang, pageText);
+  } finally {
+    await fs.promises.rm(jobDir, { recursive: true, force: true });
   }
-  return parseTesseractTsv(stdout.toString('utf-8'), request.tesseractLang);
 }

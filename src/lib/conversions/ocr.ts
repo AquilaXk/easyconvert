@@ -208,7 +208,7 @@ export async function performOcr(
       const fullText = (ret.data.text || '').trim();
       const imgWidth = prepared.geometry.outputWidth;
       const imgHeight = prepared.geometry.outputHeight;
-      const { lines: recognizedLines, lineBlocks } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight, tesseractLang);
+      const { lines: recognizedLines, lineBlocks, wordMerge } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight, tesseractLang);
 
       const words = fullText.split(/\s+/).filter(Boolean);
 
@@ -253,6 +253,7 @@ export async function performOcr(
           imageWidth: imgWidth,
           imageHeight: imgHeight,
           language: tesseractLang,
+          wordMerge,
         },
         prepared.geometry
       );

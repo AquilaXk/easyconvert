@@ -30,6 +30,7 @@ import {
   buildToUnicodeCMapFromCids,
   glyphAdvanceForCodePoint,
 } from './ocr-text-layer-font';
+import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './ocr-word-merge';
 
 /** The first allocated CID; CID 0 is reserved for .notdef. */
 const FIRST_TEXT_LAYER_CID = 1;
@@ -108,6 +109,8 @@ export interface OcrPageResult {
   lines?: string[];
   /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
   language?: string;
+  /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
+  wordMerge?: OcrWordMerge;
 }
 
 export interface OcrResult {
@@ -121,6 +124,8 @@ export interface OcrResult {
   pages?: OcrPageResult[];
   /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
   language?: string;
+  /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
+  wordMerge?: OcrWordMerge;
 }
 
 export interface ColumnGutter {
@@ -946,8 +951,9 @@ export function parseTesseractBlocks(
   pageWidth?: number,
   pageHeight?: number,
   language?: string
-): { lines: string[]; lineBlocks: OcrLineBlock[] } {
+): { lines: string[]; lineBlocks: OcrLineBlock[]; wordMerge?: OcrWordMerge } {
   const lineBlocks: OcrLineBlock[] = [];
+  const mergeOutcomes: OcrWordMerge[] = [];
   if (!blocks || blocks.length === 0) return { lines: [], lineBlocks: [] };
 
   for (const block of blocks) {
@@ -981,6 +987,14 @@ export function parseTesseractBlocks(
           }
         }
 
+        // The engine's own line text keeps the original spacing, which the per-character boxes of
+        // CJK text do not carry; whole words are rebuilt from it.
+        if (words.length > 0) {
+          const merged = mergeWordsWithPageText(text, words);
+          words.splice(0, words.length, ...merged.words);
+          mergeOutcomes.push(merged.wordMerge);
+        }
+
         lineBlocks.push({
           text,
           bbox: {
@@ -1007,7 +1021,7 @@ export function parseTesseractBlocks(
   const sortedLineBlocks = sortLineBlocksTopological(lineBlocks, pageWidth, pageHeight);
   const lines = sortedLineBlocks.map((b) => b.text);
 
-  return { lines, lineBlocks: sortedLineBlocks };
+  return { lines, lineBlocks: sortedLineBlocks, wordMerge: combineWordMerge(mergeOutcomes) };
 }
 
 /**
