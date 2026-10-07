@@ -7,6 +7,7 @@ import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
+import { renderHwpToSvg } from './hwp-render';
 
 /**
  * HWP 5.0 Record Tag IDs
@@ -1169,7 +1170,7 @@ export async function convertHwpDocument(
 
   // 12. Target: Raster Images (PNG, JPG, WEBP, BMP)
   if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(tgt)) {
-    const raster = await renderHwpToRaster(doc, tgt, baseName);
+    const raster = await renderHwpToRaster(doc, tgt);
     return {
       buffer: raster.buffer,
       mimeType: raster.mimeType,
@@ -1401,63 +1402,22 @@ async function generateOdtFromHwp(doc: HwpDocument, title: string): Promise<Buff
  */
 async function generateXpsFromHwp(doc: HwpDocument, title: string): Promise<Buffer> {
   const lines = doc.paragraphs.map((p) => p.text).filter(Boolean);
+  // Table rows follow the paragraphs, one line per row with its cells separated by a tab.
+  for (const table of doc.tables) {
+    for (const row of table.rows) lines.push(row.join('\t'));
+  }
   return buildOpenXpsPackage([{ title, lines }], title);
 }
 
 /**
- * Rasterizes HWP document into crisp PNG, JPEG, WEBP, or BMP images
+ * Rasterizes an HWP document into PNG, JPEG, WEBP or BMP: the SVG page of renderHwpToSvg, which holds every
+ * paragraph and table row, drawn at its own pixel size.
  */
 async function renderHwpToRaster(
   doc: HwpDocument,
-  tgt: string,
-  title: string
+  tgt: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
-  const width = 800;
-  const rowHeight = 24;
-  let estimatedHeight = 120 + doc.paragraphs.length * 28;
-  doc.tables.forEach((t) => {
-    estimatedHeight += t.rows.length * rowHeight + 30;
-  });
-  const height = Math.min(3000, Math.max(400, estimatedHeight));
-
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <rect width="${width}" height="${height}" fill="#ffffff" />
-    <rect x="40" y="30" width="${width - 80}" height="4" fill="#5C6BC0" />
-    <text x="40" y="65" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="20" font-weight="bold" fill="#1F2340">${escapeXml(title)}</text>
-  `;
-
-  let currentY = 100;
-  for (const p of doc.paragraphs.slice(0, 40)) {
-    if (currentY > height - 60) break;
-    const isHeading = p.isHeading;
-    const fontSize = isHeading ? 15 : 12;
-    const fill = isHeading ? '#5C6BC0' : '#2D3748';
-    const fontWeight = isHeading ? 'bold' : 'normal';
-    svg += `<text x="40" y="${currentY}" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fill}">${escapeXml(p.text.slice(0, 100))}</text>\n`;
-    currentY += isHeading ? 28 : 22;
-  }
-
-  for (const t of doc.tables) {
-    if (currentY > height - 80) break;
-    const colCount = Math.max(1, t.colCount || t.rows[0]?.length || 1);
-    const colWidth = (width - 80) / colCount;
-
-    t.rows.slice(0, 20).forEach((row, rIdx) => {
-      if (currentY > height - 40) return;
-      const isHeader = rIdx === 0;
-      const bg = isHeader ? '#F0F2FE' : (rIdx % 2 === 0 ? '#FFFFFF' : '#F8FAFC');
-      svg += `<rect x="40" y="${currentY}" width="${width - 80}" height="${rowHeight}" fill="${bg}" stroke="#CCD2FC" stroke-width="0.5" />\n`;
-      row.forEach((cell, cIdx) => {
-        const cx = 45 + cIdx * colWidth;
-        const fontW = isHeader ? 'bold' : 'normal';
-        svg += `<text x="${cx}" y="${currentY + 16}" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="11" font-weight="${fontW}" fill="#1F2340">${escapeXml(cell.slice(0, 25))}</text>\n`;
-      });
-      currentY += rowHeight;
-    });
-    currentY += 16;
-  }
-
-  svg += `</svg>`;
+  const svg = await renderHwpToSvg(doc);
   const pipeline = sharp(Buffer.from(svg, 'utf-8'));
 
   switch (tgt) {
