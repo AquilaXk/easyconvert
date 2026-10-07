@@ -432,22 +432,18 @@ describe('no MP3 conversion reaches the pure engine (issue #480)', () => {
     }
   });
 
-  it('has no call of the pure MP3 encoder in src besides the exported wrapper that delegates to it', () => {
-    const callers = new Set<string>();
+  it('leaves no pure MP3 encoder anywhere in src', () => {
+    const hits = new Set<string>();
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (/\.(ts|tsx)$/.test(entry.name)) {
-          for (const line of readFileSync(full, 'utf8').split('\n')) {
-            const isCall = /\b(encodePureMp3|pureEncodeMp3)\(/.test(line) && !/export function encodePureMp3\(/.test(line);
-            if (isCall && !/^\s*(\*|\/\/|\/\*)/.test(line)) callers.add(path.relative(process.cwd(), full));
-          }
+        else if (/\.(ts|tsx)$/.test(entry.name) && /\b(encodePureMp3|pureEncodeMp3)\b/.test(readFileSync(full, 'utf8'))) {
+          hits.add(path.relative(process.cwd(), full));
         }
       }
     };
     walk(path.join(process.cwd(), 'src'));
-    // media-encoder.ts is a public wrapper that nothing in src calls; the router and the L0 entry never reach it.
-    expect([...callers]).toEqual(['src/lib/conversions/media-encoder.ts']);
+    expect([...hits]).toEqual([]);
   });
 });

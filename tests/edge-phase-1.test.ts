@@ -14,7 +14,6 @@ import {
   convertPureAudio,
   encodePcmToWav,
   parseWavPcm,
-  encodePureMp3,
 } from '@/lib/edge/pure/pure-audio';
 import {
   isCanvasSupported,
@@ -338,33 +337,6 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       }
     });
 
-    it('encodes PCM samples to compliant MP3 with ID3v2 metadata and sync frames', () => {
-      const sampleCount = 1152 * 4; // 4 frames stereo
-      const samples = new Int16Array(sampleCount * 2);
-      for (let i = 0; i < samples.length; i++) {
-        samples[i] = (i % 2000) - 1000;
-      }
-
-      const mp3Bytes = encodePureMp3(samples, 44100, 2, '192k', 'Test Track');
-      expect(mp3Bytes).toBeInstanceOf(Uint8Array);
-      expect(mp3Bytes.length).toBeGreaterThan(100);
-
-      // Verify ID3v2 header: 'ID3' at byte 0, version 3 at byte 3
-      const id3Magic = String.fromCharCode(mp3Bytes[0], mp3Bytes[1], mp3Bytes[2]);
-      expect(id3Magic).toBe('ID3');
-      expect(mp3Bytes[3]).toBe(3); // ID3v2.3
-
-      // Find MPEG-1 Layer III Sync Word (0xFF, 0xFB) after ID3 tag
-      let foundSyncWord = false;
-      for (let i = 10; i < mp3Bytes.length - 1; i++) {
-        if (mp3Bytes[i] === 0xff && (mp3Bytes[i + 1] & 0xfe) === 0xfa) {
-          foundSyncWord = true;
-          break;
-        }
-      }
-      expect(foundSyncWord).toBe(true);
-    });
-
     it('executes end-to-end convertPureAudio for WAV to WAV', () => {
       const samples = Int16Array.from({ length: 1152 * 2 }, (_, i) => (i % 200) - 100);
       const wavBytes = encodePcmToWav(samples, 44100, 2);
@@ -477,33 +449,6 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(parsed24.samples[0]).toBe(0x1234);
     });
 
-    it('synchronizes MP3 frame length with bitrate index for standard rates and encodes UTF-8 ID3 title', () => {
-      const samples = new Int16Array(1152 * 4);
-      const titleUtf8 = '한국어 오디오 트랙';
-      const mp3Bytes = encodePureMp3(samples, 44100, 2, '320k', titleUtf8);
-
-      // Frame length for 320k at 44.1kHz: Math.floor(144 * 320000 / 44100) = 1044 bytes
-      const expectedFrameLen = 1044;
-      const expectedBitrateIdx = 14; // 320kbps in MPEG-1 Layer III
-
-      // First sync frame header after ID3 header
-      let syncOffset = -1;
-      for (let i = 10; i < mp3Bytes.length - 1; i++) {
-        if (mp3Bytes[i] === 0xff && (mp3Bytes[i + 1] & 0xfe) === 0xfa) {
-          syncOffset = i;
-          break;
-        }
-      }
-      expect(syncOffset).toBeGreaterThan(0);
-      const headerByte2 = mp3Bytes[syncOffset + 2];
-      const actualBitrateIdx = (headerByte2 >> 4) & 0x0f;
-      expect(actualBitrateIdx).toBe(expectedBitrateIdx);
-
-      // Next sync word should be at syncOffset + expectedFrameLen
-      const nextSync = syncOffset + expectedFrameLen;
-      expect(mp3Bytes[nextSync]).toBe(0xff);
-      expect((mp3Bytes[nextSync + 1] & 0xfe)).toBe(0xfa);
-    });
   });
 
   // ==========================================================================
