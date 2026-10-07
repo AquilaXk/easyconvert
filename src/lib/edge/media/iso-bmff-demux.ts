@@ -22,6 +22,8 @@ export const MP4_MAX_SAMPLES_PER_TRACK = 1_000_000;
 /** Sibling boxes read at one level of the box tree. */
 export const MP4_MAX_BOXES_PER_LEVEL = 4_096;
 export const MP4_MAX_TRACKS = 64;
+/** Samples across all tracks of a file: one video and one audio track at their per-track limit, and no more. */
+export const MP4_MAX_TOTAL_SAMPLES = 1_500_000;
 export const MP4_MAX_EDIT_LIST_ENTRIES = 16;
 /** Largest decoder configuration record (avcC, hvcC, av1C, AudioSpecificConfig) copied out of a file. */
 export const MP4_MAX_CONFIG_BYTES = 64 * 1024;
@@ -423,12 +425,24 @@ interface SampleTables {
   offsets: Float64Array;
 }
 
-function readSampleSizes(view: DataView, stsz: Mp4Box): { sizes: Uint32Array; sampleCount: number } {
+function readSampleSizes(
+  view: DataView,
+  stsz: Mp4Box,
+  fileBytes: number,
+  sampleBudget: number
+): { sizes: Uint32Array; sampleCount: number } {
   const { cursor } = openFullBox(view, stsz);
   const uniformSize = cursor.u32();
   const sampleCount = cursor.u32();
   if (sampleCount > MP4_MAX_SAMPLES_PER_TRACK) {
     throw refuse(`stsz claims ${sampleCount} samples, beyond the sample limit of ${MP4_MAX_SAMPLES_PER_TRACK}`);
+  }
+  if (sampleCount > sampleBudget) {
+    throw refuse(`stsz claims ${sampleCount} samples, beyond what is left of the ${MP4_MAX_TOTAL_SAMPLES}-sample budget of the file`);
+  }
+  // Samples are not shared between positions of the file, so they cannot add up to more than the file holds
+  if (uniformSize > 0 && uniformSize * sampleCount > fileBytes) {
+    throw refuse(`stsz claims ${sampleCount} samples of ${uniformSize} bytes, more than the file holds`);
   }
   const sizes = new Uint32Array(sampleCount);
   if (uniformSize > 0) {
@@ -681,15 +695,32 @@ function readSingleSampleEntry(view: DataView, stsd: Mp4Box): EntryHeader {
   return { type: entries[0].type, box: entries[0] };
 }
 
-function parseTrack(view: DataView, trak: Mp4Box, buffer: ArrayBuffer, movieTimescale: number): ParsedTrack | undefined {
+type TrackKind = 'video' | 'audio';
+
+/**
+ * Which kind of track `trak` is, from its header and handler alone: no sample table is touched. Disabled tracks and
+ * tracks that are neither picture nor sound (text, metadata, hint) are not read and answer undefined.
+ */
+function classifyTrack(view: DataView, trak: Mp4Box): TrackKind | undefined {
   const parts = children(view, trak);
   const tkhd = requiredChild(parts, 'tkhd', 'trak');
   const mdia = requiredChild(parts, 'mdia', 'trak');
-  const mediaParts = children(view, mdia);
-  const handler = readHandler(view, requiredChild(mediaParts, 'hdlr', 'mdia'));
-  if (handler !== 'vide' && handler !== 'soun') return undefined; // text, metadata and hint tracks carry no picture or sound
+  const handler = readHandler(view, requiredChild(children(view, mdia), 'hdlr', 'mdia'));
+  if (handler !== 'vide' && handler !== 'soun') return undefined;
   const kind = handler === 'vide' ? 'video' : 'audio';
-  if (!readTrackHeader(view, tkhd, kind === 'video').enabled) return undefined;
+  return readTrackHeader(view, tkhd, kind === 'video').enabled ? kind : undefined;
+}
+
+function parseTrack(
+  view: DataView,
+  trak: Mp4Box,
+  kind: TrackKind,
+  buffer: ArrayBuffer,
+  movieTimescale: number,
+  sampleBudget: number
+): ParsedTrack {
+  const parts = children(view, trak);
+  const mediaParts = children(view, requiredChild(parts, 'mdia', 'trak'));
 
   const timescale = readMediaTimescale(view, requiredChild(mediaParts, 'mdhd', 'mdia'));
   const minf = requiredChild(mediaParts, 'minf', 'mdia');
@@ -726,7 +757,7 @@ function parseTrack(view: DataView, trak: Mp4Box, buffer: ArrayBuffer, movieTime
     track = { codec: config.codec, description: config.description, sampleRate: config.sampleRate, channels: config.channels };
   }
 
-  const { sizes, sampleCount } = readSampleSizes(view, stsz);
+  const { sizes, sampleCount } = readSampleSizes(view, stsz, buffer.byteLength, sampleBudget);
   if (sampleCount === 0) throw refuse(`${what} has no samples`);
   const { deltas, decodeTimes } = readDecodeTimes(view, stts, sampleCount);
   const cttsBox = optionalChild(tableBoxes, 'ctts');
@@ -798,9 +829,18 @@ export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo {
   const traks = movie.filter((box) => box.type === 'trak');
   if (traks.length > MP4_MAX_TRACKS) throw refuse(`the file holds more than ${MP4_MAX_TRACKS} tracks`);
   const parsed: ParsedTrack[] = [];
+  const seen = new Set<TrackKind>();
+  let sampleBudget = MP4_MAX_TOTAL_SAMPLES;
   for (const trak of traks) {
-    const track = parseTrack(view, trak, buffer, movieTimescale);
-    if (track) parsed.push(track);
+    const kind = classifyTrack(view, trak);
+    if (!kind) continue;
+    // A second track of a kind is refused here, before its sample tables are read: a hostile file can make every
+    // track claim the per-track limit, and the edge can only use one of each
+    if (seen.has(kind)) throw refuse(`the file has more than one ${kind} track; the edge cannot choose between them`);
+    seen.add(kind);
+    const track = parseTrack(view, trak, kind, buffer, movieTimescale, sampleBudget);
+    sampleBudget -= track.samples.length;
+    parsed.push(track);
   }
 
   const video = parsed.filter((track) => track.kind === 'video');

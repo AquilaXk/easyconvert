@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { crc32 } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { demuxMp4, MP4_MAX_SAMPLES_PER_TRACK } from '../src/lib/edge/media/iso-bmff-demux';
+import { demuxMp4, MP4_MAX_SAMPLES_PER_TRACK, MP4_MAX_TOTAL_SAMPLES } from '../src/lib/edge/media/iso-bmff-demux';
 import type { DemuxedMediaSample, DemuxedTrackInfo } from '../src/lib/edge/media/media-types';
 import { demuxWav } from '../src/lib/edge/media/wav-demux';
 import { demuxMedia } from '../src/lib/edge/workers/webcodecs.worker';
@@ -334,11 +334,25 @@ function be32(n: number): number[] {
 function be64(n: number): number[] {
   return [...be32(Math.floor(n / 2 ** 32)), ...be32(n >>> 0)];
 }
+/** Big-endian 32-bit integers packed without spreading them into call arguments. */
+function packU32(values: number[]): Uint8Array {
+  const out = new Uint8Array(values.length * 4);
+  const view = new DataView(out.buffer);
+  values.forEach((value, index) => view.setUint32(index * 4, value));
+  return out;
+}
+
 function ascii(text: string): number[] {
   return [...text].map((char) => char.charCodeAt(0));
 }
 function cat(...parts: Array<number[] | Uint8Array>): Uint8Array {
-  return Uint8Array.from(parts.flatMap((part) => [...part]));
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 function box(type: string, ...payload: Array<number[] | Uint8Array>): Uint8Array {
   const body = cat(...payload);
@@ -415,13 +429,13 @@ function handTrackBoxes(track: HandTrack, trackId: number, offsets: number[]): U
     ['stsd', fullBox('stsd', 0, 0, be32(1), track.entry)],
     ['stts', fullBox('stts', 0, 0, ...stblEntries(track.stts ?? [[sampleCount, 1000]]))],
     ['stsc', fullBox('stsc', 0, 0, ...stscRuns(sampleCount, perChunk))],
-    ['stsz', fullBox('stsz', 0, 0, be32(0), be32(sampleCount), ...track.sizes.map((size) => be32(size)))],
+    ['stsz', fullBox('stsz', 0, 0, be32(0), be32(sampleCount), packU32(track.sizes))],
     [
       track.use64BitOffsets ? 'co64' : 'stco',
       fullBox(
         track.use64BitOffsets ? 'co64' : 'stco', 0, 0,
         be32(chunkOffsets.length),
-        ...chunkOffsets.map((offset) => (track.use64BitOffsets ? be64(offset) : be32(offset)))
+        ...(track.use64BitOffsets ? chunkOffsets.map((offset) => be64(offset)) : [packU32(chunkOffsets)])
       ),
     ],
   ];
@@ -470,19 +484,19 @@ function handMp4(tracks: HandTrack[], options: HandMp4Options = {}): Uint8Array 
   const movieTimescale = options.movieTimescale ?? 1000;
   const ftyp = box('ftyp', ascii('isom'), be32(0x200), ascii('isom'), ascii('iso2'));
   const mdatStart = ftyp.byteLength + 8;
-  const payloads: number[][] = [];
   const trackOffsets: number[][] = [];
   let cursor = mdatStart;
+  const mdatBody = new Uint8Array(tracks.reduce((total, track) => total + track.sizes.reduce((sum, size) => sum + size, 0), 0));
   tracks.forEach((track, trackIndex) => {
     const offsets: number[] = [];
     track.sizes.forEach((size, sampleIndex) => {
       offsets.push(cursor);
-      payloads.push(new Array(size).fill((trackIndex * 64 + sampleIndex + 1) & 0xff));
+      mdatBody.fill((trackIndex * 64 + sampleIndex + 1) & 0xff, cursor - mdatStart, cursor - mdatStart + size);
       cursor += size;
     });
     trackOffsets.push(offsets);
   });
-  const mdat = box('mdat', ...payloads);
+  const mdat = box('mdat', mdatBody);
   const mvhd = fullBox(
     'mvhd', 0, 0,
     be32(0), be32(0), be32(movieTimescale), be32(10_000), be32(0x10000), be16(0x100), new Array(10).fill(0),
@@ -742,6 +756,46 @@ describe('demuxMp4 refuses what it cannot read truthfully', () => {
   it('throws on a descriptor length that runs past the esds box', () => {
     const broken = fullBox('esds', 0, 0, [0x03, 0x7f, 0, 1, 0]);
     expectRefusal(handMp4([audioTrack({ entry: mp4aEntry(2, 44100, broken) })]), /esds/);
+  });
+});
+
+describe('demuxMp4 on files built to exhaust it', () => {
+  function expectRefusal(bytes: Uint8Array, message: RegExp): void {
+    expect(() => demux(bytes)).toThrow(EdgeUnsupportedError);
+    expect(() => demux(bytes)).toThrow(message);
+  }
+
+  it('refuses the second enabled track of a kind before reading its sample tables', () => {
+    // Every track after the first claims the largest stsz there is. Reading one would raise a different error and
+    // allocate; the refusal must come from the count of tracks, so the tables were never walked.
+    const lying = fullBox('stsz', 0, 0, be32(1), be32(MP4_MAX_SAMPLES_PER_TRACK));
+    const tracks = [videoTrack(), ...Array.from({ length: 15 }, () => videoTrack({ omit: ['stsz'], extra: [lying] }))];
+    const bytes = handMp4(tracks);
+    const heapBefore = process.memoryUsage().arrayBuffers;
+    const started = Date.now();
+
+    expectRefusal(bytes, /more than one video track/);
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(process.memoryUsage().arrayBuffers - heapBefore).toBeLessThan(8 * 1024 * 1024);
+  });
+
+  it('refuses a uniform stsz that claims more sample bytes than the file holds, before allocating the tables', () => {
+    const lying = fullBox('stsz', 0, 0, be32(1000), be32(MP4_MAX_SAMPLES_PER_TRACK));
+    const heapBefore = process.memoryUsage().arrayBuffers;
+
+    expectRefusal(handMp4([videoTrack({ omit: ['stsz'], extra: [lying] })]), /more than the file holds/);
+
+    expect(process.memoryUsage().arrayBuffers - heapBefore).toBeLessThan(8 * 1024 * 1024);
+  });
+
+  it('refuses a file whose tracks together claim more samples than the whole-file budget', () => {
+    const perTrack = (MP4_MAX_TOTAL_SAMPLES * 0.6) | 0;
+    expect(perTrack).toBeLessThanOrEqual(MP4_MAX_SAMPLES_PER_TRACK);
+    const big = (build: typeof videoTrack | typeof audioTrack) =>
+      build({ sizes: new Array(perTrack).fill(1), stts: [[perTrack, 1]], samplesPerChunk: perTrack });
+
+    expectRefusal(handMp4([big(videoTrack), big(audioTrack)]), /budget of the file/);
   });
 });
 
