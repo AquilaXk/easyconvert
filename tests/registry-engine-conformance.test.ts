@@ -25,6 +25,8 @@ import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-fon
 import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
+import { buildMobiFromBytes } from './helpers/mobi-builder';
+import { buildAzw4, textPdf } from './helpers/print-replica-builder';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 
 /**
@@ -248,6 +250,25 @@ async function buildCbz(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
+const FB2_PROBE =
+  '<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info><book-title>Probe</book-title></title-info></description>' +
+  '<body><section><title><p>Probe heading</p></title><p>First probe paragraph.</p><p>Second probe paragraph.</p></section></body></FictionBook>';
+
+async function buildProbeZip(name: string, content: string): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file(name, content);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+async function buildProbeCbc(): Promise<Buffer> {
+  const volume = new JSZip();
+  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  const collection = new JSZip();
+  collection.file('comics.txt', 'volume.cbz:Probe volume\n');
+  collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
+  return collection.generateAsync({ type: 'nodebuffer' });
+}
+
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
@@ -262,6 +283,16 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
+  // a MOBI whose text record holds HTML, a Print Replica book around a pdf-lib PDF, a collection of one comic
+  // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
+  // XML, and the HTMLZ and TXTZ ZIP wrappers.
+  azw: () => buildMobiFromBytes(Buffer.from('<html><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>', 'utf-8'), { compress: false }),
+  azw4: async () => buildAzw4([await textPdf(['Probe heading', 'First probe paragraph'])]),
+  cbc: buildProbeCbc,
+  fb2: () => Buffer.from(FB2_PROBE, 'utf-8'),
+  htmlz: () => buildProbeZip('index.html', '<html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>'),
+  txtz: () => buildProbeZip('index.txt', 'Probe heading\n\nFirst probe paragraph.\n'),
   // Legacy Office sources are read through their own record structure, so the probes are hand-written
   // documents from tests/helpers (a Word piece table and a PowerPoint record tree), not plain text.
   doc: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
