@@ -9557,7 +9557,7 @@ const ODF_GRAPHICS_MIMETYPE_PREFIX = 'application/vnd.oasis.opendocument.graphic
  * validates the package (a malformed file is a typed 400 error) and then reports the missing engine
  * with a typed 503 error. It never answers with the drawing's text under another format's name.
  */
-async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+export async function assertOpenDocumentGraphic(inputBuffer: Buffer, src: string): Promise<void> {
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(inputBuffer);
@@ -9568,6 +9568,10 @@ async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string
   if (!mimetype?.startsWith(ODF_GRAPHICS_MIMETYPE_PREFIX) || !zip.file('content.xml')) {
     throw new ConversionFailedError(`The ${src.toUpperCase()} file is not an OpenDocument drawing.`);
   }
+}
+
+async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+  await assertOpenDocumentGraphic(inputBuffer, src);
   throw new EngineUnavailableError('soffice', `Rendering a drawing to ${tgt} requires LibreOffice Draw; the in-process engine has no drawing renderer.`);
 }
 

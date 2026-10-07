@@ -24,6 +24,7 @@ import {
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
+import { assertOpenDocumentGraphic } from '../lib/conversions/office';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -1999,6 +2000,30 @@ const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([...OFFICE_FORMATS, '
 const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
 /** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
 const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
+/** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
+const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
+const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
+const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
+
+/** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package (files too big to hold in memory go straight to LibreOffice). */
+async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: string): Promise<void> {
+  if (!DRAWING_SOURCES.has(src)) return;
+  let buffer: Buffer | undefined;
+  if (Buffer.isBuffer(input)) buffer = input;
+  else if (input.inputBuffer) buffer = input.inputBuffer;
+  else if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
+    buffer = fs.readFileSync(input.inputPath);
+  }
+  if (buffer) await assertOpenDocumentGraphic(buffer, src);
+}
+
+/** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
+function asUnreadableDocument(err: unknown, src: string): unknown {
+  if (LIBREOFFICE_ONLY_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+  }
+  return err;
+}
 const HTML_TARGET = 'html';
 const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
 const HTML_TAG_PATTERN = /<[^>]*>/g;
@@ -2219,6 +2244,7 @@ export async function executeWorkerConversion(
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
+  await assertDrawingPackage(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
   if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
@@ -2266,7 +2292,7 @@ export async function executeWorkerConversion(
         fallbackReason = err.message;
         lastUnavailable = err;
       } else {
-        throw err;
+        throw asUnreadableDocument(err, src);
       }
     }
   }
@@ -2301,7 +2327,7 @@ export async function executeWorkerConversion(
         fallbackReason = err.message;
         lastUnavailable = err;
       } else {
-        throw err;
+        throw asUnreadableDocument(err, src);
       }
     } finally {
       // The intermediate PDF is an implementation detail of this chain: never leave it on disk.

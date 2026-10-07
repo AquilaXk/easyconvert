@@ -574,6 +574,34 @@ describe('a Keynote presentation becomes HTML through the PDF LibreOffice render
 });
 
 // ---------------------------------------------------------------------------
+// Damaged drawings are a typed 400, whichever engine would have drawn them
+// ---------------------------------------------------------------------------
+
+describe('a damaged drawing is a typed 400 error', () => {
+  const drawingPackage = async (content: string) => {
+    const zip = new JSZip();
+    zip.file('mimetype', 'application/vnd.oasis.opendocument.graphics', { compression: 'STORE' });
+    zip.file('content.xml', content);
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+
+  it('refuses a file that is a ZIP package but not a drawing, before LibreOffice starts', async () => {
+    const docx = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.docx'));
+    const run = dispatchConversion(docx, 'odg', 'bmp', {}, 'renamed.odg');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow('The ODG file is not an OpenDocument drawing.');
+  });
+
+  oracleTest('answers LibreOffice failing on a drawing package with unreadable content, for every kind of target', ['soffice'], async () => {
+    for (const [source, target] of [['odg', 'bmp'], ['odd', 'ps'], ['odg', 'pdf']] as const) {
+      const run = dispatchConversion(await drawingPackage('this is not xml at all'), source, target, {}, `broken.${source}`);
+      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(run).rejects.toThrow(`LibreOffice could not read the .${source} file: it is damaged or not a valid ${source.toUpperCase()} document.`);
+    }
+  }, NATIVE_TIMEOUT_MS);
+});
+
+// ---------------------------------------------------------------------------
 // Missing engines answer with a typed 503 naming the tool
 // ---------------------------------------------------------------------------
 
