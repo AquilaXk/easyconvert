@@ -232,7 +232,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
   });
 
   describe('4. Strict Filter Graph Sequencing', () => {
-    it('enforces fixed sequence: yadif -> crop -> transpose -> scale -> fps -> even parity -> format', () => {
+    it('enforces fixed sequence: bwdif -> crop -> transpose -> scale -> fps -> even parity -> format', () => {
       const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         video: {
@@ -251,7 +251,7 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
 
       // Exact ordered tokens
       const expectedFilterString = [
-        'yadif',
+        'bwdif=mode=send_field:deint=interlaced',
         'crop=640:480:10:20',
         'transpose=1',
         'scale=1280:720:force_original_aspect_ratio=decrease',

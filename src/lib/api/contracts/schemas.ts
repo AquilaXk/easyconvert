@@ -473,6 +473,34 @@ export const ConversionOptionsSchema = {
           enum: ['itu-r-bs775'],
           description: 'ITU-R BS.775 surround-to-stereo downmixing matrix.',
         },
+        loudness: {
+          type: 'object',
+          description:
+            'Opt-in EBU R128 / ITU-R BS.1770-4 loudness normalisation in two passes: a measuring pass, then a linear gain. Needs a single audio track. Without values it normalises to -23 LUFS with a -1 dBTP ceiling.',
+          properties: {
+            preset: {
+              type: 'string',
+              enum: ['ebu-r128', 'streaming', 'podcast'],
+              default: 'ebu-r128',
+              description: 'Starting target: ebu-r128 = -23 LUFS / -1 dBTP / 7 LU, streaming = -14 LUFS / -1 dBTP / 11 LU, podcast = -16 LUFS / -1.5 dBTP / 11 LU.',
+            },
+            integrated: { type: 'number', minimum: -70, maximum: -5, description: 'Integrated loudness target in LUFS.' },
+            truePeak: { type: 'number', minimum: -9, maximum: 0, description: 'True-peak ceiling in dBTP.' },
+            lra: { type: 'number', minimum: 1, maximum: 50, description: 'Loudness range target in LU.' },
+          },
+          additionalProperties: false,
+        },
+        resampler: {
+          type: 'string',
+          enum: ['soxr', 'swr'],
+          description:
+            'Resampler for sample-rate changes. Unset uses soxr (precision 28) when the ffmpeg build has it and the default swresample otherwise, reported in the result metadata; an explicit soxr on a build without it answers 503.',
+        },
+        dither: {
+          type: 'string',
+          enum: ['none', 'rectangular', 'triangular', 'triangular_hp'],
+          description: 'Dither for the reduction to 16-bit PCM output. Defaults to triangular_hp (high-pass shaped TPDF). Other codecs reject it.',
+        },
         track: {
           oneOf: [
             { type: 'integer', minimum: 0 },
@@ -509,6 +537,11 @@ export const ConversionOptionsSchema = {
               properties: {
                 mode: { const: 'crf' },
                 crf: { type: 'number', minimum: 0, maximum: 63 },
+                maxBitrateK: {
+                  type: 'number',
+                  minimum: 1,
+                  description: 'Optional peak-bitrate cap in kbit/s (capped CRF): -maxrate with a buffer of twice that. Unset leaves the rate to quality alone.',
+                },
               },
             },
             {
@@ -535,7 +568,8 @@ export const ConversionOptionsSchema = {
         },
         preset: {
           type: 'string',
-          description: 'Encoding speed-to-compression ratio preset.',
+          description:
+            'Encoding speed-to-compression preset. h264 and hevc: ultrafast, superfast, veryfast, faster, fast, medium (default), slow, slower or veryslow. av1: an integer from 0 (slowest) to 13, default 8. Other values answer an error.',
         },
         fps: {
           type: 'number',
@@ -561,7 +595,8 @@ export const ConversionOptionsSchema = {
         },
         deinterlace: {
           type: 'boolean',
-          description: 'Apply yadif deinterlacing filter.',
+          description:
+            'Deinterlace interlaced frames with bwdif in send_field mode: one progressive frame per field, so the output frame rate is twice the field-pair rate of the source.',
         },
         scale: {
           type: 'object',

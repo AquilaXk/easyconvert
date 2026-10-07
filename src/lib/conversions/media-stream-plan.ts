@@ -41,6 +41,8 @@ export const MAX_TRACK_NAME_BYTES = 255;
 export interface StreamMapPlan {
   /** `-map` operands, in output order: the video track, audio tracks, subtitle tracks, attachments. */
   maps: string[];
+  /** The `-map` operands of the mapped audio tracks. */
+  audioMaps: string[];
   /** Track titles to write as handler names, by output stream index (mp4 and mov only). */
   handlerNames: Array<{ outputIndex: number; name: string }>;
   /** Absolute input index of the mapped video stream, when the input has one. */
@@ -106,6 +108,7 @@ export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
     : [];
   return {
     maps: ordered.map((stream) => `0:${stream.index}`),
+    audioMaps: audio.map((stream) => `0:${stream.index}`),
     handlerNames,
     videoIndex: video?.index,
     subtitleCount: subtitles.length,

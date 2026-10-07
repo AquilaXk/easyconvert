@@ -228,6 +228,11 @@ export interface ConversionOptions {
 export interface VideoRateControlCrf {
   mode: 'crf';
   crf: number;
+  /**
+   * Caps the peak bitrate of the constant-quality encode (capped CRF): `-maxrate` with a `-bufsize` of twice
+   * that. Left unset, quality alone decides the rate and no bitrate is invented.
+   */
+  maxBitrateK?: number;
 }
 
 export interface VideoRateControlVbr {
@@ -278,8 +283,31 @@ export interface MediaTrimOptions {
 
 export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'vorbis' | 'pcm_s16le';
 
+/** Named EBU R128 / ITU-R BS.1770-4 loudness targets. */
+export type LoudnessPreset = 'ebu-r128' | 'streaming' | 'podcast';
+
+export interface LoudnessOptions {
+  /** Starting values: `ebu-r128` (-23 LUFS, the default), `streaming` (-14 LUFS) or `podcast` (-16 LUFS). */
+  preset?: LoudnessPreset;
+  /** Integrated loudness target in LUFS (-70 to -5). */
+  integrated?: number;
+  /** Maximum true peak in dBTP (-9 to 0). */
+  truePeak?: number;
+  /** Loudness range target in LU (1 to 50). */
+  lra?: number;
+}
+
+export type AudioResampler = 'soxr' | 'swr';
+export type AudioDither = 'none' | 'rectangular' | 'triangular' | 'triangular_hp';
+
 export interface AudioEncodingOptions {
   codec?: AudioCodec;
+  /** Opt-in two-pass loudness normalisation (a measuring pass, then a linear gain). */
+  loudness?: LoudnessOptions;
+  /** Resampler for rate changes: soxr when the ffmpeg build has it (the default), otherwise swr. */
+  resampler?: AudioResampler;
+  /** Dither for the reduction to 16-bit PCM; defaults to triangular_hp. */
+  dither?: AudioDither;
   bitrateK?: number;
   channels?: 1 | 2 | 6 | 8;
   sampleRate?: number;

@@ -54,6 +54,7 @@ import {
   plannedRungCount,
   DEFAULT_MEDIA_TIER_MAX_MS,
 } from '../lib/conversions/media';
+import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
@@ -638,7 +639,6 @@ export async function convertWithNativeFfmpeg(
         return res;
       }
 
-      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
       const runFfmpeg = (ffmpegArgs: string[]) =>
         executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
           cwd: tempDir,
@@ -647,6 +647,9 @@ export async function convertWithNativeFfmpeg(
           networkIsolated: true,
           signal: options.signal,
         });
+      // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
+      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
 
       try {
         await runFfmpeg(args);
@@ -659,7 +662,7 @@ export async function convertWithNativeFfmpeg(
           throw err;
         }
         const softwareArgs = buildFfmpegArguments(
-          inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
+          inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
         );
         try {
           await runFfmpeg(softwareArgs);
@@ -675,13 +678,15 @@ export async function convertWithNativeFfmpeg(
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-      return createConversionResult(
+      const transcoded = createConversionResult(
         persistedPath,
         tgt,
         baseName,
         'native-ffmpeg',
         Date.now() - startTime
       );
+      transcoded.metadata = describeAudioProcessing(options, ffmpegBin, loudnessStage);
+      return transcoded;
     });
   } catch (err) {
     if (options.throwOnUnavailable) {

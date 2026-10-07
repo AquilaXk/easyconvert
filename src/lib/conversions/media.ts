@@ -23,6 +23,7 @@ import {
   usesHardwareVideoEncoder,
 } from './media-ffmpeg-args';
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
+import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { encodeFlacStream } from './media-encoder';
 import {
   resampleInterleavedInt16,
@@ -391,7 +392,6 @@ async function executeFfmpegTranscode(
 
   try {
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
     const durationSeconds = probeMediaDuration(inputPath, options);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
     const runFfmpeg = (ffmpegArgs: string[]) =>
@@ -401,6 +401,10 @@ async function executeFfmpegTranscode(
         networkIsolated: true,
         signal: options.signal,
       });
+    // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
+    const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+
+    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
     try {
       await runFfmpeg(args);
     } catch (err) {
@@ -414,7 +418,7 @@ async function executeFfmpegTranscode(
         throw err;
       }
       const softwareArgs = buildFfmpegArguments(
-        inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
+        inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
       );
       try {
         await runFfmpeg(softwareArgs);
@@ -432,6 +436,7 @@ async function executeFfmpegTranscode(
       mimeType: getMimeTypeForMedia(tgt),
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
+      metadata: describeAudioProcessing(options, ffmpegBin, loudnessStage),
     };
   } finally {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);

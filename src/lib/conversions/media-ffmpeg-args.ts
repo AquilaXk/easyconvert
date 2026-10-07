@@ -10,6 +10,7 @@ import {
   MediaLadderRung,
   MediaPackagingOptions,
   MediaPackagingFormat,
+  VideoRateControl,
 } from '../types';
 import {
   assertEncoderAvailable,
@@ -32,6 +33,15 @@ import {
   probeVideoGeometry,
   VideoGeometry,
 } from './media-ffprobe';
+import {
+  chooseResampler,
+  LoudnessMeasurement,
+  loudnormApplyFilter,
+  loudnormMeasureFilter,
+  resampleFilter,
+  resolveDither,
+  resolveLoudnessTarget,
+} from './media-audio-quality';
 import {
   BITMAP_SUBTITLE_CODECS,
   CHAPTER_CONTAINERS,
@@ -277,12 +287,130 @@ function resolveVideoCodec(requested: string): VideoCodecName {
   return name as VideoCodecName;
 }
 
+/** x264 and x265 presets a caller may name; `placebo` is left out because its cost is unbounded for a service. */
+export const X26X_PRESETS: ReadonlySet<string> = new Set([
+  'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow',
+]);
+/** Quality/speed balance of x264 and x265 when the caller names no preset. */
+export const X26X_DEFAULT_PRESET = 'medium';
+/** SVT-AV1 preset: 0 is the slowest and best, 13 the fastest; 8 keeps near real-time speed with good quality. */
+export const SVT_AV1_DEFAULT_PRESET = 8;
+export const SVT_AV1_PRESET_RANGE = { min: 0, max: 13 } as const;
+/** libvpx-vp9 speed settings: row multithreading, the "good" deadline, cpu-used 2 and four tile columns (log2 = 2). */
+export const VP9_SPEED_ARGS: readonly string[] = ['-row-mt', '1', '-deadline', 'good', '-cpu-used', '2', '-tile-columns', '2'];
+/** Buffer of a capped-CRF encode over its peak rate: two seconds of video at the cap. */
+const CAPPED_CRF_BUFSIZE_FACTOR = 2;
+/** Deinterlace only the frames flagged interlaced, one progressive frame per field. */
+const DEINTERLACE_FILTER = 'bwdif=mode=send_field:deint=interlaced';
+const SVT_AV1_ENCODER = 'libsvtav1';
+const VP9_DEFAULT_CRF = 30;
+const AV1_DEFAULT_CRF = 32;
+const SVT_AV1_PRESET_PATTERN = /^\d{1,2}$/;
+
+/** x264/x265 preset: the caller's, if it is on the allow-list, otherwise the default. */
+function resolveX26xPreset(requested: string | undefined): string {
+  if (requested === undefined) return X26X_DEFAULT_PRESET;
+  if (!X26X_PRESETS.has(requested)) {
+    throw new InvalidMediaOptionError(`Invalid x264/x265 preset '${requested}'. Allowed: ${[...X26X_PRESETS].join(', ')}.`);
+  }
+  return requested;
+}
+
+/** SVT-AV1 preset: an integer 0 to 13 given as the request's preset, otherwise the default. */
+function resolveSvtAv1Preset(requested: string | undefined): string {
+  if (requested === undefined) return String(SVT_AV1_DEFAULT_PRESET);
+  const value = Number(requested);
+  if (!SVT_AV1_PRESET_PATTERN.test(requested) || value < SVT_AV1_PRESET_RANGE.min || value > SVT_AV1_PRESET_RANGE.max) {
+    throw new InvalidMediaOptionError(
+      `Invalid AV1 preset '${requested}'. Allowed: an integer from ${SVT_AV1_PRESET_RANGE.min} (slowest) to ${SVT_AV1_PRESET_RANGE.max}.`
+    );
+  }
+  return requested;
+}
+
+/** SVT-AV1 writes every AV1 target; a build without it answers 503 instead of failing mid-encode. */
+function assertSvtAv1Available(ffmpegBin: string | null | undefined): void {
+  if (!ffmpegBin) return;
+  const supported = probeHardwareAcceleration(ffmpegBin).supportedEncoders;
+  if (supported.size > 0 && !supported.has(SVT_AV1_ENCODER)) {
+    throw new EngineUnavailableError('ffmpeg', `this build has no '${SVT_AV1_ENCODER}' encoder, so AV1 video cannot be written`);
+  }
+}
+
+/** Peak bitrate cap of a constant-quality encode in kbit/s, validated; undefined when the caller set none. */
+function crfCapKbps(rateControl: VideoRateControl | undefined): number | undefined {
+  if (rateControl?.mode !== 'crf' || rateControl.maxBitrateK === undefined) return undefined;
+  const cap = rateControl.maxBitrateK;
+  if (typeof cap !== 'number' || !Number.isFinite(cap) || cap <= 0) {
+    throw new InvalidMediaOptionError(`Invalid maxBitrateK ${String(cap)}. Must be a positive number of kbit/s.`);
+  }
+  return Math.ceil(cap);
+}
+
+/** Peak-rate arguments of a capped-CRF encode; empty when the caller set no cap. */
+function cappedCrfArgs(rateControl: VideoRateControl | undefined): string[] {
+  const maxrate = crfCapKbps(rateControl);
+  return maxrate === undefined ? [] : ['-maxrate', `${maxrate}k`, '-bufsize', `${maxrate * CAPPED_CRF_BUFSIZE_FACTOR}k`];
+}
+
+/** libvpx-vp9 encoder and its speed settings; constant quality unless a bitrate follows. */
+function vp9Args(rateControl: VideoRateControl | undefined): string[] {
+  const args = ['-c:v', 'libvpx-vp9', ...VP9_SPEED_ARGS];
+  if (rateControl?.mode === 'crf') {
+    // With a cap this is constrained quality: the quality target plus a ceiling on the bitrate.
+    const cap = crfCapKbps(rateControl);
+    args.push('-crf', String(rateControl.crf), '-b:v', cap === undefined ? '0' : `${cap}k`);
+  } else if (!rateControl) {
+    args.push('-crf', String(VP9_DEFAULT_CRF), '-b:v', '0');
+  }
+  return args;
+}
+
+/** SVT-AV1 encoder at the chosen preset; constant quality unless a bitrate follows. */
+function svtAv1Args(rateControl: VideoRateControl | undefined, preset: string | undefined, profile: string | undefined): string[] {
+  const args = ['-c:v', SVT_AV1_ENCODER, '-preset', resolveSvtAv1Preset(preset)];
+  if (rateControl?.mode === 'crf') {
+    args.push('-crf', String(rateControl.crf));
+  } else if (!rateControl) {
+    args.push('-crf', String(AV1_DEFAULT_CRF));
+  }
+  if (profile) {
+    args.push('-profile:v', '0');
+  }
+  return args;
+}
+
+/** Bitrate controls shared by every video container: VBR, CBR, the capped CRF peak and the legacy videoBitrate. */
+function bitrateControlArgs(rateControl: VideoRateControl | undefined, options: ConversionOptions, codec: string): string[] {
+  const args: string[] = [];
+  if (rateControl?.mode === 'vbr') {
+    args.push('-b:v', `${rateControl.bitrateK}k`);
+    if (rateControl.maxrateK) args.push('-maxrate', `${rateControl.maxrateK}k`);
+    if (rateControl.bufsizeK) args.push('-bufsize', `${rateControl.bufsizeK}k`);
+  } else if (rateControl?.mode === 'cbr') {
+    args.push(
+      '-b:v', `${rateControl.bitrateK}k`,
+      '-minrate', `${rateControl.bitrateK}k`,
+      '-maxrate', `${rateControl.bitrateK}k`,
+      '-bufsize', `${rateControl.bitrateK}k`
+    );
+  } else if (rateControl?.mode === 'crf') {
+    // VP9 states its cap as the ceiling of constrained quality (see vp9Args); the others take -maxrate.
+    if (codec !== 'vp9') args.push(...cappedCrfArgs(rateControl));
+  } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
+    args.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
+  }
+  return args;
+}
+
 /** Codec of an external soft subtitle track when no input stream decided it: text containers convert, others copy. */
 const SOFT_SUBTITLE_CODEC_BY_CONTAINER: Readonly<Record<string, string>> = {
   mp4: 'mov_text',
   mov: 'mov_text',
   webm: 'webvtt',
 };
+/** Forces 16-bit samples, so the dithered reduction happens in the resampler that carries the dither setting. */
+const SIXTEEN_BIT_FORMAT_FILTER = 'aformat=sample_fmts=s16';
 /** Highest output frame rate a request may name. */
 const MAX_OUTPUT_FPS = 240;
 /** Output label of the filter graph that overlays a bitmap subtitle onto the picture. */
@@ -409,8 +537,28 @@ function audioOnlyStreamArgs(
 }
 
 /**
+ * Stage of the two-pass loudness normalisation: `measure` builds the arguments of the analysing pass (no
+ * output file), `apply` builds the encode with the measured values.
+ */
+export type LoudnessStage = { kind: 'measure' } | { kind: 'apply'; measurement: LoudnessMeasurement };
+
+/** Arguments of the loudness measuring pass: the audio of the conversion through loudnorm, to a null sink. */
+export function buildLoudnessMeasureArguments(
+  inputPath: string,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  ffmpegBin?: string | null
+): string[] {
+  return buildFfmpegArguments(inputPath, '', src, tgt, options, ffmpegBin, undefined, { kind: 'measure' });
+}
+
+/**
  * Builds optimized, compliant FFmpeg argument array with hardware acceleration,
  * strict filter graph ordering, rate control, and profile/level validation.
+ *
+ * An `audio.loudness` request needs a `loudnessStage`: the measuring pass (see buildLoudnessMeasureArguments)
+ * and then this call with the measurement, so a normalisation is never applied from invented numbers.
  */
 export function buildFfmpegArguments(
   inputPath: string,
@@ -419,7 +567,8 @@ export function buildFfmpegArguments(
   tgt: string,
   options: ConversionOptions = {},
   ffmpegBin?: string | null,
-  overrideTimestamp?: string
+  overrideTimestamp?: string,
+  loudnessStage?: LoudnessStage
 ): string[] {
   const globalArgs: string[] = ['-y'];
   const inputArgs: string[] = [];
@@ -557,8 +706,10 @@ export function buildFfmpegArguments(
   const burnBitmapStream =
     burnSubtitleStream && BITMAP_SUBTITLE_CODECS.has(burnSubtitleStream.codecName) ? burnSubtitleStream : undefined;
   let streamPlan: StreamMapPlan | undefined;
+  let audioOnlyMapArgs: string[] = [];
   if (audioSpec) {
-    outputArgs.push(...audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin));
+    audioOnlyMapArgs = audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin);
+    outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
     streamPlan = planStreamMapping({
       streams: inputStreams,
@@ -732,12 +883,12 @@ export function buildFfmpegArguments(
     }
 
     // 6. Strict Filter Graph Construction
-    // Sequence: yadif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
+    // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
     const videoFilters: string[] = [];
 
-    // Stage 1: yadif (deinterlace)
+    // Stage 1: bwdif (deinterlace)
     if (videoOpts?.deinterlace) {
-      videoFilters.push('yadif');
+      videoFilters.push(DEINTERLACE_FILTER);
     }
 
     // Stage 2: crop
@@ -860,7 +1011,7 @@ export function buildFfmpegArguments(
             outputArgs.push('-global_quality', crfVal);
           }
         } else {
-          outputArgs.push('-c:v', swLib, '-preset', videoOpts?.preset || 'fast');
+          outputArgs.push('-c:v', swLib, '-preset', resolveX26xPreset(videoOpts?.preset));
           if (rateControl?.mode === 'crf' || !rateControl) {
             outputArgs.push('-crf', crfVal);
           }
@@ -872,22 +1023,10 @@ export function buildFfmpegArguments(
           }
         }
       } else if (codec === 'vp9') {
-        outputArgs.push('-c:v', 'libvpx-vp9');
-        if (rateControl?.mode === 'crf') {
-          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
-        } else if (!rateControl) {
-          outputArgs.push('-crf', '30', '-b:v', '0');
-        }
+        outputArgs.push(...vp9Args(rateControl));
       } else if (codec === 'av1') {
-        outputArgs.push('-c:v', 'libaom-av1');
-        if (rateControl?.mode === 'crf') {
-          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
-        } else if (!rateControl) {
-          outputArgs.push('-crf', '32', '-b:v', '0');
-        }
-        if (videoOpts?.profile) {
-          outputArgs.push('-profile:v', '0');
-        }
+        assertSvtAv1Available(ffmpegBin);
+        outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
       } else if (codec === 'prores') {
         outputArgs.push('-c:v', 'prores_ks');
         const proresProfileMap: Record<string, string> = {
@@ -910,48 +1049,19 @@ export function buildFfmpegArguments(
         );
       }
 
-      // Bitrate rate control (VBR / CBR / legacy)
-      if (rateControl?.mode === 'vbr') {
-        outputArgs.push('-b:v', `${rateControl.bitrateK}k`);
-        if (rateControl.maxrateK) outputArgs.push('-maxrate', `${rateControl.maxrateK}k`);
-        if (rateControl.bufsizeK) outputArgs.push('-bufsize', `${rateControl.bufsizeK}k`);
-      } else if (rateControl?.mode === 'cbr') {
-        outputArgs.push(
-          '-b:v', `${rateControl.bitrateK}k`,
-          '-minrate', `${rateControl.bitrateK}k`,
-          '-maxrate', `${rateControl.bitrateK}k`,
-          '-bufsize', `${rateControl.bitrateK}k`
-        );
-      } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
-        outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
-      }
+      outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
 
       if (tgt === 'mp4' || tgt === 'mov') {
         outputArgs.push('-movflags', '+faststart');
       }
     } else if (tgt === 'webm') {
       if (codec === 'av1') {
-        outputArgs.push('-c:v', 'libaom-av1');
-        if (rateControl?.mode === 'crf') {
-          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
-        } else {
-          outputArgs.push('-crf', '32', '-b:v', '0');
-        }
+        assertSvtAv1Available(ffmpegBin);
+        outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
       } else {
-        outputArgs.push('-c:v', 'libvpx-vp9');
-        if (rateControl?.mode === 'crf') {
-          outputArgs.push('-crf', String(rateControl.crf), '-b:v', '0');
-        } else {
-          outputArgs.push('-crf', '30', '-b:v', '0');
-        }
+        outputArgs.push(...vp9Args(rateControl));
       }
-      if (rateControl?.mode === 'vbr') {
-        outputArgs.push('-b:v', `${rateControl.bitrateK}k`);
-      } else if (rateControl?.mode === 'cbr') {
-        outputArgs.push('-b:v', `${rateControl.bitrateK}k`, '-minrate', `${rateControl.bitrateK}k`, '-maxrate', `${rateControl.bitrateK}k`);
-      } else if (typeof options.videoBitrate === 'number' && Number.isFinite(options.videoBitrate) && options.videoBitrate > 0) {
-        outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
-      }
+      outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
     } else if (tgt === 'avi') {
       outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
     }
@@ -1017,12 +1127,14 @@ export function buildFfmpegArguments(
 
   // Audio filters and ITU-R BS.775 downmix
   const audioFilters: string[] = [];
+  /** `-ac` and `-ar`: shared by the encode and the loudness measuring pass, which must see the same audio. */
+  const audioFormatArgs: string[] = [];
   if (isVideo) {
     // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
     audioFilters.push(AUDIO_SYNC_FILTER);
   }
   if (audioSpec?.fixedChannels !== undefined) {
-    outputArgs.push('-ac', String(audioSpec.fixedChannels));
+    audioFormatArgs.push('-ac', String(audioSpec.fixedChannels));
   } else if (options.audio?.downmix === 'itu-r-bs775') {
     const is71 =
       options.audio.channels === 8 ||
@@ -1033,37 +1145,38 @@ export function buildFfmpegArguments(
     } else {
       audioFilters.push('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR');
     }
-    outputArgs.push('-ac', '2');
+    audioFormatArgs.push('-ac', '2');
   } else if (options.audio?.channels) {
     if (![1, 2, 6, 8].includes(options.audio.channels)) {
       throw new InvalidMediaOptionError(`Invalid audio channels: ${options.audio.channels}. Allowed: 1, 2, 6, 8.`);
     }
-    outputArgs.push('-ac', String(options.audio.channels));
+    audioFormatArgs.push('-ac', String(options.audio.channels));
   } else if (options.audioChannels && ['mono', 'stereo', '5.1', '7.1'].includes(options.audioChannels)) {
     const chMap: Record<string, string> = { mono: '1', stereo: '2', '5.1': '6', '7.1': '8' };
-    outputArgs.push('-ac', chMap[options.audioChannels]);
+    audioFormatArgs.push('-ac', chMap[options.audioChannels]);
   }
 
   // Audio sample rate
   if (audioSpec?.fixedSampleRate !== undefined) {
-    outputArgs.push('-ar', String(audioSpec.fixedSampleRate));
+    audioFormatArgs.push('-ar', String(audioSpec.fixedSampleRate));
   } else if (typeof options.audio?.sampleRate === 'number') {
     if (!Number.isFinite(options.audio.sampleRate) || options.audio.sampleRate < 8000 || options.audio.sampleRate > 192000) {
       throw new InvalidMediaOptionError(`Invalid audio sample rate: ${options.audio.sampleRate}. Allowed range: 8000 to 192000 Hz.`);
     }
-    outputArgs.push('-ar', String(options.audio.sampleRate));
+    audioFormatArgs.push('-ar', String(options.audio.sampleRate));
   } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
-    outputArgs.push('-ar', String(options.audioSampleRate));
+    audioFormatArgs.push('-ar', String(options.audioSampleRate));
   } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
-    outputArgs.push('-ar', String(audioSpec.defaultSampleRate));
+    audioFormatArgs.push('-ar', String(audioSpec.defaultSampleRate));
   } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(inputPath)) {
     // The caller set no rate: bring an input the encoder cannot code into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
     const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track));
     if (resampleRate !== undefined) {
-      outputArgs.push('-ar', String(resampleRate));
+      audioFormatArgs.push('-ar', String(resampleRate));
     }
   }
+  outputArgs.push(...audioFormatArgs);
 
   // Audio volume
   if (typeof options.audio?.volume === 'number') {
@@ -1075,6 +1188,49 @@ export function buildFfmpegArguments(
     }
   } else if (typeof options.audioVolume === 'number' && Number.isFinite(options.audioVolume) && options.audioVolume >= 0 && options.audioVolume <= 200 && options.audioVolume !== 100) {
     audioFilters.push(`volume=${options.audioVolume / 100}`);
+  }
+
+  // Loudness normalisation (two passes), then the final resample with the chosen resampler and 16-bit dither.
+  const loudnessTarget = options.audio?.loudness ? resolveLoudnessTarget(options.audio.loudness) : undefined;
+  let loudnessRate: number | undefined;
+  if (loudnessTarget) {
+    if (!loudnessStage) {
+      throw new ConversionFailedError('Loudness normalisation needs its measuring pass before the encode; no measurement was given.');
+    }
+    const audioMaps = audioSpec ? undefined : streamPlan?.audioMaps;
+    if (!audioSpec && (audioMaps === undefined || audioMaps.length !== 1)) {
+      throw new InvalidMediaOptionError(
+        audioMaps === undefined
+          ? 'Loudness normalisation needs an input file to measure.'
+          : `Loudness normalisation measures one audio track; this conversion maps ${audioMaps.length}. Select one with audio.track.`
+      );
+    }
+    if (loudnessStage.kind === 'measure') {
+      const mapArgs = audioSpec ? audioOnlyMapArgs : ['-vn', '-sn', '-dn', '-map', (audioMaps as string[])[0]];
+      return [
+        ...globalArgs,
+        ...inputArgs,
+        ...mapArgs,
+        ...audioFormatArgs,
+        '-af', [...audioFilters, loudnormMeasureFilter(loudnessTarget)].join(','),
+        '-f', 'null', '-',
+      ];
+    }
+    audioFilters.push(loudnormApplyFilter(loudnessTarget, loudnessStage.measurement));
+    // loudnorm works at 192 kHz and returns that rate; the output is brought back to the requested or source rate.
+    loudnessRate = loudnessStage.measurement.sampleRate;
+  }
+  const requestedRate = audioFormatArgs.includes('-ar') ? Number(audioFormatArgs[audioFormatArgs.indexOf('-ar') + 1]) : undefined;
+  const finalRate = requestedRate ?? loudnessRate;
+  const dither = resolveDither(options.audio?.dither, resolvedAudioCodec);
+  const resampler = chooseResampler(options.audio?.resampler, ffmpegBin);
+  if (finalRate !== undefined && (resampler.resampler === 'soxr' || dither !== undefined || loudnessRate !== undefined)) {
+    audioFilters.push(resampleFilter(finalRate, resampler, dither));
+  } else if (dither !== undefined) {
+    audioFilters.push(`aresample=dither_method=${dither}`);
+  }
+  if (dither !== undefined) {
+    audioFilters.push(SIXTEEN_BIT_FORMAT_FILTER);
   }
 
   if (audioFilters.length > 0) {
