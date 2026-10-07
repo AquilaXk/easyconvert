@@ -42,6 +42,8 @@ const BASE256_MARKER = 0x80;
 const BASE256_VALUE_MASK = 0x7f;
 const END_MARKER_BLOCKS = 2;
 /** Entry types that carry no body even when the size field is not zero (hard link, symlink, devices, directory, FIFO). */
+/** Typeflag of an old-format GNU sparse file entry. */
+const TAR_TYPE_GNU_SPARSE = 'S';
 const TAR_HEADER_ONLY_TYPES: ReadonlySet<string> = new Set(['1', '2', '3', '4', '5', '6']);
 
 function corrupt(message: string): CorruptStreamError {
@@ -152,6 +154,12 @@ export class TarStreamValidator {
     }
     if (!hasValidChecksum(this.header)) throw corrupt(`entry ${this.entries + 1} has a wrong header checksum`);
     const typeflag = String.fromCharCode(this.header[TAR_TYPEFLAG_AT]);
+    if (typeflag === TAR_TYPE_GNU_SPARSE) {
+      // Its size field is the stored bytes, and a sparse map in extension blocks follows the header: not walked here.
+      throw new EdgeUnsupportedError(
+        `Entry ${this.entries + 1} is a GNU sparse file, which the edge does not walk; the server engine converts it.`
+      );
+    }
     const size = TAR_HEADER_ONLY_TYPES.has(typeflag) ? 0 : readEntrySize(this.header);
     this.bodyRemaining = Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
     this.entries++;
