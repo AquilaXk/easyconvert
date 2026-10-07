@@ -3,6 +3,7 @@ import {
   expectLinearScaling,
   expectSizeIndependent,
   measureInterleaved,
+  MIN_SAMPLE_MS,
   SCALING_FACTOR,
   SCALING_TEST_TIMEOUT_MS,
 } from './helpers/timing';
@@ -16,6 +17,7 @@ import {
 const LINEAR_STEPS_PER_UNIT = 4000;
 const LINEAR_BASE = 2000;
 const QUADRATIC_BASE = 1500;
+const FAST_BASE = 5;
 const CONSTANT_STEPS = 20_000;
 const MODEST_CLAIM = 1000;
 const HUGE_CLAIM = 1_000_000;
@@ -61,6 +63,14 @@ describe('timing helpers separate linear from super-linear growth', () => {
     await expect(expectLinearScaling('quadratic loop', quadraticWork, { baseSize: QUADRATIC_BASE })).rejects.toThrow(
       /quadratic loop: 4x the input took \d+\.\d+x as long/
     );
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('times work that finishes in microseconds by repeating it, so a fast machine measures as well as a slow one', async () => {
+    // 5 units are 20,000 loop steps, tens of microseconds: far below one timer tick per run.
+    const measurement = await expectLinearScaling('microsecond loop', linearWork, { baseSize: FAST_BASE });
+    expect(measurement.smallMs).toBeLessThan(MIN_SAMPLE_MS);
+    expect(measurement.smallSampleMs).toBeGreaterThanOrEqual(MIN_SAMPLE_MS);
+    expect(measurement.ratio).toBeGreaterThan(1);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('refuses a comparison whose small run is too short to time', async () => {

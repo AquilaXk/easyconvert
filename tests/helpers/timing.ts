@@ -30,20 +30,32 @@ export const SCALING_FACTOR = 4;
  */
 export const LINEAR_RATIO_SLACK = 2;
 /**
- * The small run must take at least this long for the ratio to mean anything; below it a timer tick or a
- * garbage collection dominates. A test whose small run is faster than this has to use a bigger input.
+ * A timed sample must last at least this long for a ratio to mean anything; below it a timer tick or a garbage
+ * collection dominates. Work faster than that is repeated inside the sample, so a fast machine measures as well as
+ * a slow one: a run that takes 0.9 ms on an idle core and 3 ms on a loaded one is timed over enough repetitions to
+ * pass this floor on both.
  */
-export const MIN_MEASURABLE_MS = 1;
+export const MIN_SAMPLE_MS = 5;
+/** Most repetitions of one run inside a sample; work that is still shorter than MIN_SAMPLE_MS then is too trivial to compare. */
+export const MAX_SAMPLE_REPETITIONS = 4096;
+/** Calibration aims this much past MIN_SAMPLE_MS. */
+const SAMPLE_OVERSHOOT = 1.25;
+/** A sample that reads as zero is treated as this long when sizing the next one. */
+const MIN_TIMER_MS = 0.001;
 /** Baseline floor for size-independence checks: a sub-millisecond rejection is compared against this instead. */
 export const SIZE_INDEPENDENT_FLOOR_MS = 5;
 /** Ceiling on how much longer a bounded-work rejection may take when the claimed size grows. */
 export const CONSTANT_RATIO_BOUND = 4;
 
 export interface ScalingMeasurement<R = unknown> {
+  /** Best time of one run of the smaller side, in milliseconds. */
   smallMs: number;
+  /** Best time of one run of the larger side, in milliseconds. */
   largeMs: number;
   /** largeMs / smallMs. */
   ratio: number;
+  /** Length of the shortest sample of the smaller side: its runs repeated until the sample is long enough to time. */
+  smallSampleMs: number;
   /** What the last large run returned, so the caller can assert on the output of the timed work. */
   largeResult: R;
 }
@@ -66,9 +78,37 @@ async function timeOnce<T>(work: () => T | Promise<T>): Promise<{ ms: number; va
   return { ms: performance.now() - started, value };
 }
 
+/** Times `repetitions` back-to-back runs of `work` as one sample and returns the last result. */
+async function timeSample<T>(work: () => T | Promise<T>, repetitions: number): Promise<{ ms: number; value: T }> {
+  const started = performance.now();
+  let value!: T;
+  for (let run = 0; run < repetitions; run++) value = (await work()) as T;
+  return { ms: performance.now() - started, value };
+}
+
+/**
+ * One sample of `work` that lasts at least MIN_SAMPLE_MS: when the sample is shorter, the repetition count grows and
+ * the sample is taken again, so a cold first run (a slow interpreter tier, a garbage collection) cannot fix the count
+ * too low for the warm runs that follow. Returns the repetition count to start the next sample from.
+ */
+async function timeAdaptiveSample<T>(
+  work: () => T | Promise<T>,
+  startRepetitions: number
+): Promise<{ ms: number; value: T; repetitions: number }> {
+  let repetitions = startRepetitions;
+  for (;;) {
+    const sample = await timeSample(work, repetitions);
+    if (sample.ms >= MIN_SAMPLE_MS || repetitions >= MAX_SAMPLE_REPETITIONS) return { ...sample, repetitions };
+    // Aim a little past the floor so that the next sample clears it even when it runs slightly faster.
+    const wanted = Math.ceil((repetitions * MIN_SAMPLE_MS * SAMPLE_OVERSHOOT) / Math.max(sample.ms, MIN_TIMER_MS));
+    repetitions = Math.min(MAX_SAMPLE_REPETITIONS, Math.max(repetitions * 2, wanted));
+  }
+}
+
 /**
  * Times `small` and `large` alternately for `passes` rounds (after one warm-up of each) and returns the
- * best time of each.
+ * best time of one run of each. Work shorter than MIN_SAMPLE_MS is repeated inside each sample and the sample
+ * time is divided back to one run.
  */
 export async function measureInterleaved<R = unknown>(
   small: () => unknown,
@@ -77,15 +117,22 @@ export async function measureInterleaved<R = unknown>(
 ): Promise<ScalingMeasurement<R>> {
   await small();
   let largeResult = (await large()) as R;
+  let smallRepetitions = 1;
+  let largeRepetitions = 1;
   let smallMs = Number.POSITIVE_INFINITY;
   let largeMs = Number.POSITIVE_INFINITY;
+  let smallSampleMs = Number.POSITIVE_INFINITY;
   for (let pass = 0; pass < passes; pass++) {
-    smallMs = Math.min(smallMs, (await timeOnce(small)).ms);
-    const largeRun = await timeOnce<R>(large);
-    largeMs = Math.min(largeMs, largeRun.ms);
-    largeResult = largeRun.value;
+    const smallSample = await timeAdaptiveSample(small, smallRepetitions);
+    smallRepetitions = smallSample.repetitions;
+    smallMs = Math.min(smallMs, smallSample.ms / smallSample.repetitions);
+    smallSampleMs = Math.min(smallSampleMs, smallSample.ms);
+    const largeSample = await timeAdaptiveSample<R>(large, largeRepetitions);
+    largeRepetitions = largeSample.repetitions;
+    largeMs = Math.min(largeMs, largeSample.ms / largeSample.repetitions);
+    largeResult = largeSample.value;
   }
-  return { smallMs, largeMs, ratio: largeMs / smallMs, largeResult };
+  return { smallMs, largeMs, ratio: largeMs / smallMs, smallSampleMs, largeResult };
 }
 
 export interface ScalingOptions {
@@ -123,11 +170,11 @@ export async function expectLinearScaling<R = unknown>(
 export async function expectLinearOnInputs<T, R = unknown>(
   label: string,
   run: (input: T) => R | Promise<R>,
-  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number; minMeasurableMs?: number }
+  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number }
 ): Promise<ScalingMeasurement<R>> {
   const factor = inputs.factor ?? SCALING_FACTOR;
   const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes);
-  assertLinearRatio(label, measurement, factor, inputs.maxRatio, inputs.minMeasurableMs);
+  assertLinearRatio(label, measurement, factor, inputs.maxRatio);
   return measurement;
 }
 
@@ -135,14 +182,13 @@ function assertLinearRatio(
   label: string,
   measurement: ScalingMeasurement<unknown>,
   factor: number,
-  maxRatioOverride?: number,
-  minMeasurableMs: number = MIN_MEASURABLE_MS
+  maxRatioOverride?: number
 ): void {
   const maxRatio = maxRatioOverride ?? factor * LINEAR_RATIO_SLACK;
   expect(
-    measurement.smallMs,
-    `${label}: the small run took ${measurement.smallMs.toFixed(3)} ms, too short to time; use a larger input`
-  ).toBeGreaterThanOrEqual(minMeasurableMs);
+    measurement.smallSampleMs,
+    `${label}: even ${MAX_SAMPLE_REPETITIONS} repetitions of the small run took ${measurement.smallSampleMs.toFixed(3)} ms, too short to time; use a larger input`
+  ).toBeGreaterThanOrEqual(MIN_SAMPLE_MS);
   expect(
     measurement.ratio,
     `${label}: ${factor}x the input took ${measurement.ratio.toFixed(2)}x as long ` +

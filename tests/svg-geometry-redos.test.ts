@@ -13,7 +13,6 @@ const DIGIT_RUN = 600_000;
 /** 16 characters each: four times this stays under the 5 MiB SVG input cap. */
 const STYLE_LOOKALIKES = 70_000 / SCALING_FACTOR;
 const LOOKALIKE_PASSES = 9;
-const LOOKALIKE_MIN_MS = 0.25;
 
 /**
  * Runs `parse` on `build(units)` and `build(4 * units)`, asserts linear growth, and returns the outcome (value
@@ -24,7 +23,7 @@ async function expectLinearParse<T>(
   build: (units: number) => string,
   parse: (input: string) => T,
   units: number,
-  timing: { passes?: number; minMeasurableMs?: number } = {}
+  timing: { passes?: number } = {}
 ) {
   const { largeResult } = await expectLinearOnInputs(label, (input: string) => settle(() => parse(input)), {
     small: build(units),
@@ -121,8 +120,8 @@ describe('SVG parser stays linear on adversarial input', () => {
         `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="1" height="1" a="${'<style><![CDATA['.repeat(n)}"/></svg>`,
       parseSvgGeometries,
       STYLE_LOOKALIKES,
-      // The 5 MiB input cap limits how large this shape can grow, so its small run is sub-millisecond.
-      { passes: LOOKALIKE_PASSES, minMeasurableMs: LOOKALIKE_MIN_MS }
+      // The 5 MiB input cap limits how large this shape can grow, so its small run is sub-millisecond: the helper repeats it.
+      { passes: LOOKALIKE_PASSES }
     );
     expect(thrownBy(outcome)).toBeInstanceOf(CadGeometryUnavailableError);
     expect((thrownBy(outcome) as Error).message).toBe('Malformed SVG: unterminated CDATA section.');

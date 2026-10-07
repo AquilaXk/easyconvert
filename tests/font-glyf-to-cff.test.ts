@@ -689,6 +689,7 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
   const FULL_TURN = 2 * Math.PI;
   const SHARED_COMPONENTS = 1000;
   const COMPOSITE_GLYPHS = 1000;
+  const EXPANSION_FACTOR = 6;
   const RSS_GROWTH_LIMIT_BYTES = 400 * 1024 * 1024;
   const BYTES_PER_MB = 1024 * 1024;
   const SMALL_FONT_BYTES = 100 * 1024;
@@ -708,10 +709,11 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
   }
 
   it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations', async () => {
-    // 37 KB expanding to 32 million points, against 76 KB expanding to 192 million: the amplification guard
-    // refuses both after the same work, so the time must not follow the claimed expansion (tests/helpers/timing.ts).
+    // The same number of glyphs, claiming 32 million points in one font and six times as many in the other: the
+    // amplification guard refuses both after reading the glyphs, so the time must not follow the claimed expansion
+    // (tests/helpers/timing.ts). Growing the glyph count as well would grow the reading, which is legitimate work.
     const modest = amplifierFont(SHARED_COMPONENTS, COMPOSITE_GLYPHS);
-    const huge = amplifierFont(SHARED_COMPONENTS * 2, COMPOSITE_GLYPHS * 3);
+    const huge = amplifierFont(SHARED_COMPONENTS * EXPANSION_FACTOR, COMPOSITE_GLYPHS);
     expect(modest.length).toBeLessThan(SMALL_FONT_BYTES);
     expect(huge.length).toBeLessThan(SMALL_FONT_BYTES);
     const rssBefore = process.memoryUsage().rss;

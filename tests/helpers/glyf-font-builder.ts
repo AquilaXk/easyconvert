@@ -139,7 +139,19 @@ function compositeBox(components: GlyfComponent[], glyphs: GlyfGlyphSpec[]): [nu
     }
   }
   if (xs.length === 0) return [0, 0, 0, 0];
-  return [Math.floor(Math.min(...xs)), Math.floor(Math.min(...ys)), Math.ceil(Math.max(...xs)), Math.ceil(Math.max(...ys))];
+  // Loops, not Math.min(...xs): a composite of thousands of components has more points than a call can take as arguments.
+  const extent = (values: number[]): [number, number] => {
+    let low = values[0];
+    let high = values[0];
+    for (const value of values) {
+      if (value < low) low = value;
+      if (value > high) high = value;
+    }
+    return [low, high];
+  };
+  const [xMin, xMax] = extent(xs);
+  const [yMin, yMax] = extent(ys);
+  return [Math.floor(xMin), Math.floor(yMin), Math.ceil(xMax), Math.ceil(yMax)];
 }
 
 function compositeGlyphRecord(components: GlyfComponent[], box: [number, number, number, number]): Buffer {
