@@ -89,8 +89,8 @@ describe('parseTesseractTsv', () => {
     const first = (result.lineBlocks ?? []).find((b) => b.text === 'Hello world');
     expect(first?.bbox).toMatchObject({ x: 100, y: 100, width: 300, height: 40 });
     expect(first?.words.map((w) => [w.text, w.bbox.x, w.bbox.width, w.confidence])).toEqual([
-      ['Hello', 100, 120, 90.5],
-      ['world', 240, 160, 80.5],
+      ['Hello', 100, 120, 0.905],
+      ['world', 240, 160, 0.805],
     ]);
     expect(result.lines.sort()).toEqual(['Hello world', 'right', 'second']);
   });

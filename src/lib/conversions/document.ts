@@ -42,6 +42,7 @@ import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer'
 import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
+import { characterWeightedConfidence } from './ocr-calibration';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
@@ -326,7 +327,7 @@ export async function convertDocument(
               width,
               height,
               text: lb.text,
-              confidence: (lb as any).confidence ?? ocr.confidence ?? 1.0,
+              confidence: characterWeightedConfidence([lb]) ?? ocr.confidence ?? undefined,
             });
           }
         } else if (ocr.lines && ocr.lines.length > 0) {
@@ -344,7 +345,7 @@ export async function convertDocument(
                 width,
                 height,
                 text: l.text || '',
-                confidence: l.confidence ?? ocr.confidence ?? 1.0,
+                confidence: l.confidence ?? ocr.confidence ?? undefined,
               });
             } else if (typeof l === 'string') {
               dlaBoxes.push({
@@ -353,7 +354,7 @@ export async function convertDocument(
                 width: 500,
                 height: 20,
                 text: l,
-                confidence: ocr.confidence ?? 1.0,
+                confidence: ocr.confidence ?? undefined,
               });
               lineY += 24;
             }

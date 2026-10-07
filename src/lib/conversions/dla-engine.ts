@@ -34,7 +34,8 @@ export interface DlaBlock {
   type: DlaBlockType;
   bbox: DlaBoundingBox;
   text: string;
-  confidence: number;
+  /** Mean confidence of the boxes the block was built from; absent when none of them carries one. */
+  confidence?: number;
   readingOrder: number;
   columnIndex: number;
   lineCount: number;
@@ -48,6 +49,13 @@ export interface DlaPageLayout {
   columnCount: number;
   blocks: DlaBlock[];
   fullText: string;
+}
+
+/** Mean of the confidences the boxes carry, or undefined when none does; nothing is made up. */
+function meanBoxConfidence(boxes: readonly DlaBoundingBox[]): number | undefined {
+  const confidences = boxes.map((b) => b.confidence).filter((c): c is number => typeof c === 'number');
+  if (confidences.length === 0) return undefined;
+  return confidences.reduce((a, b) => a + b, 0) / confidences.length;
 }
 
 export interface DlaOptions {
@@ -344,7 +352,7 @@ export function analyzeDocumentLayout(
       type: 'header',
       bbox: computeEnclosingBox(headerBoxes),
       text,
-      confidence: 0.98,
+      confidence: meanBoxConfidence(headerBoxes),
       readingOrder: 1,
       columnIndex: 0,
       lineCount: 1,
@@ -414,13 +422,7 @@ export function analyzeDocumentLayout(
       type = 'table';
     }
 
-    const confidences = sortedItems
-      .map((s) => s.confidence)
-      .filter((c): c is number => typeof c === 'number');
-    const avgConfidence =
-      confidences.length > 0
-        ? confidences.reduce((a, b) => a + b, 0) / confidences.length
-        : 0.95;
+    const avgConfidence = meanBoxConfidence(sortedItems);
 
     allBlocks.push({
       id: `block_${blockCounter++}`,
@@ -444,7 +446,7 @@ export function analyzeDocumentLayout(
       type: 'footer',
       bbox: computeEnclosingBox(footerBoxes),
       text,
-      confidence: 0.98,
+      confidence: meanBoxConfidence(footerBoxes),
       readingOrder: allBlocks.length + 1,
       columnIndex: 0,
       lineCount: 1,

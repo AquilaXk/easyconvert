@@ -139,8 +139,8 @@ describe('TSV rows merged with the page text', () => {
     expect(result.wordCount).toBe(2);
     const words = result.lineBlocks?.[0].words ?? [];
     expect(words.map((w) => [w.text, w.bbox.x, w.bbox.width, w.confidence])).toEqual([
-      ['위원', 10, 90, 60],
-      ['42', 140, 40, 95],
+      ['위원', 10, 90, 0.6],
+      ['42', 140, 40, 0.95],
     ]);
   });
 

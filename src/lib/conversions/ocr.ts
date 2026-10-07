@@ -37,6 +37,7 @@ import {
 import { recognizeWithCli } from './ocr-cli';
 import { runPdfTextJob } from './pdf-text-geometry';
 import { mapOcrResultToSource } from './ocr-geometry';
+import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
 import {
   OCR_PREPROCESS_STEPS,
   preprocessOcrImage,
@@ -77,6 +78,7 @@ async function countSmallCropTextRows(png: Buffer, height: number | undefined): 
  * Optical Character Recognition (OCR) Engine
  * Powered by authentic WebAssembly inference (Tesseract.js) and native Tesseract CLI.
  * Strictly fail-closed without geometric fallback or fabricated glyph classification.
+ * Word and page confidences are calibrated probabilities where a table exists (see ocr-calibration.ts).
  *
  * `steps` selects the page preparation steps and is internal: callers never pass it from user
  * options, and the default is OCR_PREPROCESS_STEPS. Tests and measurements use it to score a
@@ -87,6 +89,27 @@ export async function performOcr(
   language: string = 'auto',
   steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
 ): Promise<OcrResult> {
+  const recognized = await recognizePage(imageBuffer, language, steps);
+  return calibrateOcrResult(recognized.result, recognized.enginePath);
+}
+
+/** A page as the engine read it, with word scores still raw, and the engine path that produced it. */
+export interface RecognizedPage {
+  result: OcrResult;
+  enginePath: OcrEnginePath;
+}
+
+/**
+ * Recognizes one page and returns the engine's raw scores. `performOcr` calibrates them, and the
+ * calibration tables are fitted on this output, so it is exported. `enginePath: 'cli'` skips the
+ * WebAssembly engine and reads the page with the native tool.
+ */
+export async function recognizePage(
+  imageBuffer: Buffer,
+  language: string = 'auto',
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
+  enginePath?: OcrEnginePath
+): Promise<RecognizedPage> {
   const langMap: Record<string, string> = {
     auto: 'eng',
     en: 'eng',
@@ -175,101 +198,76 @@ export async function performOcr(
   const inputTextRows = await countSmallCropTextRows(ocrInput, inputHeight);
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
-  try {
-    const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
-    const ret = await getSharedOcrWorkerPool().run(
-      {
-        langs: tesseractLang,
-        langPath: localLangPath,
-        gzip: isGzip,
-        engineMode,
-        parameters: { tessedit_pageseg_mode: pageSegMode },
-      },
-      async (recognize, recognizeWith) => {
-        const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
-        if (imageMode !== pageSegMode) {
-          return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
-        }
-        const first = await recognize(ocrInput, {}, { blocks: true });
-        const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
-        if (!fallbackMode || countWords(first.data.text) > 0) return first;
-        // Automatic segmentation finds no text block in very small images; read them as one block.
-        const retry = await recognizeWith(
-          { tessedit_pageseg_mode: fallbackMode },
-          ocrInput,
-          {},
-          { blocks: true }
-        );
-        return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
-      }
-    );
-
-    if (ret && ret.data) {
-      const fullText = (ret.data.text || '').trim();
-      const imgWidth = prepared.geometry.outputWidth;
-      const imgHeight = prepared.geometry.outputHeight;
-      const { lines: recognizedLines, lineBlocks, wordMerge } = parseTesseractBlocks(ret.data.blocks, imgWidth, imgHeight, tesseractLang);
-
-      const words = fullText.split(/\s+/).filter(Boolean);
-
-      // Compute authentic mean word confidence across recognized blocks/words
-      let totalConf = 0;
-      let confCount = 0;
-      if (Array.isArray((ret.data as any).words) && (ret.data as any).words.length > 0) {
-        for (const w of (ret.data as any).words) {
-          if (typeof w.confidence === 'number' && !isNaN(w.confidence)) {
-            totalConf += w.confidence;
-            confCount++;
-          }
-        }
-      } else if (Array.isArray(lineBlocks) && lineBlocks.length > 0) {
-        for (const block of lineBlocks) {
-          if (Array.isArray(block.words)) {
-            for (const w of block.words) {
-              const wConf = (w as any).confidence;
-              if (typeof wConf === 'number' && !isNaN(wConf)) {
-                totalConf += wConf;
-                confCount++;
-              }
-            }
-          }
-        }
-      }
-
-      const meanConf =
-        confCount > 0
-          ? totalConf / confCount / 100
-          : typeof ret.data.confidence === 'number'
-          ? ret.data.confidence / 100
-          : null;
-
-      return mapOcrResultToSource(
+  if (enginePath !== 'cli') {
+    try {
+      const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
+      const ret = await getSharedOcrWorkerPool().run(
         {
-          text: fullText,
-          confidence: meanConf,
-          wordCount: words.length,
-          lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
-          lineBlocks,
-          imageWidth: imgWidth,
-          imageHeight: imgHeight,
-          language: tesseractLang,
-          wordMerge,
+          langs: tesseractLang,
+          langPath: localLangPath,
+          gzip: isGzip,
+          engineMode,
+          parameters: { tessedit_pageseg_mode: pageSegMode },
         },
-        prepared.geometry
+        async (recognize, recognizeWith) => {
+          const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+          if (imageMode !== pageSegMode) {
+            return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
+          }
+          const first = await recognize(ocrInput, {}, { blocks: true });
+          const fallbackMode = ocrFallbackPageSegMode(tesseractLang);
+          if (!fallbackMode || countWords(first.data.text) > 0) return first;
+          // Automatic segmentation finds no text block in very small images; read them as one block.
+          const retry = await recognizeWith(
+            { tessedit_pageseg_mode: fallbackMode },
+            ocrInput,
+            {},
+            { blocks: true }
+          );
+          return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
+        }
       );
+
+      if (ret && ret.data) {
+        const fullText = (ret.data.text || '').trim();
+        const imgWidth = prepared.geometry.outputWidth;
+        const imgHeight = prepared.geometry.outputHeight;
+        const { lines: recognizedLines, lineBlocks, wordMerge } = parseTesseractBlocks(
+          ret.data.blocks,
+          imgWidth,
+          imgHeight,
+          tesseractLang
+        );
+        const words = fullText.split(/\s+/).filter(Boolean);
+        const result = mapOcrResultToSource(
+          {
+            text: fullText,
+            confidence: characterWeightedConfidence(lineBlocks),
+            wordCount: words.length,
+            lines: recognizedLines.length > 0 ? recognizedLines : (fullText ? fullText.split('\n') : []),
+            lineBlocks,
+            imageWidth: imgWidth,
+            imageHeight: imgHeight,
+            language: tesseractLang,
+            wordMerge,
+          },
+          prepared.geometry
+        );
+        return { result, enginePath: 'wasm' };
+      }
+    } catch (err: any) {
+      if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
+        throw err;
+      }
+      // Fall back to system native CLI if Tesseract.js fails
     }
-  } catch (err: any) {
-    if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
-      throw err;
-    }
-    // Fall back to system native CLI if Tesseract.js fails
   }
 
   // 3. Try System Native Tesseract CLI if available
   const tesseractCandidates = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
   const tesseractCli = tesseractCandidates.find((p) => fs.existsSync(p));
   if (tesseractCli) {
-    return mapOcrResultToSource(
+    const result = mapOcrResultToSource(
       await recognizeWithCli({
         cliPath: tesseractCli,
         tessdataDir: localLangPath,
@@ -280,6 +278,7 @@ export async function performOcr(
       }),
       prepared.geometry
     );
+    return { result, enginePath: 'cli' };
   }
 
   throw new OcrEngineUnavailableError(

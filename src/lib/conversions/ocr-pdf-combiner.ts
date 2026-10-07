@@ -59,6 +59,10 @@ export interface OcrBBox {
 export interface OcrWord {
   text: string;
   bbox: OcrBBox;
+  /**
+   * Probability that the word is correct, 0..1. It is calibrated when the result says
+   * `confidenceCalibrated`, and the engine's raw score divided by 100 otherwise.
+   */
   confidence?: number;
 }
 
@@ -115,7 +119,10 @@ export interface OcrPageResult {
 
 export interface OcrResult {
   text: string;
+  /** Mean word confidence weighted by word length in characters, 0..1; null when no word has one. */
   confidence: number | null;
+  /** Whether the word and page confidences are calibrated probabilities; false for raw engine scores. */
+  confidenceCalibrated?: boolean;
   wordCount: number;
   lines: string[];
   lineBlocks?: OcrLineBlock[];
@@ -915,6 +922,14 @@ export function sortLineBlocksTopological(
   return result;
 }
 
+const ENGINE_CONFIDENCE_PERCENT_SCALE = 100;
+
+/** The engine reports a word score in percent; it is kept as a fraction, or undefined when it has none. */
+function engineConfidence(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.min(1, value / ENGINE_CONFIDENCE_PERCENT_SCALE);
+}
+
 function finiteOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -973,7 +988,7 @@ export function parseTesseractBlocks(
             if (!wText) continue;
             words.push({
               text: wText,
-              confidence: typeof w.confidence === 'number' && !isNaN(w.confidence) ? w.confidence : undefined,
+              confidence: engineConfidence(w.confidence),
               bbox: {
                 x: w.bbox.x0,
                 y: w.bbox.y0,

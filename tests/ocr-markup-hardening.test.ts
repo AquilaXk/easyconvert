@@ -220,8 +220,8 @@ describe('HTML5-serialized hOCR', () => {
     expect(parsed.text).toBe('A B café ©');
     expect(parsed.lineBlocks).toHaveLength(1);
     expect(parsed.lineBlocks?.[0].words.map((w) => [w.text, w.confidence])).toEqual([
-      ['A B', 91],
-      ['café ©', 92],
+      ['A B', 0.91],
+      ['café ©', 0.92],
     ]);
     expect(parsed.language).toBe('en');
   });
@@ -285,7 +285,7 @@ describe('numeric syntax', () => {
     );
     expect(parsed.lineBlocks?.[0].baseline).toEqual({ x0: 0, y0: 13, x1: 500, y1: 11 });
     expect(parsed.lineBlocks?.[0].rowHeight).toBe(42.5);
-    expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(96.5);
+    expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(0.965);
   });
 
   const alto = (pageAttributes: string, line = ''): string =>

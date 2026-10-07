@@ -8,6 +8,7 @@ import { PDFDocument } from 'pdf-lib';
 import type { ConversionQueueItem } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import engineTable from '../src/lib/conversions/ocr-calibration/eng.wasm.json';
 
 /**
  * Edge OCR must never report success without recognized text: an OCR engine that fails to load
@@ -53,21 +54,26 @@ function recognizedWords() {
 
 // The block tree the OCR engine returns for one recognized line, in image pixel coordinates.
 const WORDS = recognizedWords();
-const RECOGNIZED_BLOCKS = [
-  {
-    paragraphs: [
-      {
-        lines: [
-          {
-            text: RECOGNIZED_TEXT,
-            bbox: { x0: LINE_LEFT_PX, y0: LINE_TOP_PX, x1: WORDS[WORDS.length - 1].bbox.x1, y1: LINE_BOTTOM_PX },
-            words: WORDS,
-          },
-        ],
-      },
-    ],
-  },
-];
+
+function blocksOf(words: Array<{ text: string; confidence?: number; bbox: { x0: number; y0: number; x1: number; y1: number } }>) {
+  return [
+    {
+      paragraphs: [
+        {
+          lines: [
+            {
+              text: RECOGNIZED_TEXT,
+              bbox: { x0: LINE_LEFT_PX, y0: LINE_TOP_PX, x1: words[words.length - 1].bbox.x1, y1: LINE_BOTTOM_PX },
+              words,
+            },
+          ],
+        },
+      ],
+    },
+  ];
+}
+
+const RECOGNIZED_BLOCKS = blocksOf(WORDS);
 
 async function scanPng(): Promise<Uint8Array<ArrayBuffer>> {
   const png = await sharp({ create: { width: SCAN_WIDTH, height: SCAN_HEIGHT, channels: 3, background: '#ffffff' } })
@@ -125,8 +131,9 @@ describe('runClientEdgeOcr', () => {
     await expect(runClientEdgeOcr(file, { ocrEnabled: true })).rejects.toThrow(/no text/i);
   });
 
-  it('rejects when the engine reports no confidence instead of inventing one', async () => {
-    createWorker.mockResolvedValue(workerReturning({ text: RECOGNIZED_TEXT, blocks: RECOGNIZED_BLOCKS }));
+  it('rejects when the engine reports no word confidence instead of inventing one', async () => {
+    const unscored = WORDS.map(({ text, bbox }) => ({ text, bbox }));
+    createWorker.mockResolvedValue(workerReturning({ text: RECOGNIZED_TEXT, blocks: blocksOf(unscored) }));
     const file = new File([await scanPng()], 'scan.png', { type: 'image/png' });
 
     await expect(runClientEdgeOcr(file, { ocrEnabled: true })).rejects.toThrow(/confidence/i);
@@ -194,16 +201,18 @@ describe('runClientEdgeOcr', () => {
     expect(worker.terminate).toHaveBeenCalledTimes(1);
   });
 
-  it('reports the confidence the engine measured', async () => {
-    createWorker.mockResolvedValue(
-      workerReturning({ text: RECOGNIZED_TEXT, confidence: RECOGNIZED_CONFIDENCE_PERCENT, blocks: RECOGNIZED_BLOCKS })
-    );
+  it('reports the calibrated probability for the score the engine measured', async () => {
+    // The committed table of the browser engine, read directly: an engine score at a knot is
+    // reported as the probability fitted for that knot.
+    const knot = Math.floor(engineTable.x.length / 2);
+    const scored = WORDS.map((word) => ({ ...word, confidence: engineTable.x[knot] * 100 }));
+    createWorker.mockResolvedValue(workerReturning({ text: RECOGNIZED_TEXT, blocks: blocksOf(scored) }));
     const file = new File([await scanPng()], 'scan.png', { type: 'image/png' });
 
     const result = await runClientEdgeOcr(file, { ocrEnabled: true });
 
     expect(result.text).toBe(RECOGNIZED_TEXT);
-    expect(result.confidence).toBeCloseTo(RECOGNIZED_CONFIDENCE_PERCENT / 100, 5);
+    expect(result.confidence).toBeCloseTo(engineTable.y[knot], 6);
     expect(result.filename).toBe('scan.pdf');
   });
 
