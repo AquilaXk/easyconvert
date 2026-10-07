@@ -442,3 +442,44 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
     await fs.promises.rm(jobDir, { recursive: true, force: true });
   }
 }
+
+/** Largest orientation report accepted from the CLI; a real one is a few lines. */
+const OCR_CLI_OSD_MAX_OUTPUT_BYTES = 64 * 1024;
+const OSD_TOO_FEW_CHARACTERS = /Too few characters/;
+
+export interface CliOsdRequest {
+  cliPath: string;
+  /** Directory holding `osd.traineddata`. */
+  tessdataDir: string;
+  /** A page the CLI can read, passed on stdin. */
+  image: Buffer;
+  timeoutMs?: number;
+  memoryLimitMb?: number;
+}
+
+/**
+ * Runs the native tool's orientation and script detection (`--psm 0`) under the same limits and slot
+ * count as recognition. Returns the report it prints, or null when it found too few characters to
+ * read; any other failure is an OcrEngineUnavailableError with a fixed message.
+ */
+export async function runOsdWithCli(request: CliOsdRequest): Promise<string | null> {
+  const timeoutMs = request.timeoutMs ?? OCR_CLI_TIMEOUT_MS;
+  const memoryLimitMb = request.memoryLimitMb ?? OCR_CLI_MEMORY_LIMIT_MB;
+  const args = ['--tessdata-dir', request.tessdataDir, 'stdin', 'stdout', '-l', 'osd', '--psm', '0'];
+  try {
+    const { stdout } = await cliSemaphore.run(() =>
+      executeSandboxedBinary(request.cliPath, args, {
+        stdin: request.image,
+        env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
+        signal: AbortSignal.timeout(timeoutMs),
+        timeoutMs: timeoutMs + OCR_CLI_TIMER_BACKSTOP_MS,
+        maxBuffer: OCR_CLI_OSD_MAX_OUTPUT_BYTES,
+        memoryLimitMb,
+      })
+    );
+    return stdout.toString('utf-8');
+  } catch (err) {
+    if (err instanceof SandboxedProcessError && OSD_TOO_FEW_CHARACTERS.test(err.stderr)) return null;
+    throw describeCliFailure(err, timeoutMs, memoryLimitMb);
+  }
+}

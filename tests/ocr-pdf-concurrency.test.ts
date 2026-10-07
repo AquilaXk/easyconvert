@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +10,11 @@ import {
   OCR_MAX_INFLIGHT_PAGES,
   ocrPageConcurrency,
 } from '../src/lib/conversions/ocr-page-batch';
-import { OCR_POOL_MAX_WORKERS_TOTAL } from '../src/lib/conversions/ocr-worker-pool';
+import {
+  getSharedOcrWorkerPool,
+  OCR_POOL_MAX_WORKERS_PER_KEY,
+  OCR_POOL_MAX_WORKERS_TOTAL,
+} from '../src/lib/conversions/ocr-worker-pool';
 import { oracleTest } from './helpers/oracle-test';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
 import { fixtureImage, groundTruth, requireTessdata } from './helpers/ocr-fixtures';
@@ -27,7 +31,8 @@ const SLOW_RUNNER = process.env.EASYCONVERT_SLOW_RUNNER === '1';
 const FOUR_PAGES = 4;
 const TWENTY_PAGES = 20;
 const MAX_PARALLEL_TIME_RATIO = 0.6;
-const TIMING_RUNS = 3;
+/** Best of this many runs: other test files share the CPUs, so a single pair of runs can be slowed unevenly. */
+const TIMING_RUNS = 6;
 const MIN_CPUS_FOR_TIMING = 4;
 /**
  * Memory added per page in flight, measured on a 2000x490 page (about 1 MB decoded): a recognized
@@ -112,6 +117,40 @@ async function scannedPdf(pages: Buffer[]): Promise<Buffer> {
 }
 
 describe('recognizing the pages of a scanned PDF', () => {
+  oracleTest(
+    'runs as many recognitions at once as the pool has workers, and one at a time when asked to',
+    ['tesseract'],
+    async () => {
+      requireTessdata('eng');
+      const pool = getSharedOcrWorkerPool();
+      const run = pool.run.bind(pool);
+      let active = 0;
+      let peak = 0;
+      // Counts jobs that hold a worker, not the ones still waiting for one.
+      vi.spyOn(pool, 'run').mockImplementation((spec, job) =>
+        run(spec, (recognize, recognizeWith, detect) => {
+          active++;
+          peak = Math.max(peak, active);
+          return job(recognize, recognizeWith, detect).finally(() => {
+            active--;
+          });
+        })
+      );
+      const pages = Array.from({ length: FOUR_PAGES }, () => ({ buffer: fixtureImage('en_a', 'clean300') }));
+      try {
+        await recognizePdfPages(pages, 'eng', 1, false);
+        expect(peak).toBe(1);
+        peak = 0;
+        await recognizePdfPages(pages, 'eng', ocrPageConcurrency(), false);
+        expect(peak).toBe(OCR_POOL_MAX_WORKERS_PER_KEY);
+      } finally {
+        vi.restoreAllMocks();
+        await shutdownOcrWorkerPool();
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+
   oracleTest(
     'keeps the text of each page with its page, with the pages in a different size order than their reading time',
     ['tesseract'],

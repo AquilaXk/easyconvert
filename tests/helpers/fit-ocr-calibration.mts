@@ -50,7 +50,7 @@ async function fit(language: CalibrationLanguage, enginePath: OcrEnginePath): Pr
     const { png, truth } = calibrationPage(name);
     const truthWords = splitWords(truth);
     for (const degradation of CALIBRATION_DEGRADATIONS) {
-      const page = await recognizePage(await degradation.apply(png, FIT_SEED), language, undefined, enginePath);
+      const page = await recognizePage(await degradation.apply(png, FIT_SEED), language, { enginePath, detectOrientation: false });
       if (page.enginePath !== enginePath) throw new Error(`Expected the ${enginePath} engine, got ${page.enginePath}`);
       const words = (page.result.lineBlocks ?? []).flatMap((block) => block.words).filter((w) => w.confidence !== undefined);
       const labels = labelWords(truthWords, words.map((w) => w.text.normalize('NFKC')));

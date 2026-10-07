@@ -35,6 +35,8 @@ const TEXT_ROW_MIN_HEIGHT_PX = 2;
 export const OCR_FALLBACK_MIN_WORD_GAIN = 1;
 /** PSM 5: a single uniform block of vertically aligned text, for `_vert` traineddata. */
 export const OCR_PSM_VERTICAL_BLOCK = '5';
+/** OEM 0: the legacy engine, which orientation and script detection needs. */
+export const OCR_OEM_LEGACY_ONLY = 0;
 /** OEM 1: LSTM neural-network engine only. */
 export const OCR_OEM_LSTM_ONLY = 1;
 

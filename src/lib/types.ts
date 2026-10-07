@@ -155,6 +155,13 @@ export interface ConversionOptions {
     | string;
   ocrMode?: 'skip_text' | 'skip-text' | 'force' | 'redo';
   ocrDensityThreshold?: number;
+  /**
+   * Find a page's orientation and script when it reads badly, and read it again turned (and in the
+   * script's language when `ocrLanguage` is `auto`). Left out it is done when the detection data is
+   * installed and skipped, with the skip recorded, when it is not; `true` demands it and answers 503
+   * when the data is missing; `false` never looks.
+   */
+  ocrDetectOrientation?: boolean;
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;

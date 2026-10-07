@@ -2,7 +2,7 @@ import sharp, { type Sharp } from 'sharp';
 import { OcrPreprocessError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
-import { identityGeometry, type OcrGeometry } from './ocr-geometry';
+import { identityGeometry, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import { CliSemaphore } from './ocr-cli';
 import { countTextRows, OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
 import { encodePbm, encodePgm, encodePpm, isBitonal } from './pnm';
@@ -212,6 +212,27 @@ async function smallCropTextRows(page: DecodedPage, sourceHeight: number): Promi
   return countTextRows(new Uint8Array(gray.buffer, gray.byteOffset, gray.length), page.width, page.height);
 }
 
+/** Geometry of a page that was only turned by quarters: no rescale, no levelling. */
+function quarterTurnGeometry(
+  sourceWidth: number,
+  sourceHeight: number,
+  turnedWidth: number,
+  turnedHeight: number,
+  quarterTurn: OcrQuarterTurn
+): OcrGeometry {
+  if (quarterTurn === 0) return identityGeometry(sourceWidth, sourceHeight);
+  return {
+    sourceWidth,
+    sourceHeight,
+    quarterTurnDegrees: quarterTurn,
+    scaledWidth: turnedWidth,
+    scaledHeight: turnedHeight,
+    outputWidth: turnedWidth,
+    outputHeight: turnedHeight,
+    rotationDegrees: 0,
+  };
+}
+
 const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PREPROCESS_MAX_QUEUED, 'page preparations');
 
 /**
@@ -222,22 +243,47 @@ const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PR
  */
 export function preprocessOcrImage(
   source: Buffer,
-  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
+  quarterTurn: OcrQuarterTurn = 0
 ): Promise<OcrPreprocessResult> {
-  return preparationSlots.run(() => prepare(source, steps));
+  return preparationSlots.run(() => prepare(source, steps, quarterTurn));
 }
 
-async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPreprocessResult> {
+/**
+ * Turns an 8-bit page clockwise by a multiple of 90 degrees. Exact: every pixel moves, none is
+ * resampled, and the page keeps its channels.
+ */
+async function turnByQuarters(page: DecodedPage, degrees: OcrQuarterTurn): Promise<DecodedPage> {
+  if (degrees === 0) return page;
+  const { data, info } = await sharp(page.data, {
+    raw: { width: page.width, height: page.height, channels: page.channels },
+  })
+    .rotate(degrees)
+    // A turned gray page comes back as three channels unless it is asked for as gray.
+    .toColourspace(page.channels === GRAY_CHANNELS ? 'b-w' : 'srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== page.channels) {
+    throw new OcrPreprocessError(`Turning the page changed its channels from ${page.channels} to ${info.channels}.`);
+  }
+  return { data, width: info.width, height: info.height, channels: page.channels };
+}
+
+async function prepare(
+  source: Buffer,
+  steps: OcrPreprocessSteps,
+  quarterTurn: OcrQuarterTurn
+): Promise<OcrPreprocessResult> {
   const meta = await sharp(source).metadata();
   const swapped = meta.orientation !== undefined && meta.orientation >= 5;
   const width = (swapped ? meta.height : meta.width) ?? 0;
   const height = (swapped ? meta.width : meta.height) ?? 0;
   const unchanged = async (lineHeightPx: number | null, skewDegrees: number): Promise<OcrPreprocessResult> => {
-    const page = await decodeUprightPage(source);
+    const page = await turnByQuarters(await decodeUprightPage(source), quarterTurn);
     return {
       image: encodeDecodedPage(page),
-      textRows: await smallCropTextRows(page, height),
-      geometry: identityGeometry(width, height),
+      textRows: await smallCropTextRows(page, page.height),
+      geometry: quarterTurnGeometry(width, height, page.width, page.height, quarterTurn),
       lineHeightPx,
       skewDegrees,
       applied: { rescale: false, deskew: false, binarize: false },
@@ -250,8 +296,12 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
   const held = { page: await decodeGray(source) };
   const sourceWidth = held.page.width;
   const sourceHeight = held.page.height;
+  if (quarterTurn !== 0) {
+    const turnedPage = await turnByQuarters({ ...held.page, channels: GRAY_CHANNELS }, quarterTurn);
+    held.page = { data: turnedPage.data, width: turnedPage.width, height: turnedPage.height };
+  }
   const analysis = await analysisCopy(held.page);
-  const analysisScale = analysis.width / sourceWidth;
+  const analysisScale = analysis.width / held.page.width;
   const rough = await sauvolaBinarize(analysis.data, analysis.width, analysis.height, {
     windowSize: OCR_ANALYSIS_WINDOW_PX,
   });
@@ -262,7 +312,7 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
   const lineHeightPx = measured === null ? null : measured / analysisScale;
   const paper = steps.deskew ? paperLevel(analysis) : 0;
 
-  const scale = steps.rescale ? planRescale(lineHeightPx, sourceWidth, sourceHeight) : 1;
+  const scale = steps.rescale ? planRescale(lineHeightPx, held.page.width, held.page.height) : 1;
   if (scale > 1) held.page = await enlarge(held.page, scale);
   const scaledWidth = held.page.width;
   const scaledHeight = held.page.height;
@@ -288,10 +338,12 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
   };
   return {
     image: encodeGrayPage(pixels, held.page.width, held.page.height),
-    textRows: await smallCropTextRows(finalPage, sourceHeight),
+    // A label is judged by its height as submitted, before it is enlarged; after a quarter turn that is its width.
+    textRows: await smallCropTextRows(finalPage, quarterTurn === 90 || quarterTurn === 270 ? sourceWidth : sourceHeight),
     geometry: {
       sourceWidth,
       sourceHeight,
+      ...(quarterTurn === 0 ? {} : { quarterTurnDegrees: quarterTurn }),
       scaledWidth,
       scaledHeight,
       outputWidth: held.page.width,

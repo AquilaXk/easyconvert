@@ -244,7 +244,7 @@ export async function convertDocument(
         let totalConfidence = 0;
         let count = 0;
 
-        const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage);
+        const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage, undefined, options.ocrDetectOrientation);
         for (const [index, img] of rasterImages.entries()) {
           const ocr = recognized[index];
           if (ocr && ocr.text) {

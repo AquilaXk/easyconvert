@@ -31,6 +31,7 @@ import {
   glyphAdvanceForCodePoint,
 } from './ocr-text-layer-font';
 import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './ocr-word-merge';
+import type { OcrOrientation } from './ocr-osd';
 
 /** The first allocated CID; CID 0 is reserved for .notdef. */
 const FIRST_TEXT_LAYER_CID = 1;
@@ -115,6 +116,8 @@ export interface OcrPageResult {
   language?: string;
   /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
   wordMerge?: OcrWordMerge;
+  /** What orientation detection found and did; the boxes are in the page's orientation as scanned. */
+  orientation?: OcrOrientation;
 }
 
 export interface OcrResult {
@@ -133,6 +136,8 @@ export interface OcrResult {
   language?: string;
   /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
   wordMerge?: OcrWordMerge;
+  /** What orientation detection found and did; the boxes are in the page's orientation as scanned. */
+  orientation?: OcrOrientation;
 }
 
 export interface ColumnGutter {

@@ -138,6 +138,11 @@ export async function runClientEdgeOcr(
     throw new EdgeOcrError('Edge OCR cannot rasterize PDF pages; the document needs server-side OCR');
   }
 
+  // Orientation detection needs the legacy engine and its data, which the browser tier does not load.
+  if (options.ocrDetectOrientation === true) {
+    throw new EdgeOcrError('Edge OCR cannot detect page orientation; the request needs server-side OCR');
+  }
+
   onProgress?.(10);
   const arrayBuffer = await file.arrayBuffer();
   const fileBytes = new Uint8Array(arrayBuffer);

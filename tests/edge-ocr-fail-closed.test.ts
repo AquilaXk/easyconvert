@@ -148,6 +148,15 @@ describe('runClientEdgeOcr', () => {
     await expect(runClientEdgeOcr(file, { ocrEnabled: true })).rejects.toThrow(/line geometry/i);
   });
 
+  it('rejects a request that demands orientation detection, which the browser engine cannot do', async () => {
+    const file = new File([await scanPng()], 'scan.png', { type: 'image/png' });
+
+    await expect(runClientEdgeOcr(file, { ocrEnabled: true, ocrDetectOrientation: true })).rejects.toThrow(
+      /orientation/i
+    );
+    expect(createWorker).not.toHaveBeenCalled();
+  });
+
   it('rejects PDF input, which needs page rasterization the edge tier does not have', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([300, 500]);

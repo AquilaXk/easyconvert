@@ -267,7 +267,8 @@ async function heldOutWords(
     jobs.map(async (job) => {
       const image = await job.degradation.apply(job.png, HELD_OUT_SEED);
       // The WebAssembly path is the one `performOcr` takes; the native path is read through the same steps.
-      const page = await recognizePage(image, language, undefined, enginePath);
+      // The pages are upright, so orientation detection is left out of what is being scored.
+      const page = await recognizePage(image, language, { enginePath, detectOrientation: false });
       return { job, page, calibratedResult: calibrateOcrResult(page.result, enginePath) };
     })
   );
