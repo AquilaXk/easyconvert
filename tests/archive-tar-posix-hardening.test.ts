@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { NextRequest } from 'next/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import {
@@ -32,6 +32,10 @@ import {
   padToBlock,
   paxRecordBytes,
 } from './helpers/tar-craft';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Hardening of the POSIX TAR reader and writer: resource budgets, hostile numeric fields, link

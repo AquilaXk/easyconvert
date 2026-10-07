@@ -23,6 +23,11 @@ const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
 const MIB = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 5_000;
+/**
+ * The listing bound is the production constant S3_LIST_MAX_PAGES (10,000 signed requests), which takes about
+ * 5 s on an idle machine and timed out the 5 s default on a loaded CI shard. 60 s leaves a 12x margin.
+ */
+const PAGE_BOUND_WALK_TIMEOUT_MS = 60_000;
 
 function makeClient(endpoint: string, overrides: Record<string, unknown> = {}): S3ObjectClient {
   return new S3ObjectClient({
@@ -176,7 +181,7 @@ describe('answers scripted at the HTTP level', () => {
       expect(err).toBeInstanceOf(StorageAdapterError);
       expect((err as Error).message).toBe(`Listing "walk/" did not finish within ${S3_LIST_MAX_PAGES} pages`);
       expect(pages).toBe(S3_LIST_MAX_PAGES);
-    });
+    }, PAGE_BOUND_WALK_TIMEOUT_MS);
   });
 });
 

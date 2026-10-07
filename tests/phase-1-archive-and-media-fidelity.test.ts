@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import {
@@ -24,6 +24,10 @@ import {
 } from '../src/lib/conversions';
 import { bestSnrDb, decodeAudioWithFfmpeg, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIN_ROUNDTRIP_SNR_DB = 25;
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
@@ -7,6 +7,10 @@ import { decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive, buildSyntheticStoredRarBuffer } from '../src/lib/conversions/archive';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /** The A4 page of the drawing fixture at the 150 dpi Poppler renders by default (210 x 297 mm). */
 const A4_WIDTH_PX_150_DPI = 1240;

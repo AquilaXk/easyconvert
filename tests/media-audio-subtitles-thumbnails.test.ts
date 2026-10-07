@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -18,6 +18,10 @@ import {
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { assertDecodedMedia } from './oracles/product/media-oracle';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /** AAC priming plus padding: at most two 1024-sample frames. */
 const AAC_PADDING_SAMPLES = 2048;

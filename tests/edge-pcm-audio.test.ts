@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { pcmBlockToAudioData } from '../src/lib/edge/media/pcm-audio';
 import { processWebCodecsConversion } from '../src/lib/edge/workers/webcodecs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
@@ -10,6 +10,10 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { aacLcSpecificConfig, runFfmpeg, sineInput } from './helpers/ffmpeg-media-fixtures';
 import { oracleTest } from './helpers/oracle-test';
 import { installFakeWebCodecs } from './helpers/webcodecs-platform-fakes';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const out = new ArrayBuffer(bytes.byteLength);

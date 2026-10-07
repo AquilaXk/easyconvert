@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+
+/** Each case spawns the guard as a subprocess (about 1.3 s idle); the 5 s default fails on a loaded CI shard. */
+const GUARD_SUBPROCESS_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: GUARD_SUBPROCESS_TEST_TIMEOUT_MS });
 
 describe('Anti-Cheat Guard AST Rules & Ratchet Baseline Engine (#252)', () => {
   const guardScript = path.resolve('scripts/guard-anti-cheat.ts');

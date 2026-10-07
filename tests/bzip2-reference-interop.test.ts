@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as cp from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
@@ -7,6 +7,10 @@ import * as path from 'node:path';
 import { compressBzip2, decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { convertFile } from '../src/lib/conversions';
 import { ConversionFailedError } from '../src/lib/types';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Interop suite for the pure-TypeScript bzip2 codec. The independent oracle is the system `bzip2`

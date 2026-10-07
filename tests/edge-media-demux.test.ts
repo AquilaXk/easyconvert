@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { crc32 } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { demuxMp4, MP4_MAX_SAMPLES_PER_TRACK, MP4_MAX_TOTAL_SAMPLES } from '../src/lib/edge/media/iso-bmff-demux';
 import type { DemuxedMediaSample, DemuxedTrackInfo } from '../src/lib/edge/media/media-types';
 import { demuxWav } from '../src/lib/edge/media/wav-demux';
@@ -26,6 +26,10 @@ import {
 import { findPath, listBoxes, payloadOf, walkTracks, type IsoBox } from './helpers/iso-bmff-walker';
 import { ffprobeFrameCount } from './helpers/ffprobe-frames';
 import { oracleTest } from './helpers/oracle-test';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MICROS = 1_000_000;
 const ONE_MICRO = 1;

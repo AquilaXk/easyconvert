@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   rgbToOklab,
   oklabToRgb,
@@ -29,6 +29,10 @@ import {
 } from '../src/lib/conversions/office';
 import JSZip from 'jszip';
 import sharp from 'sharp';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
