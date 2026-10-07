@@ -3,6 +3,8 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
@@ -24,6 +26,8 @@ import {
   PdfPostprocessError,
 } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
+
+const ZIP_MIME_TYPE = 'application/zip';
 
 export const dynamic = 'force-dynamic';
 
@@ -345,7 +349,7 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       sourceDef.id,
       targetDef.id,
-      options,
+      withTierPageCap(options, tierMaxPages(auth.user.tier)),
       file.name
     );
 
@@ -355,7 +359,9 @@ export async function POST(req: NextRequest) {
     // Store the result before the quota unit is committed: a storage outage fails the request and
     // rolls the reservation back, so the user is not charged for a result they cannot download.
     const baseName = file.name.replace(/\.[^/.]+$/, '');
-    const outFileName = `${baseName}.${targetDef.extension || targetDef.id}`;
+    // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
+    const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
+    const outFileName = `${baseName}.${outExtension}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
     await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
 
@@ -386,6 +392,7 @@ export async function POST(req: NextRequest) {
           'Content-Disposition': `attachment; filename="${outFileName}"`,
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
+          ...frameMetadataHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -412,6 +419,7 @@ export async function POST(req: NextRequest) {
         dataUri,
         downloadUrl,
         expiresAt: userFile.expiresAt,
+        ...frameMetadataFields(conversionResult),
       },
       {
         status: 200,

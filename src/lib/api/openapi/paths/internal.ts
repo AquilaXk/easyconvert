@@ -13,6 +13,7 @@ import {
   createProblemResponse,
   multipartBody,
   requireScope,
+  FRAME_RESPONSE_HEADERS,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -211,7 +212,10 @@ export const internalPaths = {
       security: ANONYMOUS_OR_SCOPE('convert:write'),
       requestBody: multipartBody(CONVERT_FORM_PROPERTIES, ['file', 'targetFormat']),
       responses: {
-        '200': binaryResponse('Converted file.'),
+        '200': {
+          ...binaryResponse('Converted file.'),
+          headers: FRAME_RESPONSE_HEADERS,
+        },
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
         '422': {

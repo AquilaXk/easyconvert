@@ -79,6 +79,16 @@ export const components = {
         durationMs: { type: 'number' },
         dataUri: { type: 'string' },
         expiresAt: { type: 'number' },
+        sourceFrameCount: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Frames or pages the source image holds; present only for multi-frame sources.',
+        },
+        frameUsed: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based frame or page a single-image output was taken from; present only when one was chosen.',
+        },
       },
     },
     JobSummary: {

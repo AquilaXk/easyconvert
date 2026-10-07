@@ -18,6 +18,8 @@ import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
+import { pageCappedEngine, pageLimitForOwner } from './page-cap';
+import { frameMetadataFields } from '../api/frame-headers';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -69,6 +71,8 @@ export const tsEngine: ConversionEnginePort = {
       engineUsed: 'ts-engine',
       executionTimeMs: Date.now() - startTime,
       ocrExtractedText: res.ocrExtractedText,
+      sourceFrameCount: res.sourceFrameCount,
+      frameUsed: res.frameUsed,
     };
   },
 };
@@ -115,13 +119,15 @@ async function removeJobInput(jobId: string, storageKey: string, storage: IStora
  */
 export async function processNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
-  engine: ConversionEnginePort = dispatchEngine,
+  baseEngine: ConversionEnginePort = dispatchEngine,
   rootStorage: IStorageBackend = storageProvider
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJob(job, engine, rootStorage);
+    return processGraphNodeJob(job, baseEngine, rootStorage);
   }
+  // Every conversion of the job runs under the page limit of its owner's tier.
+  const engine = pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId));
 
   // Scratch files a remote backend stages for this job's input are removed when the job ends.
   const scope = scopeStorageObjects(rootStorage);
@@ -350,6 +356,7 @@ export async function processNodeJob(
       size: finalResult.size,
       durationMs,
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
+      ...frameMetadataFields(finalResult),
     };
   } catch (err) {
     failure = err;

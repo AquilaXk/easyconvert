@@ -1,4 +1,5 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
+import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 
 import { PIPELINE_OPERATIONS } from './enums';
 
@@ -79,11 +80,13 @@ export const ConversionOptionsSchema = {
     width: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image width in pixels.',
     },
     height: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image height in pixels.',
     },
     dimensions: {
@@ -99,6 +102,12 @@ export const ConversionOptionsSchema = {
     stripMetadata: {
       type: 'boolean',
       description: 'Remove EXIF, XMP, and color profile metadata.',
+    },
+    background: {
+      type: 'string',
+      pattern: '^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$',
+      description:
+        'Background colour as #rgb or #rrggbb. Fills transparency for outputs without alpha (JPEG, BMP, EPS/PS, EXR, Ultra HDR) and the bars of fit "contain"; defaults to white for outputs without alpha.',
     },
     dpi: {
       type: 'integer',
@@ -230,7 +239,8 @@ export const ConversionOptionsSchema = {
     page: {
       type: 'integer',
       minimum: 1,
-      description: 'Single target page index for rasterization (1-indexed).',
+      description:
+        'Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
     },
     pages: {
       type: 'string',
@@ -1098,6 +1108,18 @@ export const JobResourceSchema = {
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
+      properties: {
+        sourceFrameCount: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Frames or pages the source image holds; present only for multi-frame sources.',
+        },
+        frameUsed: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based frame or page a single-image output was taken from; present only when one was chosen.',
+        },
+      },
     },
     tasks: {
       type: 'array',
