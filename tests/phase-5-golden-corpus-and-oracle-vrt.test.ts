@@ -35,6 +35,7 @@ import {
   extractTextWithExternalPdftotext,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { pdfPageCount } from './helpers/pdftocairo-svg';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { convertFile } from '../src/lib/conversions';
 import { demosaicBayerCfa, decodeRawBayerSensor } from '../src/lib/conversions/image';
@@ -774,8 +775,10 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       const result = await convertOffice(goldenPptx.buffer, 'pptx', 'pdf');
       assertFormatIntegrity(result.buffer, 'pdf');
 
-      const pdfAst = await parsePdfToAst(result.buffer);
-      expect(pdfAst.pageCount).toBeGreaterThanOrEqual(1);
+      // The deck has three slides (the slide parts of the package), and pdfinfo counts one page for each.
+      const slideParts = Object.keys((await JSZip.loadAsync(goldenPptx.buffer)).files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+      expect(slideParts).toHaveLength(3);
+      expect(pdfPageCount(result.buffer)).toBe(3);
     });
 
     it('5.4 converts golden multi-column DOCX to TXT with table structure and footnotes', async () => {

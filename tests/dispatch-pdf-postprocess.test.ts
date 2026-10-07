@@ -1,18 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { UnsupportedOptionError } from '../src/lib/types';
-import { HAS_SOFFICE } from './helpers/native-tools';
-import { getOracleToolPath } from './helpers/differential-oracle';
+import { skipWithoutTools } from './helpers/strict-skip';
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
 const PDFINFO = getOracleToolPath('pdfinfo');
 const USER_PASSWORD = 'dispatch-user-pw';
 const CONVERT_TIMEOUT_MS = 120_000;
+const VERAPDF_TIMEOUT_MS = 120_000;
 
 /** Runs pdfinfo (an independent Poppler reader) over a PDF and returns its output. */
 function pdfinfo(pdf: Buffer, extraArgs: string[]): string {
@@ -21,6 +22,19 @@ function pdfinfo(pdf: Buffer, extraArgs: string[]): string {
   try {
     writeFileSync(file, pdf);
     return execFileSync(PDFINFO as string, [...extraArgs, file], { encoding: 'utf-8' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** veraPDF, the PDF/A reference validator, run on `pdf` against the 2b flavour; its report says whether the file complies. */
+function verapdfReport(pdf: Buffer, flavour: string): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dispatch-verapdf-'));
+  const file = path.join(dir, 'in.pdf');
+  try {
+    writeFileSync(file, pdf);
+    const result = spawnSync(requireOracleTool('verapdf'), ['--flavour', flavour, '--format', 'xml', file], { encoding: 'utf-8', timeout: VERAPDF_TIMEOUT_MS });
+    return result.stdout;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -39,7 +53,7 @@ describe('PDF post-processing on native-routed output', () => {
     await expect(run).rejects.toThrow(/PDF\/A output cannot be encrypted/);
   });
 
-  it.skipIf(!HAS_SOFFICE || !PDFINFO)(
+  it.skipIf(skipWithoutTools('soffice', 'pdfinfo'))(
     'encrypts docx->pdf output when protect is requested (needs soffice, pdfinfo)',
     async () => {
       const result = await dispatchConversion(
@@ -74,12 +88,14 @@ describe('PDF post-processing on native-routed output', () => {
       const xmp = pdfinfo(result.buffer, ['-meta']);
       expect(xmp).toMatch(/<pdfaid:part>2<\/pdfaid:part>/);
       expect(xmp).toMatch(/<pdfaid:conformance>B<\/pdfaid:conformance>/);
+      // veraPDF, run here on the delivered bytes, finds the file compliant with PDF/A-2b: the metadata flag is not the evidence.
+      expect(verapdfReport(result.buffer, '2b')).toMatch(/<validationReport [^>]*isCompliant="true"/);
       expect(result.metadata).toMatchObject({ pdfaValidated: true, pdfaProfile: 'pdfa-2b' });
     },
     CONVERT_TIMEOUT_MS
   );
 
-  it.skipIf(!PDFINFO)(
+  it.skipIf(skipWithoutTools('pdfinfo'))(
     'encrypts in-process pdf output exactly once (needs pdfinfo)',
     async () => {
       const result = await dispatchConversion(

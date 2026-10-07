@@ -4,6 +4,7 @@ import os from 'node:os';
 import { describe, it, expect, vi } from 'vitest';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import {
   parsePageRanges,
   groupConsecutiveRanges,
@@ -289,26 +290,27 @@ describe('WP-40: PDF Page Range Selection & Multi-Page Rasterization', () => {
     });
 
     oracleTest('chains PPTX presentation to multi-page PNG archive via LibreOffice + Poppler', ['soffice', 'pdftoppm'], async () => {
-      const pptxPath = path.resolve(__dirname, 'fixtures/golden/office/drawingml-shapes-presentation.pptx');
-      if (!fs.existsSync(pptxPath)) return;
-      const pptxBuffer = fs.readFileSync(pptxPath);
+      const pptxBuffer = fs.readFileSync(path.resolve(__dirname, 'fixtures/golden/office/drawingml-shapes-presentation.pptx'));
+      // The deck's own slide parts say how many pages the whole presentation has.
+      const slideParts = Object.keys((await JSZip.loadAsync(pptxBuffer)).files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name));
+      expect(slideParts).toHaveLength(3);
 
-      const result = await executeWorkerConversion(
-        pptxBuffer,
-        'pptx',
-        'png',
-        { pages: '1-2' },
-        'presentation.pptx'
-      );
+      const pageNames = async (options: Record<string, unknown>): Promise<string[]> => {
+        const result = await executeWorkerConversion(pptxBuffer, 'pptx', 'png', options, 'presentation.pptx');
+        expect(result.mimeType).toBe('application/zip');
+        const zip = await JSZip.loadAsync(result.buffer);
+        const names = Object.keys(zip.files).sort();
+        for (const name of names) {
+          // Each page is a PNG of a 16:9 slide (the deck is 13.333 x 7.5 in), read back by an independent decoder.
+          const meta = await sharp(await zip.files[name].async('nodebuffer')).metadata();
+          expect(meta.format, name).toBe('png');
+          expect((meta.width as number) / (meta.height as number), name).toBeCloseTo(16 / 9, 2);
+        }
+        return names;
+      };
 
-      expect(result.mimeType).toBe('application/zip');
-      const zip = await JSZip.loadAsync(result.buffer);
-      const entries = Object.keys(zip.files);
-      expect(entries.length).toBeGreaterThanOrEqual(1);
-      for (const entry of entries) {
-        const data = await zip.files[entry].async('nodebuffer');
-        expect(data.subarray(0, 8)).toEqual(PNG_MAGIC);
-      }
+      expect(await pageNames({ pages: '1-2' })).toEqual(['presentation-p001.png', 'presentation-p002.png']);
+      expect(await pageNames({})).toEqual(['presentation-p001.png', 'presentation-p002.png', 'presentation-p003.png']);
     });
   });
 });

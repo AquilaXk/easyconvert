@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { readDxf } from './helpers/dxf-reader';
 import sharp from 'sharp';
 import JSZip from 'jszip';
@@ -18,11 +22,12 @@ import {
   performOcr,
   generateSearchablePdf,
   generateFb2FromText,
-  extractTextFromPdf,
 } from '../src/lib/conversions';
 import { zipEntryText } from './helpers/zip-entry';
 import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { requireOracleTool } from './helpers/differential-oracle';
+import { characterErrorRatePercent } from './helpers/ocr-cer';
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
@@ -176,76 +181,56 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   });
 
   describe('Domain: PDF & OCR Real Searchable PDF Overlay', () => {
-    it('generates an authentic Searchable PDF with invisible text layer and verifies OCR text extraction', async () => {
-      // 1. Create a scanned document image with text
-      const scannedImage = await sharp({
-        create: {
-          width: 400,
-          height: 120,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 },
-        },
-      })
-        .composite([
-          {
-            input: Buffer.from(
-              `<svg width="400" height="120">
-                <text x="30" y="40" font-family="monospace" font-size="20" fill="black">SEARCHABLE PDF</text>
-                <text x="30" y="85" font-family="monospace" font-size="18" fill="black">ZERO RETENTION</text>
-              </svg>`
-            ),
-            top: 0,
-            left: 0,
-          },
-        ])
+    /** A page of black text on white, large enough for the recognizer to read without error. */
+    async function renderPage(width: number, height: number, lines: { text: string; y: number; size: number }[]): Promise<Buffer> {
+      const markup = lines
+        .map((line) => `<text x="40" y="${line.y}" font-family="DejaVu Sans Mono, monospace" font-size="${line.size}" fill="black">${line.text}</text>`)
+        .join('');
+      return sharp({ create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+        .composite([{ input: Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${markup}</svg>`), top: 0, left: 0 }])
         .png()
         .toBuffer();
+    }
 
-      // 2. Run OCR to extract text and layout coordinates
+    /** The text of `pdf` as the Poppler text extractor reads it, an oracle independent of the PDF writer and of the OCR engine. */
+    function popplerText(pdf: Buffer): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'searchable-pdf-'));
+      try {
+        const file = path.join(dir, 'page.pdf');
+        fs.writeFileSync(file, pdf);
+        return execFileSync(requireOracleTool('pdftotext'), ['-enc', 'UTF-8', file, '-'], { encoding: 'utf-8' });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    /** Character error rate allowed for clean, large, machine-rendered text. */
+    const MAX_CLEAN_TEXT_CER_PERCENT = 5;
+
+    oracleTest('generates a searchable PDF whose invisible text layer holds the page text, as pdftotext reads it', ['tesseract', 'pdftotext'], async () => {
+      const expected = 'SEARCHABLE PDF ZERO RETENTION';
+      const scannedImage = await renderPage(1100, 320, [
+        { text: 'SEARCHABLE PDF', y: 110, size: 64 },
+        { text: 'ZERO RETENTION', y: 240, size: 64 },
+      ]);
+
       const ocrResult = await performOcr(scannedImage);
-      expect(ocrResult.lines.length).toBeGreaterThan(0);
-      expect(ocrResult.lineBlocks).toBeDefined();
+      expect(characterErrorRatePercent(expected, ocrResult.text)).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
+      expect(ocrResult.lineBlocks?.map((block) => block.text.trim())).toEqual(['SEARCHABLE PDF', 'ZERO RETENTION']);
 
-      // 3. Generate Searchable PDF ("Sandwich PDF") with invisible text overlay layer
       const searchablePdf = await generateSearchablePdf(scannedImage, ocrResult, {}, 'Test Document');
       expect(searchablePdf.toString('ascii', 0, 4)).toBe('%PDF');
-
-      // 4. Verify text extraction from generated searchable PDF
-      const extracted = extractTextFromPdf(searchablePdf);
-      expect(extracted).not.toBe('No extractable text found in PDF document.');
-      expect(extracted.length).toBeGreaterThan(0);
+      expect(characterErrorRatePercent(expected, popplerText(searchablePdf))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
     });
 
-    it('converts image directly to searchable PDF when ocrEnabled option is true', async () => {
-      const img = await sharp({
-        create: {
-          width: 300,
-          height: 80,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 },
-        },
-      })
-        .composite([
-          {
-            input: Buffer.from(
-              `<svg width="300" height="80">
-                <text x="20" y="50" font-family="monospace" font-size="22" fill="black">OCR SEARCH</text>
-              </svg>`
-            ),
-            top: 0,
-            left: 0,
-          },
-        ])
-        .png()
-        .toBuffer();
+    oracleTest('converts an image directly to a searchable PDF when ocrEnabled is true', ['tesseract', 'pdftotext'], async () => {
+      const img = await renderPage(900, 200, [{ text: 'OCR SEARCH', y: 130, size: 72 }]);
 
       const result = await convertFile(img, 'png', 'pdf', { ocrEnabled: true }, 'scan.png');
       expect(result.mimeType).toBe('application/pdf');
-      expect(result.ocrExtractedText).toBeDefined();
+      expect(characterErrorRatePercent('OCR SEARCH', result.ocrExtractedText ?? '')).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
       expect(result.ocrConfidence).toBeGreaterThan(0.7);
-
-      const extracted = extractTextFromPdf(result.buffer);
-      expect(extracted).not.toBe('No extractable text found in PDF document.');
+      expect(characterErrorRatePercent('OCR SEARCH', popplerText(result.buffer))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
     });
   });
 

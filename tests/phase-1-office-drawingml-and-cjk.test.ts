@@ -3,6 +3,20 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions';
 import { ConversionFailedError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+import { extractFontsWithExternalPdffonts, extractTextWithExternalPdftotext } from './helpers/differential-oracle';
+
+/** The text of `pdf` as Poppler reads it, NFC-normalized, whitespace runs collapsed. */
+function popplerText(pdf: Buffer): string {
+  return (extractTextWithExternalPdftotext(pdf) ?? '').normalize('NFC').replace(/\s+/g, ' ').trim();
+}
+
+/** Every font of `pdf` is embedded: a viewer needs no installed font to draw the page. */
+function expectEmbeddedFonts(pdf: Buffer): void {
+  const fonts = extractFontsWithExternalPdffonts(pdf);
+  expect(fonts.length).toBeGreaterThan(0);
+  for (const font of fonts) expect({ name: font.name, embedded: font.emb }).toEqual({ name: font.name, embedded: true });
+}
 import {
   evaluateDrawingMlGuideFormula,
   parseDrawingMlGuides,
@@ -552,7 +566,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(typeof config.hasUnicodeFont).toBe('boolean');
     });
 
-    it('renders CJK text safely without throwing WinAnsi encoding errors', async () => {
+    oracleTest('renders CJK text safely without throwing WinAnsi encoding errors: the text is in the PDF, in embedded fonts', ['pdftotext', 'pdffonts'], async () => {
       const doc = new PDFDocument();
       const chunks: Buffer[] = [];
       doc.on('data', (c) => chunks.push(c));
@@ -566,8 +580,8 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       doc.end();
 
       const pdf = await endPromise;
-      expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
-      expect(pdf.length).toBeGreaterThan(200);
+      expect(popplerText(pdf)).toBe('한국어 문서 보고서 (Korean Performance Report) 日本語の概要 (Japanese Summary) 中文简要 (Chinese Overview)');
+      expectEmbeddedFonts(pdf);
     });
 
     it('fails closed with ConversionFailedError instead of drawing a box for an unassigned code point', () => {
@@ -585,7 +599,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
     });
 
 
-    it('converts DOCX containing CJK characters to PDF without crashing and produces valid PDF buffer', async () => {
+    oracleTest('converts DOCX containing CJK characters to a PDF that holds the text, in embedded fonts', ['pdftotext', 'pdffonts'], async () => {
       const zip = new JSZip();
 
       zip.file(
@@ -664,8 +678,19 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       // Convert DOCX to PDF
       const pdfRes = await convertFile(docxBuffer, 'docx', 'pdf', {}, 'korean_report.docx');
       expect(pdfRes.mimeType).toBe('application/pdf');
-      expect(pdfRes.buffer.length).toBeGreaterThan(1000);
-      expect(pdfRes.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      const pdfText = popplerText(pdfRes.buffer);
+      for (const expected of [
+        '글로벌 비즈니스 성과 보고서 (Global Business Report)',
+        '본 문서는 2026년 상반기 아시아-태평양 지역의 전환 처리 실적을 다룹니다.',
+        '日本語セクション: クラウド変換のスループットが前四半期比で45%向上しました。',
+        '中文部分: 转换延迟降低至零保留存储标准。',
+        '처리량 (Throughput)',
+        '대한민국 서울',
+        '1,500,000건',
+      ]) {
+        expect(pdfText).toContain(expected);
+      }
+      expectEmbeddedFonts(pdfRes.buffer);
 
       // Convert DOCX to HTML
       const htmlRes = await convertFile(docxBuffer, 'docx', 'html', {}, 'korean_report.docx');
@@ -677,7 +702,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
   });
 
   describe('4. End-to-End High-Fidelity DOCX & PPTX Integration', () => {
-    it('converts DOCX containing DrawingML shapes and embedded chart to PDF and HTML', async () => {
+    oracleTest('converts DOCX containing DrawingML shapes and embedded chart to PDF and HTML', ['pdftotext', 'pdffonts'], async () => {
       const zip = new JSZip();
 
       zip.file(
@@ -776,7 +801,9 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       // 1. Convert to PDF and verify vector rendering without placeholders
       const pdfRes = await convertFile(docxBuf, 'docx', 'pdf', {}, 'benchmark.docx');
       expect(pdfRes.mimeType).toBe('application/pdf');
-      expect(pdfRes.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      const pdfText = popplerText(pdfRes.buffer);
+      for (const expected of ['Architecture', 'Performance Review', 'Conversion Latency Benchmark']) expect(pdfText).toContain(expected);
+      expectEmbeddedFonts(pdfRes.buffer);
 
       // 2. Convert to HTML and verify SVG chart and chevron polygon
       const htmlRes = await convertFile(docxBuf, 'docx', 'html', {}, 'benchmark.docx');
@@ -788,7 +815,7 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expect(html).toContain('<polygon'); // chevron
     });
 
-    it('converts PPTX containing <p:graphicFrame> with embedded chart to visual HTML and PDF', async () => {
+    oracleTest('converts PPTX containing <p:graphicFrame> with embedded chart to visual HTML and PDF', ['pdftotext', 'pdffonts'], async () => {
       const zip = new JSZip();
 
       zip.file(
@@ -897,10 +924,12 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       // Convert to PDF
       const pdfRes = await convertFile(pptxBuf, 'pptx', 'pdf', {}, 'deck.pptx');
       expect(pdfRes.mimeType).toBe('application/pdf');
-      expect(pdfRes.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      const pdfText = popplerText(pdfRes.buffer);
+      for (const expected of ['Executive Visual Dashboard', 'Slide Vector Chart']) expect(pdfText).toContain(expected);
+      expectEmbeddedFonts(pdfRes.buffer);
     });
 
-    it('converts PPTX containing expanded presets to HTML and PDF', async () => {
+    oracleTest('converts PPTX containing expanded presets to HTML and PDF', ['pdftotext', 'pdffonts'], async () => {
       const zip = new JSZip();
 
       zip.file(
@@ -976,7 +1005,8 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
 
       const pdfRes = await convertFile(pptxBuf, 'pptx', 'pdf', {}, 'shapes.pptx');
       expect(pdfRes.mimeType).toBe('application/pdf');
-      expect(pdfRes.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+      expect(popplerText(pdfRes.buffer)).toContain('Cube Component');
+      expectEmbeddedFonts(pdfRes.buffer);
     });
   });
 });
