@@ -14,7 +14,15 @@ import {
 } from '../types';
 export { ConversionFailedError };
 import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
-import { buildFfmpegArguments, buildHlsDashArguments, usesHardwareVideoEncoder } from './media-ffmpeg-args';
+import {
+  buildFfmpegArguments,
+  buildHlsDashArguments,
+  DEFAULT_PACKAGING_LADDER,
+  PackagingSource,
+  probePackagingSource,
+  usesHardwareVideoEncoder,
+} from './media-ffmpeg-args';
+import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { encodeFlacStream } from './media-encoder';
 import {
   resampleInterleavedInt16,
@@ -147,13 +155,33 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
   return 0;
 }
 
+/** Longest a media job may run when the caller names no tier ceiling. */
+export const DEFAULT_MEDIA_TIER_MAX_MS = 180_000;
+
 /**
  * Computes dynamic transcoding timeout: min(tierMax, 3 * durationSeconds + 60) in milliseconds.
  */
-export function computeMediaTimeoutMs(durationSeconds: number, tierMaxMs = 180000): number {
+export function computeMediaTimeoutMs(durationSeconds: number, tierMaxMs = DEFAULT_MEDIA_TIER_MAX_MS): number {
   const duration = Math.max(0, durationSeconds || 0);
   const baseTimeoutMs = Math.round((3 * duration + 60) * 1000);
   return Math.max(10000, Math.min(tierMaxMs, baseTimeoutMs));
+}
+
+/**
+ * Timeout of an adaptive-bitrate package: every rung is a full encode of the clip, so the duration is
+ * counted once per rung, under the same tier ceiling as a transcode.
+ */
+export function computePackagingTimeoutMs(
+  durationSeconds: number,
+  rungCount: number,
+  tierMaxMs = DEFAULT_MEDIA_TIER_MAX_MS
+): number {
+  return computeMediaTimeoutMs(packagingBudgetSeconds(durationSeconds, rungCount), tierMaxMs);
+}
+
+/** Rungs the packager will encode: the requested (or default) ladder cut to what the source can fill. */
+export function plannedRungCount(packaging: MediaPackagingOptions, source: PackagingSource): number {
+  return capLadderToSource(packaging.ladder ?? DEFAULT_PACKAGING_LADDER, source.geometry).length;
 }
 
 
@@ -504,10 +532,11 @@ export async function packageHlsDashMedia(
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
-    const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+    const source = probePackagingSource(inputPath, ffmpegBin);
+    const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: outputDir,
-      timeoutMs: options.timeoutMs || 120000,
+      timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), options.timeoutMs),
       maxBuffer: 100 * 1024 * 1024,
       networkIsolated: true,
       signal: options.signal,

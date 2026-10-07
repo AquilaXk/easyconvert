@@ -651,6 +651,13 @@ export const ConversionOptionsSchema = {
           default: 4,
           description: 'Segment duration target in seconds (2..10).',
         },
+        segmentType: {
+          type: 'string',
+          enum: ['ts', 'fmp4'],
+          default: 'ts',
+          description:
+            'HLS segment container: MPEG-2 transport stream (ts) or fragmented MP4 / CMAF (fmp4, ISO/IEC 23000-19, with an EXT-X-MAP init section). MPEG-DASH always uses fmp4.',
+        },
         ladder: {
           type: 'array',
           items: {
@@ -663,7 +670,8 @@ export const ConversionOptionsSchema = {
               audioBitrateK: { type: 'integer', minimum: 16, maximum: 1024, description: 'Audio bitrate target in kbps.' },
             },
           },
-          description: 'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted.',
+          description:
+            'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted. Rungs taller than the source are dropped, a rung never asks for more bitrate than the source carries, and each rung peaks at 1.07x its bitrate.',
         },
         masterPlaylistName: {
           type: 'string',

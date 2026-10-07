@@ -20,6 +20,33 @@ import {
   resolveAudioTargetSpec,
   VORBIS_DEFAULT_QUALITY,
 } from './media-audio-targets';
+import {
+  FfprobePath,
+  probeAudioChannels,
+  probeAudioSampleRate,
+  probeAudioStreamCount,
+  probeVideoColorTransfer,
+  resolveFfprobeBinary,
+  probeVideoGeometry,
+  VideoGeometry,
+} from './media-ffprobe';
+import {
+  capLadderToSource,
+  forcedKeyframeExpression,
+  keyframeIntervalFrames,
+  resolveSegmentType,
+  rungRateCaps,
+  MIN_RUNG_BITRATE_K,
+} from './media-packaging';
+
+export {
+  probeAudioChannels,
+  probeAudioSampleRate,
+  probeAudioStreamCount,
+  probeVideoColorTransfer,
+  resolveFfprobeBinary,
+};
+export type { FfprobePath };
 
 export interface HardwareAccelerationCapabilities {
   nvenc: boolean;
@@ -49,117 +76,12 @@ export function escapeFfmpegFilterPath(filePath: string): string {
     .replace(/'/g, "'\\\\''");
 }
 
-let cachedFfprobeBin: string | null = null;
-function getInternalFfprobe(): string | null {
-  if (cachedFfprobeBin !== null) return cachedFfprobeBin || null;
-  const envPath = process.env.FFPROBE_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    cachedFfprobeBin = envPath;
-    return envPath;
-  }
-  const fixedLocations = [
-    '/usr/bin/ffprobe',
-    '/usr/local/bin/ffprobe',
-    '/opt/homebrew/bin/ffprobe',
-    '/bin/ffprobe',
-  ];
-  for (const loc of fixedLocations) {
-    if (fs.existsSync(loc)) {
-      cachedFfprobeBin = loc;
-      return loc;
-    }
-  }
-  cachedFfprobeBin = '';
-  return null;
-}
-
-/** Path of an ffprobe binary. Branded so an ffmpeg path cannot be passed by mistake. */
-export type FfprobePath = string & { readonly __brand: 'FfprobePath' };
-
-const FFPROBE_TIMEOUT_MS = 10_000;
 /** Transfer characteristics of HDR video (SMPTE ST 2084 PQ and ARIB STD-B67 HLG). */
 const HDR_TRANSFERS: ReadonlySet<string> = new Set(['smpte2084', 'arib-std-b67']);
 /** Profiles that encode 10-bit samples; every other software profile encodes 8-bit 4:2:0. */
 const TEN_BIT_PROFILES: ReadonlySet<string> = new Set(['main10', 'high10']);
 const TEN_BIT_PIX_FMT = 'yuv420p10le';
 const EIGHT_BIT_PIX_FMT = 'yuv420p';
-
-/**
- * Resolves the ffprobe binary that belongs to an ffmpeg installation: the sibling of `ffmpegBin`
- * when present, otherwise `FFPROBE_PATH` or a standard location. Throws when none exists.
- */
-export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
-  const override = process.env.FFPROBE_PATH;
-  if (override && !fs.existsSync(override)) {
-    // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
-    throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
-  }
-  if (ffmpegBin) {
-    const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-    if (fs.existsSync(sibling)) {
-      return sibling as FfprobePath;
-    }
-  }
-  const found = getInternalFfprobe();
-  if (!found) {
-    throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
-  }
-  return found as FfprobePath;
-}
-
-function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): string {
-  try {
-    return execFileSync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1', filePath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-    })
-      .toString('utf-8')
-      .trim();
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
-  }
-}
-
-/**
- * Number of channels in the selected audio stream (the first by default), or 0 when the file has no audio stream.
- * Throws when ffprobe cannot read the file instead of reporting a silent input.
- */
-export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
-  if (out === '') {
-    return 0;
-  }
-  const parsed = Number.parseInt(out, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new ConversionFailedError(`ffprobe reported an invalid audio channel count: "${out}"`);
-  }
-  return parsed;
-}
-
-/** Number of audio streams in the file; 0 when it has none. Throws when ffprobe cannot read the file. */
-export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
-  return out === '' ? 0 : out.split('\n').length;
-}
-
-/** Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. */
-export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
-  if (out === '') {
-    return 0;
-  }
-  const parsed = Number.parseInt(out, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new ConversionFailedError(`ffprobe reported an invalid audio sample rate: "${out}"`);
-  }
-  return parsed;
-}
-
-/** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when unknown. */
-export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
-  return runFfprobe(ffprobe, filePath, ['-select_streams', 'v:0', '-show_entries', 'stream=color_transfer']);
-}
 
 export const H264_ALLOWED_PROFILES = new Set(['baseline', 'main', 'high', 'high10']);
 export const H264_ALLOWED_LEVELS = new Set([
@@ -1090,14 +1012,116 @@ export const PACKAGING_AUDIO_ENCODERS: Record<string, string> = {
   opus: 'libopus',
 };
 
+const DEFAULT_SEGMENT_SECONDS = 4;
+const MIN_SEGMENT_SECONDS = 2;
+const MAX_SEGMENT_SECONDS = 10;
+const MIN_RUNG_HEIGHT = 144;
+const MAX_RUNG_HEIGHT = 4320;
+const MAX_RUNG_BITRATE_K = 50_000;
+const MAX_RUNG_FPS = 240;
+const MIN_RUNG_AUDIO_BITRATE_K = 16;
+const MAX_RUNG_AUDIO_BITRATE_K = 1024;
+/** Audio bitrate of the first, second and later rungs when the ladder gives none. */
+const DEFAULT_RUNG_AUDIO_BITRATE_K = [192, 128, 96] as const;
+const TS_SEGMENT_PATTERN = 'stream_%v_%03d.ts';
+const FMP4_SEGMENT_PATTERN = 'stream_%v_%03d.m4s';
+const FMP4_INIT_PATTERN = 'init_%v.mp4';
+const PACKAGING_PIX_FMT = 'yuv420p';
+const HEVC_PACKAGING_TAG = 'hvc1';
+
+/** What packaging needs to know about the input before it plans a ladder. */
+export interface PackagingSource {
+  geometry: VideoGeometry;
+  hasAudio: boolean;
+}
+
+/** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
+export function probePackagingSource(inputPath: string, ffmpegBin?: string | null): PackagingSource {
+  const ffprobe = resolveFfprobeBinary(ffmpegBin);
+  return {
+    geometry: probeVideoGeometry(inputPath, ffprobe),
+    hasAudio: probeAudioChannels(inputPath, ffprobe) > 0,
+  };
+}
+
+function validateLadder(ladder: readonly MediaLadderRung[]): void {
+  if (!Array.isArray(ladder) || ladder.length === 0) {
+    throw new InvalidMediaOptionError('Packaging ladder must be a non-empty array of rungs.');
+  }
+  const seenHeights = new Set<number>();
+  for (const rung of ladder) {
+    if (typeof rung.height !== 'number' || !Number.isInteger(rung.height) || rung.height < MIN_RUNG_HEIGHT || rung.height > MAX_RUNG_HEIGHT) {
+      throw new InvalidMediaOptionError(
+        `Invalid ladder rung height: ${rung.height}. Must be an integer between ${MIN_RUNG_HEIGHT} and ${MAX_RUNG_HEIGHT}.`
+      );
+    }
+    if (rung.height % 2 !== 0) {
+      throw new InvalidMediaOptionError(`Invalid ladder rung height: ${rung.height}. 4:2:0 video needs an even height.`);
+    }
+    if (seenHeights.has(rung.height)) {
+      throw new InvalidMediaOptionError(`Duplicate ladder rung height ${rung.height}; each rung names its playlist by height.`);
+    }
+    seenHeights.add(rung.height);
+    if (typeof rung.bitrateK !== 'number' || !Number.isInteger(rung.bitrateK) || rung.bitrateK < MIN_RUNG_BITRATE_K || rung.bitrateK > MAX_RUNG_BITRATE_K) {
+      throw new InvalidMediaOptionError(
+        `Invalid ladder rung bitrateK: ${rung.bitrateK}. Must be an integer between ${MIN_RUNG_BITRATE_K} and ${MAX_RUNG_BITRATE_K}.`
+      );
+    }
+    if (rung.fps !== undefined && (typeof rung.fps !== 'number' || !Number.isFinite(rung.fps) || rung.fps <= 0 || rung.fps > MAX_RUNG_FPS)) {
+      throw new InvalidMediaOptionError(`Invalid ladder rung fps: ${rung.fps}. Must be a number between 1 and ${MAX_RUNG_FPS}.`);
+    }
+    if (
+      rung.audioBitrateK !== undefined &&
+      (typeof rung.audioBitrateK !== 'number' ||
+        !Number.isInteger(rung.audioBitrateK) ||
+        rung.audioBitrateK < MIN_RUNG_AUDIO_BITRATE_K ||
+        rung.audioBitrateK > MAX_RUNG_AUDIO_BITRATE_K)
+    ) {
+      throw new InvalidMediaOptionError(
+        `Invalid ladder rung audioBitrateK: ${rung.audioBitrateK}. Must be an integer between ${MIN_RUNG_AUDIO_BITRATE_K} and ${MAX_RUNG_AUDIO_BITRATE_K}.`
+      );
+    }
+  }
+}
+
+/**
+ * Encoder arguments that put an IDR frame at every segment boundary on every rung: the GOP spans one
+ * segment, a keyframe is forced at each boundary time, and scene-cut keyframes are off so no keyframe
+ * lands elsewhere and the rungs cut at the same instants (RFC 8216, section 6.2.3).
+ */
+function segmentKeyframeArgs(codec: string, rungIndex: number, gopFrames: number, segmentSeconds: number): string[] {
+  const at = (option: string) => `${option}:v:${rungIndex}`;
+  const common = [at('-g'), String(gopFrames), at('-force_key_frames'), forcedKeyframeExpression(segmentSeconds)];
+  switch (codec) {
+    case 'libx264':
+      return [...common, at('-keyint_min'), String(gopFrames), at('-sc_threshold'), '0', at('-forced-idr'), '1'];
+    case 'libx265':
+      return [
+        ...common,
+        at('-keyint_min'), String(gopFrames),
+        at('-forced-idr'), '1',
+        at('-x265-params'), 'scenecut=0:open-gop=0',
+      ];
+    case 'libsvtav1':
+      return [...common, at('-svtav1-params'), 'scd=0'];
+    default:
+      return [...common, at('-keyint_min'), String(gopFrames)];
+  }
+}
+
 /**
  * Builds FFmpeg command-line arguments for multi-bitrate ABR packaging (HLS and MPEG-DASH).
+ *
+ * `source` is what was probed from the input (exact frame rate, displayed size, audio presence); when it is
+ * left out the input file is probed here. The ladder is cut to what the source can fill and every rung
+ * gets a capped peak rate, so the declared BANDWIDTH holds.
  */
 export function buildHlsDashArguments(
   inputPath: string,
   outputDir: string,
   packaging: MediaPackagingOptions,
-  ffmpegBin?: string | null
+  ffmpegBin?: string | null,
+  source?: PackagingSource
 ): string[] {
   if (!packaging || !packaging.format) {
     throw new InvalidMediaOptionError('Packaging format is required ("hls" or "dash").');
@@ -1110,63 +1134,24 @@ export function buildHlsDashArguments(
     );
   }
 
-  // segmentSeconds validation (2..10, integer)
-  let segmentSeconds = 4;
+  let segmentSeconds = DEFAULT_SEGMENT_SECONDS;
   if (packaging.segmentSeconds !== undefined) {
     if (
       typeof packaging.segmentSeconds !== 'number' ||
       !Number.isInteger(packaging.segmentSeconds) ||
-      packaging.segmentSeconds < 2 ||
-      packaging.segmentSeconds > 10
+      packaging.segmentSeconds < MIN_SEGMENT_SECONDS ||
+      packaging.segmentSeconds > MAX_SEGMENT_SECONDS
     ) {
       throw new InvalidMediaOptionError(
-        `Invalid segmentSeconds: ${packaging.segmentSeconds}. Allowed range: 2 to 10 seconds integer.`
+        `Invalid segmentSeconds: ${packaging.segmentSeconds}. Allowed range: ${MIN_SEGMENT_SECONDS} to ${MAX_SEGMENT_SECONDS} seconds integer.`
       );
     }
     segmentSeconds = packaging.segmentSeconds;
   }
+  const segmentType = resolveSegmentType(packaging.segmentType, format);
 
-  // ladder validation
-  let ladder: MediaLadderRung[];
-  if (packaging.ladder !== undefined) {
-    if (!Array.isArray(packaging.ladder) || packaging.ladder.length === 0) {
-      throw new InvalidMediaOptionError('Packaging ladder must be a non-empty array of rungs.');
-    }
-    for (const rung of packaging.ladder) {
-      if (typeof rung.height !== 'number' || !Number.isInteger(rung.height) || rung.height < 144 || rung.height > 4320) {
-        throw new InvalidMediaOptionError(
-          `Invalid ladder rung height: ${rung.height}. Must be an integer between 144 and 4320.`
-        );
-      }
-      if (typeof rung.bitrateK !== 'number' || !Number.isInteger(rung.bitrateK) || rung.bitrateK < 50 || rung.bitrateK > 50000) {
-        throw new InvalidMediaOptionError(
-          `Invalid ladder rung bitrateK: ${rung.bitrateK}. Must be an integer between 50 and 50000.`
-        );
-      }
-      if (rung.fps !== undefined) {
-        if (typeof rung.fps !== 'number' || !Number.isFinite(rung.fps) || rung.fps <= 0 || rung.fps > 240) {
-          throw new InvalidMediaOptionError(
-            `Invalid ladder rung fps: ${rung.fps}. Must be a number between 1 and 240.`
-          );
-        }
-      }
-      if (rung.audioBitrateK !== undefined) {
-        if (
-          typeof rung.audioBitrateK !== 'number' ||
-          !Number.isInteger(rung.audioBitrateK) ||
-          rung.audioBitrateK < 16 ||
-          rung.audioBitrateK > 1024
-        ) {
-          throw new InvalidMediaOptionError(
-            `Invalid ladder rung audioBitrateK: ${rung.audioBitrateK}. Must be an integer between 16 and 1024.`
-          );
-        }
-      }
-    }
-    ladder = packaging.ladder;
-  } else {
-    ladder = [...DEFAULT_PACKAGING_LADDER];
-  }
+  const requestedLadder: readonly MediaLadderRung[] = packaging.ladder ?? DEFAULT_PACKAGING_LADDER;
+  validateLadder(requestedLadder);
 
   // Video codec
   const videoCodecKey = resolveVideoCodec((packaging.videoCodec || 'h264').toLowerCase());
@@ -1186,7 +1171,10 @@ export function buildHlsDashArguments(
     );
   }
 
-  const hasAudio = !fs.existsSync(inputPath) || probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin)) > 0;
+  const probed = source ?? probePackagingSource(inputPath, ffmpegBin);
+  const ladder = capLadderToSource(requestedLadder, probed.geometry);
+  const hasAudio = probed.hasAudio;
+  const { fpsNum, fpsDen } = probed.geometry;
 
   const globalArgs: string[] = ['-y', '-loglevel', 'error'];
   const inputArgs: string[] = ['-i', inputPath];
@@ -1215,23 +1203,27 @@ export function buildHlsDashArguments(
   // Map each rung
   for (let i = 0; i < ladder.length; i++) {
     const rung = ladder[i];
+    const caps = rungRateCaps(rung.bitrateK);
     streamArgs.push(
       '-map', `[v_out${i}]`,
       `-c:v:${i}`, vEncoder,
-      `-b:v:${i}`, `${rung.bitrateK}k`
+      `-b:v:${i}`, `${rung.bitrateK}k`,
+      `-maxrate:v:${i}`, `${caps.maxrateK}k`,
+      `-bufsize:v:${i}`, `${caps.bufsizeK}k`,
+      `-pix_fmt:v:${i}`, PACKAGING_PIX_FMT
     );
+    if (videoCodecKey === 'hevc') {
+      streamArgs.push(`-tag:v:${i}`, HEVC_PACKAGING_TAG);
+    }
 
-    // GOP / Keyframe alignment for smooth ABR switching
-    const fps = rung.fps || 30;
-    const gopSize = Math.round(fps * segmentSeconds);
-    streamArgs.push(
-      `-g:v:${i}`, String(gopSize),
-      `-keyint_min:v:${i}`, String(gopSize),
-      `-sc_threshold:v:${i}`, '0'
-    );
+    // The rung's own rate when it names one, otherwise the source's exact rational rate.
+    const gopFrames = rung.fps
+      ? keyframeIntervalFrames(rung.fps, 1, segmentSeconds)
+      : keyframeIntervalFrames(fpsNum, fpsDen, segmentSeconds);
+    streamArgs.push(...segmentKeyframeArgs(vEncoder, i, gopFrames, segmentSeconds));
 
     if (hasAudio) {
-      const audioBitrate = rung.audioBitrateK || (i === 0 ? 192 : i === 1 ? 128 : 96);
+      const audioBitrate = rung.audioBitrateK || DEFAULT_RUNG_AUDIO_BITRATE_K[Math.min(i, DEFAULT_RUNG_AUDIO_BITRATE_K.length - 1)];
       streamArgs.push(
         '-map', `[a_out${i}]`,
         `-c:a:${i}`, aEncoder,
@@ -1249,13 +1241,25 @@ export function buildHlsDashArguments(
       })
       .join(' ');
 
+    // ffmpeg expands %v in the init name only when there are several variants; with one it keeps the
+    // literal "%v", so a single rung names its init section directly.
+    const initName = ladder.length === 1 ? `init_${ladder[0].height}p.mp4` : FMP4_INIT_PATTERN;
+    const segmentArgs =
+      segmentType === 'fmp4'
+        ? [
+            '-hls_segment_type', 'fmp4',
+            '-hls_fmp4_init_filename', initName,
+            '-hls_segment_filename', path.join(outputDir, FMP4_SEGMENT_PATTERN),
+          ]
+        : ['-hls_segment_filename', path.join(outputDir, TS_SEGMENT_PATTERN)];
+
     const hlsArgs: string[] = [
       '-f', 'hls',
       '-hls_time', String(segmentSeconds),
       '-hls_playlist_type', 'vod',
       '-hls_flags', 'independent_segments',
       '-master_pl_name', masterPlaylist,
-      '-hls_segment_filename', path.join(outputDir, 'stream_%v_%03d.ts'),
+      ...segmentArgs,
       '-var_stream_map', varStreamMap,
       path.join(outputDir, 'stream_%v.m3u8'),
     ];
@@ -1282,5 +1286,3 @@ export function buildHlsDashArguments(
     return [...globalArgs, ...inputArgs, ...streamArgs, ...dashArgs];
   }
 }
-
-

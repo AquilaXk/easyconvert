@@ -314,9 +314,13 @@ export interface MediaLadderRung {
 
 export type MediaPackagingFormat = 'hls' | 'dash';
 
+/** HLS segment container: MPEG-2 transport stream, or fragmented MP4 (CMAF). MPEG-DASH always uses fmp4. */
+export type MediaPackagingSegmentType = 'ts' | 'fmp4';
+
 export interface MediaPackagingOptions {
   format: MediaPackagingFormat;
   segmentSeconds?: number;
+  segmentType?: MediaPackagingSegmentType;
   ladder?: MediaLadderRung[];
   masterPlaylistName?: string;
   audioCodec?: 'aac' | 'opus';
@@ -783,6 +787,30 @@ export class InvalidMediaOptionError extends UnsupportedOptionError {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidMediaOptionError';
+  }
+}
+
+/** The input has no video stream, so a video target or an adaptive-bitrate package has nothing to encode. */
+export class NoVideoStreamError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoVideoStreamError';
+  }
+}
+
+/** The input declares more streams than one conversion maps; the limit bounds probing and mapping work. */
+export class TooManyMediaStreamsError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TooManyMediaStreamsError';
+  }
+}
+
+/** ffprobe output that cannot be parsed or lacks a required field; the input is not described reliably. */
+export class MediaProbeError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MediaProbeError';
   }
 }
 

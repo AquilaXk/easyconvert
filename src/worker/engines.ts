@@ -42,11 +42,18 @@ import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSele
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
+  probePackagingSource,
   probeHardwareAcceleration,
   usesHardwareVideoEncoder,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
-import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
+import {
+  probeMediaDuration,
+  computeMediaTimeoutMs,
+  computePackagingTimeoutMs,
+  plannedRungCount,
+  DEFAULT_MEDIA_TIER_MAX_MS,
+} from '../lib/conversions/media';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
@@ -533,7 +540,7 @@ export async function convertWithNativeFfmpeg(
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
       const durationSeconds = probeMediaDuration(inputPath, options);
-      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || 180000);
+      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS);
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
         const parts: { filename: string; buffer: Buffer }[] = [];
@@ -578,10 +585,15 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+        const source = probePackagingSource(inputPath, ffmpegBin);
+        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
         await executeSandboxedBinary(ffmpegBin, args, {
           cwd: outputDir,
-          timeoutMs: timeout,
+          timeoutMs: computePackagingTimeoutMs(
+            source.geometry.durationSec,
+            plannedRungCount(packaging, source),
+            options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS
+          ),
           maxBuffer,
           networkIsolated: true,
           signal: options.signal,
