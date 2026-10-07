@@ -444,8 +444,8 @@ function videoConfig(view: DataView, entryType: string, entryChildren: Mp4Box[])
     case 'vp09':
       return vp9Config(view, requiredChild(entryChildren, 'vpcC', 'vp09 sample entry'));
     case 'vp08':
-      // VP8 has one picture format: 8-bit 4:2:0
-      return { codec: 'vp8', bitDepth: BITS_BASELINE_DEPTH, chroma: 'yuv420' };
+      // The reference muxer cannot write this entry, so nothing here can be checked against a real file
+      throw refuse('VP8 in MP4 (vp08) is not read');
     case 'av01':
       return av1Config(view, requiredChild(entryChildren, 'av1C', 'av01 sample entry'));
     default:

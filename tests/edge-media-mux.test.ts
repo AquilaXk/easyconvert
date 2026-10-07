@@ -31,6 +31,9 @@ import { oracleTest } from './helpers/oracle-test';
 const MICROS = 1_000_000;
 const TOLERANCE_SECONDS = 2e-6;
 const SOURCE_VIDEO = { width: 320, height: 240, fps: 25, seconds: 2 };
+/** One AAC-LC frame (ISO/IEC 14496-3): the encoder delay the output's edit list hides, in 44.1 kHz ticks and seconds. */
+const AAC_PRIMING_TICKS = 1024;
+const AAC_PRIMING_SECONDS = AAC_PRIMING_TICKS / 44100;
 
 /** Packs `[value, width]` fields most significant bit first, padding the last byte with zeros. */
 function packBits(fields: Array<[number, number]>): Uint8Array {
@@ -386,7 +389,11 @@ describe('muxMp4 writes what the encoder reported', () => {
     expect(esds.streamType).toBe(0x15);
     expect(esds.asc).toEqual(audio.config.description);
     expect(readMdhdTimescale(out, trackBoxes(out)[0])).toBe(44100);
-    expect(readElst(out, trackBoxes(out)[0])).toEqual([]);
+    // The encoder's first frame is priming: one edit that starts the media 1024 ticks in. The reference wrote the
+    // same edit for the same audio in the source file.
+    const sourceEdits = readElst(new Uint8Array(source), trackBoxes(new Uint8Array(source))[0]);
+    expect(sourceEdits).toEqual([[2000, AAC_PRIMING_TICKS]]);
+    expect(readElst(out, trackBoxes(out)[0])).toEqual(sourceEdits);
 
     const outReport = ffprobeReport(out, 'm4a');
     const outAudio = streamOf(outReport, 'audio');
@@ -397,7 +404,10 @@ describe('muxMp4 writes what the encoder reported', () => {
       channels: sourceAudio.channels,
     });
     expect(outReport.format.format_name).toBe('mov,mp4,m4a,3gp,3g2,mj2');
-    expectSamePackets(packetsOf(outReport, outAudio), packetsOf(sourceReport, sourceAudio), audio.shiftSeconds);
+    // The chunks were moved to start at zero, as an encoder's output does; the edit list moves them back, so the
+    // reference sees the audio exactly where the source file had it, and the file starts where the source did
+    expectSamePackets(packetsOf(outReport, outAudio), packetsOf(sourceReport, sourceAudio), audio.shiftSeconds - AAC_PRIMING_SECONDS);
+    expect(Number(outAudio.start_time)).toBeCloseTo(Number(sourceAudio.start_time), 6);
     expect(ffmpegDecodeErrors(out, 'm4a')).toBe('');
   });
 
@@ -418,7 +428,8 @@ describe('muxMp4 writes what the encoder reported', () => {
     const edits = readElst(out, audioTrak);
     expect(edits).toHaveLength(2);
     expect(edits[0]).toEqual([500, -1]);
-    expect(edits[1][1]).toBe(0);
+    // then the media from its first sample after the encoder's priming frame
+    expect(edits[1][1]).toBe(AAC_PRIMING_TICKS);
 
     // The chunks of the two tracks alternate in mdat: read every stco and merge them by file offset
     const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -436,7 +447,7 @@ describe('muxMp4 writes what the encoder reported', () => {
     const outVideo = streamOf(outReport, 'video');
     const outAudio = streamOf(outReport, 'audio');
     expectSamePackets(packetsOf(outReport, outVideo), packetsOf(sourceReport, streamOf(sourceReport, 'video')));
-    expectSamePackets(packetsOf(outReport, outAudio), packetsOf(sourceReport, streamOf(sourceReport, 'audio')), audio.shiftSeconds);
+    expectSamePackets(packetsOf(outReport, outAudio), packetsOf(sourceReport, streamOf(sourceReport, 'audio')), audio.shiftSeconds - AAC_PRIMING_SECONDS);
     expect(Number(outAudio.start_time)).toBeCloseTo(delayMicros / MICROS, 3);
     expect(ffmpegDecodeErrors(out, 'mp4')).toBe('');
   });
@@ -461,7 +472,7 @@ const AAC_44100_STEREO_ASC = Uint8Array.from([0x12, 0x10]);
 describe('muxMp4 refuses what it cannot describe truthfully', () => {
   const video = (chunks: EncodedMediaChunk[], config: EncoderOutputConfig = AVC_CONFIG) => ({ chunks, config, width: 64, height: 48 });
   const audioChunks = (): EncodedMediaChunk[] => videoChunks(3).map((chunk, index) => ({ ...chunk, timestampMicros: index * 23_220, durationMicros: 23_220, isKeyFrame: true }));
-  const audio = (overrides: Partial<{ config: EncoderOutputConfig; sampleRate: number; channels: number }> = {}) => ({
+  const audio = (overrides: Partial<{ chunks: EncodedMediaChunk[]; config: EncoderOutputConfig; sampleRate: number; channels: number }> = {}) => ({
     chunks: audioChunks(),
     config: { codec: 'mp4a.40.2', description: AAC_44100_STEREO_ASC },
     sampleRate: 44100,
@@ -524,6 +535,11 @@ describe('muxMp4 refuses what it cannot describe truthfully', () => {
       () => muxMp4({ video: video([{ data: Uint8Array.from([1]), timestampMicros: 0, isKeyFrame: true }]), majorBrand: 'isom' }),
       /carries no duration/
     );
+  });
+
+  it('refuses audio no longer than the encoder delay its edit list has to hide', () => {
+    const oneFrame = [{ data: Uint8Array.from([1, 2, 3]), timestampMicros: 0, durationMicros: 23_220, isKeyFrame: true }];
+    expectRefusal(() => muxMp4({ audio: audio({ chunks: oneFrame }), majorBrand: 'M4A ' }), /not longer than the 1024 samples of encoder delay/);
   });
 
   it('refuses audio whose AudioSpecificConfig disagrees with what was encoded', () => {
@@ -842,6 +858,17 @@ describe('muxWebm writes the codec the encoder reported', () => {
     expect(walked.tracks[1].codecDelayNs).toBe(6_500_000);
   });
 
+  it('states 48000 Hz for Opus whatever rate the encoder was fed, since Opus always decodes at 48 kHz', () => {
+    // OpusHead input_sample_rate 44100 (0xac44 little endian) is what the encoder was fed; the decoder output is 48 kHz
+    const head = opusHead(2);
+    head.set([0x44, 0xac, 0, 0], 12);
+
+    const walked = walkWebm(muxWebm({ video: vp9(), audio: { ...opus({ codec: 'opus', description: head }), sampleRate: 44100 } }));
+
+    expect(walked.tracks[1].samplingFrequency).toBe(48000);
+    expect(walked.tracks[1].codecPrivate).toEqual(head);
+  });
+
   it('refuses codecs WebM does not carry', () => {
     expectRefusal(() => muxWebm({ video: vp9({ codec: 'avc1.64001f', description: Uint8Array.from([1]) }) }), /avc1\.64001f is not a codec WebM carries/);
     expectRefusal(() => muxWebm({ video: vp9({ codec: 'hvc1.1.6.L93.B0' }) }), /not a codec WebM carries/);
@@ -887,7 +914,12 @@ describe('muxOggOpus', () => {
 
     const pages = walkOggPages(out);
     expect(pages.every((page) => page.crcValid)).toBe(true);
-    expect(pages).toHaveLength(2 + audioPackets.length);
+    // Several packets share a page: a second of audio (50 packets of 20 ms) or 255 segments, whichever comes first
+    const audioPages = pages.slice(2);
+    expect(audioPages.length).toBe(Math.ceil(audioPackets.length / 50));
+    expect(audioPages.slice(0, -1).map((page) => page.packets.length)).toEqual(audioPages.slice(0, -1).map(() => 50));
+    expect(audioPages.flatMap((page) => page.packets)).toEqual(audioPackets);
+    expect(pages.every((page) => page.segments <= 255)).toBe(true);
     expect(pages[0].flags).toBe(0x02);
     expect(pages[0].packets[0]).toEqual(opusHead);
     expect(new TextDecoder().decode(pages[1].packets[0].subarray(0, 8))).toBe('OpusTags');
@@ -910,6 +942,16 @@ describe('muxOggOpus', () => {
       muxedIndex += page.packets.length;
       if (page.packets.length > 0) muxedGranules.set(muxedIndex - 2, page.granule);
     }
+    // Independent of both files' granules: the samples the reference reports for each packet (48 kHz time base)
+    const referencePackets = packetsOf(sourceReport, streamOf(sourceReport, 'audio'));
+    let samplesSoFar = 0n;
+    let packetsSoFar = 0;
+    audioPages.forEach((page, pageIndex) => {
+      for (let i = 0; i < page.packets.length; i++) samplesSoFar += BigInt(referencePackets[packetsSoFar++].duration as number);
+      // The reference may cut the duration of its last packet to the input length; the muxer counts whole packets
+      if (pageIndex < audioPages.length - 1) expect(page.granule).toBe(samplesSoFar);
+      else expect(page.granule >= samplesSoFar && page.granule - samplesSoFar < 960n).toBe(true);
+    });
     const lastAudioIndex = audioPackets.length - 1;
     let compared = 0;
     for (const [index, granule] of referenceGranules) {
@@ -939,6 +981,75 @@ describe('muxOggOpus', () => {
     const sourceBytes = ffmpegDecodedAudioBytes(new Uint8Array(source), 'opus');
     const outBytes = ffmpegDecodedAudioBytes(out, 'opus');
     expect(outBytes >= sourceBytes && outBytes - sourceBytes < 960 * 2 * 2).toBe(true);
+  });
+
+  describe('packs packets into pages', () => {
+    const HEAD = Uint8Array.from([0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, 1, 2, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0]);
+    /** A packet of `bytes` bytes whose TOC byte (config 31, code 0) states 960 samples, or 120 for config 16. */
+    const packet = (bytes: number, config = 31): Uint8Array => {
+      const data = new Uint8Array(bytes).fill(7);
+      data[0] = config << 3;
+      return data;
+    };
+    const chunks = (count: number, bytes: number, config = 31) =>
+      Array.from({ length: count }, (_, index) => ({ data: packet(bytes, config), timestampMicros: index * 20_000, isKeyFrame: true }));
+    const SAMPLES_20_MS = 960n;
+    const SAMPLES_2_5_MS = 120n;
+
+    it('closes a page after a second of audio: 50 packets of 20 ms', () => {
+      const pages = walkOggPages(muxOggOpus(chunks(130, 3), HEAD)).slice(2);
+
+      expect(pages.map((page) => page.packets.length)).toEqual([50, 50, 30]);
+      expect(pages.map((page) => page.granule)).toEqual([50n * SAMPLES_20_MS, 100n * SAMPLES_20_MS, 130n * SAMPLES_20_MS]);
+      expect(pages.map((page) => page.flags)).toEqual([0, 0, 0x04]);
+    });
+
+    it('closes a page when the next packet would need more than 255 segments', () => {
+      // 600 bytes take 3 segments (two of 255 and one of 90), so 85 packets fill 255 segments of 10.6 ms audio
+      const pages = walkOggPages(muxOggOpus(chunks(100, 600, 16), HEAD)).slice(2);
+
+      expect(pages.map((page) => page.packets.length)).toEqual([85, 15]);
+      expect(pages.map((page) => page.segments)).toEqual([255, 45]);
+      expect(pages.map((page) => page.granule)).toEqual([85n * SAMPLES_2_5_MS, 100n * SAMPLES_2_5_MS]);
+    });
+
+    it('counts the terminating zero segment of a packet whose size is a multiple of 255', () => {
+      // 255 bytes take two segments (255 and 0): 127 packets use 254 segments and the 128th would make 256
+      const pages = walkOggPages(muxOggOpus(chunks(130, 255, 16), HEAD)).slice(2);
+
+      expect(pages.map((page) => page.packets.length)).toEqual([127, 3]);
+      expect(pages.every((page) => page.segments <= 255)).toBe(true);
+      expect(pages[0].packets.every((data) => data.byteLength === 255)).toBe(true);
+    });
+
+    it('carries every packet byte for byte, in order, with consecutive sequence numbers and one serial', () => {
+      const input = chunks(120, 40);
+      input.forEach((chunk, index) => chunk.data.fill(index + 1, 1));
+      const pages = walkOggPages(muxOggOpus(input, HEAD));
+
+      expect(pages.flatMap((page) => page.packets).slice(2)).toEqual(input.map((chunk) => chunk.data));
+      expect(pages.map((page) => page.sequence)).toEqual(pages.map((_, index) => index));
+      expect(new Set(pages.map((page) => page.serial)).size).toBe(1);
+      expect(pages.every((page) => page.crcValid)).toBe(true);
+    });
+
+    it('marks the page of the last packet as the end even when that packet also fills the page', () => {
+      const pages = walkOggPages(muxOggOpus(chunks(50, 3), HEAD)).slice(2);
+
+      expect(pages).toHaveLength(1);
+      expect(pages[0].flags).toBe(0x04);
+      expect(pages[0].granule).toBe(50n * SAMPLES_20_MS);
+    });
+
+    it('writes a packet of 65000 bytes (255 segments) on a page of its own and refuses one that cannot be laced', () => {
+      const pages = walkOggPages(muxOggOpus([...chunks(1, 3), { data: packet(65000), timestampMicros: 20_000, isKeyFrame: true }], HEAD)).slice(2);
+
+      expect(pages.map((page) => page.packets.map((data) => data.byteLength))).toEqual([[3], [65000]]);
+      expect(pages[1].segments).toBe(255);
+      const tooLarge = () => muxOggOpus([{ data: packet(255 * 255), timestampMicros: 0, isKeyFrame: true }], HEAD);
+      expect(tooLarge).toThrow(EdgeUnsupportedError);
+      expect(tooLarge).toThrow(/a 65025-byte packet does not fit one Ogg page/);
+    });
   });
 
   it('reads the frame count and size from the TOC byte of the packet', () => {

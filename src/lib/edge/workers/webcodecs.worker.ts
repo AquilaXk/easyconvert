@@ -40,8 +40,12 @@ const DEFAULT_AUDIO_BITRATE_BPS = 128_000;
 /** Distance between forced key frames in the re-encoded video, in frames. */
 const OUTPUT_KEYFRAME_INTERVAL_FRAMES = 15;
 const MICROS_PER_SECOND = 1_000_000;
+/** Encoder queue sizes at which the producers pause and resume: queued frames or blocks pin GPU or heap memory. */
+const ENCODER_QUEUE_HIGH_WATERMARK = 6;
+const ENCODER_QUEUE_LOW_WATERMARK = 2;
 
-/** Progress milestones, in percent: input read, encoding finished, container written. */
+/** Progress milestones, in percent: input handed over, input read, encoding finished, container written. */
+const PROGRESS_STARTED = 10;
 const PROGRESS_INPUT_READ = 25;
 const PROGRESS_VIDEO_ENCODED_WITH_AUDIO = 70;
 const PROGRESS_ENCODED = 85;
@@ -124,7 +128,7 @@ export class WatermarkFlowController {
   private resumeResolve: (() => void) | null = null;
   private currentQueueSize: number = 0;
 
-  constructor(highWatermark: number = 6, lowWatermark: number = 2) {
+  constructor(highWatermark: number = ENCODER_QUEUE_HIGH_WATERMARK, lowWatermark: number = ENCODER_QUEUE_LOW_WATERMARK) {
     if (lowWatermark >= highWatermark) {
       throw new Error('lowWatermark must be strictly less than highWatermark');
     }
@@ -1005,7 +1009,7 @@ export async function processWebCodecsConversion(
 ): Promise<{ buffer: ArrayBuffer; mimeType: string }> {
   const { sourceFormat, targetFormat, fileBuffer, options = {} } = request;
   const config = resolveWebCodecsConfig(targetFormat, options.codec);
-  const flowController = new WatermarkFlowController(6, 2);
+  const flowController = new WatermarkFlowController(ENCODER_QUEUE_HIGH_WATERMARK, ENCODER_QUEUE_LOW_WATERMARK);
 
   // Audio processing never invokes VideoEncoder with an audio codec.
   if (config.isVideo) {
@@ -1014,7 +1018,7 @@ export async function processWebCodecsConversion(
     assertAudioPlatformSupport();
   }
 
-  onProgress?.(10);
+  onProgress?.(PROGRESS_STARTED);
 
   // 1. Demux input container
   const demuxedTrack = demuxMedia(fileBuffer, sourceFormat);

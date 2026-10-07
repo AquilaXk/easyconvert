@@ -296,7 +296,8 @@ function audioTrackEntry(input: WebmAudioInput): Uint8Array {
     uint(ID.SEEK_PRE_ROLL, OPUS_SEEK_PRE_ROLL_NS),
     element(
       ID.AUDIO,
-      float64(ID.SAMPLING_FREQUENCY, input.sampleRate),
+      // Matroska codec mapping for Opus: the decoder always outputs 48 kHz; the rate the encoder was fed is in OpusHead
+      float64(ID.SAMPLING_FREQUENCY, OPUS_SAMPLE_RATE),
       uint(ID.CHANNELS, input.channels)
     )
   );

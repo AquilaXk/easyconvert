@@ -688,6 +688,12 @@ describe('demuxMp4 refuses what it cannot read truthfully', () => {
     expect(() => demux(bytes.subarray(0, bytes.byteLength - 40))).toThrow(EdgeUnsupportedError);
   });
 
+  it('refuses VP8 in MP4, which no decoder configuration of the edge worker could take', () => {
+    const entry = avc1Entry(320, 240);
+    entry.set(ascii('vp08'), 4);
+    expectRefusal(handMp4([videoTrack({ entry })]), /VP8 in MP4 \(vp08\) is not read/);
+  });
+
   it('throws for a fragmented file, whose samples live in moof boxes', () => {
     const trun = fullBox('trun', 0, 0, be32(0));
     expectRefusal(handMp4([videoTrack()], { trailing: [box('moof', trun)] }), /fragmented/);
@@ -1107,7 +1113,7 @@ describe('demuxWav against ffmpeg', () => {
     oracleTest(`reads ${c.codec} at ${c.rate} Hz, ${c.channels} ch: stream facts and every PCM byte`, ['ffmpeg', 'ffprobe'], () => {
       const { bytes, raw } = wavFixture(c.codec, c.rate, c.channels, c.raw);
       const stream = streamOf(ffprobeReport(bytes, 'wav'), 'audio');
-      // ffmpeg writes a LIST chunk before data, which a fixed 44-byte header would misread as audio
+      // The reference tool writes a LIST chunk before data, which a fixed 44-byte header would misread as audio
       expect(Buffer.from(bytes).indexOf('LIST')).toBeGreaterThan(-1);
       expect(stream.codec_name).toBe(c.codec);
 

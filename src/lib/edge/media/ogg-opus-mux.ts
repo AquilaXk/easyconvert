@@ -17,6 +17,8 @@ const OGG_SEGMENT_BYTES = 255;
 const OGG_FLAG_BOS = 0x02;
 const OGG_FLAG_EOS = 0x04;
 const OGG_STREAM_SERIAL = 0x4f505553; // 'OPUS'
+/** A page is closed once its packets hold this many 48 kHz samples: one second, which bounds seek and latency cost. */
+const OGG_PAGE_TARGET_SAMPLES = 48_000;
 const OPUS_HEAD_MAGIC = 'OpusHead';
 const OPUS_HEAD_MIN_BYTES = 19;
 const OPUS_HEAD_VERSION_OFFSET = 8;
@@ -51,25 +53,34 @@ function oggCrc(page: Uint8Array): number {
   return crc >>> 0;
 }
 
-/** One Ogg page holding one complete packet. */
-export function createOggPageTyped(
-  payload: Uint8Array,
+/** Lacing values of `payload`: full 255-byte segments, then the remainder, which is 0 when the size is a multiple of 255. */
+function lacingSegments(length: number): number {
+  return Math.floor(length / OGG_SEGMENT_BYTES) + 1;
+}
+
+/** One Ogg page holding the complete `packets` (RFC 3533 6); `granulePos` is that of the last packet. */
+function createOggPage(
+  packets: readonly Uint8Array[],
   headerType: number,
   granulePos: bigint,
   sequenceNum: number,
   serial: number
 ): Uint8Array {
   const segments: number[] = [];
-  let remaining = payload.length;
-  while (remaining >= OGG_SEGMENT_BYTES) {
-    segments.push(OGG_SEGMENT_BYTES);
-    remaining -= OGG_SEGMENT_BYTES;
+  let payloadLength = 0;
+  for (const packet of packets) {
+    let remaining = packet.length;
+    while (remaining >= OGG_SEGMENT_BYTES) {
+      segments.push(OGG_SEGMENT_BYTES);
+      remaining -= OGG_SEGMENT_BYTES;
+    }
+    segments.push(remaining);
+    payloadLength += packet.length;
   }
-  segments.push(remaining);
-  if (segments.length > OGG_MAX_SEGMENTS) throw refuse(`a ${payload.length}-byte packet does not fit one Ogg page`);
+  if (segments.length > OGG_MAX_SEGMENTS) throw refuse(`${packets.length} packets of ${payloadLength} bytes do not fit one Ogg page`);
 
   const headerSize = OGG_PAGE_HEADER_BYTES + segments.length;
-  const page = new Uint8Array(headerSize + payload.length);
+  const page = new Uint8Array(headerSize + payloadLength);
   const view = new DataView(page.buffer);
   page.set([0x4f, 0x67, 0x67, 0x53], 0); // 'OggS'
   page[4] = 0; // stream structure version
@@ -79,9 +90,25 @@ export function createOggPageTyped(
   view.setUint32(18, sequenceNum, true);
   page[26] = segments.length;
   page.set(segments, OGG_PAGE_HEADER_BYTES);
-  page.set(payload, headerSize);
+  let offset = headerSize;
+  for (const packet of packets) {
+    page.set(packet, offset);
+    offset += packet.length;
+  }
   view.setUint32(22, oggCrc(page), true);
   return page;
+}
+
+/** One Ogg page holding one complete packet. */
+export function createOggPageTyped(
+  payload: Uint8Array,
+  headerType: number,
+  granulePos: bigint,
+  sequenceNum: number,
+  serial: number
+): Uint8Array {
+  if (lacingSegments(payload.length) > OGG_MAX_SEGMENTS) throw refuse(`a ${payload.length}-byte packet does not fit one Ogg page`);
+  return createOggPage([payload], headerType, granulePos, sequenceNum, serial);
 }
 
 /** 48 kHz samples per frame for TOC configurations 0..31 (RFC 6716 3.1 Table 2). */
@@ -149,11 +176,28 @@ export function muxOggOpus(chunks: EncodedMediaChunk[], opusHead: Uint8Array | u
   ];
   // RFC 7845 4: the granule position is the number of 48 kHz samples the decoder has produced so far. The pre-skip
   // is part of that count (the decoder drops it from its output), so the muxer starts at zero and does not add it.
+  // A page holds whole packets and carries the granule position of the last one: it closes at one second of audio,
+  // or before the packet that would need more than 255 lacing values.
   let granule = 0n;
+  let pageSamples = 0;
+  let pageSegments = 0;
+  let pagePackets: Uint8Array[] = [];
+  const closePage = (isLast: boolean): void => {
+    pages.push(createOggPage(pagePackets, isLast ? OGG_FLAG_EOS : 0, granule, pages.length, OGG_STREAM_SERIAL));
+    pagePackets = [];
+    pageSamples = 0;
+    pageSegments = 0;
+  };
   chunks.forEach((chunk, index) => {
-    granule += BigInt(opusPacketSamples(chunk.data));
-    const flags = index === chunks.length - 1 ? OGG_FLAG_EOS : 0;
-    pages.push(createOggPageTyped(chunk.data, flags, granule, index + 2, OGG_STREAM_SERIAL));
+    const samples = opusPacketSamples(chunk.data);
+    const segments = lacingSegments(chunk.data.length);
+    if (segments > OGG_MAX_SEGMENTS) throw refuse(`a ${chunk.data.length}-byte packet does not fit one Ogg page`);
+    if (pagePackets.length > 0 && pageSegments + segments > OGG_MAX_SEGMENTS) closePage(false);
+    pagePackets.push(chunk.data);
+    pageSegments += segments;
+    pageSamples += samples;
+    granule += BigInt(samples);
+    if (pageSamples >= OGG_PAGE_TARGET_SAMPLES || index === chunks.length - 1) closePage(index === chunks.length - 1);
   });
 
   const out = new Uint8Array(pages.reduce((sum, page) => sum + page.byteLength, 0));

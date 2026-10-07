@@ -32,6 +32,8 @@ export interface OggPage {
   serial: number;
   sequence: number;
   crcValid: boolean;
+  /** Entries of the page's segment table (RFC 3533 6): at most 255. */
+  segments: number;
   /** Packets that end on this page, in order; a packet continued from an earlier page is not rejoined. */
   packets: Uint8Array[];
 }
@@ -68,6 +70,7 @@ export function walkOggPages(data: Uint8Array): OggPage[] {
       serial: view.getUint32(offset + 14, true),
       sequence: view.getUint32(offset + 18, true),
       crcValid: checksum(data.subarray(offset, end)) === view.getUint32(offset + 22, true),
+      segments: segmentCount,
       packets,
     });
     offset = end;

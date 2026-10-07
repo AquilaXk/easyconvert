@@ -89,10 +89,16 @@ describe('what the edge worker writes for each audio target', () => {
     expect(result.mimeType).toBe('audio/ogg; codecs=opus');
     expect(pages.every((page) => page.crcValid)).toBe(true);
     expect(pages[0].packets[0]).toEqual(OPUS_HEAD);
-    expect(pages).toHaveLength(2 + fakes.audioDataEncoded.length);
+    // One packet per encoded block, packed a second (50 packets) to a page
+    const audioPages = pages.slice(2);
+    const packetCount = fakes.audioDataEncoded.length;
+    expect(audioPages.flatMap((page) => page.packets)).toEqual(Array.from({ length: packetCount }, () => OPUS_PACKET));
+    expect(audioPages.map((page) => page.packets.length)).toEqual(
+      Array.from({ length: Math.ceil(packetCount / 50) }, (_, index) => Math.min(50, packetCount - index * 50))
+    );
     // 960 samples per 20 ms packet, counted from zero; the pre-skip is the decoder's to drop (RFC 7845 4)
-    expect(pages[2].granule).toBe(960n);
-    expect(pages[pages.length - 1].granule).toBe(960n * BigInt(fakes.audioDataEncoded.length));
+    expect(audioPages[0].granule).toBe(960n * BigInt(audioPages[0].packets.length));
+    expect(pages[pages.length - 1].granule).toBe(960n * BigInt(packetCount));
   });
 
   it('refuses a target whose encoder reported nothing the container needs', async () => {

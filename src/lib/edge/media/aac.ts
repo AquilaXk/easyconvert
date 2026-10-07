@@ -14,6 +14,8 @@ export const AAC_SAMPLE_RATES: readonly number[] = [
 export const AAC_LC_OBJECT_TYPE = 2;
 /** The WebCodecs codec string of AAC-LC. */
 export const AAC_LC_CODEC = 'mp4a.40.2';
+/** Samples in one AAC-LC frame (ISO/IEC 14496-3); an AAC-LC encoder's first frame is priming of this length. */
+export const AAC_LC_FRAME_SAMPLES = 1024;
 /** MPEG-4 audio object type indication in an esds DecoderConfigDescriptor. */
 export const OTI_MPEG4_AUDIO = 0x40;
 

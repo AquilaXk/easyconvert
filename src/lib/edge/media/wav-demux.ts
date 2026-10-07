@@ -1,7 +1,7 @@
 /**
  * Strict RIFF/WAVE demuxer for the edge WebCodecs worker.
  *
- * It walks the chunks (Microsoft RIFF: a four-character id, a little-endian size, the body, and one pad byte
+ * It walks the chunks (RIFF: a four-character id, a little-endian size, the body, and one pad byte
  * after an odd-sized body), so LIST, fact, JUNK and any other chunk before or after `fmt ` and `data` are
  * skipped. Supported audio is integer PCM at 16, 24 or 32 bits and IEEE float at 32 bits, plain or in a
  * WAVE_FORMAT_EXTENSIBLE header. Everything else (other tags, 8-bit, 64-bit float, RF64, RIFX) throws

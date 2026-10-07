@@ -14,7 +14,7 @@
  */
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
-import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
+import { AAC_LC_CODEC, AAC_LC_FRAME_SAMPLES, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
 import type { EncodedMediaChunk, EncoderOutputConfig, VideoColour } from './media-types';
 import { vp9LevelAdmitsPicture } from './codec-levels';
 import { isStorableColour } from './video-colour';
@@ -121,7 +121,7 @@ export interface Mp4AudioInput {
 export interface Mp4MuxInput {
   video?: Mp4VideoInput;
   audio?: Mp4AudioInput;
-  /** `M4A ` marks an audio-only iTunes-style file; `isom` is the generic MP4 brand. */
+  /** `M4A ` marks an audio-only file (the M4A brand); `isom` is the generic MP4 brand. */
   majorBrand: 'isom' | 'M4A ';
 }
 
@@ -264,7 +264,7 @@ function videoSampleEntry(input: Mp4VideoInput): SampleEntry {
 }
 
 function expandableLength(length: number): number[] {
-  // Four bytes of seven bits each, as ffmpeg and other writers emit, so the size never depends on the value
+  // Always four bytes of seven bits each (ISO/IEC 14496-1 8.3.3 allows it), so the size never depends on the value
   return [0x80 | ((length >>> 21) & 0x7f), 0x80 | ((length >>> 14) & 0x7f), 0x80 | ((length >>> 7) & 0x7f), length & 0x7f];
 }
 
@@ -342,6 +342,8 @@ interface TrackPlan {
   height: number;
   /** Microseconds the first sample starts after time zero; becomes an empty edit. */
   startOffsetMicros: number;
+  /** Media ticks at the start that are encoder delay, not programme: the edit list starts the media after them. */
+  primingTicks: number;
   mediaDuration: number;
   allKey: boolean;
 }
@@ -416,7 +418,7 @@ function videoPlan(input: Mp4VideoInput, trackId: number): { plan: TrackPlan; br
   const entry = videoSampleEntry(input);
   const timing = planSamples('video', input.chunks, VIDEO_TIMESCALE);
   return {
-    plan: { kind: 'video', trackId, timescale: VIDEO_TIMESCALE, entry: entry.box, width: input.width, height: input.height, ...timing },
+    plan: { kind: 'video', trackId, timescale: VIDEO_TIMESCALE, entry: entry.box, width: input.width, height: input.height, primingTicks: 0, ...timing },
     brand: entry.brand,
   };
 }
@@ -424,6 +426,10 @@ function videoPlan(input: Mp4VideoInput, trackId: number): { plan: TrackPlan; br
 function audioPlan(input: Mp4AudioInput, trackId: number): TrackPlan {
   const timing = planSamples('audio', input.chunks, input.sampleRate);
   const totalMicros = Math.round((timing.mediaDuration * MICROS_PER_SECOND) / input.sampleRate);
+  // An AAC-LC encoder's output opens with one frame of priming (its MDCT overlap), which a player must not present
+  if (timing.mediaDuration <= AAC_LC_FRAME_SAMPLES) {
+    throw refuse(`the audio is not longer than the ${AAC_LC_FRAME_SAMPLES} samples of encoder delay its edit list has to hide`);
+  }
   return {
     kind: 'audio',
     trackId,
@@ -431,6 +437,7 @@ function audioPlan(input: Mp4AudioInput, trackId: number): TrackPlan {
     entry: audioSampleEntry(input, totalMicros),
     width: 0,
     height: 0,
+    primingTicks: AAC_LC_FRAME_SAMPLES,
     ...timing,
   };
 }
@@ -479,20 +486,32 @@ function planChunks(plans: TrackPlan[]): ChunkPlan[] {
     .flatMap((slice) => (slices.get(slice) ?? []).sort((a, b) => a.track - b.track));
 }
 
+/** Movie-timescale length of the part of the media the edit list presents: the media after its priming. */
+function presentedMovieTicks(plan: TrackPlan): number {
+  return Math.round(((plan.mediaDuration - plan.primingTicks) * MOVIE_TIMESCALE) / plan.timescale);
+}
+
+function startDelayMovieTicks(plan: TrackPlan): number {
+  return Math.round((plan.startOffsetMicros * MOVIE_TIMESCALE) / MICROS_PER_SECOND);
+}
+
+/**
+ * The edit list of a track: an empty edit for the time before its first sample, then the media from its first
+ * presented sample, which is after any encoder priming (ISO/IEC 14496-12 8.6.6). A track that starts at zero and
+ * has no priming needs none. A start offset below the movie timescale's resolution is not representable and is
+ * not an offset.
+ */
 function elstBox(plan: TrackPlan): Uint8Array | undefined {
-  const delay = Math.round((plan.startOffsetMicros * MOVIE_TIMESCALE) / MICROS_PER_SECOND);
-  // A start offset below the movie timescale's resolution is not representable and is not an offset
-  if (delay === 0) return undefined;
-  const media = Math.round((plan.mediaDuration * MOVIE_TIMESCALE) / plan.timescale);
-  return box(
-    'edts',
-    fullBox('elst', 0, 0, u32(2), u32(delay), u32(0xffffffff), u16(1), u16(0), u32(media), u32(0), u16(1), u16(0))
-  );
+  const delay = startDelayMovieTicks(plan);
+  if (delay === 0 && plan.primingTicks === 0) return undefined;
+  const entries: Uint8Array[] = [];
+  if (delay > 0) entries.push(bytes(u32(delay), u32(0xffffffff), u16(1), u16(0)));
+  entries.push(bytes(u32(presentedMovieTicks(plan)), u32(plan.primingTicks), u16(1), u16(0)));
+  return box('edts', fullBox('elst', 0, 0, u32(entries.length), ...entries));
 }
 
 function trackDurationInMovie(plan: TrackPlan): number {
-  const media = Math.round((plan.mediaDuration * MOVIE_TIMESCALE) / plan.timescale);
-  return media + Math.round((plan.startOffsetMicros * MOVIE_TIMESCALE) / MICROS_PER_SECOND);
+  return presentedMovieTicks(plan) + startDelayMovieTicks(plan);
 }
 
 function trakBox(plan: TrackPlan, chunks: ChunkPlan[], trackIndex: number, chunkOffsets: number[]): Uint8Array {

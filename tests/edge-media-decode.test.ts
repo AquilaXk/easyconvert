@@ -180,6 +180,50 @@ describe('trimAudioDataStart', () => {
   });
 });
 
+describe('trimAudioDataStart when the cut fails', () => {
+  const FRAMES = 1024;
+
+  function startedBeforeZero() {
+    const platform = installFakeWebCodecs();
+    const AudioDataClass = (globalThis as unknown as { AudioData: new (init: object) => never }).AudioData;
+    const data = new AudioDataClass({
+      format: 'f32', sampleRate: 48000, numberOfFrames: FRAMES, numberOfChannels: 2, timestamp: -1000,
+      data: new Float32Array(FRAMES * 2),
+    });
+    return { platform, data: data as { close: { mock: { calls: unknown[] } }; copyTo: unknown }, AudioDataClass };
+  }
+
+  it('closes the original data when copying the frames out throws, and reports the failure', () => {
+    const { platform, data, AudioDataClass } = startedBeforeZero();
+    try {
+      data.copyTo = () => {
+        throw new Error('copyTo failed');
+      };
+
+      expect(() => trimAudioDataStart(data as never, AudioDataClass)).toThrow('copyTo failed');
+      expect(data.close.mock.calls).toHaveLength(1);
+    } finally {
+      platform.restore();
+    }
+  });
+
+  it('closes the original data when building the trimmed data throws, and reports the failure', () => {
+    const { platform, data } = startedBeforeZero();
+    try {
+      const Refusing = class {
+        constructor() {
+          throw new Error('AudioData refused');
+        }
+      };
+
+      expect(() => trimAudioDataStart(data as never, Refusing as never)).toThrow('AudioData refused');
+      expect(data.close.mock.calls).toHaveLength(1);
+    } finally {
+      platform.restore();
+    }
+  });
+});
+
 describe('compressed audio is decoded before it is encoded', () => {
   let platform: FakePlatform | undefined;
 
