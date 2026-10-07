@@ -24,6 +24,8 @@ import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
+import { buildWordBinary } from './helpers/word-binary-builder';
+import { buildPptBinary } from './helpers/ppt-binary-builder';
 
 /**
  * Registry/engine conformance gate.
@@ -231,6 +233,14 @@ const OBJ_TEXT = Buffer.from(
   'utf-8'
 );
 
+/** The golden presentation with the content type of its main part switched to the template type. */
+async function buildProbePotx(): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(readFileSync(path.join(FIXTURE_ROOT, 'golden', 'office', 'drawingml-shapes-presentation.pptx')));
+  const types = await zip.file('[Content_Types].xml')!.async('string');
+  zip.file('[Content_Types].xml', types.replace('presentationml.presentation.main+xml', 'presentationml.template.main+xml'));
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
   zip.file('page-001.png', PNG_SEED);
@@ -252,6 +262,13 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // Legacy Office sources are read through their own record structure, so the probes are hand-written
+  // documents from tests/helpers (a Word piece table and a PowerPoint record tree), not plain text.
+  doc: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
+  ppt: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
+  // A template is a presentation package whose main part has the template content type.
+  potx: buildProbePotx,
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
   bz: () => requireDerived('tar.bz2'),
   bz2: () => requireDerived('tar.bz2'),
@@ -368,6 +385,9 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
+  key: ['pdf', 'pptx'],
+  odd: ['jpg', 'pdf', 'png'],
+  odg: ['jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
@@ -670,12 +690,15 @@ describe('withdrawn pairs stay withdrawn', () => {
     ibooks: ['epub', 'pdf', 'txt'],
     jpeg: ['svg'],
     jpg: ['svg'],
-    key: ['doc', 'jpg', 'png', 'ppt', 'xls'],
+    key: ['doc', 'html', 'jpg', 'png', 'ppt', 'xls'],
     lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     md: ['doc', 'jpg', 'png', 'rst', 'rtf', 'tex'],
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
     numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
+    // Drawings are rendered by LibreOffice Draw through PDF and Poppler: only PDF, JPEG and PNG come out of that chain.
+    odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'webp'],
+    odg: ['bmp'],
     odp: ['eps', 'md', 'swf'],
     odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
     oxps: ['docx'],
@@ -1134,7 +1157,14 @@ describe('native-engine pairs route through the dispatcher', () => {
   const DARK_CHANNEL_MAX = 128;
   /** The CFB stream that holds the main body of a Word or PowerPoint binary file. */
   const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
-  const ODF_MIMETYPE: Readonly<Record<string, string>> = { odp: 'application/vnd.oasis.opendocument.presentation' };
+  const ODF_MIMETYPE: Readonly<Record<string, string>> = {
+    odp: 'application/vnd.oasis.opendocument.presentation',
+    odg: 'application/vnd.oasis.opendocument.graphics',
+    odd: 'application/vnd.oasis.opendocument.graphics-template',
+  };
+  /** Sources whose real input no installed tool can author (Keynote has no writer); their pairs prove only the missing-engine answer. */
+  const NO_AUTHORABLE_INPUT = new Set(['key']);
+  const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   const PDF_SOURCE = 'pdf';
   const SVG_TARGET = 'svg';
@@ -1147,8 +1177,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target));
-  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target));
+  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source));
+  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
 
@@ -1165,10 +1195,13 @@ describe('native-engine pairs route through the dispatcher', () => {
     xlsx: 'golden/office/multi-sheet-enterprise.xlsx',
     ods: 'golden/office/multi-sheet-enterprise.ods',
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
+    odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx', odd: 'odg' };
+  /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
+  const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
   /** Converts with the soffice CLI directly, outside the engines under test. */
   function sofficeConvert(input: Buffer, from: string, to: string): Buffer {
@@ -1191,7 +1224,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     let input = realInputs.get(source);
     if (!input) {
       const from = DERIVED_FROM[source];
-      input = from ? sofficeConvert(fixture(SEEDS[from]), from, source) : fixture(SEEDS[source]);
+      input = from ? sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source) : fixture(SEEDS[source]);
       realInputs.set(source, input);
     }
     return input;
@@ -1209,7 +1242,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (SEEDS[source]) return fixture(SEEDS[source]);
     if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
-    if (source === 'odp') return headerOnlyOdf(ODF_MIMETYPE.odp);
+    if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
+    if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
   }
 
@@ -1223,6 +1257,15 @@ describe('native-engine pairs route through the dispatcher', () => {
   }
 
   async function expectOfficeDocument(buffer: Buffer, target: string): Promise<void> {
+    if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+      return;
+    }
+    if (target === 'pptx') {
+      const presentation = await JSZip.loadAsync(buffer);
+      expect(presentation.file('ppt/presentation.xml')).not.toBeNull();
+      return;
+    }
     if (target === 'rtf') {
       expect(buffer.subarray(0, 6).toString('latin1')).toBe('{\\rtf1');
       expect(buffer.toString('latin1').replace(/\s+/g, ' ')).toContain(OFFICE_DOC_TEXT);
