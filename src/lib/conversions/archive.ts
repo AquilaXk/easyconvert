@@ -39,6 +39,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
+import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
 import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
@@ -3083,12 +3084,16 @@ export function create7zArchive(
       write7zVarint(nh, us);
     }
 
+    nh.push(0x00); // kEnd (UnpackInfo)
+
+    // kSubStreamsInfo: one stream per folder, with the file CRC where 7-Zip lists it
+    nh.push(0x08); // kSubStreamsInfo
     nh.push(0x0a); // kCRC
     nh.push(0x01); // allAreDefined = 1
     for (const c of crcs) {
       nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
     }
-    nh.push(0x00); // kEnd (UnpackInfo)
+    nh.push(0x00); // kEnd (SubStreamsInfo)
     nh.push(0x00); // kEnd (MainStreamsInfo)
   }
 
@@ -3136,20 +3141,6 @@ export function create7zArchive(
 // 7z Archive Extraction with Authentic Decompression
 // ============================================================================
 
-interface SevenZipCoder {
-  codecId: Buffer;
-  properties: Buffer;
-}
-
-interface SevenZipFolder {
-  coders: SevenZipCoder[];
-  unpackSize: number;
-  crc?: number;
-  numUnpackStreams?: number;
-  unpackSizes?: number[];
-  unpackCrcs?: number[];
-}
-
 function decompress7zFolder(
   packSlice: Buffer,
   coder: SevenZipCoder,
@@ -3165,7 +3156,11 @@ function decompress7zFolder(
     (id.length === 1 && id[0] === 0x04)
   ) {
     // Deflate
-    return zlib.inflateRawSync(packSlice);
+    try {
+      return zlib.inflateRawSync(packSlice, { maxOutputLength: Math.max(1, unpackSize) });
+    } catch (err) {
+      throw new CorruptStreamError(`Corrupted 7z archive: invalid Deflate stream (${err instanceof Error ? err.message : String(err)})`);
+    }
   }
   if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) {
     // LZMA
@@ -3185,419 +3180,28 @@ function decompress7zFolder(
   throw new ConversionFailedError(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
 }
 
-function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | null {
-  try {
-    let cur = 1;
-    let packPos = 0;
-    let packSize = 0;
-    let unpackSize = 0;
-    const coder: SevenZipCoder = { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
+/** Decodes one 7z folder: a single coder from the codecs this engine carries. */
+const decodeSevenZipFolder: SevenZipFolderDecoder = (folder, packed) =>
+  decompress7zFolder(packed, folder.coders[0], folder.unpackSize);
 
-    while (cur < nh.length && nh[cur] !== 0x00) {
-      const p = nh[cur++];
-      if (p === 0x06) {
-        // kPackInfo
-        const packPosVar = read7zVarint(nh, cur);
-        packPos = packPosVar.value;
-        cur = packPosVar.nextOffset;
-        const numStreams = read7zVarint(nh, cur);
-        cur = numStreams.nextOffset;
-        if (nh[cur++] === 0x09) {
-          const sz = read7zVarint(nh, cur);
-          packSize = sz.value;
-          cur = sz.nextOffset;
-        }
-        while (cur < nh.length && nh[cur] !== 0x00) cur++;
-        if (cur < nh.length && nh[cur] === 0x00) cur++;
-      } else if (p === 0x07) {
-        // kUnpackInfo
-        while (cur < nh.length && nh[cur] !== 0x00) {
-          const up = nh[cur++];
-          if (up === 0x0b) {
-            // kFolder
-            const numF = read7zVarint(nh, cur);
-            cur = numF.nextOffset;
-            const ext = nh[cur++];
-            if (ext === 0) {
-              const numC = read7zVarint(nh, cur);
-              cur = numC.nextOffset;
-              const flags = nh[cur++];
-              const idSz = flags & 0x0f;
-              coder.codecId = Buffer.from(nh.subarray(cur, cur + idSz));
-              cur += idSz;
-              if ((flags & 0x20) !== 0) {
-                const propSz = read7zVarint(nh, cur);
-                cur = propSz.nextOffset;
-                coder.properties = Buffer.from(nh.subarray(cur, cur + propSz.value));
-                cur += propSz.value;
-              }
-            }
-          } else if (up === 0x0c) {
-            const sz = read7zVarint(nh, cur);
-            unpackSize = sz.value;
-            cur = sz.nextOffset;
-          } else {
-            break;
-          }
-        }
-        if (cur < nh.length && nh[cur] === 0x00) cur++;
-      } else {
-        break;
-      }
-    }
-
-    if (packSize > 0 && unpackSize > 0) {
-      const packSlice = Buffer.from(sevenZipBuffer.subarray(32 + packPos, 32 + packPos + packSize));
-      return decompress7zFolder(packSlice, coder, unpackSize);
-    }
-  } catch {}
-  return null;
-}
-
+/**
+ * Extracts the files of a 7z archive in process. A damaged, truncated or mislabelled archive throws a
+ * CorruptStreamError; it never yields an empty or partial file list.
+ */
 export function extract7zArchive(
   sevenZipBuffer: Buffer,
   options: { password?: string; entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
+  const entries = readSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
+    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+  });
   const files: { filename: string; buffer: Buffer }[] = [];
-  if (sevenZipBuffer.length < 32) return files;
-
-  if (
-    sevenZipBuffer[0] !== 0x37 ||
-    sevenZipBuffer[1] !== 0x7a ||
-    sevenZipBuffer[2] !== 0xbc ||
-    sevenZipBuffer[3] !== 0xaf ||
-    sevenZipBuffer[4] !== 0x27 ||
-    sevenZipBuffer[5] !== 0x1c
-  ) {
-    return files;
+  for (const entry of entries) {
+    const filename = sanitizeArchivePath(entry.name);
+    if (filename) files.push({ filename, buffer: entry.data });
   }
-
-  const nextHeaderOffset = Number(sevenZipBuffer.readBigUInt64LE(12));
-  const nextHeaderSize = Number(sevenZipBuffer.readBigUInt64LE(20));
-  const nextHeaderCrc = sevenZipBuffer.readUInt32LE(28);
-
-  const startHeaderCrc = crc32(sevenZipBuffer.subarray(12, 32));
-  if (startHeaderCrc !== sevenZipBuffer.readUInt32LE(8)) {
-    return files;
-  }
-
-  const nhStart = 32 + nextHeaderOffset;
-  if (nhStart + nextHeaderSize > sevenZipBuffer.length) {
-    return files;
-  }
-
-  let nh = sevenZipBuffer.subarray(nhStart, nhStart + nextHeaderSize);
-  if (crc32(nh) !== nextHeaderCrc) {
-    return files;
-  }
-
-  // Handle kEncodedHeader (0x17)
-  if (nh.length > 0 && nh[0] === 0x17) {
-    const decodedNh = decode7zEncodedHeader(sevenZipBuffer, nh);
-    if (decodedNh) {
-      nh = decodedNh;
-    }
-  }
-
-  // Parse kHeader
-  let cur = 0;
-  if (cur < nh.length && nh[cur] === 0x01) cur++; // skip kHeader (0x01)
-
-  const folders: SevenZipFolder[] = [];
-  const packSizes: number[] = [];
-  const filenames: string[] = [];
-
-  while (cur < nh.length && nh[cur] !== 0x00) {
-    const propId = nh[cur++];
-
-    if (propId === 0x04) {
-      // kMainStreamsInfo
-      while (cur < nh.length && nh[cur] !== 0x00) {
-        const streamProp = nh[cur++];
-
-        if (streamProp === 0x06) {
-          // kPackInfo
-          const packPosVar = read7zVarint(nh, cur);
-          cur = packPosVar.nextOffset;
-          const numStreamsVar = read7zVarint(nh, cur);
-          cur = numStreamsVar.nextOffset;
-          const streamCount = numStreamsVar.value;
-
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const packSub = nh[cur++];
-            if (packSub === 0x09) {
-              // kSize
-              for (let s = 0; s < streamCount && cur < nh.length; s++) {
-                const sz = read7zVarint(nh, cur);
-                packSizes.push(sz.value);
-                cur = sz.nextOffset;
-              }
-            } else if (packSub === 0x0a) {
-              // kCRC
-              const allDefined = nh[cur++];
-              if (allDefined === 1) {
-                cur += streamCount * 4;
-              } else {
-                cur += Math.ceil(streamCount / 8) + streamCount * 4;
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else if (streamProp === 0x07) {
-          // kUnpackInfo
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const unpackSub = nh[cur++];
-            if (unpackSub === 0x0b) {
-              // kFolder
-              const numFoldersVar = read7zVarint(nh, cur);
-              cur = numFoldersVar.nextOffset;
-              const external = nh[cur++];
-              if (external === 0) {
-                for (let f = 0; f < numFoldersVar.value && cur < nh.length; f++) {
-                  const numCodersVar = read7zVarint(nh, cur);
-                  cur = numCodersVar.nextOffset;
-                  const folderCoders: SevenZipCoder[] = [];
-
-                  for (let c = 0; c < numCodersVar.value && cur < nh.length; c++) {
-                    const flags = nh[cur++];
-                    const idSize = flags & 0x0f;
-                    const codecId = Buffer.from(nh.subarray(cur, cur + idSize));
-                    cur += idSize;
-
-                    if ((flags & 0x10) !== 0) {
-                      const numIn = read7zVarint(nh, cur);
-                      cur = numIn.nextOffset;
-                      const numOut = read7zVarint(nh, cur);
-                      cur = numOut.nextOffset;
-                    }
-
-                    let properties = Buffer.alloc(0);
-                    if ((flags & 0x20) !== 0) {
-                      const propSizeVar = read7zVarint(nh, cur);
-                      cur = propSizeVar.nextOffset;
-                      properties = Buffer.from(nh.subarray(cur, cur + propSizeVar.value));
-                      cur += propSizeVar.value;
-                    }
-
-                    folderCoders.push({ codecId, properties });
-                  }
-
-                  folders.push({ coders: folderCoders, unpackSize: 0 });
-                }
-              }
-            } else if (unpackSub === 0x0c) {
-              // kCodersUnpackSize
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const sz = read7zVarint(nh, cur);
-                folders[f].unpackSize = sz.value;
-                cur = sz.nextOffset;
-              }
-            } else if (unpackSub === 0x0a) {
-              // kCRC
-              const allDefined = nh[cur++];
-              if (allDefined === 1) {
-                for (let f = 0; f < folders.length && cur + 4 <= nh.length; f++) {
-                  folders[f].crc = nh.readUInt32LE(cur);
-                  cur += 4;
-                }
-              } else {
-                const maskBytes = Math.ceil(folders.length / 8);
-                cur += maskBytes + folders.length * 4;
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else if (streamProp === 0x08) {
-          // kSubStreamsInfo
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const subProp = nh[cur++];
-            if (subProp === 0x0d) {
-              // kNumUnpackStream
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const num = read7zVarint(nh, cur);
-                folders[f].numUnpackStreams = num.value;
-                cur = num.nextOffset;
-              }
-            } else if (subProp === 0x09) {
-              // kSize
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const numStreams = folders[f].numUnpackStreams || 1;
-                folders[f].unpackSizes = [];
-                let sum = 0;
-                for (let s = 0; s < numStreams - 1 && cur < nh.length; s++) {
-                  const sz = read7zVarint(nh, cur);
-                  folders[f].unpackSizes!.push(sz.value);
-                  sum += sz.value;
-                  cur = sz.nextOffset;
-                }
-                folders[f].unpackSizes!.push(Math.max(0, folders[f].unpackSize - sum));
-              }
-            } else if (subProp === 0x0a) {
-              // kCRC
-              cur++; // skip allDefined flag
-              for (const folder of folders) {
-                const numStreams = folder.numUnpackStreams || 1;
-                folder.unpackCrcs = [];
-                for (let s = 0; s < numStreams && cur + 4 <= nh.length; s++) {
-                  folder.unpackCrcs.push(nh.readUInt32LE(cur));
-                  cur += 4;
-                }
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else {
-          break;
-        }
-      }
-      if (cur < nh.length && nh[cur] === 0x00) cur++;
-    } else if (propId === 0x05) {
-      // kFilesInfo
-      const numFilesVar = read7zVarint(nh, cur);
-      cur = numFilesVar.nextOffset;
-      const fileCount = numFilesVar.value;
-
-      while (cur < nh.length && nh[cur] !== 0x00) {
-        const fileProp = nh[cur++];
-        if (fileProp === 0x11) {
-          // kName (0x11 standard)
-          const nameLen = read7zVarint(nh, cur);
-          cur = nameLen.nextOffset;
-          const external = nh[cur++];
-          if (external === 0) {
-            const rawNames = Buffer.from(nh.subarray(cur, cur + nameLen.value - 1));
-            cur += nameLen.value - 1;
-
-            let nameOffset = 0;
-            while (nameOffset + 2 <= rawNames.length && filenames.length < fileCount) {
-              let end = nameOffset;
-              while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
-                end += 2;
-              }
-              if (end === nameOffset) break;
-              const fn = rawNames.toString('utf16le', nameOffset, end);
-              if (fn) filenames.push(fn);
-              nameOffset = end + 2;
-            }
-          }
-        } else {
-          const propLen = read7zVarint(nh, cur);
-          cur = propLen.nextOffset + propLen.value;
-        }
-      }
-      if (cur < nh.length && nh[cur] === 0x00) cur++;
-    } else {
-      break;
-    }
-  }
-
-  // Fallback: heuristic scan if structural parse yielded no filenames
-  if (filenames.length === 0) {
-    let nameIdx = -1;
-    for (let i = 0; i < nh.length; i++) {
-      if ((nh[i] === 0x11 || nh[i] === 0x05) && i + 2 < nh.length && (nh[i + 2] === 0x0e || nh[i + 2] === 0x11)) {
-        nameIdx = i + 2;
-        break;
-      }
-    }
-    if (nameIdx !== -1) {
-      let idx = nameIdx + 1;
-      while (idx < nh.length && (nh[idx] & 0x80) !== 0) idx++;
-      idx++;
-      idx++;
-      const rawNames = nh.subarray(idx);
-      let nameOffset = 0;
-      while (nameOffset + 2 <= rawNames.length) {
-        let end = nameOffset;
-        while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
-          end += 2;
-        }
-        if (end === nameOffset) break;
-        const fn = rawNames.toString('utf16le', nameOffset, end);
-        if (fn) filenames.push(fn);
-        nameOffset = end + 2;
-      }
-    }
-  }
-
-  // Decompress each folder and extract files
-  let packOffset = 32;
-  let fileIdx = 0;
-  let totalUncompressedSize = 0;
-
-  for (let f = 0; f < folders.length; f++) {
-    const folder = folders[f];
-    const packSize = f < packSizes.length ? packSizes[f] : nextHeaderOffset - (packOffset - 32);
-    if (packOffset + packSize > sevenZipBuffer.length) {
-      throw new CorruptStreamError('Corrupted 7z archive: truncated pack stream');
-    }
-
-    const packSlice = Buffer.from(sevenZipBuffer.subarray(packOffset, packOffset + packSize));
-    packOffset += packSize;
-
-    // Decompress folder stream using primary coder
-    const primaryCoder = folder.coders.length > 0 ? folder.coders[0] : { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
-    const uncompressedData = decompress7zFolder(packSlice, primaryCoder, folder.unpackSize);
-
-    if (uncompressedData.length !== folder.unpackSize) {
-      throw new CorruptStreamError(`Corrupted 7z archive: unpack size mismatch (expected ${folder.unpackSize}, got ${uncompressedData.length})`);
-    }
-
-    if (folder.crc !== undefined) {
-      const computedCrc = crc32(uncompressedData);
-      if (computedCrc !== folder.crc) {
-        throw new CorruptStreamError(`Corrupted 7z archive: CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${computedCrc.toString(16)})`);
-      }
-    }
-
-    totalUncompressedSize += uncompressedData.length;
-    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
-    }
-    if (sevenZipBuffer.length > 0 && totalUncompressedSize / sevenZipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
-    }
-
-    // Distribute uncompressed folder data to files
-    if (folder.unpackSizes && folder.unpackSizes.length > 0) {
-      let subOffset = 0;
-      for (let s = 0; s < folder.unpackSizes.length && fileIdx < filenames.length; s++) {
-        if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-          throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
-        }
-        const sz = folder.unpackSizes[s];
-        const fileBuf = Buffer.from(uncompressedData.subarray(subOffset, subOffset + sz));
-        subOffset += sz;
-
-        if (folder.unpackCrcs?.[s] !== undefined) {
-          if (crc32(fileBuf) !== folder.unpackCrcs[s]) {
-            throw new CorruptStreamError(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
-          }
-        }
-
-        const sanitizedName = sanitizeArchivePath(filenames[fileIdx++]);
-        if (sanitizedName) {
-          files.push({ filename: sanitizedName, buffer: fileBuf });
-        }
-      }
-    } else {
-      if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
-      }
-      const fname = fileIdx < filenames.length ? filenames[fileIdx++] : `file_${f}`;
-      const sanitizedName = sanitizeArchivePath(fname);
-      if (sanitizedName) {
-        files.push({ filename: sanitizedName, buffer: uncompressedData });
-      }
-    }
-  }
-
   if (options.entries && options.entries.length > 0) {
     return files.filter((f) => matchArchiveGlob(f.filename, options.entries));
   }

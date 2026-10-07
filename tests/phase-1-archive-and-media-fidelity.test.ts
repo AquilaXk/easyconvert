@@ -72,56 +72,6 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   // 1. Authentic 7z Archive Compression & Decompression
   // ==========================================================================
   describe('1. 7z Compression and Authentic Decompression', () => {
-    it('compresses files with Deflate in 7z format and achieves real size reduction', () => {
-      // Repetitive text payload that compresses well
-      const repetitiveText = Buffer.from('EasyConvert High Fidelity Archive Engine. '.repeat(200), 'utf-8');
-      const uncompressedResult = create7zArchive(
-        [{ filename: 'repetitive.txt', buffer: repetitiveText }],
-        { compressionLevel: 0 },
-        'uncompressed.7z'
-      );
-
-      const compressedResult = create7zArchive(
-        [{ filename: 'repetitive.txt', buffer: repetitiveText }],
-        { compressionLevel: 6 },
-        'compressed.7z'
-      );
-
-      expect(compressedResult.buffer.length).toBeLessThan(uncompressedResult.buffer.length);
-      expect(compressedResult.buffer.length).toBeLessThan(repetitiveText.length);
-
-      // Verify authentic decompression of both
-      const extractedCompressed = extract7zArchive(compressedResult.buffer);
-      expect(extractedCompressed).toHaveLength(1);
-      expect(extractedCompressed[0].filename).toBe('repetitive.txt');
-      expect(extractedCompressed[0].buffer.toString('utf-8')).toBe(repetitiveText.toString('utf-8'));
-
-      const extractedUncompressed = extract7zArchive(uncompressedResult.buffer);
-      expect(extractedUncompressed).toHaveLength(1);
-      expect(extractedUncompressed[0].buffer.toString('utf-8')).toBe(repetitiveText.toString('utf-8'));
-    });
-
-    it('preserves SHA-256 hashes across multi-file 7z roundtrip with mixed content types', () => {
-      const files = [
-        { filename: 'readme.md', buffer: Buffer.from('# Enterprise Archive Fidelity\nTested for zero loss.') },
-        { filename: 'config.json', buffer: Buffer.from(JSON.stringify({ port: 8080, engine: 'pure-ts', level: 9 })) },
-        { filename: 'random.bin', buffer: crypto.randomBytes(512) },
-      ];
-
-      const archive = create7zArchive(files, { compressionLevel: 6 }, 'multi.7z');
-      const extracted = extract7zArchive(archive.buffer);
-
-      expect(extracted).toHaveLength(files.length);
-      for (let i = 0; i < files.length; i++) {
-        expect(extracted[i].filename).toBe(files[i].filename);
-        expect(extracted[i].buffer.equals(files[i].buffer)).toBe(true);
-
-        const origHash = crypto.createHash('sha256').update(files[i].buffer).digest('hex');
-        const extractedHash = crypto.createHash('sha256').update(extracted[i].buffer).digest('hex');
-        expect(extractedHash).toBe(origHash);
-      }
-    });
-
     it('verifies pure TypeScript LZMA decompressor on authentic literal stream', () => {
       // Test decompressLzma directly on valid parameters: lc=3, lp=0, pb=2 (byte 0 = 93 = 0x5D), dictSize = 65536
       const props = Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
@@ -140,13 +90,21 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     });
 
     it('fails closed on corrupt 7z archive buffers with invalid signature or truncated headers', () => {
-      const corruptGarbage = Buffer.from('NOT_A_VALID_7Z_FILE_HEADER_GARBAGE');
-      const extracted = extract7zArchive(corruptGarbage);
-      expect(extracted).toHaveLength(0);
-
-      // Truncated buffer under 32 bytes
-      const truncated = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00]);
-      expect(extract7zArchive(truncated)).toHaveLength(0);
+      // Writer and reader are proven against the reference 7-Zip in archive-7z-oracle.test.ts, where damage to a
+      // reference archive is covered too. Here the buffers are not archives at all.
+      const failureOf = (buffer: Buffer): unknown => {
+        try {
+          extract7zArchive(buffer);
+        } catch (err) {
+          return err;
+        }
+        return undefined;
+      };
+      const tooShort = { name: 'CorruptStreamError', message: 'Invalid 7z archive: shorter than the 32-byte start header' };
+      const badSignature = { name: 'CorruptStreamError', message: 'Invalid 7z archive: bad signature' };
+      expect(failureOf(Buffer.from('NOT_A_VALID_7Z_FILE_HEADER_GARBAGE'))).toMatchObject(badSignature);
+      expect(failureOf(Buffer.alloc(64, 0x41))).toMatchObject(badSignature);
+      expect(failureOf(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00]))).toMatchObject(tooShort);
     });
 
     it('sanitizes Zip-Slip directory traversal attempts in 7z entries', () => {
@@ -362,18 +320,6 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       write7zVarint(arr16384, 16384);
       expect(arr16384).toEqual([0xc0, 0x00, 0x40]);
       expect(read7zVarint(Buffer.from(arr16384), 0)).toEqual({ value: 16384, nextOffset: 3 });
-    });
-
-    it('extracts 7z archives correctly when kEmptyStream (0x0e) property is present', () => {
-      // Build a 7z archive where kFilesInfo has kEmptyStream (0x0e) before kName (0x11)
-      const files = [{ filename: 'test.txt', buffer: Buffer.from('hello 7z') }];
-      const arc = create7zArchive(files, { compressionLevel: 0 }, 'test.7z');
-
-      // The archive was created with proper UTF-16 terminal null in kName
-      const extracted = extract7zArchive(arc.buffer);
-      expect(extracted).toHaveLength(1);
-      expect(extracted[0].filename).toBe('test.txt');
-      expect(extracted[0].buffer.toString()).toBe('hello 7z');
     });
 
     it('fails closed on RAR archives with uncompressed size exceeding bomb limits', () => {
