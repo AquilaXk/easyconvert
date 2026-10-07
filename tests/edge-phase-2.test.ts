@@ -123,16 +123,19 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
 
   describe('3. Codec Configuration Resolution', () => {
     it('resolves standard video and audio codecs accurately', () => {
+      // The H.264 and VP9 defaults name a family: the level (and the VP9 profile) is derived from the video
       expect(resolveWebCodecsConfig('mp4')).toEqual({
         codec: 'avc1.4d002a',
         mimeType: 'video/mp4',
         isVideo: true,
+        deriveLevel: 'h264',
       });
 
       expect(resolveWebCodecsConfig('webm')).toEqual({
         codec: 'vp09.00.10.08',
         mimeType: 'video/webm',
         isVideo: true,
+        deriveLevel: 'vp9',
       });
 
       expect(resolveWebCodecsConfig('av1')).toEqual({

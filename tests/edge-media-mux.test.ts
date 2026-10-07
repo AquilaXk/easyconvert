@@ -535,6 +535,74 @@ describe('muxMp4 refuses what it cannot describe truthfully', () => {
     expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), width: 0 }, majorBrand: 'isom' }), /frame size/);
   });
 
+  describe('the vpcC it writes states what a VP9 decoder needs to know', () => {
+    const vp9Out = (codec: string, width = 64, height = 48) =>
+      muxMp4({ video: { chunks: videoChunks(2), config: { codec }, width, height }, majorBrand: 'isom' });
+    const vpcCOf = (out: Uint8Array): number[] => {
+      const entry = walkTracks(out)[0].entries[0];
+      return [...payloadOf(out, entry.children.find((box) => box.type === 'vpcC') as IsoBox)];
+    };
+
+    it('writes profile 1 with the 4:4:4 the codec string states', () => {
+      // version 1, flags 0, profile 1, level 10, 8 bit | 4:4:4 | limited range, BT.709 x3, no init data
+      expect(vpcCOf(vp9Out('vp09.01.10.08.03.01.01.01.00'))).toEqual([1, 0, 0, 0, 1, 10, 0x86, 1, 1, 1, 0, 0]);
+    });
+
+    it('writes profile 2 at 10 bit with the 4:2:0 that profile implies', () => {
+      expect(vpcCOf(vp9Out('vp09.02.10.10'))).toEqual([1, 0, 0, 0, 2, 10, 0xa2, 1, 1, 1, 0, 0]);
+    });
+
+    it('refuses a bit depth other than 8, 10 or 12', () => {
+      expectRefusal(() => vp9Out('vp09.00.10.09'), /bit depth 9 is not 8, 10 or 12/);
+      expectRefusal(() => vp9Out('vp09.02.10.16'), /bit depth 16 is not 8, 10 or 12/);
+      expectRefusal(() => vp9Out('vp09.00.10.00'), /bit depth 0 is not 8, 10 or 12/);
+    });
+
+    it('refuses a chroma subsampling above 3, which vpcC has no value for', () => {
+      expectRefusal(() => vp9Out('vp09.01.10.08.04'), /chroma subsampling 4 is not 0 to 3/);
+      expectRefusal(() => vp9Out('vp09.01.10.08.255'), /chroma subsampling 255 is not 0 to 3/);
+    });
+
+    it('does not assume 4:2:0 for profiles 1 and 3', () => {
+      expectRefusal(() => vp9Out('vp09.01.10.08'), /states no chroma subsampling, which VP9 profile 1 does not imply/);
+      expectRefusal(() => vp9Out('vp09.03.10.10'), /states no chroma subsampling, which VP9 profile 3 does not imply/);
+    });
+
+    it('refuses a profile that does not carry the stated depth and chroma, and a profile above 3', () => {
+      expectRefusal(() => vp9Out('vp09.00.10.10'), /VP9 profile 0 does not carry 10-bit pictures with chroma subsampling 1/);
+      expectRefusal(() => vp9Out('vp09.00.10.08.02'), /VP9 profile 0 does not carry 8-bit pictures with chroma subsampling 2/);
+      expectRefusal(() => vp9Out('vp09.01.10.08.01'), /VP9 profile 1 does not carry 8-bit pictures with chroma subsampling 1/);
+      expectRefusal(() => vp9Out('vp09.02.10.08'), /VP9 profile 2 does not carry 8-bit pictures with chroma subsampling 1/);
+      expectRefusal(() => vp9Out('vp09.03.10.10.01'), /VP9 profile 3 does not carry 10-bit pictures with chroma subsampling 1/);
+      expectRefusal(() => vp9Out('vp09.04.10.08.03'), /VP9 profile 4 is not 0 to 3/);
+    });
+
+    it('refuses a level that does not admit the frame size, which the level field would misstate', () => {
+      expectRefusal(() => vp9Out('vp09.00.10.08', 1920, 1080), /VP9 level 10 does not admit a 1920x1080 picture/);
+      expectRefusal(() => vp9Out('vp09.00.31.08', 3840, 2160), /VP9 level 31 does not admit a 3840x2160 picture/);
+      expect(vpcCOf(vp9Out('vp09.00.40.08', 1920, 1080))[5]).toBe(40);
+      expect(vpcCOf(vp9Out('vp09.00.50.08', 3840, 2160))[5]).toBe(50);
+    });
+
+    it('refuses a level code that is not a VP9 level', () => {
+      expectRefusal(() => vp9Out('vp09.00.00.08'), /VP9 level 0 is not a level of the VP9 specification/);
+      expectRefusal(() => vp9Out('vp09.00.25.08'), /VP9 level 25 is not a level of the VP9 specification/);
+    });
+  });
+
+  it('writes a frame size of 65535 pixels in the sample entry and the track header, and refuses 65536', () => {
+    const wide = muxMp4({ video: { ...video(videoChunks(2)), width: 65535, height: 65535 }, majorBrand: 'isom' });
+    const tkhd = readTkhd(wide, trackBoxes(wide)[0]);
+    expect({ width: tkhd.width, height: tkhd.height }).toEqual({ width: 65535, height: 65535 });
+    const entry = walkTracks(wide)[0].entries[0];
+    const view = new DataView(wide.buffer, wide.byteOffset, wide.byteLength);
+    // VisualSampleEntry: width and height are the 16-bit fields 24 bytes into the entry payload
+    expect([view.getUint16(entry.box.payloadStart + 24), view.getUint16(entry.box.payloadStart + 26)]).toEqual([65535, 65535]);
+
+    expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), width: 65536 }, majorBrand: 'isom' }), /65536x48 .* 65535 pixels/);
+    expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), height: 70000 }, majorBrand: 'isom' }), /64x70000 .* 65535 pixels/);
+  });
+
   it('refuses a colour description that is not whole code points', () => {
     const colour = (overrides: Partial<{ primaries: number; transfer: number; matrix: number }>) => ({
       primaries: 1, transfer: 1, matrix: 1, fullRange: false, ...overrides,

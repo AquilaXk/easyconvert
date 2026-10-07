@@ -16,6 +16,7 @@
 import { EdgeUnsupportedError } from '../workers/worker-errors';
 import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
 import type { EncodedMediaChunk, EncoderOutputConfig, VideoColour } from './media-types';
+import { vp9LevelAdmitsPicture } from './codec-levels';
 import { isStorableColour } from './video-colour';
 
 /** Samples one track may hold, the same cap the demuxer applies. */
@@ -171,6 +172,20 @@ function visualEntry(type: string, width: number, height: number, configBox: Uin
 }
 
 const VP9_DEFAULT_CHROMA = 1;
+const VP9_MAX_PROFILE = 3;
+const VP9_MAX_CHROMA_SUBSAMPLING = 3;
+/** The pictures each VP9 profile carries (VP9 bitstream specification, profile definitions): bit depths and vpcC chroma codes. */
+const VP9_PROFILES: ReadonlyArray<{ bitDepths: ReadonlySet<number>; chroma: ReadonlySet<number> }> = [
+  { bitDepths: new Set([8]), chroma: new Set([0, 1]) },
+  { bitDepths: new Set([8]), chroma: new Set([2, 3]) },
+  { bitDepths: new Set([10, 12]), chroma: new Set([0, 1]) },
+  { bitDepths: new Set([10, 12]), chroma: new Set([2, 3]) },
+];
+const VP9_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 10, 12]);
+/** Profiles 0 and 2 are 4:2:0 only, so a codec string may leave the chroma out; 1 and 3 must state it. */
+const VP9_PROFILES_IMPLYING_420: ReadonlySet<number> = new Set([0, 2]);
+/** The largest width or height a VisualSampleEntry (16 bits) and tkhd (16.16 fixed point) can state. */
+export const MP4_MUX_MAX_PICTURE_DIMENSION = 0xffff;
 /** BT.709 code points, limited range: what a VP9 codec string means when it states no colour. */
 const VP9_DEFAULT_COLOUR: VideoColour = { primaries: 1, transfer: 1, matrix: 1, fullRange: false };
 const VPCC_VERSION = 1;
@@ -185,13 +200,28 @@ function describeColour(colour: VideoColour): string {
  * optional fields take the colour of the source when it has one, else the defaults the binding names (4:2:0
  * co-located, BT.709 colour, limited range). A codec string that states a colour other than the source's throws.
  */
-function vp9ConfigBox(codec: string, source?: VideoColour): Uint8Array {
+function vp9ConfigBox(codec: string, width: number, height: number, source?: VideoColour): Uint8Array {
   const fields = codec.split('.').slice(1).map((part) => Number(part));
   if (fields.length < VP9_MIN_CODEC_FIELDS || fields.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
     throw refuse(`${codec} is not a VP9 codec string with profile, level and bit depth`);
   }
   const [profile, level, bitDepth] = fields;
+  if (profile > VP9_MAX_PROFILE) throw refuse(`VP9 profile ${profile} is not 0 to ${VP9_MAX_PROFILE}`);
+  if (!VP9_BIT_DEPTHS.has(bitDepth)) throw refuse(`VP9 bit depth ${bitDepth} is not 8, 10 or 12`);
+  if (fields[3] !== undefined && fields[3] > VP9_MAX_CHROMA_SUBSAMPLING) {
+    throw refuse(`VP9 chroma subsampling ${fields[3]} is not 0 to ${VP9_MAX_CHROMA_SUBSAMPLING}`);
+  }
+  if (fields[3] === undefined && !VP9_PROFILES_IMPLYING_420.has(profile)) {
+    throw refuse(`the codec string ${codec} states no chroma subsampling, which VP9 profile ${profile} does not imply`);
+  }
   const chroma = fields[3] ?? VP9_DEFAULT_CHROMA;
+  if (!VP9_PROFILES[profile].bitDepths.has(bitDepth) || !VP9_PROFILES[profile].chroma.has(chroma)) {
+    throw refuse(`VP9 profile ${profile} does not carry ${bitDepth}-bit pictures with chroma subsampling ${chroma}`);
+  }
+  if (!vp9LevelAdmitsPicture(level, 1, 1)) throw refuse(`the VP9 level ${level} is not a level of the VP9 specification`);
+  if (!vp9LevelAdmitsPicture(level, width, height)) {
+    throw refuse(`the VP9 level ${level} does not admit a ${width}x${height} picture`);
+  }
   const fallback = source ?? VP9_DEFAULT_COLOUR;
   const stated: VideoColour = {
     primaries: fields[4] ?? fallback.primaries,
@@ -225,7 +255,7 @@ function videoSampleEntry(input: Mp4VideoInput): SampleEntry {
     return { box: visualEntry('hvc1', width, height, box('hvcC', requireDescription(config, 'hvcC')), colour) };
   }
   if (codec.startsWith('vp09.')) {
-    return { box: visualEntry('vp09', width, height, vp9ConfigBox(codec, colour), colour) };
+    return { box: visualEntry('vp09', width, height, vp9ConfigBox(codec, width, height, colour), colour) };
   }
   if (codec.startsWith('av01.')) {
     return { box: visualEntry('av01', width, height, box('av1C', requireDescription(config, 'av1C')), colour), brand: 'av01' };
@@ -377,6 +407,11 @@ function planSamples(kind: 'video' | 'audio', chunks: EncodedMediaChunk[], times
 function videoPlan(input: Mp4VideoInput, trackId: number): { plan: TrackPlan; brand?: string } {
   if (!Number.isInteger(input.width) || !Number.isInteger(input.height) || input.width <= 0 || input.height <= 0) {
     throw refuse('the video frame size is not a positive whole number');
+  }
+  if (input.width > MP4_MUX_MAX_PICTURE_DIMENSION || input.height > MP4_MUX_MAX_PICTURE_DIMENSION) {
+    throw refuse(
+      `the video frame ${input.width}x${input.height} is larger than the ${MP4_MUX_MAX_PICTURE_DIMENSION} pixels a sample entry and track header can state`
+    );
   }
   const entry = videoSampleEntry(input);
   const timing = planSamples('video', input.chunks, VIDEO_TIMESCALE);

@@ -145,6 +145,17 @@ export function extractAvcC(data: Uint8Array): Uint8Array {
   throw new Error('no avcC box in the file');
 }
 
+/** The vpcC payload (version and flags included) of the first VP9 track, read from a reference-authored file. */
+export function extractVpcC(data: Uint8Array): Uint8Array {
+  for (const track of walkTracks(data)) {
+    for (const entry of track.entries) {
+      const vpcC = entry.children.find((child) => child.type === 'vpcC');
+      if (vpcC) return payloadOf(data, vpcC).slice();
+    }
+  }
+  throw new Error('no vpcC box in the file');
+}
+
 /** Reads an MPEG-4 descriptor length: seven bits per byte while the high bit is set. */
 function descriptorLength(bytes: Uint8Array, at: number): { length: number; next: number } {
   let length = 0;

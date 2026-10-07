@@ -158,7 +158,8 @@ describe('what the edge worker writes for each video target', () => {
     expect(walked.tracks).toHaveLength(1);
     expect(walked.tracks[0]).toMatchObject({ codecId: 'V_VP9', width: 160, height: 120 });
     expect(walked.blocks).toHaveLength(platform.encodedFrames.length);
-    expect(platform.videoEncoderConfigures[0]).toMatchObject({ codec: 'vp09.00.10.08', width: 160, height: 120 });
+    // 8-bit 4:2:0 from the source's avcC, no colour stated, and level 1 for 160x120 at 25 fps
+    expect(platform.videoEncoderConfigures[0]).toMatchObject({ codec: 'vp09.00.10.08.01.02.02.02.00', width: 160, height: 120 });
   });
 
   oracleTest('mp4 carries the avcC of the encoder, not a built-in parameter set', ['ffmpeg', 'ffprobe'], async () => {
@@ -199,6 +200,18 @@ describe('what the edge worker writes for each video target', () => {
     expect(resolveWebCodecsConfig('webm', 'vp8').codec).toBe('vp8');
   });
 
+  it('derives the level only for codecs named by family or target, never for a string the request spelled out', () => {
+    expect(resolveWebCodecsConfig('mp4', 'h264').deriveLevel).toBe('h264');
+    expect(resolveWebCodecsConfig('mp4', 'hevc').deriveLevel).toBe('hevc');
+    expect(resolveWebCodecsConfig('webm', 'vp9').deriveLevel).toBe('vp9');
+    expect(resolveWebCodecsConfig('mp4').deriveLevel).toBe('h264');
+    expect(resolveWebCodecsConfig('webm').deriveLevel).toBe('vp9');
+    expect(resolveWebCodecsConfig('mp4', 'av1').deriveLevel).toBeUndefined();
+    expect(resolveWebCodecsConfig('webm', 'vp8').deriveLevel).toBeUndefined();
+    expect(resolveWebCodecsConfig('mp4', 'avc1.4d002a').deriveLevel).toBeUndefined();
+    expect(resolveWebCodecsConfig('mp4', 'avc1.640028').codec).toBe('avc1.640028');
+  });
+
   oracleTest('refuses a resize that names only one dimension instead of stretching the picture', ['ffmpeg', 'ffprobe'], async () => {
     const mp4 = source();
     platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 } });
@@ -225,7 +238,8 @@ describe('what the edge worker writes for each video target', () => {
     const error = await convert(mp4, 'mp4').catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
-    expect((error as Error).message).toBe('The encoder reported no decoder configuration for avc1.4d002a, which the container needs.');
+    // Level 1.1 (0x0b) is the lowest that holds 160x120 at 25 fps
+    expect((error as Error).message).toBe('The encoder reported no decoder configuration for avc1.4d000b, which the container needs.');
   });
 
   oracleTest('refuses an H.264 encoder output for a webm target even when the codec was not requested', ['ffmpeg', 'ffprobe'], async () => {
@@ -382,4 +396,163 @@ describe('the colour of the source picture in the edge worker', () => {
 
     expect((error as Error).message).toBe('Resizing video needs OffscreenCanvas, which this browser lacks.');
   });
+});
+
+describe('the codec level and profile the edge worker requests', () => {
+  let platform: FakePlatform | undefined;
+  afterEach(() => {
+    platform?.restore();
+    platform = undefined;
+  });
+
+  const ENCODER_AVCC = Uint8Array.from([1, 0x4d, 0x40, 0x1e, 0xff, 0xe1, 0, 5, 0x67, 0x4d, 0x40, 0x1e, 0x95, 1, 0, 3, 0x68, 0xee, 0x3c]);
+  const HEVC_RECORD = Uint8Array.from([1, 1, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x78, 0xf0, 0, 0xfc, 0xfd, 0xf8, 0xf8, 0, 0, 0, 0, 0, 0]);
+
+  /** A few frames of the given size, from the reference H.264 encoder, in the given pixel format. */
+  function source(width: number, height: number, pixFmt = 'yuv420p', extraArgs: string[] = []): Buffer {
+    requireEncoders('libx264');
+    return runFfmpeg(
+      [...testPatternInput({ width, height, fps: 25, seconds: 0.2 }), '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', pixFmt, ...extraArgs],
+      'mp4'
+    );
+  }
+
+  function convert(mp4: Buffer, targetFormat: string, options: Record<string, unknown> = {}) {
+    return processWebCodecsConversion({ jobId: 'level', sourceFormat: 'mp4', targetFormat, fileBuffer: toArrayBuffer(mp4), options });
+  }
+
+  const frame = (width: number, height: number) => ({ decodedFrameSize: { width, height } });
+  const requestedCodecs = (): unknown[] => (platform as FakePlatform).videoEncoderConfigures.map((config) => config.codec);
+
+  oracleTest('asks for the lowest H.264 level that admits the picture and frame rate', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1920, 1080);
+    platform = installFakeWebCodecs({ ...frame(1920, 1080), videoDecoderConfig: { codec: 'avc1.4d0028', description: ENCODER_AVCC } });
+
+    await convert(mp4, 'mp4', { framerate: 30 });
+
+    expect(requestedCodecs()).toEqual(['avc1.4d0028']);
+  }, 30_000);
+
+  oracleTest('asks for level 5.1 for 4K at 30 fps and 4.2 for 1080p at 60 fps', ['ffmpeg', 'ffprobe'], async () => {
+    const small = source(1920, 1080);
+    platform = installFakeWebCodecs({ ...frame(1920, 1080), videoDecoderConfig: { codec: 'avc1.4d002a', description: ENCODER_AVCC } });
+    await convert(small, 'mp4', { framerate: 60 });
+    expect(requestedCodecs()).toEqual(['avc1.4d002a']);
+    platform.restore();
+
+    const large = source(3840, 2160);
+    platform = installFakeWebCodecs({ ...frame(3840, 2160), videoDecoderConfig: { codec: 'avc1.4d0033', description: ENCODER_AVCC } });
+    await convert(large, 'mp4', { framerate: 30 });
+    expect(requestedCodecs()).toEqual(['avc1.4d0033']);
+  }, 60_000);
+
+  oracleTest('asks for the HEVC level of the picture, main tier', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1920, 1080);
+    platform = installFakeWebCodecs({ ...frame(1920, 1080), videoDecoderConfig: { codec: 'hvc1.1.6.L120.B0', description: HEVC_RECORD } });
+
+    await convert(mp4, 'mp4', { framerate: 30, codec: 'hevc' });
+
+    expect(requestedCodecs()).toEqual(['hvc1.1.6.L120.B0']);
+  }, 30_000);
+
+  oracleTest('takes the next level up when the platform lacks the lowest one that admits the picture', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1280, 720);
+    platform = installFakeWebCodecs({ ...frame(1280, 720), videoDecoderConfig: { codec: 'avc1.4d0020', description: ENCODER_AVCC } });
+    platform.unsupportedCodecs.add('avc1.4d001f');
+
+    await convert(mp4, 'mp4', { framerate: 30 });
+
+    // 720p at 30 fps needs level 3.1 (0x1f); the platform lacks it, so level 3.2 (0x20) is asked for, and only that
+    expect(requestedCodecs()).toEqual(['avc1.4d0020']);
+  }, 30_000);
+
+  oracleTest('refuses when the platform supports none of the levels that admit the picture', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1280, 720);
+    platform = installFakeWebCodecs(frame(1280, 720));
+    for (const level of [31, 32, 40, 41, 42, 50, 51, 52, 60, 61, 62]) platform.unsupportedCodecs.add(`avc1.4d00${level.toString(16)}`);
+
+    const error = await convert(mp4, 'mp4', { framerate: 30 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect((error as Error).message).toBe(
+      'VideoEncoder supports none of the 11 H.264 levels that admit 1280x720 at 30 frames per second (avc1.4d001f to avc1.4d003e) in this browser environment'
+    );
+    expect(platform.videoChunksDecoded).toHaveLength(0);
+  }, 30_000);
+
+  oracleTest('keeps the exact codec string a request names, level included', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1920, 1080);
+    platform = installFakeWebCodecs({ ...frame(1920, 1080), videoDecoderConfig: { codec: 'avc1.64001f', description: ENCODER_AVCC } });
+
+    await convert(mp4, 'mp4', { framerate: 30, codec: 'avc1.64001f' });
+
+    expect(requestedCodecs()).toEqual(['avc1.64001f']);
+  }, 30_000);
+
+  oracleTest('refuses a picture no level admits before decoding anything', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(160, 120);
+    platform = installFakeWebCodecs(frame(160, 120));
+
+    const error = await convert(mp4, 'mp4', { width: 16384, height: 16384, framerate: 30 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect((error as Error).message).toBe('No H.264 level admits 16384x16384 at 30 frames per second; the server engine converts it.');
+    expect(platform.videoChunksDecoded).toHaveLength(0);
+    expect(platform.videoEncoderConfigures).toHaveLength(0);
+  }, 30_000);
+
+  oracleTest('asks for the VP9 profile of the source: 4:4:4 is profile 1', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(160, 120, 'yuv444p', ['-profile:v', 'high444']);
+    platform = installFakeWebCodecs(frame(160, 120));
+
+    const result = await convert(mp4, 'mp4', { codec: 'vp9' });
+
+    expect(requestedCodecs()).toEqual(['vp09.01.10.08.03.02.02.02.00']);
+    // With no decoder configuration reported, the muxer's vpcC states what was requested: profile 1, level 10, 4:4:4
+    const bytes = new Uint8Array(result.buffer);
+    const entry = walkTracks(bytes)[0].entries[0];
+    expect(Array.from(payloadOf(bytes, entry.children.find((box) => box.type === 'vpcC') as IsoBox))).toEqual([1, 0, 0, 0, 1, 10, 0x86, 2, 2, 2, 0, 0]);
+  }, 30_000);
+
+  oracleTest('asks for VP9 profile 2 for a 10-bit 4:2:0 source, with the colour the source states', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(160, 120, 'yuv420p10le', ['-colorspace', 'smpte170m', '-color_primaries', 'smpte170m', '-color_trc', 'smpte170m', '-color_range', 'tv']);
+    platform = installFakeWebCodecs(frame(160, 120));
+
+    const result = await convert(mp4, 'mp4', { codec: 'vp9' });
+
+    expect(requestedCodecs()).toEqual(['vp09.02.10.10.01.06.06.06.00']);
+    const bytes = new Uint8Array(result.buffer);
+    const entry = walkTracks(bytes)[0].entries[0];
+    expect(entry.children.map((box) => box.type)).toEqual(['vpcC', 'colr']);
+    expect(Array.from(payloadOf(bytes, entry.children[0]))).toEqual([1, 0, 0, 0, 2, 10, 0xa2, 6, 6, 6, 0, 0]);
+  }, 30_000);
+
+  oracleTest('writes the VP9 level for the size of a 1080p source', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(1920, 1080);
+    platform = installFakeWebCodecs(frame(1920, 1080));
+
+    const result = await convert(mp4, 'mp4', { codec: 'vp9', framerate: 30 });
+
+    expect(requestedCodecs()).toEqual(['vp09.00.40.08.01.02.02.02.00']);
+    const bytes = new Uint8Array(result.buffer);
+    const entry = walkTracks(bytes)[0].entries[0];
+    expect(Array.from(payloadOf(bytes, entry.children[0]))[5]).toBe(40);
+  }, 30_000);
+
+  oracleTest('refuses VP9 for a source that does not state its bit depth and chroma, without assuming 8-bit 4:2:0', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = source(160, 120, 'yuv420p', ['-preset', 'medium', '-profile:v', 'high']);
+    // profile_idc 99 is not a profile the edge can interpret: the avcC of this file states nothing about its pictures
+    const avcCAt = mp4.indexOf('avcC');
+    expect(mp4[avcCAt + 'avcC'.length + 1]).toBe(100);
+    mp4[avcCAt + 'avcC'.length + 1] = 99;
+    platform = installFakeWebCodecs(frame(160, 120));
+
+    const error = await convert(mp4, 'webm').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect((error as Error).message).toBe(
+      'The source does not state the bit depth and chroma layout of its pictures, which a VP9 profile needs; the server engine converts it.'
+    );
+    expect(platform.videoChunksDecoded).toHaveLength(0);
+  }, 30_000);
 });

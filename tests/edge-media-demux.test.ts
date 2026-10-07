@@ -878,6 +878,96 @@ describe('demuxMp4 and the picture metadata the edge has to honour', () => {
   });
 });
 
+describe('demuxMp4 reports the bit depth and chroma layout the file states', () => {
+  const FACTS_TIMEOUT_MS = 60_000;
+  const clip = (codecArgs: string[], pixFmt: string, extension = 'mp4'): Buffer =>
+    runFfmpeg([...testPatternInput({ width: 128, height: 96, fps: 25, seconds: 0.2 }), ...codecArgs, '-pix_fmt', pixFmt, '-f', 'mp4'], extension);
+
+  // pix_fmt as ffprobe names it, and the facts it means (ffmpeg pixel format descriptions: planes and bit depth)
+  const PIXEL_FORMATS: Record<string, { bitDepth: number; chroma: string }> = {
+    yuv420p: { bitDepth: 8, chroma: 'yuv420' },
+    yuv422p: { bitDepth: 8, chroma: 'yuv422' },
+    yuv444p: { bitDepth: 8, chroma: 'yuv444' },
+    yuv420p10le: { bitDepth: 10, chroma: 'yuv420' },
+    yuv422p10le: { bitDepth: 10, chroma: 'yuv422' },
+    yuv420p12le: { bitDepth: 12, chroma: 'yuv420' },
+    gray: { bitDepth: 8, chroma: 'mono' },
+  };
+
+  const CASES: Array<{ codec: string; encoder: string; args: string[]; pixFmt: string }> = [
+    { codec: 'H.264', encoder: 'libx264', args: ['-c:v', 'libx264'], pixFmt: 'yuv420p' },
+    { codec: 'H.264', encoder: 'libx264', args: ['-c:v', 'libx264'], pixFmt: 'yuv420p10le' },
+    { codec: 'H.264', encoder: 'libx264', args: ['-c:v', 'libx264'], pixFmt: 'yuv422p' },
+    { codec: 'H.264', encoder: 'libx264', args: ['-c:v', 'libx264'], pixFmt: 'yuv444p' },
+    { codec: 'HEVC', encoder: 'libx265', args: ['-c:v', 'libx265', '-x265-params', 'log-level=none'], pixFmt: 'yuv420p' },
+    { codec: 'HEVC', encoder: 'libx265', args: ['-c:v', 'libx265', '-x265-params', 'log-level=none'], pixFmt: 'yuv422p10le' },
+    { codec: 'HEVC', encoder: 'libx265', args: ['-c:v', 'libx265', '-x265-params', 'log-level=none'], pixFmt: 'yuv444p' },
+    { codec: 'VP9', encoder: 'libvpx-vp9', args: ['-c:v', 'libvpx-vp9', '-deadline', 'realtime'], pixFmt: 'yuv420p' },
+    { codec: 'VP9', encoder: 'libvpx-vp9', args: ['-c:v', 'libvpx-vp9', '-deadline', 'realtime'], pixFmt: 'yuv422p' },
+    { codec: 'VP9', encoder: 'libvpx-vp9', args: ['-c:v', 'libvpx-vp9', '-deadline', 'realtime'], pixFmt: 'yuv444p' },
+    { codec: 'VP9', encoder: 'libvpx-vp9', args: ['-c:v', 'libvpx-vp9', '-deadline', 'realtime'], pixFmt: 'yuv420p10le' },
+    { codec: 'AV1', encoder: 'libaom-av1', args: ['-c:v', 'libaom-av1', '-cpu-used', '8'], pixFmt: 'yuv420p' },
+    { codec: 'AV1', encoder: 'libaom-av1', args: ['-c:v', 'libaom-av1', '-cpu-used', '8'], pixFmt: 'yuv444p' },
+    { codec: 'AV1', encoder: 'libaom-av1', args: ['-c:v', 'libaom-av1', '-cpu-used', '8'], pixFmt: 'yuv420p12le' },
+    { codec: 'AV1', encoder: 'libaom-av1', args: ['-c:v', 'libaom-av1', '-cpu-used', '8'], pixFmt: 'gray' },
+  ];
+
+  for (const { codec, encoder, args, pixFmt } of CASES) {
+    oracleTest(`${codec} ${pixFmt}: the facts of the reference's own pixel format`, ['ffmpeg', 'ffprobe'], () => {
+      requireEncoders(encoder);
+      const mp4 = clip(args, pixFmt);
+      expect(streamOf(ffprobeReport(new Uint8Array(mp4), 'mp4'), 'video').pix_fmt).toBe(pixFmt);
+
+      const track = demuxMp4(toArrayBuffer(mp4));
+
+      expect({ bitDepth: track.bitDepth, chroma: track.chroma }).toEqual(PIXEL_FORMATS[pixFmt]);
+    }, FACTS_TIMEOUT_MS);
+  }
+
+  oracleTest('H.264 baseline and main profiles are 8-bit 4:2:0 by definition, with no extension in avcC', ['ffmpeg', 'ffprobe'], () => {
+    requireEncoders('libx264');
+    for (const profile of ['baseline', 'main']) {
+      const mp4 = runFfmpeg(
+        [...testPatternInput({ width: 128, height: 96, fps: 25, seconds: 0.2 }), '-c:v', 'libx264', '-profile:v', profile, '-pix_fmt', 'yuv420p'],
+        'mp4'
+      );
+      const track = demuxMp4(toArrayBuffer(mp4));
+      expect({ bitDepth: track.bitDepth, chroma: track.chroma }).toEqual({ bitDepth: 8, chroma: 'yuv420' });
+    }
+  });
+
+  const avcWithProfile = (profile: number, tail: number[] = []): number[] => [
+    1, profile, 0x00, 0x1f, 0xff, 0xe1, ...be16(SPS.length), ...SPS, 1, ...be16(PPS.length), ...PPS, ...tail,
+  ];
+  const demuxAvc = (avcC: number[]): DemuxedTrackInfo => demux(handMp4([videoTrack({ entry: avc1Entry(320, 240, avcC) })]));
+
+  it('states nothing for a high profile whose avcC carries no extension, instead of assuming 8-bit 4:2:0', () => {
+    const track = demuxAvc(avcWithProfile(0x64));
+    expect(track.bitDepth).toBeUndefined();
+    expect(track.chroma).toBeUndefined();
+  });
+
+  it('reads the extension of a high profile avcC: chroma_format, then luma and chroma bit depth', () => {
+    // ISO/IEC 14496-15 5.3.3.1.2: 6 reserved bits + chroma_format, 5 reserved + bit_depth_luma_minus8, same for chroma
+    const track = demuxAvc(avcWithProfile(0x6e, [0xfe, 0xfa, 0xfa, 0]));
+    expect({ bitDepth: track.bitDepth, chroma: track.chroma }).toEqual({ bitDepth: 10, chroma: 'yuv422' });
+  });
+
+  it('states no bit depth when luma and chroma differ, which no single field can say', () => {
+    const track = demuxAvc(avcWithProfile(0x6e, [0xfd, 0xfa, 0xf8, 0]));
+    expect(track.bitDepth).toBeUndefined();
+    expect(track.chroma).toBe('yuv420');
+  });
+
+  it('refuses an avcC extension that is cut short, and an SPS count that runs past the record', () => {
+    expect(() => demuxAvc(avcWithProfile(0x64, [0xfd, 0xf8]))).toThrow(EdgeUnsupportedError);
+    expect(() => demuxAvc(avcWithProfile(0x64, [0xfd, 0xf8]))).toThrow(/avcC is truncated/);
+    const lying = avcWithProfile(0x64);
+    lying[5] = 0xff; // 31 sequence parameter sets
+    expect(() => demuxAvc(lying)).toThrow(/avcC is truncated/);
+  });
+});
+
 describe('demuxMp4 on files built to exhaust it', () => {
   function expectRefusal(bytes: Uint8Array, message: RegExp): void {
     expect(() => demux(bytes)).toThrow(EdgeUnsupportedError);

@@ -19,6 +19,9 @@ export interface VideoColour {
   fullRange: boolean;
 }
 
+/** Chroma layout of coded pictures. */
+export type ChromaFormat = 'mono' | 'yuv420' | 'yuv422' | 'yuv440' | 'yuv444';
+
 export interface DemuxedTrackInfo {
   type: 'video' | 'audio';
   /** WebCodecs codec string (RFC 6381 style) for compressed tracks, or a `pcm-*` label for PCM audio. */
@@ -30,6 +33,9 @@ export interface DemuxedTrackInfo {
   channels?: number;
   /** Decoder configuration record as WebCodecs takes it: avcC, hvcC or AudioSpecificConfig bytes. */
   description?: Uint8Array;
+  /** Video only, and only what the file states: bit depth and chroma layout of the coded pictures. */
+  bitDepth?: number;
+  chroma?: ChromaFormat;
   /** Video only: the file's colour description (`colr`), absent when the file states none. */
   colour?: VideoColour;
   samples: DemuxedMediaSample[];

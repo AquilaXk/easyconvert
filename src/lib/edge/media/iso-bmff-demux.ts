@@ -15,7 +15,7 @@
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
 import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
-import type { DemuxedMediaSample, DemuxedTrackInfo, VideoColour } from './media-types';
+import type { ChromaFormat, DemuxedMediaSample, DemuxedTrackInfo, VideoColour } from './media-types';
 
 /** Samples per track. 100 MB of 64 kbit/s audio is under 700,000 AAC frames. */
 export const MP4_MAX_SAMPLES_PER_TRACK = 1_000_000;
@@ -240,16 +240,62 @@ function copyBytes(view: DataView, start: number, end: number, what: string): Ui
   return new Uint8Array(view.buffer, view.byteOffset + start, end - start).slice();
 }
 
-interface VideoConfig {
+/** Bit depth and chroma layout as far as the decoder configuration record states them. */
+interface PictureFacts {
+  bitDepth?: number;
+  chroma?: ChromaFormat;
+}
+
+interface VideoConfig extends PictureFacts {
   codec: string;
   description?: Uint8Array;
 }
+
+/** chroma_format_idc of H.264 and HEVC (and the chroma_format field of their configuration records). */
+const CHROMA_BY_FORMAT_IDC: readonly ChromaFormat[] = ['mono', 'yuv420', 'yuv422', 'yuv444'];
+const CHROMA_FORMAT_MASK = 0x3;
+const BIT_DEPTH_MASK = 0x7;
+const BIT_DEPTH_BASE = 8;
+const BITS_BASELINE_DEPTH = 8;
+/** ISO/IEC 14496-15 5.3.3.1.2: profiles whose avcC ends in chroma_format, bit depths and SPS extensions. */
+const AVC_PROFILES_WITH_EXTENSION: ReadonlySet<number> = new Set([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]);
+/** Baseline, Main and Extended profiles are 8-bit 4:2:0 by definition (ITU-T H.264 A.2). */
+const AVC_PROFILES_8_BIT_420: ReadonlySet<number> = new Set([66, 77, 88]);
+const VP9_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 10, 12]);
+const HVCC_FACTS_BYTES = 19;
+const HVCC_CHROMA_OFFSET = 16;
+const HVCC_LUMA_DEPTH_OFFSET = 17;
+const HVCC_CHROMA_DEPTH_OFFSET = 18;
+const AVCC_SPS_COUNT_OFFSET = 5;
+const AVCC_SPS_COUNT_MASK = 0x1f;
 
 function avcConfig(view: DataView, entryType: string, config: Mp4Box): VideoConfig {
   const record = copyBytes(view, config.payload, config.end, 'avcC');
   if (record.byteLength < AVCC_MIN_BYTES || record[0] !== 1) throw refuse('avcC is not a version 1 record');
   // ISO/IEC 14496-15 5.3.3.1: profile_idc, profile_compatibility and level_idc follow configurationVersion
-  return { codec: `${entryType}.${hex2(record[1])}${hex2(record[2])}${hex2(record[3])}`, description: record };
+  return { codec: `${entryType}.${hex2(record[1])}${hex2(record[2])}${hex2(record[3])}`, description: record, ...avcFacts(record) };
+}
+
+/**
+ * Bit depth and chroma of an avcC. Baseline, Main and Extended profiles are 8-bit 4:2:0 by definition; the
+ * high profiles state both after the parameter sets, and an old record that lacks them states nothing.
+ */
+function avcFacts(record: Uint8Array): PictureFacts {
+  const profile = record[1];
+  if (AVC_PROFILES_8_BIT_420.has(profile)) return { bitDepth: BITS_BASELINE_DEPTH, chroma: 'yuv420' };
+  if (!AVC_PROFILES_WITH_EXTENSION.has(profile)) return {};
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  const cursor = new Cursor(view, AVCC_SPS_COUNT_OFFSET, record.byteLength, 'avcC');
+  const parameterSets = (count: number): void => {
+    for (let i = 0; i < count; i++) cursor.skip(cursor.u16());
+  };
+  parameterSets(cursor.u8() & AVCC_SPS_COUNT_MASK);
+  parameterSets(cursor.u8());
+  if (cursor.remaining === 0) return {};
+  const chroma = CHROMA_BY_FORMAT_IDC[cursor.u8() & CHROMA_FORMAT_MASK];
+  const luma = (cursor.u8() & BIT_DEPTH_MASK) + BIT_DEPTH_BASE;
+  const chromaDepth = (cursor.u8() & BIT_DEPTH_MASK) + BIT_DEPTH_BASE;
+  return { chroma, bitDepth: luma === chromaDepth ? luma : undefined };
 }
 
 function hevcConfig(view: DataView, entryType: string, config: Mp4Box): VideoConfig {
@@ -272,7 +318,18 @@ function hevcConfig(view: DataView, entryType: string, config: Mp4Box): VideoCon
     `${tier}${record[12]}`,
     ...constraints.map((byte) => byte.toString(HEX_RADIX).toUpperCase()),
   ];
-  return { codec: parts.join('.'), description: record };
+  return { codec: parts.join('.'), description: record, ...hevcFacts(record) };
+}
+
+/** Chroma format and bit depths of an hvcC (ISO/IEC 14496-15 8.3.3.1.2), when the record is long enough to state them. */
+function hevcFacts(record: Uint8Array): PictureFacts {
+  if (record.byteLength < HVCC_FACTS_BYTES) return {};
+  const luma = (record[HVCC_LUMA_DEPTH_OFFSET] & BIT_DEPTH_MASK) + BIT_DEPTH_BASE;
+  const chromaDepth = (record[HVCC_CHROMA_DEPTH_OFFSET] & BIT_DEPTH_MASK) + BIT_DEPTH_BASE;
+  return {
+    chroma: CHROMA_BY_FORMAT_IDC[record[HVCC_CHROMA_OFFSET] & CHROMA_FORMAT_MASK],
+    bitDepth: luma === chromaDepth ? luma : undefined,
+  };
 }
 
 function vp9Config(view: DataView, config: Mp4Box): VideoConfig {
@@ -287,8 +344,20 @@ function vp9Config(view: DataView, config: Mp4Box): VideoConfig {
   const transfer = cursor.u8();
   const matrix = cursor.u8();
   // VP Codec ISO Media File Format Binding 2.2: bitDepth(4) chromaSubsampling(3) videoFullRangeFlag(1)
-  const fields = [profile, level, packed >>> 4, (packed >>> 1) & 7, primaries, transfer, matrix, packed & 1];
-  return { codec: `vp09.${fields.map(dec2).join('.')}` };
+  const bitDepth = packed >>> 4;
+  const chromaSubsampling = (packed >>> 1) & 7;
+  const fields = [profile, level, bitDepth, chromaSubsampling, primaries, transfer, matrix, packed & 1];
+  return { codec: `vp09.${fields.map(dec2).join('.')}`, ...vp9Facts(bitDepth, chromaSubsampling) };
+}
+
+/** vpcC chromaSubsampling: 0 and 1 are 4:2:0 (vertical and co-located siting), 2 is 4:2:2, 3 is 4:4:4. */
+const VPCC_CHROMA: readonly ChromaFormat[] = ['yuv420', 'yuv420', 'yuv422', 'yuv444'];
+
+function vp9Facts(bitDepth: number, chromaSubsampling: number): PictureFacts {
+  return {
+    bitDepth: VP9_BIT_DEPTHS.has(bitDepth) ? bitDepth : undefined,
+    chroma: VPCC_CHROMA[chromaSubsampling],
+  };
 }
 
 function av1Config(view: DataView, config: Mp4Box): VideoConfig {
@@ -304,7 +373,21 @@ function av1Config(view: DataView, config: Mp4Box): VideoConfig {
   const twelveBit = (record[2] & 0x20) !== 0;
   let depth = 8;
   if (highBitDepth) depth = twelveBit ? 12 : 10;
-  return { codec: `av01.${profile}.${dec2(level)}${tier}.${dec2(depth)}`, description: record };
+  return { codec: `av01.${profile}.${dec2(level)}${tier}.${dec2(depth)}`, description: record, bitDepth: depth, chroma: av1Chroma(record[2]) };
+}
+
+const AV1C_MONOCHROME = 0x10;
+const AV1C_SUBSAMPLING_X = 0x08;
+const AV1C_SUBSAMPLING_Y = 0x04;
+
+/** Chroma layout from the monochrome and chroma_subsampling_x/y flags of av1C (AV1 ISO Media File Format Binding 2.3.3). */
+function av1Chroma(flags: number): ChromaFormat {
+  if ((flags & AV1C_MONOCHROME) !== 0) return 'mono';
+  const x = (flags & AV1C_SUBSAMPLING_X) !== 0;
+  const y = (flags & AV1C_SUBSAMPLING_Y) !== 0;
+  if (x && y) return 'yuv420';
+  if (x) return 'yuv422';
+  return y ? 'yuv440' : 'yuv444';
 }
 
 /**
@@ -361,7 +444,8 @@ function videoConfig(view: DataView, entryType: string, entryChildren: Mp4Box[])
     case 'vp09':
       return vp9Config(view, requiredChild(entryChildren, 'vpcC', 'vp09 sample entry'));
     case 'vp08':
-      return { codec: 'vp8' };
+      // VP8 has one picture format: 8-bit 4:2:0
+      return { codec: 'vp8', bitDepth: BITS_BASELINE_DEPTH, chroma: 'yuv420' };
     case 'av01':
       return av1Config(view, requiredChild(entryChildren, 'av1C', 'av01 sample entry'));
     default:
@@ -696,6 +780,8 @@ interface ParsedTrack {
   width?: number;
   height?: number;
   colour?: VideoColour;
+  bitDepth?: number;
+  chroma?: ChromaFormat;
   sampleRate?: number;
   channels?: number;
   samples: DemuxedMediaSample[];
@@ -812,7 +898,7 @@ function parseTrack(
         `the track header presents ${header.displayWidth}x${header.displayHeight} but the pictures are coded ${width}x${height}; the edge would drop that scaling`
       );
     }
-    track = { codec: config.codec, description: config.description, width, height, colour };
+    track = { codec: config.codec, description: config.description, width, height, colour, bitDepth: config.bitDepth, chroma: config.chroma };
   } else {
     const version = view.getUint16(entry.box.payload + AUDIO_ENTRY_VERSION_OFFSET);
     if (version !== 0) throw refuse(`audio sample entry version ${version} is not read`);
@@ -865,6 +951,8 @@ function toTrackInfo(track: ParsedTrack): DemuxedTrackInfo {
     width: track.width,
     height: track.height,
     colour: track.colour,
+    bitDepth: track.bitDepth,
+    chroma: track.chroma,
     sampleRate: track.sampleRate,
     channels: track.channels,
     description: track.description,

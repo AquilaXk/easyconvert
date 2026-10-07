@@ -417,7 +417,8 @@ describe('video is decoded and encoded frame for frame', () => {
     const mp4 = h264AacMp4();
     platform = installFakeWebCodecs({ decodedFrameSize: { width: 320, height: 240 } });
     const encoderClass = (globalThis as unknown as { VideoEncoder: { isConfigSupported: ReturnType<typeof vi.fn> } }).VideoEncoder;
-    encoderClass.isConfigSupported.mockResolvedValueOnce({ supported: false });
+    // every level the request could take is refused, not only the first
+    encoderClass.isConfigSupported.mockResolvedValue({ supported: false });
 
     const error = await processWebCodecsConversion({
       jobId: 'video-encoder-unsupported',

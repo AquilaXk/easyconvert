@@ -15,6 +15,7 @@
  */
 
 import { trimAudioDataStart } from '../media/audio-trim';
+import { levelCodecStrings, levelFamilyLabel, type LevelFamily } from '../media/codec-levels';
 import { muxAdtsStream } from '../media/aac';
 import { demuxMp4 } from '../media/iso-bmff-demux';
 import type {
@@ -177,18 +178,30 @@ export class WatermarkFlowController {
   }
 }
 
-/** Encoder codec strings of the targets that name no codec. They are encoder choices, checked against the platform. */
+/**
+ * Encoder codec strings of the targets that name no codec, and of the `videoCodec` option names. They are
+ * encoder choices, checked against the platform. The H.264, HEVC and VP9 ones stand for a codec family: the
+ * level (and for VP9 the profile and colour) is derived from the video, so the string here only names the family.
+ */
 const MP4_TARGET_VIDEO_CODEC = 'avc1.4d002a';
+const HEVC_TARGET_VIDEO_CODEC = 'hvc1.1.6.L93.B0';
 const WEBM_TARGET_VIDEO_CODEC = 'vp09.00.10.08';
 const AV1_TARGET_VIDEO_CODEC = 'av01.0.04M.08';
 
 /** The `videoCodec` option values of ConversionOptions, and the WebCodecs codec string each asks the encoder for. */
 const VIDEO_CODEC_BY_OPTION: ReadonlyMap<string, string> = new Map([
   ['h264', MP4_TARGET_VIDEO_CODEC],
-  ['hevc', 'hvc1.1.6.L93.B0'],
+  ['hevc', HEVC_TARGET_VIDEO_CODEC],
   ['vp8', 'vp8'],
   ['vp9', WEBM_TARGET_VIDEO_CODEC],
   ['av1', AV1_TARGET_VIDEO_CODEC],
+]);
+
+/** Which level family a codec string of the table above stands for; a codec the request spelled out is not here. */
+const LEVEL_FAMILY_BY_DEFAULT_CODEC: ReadonlyMap<string, LevelFamily> = new Map([
+  [MP4_TARGET_VIDEO_CODEC, 'h264'],
+  [HEVC_TARGET_VIDEO_CODEC, 'hevc'],
+  [WEBM_TARGET_VIDEO_CODEC, 'vp9'],
 ]);
 
 /** Codec string prefixes each video container carries. */
@@ -212,12 +225,15 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
   codec: string;
   mimeType: string;
   isVideo: boolean;
+  /** Set when the codec was named by family or by target, not spelled out: its level is then derived from the video. */
+  deriveLevel?: LevelFamily;
 } {
   const tgt = targetFormat.toLowerCase();
   if (userCodec) {
     const requested = userCodec.toLowerCase();
     const isAudioCodec = ['mp4a', 'aac', 'opus', 'vorbis', 'pcm'].some((c) => requested.includes(c));
-    const codec = isAudioCodec ? userCodec : (VIDEO_CODEC_BY_OPTION.get(requested) ?? userCodec);
+    const alias = isAudioCodec ? undefined : VIDEO_CODEC_BY_OPTION.get(requested);
+    const codec = isAudioCodec ? userCodec : (alias ?? userCodec);
     if (!isAudioCodec) assertContainerCarries(tgt, codec);
     let mimeType = 'video/mp4';
     if (tgt === 'webm') {
@@ -227,15 +243,16 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
     } else if (isAudioCodec) {
       mimeType = 'audio/mp4';
     }
-    return { codec, mimeType, isVideo: !isAudioCodec };
+    const family = alias === undefined ? undefined : LEVEL_FAMILY_BY_DEFAULT_CODEC.get(alias);
+    return { codec, mimeType, isVideo: !isAudioCodec, ...(family ? { deriveLevel: family } : {}) };
   }
 
   switch (tgt) {
     case 'mp4':
     case 'm4v':
-      return { codec: MP4_TARGET_VIDEO_CODEC, mimeType: 'video/mp4', isVideo: true };
+      return { codec: MP4_TARGET_VIDEO_CODEC, mimeType: 'video/mp4', isVideo: true, deriveLevel: 'h264' };
     case 'webm':
-      return { codec: WEBM_TARGET_VIDEO_CODEC, mimeType: 'video/webm', isVideo: true };
+      return { codec: WEBM_TARGET_VIDEO_CODEC, mimeType: 'video/webm', isVideo: true, deriveLevel: 'vp9' };
     case 'av1':
       return { codec: AV1_TARGET_VIDEO_CODEC, mimeType: 'video/mp4', isVideo: true };
     case 'm4a':
@@ -369,9 +386,50 @@ function videoEncoderConfig(codec: string, width: number, height: number, bitrat
 }
 
 interface VideoEncodeResult {
+  /** The codec string the platform accepted for the encoder; the muxers fall back to it for VP8 and VP9. */
+  codec: string;
   chunks: EncodedMediaChunk[];
   /** What the encoder said about its own output; absent when it reported nothing. */
   decoderConfig?: EncoderOutputConfig;
+}
+
+/**
+ * The first of `codecs` (lowest level first) whose encoder configuration the platform supports. A single
+ * candidate keeps the platform's own refusal message; several that all fail say how many were tried.
+ */
+async function selectVideoEncoderConfig(
+  VideoEncoderClass: any,
+  codecs: readonly string[],
+  family: LevelFamily | undefined,
+  size: { width: number; height: number; framerate: number },
+  bitrate: number
+): Promise<{ codec: string; config: object }> {
+  let lastRefusal: EdgeUnsupportedError | undefined;
+  for (const codec of codecs) {
+    const config = videoEncoderConfig(codec, size.width, size.height, bitrate, size.framerate);
+    try {
+      await assertConfigSupported(VideoEncoderClass, config, 'VideoEncoder', codec);
+      return { codec, config };
+    } catch (error) {
+      if (!(error instanceof EdgeUnsupportedError)) throw error;
+      lastRefusal = error;
+    }
+  }
+  if (codecs.length === 1 && lastRefusal) throw lastRefusal;
+  const label = family ? levelFamilyLabel(family) : 'codec';
+  throw new EdgeUnsupportedError(
+    `VideoEncoder supports none of the ${codecs.length} ${label} levels that admit ${size.width}x${size.height} at ${size.framerate} frames per second (${codecs[0]} to ${codecs[codecs.length - 1]}) in this browser environment`
+  );
+}
+
+/** Codec strings to request, lowest level first: the one spelled out, or those derived from the video. */
+function requestedVideoCodecs(
+  config: { codec: string; deriveLevel?: LevelFamily },
+  size: { width: number; height: number; framerate: number },
+  track: DemuxedTrackInfo
+): string[] {
+  if (!config.deriveLevel) return [config.codec];
+  return levelCodecStrings(config.deriveLevel, size, { bitDepth: track.bitDepth, chroma: track.chroma, colour: track.colour });
 }
 
 /**
@@ -381,7 +439,8 @@ interface VideoEncodeResult {
  * decoder or encoder throws EdgeUnsupportedError instead of producing substitute frames.
  */
 async function encodeVideoTrack(
-  codec: string,
+  codecs: readonly string[],
+  family: LevelFamily | undefined,
   width: number,
   height: number,
   framerate: number,
@@ -412,8 +471,9 @@ async function encodeVideoTrack(
   if (demuxedTrack.colour) decoderConfig.colorSpace = toWebCodecsColorSpace(demuxedTrack.colour);
   if (width !== demuxedTrack.width || height !== demuxedTrack.height) assertCanvasKeepsColour(demuxedTrack);
   await assertConfigSupported(VideoDecoderClass, decoderConfig, 'VideoDecoder', demuxedTrack.codec);
-  const encoderConfig = videoEncoderConfig(codec, width, height, videoBitrate, framerate);
-  await assertConfigSupported(VideoEncoderClass, encoderConfig, 'VideoEncoder', codec);
+  const { codec, config: encoderConfig } = await selectVideoEncoderConfig(
+    VideoEncoderClass, codecs, family, { width, height, framerate }, videoBitrate
+  );
 
   const chunks: EncodedMediaChunk[] = [];
   let outputConfig: EncoderOutputConfig | undefined;
@@ -526,7 +586,7 @@ async function encodeVideoTrack(
     await queue.settle();
   }
 
-  return { chunks, decoderConfig: outputConfig };
+  return { codec, chunks, decoderConfig: outputConfig };
 }
 
 /** Demuxer codec labels of PCM audio start with this; every other label names a compressed codec. */
@@ -862,8 +922,11 @@ async function convertVideoTrack(
   const audioTrack = demuxedTrack.audioTrack;
   const hasAudio = Boolean(audioTrack && audioTrack.samples.length > 0);
   const videoEnd = hasAudio ? PROGRESS_VIDEO_ENCODED_WITH_AUDIO : PROGRESS_ENCODED;
+  // Chosen before anything is decoded: a video no level admits, or a source the VP9 profile cannot be read from, throws now
+  const codecs = requestedVideoCodecs(config, { width, height, framerate }, demuxedTrack);
   const video = await encodeVideoTrack(
-    config.codec,
+    codecs,
+    config.deriveLevel,
     width,
     height,
     framerate,
@@ -890,7 +953,7 @@ async function convertVideoTrack(
   onProgress?.(PROGRESS_MUXING);
 
   const finalBytes = muxFinalMedia(targetFormat, {
-    video: { encoded: video, codec: config.codec, width, height, colour: demuxedTrack.colour },
+    video: { encoded: video, codec: video.codec, width, height, colour: demuxedTrack.colour },
     audio: audio ? { encoded: audio, codec: audioCodec } : undefined,
   });
 
