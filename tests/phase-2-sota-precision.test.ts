@@ -19,12 +19,19 @@ import {
   decodeFlac,
   decodeMp3,
   decodeAudioBuffer,
-  encodePureMp3,
   encodeFlacStream,
   BitWriter,
   BitReader,
 } from '../src/lib/conversions/index';
-import { probeStream } from './helpers/media-lossy-oracle';
+import { execFileSync } from 'node:child_process';
+import { getOracleToolPath } from './helpers/differential-oracle';
+import {
+  chirpSamples,
+  decodeAudioWithFfmpeg,
+  probeStream,
+  wavFromSamples,
+  withTempFile,
+} from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
 describe('Phase 2 SOTA Precision & Standards Testnet', () => {
@@ -637,28 +644,24 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       }
     });
 
-    it('decodes MP3 bitstream and reconstructs 16-bit PCM audio', () => {
+    oracleTest('decodes an MP3 authored by the reference encoder to as many 16-bit samples as FFmpeg decodes', ['ffmpeg'], () => {
       const sampleRate = 44100;
       const channels = 2;
-      const sampleCount = 1152 * 4;
-      const rawSamples = new Int16Array(sampleCount * channels);
-      for (let i = 0; i < rawSamples.length; i++) {
-        rawSamples[i] = Math.round(Math.sin(i * 0.1) * 16000);
-      }
-
-      const mp3Buffer = encodePureMp3(rawSamples, sampleRate, channels, '192k', 'Test Track');
-      expect(mp3Buffer.toString('ascii', 0, 3)).toBe('ID3');
+      const source = wavFromSamples(chirpSamples(sampleRate, channels, 0.5), sampleRate, channels);
+      const mp3Buffer = withTempFile(source, 'wav', (file) =>
+        execFileSync(
+          getOracleToolPath('ffmpeg') as string,
+          ['-v', 'error', '-i', file, '-c:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', '-'],
+          { maxBuffer: 64 * 1024 * 1024 }
+        )
+      );
 
       const decoded = decodeMp3(mp3Buffer);
+      const reference = decodeAudioWithFfmpeg(mp3Buffer, 'mp3', sampleRate, channels);
       expect(decoded.sampleRate).toBe(sampleRate);
       expect(decoded.channels).toBe(channels);
-      expect(decoded.samples.length).toBeGreaterThan(0);
-      // Valid non-silent audio samples produced
-      let nonZero = 0;
-      for (let i = 0; i < decoded.samples.length; i++) {
-        if (decoded.samples[i] !== 0) nonZero++;
-      }
-      expect(nonZero).toBeGreaterThan(0);
+      expect(decoded.samples.length).toBe(reference.length);
+      expect(decoded.samples.some((sample) => sample !== 0)).toBe(true);
     });
 
     oracleTest('transcodes FLAC to MP3 and MP3 to WAV through the native engine', ['ffmpeg', 'ffprobe'], async () => {

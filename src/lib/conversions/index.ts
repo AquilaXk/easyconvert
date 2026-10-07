@@ -99,7 +99,6 @@ import {
   parseIgesBSplineCurves,
 } from './cad-nurbs';
 import {
-  encodePureMp3,
   encodeFlacStream,
   BitWriter,
 } from './media-encoder';
@@ -108,7 +107,6 @@ import {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  decodeAdtsAac,
   decodeOgg,
   type DecodedAudio,
   BitReader,
@@ -273,7 +271,6 @@ export {
   extractStepBSplineCurves,
   parseIgesBSplineSurfaces,
   parseIgesBSplineCurves,
-  encodePureMp3,
   encodeFlacStream,
   BitWriter,
   parseSvgPathToBezierPoints,
@@ -301,7 +298,6 @@ export {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  decodeAdtsAac,
   decodeOgg,
   decompressLzma,
   decompressLzma2,
