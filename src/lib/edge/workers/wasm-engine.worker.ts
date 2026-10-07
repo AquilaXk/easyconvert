@@ -445,6 +445,10 @@ export class WasmEngine {
    * `memory`, `alloc(len: i32) -> i32` (the address of a region of `len` bytes) and `transform(ptr: i32, len: i32) -> i32`
    * (rewrites the region in place and returns the number of output bytes, at most `len`). The result is those bytes.
    * Every address and length is checked against the module's memory; a module that breaks the ABI is refused.
+   *
+   * Nothing here can interrupt a module that never returns: a loop inside alloc or transform is bounded only by
+   * the caller. WasmWorkerManager runs this in a dedicated worker with a timeout and terminates the worker when
+   * it fires, and it refuses to run a custom module anywhere it could not do that.
    */
   private async executeCustomWasm(inputBytes: Uint8Array, customWasmBytes?: ArrayBuffer): Promise<Uint8Array> {
     if (!customWasmBytes) {
@@ -485,12 +489,20 @@ export class WasmEngine {
     if (typeof transform !== 'function') {
       throw customModuleRefusal('the module does not export "transform(ptr, len) -> len"');
     }
-    if (memory.buffer.byteLength > WASM_MAX_MEMORY_BYTES) {
-      throw customModuleRefusal(`the module memory is larger than ${WASM_MAX_MEMORY_BYTES} bytes (memory limit)`);
-    }
+    // A module can grow its memory while it runs, so the size is checked after instantiation and again after
+    // each call that ran the module's code, before anything is read from or written to that memory.
+    const assertMemoryWithinLimit = (phase: string): void => {
+      if (memory.buffer.byteLength > WASM_MAX_MEMORY_BYTES) {
+        throw customModuleRefusal(
+          `the module memory grew to ${memory.buffer.byteLength} bytes during ${phase}, past ${WASM_MAX_MEMORY_BYTES} bytes (memory limit)`
+        );
+      }
+    };
+    assertMemoryWithinLimit('instantiation');
 
     const length = inputBytes.byteLength;
     const pointer = runModuleFunction('alloc', () => alloc(length)) >>> 0;
+    assertMemoryWithinLimit('alloc');
     if (pointer + length > memory.buffer.byteLength) {
       throw customModuleRefusal(
         `alloc returned address ${pointer} for ${length} bytes, outside the module memory of ${memory.buffer.byteLength} bytes`
@@ -499,6 +511,7 @@ export class WasmEngine {
     new Uint8Array(memory.buffer, pointer, length).set(inputBytes);
 
     const outputLength = runModuleFunction('transform', () => transform(pointer, length)) >>> 0;
+    assertMemoryWithinLimit('transform');
     if (outputLength > length) {
       throw customModuleRefusal(`transform reported ${outputLength} output bytes for a region of ${length}`);
     }

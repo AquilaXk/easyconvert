@@ -14,7 +14,7 @@ import {
   WasmEngine,
   WasmTaskResult,
 } from '../workers/wasm-engine.worker';
-import { rehydrateWorkerError } from '../workers/worker-errors';
+import { EdgeUnsupportedError, rehydrateWorkerError } from '../workers/worker-errors';
 
 export interface WasmExecutionInfo {
   mode: 'isolated-threads' | 'zero-coop-transferable';
@@ -261,7 +261,13 @@ export class WasmWorkerManager {
       }
     }
 
-    // In-process fallback (Node.js or test environment)
+    // In-process fallback (Node.js or test environment). A custom module is a caller's code that may never return,
+    // and only a worker can be terminated, so it does not run here.
+    if (task === 'custom-module') {
+      throw new EdgeUnsupportedError(
+        'A custom Wasm module runs only in a terminable worker, and this runtime has none; the server engine converts the file.'
+      );
+    }
     const result: WasmTaskResult = await this.inProcessEngine.executeTask(
       { jobId, task, buffer, options },
       onProgress

@@ -18,6 +18,8 @@ export const OP = {
   localSet: 0x21,
   i32Load8U: 0x2d,
   i32Store8: 0x3a,
+  drop: 0x1a,
+  memoryGrow: 0x40,
   i32Const: 0x41,
   i32Eqz: 0x45,
   i32GeU: 0x4f,
@@ -164,4 +166,9 @@ export function addToEachByte(delta: number, returns: number[] = [OP.localGet, 1
     OP.end,
     ...returns,
   ];
+}
+
+/** `memory.grow(pages)` as instruction bytes, leaving the previous size (or -1) on the stack. */
+export function growMemory(pages: number): number[] {
+  return [...i32Const(pages), OP.memoryGrow, 0x00];
 }

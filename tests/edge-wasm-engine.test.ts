@@ -6,13 +6,15 @@ import {
   applyRgbaQuantize,
   runWasmWorkerJob,
   WASM_MAX_INPUT_BYTES,
+  WASM_MAX_MEMORY_BYTES,
   WASM_MAX_MODULE_BYTES,
   WasmEngine,
   type WasmTaskRequest,
 } from '../src/lib/edge/workers/wasm-engine.worker';
+import { executeWasmTask } from '../src/lib/edge/pipelines/wasm-simd-pipeline';
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { mulberry32 } from './helpers/audio-signals';
-import { addToEachByte, allocAt, craftModule, OP } from './helpers/wasm-craft';
+import { addToEachByte, allocAt, craftModule, growMemory, OP } from './helpers/wasm-craft';
 
 const PAGE = 65_536;
 const IO_ADDRESS = 1_024;
@@ -152,6 +154,50 @@ describe('custom Wasm task (issue #480)', () => {
     const error = await failure(runCustom(new Uint8Array(WASM_MAX_INPUT_BYTES + 1), INCREMENT));
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
     expect(error.message).toMatch(/input is larger than/);
+  });
+
+  describe('memory growth while the module runs', () => {
+    const OVER_LIMIT_PAGES = WASM_MAX_MEMORY_BYTES / PAGE + 16;
+
+    it('refuses a module whose alloc grows its memory past the limit', async () => {
+      const growsInAlloc = craftModule({
+        alloc: [...growMemory(OVER_LIMIT_PAGES), OP.drop, ...allocAt(IO_ADDRESS)],
+        transform: addToEachByte(1),
+        memoryPages: 1,
+      });
+      const error = await failure(runCustom(INPUT, growsInAlloc));
+      expect(error).toBeInstanceOf(EdgeUnsupportedError);
+      expect(error.message).toMatch(/memory grew to \d+ bytes during alloc/);
+    });
+
+    it('refuses a module whose transform grows its memory past the limit before the output is copied', async () => {
+      const growsInTransform = craftModule({
+        alloc: allocAt(IO_ADDRESS),
+        transform: addToEachByte(1, [...growMemory(OVER_LIMIT_PAGES), OP.drop, OP.localGet, 1]),
+        memoryPages: 1,
+      });
+      const error = await failure(runCustom(INPUT, growsInTransform));
+      expect(error).toBeInstanceOf(EdgeUnsupportedError);
+      expect(error.message).toMatch(/memory grew to \d+ bytes during transform/);
+    });
+
+    it('allows growth that stays inside the limit and returns the output', async () => {
+      const growsALittle = craftModule({
+        alloc: [...growMemory(2), OP.drop, ...allocAt(IO_ADDRESS)],
+        transform: addToEachByte(1),
+        memoryPages: 1,
+      });
+      expect(Array.from(await runCustom(INPUT, growsALittle))).toEqual(Array.from(INPUT, (byte) => (byte + 1) % 256));
+    });
+  });
+
+  it('does not run a custom module on the in-process path, where nothing can stop it', async () => {
+    // No window and no Worker here, so the pipeline would run the module inside the caller's own thread.
+    const error = await failure(
+      executeWasmTask('custom-module', asArrayBuffer(INPUT), { customWasmBytes: asArrayBuffer(INCREMENT) })
+    );
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect(error.message).toMatch(/terminable worker/);
   });
 
   it('refuses an empty input', async () => {
