@@ -11,8 +11,9 @@
 
 import { ConversionOptions } from '../../types';
 import { checkWebCodecsSupport, EDGE_VIDEO_TARGET_FORMATS } from '../tier-router';
-import { processWebCodecsConversion, type WebCodecsConversionRequest } from '../workers/webcodecs.worker';
+import { processWebCodecsConversion } from '../workers/webcodecs.worker';
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../workers/worker-errors';
+import { toWorkerOptions } from './webcodecs-options';
 
 export interface WebCodecsPipelineResult {
   blob: Blob;
@@ -21,9 +22,6 @@ export interface WebCodecsPipelineResult {
   mimeType: string;
 }
 
-const KBPS = 1000;
-const MONO_CHANNELS = 1;
-const STEREO_CHANNELS = 2;
 const AUDIO_TARGET_FORMATS: ReadonlySet<string> = new Set(['m4a', 'aac', 'opus']);
 
 /**
@@ -36,29 +34,6 @@ export async function isWebCodecsEligible(targetFormat: string): Promise<boolean
   if (EDGE_VIDEO_TARGET_FORMATS.has(tgt)) return caps.video;
   if (AUDIO_TARGET_FORMATS.has(tgt)) return caps.audio;
   return caps.video || caps.audio;
-}
-
-/**
- * Channel count a request names. Only mono and stereo are channel counts the edge can state; a request that
- * names nothing leaves the count to the source audio, and any other layout is not expressible here.
- */
-function requestedAudioChannels(channels: ConversionOptions['audioChannels']): number | undefined {
-  if (channels === undefined) return undefined;
-  if (channels === 'mono') return MONO_CHANNELS;
-  if (channels === 'stereo') return STEREO_CHANNELS;
-  throw new EdgeUnsupportedError(`The edge worker cannot write ${channels} audio.`);
-}
-
-function toWorkerOptions(options: ConversionOptions): WebCodecsConversionRequest['options'] {
-  return {
-    width: options.width,
-    height: options.height,
-    videoBitrate: options.videoBitrate,
-    audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * KBPS : undefined,
-    audioSampleRate: options.audioSampleRate,
-    audioChannels: requestedAudioChannels(options.audioChannels),
-    codec: options.videoCodec,
-  };
 }
 
 function toPipelineResult(buffer: ArrayBuffer, mimeType: string): WebCodecsPipelineResult {
