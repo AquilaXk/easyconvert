@@ -166,31 +166,38 @@ describe('GET /api/health live probes', () => {
       expect(fs.readdirSync(storageDir)).toEqual([]);
     });
 
-    it.each(Object.keys(BINARY_ENV))('answers 503 when %s is missing and the admin view names exactly that component', async (tool) => {
-      vi.stubEnv(BINARY_ENV[tool], path.join(binDir, 'does-not-exist'));
-      const loaded = await loadHealth();
-      const key = await adminKey(loaded, ['*']);
+    it.each(Object.keys(BINARY_ENV))(
+      'stays healthy when %s is missing and the admin view names exactly that advisory component',
+      async (tool) => {
+        vi.stubEnv(BINARY_ENV[tool], path.join(binDir, 'does-not-exist'));
+        const loaded = await loadHealth();
+        const key = await adminKey(loaded, ['*']);
 
-      const publicRes = await loaded.GET(healthRequest());
-      expect(publicRes.status).toBe(HTTP_UNAVAILABLE);
-      expect(await publicRes.json()).toEqual({ status: 'unhealthy' });
+        const publicRes = await loaded.GET(healthRequest());
+        expect(publicRes.status).toBe(HTTP_OK);
+        expect(await publicRes.json()).toEqual({ status: 'healthy' });
 
-      loaded.probes.resetHealthCache();
-      const adminRes = await loaded.GET(healthRequest(key));
-      expect(adminRes.status).toBe(HTTP_UNAVAILABLE);
-      const body = await adminRes.json();
-      expect(body.status).toBe('unhealthy');
-      const failed = Object.entries(body.components as Record<string, { status: string; reason?: string }>)
-        .filter(([, component]) => component.status === 'failed')
-        .map(([name, component]) => [name, component.reason]);
-      expect(failed).toEqual([[tool, 'missing']]);
-    });
+        loaded.probes.resetHealthCache();
+        const adminRes = await loaded.GET(healthRequest(key));
+        expect(adminRes.status).toBe(HTTP_OK);
+        const body = await adminRes.json();
+        expect(body.status).toBe('healthy');
+        const failed = Object.entries(body.components as Record<string, { status: string; reason?: string; required: boolean }>)
+          .filter(([, component]) => component.status === 'failed')
+          .map(([name, component]) => [name, component.reason, component.required]);
+        expect(failed).toEqual([[tool, 'missing', false]]);
+        expect(body.components.storage).toMatchObject({ status: 'ok', required: true });
+        expect(body.components.redis).toMatchObject({ required: true });
+      }
+    );
 
     it('treats a file without the execute bit as a missing binary', async () => {
       vi.stubEnv('TESSERACT_PATH', installFakeBinary('tesseract-noexec', 0o644));
-      const { GET } = await loadHealth();
-      const res = await GET(healthRequest());
-      expect(res.status).toBe(HTTP_UNAVAILABLE);
+      const loaded = await loadHealth();
+      const key = await adminKey(loaded, ['*']);
+      const res = await loaded.GET(healthRequest(key));
+      expect(res.status).toBe(HTTP_OK);
+      expect((await res.json()).components.tesseract).toEqual({ status: 'failed', reason: 'missing', required: false });
     });
 
     it('answers 503 when the storage directory cannot be written', async () => {
@@ -374,7 +381,10 @@ describe('GET /api/health live probes', () => {
 
       expect((await loaded.GET(healthRequest())).status).toBe(HTTP_OK);
 
-      vi.stubEnv('SOFFICE_PATH', path.join(binDir, 'does-not-exist'));
+      // A required component starts failing: a directory below a regular file can never be created.
+      const blocker = path.join(workDir, 'cache-blocker');
+      fs.writeFileSync(blocker, 'x');
+      vi.stubEnv('EASYCONVERT_STORAGE_DIR', path.join(blocker, 'storage'));
       vi.setSystemTime(Date.now() + ttl - 1);
       expect((await loaded.GET(healthRequest())).status).toBe(HTTP_OK);
 
