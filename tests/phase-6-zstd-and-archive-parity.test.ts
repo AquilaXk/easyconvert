@@ -30,6 +30,7 @@ import {
 import { decodeZstdCompressedBlockWithDict } from '../src/lib/conversions/zstd-dict';
 import { getZstdBinaryPath } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
   const sha256 = (b: Buffer | Uint8Array): string =>
@@ -121,16 +122,18 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       expect(decompressed.toString('utf-8')).toBe(originalXml.toString('utf-8'));
     });
 
-    it('authentically encodes and decodes high sequence counts (>255 sequences) conforming to RFC 8878 Section 3.1.1.3.2', () => {
-      const dictPattern = 'AlphaBetaGammaDelta0123456789!@#$%^&*()_+{}[]:;<>,.?/~`';
-      const dict = Buffer.from(dictPattern, 'utf-8');
-
-      // Generate input with 300 distinct sequence matches against dict
+    const highSeqDictPattern = 'AlphaBetaGammaDelta0123456789!@#$%^&*()_+{}[]:;<>,.?/~`';
+    const buildHighSeqFixture = (): { dict: Buffer; input: Buffer } => {
+      // Input with 300 distinct sequence matches against the dictionary
       const parts: string[] = [];
       for (let i = 0; i < 300; i++) {
-        parts.push(dictPattern.slice(0, 16) + String(i).padStart(4, '0'));
+        parts.push(highSeqDictPattern.slice(0, 16) + String(i).padStart(4, '0'));
       }
-      const highSeqInput = Buffer.from(parts.join(''), 'utf-8');
+      return { dict: Buffer.from(highSeqDictPattern, 'utf-8'), input: Buffer.from(parts.join(''), 'utf-8') };
+    };
+
+    it('authentically encodes and decodes high sequence counts (>255 sequences) conforming to RFC 8878 Section 3.1.1.3.2', () => {
+      const { dict, input: highSeqInput } = buildHighSeqFixture();
 
       const compressed = compressWithZstdDict(highSeqInput, dict, { dictId: 0 });
       expect(compressed.length).toBeLessThan(highSeqInput.length);
@@ -139,30 +142,36 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       const tsDecompressed = decompressWithZstdDict(compressed, dict);
       expect(tsDecompressed.length).toBe(highSeqInput.length);
       expect(sha256(tsDecompressed)).toBe(sha256(highSeqInput));
+    });
 
-      // Official zstd CLI round-trip if available
+    // oracleTest skips explicitly when the zstd CLI is missing and throws under ORACLE_STRICT_MODE=1.
+    oracleTest('high sequence counts decode identically with the official zstd CLI', ['zstd'], () => {
       const zstdBin = getZstdBinaryPath();
-      if (zstdBin) {
-        const tmpDir = os.tmpdir();
-        const token = crypto.randomBytes(8).toString('hex');
-        const compFile = path.join(tmpDir, `zstd_high_seq_${token}.zst`);
-        const dictFile = path.join(tmpDir, `zstd_high_dict_${token}.dict`);
+      if (!zstdBin) {
+        throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
+      }
+      const { dict, input: highSeqInput } = buildHighSeqFixture();
+      const compressed = compressWithZstdDict(highSeqInput, dict, { dictId: 0 });
 
-        try {
-          fs.writeFileSync(compFile, compressed);
-          fs.writeFileSync(dictFile, dict);
+      const tmpDir = os.tmpdir();
+      const token = crypto.randomBytes(8).toString('hex');
+      const compFile = path.join(tmpDir, `zstd_high_seq_${token}.zst`);
+      const dictFile = path.join(tmpDir, `zstd_high_dict_${token}.dict`);
 
-          const cliOutput = execFileSync(zstdBin, ['-d', '-D', dictFile, compFile, '-c', '-q'], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            timeout: 10000,
-          });
+      try {
+        fs.writeFileSync(compFile, compressed);
+        fs.writeFileSync(dictFile, dict);
 
-          expect(cliOutput.length).toBe(highSeqInput.length);
-          expect(sha256(cliOutput)).toBe(sha256(highSeqInput));
-        } finally {
-          try { fs.unlinkSync(compFile); } catch {}
-          try { fs.unlinkSync(dictFile); } catch {}
-        }
+        const cliOutput = execFileSync(zstdBin, ['-d', '-D', dictFile, compFile, '-c', '-q'], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 10000,
+        });
+
+        expect(cliOutput.length).toBe(highSeqInput.length);
+        expect(sha256(cliOutput)).toBe(sha256(highSeqInput));
+      } finally {
+        try { fs.unlinkSync(compFile); } catch {}
+        try { fs.unlinkSync(dictFile); } catch {}
       }
     });
 

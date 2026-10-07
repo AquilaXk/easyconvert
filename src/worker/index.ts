@@ -13,6 +13,7 @@ import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../l
 import { storageProvider as ociStorage } from '../lib/storage';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
+import { probeNativeEngines } from './engines';
 import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 
@@ -180,6 +181,10 @@ const subscribedQueues = resolveSubscribedQueues();
 console.log(
   `[EasyConvert OCI Worker] Initializing daemon (Concurrency: ${config.concurrency}, Queues: ${subscribedQueues.map((q) => q.name).join(', ')})...`
 );
+
+// Resolve the native binaries and probe ffmpeg's hardware encoders once at startup. The probe is
+// synchronous and cached per binary, so jobs hit the cache instead of blocking the event loop.
+probeNativeEngines();
 
 export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   subscribedQueues,

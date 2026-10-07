@@ -36,7 +36,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
-import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
@@ -94,11 +94,8 @@ import {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 } from './zstd-dict';
 
 export {
@@ -133,11 +130,8 @@ export {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 };
 
 // Standard CRC32 table
@@ -419,6 +413,26 @@ export async function createZipArchive(
     filename: archiveName,
     size: content.length,
   };
+}
+
+/**
+ * Decodes a .zst / .tar.zst payload. An explicit `zstdDict` option selects a pre-trained dictionary;
+ * otherwise a frame that names one of the built-in dictionary ids is decoded with that dictionary.
+ */
+function decodeZstdArchivePayload(payload: Buffer, zstdDict: unknown): Buffer {
+  if (zstdDict) {
+    const dict =
+      typeof zstdDict === 'string' && (zstdDict === 'office' || zstdDict === 'data')
+        ? getPretrainedDictionary(zstdDict)
+        : DATA_DICTIONARY_JSON_CSV;
+    return decompressWithZstdDict(payload, dict);
+  }
+  if (payload.length >= ZSTD_MAGIC_LE.length + 1 && payload.subarray(0, ZSTD_MAGIC_LE.length).equals(ZSTD_MAGIC_LE)) {
+    const { dictionaryId } = parseZstdFrameHeader(payload, 0);
+    if (dictionaryId === ZSTD_DICT_MAGIC) return decompressWithZstdDict(payload, DATA_DICTIONARY_JSON_CSV);
+    if (dictionaryId === ZSTD_OFFICE_DICT_MAGIC) return decompressWithZstdDict(payload, OFFICE_XML_DICTIONARY);
+  }
+  return decompressZstd(payload);
 }
 
 /** Longest one unrar extraction may run. */
@@ -4448,7 +4462,9 @@ async function inspectArchiveEntries(
     try {
       const decompressed = decompressZstd(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.zst');
-    } catch {
+    } catch (err) {
+      // Typed decoder errors (bomb guard, malformed frame) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
       throw new ConversionFailedError('Failed to decompress zstd archive.');
     }
   }
@@ -4621,40 +4637,24 @@ export async function convertArchive(
     }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
-    if (options.zstdDict) {
-      const dict =
-        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
-          ? getPretrainedDictionary(options.zstdDict)
-          : DATA_DICTIONARY_JSON_CSV;
-      uncompressed = decompressWithZstdDict(effectiveBuffer, dict);
-    } else if (
-      effectiveBuffer.length >= 13 &&
-      effectiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE) &&
-      (effectiveBuffer[4] & 0x03) === 3
-    ) {
-      const fcsFlag = (effectiveBuffer[4] >> 6) & 0x03;
-      const fcsBytes = fcsFlag === 0 ? 1 : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
-      if (effectiveBuffer.length >= 5 + fcsBytes + 4) {
-        const dictId = effectiveBuffer.readUInt32LE(5 + fcsBytes);
-        if (dictId === ZSTD_DICT_MAGIC) {
-          uncompressed = decompressWithZstdDict(effectiveBuffer, DATA_DICTIONARY_JSON_CSV);
-        } else {
-          uncompressed = decompressZstd(effectiveBuffer);
-        }
-      } else {
-        uncompressed = decompressZstd(effectiveBuffer);
-      }
-    } else {
-      uncompressed = decompressZstd(effectiveBuffer);
+    try {
+      uncompressed = decodeZstdArchivePayload(effectiveBuffer, options.zstdDict);
+    } catch (err) {
+      // Typed decoder errors (bomb guards, malformed frames) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
+      throw new ConversionFailedError(
+        `Failed to decompress zstd archive: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
       throw new ConversionFailedError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+    // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
+    if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
       throw new ConversionFailedError(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
