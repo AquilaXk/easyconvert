@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { extractStructuredTextFromPdf, recursiveXyCut, type PdfTextBlock } from '../src/lib/conversions/pdf-utils';
 import { PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
+import {
+  expectLinearOnInputs,
+  expectNoHang,
+  expectSizeIndependentOnInputs,
+  SCALING_FACTOR,
+  SCALING_TEST_TIMEOUT_MS,
+  settle,
+} from './helpers/timing';
 
 /**
  * Text extraction costs time and memory proportional to the content stream, whatever the operators
@@ -9,17 +17,18 @@ import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from '.
  * ISO 32000-1 section 9.4 (text objects) and 9.3 (Tf), with every expected value written by hand.
  */
 
-// A quadratic regression at these input sizes runs for tens of seconds or more; the budget leaves headroom for a
-// loaded CI runner executing the suite in parallel, where linear runs measured up to 3 s.
-const FAST_MS = 4000;
-const BOUND_TEST_TIMEOUT_MS = 30_000;
+// Bounds are checked by comparing two inputs in the same process (tests/helpers/timing.ts), so the verdict does
+// not depend on how fast the runner is: a linear reader takes about 4x as long for a 4x longer stream, a
+// quadratic one 16x; work that must stop at a cap costs the same however far past the cap the input goes.
+const BOUND_TEST_TIMEOUT_MS = 60_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const OPERAND_RUN = 80 * 1000;
 const BLOCKS_OVER_CAP = 100 * 1000 + 1;
 const FORM_BLOCKS = 1000;
 const FORM_INVOCATIONS = 120;
 const XY_CUT_BLOCKS = 50 * 1000;
-const XY_CUT_MS = 8000;
+/** n log n with allocation: measured 4x to 6.5x for 4x the rows; a quadratic cut takes 16x. */
+const XY_CUT_MAX_RATIO = 10;
 
 vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
@@ -37,24 +46,27 @@ function pageWith(content: string, extra: CraftObject[] = [], resources?: string
 }
 
 describe('operator scanning is linear in the content stream', () => {
-  it('reads a long digit run without backtracking (Tm, Td)', () => {
-    const { value, ms } = timed(() => extractStructuredTextFromPdf(pageWith(`BT ${'1'.repeat(OPERAND_RUN)} ET`)));
-    expect(value?.blocks).toEqual([]);
-    expect(ms).toBeLessThan(FAST_MS);
+  async function expectLinearExtraction(label: string, content: (run: number) => string) {
+    const { largeResult } = await expectLinearOnInputs(label, (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
+      small: pageWith(content(OPERAND_RUN)),
+      large: pageWith(content(OPERAND_RUN * SCALING_FACTOR)),
+    });
+    return largeResult;
+  }
+
+  it('reads a long digit run without backtracking (Tm, Td)', async () => {
+    const value = await expectLinearExtraction('digit run', (run) => `BT ${'1'.repeat(run)} ET`);
+    expect(value.blocks).toEqual([]);
   });
 
-  it('reads a long run of opening brackets without backtracking (TJ)', () => {
-    const { value, ms } = timed(() => extractStructuredTextFromPdf(pageWith(`BT ${'['.repeat(OPERAND_RUN)} ET`)));
-    expect(value?.blocks).toEqual([]);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('reads a long run of opening brackets without backtracking (TJ)', async () => {
+    const value = await expectLinearExtraction('bracket run', (run) => `BT ${'['.repeat(run)} ET`);
+    expect(value.blocks).toEqual([]);
   });
 
-  it('reads a long run of unterminated strings and hex strings', () => {
-    const { value, ms } = timed(() =>
-      extractStructuredTextFromPdf(pageWith(`BT ${'('.repeat(OPERAND_RUN)} Tj ${'<'.repeat(OPERAND_RUN)} Tj ET`))
-    );
-    expect(value?.blocks).toEqual([]);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('reads a long run of unterminated strings and hex strings', async () => {
+    const value = await expectLinearExtraction('string runs', (run) => `BT ${'('.repeat(run)} Tj ${'<'.repeat(run)} Tj ET`);
+    expect(value.blocks).toEqual([]);
   });
 });
 
@@ -92,26 +104,35 @@ describe('text operators place and decode text as the specification defines', ()
 });
 
 describe('a document yields a bounded number of text blocks', () => {
-  it('refuses a content stream with more blocks than the cap', () => {
-    const pdf = pageWith('BT (a) Tj ET\n'.repeat(BLOCKS_OVER_CAP));
-    const { err, ms } = timed(() => extractStructuredTextFromPdf(pdf));
-    expect(err).toBeInstanceOf(PayloadLimitError);
-    expect((err as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
-    expect((err as Error).message).toMatch(/text blocks/);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('refuses a content stream with more blocks than the cap', async () => {
+    const { largeResult } = await expectLinearOnInputs('blocks past the cap', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
+      small: pageWith('BT (a) Tj ET\n'.repeat(Math.floor(BLOCKS_OVER_CAP / SCALING_FACTOR))),
+      large: pageWith('BT (a) Tj ET\n'.repeat(BLOCKS_OVER_CAP)),
+    });
+    if (largeResult.ok) throw new Error('a stream with more blocks than the cap was accepted');
+    expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
+    expect((largeResult.error as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+    expect((largeResult.error as Error).message).toMatch(/text blocks/);
   });
 
-  it('counts the blocks of a form XObject once per drawing, across the document', () => {
-    const form: CraftObject = {
-      id: 6,
-      dict: '/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >>',
-      stream: Buffer.from('BT (x) Tj ET\n'.repeat(FORM_BLOCKS), 'latin1'),
+  it('counts the blocks of a form XObject once per drawing, across the document', async () => {
+    // 120 drawings of a 1000-block form pass the 100,000 cap; 480 drawings are refused after the same work,
+    // because the count stops the extraction, not after drawing all of them.
+    const drawings = (invocations: number): Buffer => {
+      const form: CraftObject = {
+        id: 6,
+        dict: '/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >>',
+        stream: Buffer.from('BT (x) Tj ET\n'.repeat(FORM_BLOCKS), 'latin1'),
+      };
+      return pageWith('/Fm0 Do\n'.repeat(invocations), [form], '<< /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >>');
     };
-    const pdf = pageWith('/Fm0 Do\n'.repeat(FORM_INVOCATIONS), [form], '<< /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >>');
-    const { err, ms } = timed(() => extractStructuredTextFromPdf(pdf));
-    expect(err).toBeInstanceOf(PayloadLimitError);
-    expect((err as Error).message).toMatch(/text blocks/);
-    expect(ms).toBeLessThan(FAST_MS * 3);
+    const { largeResult } = await expectSizeIndependentOnInputs('form drawings', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
+      modest: drawings(FORM_INVOCATIONS),
+      huge: drawings(FORM_INVOCATIONS * SCALING_FACTOR),
+    });
+    if (largeResult.ok) throw new Error('the form drawings were accepted');
+    expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
+    expect((largeResult.error as Error).message).toMatch(/text blocks/);
   });
 
   it('counts the blocks of all pages together', () => {
@@ -141,24 +162,40 @@ describe('a document yields a bounded number of text blocks', () => {
 });
 
 describe('reading-order cuts stay near-linear in the block count', () => {
-  const grid: PdfTextBlock[] = Array.from({ length: XY_CUT_BLOCKS }, (_, i) => ({
-    text: `b${i}`,
-    x: (i % 200) * 50,
-    y: Math.floor(i / 200) * 20,
-    width: 40,
-    height: 10,
-  }));
+  const gridOf = (count: number): PdfTextBlock[] =>
+    Array.from({ length: count }, (_, i) => ({
+      text: `b${i}`,
+      x: (i % 200) * 50,
+      y: Math.floor(i / 200) * 20,
+      width: 40,
+      height: 10,
+    }));
 
-  it('orders a grid of blocks quickly and top-down, left-to-right', () => {
-    const { value, ms } = timed(() => recursiveXyCut(grid));
-    expect(ms).toBeLessThan(XY_CUT_MS);
-    const ordered = value as PdfTextBlock[];
-    expect(ordered).toHaveLength(XY_CUT_BLOCKS);
-    expect(ordered[0].text).toBe(`b${XY_CUT_BLOCKS - 200}`);
-    expect(ordered[1].text).toBe(`b${XY_CUT_BLOCKS - 200 + 1}`);
+  it('orders a grid of blocks top-down and left-to-right', () => {
+    const blocks = 5000;
+    const ordered = recursiveXyCut(gridOf(blocks));
+    expect(ordered).toHaveLength(blocks);
+    expect(ordered[0].text).toBe(`b${blocks - 200}`);
+    expect(ordered[1].text).toBe(`b${blocks - 200 + 1}`);
   });
 
-  it('terminates on a staircase that peels one block per cut', () => {
+  it('orders a long column of blocks in near-linear time', async () => {
+    // Each cut peels one row and the recursion stops cutting at MAX_XY_CUT_DEPTH, so once a column is longer than
+    // that cap the cost is about n log n per level: 4x the rows costs 4x to 6.5x (measured), a quadratic cut 16x.
+    // (Below the cap the depth grows with the input, which makes smaller grids look quadratic.)
+    const column = (count: number): PdfTextBlock[] =>
+      Array.from({ length: count }, (_, i) => ({ text: `r${i}`, x: 0, y: i * 20, width: 40, height: 10 }));
+    const { largeResult: ordered } = await expectLinearOnInputs('xy-cut column', (blocks: PdfTextBlock[]) => recursiveXyCut(blocks), {
+      small: column(XY_CUT_BLOCKS / SCALING_FACTOR),
+      large: column(XY_CUT_BLOCKS),
+      maxRatio: XY_CUT_MAX_RATIO,
+    });
+    expect(ordered).toHaveLength(XY_CUT_BLOCKS);
+    expect(ordered[0].text).toBe(`r${XY_CUT_BLOCKS - 1}`);
+    expect(ordered[XY_CUT_BLOCKS - 1].text).toBe('r0');
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('terminates on a staircase that peels one block per cut', async () => {
     const staircase: PdfTextBlock[] = Array.from({ length: 5000 }, (_, i) => ({
       text: `s${i}`,
       x: i * 100,
@@ -166,9 +203,8 @@ describe('reading-order cuts stay near-linear in the block count', () => {
       width: 10,
       height: 10,
     }));
-    const { value, err, ms } = timed(() => recursiveXyCut(staircase));
-    expect(err).toBeUndefined();
-    expect(value).toHaveLength(staircase.length);
-    expect(ms).toBeLessThan(XY_CUT_MS);
+    // Each cut peels one block, so the cost is inherently quadratic here; the check is that it terminates.
+    const ordered = await expectNoHang('staircase', () => recursiveXyCut(staircase));
+    expect(ordered).toHaveLength(staircase.length);
   });
 });

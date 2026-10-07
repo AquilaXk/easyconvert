@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { extractStructuredTextFromPdf, parseToUnicodeCMap } from '../src/lib/conversions/pdf-utils';
 import { PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, textContent } from './helpers/pdf-craft';
+import { expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, settle } from './helpers/timing';
 
 /**
  * ToUnicode CMaps (ISO 32000-1 section 9.10.3, Adobe Technical Note 5014 for bfrange and bfchar)
@@ -9,13 +10,14 @@ import { type CraftObject, buildPdf, flate, textContent } from './helpers/pdf-cr
  * section markers are located without rescanning the stream. Expected values are written by hand.
  */
 
-// A quadratic regression at these input sizes runs for tens of seconds or more; the budget leaves headroom for a
-// loaded CI runner executing the suite in parallel, where linear runs measured up to 3 s.
-const FAST_MS = 4000;
-const BOUND_TEST_TIMEOUT_MS = 30_000;
+// Bounds are checked by comparing runs in the same process (tests/helpers/timing.ts): a refused range must cost
+// the same whatever span it declares, and a marker scan must grow linearly with the input. Neither depends on
+// how fast the runner is.
+const BOUND_TEST_TIMEOUT_MS = 60_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const RANGE_CAP = 0x10000;
-const UNTERMINATED_MARKERS = 30 * 1000;
+const UNTERMINATED_MARKERS = 100 * 1000;
+const OVERLAPPING_RANGES = 8;
 const FONT_COUNT = 3;
 const RANGES_PER_FONT = 3;
 
@@ -39,28 +41,39 @@ describe('bfrange expansion is capped', () => {
     expect(cmap.charMap.get(0x1234)).toBe(String.fromCharCode(0x41 + 0x1234));
   });
 
-  it('refuses a range past the cap without expanding it', () => {
-    const { err, ms } = timed(() => parseToUnicodeCMap(wrap('1 beginbfrange <00000000> <00FFFFFF> <0041> endbfrange')));
-    expect(err).toBeInstanceOf(PayloadLimitError);
-    expect((err as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
-    expect((err as Error).message).toMatch(/range/);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('refuses a range past the cap without expanding it', async () => {
+    // A range one past the cap and one 256 times as wide are refused after the same work: nothing is expanded.
+    const range = (last: string) => wrap(`1 beginbfrange <00000000> <${last}> <0041> endbfrange`);
+    const { largeResult } = await expectSizeIndependentOnInputs('range past the cap', (cmap: string) => settle(() => parseToUnicodeCMap(cmap)), {
+      modest: range('00010000'),
+      huge: range('00FFFFFF'),
+    });
+    if (largeResult.ok) throw new Error('the oversized range was accepted');
+    expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
+    expect((largeResult.error as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+    expect((largeResult.error as Error).message).toMatch(/range/);
   });
 
-  it('refuses ranges whose combined expansion passes the map cap, even when they overlap', () => {
-    const ranges = '<00010000> <0001FFFF> <0041>\n'.repeat(8);
-    const { err, ms } = timed(() => parseToUnicodeCMap(wrap(`8 beginbfrange ${ranges} endbfrange`)));
-    expect(err).toBeInstanceOf(PayloadLimitError);
-    expect((err as Error).message).toMatch(/character mappings/);
-    expect(ms).toBeLessThan(FAST_MS * 3);
+  it('refuses ranges whose combined expansion passes the map cap, even when they overlap', async () => {
+    // Eight ranges of 65,536 overlap in one block; the cap is passed within them, so 32 such ranges are
+    // refused after about the same work, not after reading all of them.
+    const overlapping = (count: number) => wrap(`${count} beginbfrange ${'<00010000> <0001FFFF> <0041>\n'.repeat(count)} endbfrange`);
+    const { largeResult } = await expectSizeIndependentOnInputs('overlapping ranges', (cmap: string) => settle(() => parseToUnicodeCMap(cmap)), {
+      modest: overlapping(OVERLAPPING_RANGES),
+      huge: overlapping(OVERLAPPING_RANGES * SCALING_FACTOR),
+    });
+    if (largeResult.ok) throw new Error('the overlapping ranges were accepted');
+    expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
+    expect((largeResult.error as Error).message).toMatch(/character mappings/);
   });
 
-  it('reads an array range by its elements, not by its declared span', () => {
-    const { value, ms } = timed(() =>
-      parseToUnicodeCMap(wrap('1 beginbfrange <00000000> <FFFFFFFF> [<0041> <0042>] endbfrange'))
-    );
-    expect(ms).toBeLessThan(FAST_MS);
-    expect([...(value as { charMap: Map<number, string> }).charMap.entries()]).toEqual([
+  it('reads an array range by its elements, not by its declared span', async () => {
+    const arrayRange = (last: string) => wrap(`1 beginbfrange <00000000> <${last}> [<0041> <0042>] endbfrange`);
+    const { largeResult } = await expectSizeIndependentOnInputs('array range', (cmap: string) => parseToUnicodeCMap(cmap), {
+      modest: arrayRange('0000FFFF'),
+      huge: arrayRange('FFFFFFFF'),
+    });
+    expect([...largeResult.charMap.entries()]).toEqual([
       [0, 'A'],
       [1, 'B'],
     ]);
@@ -69,19 +82,22 @@ describe('bfrange expansion is capped', () => {
 
 describe('section markers are found in linear time', () => {
   for (const begin of ['beginbfchar', 'beginbfrange', 'begincidchar']) {
-    it(`reads ${UNTERMINATED_MARKERS} unterminated ${begin} markers in one pass`, () => {
-      const { value, ms } = timed(() => parseToUnicodeCMap(`${`${begin} `.repeat(UNTERMINATED_MARKERS)}`));
-      expect(value?.charMap.size).toBe(0);
-      expect(ms).toBeLessThan(FAST_MS);
+    it(`reads many unterminated ${begin} markers in one pass`, async () => {
+      const { largeResult } = await expectLinearOnInputs(begin, (cmap: string) => parseToUnicodeCMap(cmap), {
+        small: `${begin} `.repeat(UNTERMINATED_MARKERS),
+        large: `${begin} `.repeat(UNTERMINATED_MARKERS * SCALING_FACTOR),
+      });
+      expect(largeResult.charMap.size).toBe(0);
     });
   }
 
-  it('reads many unterminated array ranges in one pass', () => {
-    const { value, ms } = timed(() =>
-      parseToUnicodeCMap(`beginbfrange ${'<0001> <0002> [ '.repeat(UNTERMINATED_MARKERS)}endbfrange`)
-    );
-    expect(value?.charMap.size).toBe(0);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('reads many unterminated array ranges in one pass', async () => {
+    const arrays = (count: number) => `beginbfrange ${'<0001> <0002> [ '.repeat(count)}endbfrange`;
+    const { largeResult } = await expectLinearOnInputs('array ranges', (cmap: string) => parseToUnicodeCMap(cmap), {
+      small: arrays(UNTERMINATED_MARKERS),
+      large: arrays(UNTERMINATED_MARKERS * SCALING_FACTOR),
+    });
+    expect(largeResult.charMap.size).toBe(0);
   });
 
   it('still reads bfchar, bfrange and cidchar sections', () => {
@@ -139,21 +155,27 @@ describe('CMaps of one document share a mapping budget', () => {
     expect((err as Error).message).toMatch(/character mappings/);
   });
 
-  it('refuses a ToUnicode stream that declares a huge range', () => {
-    const objects: CraftObject[] = [
-      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
-      { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
-      { id: 3, dict: '/Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>' },
-      { id: 4, dict: '/Filter /FlateDecode', stream: flate(textContent('x')) },
-      { id: 5, raw: '<< /Type /Font /Subtype /Type0 /BaseFont /Evil /ToUnicode 6 0 R >>' },
-      {
-        id: 6,
-        dict: '/Filter /FlateDecode',
-        stream: flate(wrap('1 beginbfrange <00000000> <0FFFFFFF> <0041> endbfrange')),
-      },
-    ];
-    const { err, ms } = timed(() => extractStructuredTextFromPdf(buildPdf(objects, 1).buffer));
-    expect(err).toBeInstanceOf(PayloadLimitError);
-    expect(ms).toBeLessThan(FAST_MS);
+  it('refuses a ToUnicode stream that declares a huge range', async () => {
+    const pdfWithRange = (last: string): Buffer => {
+      const objects: CraftObject[] = [
+        { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+        { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+        { id: 3, dict: '/Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>' },
+        { id: 4, dict: '/Filter /FlateDecode', stream: flate(textContent('x')) },
+        { id: 5, raw: '<< /Type /Font /Subtype /Type0 /BaseFont /Evil /ToUnicode 6 0 R >>' },
+        {
+          id: 6,
+          dict: '/Filter /FlateDecode',
+          stream: flate(wrap(`1 beginbfrange <00000000> <${last}> <0041> endbfrange`)),
+        },
+      ];
+      return buildPdf(objects, 1).buffer;
+    };
+    const { largeResult } = await expectSizeIndependentOnInputs('range declared in a PDF', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
+      modest: pdfWithRange('00010000'),
+      huge: pdfWithRange('0FFFFFFF'),
+    });
+    if (largeResult.ok) throw new Error('the huge range was accepted');
+    expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
   });
 });
