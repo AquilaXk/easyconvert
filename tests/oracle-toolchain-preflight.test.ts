@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
+import { MAGICK_BINARY } from './helpers/imagemagick';
 
 /**
  * Every external tool and language pack a suite uses as an oracle or as an engine. Under ORACLE_STRICT_MODE=1 (CI)
@@ -37,8 +38,6 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'ghostscript (ps2pdf)', tool: 'ps2pdf' },
   { name: 'veraPDF', tool: 'verapdf' },
   { name: 'libreoffice (soffice)', tool: 'soffice' },
-  { name: 'imagemagick (magick)', tool: 'magick' },
-  { name: 'imagemagick (identify)', tool: 'identify' },
   { name: 'tesseract-ocr (tesseract)', tool: 'tesseract' },
   { name: 'libxml2-utils (xmllint)', tool: 'xmllint' },
   { name: 'libraw-bin (dcraw_emu)', tool: 'dcraw_emu' },
@@ -89,6 +88,8 @@ function tesseractLanguage(language: string): RequiredTool {
 
 export const CI_REQUIRED_ORACLE_TOOLS: RequiredTool[] = [
   ...ORACLE_BINARIES.map(({ name, tool }) => binary(name, tool)),
+  // ImageMagick 7 installs `magick`; version 6, which Debian-based images carry, installs `convert`, `compare` and `identify`.
+  { name: 'imagemagick (magick or convert)', resolve: () => MAGICK_BINARY },
   { name: 'fontconfig (fc-scan)', resolve: fontconfigScanner },
   ...PYTHON_MODULES.map(pythonModule),
   ...TESSERACT_LANGUAGES.map(tesseractLanguage),
