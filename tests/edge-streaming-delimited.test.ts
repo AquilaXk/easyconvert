@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import { resolveChunkTransformer, runOpfsWorkerJob, type ChunkTransformerFn } from '../src/lib/edge/workers/opfs-vfs.worker';
 import { rehydrateWorkerError, serializeWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { streamConvertWithOpfs } from '../src/lib/edge/pipelines/opfs-streaming-pipeline';
@@ -53,7 +54,7 @@ async function stream(transformer: ChunkTransformerFn, bytes: Uint8Array, cuts: 
   const out: Uint8Array[] = [];
   let start = 0;
   for (const end of [...cuts, bytes.byteLength]) {
-    out.push(await transformer(bytes.subarray(start, end), start, bytes.byteLength));
+    out.push(await collectOutput(transformer(bytes.subarray(start, end), start, bytes.byteLength)));
     start = end;
   }
   return Buffer.concat(out);
@@ -140,7 +141,7 @@ describe('streamed CSV <-> TSV applies the server output rules', () => {
     const total = chunk.byteLength * PROPORTIONALITY_CHUNKS;
     let largest = 0;
     for (let index = 0; index < PROPORTIONALITY_CHUNKS; index++) {
-      const out = await transformer(chunk, index * chunk.byteLength, total);
+      const out = await collectOutput(transformer(chunk, index * chunk.byteLength, total));
       largest = Math.max(largest, out.byteLength);
     }
     // Quoting and the ' prefix add at most a few bytes per record; nothing accumulates across chunks.

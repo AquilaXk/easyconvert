@@ -4,8 +4,12 @@ import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, C
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
+import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
+import { canvasToBlob } from './edge/pipelines/canvas-blob';
+import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
+import { deriveQuantizerLevels } from './edge/quantizer-levels';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import {
@@ -70,7 +74,7 @@ function describeEdgeError(err: unknown): string {
  */
 export function getEffectiveMaxFileSize(baseMax: number = 100 * 1024 * 1024): number {
   if (typeof window !== 'undefined' && checkOpfsSupport()) {
-    return 2 * 1024 * 1024 * 1024; // 2 GB OPFS VFS ceiling
+    return OPFS_MAX_FILE_BYTES; // 2 GB OPFS VFS ceiling
   }
   return baseMax;
 }
@@ -94,65 +98,16 @@ export async function tryProcessClientEdge(
 
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
-    onProgress?.(25);
-
-    // Structured data never resolves to L0: the router sends it to the server data engine.
-
-    // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
-    if (isPureCadConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
-      const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Audio conversion (WAV, PCM, MP3)
-    if (isPureAudioConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
-        sampleRate: item.options.audioSampleRate,
-        channels: item.options.audioChannels === 'mono' ? 1 : 2,
-        bitrate: item.options.audioBitrate,
-      });
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
-    if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
-      onProgress?.(50);
-      const res = await convertPureCanvas(item.file, src, tgt, {
-        quality: item.options.quality,
-        width: item.options.width,
-        height: item.options.height,
-        fit: item.options.fit,
-      });
-      onProgress?.(95);
-      const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
+    try {
+      const l0Res = await processL0Conversion(item, src, tgt, onProgress);
+      if (l0Res) return l0Res;
+    } catch (err: unknown) {
+      // The pure engine cannot convert this file (a layout it cannot mix, a mesh it cannot write): the router
+      // names the server tier, which converts the original file. No edge result stands in for it.
+      if (resolveTierAfterEdgeFailure('L0', err)) {
+        throw new ClientEdgeEscalationError('L0', describeEdgeError(err));
+      }
+      throw err;
     }
   }
 
@@ -251,6 +206,79 @@ export async function tryProcessClientEdge(
 }
 
 /**
+ * Helper to process Level 0 (pure isomorphic) conversion: CAD tessellation, audio, canvas transcoding.
+ */
+async function processL0Conversion(
+  item: ConversionQueueItem,
+  src: string,
+  tgt: string,
+  onProgress?: (progress: number) => void
+): Promise<ClientEdgeResult | null> {
+  onProgress?.(25);
+
+  // Structured data never resolves to L0: the router sends it to the server data engine.
+
+  // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
+  if (isPureCadConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const baseName = item.name.replace(/\.[^/.]+$/, '');
+    const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Audio conversion (WAV, PCM, MP3). The source layout and rate stay unless the request names others.
+  if (isPureAudioConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
+      sampleRate: item.options.audioSampleRate,
+      channels: requestedAudioChannels(item.options.audioChannels),
+      bitrate: item.options.audioBitrate,
+    });
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
+  if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
+    onProgress?.(50);
+    const res = await convertPureCanvas(item.file, src, tgt, {
+      quality: item.options.quality,
+      width: item.options.width,
+      height: item.options.height,
+      fit: item.options.fit,
+    });
+    onProgress?.(95);
+    const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  return null;
+}
+
+/**
  * Helper to process Level 1A (WebGPU Compute Shader) conversion.
  */
 async function processL1AWebGpuConversion(
@@ -330,9 +358,8 @@ async function processL1AWebGpuConversion(
   ) {
     const maxColors =
       item.options.colors ?? (item.options.colorDepth ? 1 << item.options.colorDepth : 256);
-    const rLevels = maxColors <= 16 ? 4 : 8;
-    const gLevels = maxColors <= 16 ? 4 : 8;
-    const bLevels = maxColors <= 16 ? 2 : 4;
+    // The same levels the Wasm path derives, so both paths keep at most `maxColors` colours.
+    const { r: rLevels, g: gLevels, b: bLevels } = deriveQuantizerLevels(maxColors);
     task = { type: 'quantize', options: { rLevels, gLevels, bLevels } };
   } else {
     task = { type: 'color-transform', options: { mode: 'grayscale' } };
@@ -362,21 +389,7 @@ async function processL1AWebGpuConversion(
       ? 'image/webp'
       : 'image/png';
 
-  let resultBlob: Blob;
-  if ('convertToBlob' in canvas) {
-    resultBlob = await canvas.convertToBlob({
-      type: mimeType,
-      quality: (item.options.quality || 90) / 100,
-    });
-  } else {
-    resultBlob = await new Promise<Blob>((resolve) => {
-      canvas.toBlob(
-        (b: Blob | null) => resolve(b || new Blob([])),
-        mimeType,
-        (item.options.quality || 90) / 100
-      );
-    });
-  }
+  const resultBlob = await canvasToBlob(canvas, mimeType, (item.options.quality || 90) / 100);
 
   onProgress?.(100);
   const resultUrl = URL.createObjectURL(resultBlob);
@@ -492,14 +505,7 @@ async function processL2Conversion(
           }
 
           const mimeType = tgt === 'jpg' || tgt === 'jpeg' ? 'image/jpeg' : (tgt === 'webp' ? 'image/webp' : 'image/png');
-          let resultBlob: Blob;
-          if ('convertToBlob' in canvas) {
-            resultBlob = await canvas.convertToBlob({ type: mimeType, quality: (item.options.quality || 90) / 100 });
-          } else {
-            resultBlob = await new Promise<Blob>((resolve) => {
-              canvas.toBlob((b: Blob | null) => resolve(b || new Blob([])), mimeType, (item.options.quality || 90) / 100);
-            });
-          }
+          const resultBlob = await canvasToBlob(canvas, mimeType, (item.options.quality || 90) / 100);
 
           const resultUrl = URL.createObjectURL(resultBlob);
           return {

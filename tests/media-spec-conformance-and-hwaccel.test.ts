@@ -114,15 +114,15 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
       wavHeader.writeUInt32LE(0, 40);
 
       await expect(
-        convertMedia(wavHeader, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
+        convertMedia(wavHeader, 'wav', 'opus', { disableNativeEngine: true }, 'audio.wav')
       ).rejects.toThrow(ConversionFailedError);
 
       await expect(
-        convertMedia(wavHeader, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
+        convertMedia(wavHeader, 'wav', 'ogg', { disableNativeEngine: true }, 'audio.wav')
       ).rejects.toThrow(ConversionFailedError);
 
       await expect(
-        convertMedia(wavHeader, 'wav', 'vorbis', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
+        convertMedia(wavHeader, 'wav', 'vorbis', { disableNativeEngine: true }, 'audio.wav')
       ).rejects.toThrow(ConversionFailedError);
     });
   });

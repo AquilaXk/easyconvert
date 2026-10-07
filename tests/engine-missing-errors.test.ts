@@ -28,6 +28,8 @@ const NOT_ABOUT_THE_WORKER = new Set([
   'ArchivePasswordRequiredError',
   // A webhook secret request that names no target: a 400 about the caller, not a missing tool.
   'WebhookTargetRequiredError',
+  // The browser offers no OPFS sync access handle: an internal signal to use the in-memory route.
+  'SyncAccessUnavailableError',
 ]);
 
 function sourceFiles(directory: string): string[] {

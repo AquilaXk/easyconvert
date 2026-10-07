@@ -129,14 +129,17 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     it('verifies supported OPFS format whitelist and router guard', () => {
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('csv:tsv')).toBe(true);
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('tsv:csv')).toBe(true);
-      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(false); // correctly excluded
+      // Raw PCM to WAV is streamed now that its header is written from the stated rate, channels and bit depth.
+      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(true);
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('grayscale:rgba')).toBe(false); // correctly excluded
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('rgba:grayscale')).toBe(true);
 
       // Verify that every single format pair in SUPPORTED_OPFS_STREAMING_CONVERSIONS is resolvable in worker
+      const rawPcm = { sampleRate: 48_000, channels: 2, bitDepth: 16 };
       for (const pair of SUPPORTED_OPFS_STREAMING_CONVERSIONS) {
         const [s, t] = pair.split(':');
-        expect(() => resolveChunkTransformer(s, t)).not.toThrow();
+        expect(typeof resolveChunkTransformer(s, t, rawPcm)).toBe('function');
+        expect(isOpfsStreamingSupported(s, t, rawPcm)).toBe(true);
       }
 
       // Unsupported formats must return false
@@ -144,8 +147,8 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(isOpfsStreamingSupported('pdf', 'docx')).toBe(false);
       expect(isOpfsStreamingSupported('png', 'svg')).toBe(false);
 
-      // Identity pass-through with explicit flag
-      expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true })).toBe(true);
+      // An identical pair is a copy, not a conversion, whatever the options say.
+      expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true } as never)).toBe(false);
     });
 
     it('streams TSV -> CSV with the server output rules (BOM, CRLF, quoting, formula escape)', () => {

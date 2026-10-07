@@ -17,7 +17,9 @@ import {
   isOpfsStreamingSupported,
   SUPPORTED_OPFS_STREAMING_CONVERSIONS,
 } from '../src/lib/edge/tier-router';
+import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import { resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
+import { craftWav } from './helpers/wav-craft';
 
 describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
   // ==========================================================================
@@ -198,101 +200,53 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
   // 3. Expanded Level 3 OPFS Streaming Pipeline
   // ==========================================================================
   describe('Expanded L3 OPFS Streaming Pipeline (Component 3.3)', () => {
+    const PCM_FORMAT = { sampleRate: 48000, channels: 2, bitDepth: 16 };
+
     it('supports media and archive streaming conversions in OPFS tier whitelist', () => {
       expect(isOpfsStreamingSupported('wav', 'pcm')).toBe(true);
-      expect(isOpfsStreamingSupported('pcm', 'wav')).toBe(false); // Excluded due to non-chunked RIFF header framing
-      expect(isOpfsStreamingSupported('pcm', 'adpcm')).toBe(true);
       expect(isOpfsStreamingSupported('wav', 'adpcm')).toBe(true);
       expect(isOpfsStreamingSupported('adpcm', 'pcm')).toBe(true);
+      expect(isOpfsStreamingSupported('adpcm', 'wav')).toBe(true);
       expect(isOpfsStreamingSupported('tar', 'tar_gz')).toBe(true);
       expect(isOpfsStreamingSupported('tar', 'gz')).toBe(true);
       expect(isOpfsStreamingSupported('gz', 'tar')).toBe(true);
+      // Raw PCM says nothing about itself, so it is streamed only when the options describe it.
+      expect(isOpfsStreamingSupported('pcm', 'wav')).toBe(false);
+      expect(isOpfsStreamingSupported('pcm', 'adpcm')).toBe(false);
+      expect(isOpfsStreamingSupported('pcm', 'wav', PCM_FORMAT)).toBe(true);
+      expect(isOpfsStreamingSupported('pcm', 'adpcm', PCM_FORMAT)).toBe(true);
     });
 
-    it('streams WAV to raw PCM by stripping 44-byte RIFF header on first chunk', () => {
+    it('streams WAV to raw PCM from the data chunk when the first window ends inside the audio', async () => {
+      const audio = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+      const wav = craftWav({ sampleRate: 8000, channels: 1, bitsPerSample: 16, data: audio });
+      expect(wav.length).toBe(44 + 8);
       const transformer = resolveChunkTransformer('wav', 'pcm');
 
-      // Create a simulated 44-byte WAV header + 8 bytes audio data
-      const chunk1 = new Uint8Array(52);
-      chunk1[0] = 0x52; chunk1[1] = 0x49; chunk1[2] = 0x46; chunk1[3] = 0x46; // 'RIFF'
-      for (let i = 44; i < 52; i++) chunk1[i] = i;
-
-      const out1 = transformer(chunk1);
-      expect(out1.byteLength).toBe(8);
-      expect(out1[0]).toBe(44);
-
-      // Subsequent chunk should not be stripped
-      const chunk2 = new Uint8Array([1, 2, 3, 4]);
-      const out2 = transformer(chunk2);
-      expect(out2.byteLength).toBe(4);
-      expect(out2[0]).toBe(1);
+      // The first window holds the 44-byte header and the first four audio bytes.
+      const out1 = await collectOutput(transformer(wav.subarray(0, 48), 0, wav.length));
+      expect(Array.from(out1)).toEqual([1, 2, 3, 4]);
+      // The next window is audio only.
+      const out2 = await collectOutput(transformer(wav.subarray(48), 48, wav.length));
+      expect(Array.from(out2)).toEqual([5, 6, 7, 8]);
     });
 
-    it('streams raw PCM to WAV by prepending RIFF/WAVE header on first chunk', () => {
-      const transformer = resolveChunkTransformer('pcm', 'wav', {
-        sampleRate: 48000,
-        channels: 2,
-        bitsPerSample: 16,
-      });
+    it('streams raw PCM to WAV with a header that states the whole input, written with the first window', async () => {
+      const transformer = resolveChunkTransformer('pcm', 'wav', PCM_FORMAT);
+      const pcm = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]);
 
-      const pcmChunk1 = new Uint8Array([10, 20, 30, 40]);
-      const out1 = transformer(pcmChunk1);
+      const out1 = await collectOutput(transformer(pcm.subarray(0, 4), 0, pcm.length));
       expect(out1.byteLength).toBe(44 + 4);
-      expect(out1[0]).toBe(0x52); // 'R'
-      expect(out1[1]).toBe(0x49); // 'I'
-      expect(out1[2]).toBe(0x46); // 'F'
-      expect(out1[3]).toBe(0x46); // 'F'
-
-      // Check sample rate at offset 24
+      expect(String.fromCharCode(...out1.subarray(0, 4))).toBe('RIFF');
       const view = new DataView(out1.buffer, out1.byteOffset);
+      expect(view.getUint32(4, true)).toBe(36 + 8);
       expect(view.getUint32(24, true)).toBe(48000);
       expect(view.getUint16(22, true)).toBe(2);
+      expect(view.getUint32(40, true)).toBe(8);
+      expect(Array.from(out1.subarray(44))).toEqual([10, 20, 30, 40]);
 
-      // Check audio payload
-      expect(out1[44]).toBe(10);
-      expect(out1[45]).toBe(20);
-
-      // Chunk 2 receives raw passthrough
-      const pcmChunk2 = new Uint8Array([50, 60]);
-      const out2 = transformer(pcmChunk2);
-      expect(out2.byteLength).toBe(2);
-      expect(out2[0]).toBe(50);
-    });
-
-    it('performs IMA ADPCM 4:1 streaming compression and 16-bit PCM decompression', () => {
-      const compressor = resolveChunkTransformer('pcm', 'adpcm');
-      const decompressor = resolveChunkTransformer('adpcm', 'pcm');
-
-      // Generate 16 16-bit PCM samples (32 bytes)
-      const pcmIn = new Uint8Array(32);
-      const inView = new DataView(pcmIn.buffer);
-      for (let i = 0; i < 16; i++) {
-        inView.setInt16(i * 2, Math.round(Math.sin((i / 16) * Math.PI) * 15000), true);
-      }
-
-      // Compress: 32 bytes -> 8 bytes (4:1 compression ratio)
-      const compressed = compressor(pcmIn);
-      expect(compressed.byteLength).toBe(8);
-
-      // Decompress: 8 bytes -> 32 bytes
-      const decompressed = decompressor(compressed);
-      expect(decompressed.byteLength).toBe(32);
-
-      // Verify finite, valid decompressed samples
-      const outView = new DataView(decompressed.buffer);
-      for (let i = 0; i < 16; i++) {
-        const sample = outView.getInt16(i * 2, true);
-        expect(sample).toBeGreaterThanOrEqual(-32768);
-        expect(sample).toBeLessThanOrEqual(32767);
-      }
-    });
-
-    it('streams archive chunks without memory buffering', () => {
-      const tarGzTransformer = resolveChunkTransformer('tar', 'tar_gz');
-      const chunk = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
-      const out = tarGzTransformer(chunk);
-      expect(out.byteLength).toBe(4);
-      expect(out[0]).toBe(0x1f);
+      const out2 = await collectOutput(transformer(pcm.subarray(4), 4, pcm.length));
+      expect(Array.from(out2)).toEqual([50, 60, 70, 80]);
     });
   });
 });

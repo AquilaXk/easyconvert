@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import {
   OPFS_CHUNK_SIZE,
   calculateChunkCount,
@@ -30,24 +31,24 @@ import {
 describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distributed Interfaces', () => {
   describe('1. Level 3 OPFS Streaming VFS Chunk Transcoders', () => {
     it('accurately resolves and executes Audio PCM Endianness swap (pcm -> pcm_be)', async () => {
-      const transformer = resolveChunkTransformer('pcm', 'pcm_be');
+      const transformer = resolveChunkTransformer('pcm', 'pcm_be', { bitDepth: 16 });
       // Little-endian 16-bit samples: [0x12, 0x34, 0x56, 0x78]
       const input = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
-      const transformed = await transformer(input, 0, input.length);
+      const transformed = await collectOutput(transformer(input, 0, input.length));
 
       // Big-endian swapped: [0x34, 0x12, 0x78, 0x56]
       expect(transformed).toEqual(new Uint8Array([0x34, 0x12, 0x78, 0x56]));
     });
 
     it('accurately resolves and executes Audio 16-bit signed to 8-bit unsigned PCM (pcm -> pcm_u8)', async () => {
-      const transformer = resolveChunkTransformer('pcm', 'pcm_u8');
+      const transformer = resolveChunkTransformer('pcm', 'pcm_u8', { bitDepth: 16 });
       // 2 samples: 0 (silence) and 32767 (max positive) in 16-bit little endian
       const buf = new ArrayBuffer(4);
       const view = new DataView(buf);
       view.setInt16(0, 0, true); // silence -> ~128 unsigned
       view.setInt16(2, 32767, true); // max -> 255 unsigned
 
-      const transformed = await transformer(new Uint8Array(buf), 0, 4);
+      const transformed = await collectOutput(transformer(new Uint8Array(buf), 0, 4));
       expect(transformed.length).toBe(2);
       expect(transformed[0]).toBe(128);
       expect(transformed[1]).toBe(255);
@@ -57,7 +58,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       const transformer = resolveChunkTransformer('csv', 'tsv');
       const csvData = 'id,name,notes\n1,"Doe, John",Engineer\n2,"Smith, Alice",Scientist';
       const input = new TextEncoder().encode(csvData);
-      const transformed = await transformer(input, 0, input.length);
+      const transformed = await collectOutput(transformer(input, 0, input.length));
       const tsvText = new TextDecoder().decode(transformed);
 
       expect(tsvText).toContain('id\tname\tnotes');
@@ -74,8 +75,10 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       // Chunk 2 continues and closes the quoted field: 'Jane",Manager\n'
       const chunk2Str = 'Jane",Manager\n';
 
-      const res1 = await transformer(new TextEncoder().encode(chunk1Str), 0, chunk1Str.length + chunk2Str.length);
-      const res2 = await transformer(new TextEncoder().encode(chunk2Str), chunk1Str.length, chunk1Str.length + chunk2Str.length);
+      const res1 = await collectOutput(transformer(new TextEncoder().encode(chunk1Str), 0, chunk1Str.length + chunk2Str.length));
+      const res2 = await collectOutput(
+        transformer(new TextEncoder().encode(chunk2Str), chunk1Str.length, chunk1Str.length + chunk2Str.length)
+      );
 
       const combinedText = new TextDecoder().decode(res1) + new TextDecoder().decode(res2);
       expect(combinedText).toContain('id\tname\trole');
@@ -84,14 +87,14 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
     });
 
     it('handles odd-length byte chunks without sample misalignment or data corruption in PCM streaming', async () => {
-      const transformer = resolveChunkTransformer('pcm', 'pcm_be');
+      const transformer = resolveChunkTransformer('pcm', 'pcm_be', { bitDepth: 16 });
       // 3 bytes in chunk 1 (1.5 samples), 3 bytes in chunk 2 (1.5 samples) -> 3 complete samples
       // Samples in LE: [0x11, 0x22], [0x33, 0x44], [0x55, 0x66]
       const chunk1 = new Uint8Array([0x11, 0x22, 0x33]); // 0x33 is first half of sample 2
       const chunk2 = new Uint8Array([0x44, 0x55, 0x66]); // 0x44 completes sample 2, [0x55, 0x66] is sample 3
 
-      const out1 = await transformer(chunk1, 0, 6);
-      const out2 = await transformer(chunk2, 3, 6);
+      const out1 = await collectOutput(transformer(chunk1, 0, 6));
+      const out2 = await collectOutput(transformer(chunk2, 3, 6));
 
       // Expected swapped BE: [0x22, 0x11], [0x44, 0x33], [0x66, 0x55]
       const combined = new Uint8Array(out1.length + out2.length);
@@ -108,7 +111,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
         255, 0, 0, 255,
         0, 255, 0, 200,
       ]);
-      const transformed = await transformer(input, 0, input.length);
+      const transformed = await collectOutput(transformer(input, 0, input.length));
 
       // Pixel 1: (77 * 255) >> 8 = 76
       expect(transformed[0]).toBe(76);
@@ -153,22 +156,21 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
     });
 
     it('executes processOpfsStreaming through chunk transformer fallback on ArrayBuffer', async () => {
-      const input = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+      // Two RGBA pixels: pure red and pure green with a partial alpha.
+      const input = new Uint8Array([255, 0, 0, 255, 0, 255, 0, 200]);
       const res = await processOpfsStreaming(
         {
           jobId: 'test-job-fallback',
-          sourceFormat: 'bin',
-          targetFormat: 'invert',
+          sourceFormat: 'rgba',
+          targetFormat: 'grayscale',
           totalSize: input.byteLength,
         },
         input.buffer
       );
 
       expect(res.outputSize).toBe(input.byteLength);
-      expect(res.buffer).toBeDefined();
-      const outView = new Uint8Array(res.buffer!);
-      expect(outView[0]).toBe(1 ^ 0xff);
-      expect(outView[7]).toBe(8 ^ 0xff);
+      // Fixed-point luma (77 R + 150 G + 29 B) >> 8 with alpha kept.
+      expect(Array.from(new Uint8Array(res.buffer as ArrayBuffer))).toEqual([76, 76, 76, 255, 149, 149, 149, 200]);
     });
   });
 
@@ -231,10 +233,10 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
     });
 
     it('provides destroy() callback on streamConvertWithOpfs for immediate zero-retention disposal', async () => {
-      const testContent = 'Zero-retention streaming test buffer';
-      const file = new File([testContent], 'test.txt', { type: 'text/plain' });
+      const testContent = 'id,note\n1,zero-retention streaming test buffer\n';
+      const file = new File([testContent], 'test.csv', { type: 'text/csv' });
 
-      const result = await streamConvertWithOpfs(file, 'txt', 'txt');
+      const result = await streamConvertWithOpfs(file, 'csv', 'tsv');
       expect(result.sessionId).toBeDefined();
       expect(typeof result.destroy).toBe('function');
 
