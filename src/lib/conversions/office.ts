@@ -13,6 +13,7 @@ import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, pa
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
+import { readDocText } from './office/doc-reader';
 
 export { buildOpenXpsPackage };
 
@@ -484,86 +485,12 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
   throw new Error('Failed to extract text content from ODT document: fail-closed.');
 }
 
-function sanitizeControlChars(text: string): string {
-  let result = '';
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31)) {
-      result += ' ';
-    } else {
-      result += text[i];
-    }
-  }
-  return result;
-}
-
+/**
+ * Text of a Word 97-2003 binary document, read through its CLX piece table ([MS-DOC]). Malformed input
+ * throws a LegacyOfficeFormatError (400) and an encrypted document an EncryptedOfficeDocumentError (422).
+ */
 export function extractTextFromDoc(buffer: Buffer): string {
-  // 1. OLE2 Compound File Binary Format (.doc)
-  if (isCfbfContainer(buffer)) {
-    try {
-      const cfbf = parseCfbf(buffer);
-      const wordDoc = cfbf.streams.get('WordDocument') || cfbf.streams.get('worddocument');
-      if (wordDoc && wordDoc.length >= 0x0100) {
-        // Parse File Information Block (FIB)
-        const wIdent = wordDoc.readUInt16LE(0);
-        // Standard Microsoft Word binary signatures: 0xA5EC (Word 97-2003), 0xA5DC (Word 95)
-        if (wIdent === 0xa5ec || wIdent === 0xa5dc || wIdent === 0xa5cd) {
-          const fcMin = wordDoc.length > 0x001c ? wordDoc.readUInt32LE(0x0018) : 0;
-          const ccpText = wordDoc.length > 0x0050 ? wordDoc.readUInt32LE(0x004c) : 0;
-
-          if (fcMin > 0 && fcMin < wordDoc.length && ccpText > 0) {
-            // Text stream starting at fcMin
-            const textBytes = Math.min(ccpText * 2, wordDoc.length - fcMin);
-            const textSlice = wordDoc.subarray(fcMin, fcMin + textBytes);
-
-            // Attempt UTF-16LE decode
-            const decodedUtf16 = sanitizeControlChars(textSlice.toString('utf16le')).trim();
-
-            if (decodedUtf16.length > 0) {
-              const paragraphs = decodedUtf16
-                .split(/\r?\n/)
-                .map((p) => p.trim())
-                .filter((p) => p.length > 0);
-              if (paragraphs.length > 0) {
-                return paragraphs.join('\n\n');
-              }
-            }
-          }
-        }
-
-        // If FIB offsets point outside or 8-bit text: inspect WordDocument stream directly
-        const rawUtf16 = sanitizeControlChars(wordDoc.toString('utf16le'));
-        const utf16Candidate = rawUtf16
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter((s) => s.length >= 3);
-
-        if (utf16Candidate.length > 0) {
-          return utf16Candidate.join('\n\n');
-        }
-      }
-    } catch {
-      // Fallback to byte scraping on malformed CFBF
-    }
-  }
-
-  // 2. Fallback character scanner for raw or fragmented text
-  const strings: string[] = [];
-  let curr = '';
-  for (let i = 0; i < buffer.length; i++) {
-    const byte = buffer[i];
-    if (byte >= 32 && byte <= 126) {
-      curr += String.fromCharCode(byte);
-    } else if (byte === 10 || byte === 13) {
-      if (curr.trim().length >= 4) strings.push(curr.trim());
-      curr = '';
-    } else {
-      if (curr.trim().length >= 5) strings.push(curr.trim());
-      curr = '';
-    }
-  }
-  if (curr.trim().length >= 4) strings.push(curr.trim());
-  return strings.join('\n\n') || 'Extracted document content.';
+  return readDocText(buffer);
 }
 
 function extractTextFromTexString(tex: string): string {
