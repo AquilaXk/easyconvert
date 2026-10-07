@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redactForOutput, redactText, scrubError } from '../security/redact';
 import { classifyJobFailure } from './job-failure';
+import { QueueUnavailableError } from '../types';
 
 export interface JobOptions {
   jobId?: string;
@@ -1340,10 +1341,49 @@ function flatHashToRecord(flat: string[]): Record<string, string> {
   return record;
 }
 
+const REDIS_WRONGTYPE_PREFIX = 'WRONGTYPE';
+
+/** ioredis states of a client that has not finished connecting yet (`wait`: lazy, not started). */
+const REDIS_HANDSHAKE_STATUSES: ReadonlySet<string> = new Set(['wait', 'connecting', 'connect']);
+/** Longest a request waits for a starting Redis connection before the queue answers unavailable. */
+export const REDIS_READY_WAIT_MS = 1_000;
+
+/** Resolves true once the client is ready, false on close/end or after `timeoutMs`. */
+function waitForRedisReady(client: Redis, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const finish = (ready: boolean) => {
+      clearTimeout(timer);
+      client.off('ready', onReady);
+      client.off('end', onDown);
+      client.off('close', onDown);
+      resolve(ready);
+    };
+    const onReady = () => finish(true);
+    const onDown = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    client.once('ready', onReady);
+    client.once('end', onDown);
+    client.once('close', onDown);
+  });
+}
+
+/**
+ * The waiting key is a sorted set, or a list on data written by an older version; a command for the
+ * other type answers WRONGTYPE and the caller tries the other command. Any other failure is Redis
+ * not answering and must reach the caller.
+ */
+function rethrowUnlessWrongType(err: unknown): void {
+  if (!(err instanceof Error && err.message.startsWith(REDIS_WRONGTYPE_PREFIX))) {
+    throw err;
+  }
+}
+
 /**
  * Distributed Queue Adapter for Redis/BullMQ clustering.
  * Provides authentic Redis cluster storage (Hashes, Lists, Sets, Sorted Sets, Pub/Sub)
- * and seamless, zero-config in-memory fallback for local development and testnets.
+ * and a zero-config in-memory stand-in for local development, used only while no Redis is
+ * configured. Once Redis is configured, a disconnected client fails closed with
+ * `QueueUnavailableError` instead of falling back to process memory.
  */
 export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
   readonly name: string;
@@ -1566,6 +1606,42 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
   }
 
+  /**
+   * Fails closed once Redis is configured: a client that is not connected is a queue that cannot
+   * answer. Only the no-Redis configuration (local development) may use the in-memory engine.
+   */
+  private async assertRedisConnected(): Promise<void> {
+    const client = this.redisClient;
+    const status = (client as { status?: unknown } | null)?.status;
+    if (client && typeof status === 'string' && REDIS_HANDSHAKE_STATUSES.has(status)) {
+      // A client still completing its handshake (the offline queue is off) would reject the
+      // command; wait for it, bounded, so a request right after start-up is not refused.
+      if (!(await waitForRedisReady(client, REDIS_READY_WAIT_MS))) {
+        throw new QueueUnavailableError(this.name);
+      }
+      return;
+    }
+    if (!this.redisConnected) {
+      throw new QueueUnavailableError(this.name);
+    }
+  }
+
+  /** Any failure of a Redis operation means the queue cannot answer; the cause stays server-side. */
+  private toQueueUnavailable(err: unknown): QueueUnavailableError {
+    if (err instanceof QueueUnavailableError) {
+      return err;
+    }
+    return new QueueUnavailableError(this.name, err instanceof Error ? err.message : String(err));
+  }
+
+  private async redisOp<V>(operation: () => Promise<V>): Promise<V> {
+    try {
+      return await operation();
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
+  }
+
   private getJobKey(id: string): string {
     return `${this.keyPrefix}{${this.name}}:job:${id}`;
   }
@@ -1692,7 +1768,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
+      const redis = this.redisClient;
       const id = opts.jobId || generateJobId();
       const userId = (data as any)?.userId ? String((data as any).userId) : '';
       const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
@@ -1734,22 +1812,24 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           flatHash.push(k, v);
         }
 
-        const res = (await this.redisClient.eval(
-          ADD_JOB_LUA_SCRIPT,
-          4,
-          this.getJobKey(id),
-          this.waitingKey,
-          this.delayedKey,
-          userJobsKey || `${this.keyPrefix}{${this.name}}:user_jobs:none`,
-          id,
-          isDelayed ? '1' : '0',
-          String(delayUntil),
-          String(priorityScore),
-          String(now),
-          userId,
-          this.eventsChannel,
-          this.getJobEventsChannel(id),
-          ...flatHash
+        const res = (await this.redisOp(() =>
+          redis.eval(
+            ADD_JOB_LUA_SCRIPT,
+            4,
+            this.getJobKey(id),
+            this.waitingKey,
+            this.delayedKey,
+            userJobsKey || `${this.keyPrefix}{${this.name}}:user_jobs:none`,
+            id,
+            isDelayed ? '1' : '0',
+            String(delayUntil),
+            String(priorityScore),
+            String(now),
+            userId,
+            this.eventsChannel,
+            this.getJobEventsChannel(id),
+            ...flatHash
+          )
         )) as [number, string[]?];
 
         if (Array.isArray(res) && res[0] === 0 && res[1]) {
@@ -1787,23 +1867,23 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         });
 
         const hash = this.jobToHash(job);
-        await this.redisClient.hset(this.getJobKey(id), hash);
+        await this.redisOp(() => redis.hset(this.getJobKey(id), hash));
 
         if (isDelayed) {
-          if (typeof this.redisClient.zadd === 'function') {
-            await this.redisClient.zadd(this.delayedKey, delayUntil, id);
+          if (typeof redis.zadd === 'function') {
+            await this.redisOp(() => redis.zadd(this.delayedKey, delayUntil, id));
           }
         } else {
-          if (typeof this.redisClient.zadd === 'function') {
-            await this.redisClient.zadd(this.waitingKey, priorityScore, id);
-          } else if (typeof this.redisClient.rpush === 'function') {
-            await this.redisClient.rpush(this.waitingKey, id);
+          if (typeof redis.zadd === 'function') {
+            await this.redisOp(() => redis.zadd(this.waitingKey, priorityScore, id));
+          } else if (typeof redis.rpush === 'function') {
+            await this.redisOp(() => redis.rpush(this.waitingKey, id));
           }
           await this.publishEvent({ event: 'waiting', jobId: id });
         }
 
-        if (userId && typeof this.redisClient.zadd === 'function') {
-          await this.redisClient.zadd(userJobsKey, now, id);
+        if (userId && typeof redis.zadd === 'function') {
+          await this.redisOp(() => redis.zadd(userJobsKey, now, id));
         }
 
         this.emit('waiting', job);
@@ -1814,22 +1894,21 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async getJob(id: string): Promise<Job<T, R> | undefined> {
-    if (this.redisClient && this.redisConnected) {
-      try {
-        const raw = await this.redisClient.hgetall(this.getJobKey(id));
-        if (!raw || !raw.id) {
-          return undefined;
-        }
-        return this.hashToJob(raw);
-      } catch {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
+      const redis = this.redisClient;
+      const raw = await this.redisOp(() => redis.hgetall(this.getJobKey(id)));
+      if (!raw || !raw.id) {
         return undefined;
       }
+      return this.hashToJob(raw);
     }
     return this.memoryFallback.getJob(id);
   }
 
   async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const ids: string[] = [];
         for (const type of types) {
@@ -1838,7 +1917,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             if (typeof this.redisClient.zrange === 'function') {
               try {
                 list = await this.redisClient.zrange(this.waitingKey, 0, -1 as any);
-              } catch {}
+              } catch (err) {
+                rethrowUnlessWrongType(err);
+              }
             }
             if ((!list || list.length === 0) && typeof this.redisClient.lrange === 'function') {
               try {
@@ -1846,7 +1927,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
                 if (legacyList && legacyList.length > 0) {
                   list = legacyList;
                 }
-              } catch {}
+              } catch (err) {
+                rethrowUnlessWrongType(err);
+              }
             }
             ids.push(...(list || []));
           } else if (type === 'delayed') {
@@ -1873,15 +1956,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           if (j) jobs.push(j);
         }
         return jobs;
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobs(types);
   }
 
   async getJobCounts(): Promise<JobCounts> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const getWaitingCount = async (): Promise<number> => {
           if (!this.redisClient) return 0;
@@ -1889,13 +1973,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             try {
               const count = await this.redisClient.zcard(this.waitingKey);
               if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch {}
+            } catch (err) {
+              rethrowUnlessWrongType(err);
+            }
           }
           if (typeof this.redisClient.llen === 'function') {
             try {
               const count = await this.redisClient.llen(this.waitingKey);
               if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch {}
+            } catch (err) {
+              rethrowUnlessWrongType(err);
+            }
           }
           return 0;
         };
@@ -1916,8 +2004,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           delayed: delayed || 0,
           cancelled: cancelled || 0,
         };
-      } catch {
-        return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, cancelled: 0 };
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobCounts();
@@ -1929,7 +2017,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     limit: number = 50,
     offset: number = 0
   ): Promise<Job<T, R>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const userKey = this.getUserJobsKey(userId);
         const allJobIds = await this.redisClient.zrevrange(userKey, 0, -1);
@@ -1966,15 +2055,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         }
 
         return matchedJobs.slice(offset, offset + limit);
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobsByUser(userId, states, limit, offset);
   }
 
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const setKeysByType = {
           completed: this.completedKey,
@@ -2006,8 +2096,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           }
         }
         return removed;
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.clean(grace, limit, type);
@@ -2015,26 +2105,29 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const client = this.redisClient;
-    if (!client || !this.redisConnected) {
+    if (!client) {
       return this.memoryFallback.cancelJob(id, reason);
     }
+    await this.assertRedisConnected();
 
     // Fail closed: a Redis error propagates instead of reporting a cancel that did not happen.
     const finishedOn = Date.now();
     const logEntry = `[${new Date(finishedOn).toISOString()}] Job cancelled: ${reason}`;
-    const outcome = await client.eval(
-      CANCEL_JOB_LUA_SCRIPT,
-      6,
-      this.getJobKey(id),
-      this.waitingKey,
-      this.delayedKey,
-      this.activeKey,
-      this.cancelledKey,
-      this.getHeartbeatKey(id),
-      id,
-      reason,
-      String(finishedOn),
-      logEntry
+    const outcome = await this.redisOp(() =>
+      client.eval(
+        CANCEL_JOB_LUA_SCRIPT,
+        6,
+        this.getJobKey(id),
+        this.waitingKey,
+        this.delayedKey,
+        this.activeKey,
+        this.cancelledKey,
+        this.getHeartbeatKey(id),
+        id,
+        reason,
+        String(finishedOn),
+        logEntry
+      )
     );
     if (!Array.isArray(outcome)) {
       return false;
@@ -2050,7 +2143,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const raws = await this.redisClient.lrange(this.dlqKey, 0, -1);
         return raws.map((r: string) => {
@@ -2068,8 +2162,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             };
           }
         });
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getDlqEntries ? this.memoryFallback.getDlqEntries() : [];
@@ -2090,13 +2184,14 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async purgeDlq(): Promise<number> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const count = await this.redisClient.llen(this.dlqKey);
         await this.redisClient.del(this.dlqKey);
         return count;
-      } catch {
-        return 0;
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.purgeDlq ? this.memoryFallback.purgeDlq() : 0;
@@ -2104,7 +2199,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async ping(): Promise<{ ok: boolean; latencyMs: number }> {
     const start = Date.now();
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient && !this.redisConnected) {
+      return { ok: false, latencyMs: Date.now() - start };
+    }
+    if (this.redisClient) {
       try {
         await this.redisClient.ping();
         return { ok: true, latencyMs: Date.now() - start };

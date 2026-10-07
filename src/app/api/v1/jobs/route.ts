@@ -11,7 +11,7 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile, FileExtensionSpoofError } from '@/lib/registry';
 import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { ConversionOptions, JobStatus, PipelineTask, JobGraph } from '@/lib/types';
+import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
 import {
   validateJobGraph,
   linearTasksToJobGraph,
@@ -26,6 +26,7 @@ import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { describeStorageError } from '@/lib/api/storage-error-response';
+import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import {
   validateOrProblem,
@@ -709,6 +710,10 @@ export async function POST(req: NextRequest) {
         'Service Unavailable'
       );
     }
+    if (error instanceof QueueUnavailableError) {
+      // The queue could not store the job: release the quota reservation and let the client retry.
+      return failWithRollback(503, QUEUE_UNAVAILABLE_DETAIL, 'Service Unavailable', undefined, queueRetryAfterHeaders());
+    }
     const storageProblem = describeStorageError(error);
     if (storageProblem) {
       return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
@@ -719,6 +724,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  return withQueueErrors(req.nextUrl?.pathname || '/api/v1/jobs', () => listJobs(req));
+}
+
+async function listJobs(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
   // Guard check: Authenticate API key or user session with 'convert:read' scope

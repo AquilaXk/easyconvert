@@ -44,6 +44,8 @@ export interface GraphExecutionState {
   webhookUrl?: string;
   webhookSecret?: string;
   originalFilename?: string;
+  /** Storage key of the submitted source object, as persisted by the Redis scheduler. */
+  sourceStorageKey?: string;
   sourceFormat?: string;
   targetFormat?: string;
   tasks?: unknown[];
