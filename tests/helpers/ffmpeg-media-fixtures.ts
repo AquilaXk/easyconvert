@@ -130,3 +130,12 @@ export function ffmpegVideoFrameHashes(bytes: Uint8Array, extension: string): st
       .map((line) => line.split(',').pop()?.trim() ?? '');
   });
 }
+
+/** Bytes of 16-bit PCM the reference decoder outputs for the first audio stream (every decoded sample, after trimming). */
+export function ffmpegDecodedAudioBytes(bytes: Uint8Array, extension: string): number {
+  return withFile(bytes, extension, (file) =>
+    execFileSync(requireFfmpeg(), ['-v', 'error', '-i', file, '-map', '0:a:0', '-f', 's16le', '-'], {
+      maxBuffer: MAX_FFMPEG_OUTPUT_BYTES,
+    }).byteLength
+  );
+}

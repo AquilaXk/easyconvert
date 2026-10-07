@@ -8,6 +8,7 @@ import { muxWebm } from '../src/lib/edge/media/webm-mux';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { walkWebm, WEBM_IDS, type WalkedWebm } from './helpers/ebml-walker';
 import {
+  ffmpegDecodedAudioBytes,
   ffmpegDecodeErrors,
   ffmpegVideoFrameHashes,
   requireEncoders,
@@ -723,7 +724,7 @@ describe('muxWebm writes the codec the encoder reported', () => {
 describe('muxOggOpus', () => {
   oracleTest('writes the encoder\'s OpusHead and packets in pages with valid checksums and counted granule positions', ['ffmpeg', 'ffprobe'], () => {
     requireEncoders('libopus');
-    const source = runFfmpeg([...sineInput(48000, 2), '-c:a', 'libopus', '-f', 'ogg'], 'opus');
+    const source = runFfmpeg([...sineInput(48000, 4), '-c:a', 'libopus', '-f', 'ogg'], 'opus');
     const sourceReport = ffprobeReport(new Uint8Array(source), 'opus');
     const sourcePages = walkOggPages(new Uint8Array(source));
     const sourcePackets = sourcePages.flatMap((page) => page.packets);
@@ -746,13 +747,34 @@ describe('muxOggOpus', () => {
     expect(new Set(pages.map((page) => page.serial)).size).toBe(1);
     expect(pages[0].granule).toBe(0n);
     expect(pages[1].granule).toBe(0n);
-    // RFC 7845 4: pre-skip plus every 48 kHz sample of the packets so far, which the TOC byte of each states
-    let expected = BigInt(preSkip);
-    audioPackets.forEach((packet, index) => {
-      expected += BigInt(opusPacketSamples(packet));
-      expect(pages[index + 2].granule).toBe(expected);
-      expect(pages[index + 2].packets).toEqual([packet]);
-    });
+    // The reference wrote its own granule positions for these very packets. Wherever one of its pages ends on a
+    // packet, the muxed page that ends on the same packet must carry the same granule (RFC 7845 4).
+    const referenceGranules = new Map<number, bigint>();
+    let packetIndex = -1;
+    for (const page of sourcePages) {
+      packetIndex += page.packets.length;
+      if (page.packets.length > 0) referenceGranules.set(packetIndex - 2, page.granule);
+    }
+    const muxedGranules = new Map<number, bigint>();
+    let muxedIndex = -1;
+    for (const page of pages) {
+      muxedIndex += page.packets.length;
+      if (page.packets.length > 0) muxedGranules.set(muxedIndex - 2, page.granule);
+    }
+    const lastAudioIndex = audioPackets.length - 1;
+    let compared = 0;
+    for (const [index, granule] of referenceGranules) {
+      if (index < 0 || index === lastAudioIndex) continue;
+      expect(muxedGranules.get(index)).toBe(granule);
+      compared++;
+    }
+    expect(compared).toBeGreaterThanOrEqual(3);
+    // The reference may cut the final granule to the input length; the muxer, which does not know it, must not exceed
+    // the reference by a whole packet nor fall short of it
+    const lastReference = referenceGranules.get(lastAudioIndex) as bigint;
+    const lastMuxed = muxedGranules.get(lastAudioIndex) as bigint;
+    expect(lastMuxed >= lastReference && lastMuxed - lastReference < 960n).toBe(true);
+    expect(preSkip).toBeGreaterThan(0);
 
     const outReport = ffprobeReport(out, 'opus');
     const outAudio = streamOf(outReport, 'audio');
@@ -761,6 +783,13 @@ describe('muxOggOpus', () => {
       packetsOf(sourceReport, streamOf(sourceReport, 'audio')).map((packet) => packet.data_hash)
     );
     expect(ffmpegDecodeErrors(out, 'opus')).toBe('');
+    // What the reference reads as the length of the file, and how many samples it decodes, must not grow
+    const sourceDuration = Number(sourceReport.format.duration);
+    const outDuration = Number(outReport.format.duration);
+    expect(Math.abs(outDuration - sourceDuration)).toBeLessThan(0.02);
+    const sourceBytes = ffmpegDecodedAudioBytes(new Uint8Array(source), 'opus');
+    const outBytes = ffmpegDecodedAudioBytes(out, 'opus');
+    expect(outBytes >= sourceBytes && outBytes - sourceBytes < 960 * 2 * 2).toBe(true);
   });
 
   it('reads the frame count and size from the TOC byte of the packet', () => {

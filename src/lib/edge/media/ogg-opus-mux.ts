@@ -20,7 +20,6 @@ const OGG_STREAM_SERIAL = 0x4f505553; // 'OPUS'
 const OPUS_HEAD_MAGIC = 'OpusHead';
 const OPUS_HEAD_MIN_BYTES = 19;
 const OPUS_HEAD_VERSION_OFFSET = 8;
-const OPUS_HEAD_PRE_SKIP_OFFSET = 10;
 /** The version byte's major nibble must be 0 (RFC 7845 5.1). */
 const OPUS_HEAD_MAJOR_VERSION_MASK = 0xf0;
 /** The 48 kHz sample count an Opus packet may hold at most: 120 ms. */
@@ -143,14 +142,14 @@ export function muxOggOpus(chunks: EncodedMediaChunk[], opusHead: Uint8Array | u
   ) {
     throw refuse('the encoder reported a decoder configuration that is not an OpusHead');
   }
-  const preSkip = new DataView(opusHead.buffer, opusHead.byteOffset, opusHead.byteLength).getUint16(OPUS_HEAD_PRE_SKIP_OFFSET, true);
 
   const pages: Uint8Array[] = [
     createOggPageTyped(opusHead, OGG_FLAG_BOS, 0n, 0, OGG_STREAM_SERIAL),
     createOggPageTyped(opusTagsPacket(), 0, 0n, 1, OGG_STREAM_SERIAL),
   ];
-  // RFC 7845 4: the granule position counts 48 kHz samples decoded so far, pre-skip included
-  let granule = BigInt(preSkip);
+  // RFC 7845 4: the granule position is the number of 48 kHz samples the decoder has produced so far. The pre-skip
+  // is part of that count (the decoder drops it from its output), so the muxer starts at zero and does not add it.
+  let granule = 0n;
   chunks.forEach((chunk, index) => {
     granule += BigInt(opusPacketSamples(chunk.data));
     const flags = index === chunks.length - 1 ? OGG_FLAG_EOS : 0;

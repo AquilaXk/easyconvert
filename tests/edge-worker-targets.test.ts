@@ -90,9 +90,9 @@ describe('what the edge worker writes for each audio target', () => {
     expect(pages.every((page) => page.crcValid)).toBe(true);
     expect(pages[0].packets[0]).toEqual(OPUS_HEAD);
     expect(pages).toHaveLength(2 + fakes.audioDataEncoded.length);
-    // pre-skip 312, then 960 samples per 20 ms packet
-    expect(pages[2].granule).toBe(312n + 960n);
-    expect(pages[pages.length - 1].granule).toBe(312n + 960n * BigInt(fakes.audioDataEncoded.length));
+    // 960 samples per 20 ms packet, counted from zero; the pre-skip is the decoder's to drop (RFC 7845 4)
+    expect(pages[2].granule).toBe(960n);
+    expect(pages[pages.length - 1].granule).toBe(960n * BigInt(fakes.audioDataEncoded.length));
   });
 
   it('refuses a target whose encoder reported nothing the container needs', async () => {
