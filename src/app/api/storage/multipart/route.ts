@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
+import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import type { UserTier } from '@/lib/auth/types';
+import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +21,43 @@ const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
 };
 
 const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
+
+/** The session operations the multipart actions need; every shipped backend provides them. */
+type MultipartCapableStorage = IStorageBackend &
+  Required<Pick<IStorageBackend, 'getUploadSession' | 'getUploadOwner' | 'uploadPartStream' | 'getUploadedParts'>>;
+
+function supportsMultipartSessions(storage: IStorageBackend): storage is MultipartCapableStorage {
+  return Boolean(
+    storage.getUploadSession && storage.getUploadOwner && storage.uploadPartStream && storage.getUploadedParts
+  );
+}
+
+/** The reason a presign request's key or expiry cannot be used, or undefined when both are acceptable. */
+function presignInputProblem(key: unknown, expiresInSeconds: unknown): string | undefined {
+  if (typeof key !== 'string' || key.length === 0) {
+    return 'Missing required "key" in presign payload.';
+  }
+  try {
+    assertValidObjectKey(key);
+  } catch (err: unknown) {
+    if (err instanceof SigV4SigningError) return 'The "key" in the presign payload is not a valid object key.';
+    throw err;
+  }
+  if (
+    expiresInSeconds !== undefined &&
+    (typeof expiresInSeconds !== 'number' ||
+      !Number.isInteger(expiresInSeconds) ||
+      expiresInSeconds < PRESIGN_MIN_EXPIRES_SECONDS ||
+      expiresInSeconds > PRESIGN_MAX_EXPIRES_SECONDS)
+  ) {
+    return `"expiresInSeconds" must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS}.`;
+  }
+  return undefined;
+}
+
+function sameEtag(a: string, b: string): boolean {
+  return a.replace(/"/g, '') === b.replace(/"/g, '');
+}
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/storage/multipart';
@@ -41,6 +82,15 @@ export async function POST(req: NextRequest) {
   }
 
   const currentUser = auth.user;
+
+  if (!supportsMultipartSessions(storageProvider)) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider does not support multipart upload sessions.',
+      instanceUri
+    );
+  }
+  const storage: MultipartCapableStorage = storageProvider;
 
   try {
     // 1. Initiate Multipart Upload
@@ -76,7 +126,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const initResult = s3Storage.initiateMultipartUpload(
+      const initResult = await storage.initiateMultipartUpload(
         filename,
         mimeType || 'application/octet-stream',
         totalSize,
@@ -98,7 +148,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const session = s3Storage.getUploadSession(uploadId);
+      const session = await storage.getUploadSession(uploadId);
       if (!session || !session.ownerUserId || session.ownerUserId !== currentUser.id) {
         return createProblemDetailsResponse(
           404,
@@ -120,8 +170,8 @@ export async function POST(req: NextRequest) {
         (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
 
       let currentSessionBytes = 0;
-      for (const [pNum, partInfo] of session.parts.entries()) {
-        if (pNum !== partNumber) {
+      for (const partInfo of (await storage.getUploadedParts(uploadId)) ?? []) {
+        if (partInfo.partNumber !== partNumber) {
           currentSessionBytes += partInfo.size;
         }
       }
@@ -154,7 +204,7 @@ export async function POST(req: NextRequest) {
       }
 
       try {
-        const partResult = await s3Storage.uploadPartStream(
+        const partResult = await storage.uploadPartStream(
           uploadId,
           partNumber,
           req.body,
@@ -164,6 +214,8 @@ export async function POST(req: NextRequest) {
         );
         return NextResponse.json({ success: true, ...partResult });
       } catch (err: any) {
+        const storageProblem = storageErrorResponse(err, instanceUri);
+        if (storageProblem) return storageProblem;
         const statusCode = err?.statusCode || (err?.message?.includes('exceeds') ? 413 : 400);
         return createProblemDetailsResponse(
           statusCode,
@@ -186,7 +238,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const session = s3Storage.getUploadSession(uploadId);
+      const session = await storage.getUploadSession(uploadId);
       if (!session || !session.ownerUserId || session.ownerUserId !== currentUser.id) {
         return createProblemDetailsResponse(
           404,
@@ -194,6 +246,10 @@ export async function POST(req: NextRequest) {
           instanceUri
         );
       }
+
+      const uploadedParts = new Map(
+        ((await storage.getUploadedParts(uploadId)) ?? []).map((part) => [part.partNumber, part] as const)
+      );
 
       if (parts !== undefined) {
         if (!Array.isArray(parts) || parts.length === 0) {
@@ -211,7 +267,7 @@ export async function POST(req: NextRequest) {
               instanceUri
             );
           }
-          const sessionPart = session.parts.get(p.partNumber);
+          const sessionPart = uploadedParts.get(p.partNumber);
           if (!sessionPart) {
             return createProblemDetailsResponse(
               400,
@@ -219,7 +275,7 @@ export async function POST(req: NextRequest) {
               instanceUri
             );
           }
-          if (p.etag && p.etag !== sessionPart.etag) {
+          if (p.etag && !sameEtag(p.etag, sessionPart.etag)) {
             return createProblemDetailsResponse(
               400,
               `ETag mismatch for part number ${p.partNumber}.`,
@@ -231,8 +287,8 @@ export async function POST(req: NextRequest) {
 
       let totalPartBytes = 0;
       const targetParts = parts && Array.isArray(parts)
-        ? parts.map((p: any) => session.parts.get(p.partNumber)!)
-        : Array.from(session.parts.values());
+        ? parts.map((p: any) => uploadedParts.get(p.partNumber)!)
+        : Array.from(uploadedParts.values());
 
       for (const partInfo of targetParts) {
         if (partInfo) {
@@ -249,7 +305,17 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const completeResult = s3Storage.completeMultipartUpload(uploadId, parts);
+      const completeResult = await storage.completeMultipartUpload(uploadId, parts);
+      // Parts can be added to an open session between the listing above and the completion, so
+      // the size that was actually assembled is checked again, and an object over the cap is removed.
+      if (completeResult.size > maxAllowedBytes) {
+        await storage.deleteObject(completeResult.key);
+        return createProblemDetailsResponse(
+          400,
+          `Completed upload size ${completeResult.size} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
+          instanceUri
+        );
+      }
       return NextResponse.json({ success: true, ...completeResult });
     }
 
@@ -265,7 +331,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const sessionOwner = s3Storage.getUploadOwner(uploadId);
+      const sessionOwner = await storage.getUploadOwner(uploadId);
       if (!sessionOwner || sessionOwner !== currentUser.id) {
         return createProblemDetailsResponse(
           404,
@@ -274,7 +340,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const aborted = s3Storage.abortMultipartUpload(uploadId);
+      const aborted = await storage.abortMultipartUpload(uploadId);
       return NextResponse.json({ success: aborted });
     }
 
@@ -283,12 +349,9 @@ export async function POST(req: NextRequest) {
       const body = await req.json().catch(() => ({}));
       const { type = 'upload', key, partNumber, uploadId, expiresInSeconds } = body;
 
-      if (!key) {
-        return createProblemDetailsResponse(
-          400,
-          'Missing required "key" in presign payload.',
-          instanceUri
-        );
+      const inputProblem = presignInputProblem(key, expiresInSeconds);
+      if (inputProblem) {
+        return createProblemDetailsResponse(400, inputProblem, instanceUri);
       }
 
       if (type === 'upload') {
@@ -300,7 +363,7 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        const sessionOwner = s3Storage.getUploadOwner(uploadId);
+        const sessionOwner = await storage.getUploadOwner(uploadId);
         if (!sessionOwner || sessionOwner !== currentUser.id) {
           return createProblemDetailsResponse(
             404,
@@ -309,13 +372,21 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        if (s3Storage.generatePresignedUploadUrl) {
-          const presigned = s3Storage.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
+        if (storage.generatePresignedUploadUrl) {
+          const presigned = await storage.generatePresignedUploadUrl(
+            key,
+            partNumber,
+            uploadId,
+            Math.min(expiresInSeconds ?? PART_URL_TTL_SECONDS, PART_URL_TTL_SECONDS)
+          );
           return NextResponse.json({ success: true, ...presigned });
         }
       } else if (type === 'download') {
+        // A signed URL needs no further authentication, so it is issued only for a key the caller
+        // provably owns: an unresolved owner (job record unreadable), an ownerless key and another
+        // user's key are all answered like a missing object.
         const ownership = await resolveObjectOwnership(key);
-        if (ownership.resolved && ownership.ownerUserId && ownership.ownerUserId !== currentUser.id) {
+        if (!ownership.resolved || ownership.ownerUserId !== currentUser.id) {
           return createProblemDetailsResponse(
             404,
             STORAGE_OBJECT_NOT_FOUND,
@@ -323,8 +394,11 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        if (s3Storage.generatePresignedDownloadUrl) {
-          const presigned = s3Storage.generatePresignedDownloadUrl(key, expiresInSeconds);
+        if (storage.generatePresignedDownloadUrl) {
+          const presigned = await storage.generatePresignedDownloadUrl(
+            key,
+            Math.min(expiresInSeconds ?? DOWNLOAD_PRESIGN_MAX_SECONDS, DOWNLOAD_PRESIGN_MAX_SECONDS)
+          );
           return NextResponse.json({ success: true, ...presigned });
         }
       }
@@ -342,6 +416,8 @@ export async function POST(req: NextRequest) {
       instanceUri
     );
   } catch (error: any) {
+    const storageProblem = storageErrorResponse(error, instanceUri);
+    if (storageProblem) return storageProblem;
     console.error('Storage operation error:', error);
     const safeMessage = error instanceof Error && !error.message.includes('/') && !error.message.includes('\\')
       ? error.message

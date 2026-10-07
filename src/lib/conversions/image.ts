@@ -1,9 +1,13 @@
 import zlib from 'node:zlib';
-import sharp, { type Metadata, type Sharp } from 'sharp';
+import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
-import { buildOpenXpsPackage } from './openxps';
-import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
+import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
+import { encodeDecodedAnimation, joinPageTiffs, zipPageImages } from './image-frame-output';
+import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
+import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
+import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
+import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
   quantizeMedianCut,
   quantizeNeuQuant,
@@ -2395,8 +2399,9 @@ export const AVIF_EFFORT = 3;
  * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
  * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
  * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
- * keep only their EXIF block (orientation included) and reach the encoder as plain device RGB, so the
- * high byte of each sample is what reaches an 8-bit output.
+ * keep only their EXIF block and reach the encoder as plain device RGB, so the high byte of each sample
+ * is what reaches an 8-bit output. The pipeline has already been auto-oriented, which removes the
+ * Orientation tag from the kept EXIF block.
  */
 async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
   const meta = await pipeline.metadata();
@@ -2404,14 +2409,110 @@ async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
   return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
 }
 
+/** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
+function toImageDecodeError(err: unknown): ConversionFailedError {
+  const pixelLimit = asInputPixelLimitError(err);
+  if (pixelLimit instanceof ConversionFailedError) return pixelLimit;
+  if (err instanceof ConversionFailedError) return err;
+  const detail = err instanceof Error ? err.message : String(err);
+  const failure = new ConversionFailedError(`Invalid image: it could not be decoded (${detail})`);
+  failure.cause = err;
+  return failure;
+}
+
+/** libvips and sharp report a source they cannot read this way (loaders, `*2vips`, corrupt or short input). */
+const DECODE_FAILURE_PATTERN =
+  /Input (buffer|file)|\b\w*load\w*:|\w+2vips:|corrupt|premature end|end of stream|truncated|unsupported image format|\bread error\b/i;
+
+/**
+ * Names a sharp/libvips failure after what failed: a source that cannot be read is a decode error, anything
+ * else met while writing the output is an encode error. Typed conversion errors and non-library failures
+ * (type errors, exhausted memory) pass through unchanged.
+ */
+function toImageFailure(err: unknown, target: string): unknown {
+  const pixelLimit = asInputPixelLimitError(err);
+  if (pixelLimit instanceof ConversionFailedError) return pixelLimit;
+  if (err instanceof ConversionFailedError) return err;
+  const isLibraryError = err instanceof Error && err.constructor === Error;
+  if (!isLibraryError) return err;
+  if (DECODE_FAILURE_PATTERN.test(err.message)) return toImageDecodeError(err);
+  const failure = new ConversionFailedError(`Cannot encode the image as .${target} (${err.message})`);
+  failure.cause = err;
+  return failure;
+}
+
+const RGB_CHANNEL_COUNT = 3;
+const DEFAULT_QUALITY = 85;
+/** First EXIF orientation that turns the picture a quarter turn (width and height swap). */
+const FIRST_QUARTER_TURN_ORIENTATION = 5;
+const MIN_PALETTE_COLOURS = 2;
+const MAX_PALETTE_COLOURS = 256;
+const FULL_DITHER = 1.0;
+const NO_DITHER = 0.0;
+const QUALITY_RANGE = { min: 1, max: 100 } as const;
+
+/** The validated width, height and fit the request asks for, or null when it does not resize. */
+function requestedResizeOf(options: ConversionOptions): PageResize | null {
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  if (width === undefined && height === undefined) return null;
+  return { width, height, fit: options.fit || 'contain' };
+}
+
+/**
+ * Resize parameters for the requested width/height, or null when the request does not resize. The sides are
+ * validated here, before sharp sees them, and a box over the output pixel limit is refused.
+ */
+function resizeOptionsOf(
+  options: ConversionOptions,
+  background: ReturnType<typeof parseBackground>,
+  isOpaqueTarget: boolean
+): ResizeOptions | null {
+  const requested = requestedResizeOf(options);
+  if (!requested) return null;
+  if (requested.width !== undefined && requested.height !== undefined) assertOutputPixels(requested.width, requested.height);
+  return {
+    width: requested.width,
+    height: requested.height,
+    fit: requested.fit,
+    background: letterboxColour(background, isOpaqueTarget),
+  };
+}
+
+/** File extension of a target format's output (Ultra HDR is a JPEG). */
+function outputExtensionOf(fmt: string): string {
+  return fmt === 'ultrahdr' ? 'jpg' : fmt;
+}
+
+/** The custom quantizers work on a single frame; applying them to a stacked animation would merge its frames. */
+function assertAnimatableOptions(options: ConversionOptions): void {
+  if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma' || options.ditherMethod === 'blue-noise') {
+    throw new UnsupportedOptionError(
+      'The oklab quantizer, riemersma and blue-noise dithering work on one frame and cannot be applied to an animated GIF; remove them or select a single frame with the "page" option'
+    );
+  }
+}
+
+/** The EPS, EXR and Ultra HDR encoders read three bytes per pixel; any other layout would shear the picture. */
+function assertRgbSamples(info: OutputInfo, target: string): void {
+  if (info.channels !== RGB_CHANNEL_COUNT) {
+    throw new ConversionFailedError(
+      `Cannot encode .${target}: expected 3 colour channels per pixel but the decoded image has ${info.channels}`
+    );
+  }
+}
+
 /**
  * The float arrays of EXR and Ultra HDR output are width x height x 3 values: refuse a picture over the HDR
  * budget from its header, with the resize that will be applied, before the raster is decoded.
  */
 async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
-  const { width, height } = await pipeline.metadata();
+  const { width, height, orientation } = await pipeline.metadata();
   if (width === undefined || height === undefined) return;
-  const target = resizedDimensions(width, height, options);
+  // The picture is turned upright before it is resized, so a quarter-turn orientation swaps the sides.
+  const quarterTurn = (orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+  const upright = quarterTurn ? { width: height, height: width } : { width, height };
+  const target = resizedDimensions(upright.width, upright.height, options);
   assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
 }
 
@@ -2425,6 +2526,8 @@ export async function convertImage(
   const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
   const fmt = targetFormat.toLowerCase();
   const src = (sourceFormat || '').toLowerCase();
+  // Checked before any early-return target (PDF, hOCR, ALTO) does work.
+  const background = parseBackground(options.background);
 
   // Special case: Image to PDF
   if (fmt === 'pdf') {
@@ -2454,6 +2557,8 @@ export async function convertImage(
       ocrConfidence: ocrResult.confidence,
     };
   }
+
+  const isOpaqueTarget = OPAQUE_IMAGE_TARGETS.has(fmt);
 
   // Sanitize SVG inputs against Stored XSS
   let activeBuffer = inputBuffer;
@@ -2500,6 +2605,61 @@ export async function convertImage(
   }
 
   let pipeline: Sharp;
+  let frameSelection: FrameSelection | undefined;
+
+  /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
+  const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
+    const frameFields = { sourceFrameCount: selection.sourceFrameCount, frameUsed: selection.frameUsed };
+    if (selection.animation) {
+      assertAnimatableOptions(options);
+      const animated = await encodeDecodedAnimation(
+        selection.animation,
+        fmt as 'gif' | 'webp',
+        resizeOptionsOf(options, background, false),
+        {
+          quality: options.quality ? Math.max(QUALITY_RANGE.min, Math.min(QUALITY_RANGE.max, options.quality)) : DEFAULT_QUALITY,
+          colours: Math.min(MAX_PALETTE_COLOURS, Math.max(MIN_PALETTE_COLOURS, options.colors || MAX_PALETTE_COLOURS)),
+          dither: options.dither !== false ? FULL_DITHER : NO_DITHER,
+        }
+      );
+      return {
+        buffer: animated,
+        mimeType: fmt === 'gif' ? 'image/gif' : 'image/webp',
+        filename: `${baseName}.${fmt}`,
+        size: animated.length,
+        ...frameFields,
+      };
+    }
+    const convertPage = (page: number) =>
+      convertImage(
+        inputBuffer,
+        targetFormat,
+        { ...options, page, pages: undefined, multiPageOutput: undefined },
+        originalFilename,
+        sourceFormat
+      );
+    if (selection.tiffPages) {
+      const joined = await joinPageTiffs(selection.tiffPages, convertPage);
+      return {
+        buffer: joined,
+        mimeType: 'image/tiff',
+        filename: `${baseName}.${outputExtensionOf(fmt)}`,
+        size: joined.length,
+        ...frameFields,
+      };
+    }
+    if (selection.zipPages) {
+      const zipped = await zipPageImages(selection.zipPages, convertPage, baseName, outputExtensionOf(fmt));
+      return {
+        buffer: zipped,
+        mimeType: 'application/zip',
+        filename: `${baseName}.zip`,
+        size: zipped.length,
+        ...frameFields,
+      };
+    }
+    return null;
+  };
 
   try {
     if (rawDemosaiced) {
@@ -2575,12 +2735,23 @@ export async function convertImage(
         raw: { width: uHdr.width, height: uHdr.height, channels: 3 },
       });
     } else {
-      pipeline = await openInputImage(activeBuffer);
+      // Multi-frame sources: animated targets keep every frame, still targets take frame 1 (or `page`),
+      // multi-page documents become one image per page.
+      // The declared canvas is checked from the header before any frame or page is decoded.
+      await assertEncodedImageWithinLimit(activeBuffer);
+      frameSelection = await selectFrames(activeBuffer, fmt, options, requestedResizeOf(options));
+      const packaged = await packageMultiFrameSource(frameSelection);
+      if (packaged) return packaged;
+      pipeline = openLimitedSharp(frameSelection.source, frameSelection.input);
     }
 
     if (isRawInput) {
       await pipeline.metadata();
     }
+
+    // Apply the EXIF Orientation (1-8) to the pixels before any resize, so sizes follow the upright image,
+    // and drop the tag so metadata kept on the output never makes a viewer rotate the image a second time.
+    pipeline = pipeline.rotate();
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
@@ -2598,71 +2769,272 @@ export async function convertImage(
         throw new RawEngineRequiredError(`Unsupported camera RAW format '${src}': unable to decode RAW sensor data without native RAW decoder`);
       }
     } else {
-      throw err;
+      throw toImageDecodeError(err);
     }
   }
 
+  // libvips uses only the first component of a background colour for 1 and 2 band (gray) images; work in
+  // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
+  if (background !== undefined || isOpaqueTarget) {
+    pipeline = pipeline.pipelineColourspace('srgb');
+  }
+
   // Resize options
-  if (options.width || options.height) {
-    pipeline = pipeline.resize({
-      width: options.width ? Number(options.width) : undefined,
-      height: options.height ? Number(options.height) : undefined,
-      fit: options.fit || 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
-    });
+  const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
+  if (resizeOptions) {
+    const canvas = frameSelection?.keepsAnimation ? frameSelection.canvas : undefined;
+    if (canvas) {
+      const resized = resizedDimensions(canvas.width, canvas.height, resizeOptions);
+      assertAnimationBudget(resized.width, resized.height, canvas.frames, 'The resized animation');
+    } else {
+      const source = await pipeline.metadata();
+      const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+      const sourceWidth = (swapsSides ? source.height : source.width) ?? 0;
+      const sourceHeight = (swapsSides ? source.width : source.height) ?? 0;
+      if (sourceWidth > 0 && sourceHeight > 0) {
+        const resized = resizedDimensions(sourceWidth, sourceHeight, resizeOptions);
+        assertOutputPixels(resized.width, resized.height);
+      }
+    }
+    pipeline = pipeline.resize(resizeOptions);
+  }
+
+  // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
+  if (isOpaqueTarget) {
+    pipeline = pipeline.flatten({ background: flattenColour(background) });
   }
 
 
-  const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 85;
+  const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : DEFAULT_QUALITY;
 
   let outputBuffer: Buffer;
   let mimeType: string;
 
-  switch (fmt) {
-    case 'jpg':
-    case 'jpeg':
-      if (options.gainMap && rawDemosaiced && rawDemosaiced.rgbFloat) {
-        outputBuffer = await encodeUltraHdrJpeg(
-          rawDemosaiced.rgb,
-          rawDemosaiced.rgbFloat,
-          rawDemosaiced.width,
-          rawDemosaiced.height,
-          { quality }
-        );
-      } else {
-        outputBuffer = await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer();
-      }
-      mimeType = 'image/jpeg';
-      break;
+  try {
+    switch (fmt) {
+      case 'jpg':
+      case 'jpeg':
+        if (options.gainMap && rawDemosaiced && rawDemosaiced.rgbFloat) {
+          outputBuffer = await encodeUltraHdrJpeg(
+            rawDemosaiced.rgb,
+            rawDemosaiced.rgbFloat,
+            rawDemosaiced.width,
+            rawDemosaiced.height,
+            { quality }
+          );
+        } else {
+          outputBuffer = await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer();
+        }
+        mimeType = 'image/jpeg';
+        break;
 
-    case 'png': {
-      if (
-        (options.outputDepth === 16 || options.colorDepth === 16) &&
-        rawDemosaiced &&
-        rawDemosaiced.rgb16
-      ) {
-        const icc =
-          options.targetColorSpace === 'display-p3'
-            ? DISPLAY_P3_ICC
-            : options.targetColorSpace === 'rec2020'
-            ? REC2020_ICC
-            : undefined;
-        outputBuffer = encode16BitPng(
-          rawDemosaiced.width,
-          rawDemosaiced.height,
-          rawDemosaiced.rgb16,
-          icc
-        );
+      case 'png': {
+        if (
+          (options.outputDepth === 16 || options.colorDepth === 16) &&
+          rawDemosaiced &&
+          rawDemosaiced.rgb16
+        ) {
+          const icc =
+            options.targetColorSpace === 'display-p3'
+              ? DISPLAY_P3_ICC
+              : options.targetColorSpace === 'rec2020'
+              ? REC2020_ICC
+              : undefined;
+          outputBuffer = encode16BitPng(
+            rawDemosaiced.width,
+            rawDemosaiced.height,
+            rawDemosaiced.rgb16,
+            icc
+          );
+          mimeType = 'image/png';
+          break;
+        }
+        if (options.colorDepth === 8 || options.palette || options.quantizer === 'oklab') {
+          const colours = Math.min(256, Math.max(2, options.colors || 256));
+          if (
+            options.quantizer === 'oklab' ||
+            options.ditherMethod === 'riemersma' ||
+            options.ditherMethod === 'blue-noise'
+          ) {
+            const { data, info } = await pipeline
+              .ensureAlpha()
+              .raw()
+              .toBuffer({ resolveWithObject: true });
+
+            let rgbaBuffer: Buffer;
+            if (options.ditherMethod === 'blue-noise') {
+              const rawRgb = Buffer.alloc(info.width * info.height * 3);
+              for (let i = 0; i < info.width * info.height; i++) {
+                rawRgb[i * 3] = data[i * 4];
+                rawRgb[i * 3 + 1] = data[i * 4 + 1];
+                rawRgb[i * 3 + 2] = data[i * 4 + 2];
+              }
+              const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+                dither: options.dither !== false,
+                ditherMethod: 'blue-noise',
+              });
+              const reconstructed = Buffer.alloc(info.width * info.height * 4);
+              for (let i = 0; i < wu.indexedPixels.length; i++) {
+                const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
+                const off = i * 4;
+                reconstructed[off] = c.r;
+                reconstructed[off + 1] = c.g;
+                reconstructed[off + 2] = c.b;
+                reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
+              }
+              rgbaBuffer = reconstructed;
+            } else {
+              assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
+              const oklabRes = applyOklabQuantizationAndDither(
+                { data, width: info.width, height: info.height },
+                colours,
+                options.dither !== false
+              );
+              rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
+            }
+
+            outputBuffer = await sharp(rgbaBuffer, {
+              raw: { width: info.width, height: info.height, channels: 4 },
+            })
+              .png({ palette: true, colours, compressionLevel: 8 })
+              .toBuffer();
+          } else {
+            outputBuffer = await pipeline
+              .png({
+                palette: true,
+                colours,
+                dither: options.dither !== false ? 1.0 : 0.0,
+                compressionLevel: 8,
+              })
+              .toBuffer();
+          }
+        } else {
+          outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+        }
         mimeType = 'image/png';
         break;
       }
-      if (options.colorDepth === 8 || options.palette || options.quantizer === 'oklab') {
+
+      case 'webp':
+        outputBuffer = await pipeline.webp({ quality }).toBuffer();
+        mimeType = 'image/webp';
+        break;
+
+      case 'avif':
+        outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
+        mimeType = 'image/avif';
+        break;
+
+      case 'tiff': {
+        if (
+          (options.outputDepth === 16 || options.colorDepth === 16) &&
+          rawDemosaiced &&
+          rawDemosaiced.rgb16
+        ) {
+          const icc =
+            options.targetColorSpace === 'display-p3'
+              ? DISPLAY_P3_ICC
+              : options.targetColorSpace === 'rec2020'
+              ? REC2020_ICC
+              : undefined;
+          outputBuffer = encode16BitTiff(
+            rawDemosaiced.width,
+            rawDemosaiced.height,
+            rawDemosaiced.rgb16,
+            icc
+          );
+        } else {
+          outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+        }
+        mimeType = 'image/tiff';
+        break;
+      }
+
+      case 'exr': {
+        if (rawDemosaiced && rawDemosaiced.rgbFloat) {
+          outputBuffer = encodeOpenExr(
+            rawDemosaiced.rgbFloat,
+            rawDemosaiced.width,
+            rawDemosaiced.height,
+            options.outputDepth !== 32
+          );
+        } else {
+          let hdrFloat: Float32Array | null = null;
+          let imgW = 0;
+          let imgH = 0;
+          if (src === 'ultrahdr') {
+            const uHdr = await reconstructUltraHdr(activeBuffer);
+            hdrFloat = uHdr.rgbFloat;
+            imgW = uHdr.width;
+            imgH = uHdr.height;
+          } else {
+            try {
+              const uHdr = await reconstructUltraHdr(activeBuffer);
+              hdrFloat = uHdr.rgbFloat;
+              imgW = uHdr.width;
+              imgH = uHdr.height;
+            } catch (err) {
+              // Standard non-UltraHDR image; an image over the pixel limit is never tolerated.
+              rethrowInputPixelLimit(err);
+            }
+          }
+
+          if (hdrFloat && imgW > 0 && imgH > 0) {
+            outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
+          } else {
+            await assertFloatBudgetBeforeDecode(pipeline, options);
+            const { data, info } = await pipeline
+              .raw()
+              .toBuffer({ resolveWithObject: true });
+            assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
+            assertRgbSamples(info, fmt);
+            const floatPix = new Float32Array(info.width * info.height * 3);
+            for (let i = 0; i < data.length; i++) {
+              floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+            }
+            outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+          }
+        }
+        mimeType = 'image/x-exr';
+        break;
+      }
+
+      case 'ultrahdr': {
+        if (rawDemosaiced && rawDemosaiced.rgbFloat) {
+          outputBuffer = await encodeUltraHdrJpeg(
+            rawDemosaiced.rgb,
+            rawDemosaiced.rgbFloat,
+            rawDemosaiced.width,
+            rawDemosaiced.height,
+            { quality }
+          );
+        } else {
+          await assertFloatBudgetBeforeDecode(pipeline, options);
+          const { data, info } = await pipeline
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
+          assertRgbSamples(info, fmt);
+          const floatPix = new Float32Array(info.width * info.height * 3);
+          for (let i = 0; i < data.length; i++) {
+            floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+          }
+          outputBuffer = await encodeUltraHdrJpeg(data, floatPix, info.width, info.height, { quality });
+        }
+        mimeType = 'image/jpeg';
+        break;
+      }
+
+      case 'gif': {
         const colours = Math.min(256, Math.max(2, options.colors || 256));
         if (
           options.quantizer === 'oklab' ||
           options.ditherMethod === 'riemersma' ||
           options.ditherMethod === 'blue-noise'
         ) {
+          if (frameSelection?.keepsAnimation) {
+            assertAnimatableOptions(options);
+          }
           const { data, info } = await pipeline
             .ensureAlpha()
             .raw()
@@ -2703,380 +3075,247 @@ export async function convertImage(
           outputBuffer = await sharp(rgbaBuffer, {
             raw: { width: info.width, height: info.height, channels: 4 },
           })
-            .png({ palette: true, colours, compressionLevel: 8 })
+            .gif({ colours, dither: 0.0 })
             .toBuffer();
         } else {
-          outputBuffer = await pipeline
-            .png({
-              palette: true,
-              colours,
-              dither: options.dither !== false ? 1.0 : 0.0,
-              compressionLevel: 8,
-            })
-            .toBuffer();
+          outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
         }
-      } else {
-        outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+        mimeType = 'image/gif';
+        break;
       }
-      mimeType = 'image/png';
-      break;
-    }
 
-    case 'webp':
-      outputBuffer = await pipeline.webp({ quality }).toBuffer();
-      mimeType = 'image/webp';
-      break;
+      case 'bmp': {
+        // Deterministic raw RGBA extraction and standard BMP binary generation
+        const { data, info } = await pipeline
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
 
-    case 'avif':
-      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
-      mimeType = 'image/avif';
-      break;
-
-    case 'tiff': {
-      if (
-        (options.outputDepth === 16 || options.colorDepth === 16) &&
-        rawDemosaiced &&
-        rawDemosaiced.rgb16
-      ) {
-        const icc =
-          options.targetColorSpace === 'display-p3'
-            ? DISPLAY_P3_ICC
-            : options.targetColorSpace === 'rec2020'
-            ? REC2020_ICC
-            : undefined;
-        outputBuffer = encode16BitTiff(
-          rawDemosaiced.width,
-          rawDemosaiced.height,
-          rawDemosaiced.rgb16,
-          icc
-        );
-      } else {
-        outputBuffer = await pipeline.tiff({ quality }).toBuffer();
-      }
-      mimeType = 'image/tiff';
-      break;
-    }
-
-    case 'exr': {
-      if (rawDemosaiced && rawDemosaiced.rgbFloat) {
-        outputBuffer = encodeOpenExr(
-          rawDemosaiced.rgbFloat,
-          rawDemosaiced.width,
-          rawDemosaiced.height,
-          options.outputDepth !== 32
-        );
-      } else {
-        let hdrFloat: Float32Array | null = null;
-        let imgW = 0;
-        let imgH = 0;
-        if (src === 'ultrahdr') {
-          const uHdr = await reconstructUltraHdr(activeBuffer);
-          hdrFloat = uHdr.rgbFloat;
-          imgW = uHdr.width;
-          imgH = uHdr.height;
-        } else {
-          try {
-            const uHdr = await reconstructUltraHdr(activeBuffer);
-            hdrFloat = uHdr.rgbFloat;
-            imgW = uHdr.width;
-            imgH = uHdr.height;
-          } catch (err) {
-            // Standard non-UltraHDR image; an image over the pixel limit is never tolerated.
-            rethrowInputPixelLimit(err);
+        if (options.colorDepth === 8 || options.palette) {
+          const colours = Math.min(256, Math.max(2, options.colors || 256));
+          const rawRgb = Buffer.alloc(info.width * info.height * 3);
+          for (let i = 0; i < info.width * info.height; i++) {
+            rawRgb[i * 3] = data[i * 4];
+            rawRgb[i * 3 + 1] = data[i * 4 + 1];
+            rawRgb[i * 3 + 2] = data[i * 4 + 2];
           }
-        }
 
-        if (hdrFloat && imgW > 0 && imgH > 0) {
-          outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
+          if (options.ditherMethod === 'blue-noise') {
+            const quant = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+              dither: options.dither !== false,
+              ditherMethod: 'blue-noise',
+            });
+            outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+          } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
+          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
+            const res = applyOklabQuantizationAndDither(
+              { data, width: info.width, height: info.height },
+              colours,
+              options.dither !== false
+            );
+            outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
+          } else {
+            const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
+            outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
+          }
         } else {
-          await assertFloatBudgetBeforeDecode(pipeline, options);
-          const { data, info } = await pipeline
-            .removeAlpha()
+          outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
+        }
+        mimeType = 'image/bmp';
+        break;
+      }
+
+      case 'ico': {
+        // Resize to valid icon dimension (up to 256x256) and package with ICONDIR header
+        const icoPipeline = pipeline.clone().resize({
+          width: Math.min(256, options.width || 256),
+          height: Math.min(256, options.height || 256),
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        });
+
+        if (
+          options.colorDepth === 8 ||
+          options.palette ||
+          options.quantizer === 'oklab' ||
+          options.ditherMethod === 'riemersma' ||
+          options.ditherMethod === 'blue-noise'
+        ) {
+          const { data, info } = await icoPipeline
+            .ensureAlpha()
             .raw()
             .toBuffer({ resolveWithObject: true });
-          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
-          const floatPix = new Float32Array(info.width * info.height * 3);
-          for (let i = 0; i < data.length; i++) {
-            floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+          const colours = Math.min(256, Math.max(2, options.colors || 256));
+          let rgbaBuffer: Buffer;
+          if (options.ditherMethod === 'blue-noise') {
+            const rawRgb = Buffer.alloc(info.width * info.height * 3);
+            for (let i = 0; i < info.width * info.height; i++) {
+              rawRgb[i * 3] = data[i * 4];
+              rawRgb[i * 3 + 1] = data[i * 4 + 1];
+              rawRgb[i * 3 + 2] = data[i * 4 + 2];
+            }
+            const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
+              dither: options.dither !== false,
+              ditherMethod: 'blue-noise',
+            });
+            const reconstructed = Buffer.alloc(info.width * info.height * 4);
+            for (let i = 0; i < wu.indexedPixels.length; i++) {
+              const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
+              const off = i * 4;
+              reconstructed[off] = c.r;
+              reconstructed[off + 1] = c.g;
+              reconstructed[off + 2] = c.b;
+              reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
+            }
+            rgbaBuffer = reconstructed;
+          } else {
+            assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
+            const oklabRes = applyOklabQuantizationAndDither(
+              { data, width: info.width, height: info.height },
+              colours,
+              options.dither !== false
+            );
+            rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
           }
-          outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+          const pngBuf = await sharp(rgbaBuffer, {
+            raw: { width: info.width, height: info.height, channels: 4 },
+          })
+            .png({ palette: true, colours, compressionLevel: 8 })
+            .toBuffer();
+          outputBuffer = encodeIco(pngBuf, info.width, info.height);
+        } else {
+          const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
+          outputBuffer = encodeIco(pngBuf, info.width, info.height);
         }
+        mimeType = 'image/x-icon';
+        break;
       }
-      mimeType = 'image/x-exr';
-      break;
-    }
 
-    case 'ultrahdr': {
-      if (rawDemosaiced && rawDemosaiced.rgbFloat) {
-        outputBuffer = await encodeUltraHdrJpeg(
-          rawDemosaiced.rgb,
-          rawDemosaiced.rgbFloat,
-          rawDemosaiced.width,
-          rawDemosaiced.height,
-          { quality }
-        );
-      } else {
-        await assertFloatBudgetBeforeDecode(pipeline, options);
-        const { data, info } = await pipeline
-          .removeAlpha()
+      case 'icns': {
+        const icnsPipeline = pipeline.clone().resize({
+          width: 256,
+          height: 256,
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        });
+        const pngBuf = await icnsPipeline.png().toBuffer();
+        outputBuffer = encodeIcns(pngBuf);
+        mimeType = 'image/x-icns';
+        break;
+      }
+
+      case 'psd': {
+        const { data: pngBuf, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
+        outputBuffer = encodePsd(pngBuf, info.width, info.height);
+        mimeType = 'image/vnd.adobe.photoshop';
+        break;
+      }
+
+      case 'eps':
+      case 'ps': {
+        const { data: rawRgb, info } = await pipeline
           .raw()
           .toBuffer({ resolveWithObject: true });
-        assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
-        const floatPix = new Float32Array(info.width * info.height * 3);
-        for (let i = 0; i < data.length; i++) {
-          floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
-        }
-        outputBuffer = await encodeUltraHdrJpeg(data, floatPix, info.width, info.height, { quality });
+        assertRgbSamples(info, fmt);
+        outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
+        mimeType = 'application/postscript';
+        break;
       }
-      mimeType = 'image/jpeg';
-      break;
-    }
 
-    case 'gif': {
-      const colours = Math.min(256, Math.max(2, options.colors || 256));
-      if (
-        options.quantizer === 'oklab' ||
-        options.ditherMethod === 'riemersma' ||
-        options.ditherMethod === 'blue-noise'
-      ) {
-        const { data, info } = await pipeline
-          .ensureAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true });
-
-        let rgbaBuffer: Buffer;
-        if (options.ditherMethod === 'blue-noise') {
-          const rawRgb = Buffer.alloc(info.width * info.height * 3);
-          for (let i = 0; i < info.width * info.height; i++) {
-            rawRgb[i * 3] = data[i * 4];
-            rawRgb[i * 3 + 1] = data[i * 4 + 1];
-            rawRgb[i * 3 + 2] = data[i * 4 + 2];
-          }
-          const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
-            dither: options.dither !== false,
-            ditherMethod: 'blue-noise',
-          });
-          const reconstructed = Buffer.alloc(info.width * info.height * 4);
-          for (let i = 0; i < wu.indexedPixels.length; i++) {
-            const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
-            const off = i * 4;
-            reconstructed[off] = c.r;
-            reconstructed[off + 1] = c.g;
-            reconstructed[off + 2] = c.b;
-            reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
-          }
-          rgbaBuffer = reconstructed;
-        } else {
-          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
-          const oklabRes = applyOklabQuantizationAndDither(
-            { data, width: info.width, height: info.height },
-            colours,
-            options.dither !== false
-          );
-          rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
-        }
-
-        outputBuffer = await sharp(rgbaBuffer, {
-          raw: { width: info.width, height: info.height, channels: 4 },
-        })
-          .gif({ colours, dither: 0.0 })
-          .toBuffer();
-      } else {
-        outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
+      case 'odd': {
+        // OpenDocument Drawing package embedding the picture as a full-page frame
+        const { data: pngPicture, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
+        outputBuffer = await buildOdgPackage(pngPicture, info.width, info.height);
+        mimeType = 'application/vnd.oasis.opendocument.graphics';
+        break;
       }
-      mimeType = 'image/gif';
-      break;
-    }
 
-    case 'bmp': {
-      // Deterministic raw RGBA extraction and standard BMP binary generation
-      const { data, info } = await pipeline
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-
-      if (options.colorDepth === 8 || options.palette) {
-        const colours = Math.min(256, Math.max(2, options.colors || 256));
-        const rawRgb = Buffer.alloc(info.width * info.height * 3);
-        for (let i = 0; i < info.width * info.height; i++) {
-          rawRgb[i * 3] = data[i * 4];
-          rawRgb[i * 3 + 1] = data[i * 4 + 1];
-          rawRgb[i * 3 + 2] = data[i * 4 + 2];
-        }
-
-        if (options.ditherMethod === 'blue-noise') {
-          const quant = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
-            dither: options.dither !== false,
-            ditherMethod: 'blue-noise',
-          });
-          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
-        } else if (options.quantizer === 'oklab' || options.ditherMethod === 'riemersma') {
-          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
-          const res = applyOklabQuantizationAndDither(
-            { data, width: info.width, height: info.height },
-            colours,
-            options.dither !== false
-          );
-          outputBuffer = encodeBmp8(res.indexed, res.palette, info.width, info.height);
-        } else {
-          const quant = quantizeNeuQuant(rawRgb, info.width, info.height, 3, 10, options.dither !== false);
-          outputBuffer = encodeBmp8(quant.indexedPixels, quant.palette, info.width, info.height);
-        }
-      } else {
-        outputBuffer = encodeBmp(data, info.width, info.height, info.channels);
-      }
-      mimeType = 'image/bmp';
-      break;
-    }
-
-    case 'ico': {
-      // Resize to valid icon dimension (up to 256x256) and package with ICONDIR header
-      const icoPipeline = pipeline.clone().resize({
-        width: Math.min(256, options.width || 256),
-        height: Math.min(256, options.height || 256),
-        fit: 'contain',
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      });
-
-      if (
-        options.colorDepth === 8 ||
-        options.palette ||
-        options.quantizer === 'oklab' ||
-        options.ditherMethod === 'riemersma' ||
-        options.ditherMethod === 'blue-noise'
-      ) {
-        const { data, info } = await icoPipeline
-          .ensureAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true });
-        const colours = Math.min(256, Math.max(2, options.colors || 256));
-        let rgbaBuffer: Buffer;
-        if (options.ditherMethod === 'blue-noise') {
-          const rawRgb = Buffer.alloc(info.width * info.height * 3);
-          for (let i = 0; i < info.width * info.height; i++) {
-            rawRgb[i * 3] = data[i * 4];
-            rawRgb[i * 3 + 1] = data[i * 4 + 1];
-            rawRgb[i * 3 + 2] = data[i * 4 + 2];
-          }
-          const wu = quantizeWuOklab(rawRgb, info.width, info.height, colours, {
-            dither: options.dither !== false,
-            ditherMethod: 'blue-noise',
-          });
-          const reconstructed = Buffer.alloc(info.width * info.height * 4);
-          for (let i = 0; i < wu.indexedPixels.length; i++) {
-            const c = wu.palette[wu.indexedPixels[i]] || { r: 0, g: 0, b: 0 };
-            const off = i * 4;
-            reconstructed[off] = c.r;
-            reconstructed[off + 1] = c.g;
-            reconstructed[off + 2] = c.b;
-            reconstructed[off + 3] = data[off + 3] !== undefined ? data[off + 3] : 255;
-          }
-          rgbaBuffer = reconstructed;
-        } else {
-          assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
-          const oklabRes = applyOklabQuantizationAndDither(
-            { data, width: info.width, height: info.height },
-            colours,
-            options.dither !== false
-          );
-          rgbaBuffer = Buffer.from(oklabRes.rgba.buffer, oklabRes.rgba.byteOffset, oklabRes.rgba.byteLength);
-        }
-        const pngBuf = await sharp(rgbaBuffer, {
-          raw: { width: info.width, height: info.height, channels: 4 },
-        })
-          .png({ palette: true, colours, compressionLevel: 8 })
-          .toBuffer();
-        outputBuffer = encodeIco(pngBuf, info.width, info.height);
-      } else {
-        const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
-        outputBuffer = encodeIco(pngBuf, info.width, info.height);
-      }
-      mimeType = 'image/x-icon';
-      break;
-    }
-
-    case 'icns': {
-      const icnsPipeline = pipeline.clone().resize({
-        width: 256,
-        height: 256,
-        fit: 'contain',
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      });
-      const pngBuf = await icnsPipeline.png().toBuffer();
-      outputBuffer = encodeIcns(pngBuf);
-      mimeType = 'image/x-icns';
-      break;
-    }
-
-    case 'psd': {
-      const { data: pngBuf, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
-      outputBuffer = encodePsd(pngBuf, info.width, info.height);
-      mimeType = 'image/vnd.adobe.photoshop';
-      break;
-    }
-
-    case 'eps':
-    case 'ps': {
-      const { data: rawRgb, info } = await pipeline
-        .removeAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
-      mimeType = 'application/postscript';
-      break;
-    }
-
-    case 'odd': {
-      // OpenDocument Drawing package embedding the picture as a full-page frame
-      const { data: pngPicture, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
-      outputBuffer = await buildOdgPackage(pngPicture, info.width, info.height);
-      mimeType = 'application/vnd.oasis.opendocument.graphics';
-      break;
-    }
-
-    case 'xps': {
-      let pngBuffer = inputBuffer;
-      let imgMeta: Metadata | undefined;
-      try {
-        const s = openLimitedSharp(inputBuffer);
-        imgMeta = await s.metadata();
-        if (imgMeta.format !== 'png') {
-          pngBuffer = await s.png().toBuffer();
-        }
-      } catch (err) {
-        // If sharp cannot decode directly, fallback to inputBuffer; an oversized canvas is never tolerated.
-        rethrowInputPixelLimit(err);
-      }
-      outputBuffer = await buildOpenXpsPackage(
-        [
-          {
-            title: baseName,
-            image: {
-              buffer: pngBuffer,
-              format: 'png',
-              width: imgMeta?.width || 800,
-              height: imgMeta?.height || 600,
+      case 'xps': {
+        // Embed the decoded, oriented and resized picture; undecodable input is an error, never a stand-in.
+        const picture = await pipeline.png().toBuffer({ resolveWithObject: true });
+        outputBuffer = await buildOpenXpsPackage(
+          [
+            {
+              title: baseName,
+              image: {
+                buffer: withPngDensity96(picture.data),
+                format: 'png',
+                width: picture.info.width,
+                height: picture.info.height,
+              },
             },
-          },
-        ],
-        baseName
-      );
-      mimeType = 'application/oxps';
-      break;
-    }
+          ],
+          baseName
+        );
+        mimeType = 'application/oxps';
+        break;
+      }
 
-    default:
-      throw new Error(`Unsupported image target format: ${targetFormat}`);
+      default:
+        throw new UnsupportedTargetError(`Unsupported image target format: ${targetFormat}`);
+    }
+  } catch (err: unknown) {
+    throw toImageFailure(err, fmt);
   }
 
-  const outExt = fmt === 'ultrahdr' ? 'jpg' : fmt;
+  const outExt = outputExtensionOf(fmt);
   return {
     buffer: outputBuffer,
     mimeType,
     filename: `${baseName}.${outExt}`,
     size: outputBuffer.length,
     isEmbeddedPreview: isEmbeddedPreview || undefined,
+    ...(frameSelection?.sourceFrameCount === undefined
+      ? {}
+      : { sourceFrameCount: frameSelection.sourceFrameCount, frameUsed: frameSelection.frameUsed }),
   };
+}
+
+/** One PDF page: the oriented picture as PNG plus its pixel size. */
+interface PdfPageImage {
+  png: Buffer;
+  width: number;
+  height: number;
+}
+
+/** Decodes the pages a PDF is built from: BMP/ICO payloads directly, anything else through the frame rules. */
+async function decodePdfPages(
+  activeBuffer: Buffer,
+  options: ConversionOptions,
+  sourceFormat: string | undefined
+): Promise<{ pages: PdfPageImage[]; sourceFrameCount?: number; frameUsed?: number }> {
+  const toPage = async (pipeline: Sharp): Promise<PdfPageImage> => {
+    const { data, info } = await pipeline.rotate().png().toBuffer({ resolveWithObject: true });
+    return { png: data, width: info.width, height: info.height };
+  };
+
+  if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
+    const decoded = decodeBmp(activeBuffer);
+    return { pages: [await toPage(sharp(decoded.raw, { raw: { width: decoded.width, height: decoded.height, channels: 4 } }))] };
+  }
+  if (
+    sourceFormat === 'ico' ||
+    (activeBuffer.length >= 4 && activeBuffer[0] === 0 && activeBuffer[1] === 0 && activeBuffer[2] === 1 && activeBuffer[3] === 0)
+  ) {
+    return { pages: [await toPage(await openInputImage(decodeIco(activeBuffer)))] };
+  }
+
+  // A PDF holds several pages, so a multi-page source keeps all of them here (pdf is not a tiff target).
+  // Every page is checked from its own header before it is decoded: page 1's header says nothing of the rest.
+  await assertEncodedImageWithinLimit(activeBuffer);
+  const selection = await selectFrames(activeBuffer, 'pdf', options);
+  const frameFields = { sourceFrameCount: selection.sourceFrameCount, frameUsed: selection.frameUsed };
+  if (selection.zipPages) {
+    const pages: PdfPageImage[] = [];
+    for (const page of selection.zipPages) {
+      const pageInput = { page: page - 1 };
+      await assertEncodedImageWithinLimit(activeBuffer, undefined, pageInput);
+      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput)));
+    }
+    return { pages, ...frameFields };
+  }
+  await assertEncodedImageWithinLimit(selection.source, undefined, selection.input);
+  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input))], ...frameFields };
 }
 
 async function convertImageToPdf(
@@ -3090,35 +3329,24 @@ async function convertImageToPdf(
     activeBuffer = sanitizeSvgBuffer(activeBuffer);
   }
 
-  let pipeline: Sharp;
-
-  if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(activeBuffer);
-    pipeline = sharp(decoded.raw, {
-      raw: { width: decoded.width, height: decoded.height, channels: 4 },
-    });
-  } else if (
-    sourceFormat === 'ico' ||
-    (activeBuffer.length >= 4 &&
-      activeBuffer[0] === 0 &&
-      activeBuffer[1] === 0 &&
-      activeBuffer[2] === 1 &&
-      activeBuffer[3] === 0)
-  ) {
-    const payload = decodeIco(activeBuffer);
-    pipeline = await openInputImage(payload);
-  } else {
-    pipeline = await openInputImage(activeBuffer);
+  let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
+  try {
+    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat);
+  } catch (err: unknown) {
+    throw toImageFailure(err, 'pdf');
   }
-
-  const metadata = await pipeline.metadata();
-  const imgWidth = metadata.width || 595.28;
-  const imgHeight = metadata.height || 841.89;
+  const { pages, sourceFrameCount, frameUsed } = decodedPages;
+  const frameFields = sourceFrameCount === undefined ? {} : { sourceFrameCount, frameUsed };
 
   // If OCR is requested, generate an authentic Searchable PDF with invisible text layer
   if (options.ocrEnabled) {
-    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage);
-    const searchablePdf = await generateSearchablePdf(inputBuffer, ocrResult, options, baseName);
+    if (pages.length !== 1) {
+      throw new ConversionFailedError(
+        `OCR reads one page at a time but this image has ${pages.length} pages: select one with the "page" option`
+      );
+    }
+    const ocrResult = await performOcr(pages[0].png, options.ocrLanguage);
+    const searchablePdf = await generateSearchablePdf(pages[0].png, ocrResult, options, baseName);
     return {
       buffer: searchablePdf,
       mimeType: 'application/pdf',
@@ -3126,23 +3354,17 @@ async function convertImageToPdf(
       size: searchablePdf.length,
       ocrExtractedText: ocrResult.text,
       ocrConfidence: ocrResult.confidence,
+      ...frameFields,
     };
   }
 
-  // Convert to PNG buffer first to ensure pdfkit can embed it reliably
-  const pngBuffer = await pipeline.png().toBuffer();
-
   return new Promise((resolve, reject) => {
-    const isLandscape =
-      options.orientation === 'landscape' || (imgWidth > imgHeight && !options.orientation);
-    // The size is already [width, height] in the final orientation, so no layout swap is applied.
-    const doc = new PDFDocument({
-      size: [
-        isLandscape ? Math.max(imgWidth, imgHeight) : imgWidth,
-        isLandscape ? Math.min(imgWidth, imgHeight) : imgHeight,
-      ],
-      margin: 0,
-    });
+    const pageSize = (page: PdfPageImage): [number, number] => {
+      const isLandscape = options.orientation === 'landscape' || (page.width > page.height && !options.orientation);
+      // The size is already [width, height] in the final orientation, so no layout swap is applied.
+      return isLandscape ? [Math.max(page.width, page.height), Math.min(page.width, page.height)] : [page.width, page.height];
+    };
+    const doc = new PDFDocument({ size: pageSize(pages[0]), margin: 0 });
 
     const chunks: Buffer[] = [];
     doc.on('data', (chunk) => chunks.push(chunk));
@@ -3153,14 +3375,18 @@ async function convertImageToPdf(
         mimeType: 'application/pdf',
         filename: `${baseName}.pdf`,
         size: buffer.length,
+        ...frameFields,
       });
     });
     doc.on('error', (err) => reject(err));
 
-    doc.image(pngBuffer, 0, 0, {
-      fit: [doc.page.width, doc.page.height],
-      align: 'center',
-      valign: 'center',
+    pages.forEach((page, index) => {
+      if (index > 0) doc.addPage({ size: pageSize(page), margin: 0 });
+      doc.image(page.png, 0, 0, {
+        fit: [doc.page.width, doc.page.height],
+        align: 'center',
+        valign: 'center',
+      });
     });
     doc.end();
   });

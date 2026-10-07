@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { request } from 'undici';
-import { localFsStorage } from './local-fs-storage';
+import { LocalFsStorage } from './local-fs-storage';
+import { objectStorage } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { credentialsVault, CustomerStorageCredentials } from './credentials-vault';
 import { createStorageAdapter } from './adapters';
@@ -70,7 +71,12 @@ function registerSharedObject(
   targetKey: string,
   stored: StoredObjectMetadata
 ): void {
-  const binPath = (localFsStorage as any).getPathsForKey(targetKey).binPath;
+  // Only local storage shares objects with the job queue through the shared disk store; an
+  // object store is read by the queue straight from the store.
+  if (!(objectStorage instanceof LocalFsStorage)) {
+    return;
+  }
+  const binPath = objectStorage.getPathsForKey(targetKey).binPath;
   let cachedBuffer: Buffer | null = null;
   globalSharedObjects.set(targetKey, {
     key: stored.key,
@@ -131,7 +137,7 @@ async function executeUrlImport(
   }
 
   const contentType = (res.headers['content-type'] as string) || 'application/octet-stream';
-  const stored = await localFsStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
+  const stored = await objectStorage.putStream(targetKey, res.body as unknown as NodeJS.ReadableStream, {
     filename,
     contentType,
   });
@@ -173,7 +179,7 @@ async function executeAdapterImport(
   const adapter = createStorageAdapter(creds as CustomerStorageCredentials);
   const stream = await adapter.downloadStream(params.remotePath);
 
-  const stored = await localFsStorage.putStream(targetKey, stream, {
+  const stored = await objectStorage.putStream(targetKey, stream, {
     filename,
   });
 
@@ -329,7 +335,7 @@ export async function executeExportTask(params: ExportOperationParams): Promise<
       ? await resolveUrlDestination(params)
       : await resolveAdapterDestination(params);
 
-  const source = await localFsStorage.getStream(params.sourceKey);
+  const source = await objectStorage.getStream(params.sourceKey);
   if (!source) {
     throw new StorageNotFoundError(params.sourceKey, 'local-fs');
   }

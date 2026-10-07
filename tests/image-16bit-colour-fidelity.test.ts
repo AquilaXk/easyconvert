@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
 import { encode16BitTiff } from '../src/lib/conversions/raw-hdr';
+import { readExifOrientation } from './helpers/exif-orientation';
 
 /**
  * Regression for the colour shift of 16-bit RGB sources (the decoded RAW intermediate is a 16-bit TIFF):
@@ -112,13 +113,16 @@ function decodeRgb8(encoded: Buffer, extension: string): Buffer {
   });
 }
 
-function expectBlocksMatch(rgb: Buffer, tolerance: number): void {
+/** `halfTurn` expects the stored grid rotated by 180 degrees, as EXIF orientation 3 displays it. */
+function expectBlocksMatch(rgb: Buffer, tolerance: number, halfTurn = false): void {
   expect(rgb.length).toBe(SIDE * SIDE * CHANNELS);
   for (let blockY = 0; blockY < GRID; blockY += 1) {
     for (let blockX = 0; blockX < GRID; blockX += 1) {
       const centreX = blockX * BLOCK + BLOCK / 2;
       const centreY = blockY * BLOCK + BLOCK / 2;
-      const expected = blockColour(centreX, centreY).map((sample) => sample >> BYTE_SHIFT);
+      const expected = (halfTurn ? blockColour(SIDE - 1 - centreX, SIDE - 1 - centreY) : blockColour(centreX, centreY)).map(
+        (sample) => sample >> BYTE_SHIFT
+      );
       const at = (centreY * SIDE + centreX) * CHANNELS;
       const actual = [rgb[at], rgb[at + 1], rgb[at + 2]];
       actual.forEach((value, channel) => {
@@ -172,14 +176,15 @@ describe.each(sources)('convertImage of 16-bit RGB from %s', (_label, build) => 
 });
 
 describe('convertImage of 16-bit RGB with an EXIF orientation', () => {
-  it.skipIf(!MAGICK)('keeps the EXIF orientation tag and the stored colours, as the 8-bit path does', async () => {
+  it.skipIf(!MAGICK)('applies the orientation to the pixels and leaves no stale tag, keeping the stored colours', async () => {
     const rotatedHalfTurn = 3;
     const source = writeTiff16(SIDE, SIDE, blockColour, rotatedHalfTurn);
     expect((await sharp(source).metadata()).orientation).toBe(rotatedHalfTurn);
+    expect(readExifOrientation(source)).toBe(rotatedHalfTurn);
     const result = await convertImage(source, 'png', {}, 'sample.tiff', 'tiff');
-    // The EXIF block reaches the output, so viewers apply the orientation; the pixels stay as stored.
-    expect((await sharp(result.buffer).metadata()).orientation).toBe(rotatedHalfTurn);
-    expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE);
+    // The pixels are rotated by the half turn the tag asked for, so the tag must not ask for it again.
+    expect([undefined, 1]).toContain(readExifOrientation(result.buffer));
+    expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE, true);
   });
 });
 

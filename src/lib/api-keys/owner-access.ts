@@ -74,7 +74,7 @@ export async function mayUseStorageKeyAsJobInput(
   key: string,
   callerUserId: string | undefined
 ): Promise<boolean> {
-  if (!storageProvider.getObject(key)) {
+  if (!(await storageProvider.stat(key))) {
     return false;
   }
   if (isUploadKey(key)) {

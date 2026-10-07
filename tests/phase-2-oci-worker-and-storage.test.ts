@@ -23,7 +23,8 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
 
       if (typeof ociStorage.generatePresignedUploadUrl === 'function') {
         const presigned = ociStorage.generatePresignedUploadUrl(init.key, 1, init.uploadId, 3600);
-        expect(presigned.url).toContain('https://');
+        // Local storage mints URLs that point back at this application, never at a remote host.
+        expect(new URL(presigned.url).pathname).toBe('/api/v1/uploads/direct/part');
         expect(presigned.url).toContain(init.uploadId);
         expect(presigned.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
       }
@@ -147,10 +148,8 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       const resultKey = `results/${job.id}/${convRes.filename}`;
       ociStorage.saveObject(resultKey, convRes.buffer, convRes.mimeType, convRes.filename, 3600000);
 
-      let downloadUrl = `/api/storage/file/${resultKey}`;
-      if (typeof ociStorage.generatePresignedDownloadUrl === 'function') {
-        downloadUrl = ociStorage.generatePresignedDownloadUrl(resultKey, 3600).url;
-      }
+      // Local storage has no object-store host to presign for, so results download through the application.
+      const downloadUrl = `/api/storage/file/${resultKey}`;
 
       const jobResult: ConversionJobResult = {
         jobId: job.id,

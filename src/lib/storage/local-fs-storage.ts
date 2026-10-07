@@ -13,6 +13,9 @@ import type {
   StoragePresignedUrlResult,
   StoredObjectMetadata,
 } from './object-storage';
+import { StorageSigningSecretMissingError } from './errors';
+import { lazySingleton } from './lazy-singleton';
+import { isProductionRuntime, resolveSigningSecret } from './storage-config';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -49,7 +52,7 @@ export class LocalFsStorage implements IObjectStorage {
 
   private readonly storageDir: string;
   private readonly partsDir: string;
-  private readonly signingSecret: string;
+  private readonly configuredSigningSecret: string | undefined;
   private readonly defaultTtlSeconds: number;
   private gcTimer: NodeJS.Timeout | null = null;
 
@@ -61,20 +64,11 @@ export class LocalFsStorage implements IObjectStorage {
     this.partsDir = path.join(this.storageDir, '.parts');
     this.defaultTtlSeconds = options?.defaultTtlSeconds || 3600;
 
-    const secret =
-      options?.signingSecret ||
-      process.env.STORAGE_SIGNING_SECRET ||
-      process.env.S3_SIGNING_SECRET ||
-      process.env.OCI_SIGNING_SECRET;
-
-    if (!secret) {
-      if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
-        throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
-      }
-      this.signingSecret = crypto.randomBytes(32).toString('hex');
-    } else {
-      this.signingSecret = secret;
+    const secret = options?.signingSecret || resolveSigningSecret();
+    if (!secret && isProductionRuntime()) {
+      throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
     }
+    this.configuredSigningSecret = secret;
 
     this.ensureDirectories();
 
@@ -84,6 +78,14 @@ export class LocalFsStorage implements IObjectStorage {
     if (this.gcTimer && typeof this.gcTimer.unref === 'function') {
       this.gcTimer.unref();
     }
+  }
+
+  /** The configured signing secret; signing without one is refused rather than done with an invented secret. */
+  private get signingSecret(): string {
+    if (!this.configuredSigningSecret) {
+      throw new StorageSigningSecretMissingError();
+    }
+    return this.configuredSigningSecret;
   }
 
   public stopGc(): void {
@@ -315,7 +317,7 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
-  presignPart(
+  async presignPart(
     key: string,
     uploadId: string,
     partNumber: number,
@@ -329,12 +331,12 @@ export class LocalFsStorage implements IObjectStorage {
       .digest('hex');
 
     const url = `/api/storage/multipart?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expiresAt=${expiresAt}&signature=${signature}`;
-    return Promise.resolve({
+    return {
       url,
       expiresAt,
       signature,
       method: 'PUT',
-    });
+    };
   }
 
   private validateContiguousParts(parts: CompletedPart[]): CompletedPart[] {
@@ -459,7 +461,7 @@ export class LocalFsStorage implements IObjectStorage {
     }
   }
 
-  presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
+  async presignGet(key: string, expiresInSeconds: number = 3600): Promise<StoragePresignedUrlResult> {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `GET\n${key}\n${expiresAt}`;
     const signature = crypto
@@ -468,12 +470,12 @@ export class LocalFsStorage implements IObjectStorage {
       .digest('hex');
 
     const url = `/api/storage/file/${encodeURIComponent(key)}?expiresAt=${expiresAt}&signature=${signature}`;
-    return Promise.resolve({
+    return {
       url,
       expiresAt,
       signature,
       method: 'GET',
-    });
+    };
   }
 
   verifyPresignedSignature(
@@ -543,5 +545,5 @@ export class LocalFsStorage implements IObjectStorage {
   }
 }
 
-export const localFsStorage = new LocalFsStorage();
+export const localFsStorage: LocalFsStorage = lazySingleton(LocalFsStorage.prototype, () => new LocalFsStorage());
 

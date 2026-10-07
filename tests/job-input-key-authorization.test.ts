@@ -51,8 +51,8 @@ function storeCsv(key: string): string {
   return key;
 }
 
-function storedText(key: string): string | undefined {
-  return storageProvider.getObject(key)?.buffer.toString('utf-8');
+async function storedText(key: string): Promise<string | undefined> {
+  return (await storageProvider.getObject(key))?.buffer.toString('utf-8');
 }
 
 function victimJobData(userId: string): ConversionJobData {
@@ -132,7 +132,7 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
       const res = await legacySubmit(key);
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ success: false, error: NOT_FOUND_DETAIL });
-      expect(storedText(key)).toBe(CSV_INPUT);
+      expect(await storedText(key)).toBe(CSV_INPUT);
     }
     expect(addSpy).toHaveBeenCalledTimes(0);
     expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
@@ -158,7 +158,7 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
         expect(body.status).toBe(404);
         expect(body.title).toBe('Not Found');
         expect(body.detail).toBe(NOT_FOUND_DETAIL);
-        expect(storedText(key)).toBe(CSV_INPUT);
+        expect(await storedText(key)).toBe(CSV_INPUT);
       }
     }
     expect(addSpy).toHaveBeenCalledTimes(0);
@@ -237,8 +237,8 @@ describe('job input cleanup deletes only uploads (#249)', () => {
     const { jobId } = await res.json();
 
     const result = await completeQueuedJob(jobId);
-    expect(JSON.parse(storedText(result.resultKey) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
-    expect(storedText(key)).toBe(CSV_INPUT);
+    expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+    expect(await storedText(key)).toBe(CSV_INPUT);
     createdKeys.push(result.resultKey);
   });
 
@@ -257,7 +257,7 @@ describe('job input cleanup deletes only uploads (#249)', () => {
     );
     await waitForJobEvent(worker, 'failed', job.id);
 
-    expect(storedText(key)).toBe(CSV_INPUT);
+    expect(await storedText(key)).toBe(CSV_INPUT);
     await worker.close();
     await queue.close();
   });
@@ -270,7 +270,7 @@ describe('job input cleanup deletes only uploads (#249)', () => {
     const { jobId } = await res.json();
 
     const result = await completeQueuedJob(jobId);
-    expect(JSON.parse(storedText(result.resultKey) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+    expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
     expect(storageProvider.getObject(uploadKey)).toBeUndefined();
     createdKeys.push(result.resultKey);
   });

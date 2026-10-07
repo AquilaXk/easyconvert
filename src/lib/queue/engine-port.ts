@@ -19,6 +19,8 @@ export interface EngineResult {
   fallbackChain?: string[];
   skippedLinks?: string[];
   ocrExtractedText?: string;
+  sourceFrameCount?: number;
+  frameUsed?: number;
 }
 
 export interface ConversionEnginePort {

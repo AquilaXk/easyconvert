@@ -3,6 +3,7 @@ import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
   ConversionOptions,
   ConversionFailedError,
@@ -136,7 +137,7 @@ export async function POST(req: NextRequest) {
         inputBuffer,
         detected.extension,
         targetFormat,
-        defaultOptions,
+        withTierPageCap(defaultOptions, tierMaxPages(auth.user.tier)),
         file.name
       );
 
