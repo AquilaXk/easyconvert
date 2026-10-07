@@ -254,7 +254,7 @@ export async function convertMedia(
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {
       // Invalid options are the caller's error (HTTP 400); keep their type.
-      if (err instanceof InvalidMediaOptionError) {
+      if (err instanceof InvalidMediaOptionError || err instanceof EngineUnavailableError) {
         throw err;
       }
       throw new ConversionFailedError(

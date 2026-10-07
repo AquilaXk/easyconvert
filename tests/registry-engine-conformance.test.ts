@@ -15,7 +15,7 @@ import { probeNativeEngines } from '../src/worker/engines';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
-import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
 import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
 const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
@@ -496,6 +496,107 @@ const HAS_CI_TOOLCHAIN =
   HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract', 'dcraw_emu'].every(onPath);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
+const SHORT_CLIP_SECONDS = 0.5;
+const MESSAGE_TAIL_CHARS = 400;
+const FFMPEG_SAMPLE_TIMEOUT_MS = 30_000;
+/**
+ * ffprobe codec name and ffmpeg encoder that every encodable audio target must produce. Authored by
+ * hand from the container specifications; not read from the engine.
+ */
+const AUDIO_TARGET_CODECS: Readonly<Record<string, { codec: string; encoder: string }>> = {
+  mp3: { codec: 'mp3', encoder: 'libmp3lame' },
+  aac: { codec: 'aac', encoder: 'aac' },
+  m4a: { codec: 'aac', encoder: 'aac' },
+  m4b: { codec: 'aac', encoder: 'aac' },
+  ogg: { codec: 'vorbis', encoder: 'libvorbis' },
+  oga: { codec: 'vorbis', encoder: 'libvorbis' },
+  opus: { codec: 'opus', encoder: 'libopus' },
+  weba: { codec: 'opus', encoder: 'libopus' },
+  wma: { codec: 'wmav2', encoder: 'wmav2' },
+  ac3: { codec: 'ac3', encoder: 'ac3' },
+  amr: { codec: 'amr_nb', encoder: 'libopencore_amrnb' },
+  flac: { codec: 'flac', encoder: 'flac' },
+  alac: { codec: 'alac', encoder: 'alac' },
+  wav: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  aiff: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  aif: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  au: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  aifc: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  caf: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  voc: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+};
+/** FFmpeg has a decoder but no encoder or muxer for these advertised audio targets. */
+const UNENCODABLE_AUDIO_TARGET_IDS: ReadonlySet<string> = new Set(['dss']);
+/**
+ * Sources ffmpeg cannot write a 0.5 s clip for (no muxer or encoder, or a build without libopencore
+ * for AMR); a source outside this list that fails to build is a failure, so it may only shrink.
+ */
+const AUDIO_SOURCES_FFMPEG_CANNOT_MUX: ReadonlySet<string> = new Set([
+  'amr', 'ape', 'cavs', 'dss', 'dts', 'dv', 'mid', 'midi', 'mpc', 'rm', 'rmvb',
+]);
+
+/** Muxer and codec arguments for sources whose extension alone does not give ffmpeg a writable container. */
+const SAMPLE_ARGS_BY_SOURCE: Readonly<Record<string, readonly string[]>> = {
+  weba: ['-f', 'webm'],
+  alac: ['-f', 'ipod', '-c:a', 'alac'],
+  '3gp': ['-f', '3gp', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  '3g2': ['-f', '3g2', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  '3gpp': ['-f', '3gp', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  swf: ['-f', 'swf', '-c:a', 'libmp3lame', '-ar', '44100'],
+  mod: ['-f', 'mpeg'],
+  dvr: ['-f', 'mpeg'],
+};
+
+let cachedEncoderNames: Set<string> | null = null;
+
+/** Encoder names reported by `ffmpeg -encoders`, parsed here rather than by the engine's probe. */
+function ffmpegEncoderNames(): Set<string> {
+  if (cachedEncoderNames === null) {
+    const listing = execFileSync('ffmpeg', ['-hide_banner', '-encoders'], { timeout: FFMPEG_SAMPLE_TIMEOUT_MS }).toString('utf-8');
+    cachedEncoderNames = new Set<string>();
+    for (const line of listing.split('\n')) {
+      const match = /^\s*[VAS][A-Za-z.]{5}\s+(\S+)/.exec(line);
+      if (match) cachedEncoderNames.add(match[1]);
+    }
+  }
+  return cachedEncoderNames;
+}
+
+/** `type:codec` of every stream in a file, in stream order. */
+function probeStreamKinds(file: string): string[] {
+  const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'csv=p=0', file], {
+    timeout: FFMPEG_SAMPLE_TIMEOUT_MS,
+  }).toString('utf-8');
+  return out
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const [codecName, codecType] = line.split(',');
+      return `${codecType}:${codecName}`;
+    });
+}
+
+/**
+ * A 0.5 s sine tone (plus a test pattern for video formats) in the source's own container, or null
+ * when ffmpeg cannot write that container with an audio stream.
+ */
+function buildShortMediaSample(dir: string, source: string): Buffer | null {
+  const file = path.join(dir, `sample.${source}`);
+  const sources = ['-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=48000:duration=${SHORT_CLIP_SECONDS}`];
+  const video = FORMAT_REGISTRY[source].category === 'video';
+  const pattern = ['-f', 'lavfi', '-i', `testsrc2=size=160x120:rate=25:duration=${SHORT_CLIP_SECONDS}`];
+  try {
+    execFileSync('ffmpeg', ['-v', 'error', '-y', ...(video ? pattern : []), ...sources, '-shortest', ...(SAMPLE_ARGS_BY_SOURCE[source] ?? []), file], {
+      stdio: 'ignore',
+      timeout: FFMPEG_SAMPLE_TIMEOUT_MS,
+    });
+    if (!probeStreamKinds(file).some((kind) => kind.startsWith('audio:'))) return null;
+    return readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
 describe('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
@@ -680,6 +781,65 @@ describe('every advertised registry pair has an engine path', () => {
     async () => {
       const transcoderPairs = pairsFor(isTranscoderPair);
       expect(await findUnroutedPairs(transcoderPairs)).toEqual([]);
+    },
+    CATEGORY_TIMEOUT_MS
+  );
+
+  // Audio targets are checked by default: each pair converts a 0.5 s clip in the source's own
+  // format and the output is read back with ffprobe, so a target that keeps the video stream or
+  // encodes another codec fails here. Strict mode requires ffmpeg instead of skipping.
+  it.skipIf(!HAS_FFMPEG && !STRICT_MODE)(
+    'audio targets of audio and video sources write one stream in the target codec (needs ffmpeg)',
+    async () => {
+      if (!HAS_FFMPEG) throw new Error('ORACLE_STRICT_MODE=1 requires ffmpeg for the audio target conformance pairs');
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'audio-target-conformance-'));
+      try {
+        const pairs = pairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio');
+        const samples = new Map<string, Buffer | null>();
+        for (const [source] of pairs) {
+          if (!samples.has(source)) samples.set(source, buildShortMediaSample(workDir, source));
+        }
+        const failures: string[] = [];
+        const covered = new Set<string>();
+        const checkPair = async (index: number, [source, target]: [string, string]): Promise<void> => {
+          const sample = samples.get(source);
+          const expected = AUDIO_TARGET_CODECS[target];
+          if (!sample) return;
+          const outcome = await convertFile(sample, source, target, {}, `probe.${source}`).then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error })
+          );
+          if (!expected) {
+            // Only a target FFmpeg cannot encode at all may lack an expectation, and it must be rejected.
+            const rejected = 'error' in outcome && outcome.error instanceof ConversionFailedError;
+            if (!UNENCODABLE_AUDIO_TARGET_IDS.has(target) || !rejected) failures.push(`${source} -> ${target}: no expectation for this target`);
+            return;
+          }
+          if ('error' in outcome) {
+            const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+            const encoderMissing = !ffmpegEncoderNames().has(expected.encoder) && message.includes(`'${expected.encoder}' encoder`);
+            if (!(outcome.error instanceof ConversionFailedError) || !encoderMissing) failures.push(`${source} -> ${target}: ${message.slice(-MESSAGE_TAIL_CHARS)}`);
+            return;
+          }
+          const out = path.join(workDir, `out-${index}.${target}`);
+          writeFileSync(out, outcome.result.buffer);
+          const streams = probeStreamKinds(out);
+          if (streams.join() !== `audio:${expected.codec}`) failures.push(`${source} -> ${target}: ${streams.join() || 'no streams'}`);
+          else covered.add(target);
+        };
+        for (const [index, pair] of pairs.entries()) {
+          await checkPair(index, pair);
+        }
+        expect(failures).toEqual([]);
+        // Every encodable target is proven by at least one source, so a skipped source cannot hide a target.
+        const advertised = new Set(pairs.map(([, target]) => target));
+        const encodable = [...advertised].filter((target) => ffmpegEncoderNames().has(AUDIO_TARGET_CODECS[target]?.encoder));
+        expect(encodable.filter((target) => !covered.has(target))).toEqual([]);
+        const unbuilt = [...samples].filter(([, sample]) => !sample).map(([source]) => source).sort();
+        expect(unbuilt.filter((source) => !AUDIO_SOURCES_FFMPEG_CANNOT_MUX.has(source))).toEqual([]);
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
     },
     CATEGORY_TIMEOUT_MS
   );
