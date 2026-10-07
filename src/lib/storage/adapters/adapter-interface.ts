@@ -14,6 +14,25 @@ export class StorageAdapterError extends Error {
   }
 }
 
+/**
+ * The caller supplied a value the store cannot accept (a bad size, part number, expiry, content type
+ * or metadata). It is the caller's mistake, so an API maps it to HTTP 400.
+ */
+export class StorageInputError extends StorageAdapterError {
+  constructor(message: string, provider: string, cause?: unknown) {
+    super(message, provider, cause);
+    this.name = 'StorageInputError';
+  }
+}
+
+/** An object key the store cannot address safely (empty, or with "." / ".." path segments). */
+export class StorageInvalidKeyError extends StorageInputError {
+  constructor(message: string, provider: string, cause?: unknown) {
+    super(message, provider, cause);
+    this.name = 'StorageInvalidKeyError';
+  }
+}
+
 export class StorageNotFoundError extends StorageAdapterError {
   constructor(path: string, provider: string) {
     super(`Remote object not found: "${path}"`, provider);

@@ -12,11 +12,13 @@ import {
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
+import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
@@ -168,7 +170,7 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       detectedDef.extension,
       tgt,
-      options,
+      withTierPageCap(options, tierMaxPages(auth.user?.tier)),
       file.name
     );
 
@@ -188,6 +190,7 @@ export async function POST(req: NextRequest) {
         'X-Engine-Used': result.engineUsed,
         'X-Zero-Data-Retention': 'true',
         'X-Storage-Footprint': '0-bytes',
+        ...frameMetadataHeaders(result),
       },
     });
   } catch (error: unknown) {

@@ -310,7 +310,7 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       await queue.close();
     });
 
-    it('validates IStorageBackend interface across OCI and S3-Compatible providers', () => {
+    it('validates IStorageBackend interface across OCI and S3-Compatible providers', async () => {
       const ociBackend: IStorageBackend = getStorageBackend('oci');
       const s3Backend: IStorageBackend = getStorageBackend('s3');
 
@@ -320,18 +320,18 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
 
       // Verify interface compatibility
       const buffer = Buffer.from('Storage backend interface validation payload');
-      const stored = s3Backend.saveObject('test/interface-key.txt', buffer, 'text/plain', 'test.txt');
+      const stored = await s3Backend.saveObject('test/interface-key.txt', buffer, 'text/plain', 'test.txt');
 
       expect(stored.key).toContain('interface-key.txt');
       expect(stored.size).toBe(buffer.length);
 
-      const retrieved = s3Backend.getObject(stored.key);
+      const retrieved = await s3Backend.getObject(stored.key);
       expect(retrieved).toBeDefined();
       expect(retrieved?.buffer.toString('utf-8')).toBe('Storage backend interface validation payload');
 
-      const deleted = s3Backend.deleteObject(stored.key);
+      const deleted = await s3Backend.deleteObject(stored.key);
       expect(deleted).toBe(true);
-      expect(s3Backend.getObject(stored.key)).toBeUndefined();
+      expect(await s3Backend.getObject(stored.key)).toBeUndefined();
     });
 
     it('clears all pending delay timers when Queue.close() is invoked to prevent event loop leaks', async () => {

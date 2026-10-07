@@ -16,6 +16,7 @@ import {
   ArchiveInspectResponse,
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
+  ArchivePasswordRequiredError,
   EngineUnavailableError,
 } from '../types';
 import {
@@ -29,12 +30,13 @@ import {
   inspectedKindOf,
   listingBufferLimit,
   parse7zTechnicalListing,
+  stripSevenZipPasswordPrompt,
   cleanupDirectoryTree,
   sanitizeLeafFilename,
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
-import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
@@ -65,6 +67,24 @@ import {
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
 import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
+  assertZipPasswordSupported,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  SEVEN_ZIP_LISTING_TIMEOUT_MS,
+  walkArchiveTreePaths,
+  execFileSyncWithPasswordStdin,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
+  sevenZipReadPasswordInput,
+  isArchivePasswordFailure,
+} from './archive-password';
+import {
   compressWithZstdDict,
   decompressWithZstdDict,
   getPretrainedDictionary,
@@ -74,11 +94,8 @@ import {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 } from './zstd-dict';
 
 export {
@@ -113,11 +130,8 @@ export {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 };
 
 // Standard CRC32 table
@@ -273,6 +287,28 @@ export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean
   return false;
 }
 
+/**
+ * Lists a freshly created password-protected archive without its password and throws
+ * ArchiveNotEncryptedError unless it is encrypted, so a plaintext archive is never returned.
+ */
+function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format: 'zip' | '7z', cwd: string): void {
+  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true });
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+      cwd,
+      env: getSanitizedEnvironment({}, true),
+      timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      input: sevenZipEncryptionCheckInput(),
+    });
+    outcome = { listing: out.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureStderr(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 function createEncryptedArchiveVia7z(
   files: { filename: string; buffer: Buffer }[],
   archiveName: string,
@@ -283,11 +319,11 @@ function createEncryptedArchiveVia7z(
 ): ConversionResult | null {
   const p7z = get7zBinaryPath();
   if (!p7z || !password) return null;
-  if (/[\r\n\0]/.test(password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(password);
+  if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
+  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => sanitizeArchivePath(f.filename) || path.basename(f.filename)));
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
@@ -302,17 +338,18 @@ function createEncryptedArchiveVia7z(
     }
     const outPath = path.join(workDir, archiveName);
     const extraArgs = archiveType === '7z'
-      ? ['-t7z', '-mhe=on', '-p']
-      : ['-tzip', '-mem=AES256', '-p'];
+      ? ['-t7z', '-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH]
+      : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
     });
-    execFileSync(resolved.binary, resolved.args, {
+    execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd: stagingDir,
       env: getSanitizedEnvironment({}, true),
       timeout: 60000,
-      input: Buffer.from(`${password}\n${password}\n`),
+      input: sevenZipCreatePasswordInput(password),
     });
+    assertCreatedArchiveEncrypted(p7z, outPath, archiveType, stagingDir);
     const content = fs.readFileSync(outPath);
     return {
       buffer: content,
@@ -330,6 +367,8 @@ export async function createZipArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
+  // Before the truthiness check below: a falsy non-string such as 0 must not silently skip encryption.
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (options.password) {
     const p7z = get7zBinaryPath();
@@ -374,6 +413,55 @@ export async function createZipArchive(
     filename: archiveName,
     size: content.length,
   };
+}
+
+/**
+ * Decodes a .zst / .tar.zst payload. An explicit `zstdDict` option selects a pre-trained dictionary;
+ * otherwise a frame that names one of the built-in dictionary ids is decoded with that dictionary.
+ */
+function decodeZstdArchivePayload(payload: Buffer, zstdDict: unknown): Buffer {
+  if (zstdDict) {
+    const dict =
+      typeof zstdDict === 'string' && (zstdDict === 'office' || zstdDict === 'data')
+        ? getPretrainedDictionary(zstdDict)
+        : DATA_DICTIONARY_JSON_CSV;
+    return decompressWithZstdDict(payload, dict);
+  }
+  if (payload.length >= ZSTD_MAGIC_LE.length + 1 && payload.subarray(0, ZSTD_MAGIC_LE.length).equals(ZSTD_MAGIC_LE)) {
+    const { dictionaryId } = parseZstdFrameHeader(payload, 0);
+    if (dictionaryId === ZSTD_DICT_MAGIC) return decompressWithZstdDict(payload, DATA_DICTIONARY_JSON_CSV);
+    if (dictionaryId === ZSTD_OFFICE_DICT_MAGIC) return decompressWithZstdDict(payload, OFFICE_XML_DICTIONARY);
+  }
+  return decompressZstd(payload);
+}
+
+/** Longest one unrar extraction may run. */
+const UNRAR_EXTRACT_TIMEOUT_MS = 30_000;
+
+/** unrar restores the Unix mode stored in the archive; the owner needs these bits to read and remove the result. */
+const EXTRACTED_DIRECTORY_MODE = 0o700;
+const EXTRACTED_FILE_MODE = 0o600;
+
+/**
+ * Gives the owner access to everything an extraction wrote. An archive may store any mode, down to
+ * no permission bits; unrar applies it, so a worker that is not root could neither read the entries
+ * nor delete the directory. Walks iteratively and stops at the archive file-count limit.
+ */
+function makeExtractedTreeAccessible(root: string): void {
+  const pending = [root];
+  let visited = 0;
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    fs.chmodSync(dir, EXTRACTED_DIRECTORY_MODE);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      visited += 1;
+      if (visited > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(fullPath);
+      else if (entry.isFile()) fs.chmodSync(fullPath, EXTRACTED_FILE_MODE);
+    }
+  }
 }
 
 export const ARCHIVE_SECURITY_LIMITS = {
@@ -476,14 +564,12 @@ export async function extractZipArchive(
     collisionPolicy?: ArchiveCollisionPolicy;
   } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   const isEncrypted = isZipBufferEncrypted(zipBuffer);
   if (isEncrypted) {
     if (!options.password) {
-      throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
+      throw new ArchivePasswordRequiredError('ZIP archive is password protected. A password is required to extract.');
     }
     const p7z = get7zBinaryPath();
     if (p7z) {
@@ -1794,9 +1880,7 @@ export function extractRarArchive(
     throw new Error('Invalid RAR archive: signature mismatch');
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   // If unrar binary is available on the system, execute under defensive limits
   const unrarBin = getUnrarBinaryPath();
@@ -1811,22 +1895,26 @@ export function extractRarArchive(
     try {
       const pwArgs = options.password ? ['-p'] : ['-p-'];
       try {
-        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+        // -idq keeps error text on stderr so a password failure can be told from other failures.
+        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], {
           networkIsolated: true,
         });
-        execFileSync(resolved.binary, resolved.args, {
+        const unrarOptions = {
           cwd: extractDir,
           env: getSanitizedEnvironment({}, true),
-          timeout: 30000,
+          timeout: UNRAR_EXTRACT_TIMEOUT_MS,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: options.password ? Buffer.from(options.password + '\n') : undefined,
-        });
-      } catch (err: any) {
-        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (msg.includes('password') || msg.includes('CRC error')) {
-          throw new ConversionFailedError('Invalid password for encrypted RAR archive.');
+        };
+        if (options.password) {
+          execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+            ...unrarOptions,
+            input: Buffer.from(`${options.password}\n`, 'utf-8'),
+          });
+        } else {
+          execFileSync(resolved.binary, resolved.args, unrarOptions);
         }
-        throw err;
+      } catch (err: any) {
+        throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? err;
       }
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
@@ -1859,6 +1947,7 @@ export function extractRarArchive(
         }
       }
 
+      makeExtractedTreeAccessible(extractDir);
       walkDir(extractDir, '');
       return extracted;
     } catch (err) {
@@ -1872,7 +1961,14 @@ export function extractRarArchive(
     } finally {
       try {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-        if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+        if (fs.existsSync(extractDir)) {
+          try {
+            makeExtractedTreeAccessible(extractDir);
+          } catch {
+            // Best effort: the removal below runs either way.
+          }
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        }
       } catch {}
     }
   }
@@ -2537,13 +2633,12 @@ export function convertWithNative7z(
   originalFilename = 'file'
 ): ConversionResult | null {
   const tgt = targetFormat.toLowerCase();
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
@@ -2647,17 +2742,20 @@ export function convertWithNative7z(
 
     if (entryCount === 0) return null;
 
+    if (options.password && (tgt === 'zip' || tgt === '7z')) {
+      assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+    }
     const pwCreateArgs: string[] = [];
     if (options.password) {
       if (tgt === '7z') {
-        pwCreateArgs.push('-mhe=on', '-p');
+        pwCreateArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       } else if (tgt === 'zip') {
-        pwCreateArgs.push('-mem=AES256', '-p');
+        pwCreateArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       }
     }
     const pwCreateInput =
       options.password && (tgt === 'zip' || tgt === '7z')
-        ? Buffer.from(`${options.password}\n${options.password}\n`)
+        ? sevenZipCreatePasswordInput(options.password)
         : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -2680,12 +2778,15 @@ export function convertWithNative7z(
       execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
       const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true });
-      execFileSync(rCreate.binary, rCreate.args, {
-        cwd: extractDir,
-        env: getSanitizedEnvironment({}, true),
-        timeout: 60000,
-        input: pwCreateInput,
-      });
+      const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 };
+      if (pwCreateInput) {
+        execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
+      } else {
+        execFileSync(rCreate.binary, rCreate.args, createOptions);
+      }
+      if (options.password && (tgt === 'zip' || tgt === '7z')) {
+        assertCreatedArchiveEncrypted(p7zBin, outputPath, tgt, workDir);
+      }
     } else {
       return null;
     }
@@ -2857,6 +2958,7 @@ export function create7zArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.7z'
 ): ConversionResult {
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   files = resolvedFiles;
   if (options.password) {
@@ -4020,17 +4122,18 @@ async function inspectArchiveVia7zCli(
     const archivePath = path.join(workDir, `archive.${format}`);
     fs.writeFileSync(archivePath, buffer);
 
-    const pwArgs = password ? ['-p' + password] : ['-p-'];
-    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', ...pwArgs, archivePath], {
+    // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
+    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
       networkIsolated: true,
     });
 
     let stdoutStr = '';
     try {
-      const out = execFileSync(resolved.binary, resolved.args, {
+      const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
         cwd: workDir,
         env: getSanitizedEnvironment({}, true),
-        timeout: 30000,
+        timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
+        input: sevenZipReadPasswordInput(password),
         maxBuffer: listingBufferLimit(ARCHIVE_SECURITY_LIMITS),
       });
       stdoutStr = out.toString('utf-8');
@@ -4041,30 +4144,21 @@ async function inspectArchiveVia7zCli(
           `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
         );
       }
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
-      if (
-        errMsg.includes('Enter password') ||
-        errMsg.includes('Can not open encrypted') ||
-        errMsg.includes('Cannot open encrypted') ||
-        errMsg.includes('Data Error in encrypted archive') ||
-        errMsg.includes('Wrong password')
-      ) {
+      // Only 7-Zip's own stderr lines decide: stdout carries the prompt and entry names on every listing.
+      if (isArchivePasswordFailure(archiveFailureStderr(err))) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
       throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
     }
 
-    if (stdoutStr.includes('Enter password (will not be echoed):')) {
-      throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-    }
-
     // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,
     // which protect this service from an unbounded listing, still refuse.
-    const listed = parse7zTechnicalListing(stdoutStr);
+    const listingText = stripSevenZipPasswordPrompt(stdoutStr);
+    const listed = parse7zTechnicalListing(listingText);
     assertListingResourceCaps(listed, buffer.length, ARCHIVE_SECURITY_LIMITS);
 
     const entries: ArchiveEntryMetadata[] = [];
-    const blocks = stdoutStr.split(/\r?\n\r?\n/);
+    const blocks = listingText.split(/\r?\n\r?\n/);
     let isArchiveEncrypted = false;
 
     for (const block of blocks) {
@@ -4368,7 +4462,9 @@ async function inspectArchiveEntries(
     try {
       const decompressed = decompressZstd(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.zst');
-    } catch {
+    } catch (err) {
+      // Typed decoder errors (bomb guard, malformed frame) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
       throw new ConversionFailedError('Failed to decompress zstd archive.');
     }
   }
@@ -4432,9 +4528,7 @@ export async function convertArchive(
     };
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
@@ -4471,7 +4565,7 @@ export async function convertArchive(
         },
       });
     } catch (err) {
-      if (err instanceof ArchiveEntryCollisionError) throw err;
+      if (isArchivePasswordError(err) || err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4528,6 +4622,7 @@ export async function convertArchive(
         files = files.filter((f) => matchArchiveGlob(f.filename, options.entries));
       }
     } catch (err: any) {
+      if (isArchivePasswordError(err)) throw err;
       throw new ConversionFailedError(
         `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
       );
@@ -4542,40 +4637,24 @@ export async function convertArchive(
     }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
-    if (options.zstdDict) {
-      const dict =
-        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
-          ? getPretrainedDictionary(options.zstdDict)
-          : DATA_DICTIONARY_JSON_CSV;
-      uncompressed = decompressWithZstdDict(effectiveBuffer, dict);
-    } else if (
-      effectiveBuffer.length >= 13 &&
-      effectiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE) &&
-      (effectiveBuffer[4] & 0x03) === 3
-    ) {
-      const fcsFlag = (effectiveBuffer[4] >> 6) & 0x03;
-      const fcsBytes = fcsFlag === 0 ? 1 : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
-      if (effectiveBuffer.length >= 5 + fcsBytes + 4) {
-        const dictId = effectiveBuffer.readUInt32LE(5 + fcsBytes);
-        if (dictId === ZSTD_DICT_MAGIC) {
-          uncompressed = decompressWithZstdDict(effectiveBuffer, DATA_DICTIONARY_JSON_CSV);
-        } else {
-          uncompressed = decompressZstd(effectiveBuffer);
-        }
-      } else {
-        uncompressed = decompressZstd(effectiveBuffer);
-      }
-    } else {
-      uncompressed = decompressZstd(effectiveBuffer);
+    try {
+      uncompressed = decodeZstdArchivePayload(effectiveBuffer, options.zstdDict);
+    } catch (err) {
+      // Typed decoder errors (bomb guards, malformed frames) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
+      throw new ConversionFailedError(
+        `Failed to decompress zstd archive: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
       throw new ConversionFailedError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+    // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
+    if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
       throw new ConversionFailedError(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {

@@ -1,9 +1,10 @@
-import sharp from 'sharp';
+import sharp, { type ResizeOptions } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
-import { openInputImage } from './image-input-limits';
+import { openInputImage, resizedDimensions } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 import { loadFontCoverageIndex } from './pdf-fonts';
 
@@ -324,6 +325,42 @@ function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): 
   return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
 }
 
+/** Targets the SVG converter writes without rendering pixels, so the output size options do not apply. */
+const SVG_NON_RASTER_TARGETS = new Set(['svg', 'emf', 'wmf', 'cgm']);
+
+/**
+ * Size the drawing renders at for `density`, read from the SVG header without rendering it. A drawing that
+ * would render over the output pixel limit is refused before any pixel is allocated.
+ */
+async function assertSvgRenderSize(svg: Buffer, density: number): Promise<{ width: number; height: number }> {
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    ({ width, height } = await sharp(svg, { density }).metadata());
+  } catch (error) {
+    throw new ConversionFailedError(`The SVG drawing cannot be rendered at ${density} dpi: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!width || !height) throw new ConversionFailedError('The SVG drawing declares no size');
+  assertOutputPixels(width, height);
+  return { width, height };
+}
+
+/**
+ * Resize parameters for the requested width and height, or null when the request does not resize. The sides
+ * are validated like raster images and the resized box is checked against the output pixel limit before the
+ * drawing is rendered.
+ */
+async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<ResizeOptions | null> {
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  const rendered = await assertSvgRenderSize(svg, density);
+  if (width === undefined && height === undefined) return null;
+  const resize = { width, height, fit: options.fit || 'contain' };
+  const resized = resizedDimensions(rendered.width, rendered.height, resize);
+  assertOutputPixels(resized.width, resized.height);
+  return { ...resize, background: { r: 255, g: 255, b: 255, alpha: 0 } };
+}
+
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
@@ -357,10 +394,13 @@ async function convertSvgSource(
     };
   }
 
+  const density = options.dpi || DEFAULT_SVG_RENDER_DPI;
+
   // SVG -> PDF
   if (tgt === 'pdf') {
-    // The render size follows the requested dpi, so the declared canvas is checked at that density.
-    const renderer = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
+    // The render size follows the requested dpi, so the declared canvas is checked at that density first.
+    const renderer = await openInputImage(inputBuffer, { density });
+    await assertSvgRenderSize(inputBuffer, density);
     const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
     const width = meta.width || 600;
@@ -395,15 +435,11 @@ async function convertSvgSource(
   if (vectorOutput) return vectorOutput;
 
   // SVG -> Raster Images via Sharp
-  let pipeline = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
+  let pipeline = await openInputImage(inputBuffer, { density });
 
-  if (options.width || options.height) {
-    pipeline = pipeline.resize({
-      width: options.width ? Number(options.width) : undefined,
-      height: options.height ? Number(options.height) : undefined,
-      fit: options.fit || 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
-    });
+  if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
+    const resize = await svgResizeOf(inputBuffer, density, options);
+    if (resize) pipeline = pipeline.resize(resize);
   }
 
   const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 90;

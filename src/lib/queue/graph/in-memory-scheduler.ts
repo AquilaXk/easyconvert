@@ -12,7 +12,7 @@ import type {
 import { cancelGraphNodeJob, enqueueGraphNodeJob, graphNodeJobId } from './node-jobs';
 import { maskTaskRecords, sealJobGraph } from './sealed-nodes';
 import { redactText } from '../../security/redact';
-import { s3Storage } from '../../storage/s3-storage';
+import { storageProvider } from '../../storage';
 import { redisKeyStore } from '../../api-keys/redis-key-store';
 import { webhookDispatcher } from '../../api-keys/webhook-dispatcher';
 
@@ -342,8 +342,8 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
 
   async cleanupIntermediates(graphId: string): Promise<number> {
     const prefix = `intermediate/${graphId}/`;
-    if (typeof s3Storage.deleteByPrefix === 'function') {
-      return s3Storage.deleteByPrefix(prefix);
+    if (typeof storageProvider.deleteByPrefix === 'function') {
+      return storageProvider.deleteByPrefix(prefix);
     }
     return 0;
   }

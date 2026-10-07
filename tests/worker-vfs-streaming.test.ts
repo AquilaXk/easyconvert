@@ -30,7 +30,7 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
   });
 
   describe('1. Storage Backend saveObjectFromFile Zero-Heap Persistence', () => {
-    it('persists object directly from disk filePath without pre-allocating buffer in memory', () => {
+    it('persists object directly from disk filePath without pre-allocating buffer in memory', async () => {
       const filePath = path.join(tempDir, 'sample_dataset.csv');
       const testContent = 'id,name,value\n1,alpha,100\n2,beta,200\n';
       fs.writeFileSync(filePath, testContent, 'utf-8');
@@ -51,7 +51,7 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
       expect(stored.etag).toMatch(/^"[a-f0-9]+"/);
 
       // Verify cross-backend retrieval via unified storageProvider
-      const retrieved = storageProvider.getObject(storageKey);
+      const retrieved = await storageProvider.getObject(storageKey);
       expect(retrieved).toBeDefined();
       expect(retrieved?.filePath).toBe(filePath);
       expect(retrieved?.size).toBe(Buffer.byteLength(testContent, 'utf-8'));

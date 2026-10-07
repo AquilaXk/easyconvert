@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
-import { extractArchiveContained } from '../src/lib/conversions/archive-extraction-safety';
+import { extractArchiveContained, parse7zTechnicalListing, stripSevenZipPasswordPrompt } from '../src/lib/conversions/archive-extraction-safety';
 import { convertWithNative7z } from '../src/worker/engines';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -375,4 +375,47 @@ describe('7z listing key whitelist on every native archive source', () => {
       );
     }
   }
+});
+
+describe('RAR5 listing keys', () => {
+  // 7-Zip prints `Copy Link` (the RAR5 file-copy reference) for every RAR5 entry; written by hand from a 23.01 listing.
+  const RAR5_BLOCK = [
+    'Path = a.txt',
+    'Folder = -',
+    'Size = 11',
+    'Packed Size = 16',
+    'Encrypted = +',
+    'Host OS = Unix',
+    'Method = m0:17 AES:15:1',
+    'Symbolic Link = ',
+    'Hard Link = ',
+    'Copy Link = ',
+    '',
+  ].join('\n');
+
+  it('accepts the Copy Link field and still reads the entry', () => {
+    const [entry] = parse7zTechnicalListing(RAR5_BLOCK);
+    expect(entry.path).toBe('a.txt');
+    expect(entry.sizeBytes).toBe(11);
+    expect(entry.linkKind).toBeNull();
+  });
+});
+
+describe('the password prompt is not part of a listing', () => {
+  const LISTING = 'Path = a.txt\nSize = 2\n';
+
+  it.each([
+    ['p7zip and 7-Zip up to 23.01', 'Enter password (will not be echoed):'],
+    ['7-Zip 26.01', 'Enter password:'],
+  ])('strips the %s prompt so the listing parses', (_build, prompt) => {
+    const [entry] = parse7zTechnicalListing(stripSevenZipPasswordPrompt(`\n${prompt}\n${LISTING}`));
+    expect(entry.path).toBe('a.txt');
+    expect(entry.sizeBytes).toBe(2);
+  });
+
+  it('leaves a line that only starts like the prompt for the parser to refuse', () => {
+    expect(() => parse7zTechnicalListing(stripSevenZipPasswordPrompt(`Enter passwords here\n${LISTING}`))).toThrow(
+      /unrecognized line/
+    );
+  });
 });

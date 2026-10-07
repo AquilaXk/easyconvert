@@ -73,8 +73,8 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
       storage.stopGc();
     });
 
-    it('generates authentic AWS SigV4 Presigned Upload and Download URLs', () => {
-      const storage = new S3ObjectStorageService();
+    it('generates SigV4 presigned upload URLs that this application verifies, and no download URLs', () => {
+      const storage = new S3ObjectStorageService({ signingSecret: 'phase-3-s3-local-signing-secret-0001' });
       const key = 'uploads/test-image.png';
 
       // Upload presigned URL
@@ -87,25 +87,18 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
       expect(presignedUpload.url).toContain('partNumber=1');
       expect(presignedUpload.url).toContain('uploadId=s3_upload_123');
 
-      // Download presigned URL
-      const presignedDownload = storage.generatePresignedDownloadUrl(key, 3600);
-      expect(presignedDownload.url).toContain('X-Amz-Algorithm=AWS4-HMAC-SHA256');
-      expect(presignedDownload.url).toContain('X-Amz-Expires=3600');
-      expect(presignedDownload.url).toContain('X-Amz-Signature');
+      // The signature checks out under the application's signing secret, and only under it
+      const verified = storage.verifySigV4Url(presignedUpload.url, 'PUT');
+      expect(verified.valid).toBe(true);
+      expect(verified.queryParams?.uploadId).toBe('s3_upload_123');
+      const stranger = new S3ObjectStorageService({ signingSecret: 'another-signing-secret-for-the-stranger' });
+      expect(stranger.verifySigV4Url(presignedUpload.url, 'PUT').valid).toBe(false);
+      stranger.stopGc();
 
-      // Signature verification
-      expect(
-        storage.verifyPresignedSignature(
-          'PUT',
-          key,
-          presignedUpload.expiresAt,
-          presignedUpload.signature,
-          's3_upload_123',
-          1
-        )
-      ).toBe(true);
+      // Local storage has no object-store host that could verify a download URL, so it mints none
+      expect((storage as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
 
-      // Expired signature fails closed
+      // A capability signature is not valid after its expiry
       expect(
         storage.verifyPresignedSignature(
           'PUT',

@@ -51,6 +51,7 @@ import {
 import { convertArchive } from '../src/lib/conversions/archive';
 import { convertData } from '../src/lib/conversions/data';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { buildRleBombFrame } from './helpers/zstd-frames';
 
 describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Variable Fonts', () => {
   // =========================================================================
@@ -219,13 +220,21 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
     });
 
     it('handles multi-block data spanning beyond single block limit (128KB)', () => {
-      // 300KB random binary pattern
-      const largeData = Buffer.alloc(300 * 1024);
-      for (let i = 0; i < largeData.length; i++) {
-        largeData[i] = (i * 37 + 13) & 0xff;
+      // 300KB of repetitive-but-not-degenerate text: three blocks, genuinely compressed, ratio far below the bomb floor
+      const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
+      let seed = 0x2545f491;
+      const pieces: string[] = [];
+      let total = 0;
+      while (total < 300 * 1024) {
+        seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+        const piece = `${words[(seed >>> 16) % words.length]}-${(seed >>> 8) % 97} `;
+        pieces.push(piece);
+        total += piece.length;
       }
+      const largeData = Buffer.from(pieces.join('').slice(0, 300 * 1024), 'latin1');
 
       const compressed = compressZstd(largeData);
+      expect(compressed.length).toBeLessThan(largeData.length / 2);
       const decompressed = decompressZstd(compressed);
 
       expect(decompressed.length).toBe(largeData.length);
@@ -274,15 +283,20 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(() => decompressZstd(invalid)).toThrow(/Invalid Zstandard magic/i);
     });
 
-    it('enforces archive bomb safeguards for suspicious compression ratios', () => {
-      // 50,000 bytes of zeros compresses down to 14 bytes (ratio > 3000:1)
-      const repetitiveData = Buffer.alloc(50000, 0x42);
-      const compressed = compressZstd(repetitiveData);
-
-      expect(repetitiveData.length / compressed.length).toBeGreaterThan(100);
-      expect(() => decompressZstd(compressed)).toThrow(
+    it('enforces archive bomb safeguards once output passes the ratio-guard floor', () => {
+      // 257 RLE blocks of 128 KiB decode to 32 MiB + 128 KiB from ~1 KB (ratio > 30000:1)
+      const bomb = buildRleBombFrame(257);
+      expect(bomb.length).toBeLessThan(2048);
+      expect(() => decompressZstd(bomb)).toThrow(
         /Archive bomb detected: compression ratio .* exceeds 100:1 limit/i
       );
+    });
+
+    it('accepts small highly repetitive payloads below the ratio-guard floor', () => {
+      const repetitiveData = Buffer.alloc(50000, 0x42);
+      const compressed = compressZstd(repetitiveData);
+      expect(repetitiveData.length / compressed.length).toBeGreaterThan(100);
+      expect(Buffer.compare(decompressZstd(compressed), repetitiveData)).toBe(0);
     });
 
     it('integrates zst and tar.zst in convertArchive and FORMAT_REGISTRY', async () => {

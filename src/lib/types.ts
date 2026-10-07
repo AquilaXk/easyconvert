@@ -19,6 +19,7 @@ export interface FormatOptionsSchema {
   dimensions?: boolean;
   fit?: boolean;
   stripMetadata?: boolean;
+  background?: boolean;
   dpi?: boolean;
   imageDpi?: boolean;
   jpegQuality?: boolean;
@@ -88,6 +89,8 @@ export interface ConversionOptions {
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
   stripMetadata?: boolean;
+  /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
+  background?: string;
   dpi?: number;
   /** pdf -> txt: keep physical layout so table rows stay on one line (default: reading order). */
   layout?: boolean;
@@ -355,6 +358,10 @@ export interface ConversionResult {
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Frames (animated GIF/WebP/APNG) or pages (multi-page TIFF/HEIF) the source image holds; set only when more than one. */
+  sourceFrameCount?: number;
+  /** 1-based frame or page a still output was taken from: frame 1 by default, or the requested `page`. */
+  frameUsed?: number;
   /** Link entries left out of an extraction because `skipLinks` was set. */
   skippedLinks?: string[];
   /** Engine and post-processing facts about the result, such as the PDF/A verdict. */
@@ -440,6 +447,8 @@ export interface ConversionJobResult {
   size: number;
   durationMs: number;
   ocrExtracted?: boolean;
+  sourceFrameCount?: number;
+  frameUsed?: number;
 }
 
 export class ConversionFailedError extends Error {
@@ -494,6 +503,30 @@ export class ArchiveEncryptionUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'ArchiveEncryptionUnavailableError';
+  }
+}
+
+/** A password-protected archive came out of the archiver without encryption and was discarded. */
+export class ArchiveNotEncryptedError extends ConversionFailedError {
+  constructor(message = 'Archive was written without encryption.') {
+    super(message);
+    this.name = 'ArchiveNotEncryptedError';
+  }
+}
+
+/** The archive is encrypted and the request carried no password. */
+export class ArchivePasswordRequiredError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchivePasswordRequiredError';
+  }
+}
+
+/** The request carried a password that does not decrypt the archive. */
+export class InvalidArchivePasswordError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidArchivePasswordError';
   }
 }
 

@@ -23,6 +23,8 @@ export const dispatchEngine: ConversionEnginePort = {
       fallbackChain: res.fallbackChain,
       skippedLinks: res.skippedLinks,
       ocrExtractedText: res.ocrExtractedText,
+      sourceFrameCount: res.sourceFrameCount,
+      frameUsed: res.frameUsed,
     };
   },
 };

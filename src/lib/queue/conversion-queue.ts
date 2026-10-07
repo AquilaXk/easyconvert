@@ -1,6 +1,6 @@
 import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } from './bullmq-engine';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../types';
-import { s3Storage } from '../storage/s3-storage';
+import { storageProvider } from '../storage';
 import { isUploadKey } from '../storage/key-namespace';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
@@ -35,19 +35,19 @@ export const allConversionQueues: readonly IQueueEngine<ConversionJobData, Conve
 export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
-  return processNodeJob(job, dispatchEngine, s3Storage);
+  return processNodeJob(job, dispatchEngine, storageProvider);
 }
 
 /**
  * Deletes a job's uploaded input, reporting a missing object or a failed delete. Only an upload
  * belongs to the job: a user's `conversions/` or `results/` output chained as the input is kept.
  */
-function removeJobInput(jobId: string, storageKey: string): void {
+async function removeJobInput(jobId: string, storageKey: string): Promise<void> {
   if (!isUploadKey(storageKey)) {
     return;
   }
   try {
-    if (!s3Storage.deleteObject(storageKey)) {
+    if (!(await storageProvider.deleteObject(storageKey))) {
       console.warn(`[ConversionQueue] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
     }
   } catch (err) {
@@ -188,12 +188,12 @@ export function attachInputCleanupOnCompletion(
 ): void {
   worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => {
     if (job.data?.storageKey) {
-      removeJobInput(job.id, job.data.storageKey);
+      void removeJobInput(job.id, job.data.storageKey);
     }
   });
   worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => {
     if (job.data?.storageKey && isFinalFailure(job, err)) {
-      removeJobInput(job.id, job.data.storageKey);
+      void removeJobInput(job.id, job.data.storageKey);
     }
   });
 }

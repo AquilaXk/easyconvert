@@ -30,6 +30,7 @@ import {
 } from '../src/lib/conversions/hwp';
 import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
 import { ConversionFailedError } from '../src/lib/types';
+import { buildRleBombFrame } from './helpers/zstd-frames';
 
 // ============================================================================
 // Adversarial Mutator Primitives
@@ -210,12 +211,11 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       expect(() => decompressZstd(truncated)).toThrow();
     });
 
-    it('enforces archive bomb safeguards for suspicious compression ratios (>100:1)', () => {
-      const repetitive = Buffer.alloc(40000, 0x5a); // 40KB
-      const compressed = compressZstd(repetitive);
-
-      expect(repetitive.length / compressed.length).toBeGreaterThan(100);
-      expect(() => decompressZstd(compressed)).toThrow(/Archive bomb detected/i);
+    it('enforces archive bomb safeguards for suspicious compression ratios (>100:1) beyond the floor', () => {
+      // 300 RLE blocks of 128 KiB: 37.5 MiB from ~1.2 KB
+      const bomb = buildRleBombFrame(300);
+      expect(bomb.length * 100).toBeLessThan(300 * 128 * 1024);
+      expect(() => decompressZstd(bomb)).toThrow(/Archive bomb detected/i);
     });
 
     it('survives randomized bit-flip fuzzing loop without crashes or unhandled exceptions', () => {

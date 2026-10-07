@@ -9,6 +9,7 @@ import {
   ConversionResult,
   ConversionFailedError,
   ArchiveEncryptionUnavailableError,
+  ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
   InvalidPageRangeError,
@@ -36,7 +37,7 @@ import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
+import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -56,11 +57,25 @@ import {
 } from './raw-decoded-tiff';
 import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
 import {
-  assertArchivePasswordSafe,
   cleanupDirectoryTree,
   extractArchiveContained,
   sanitizeLeafFilename,
 } from '../lib/conversions/archive-extraction-safety';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
+  assertZipPasswordSupported,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
+  sevenZipReadPasswordInput,
+  walkArchiveTreePaths,
+} from '../lib/conversions/archive-password';
 import {
   LIBREOFFICE_POOL_ENGINE_NAME,
   LibreOfficePoolManager,
@@ -688,6 +703,34 @@ interface Package7zArchiveParams {
   options?: WorkerEngineOptions;
 }
 
+/**
+ * Lists the password-protected archive just written, without its password, and throws
+ * ArchiveNotEncryptedError unless it is encrypted: a 7-Zip that ignores its prompt exits 0 with
+ * a plaintext archive.
+ */
+async function assertCreatedArchiveEncrypted(
+  p7zBin: string,
+  archivePath: string,
+  format: 'zip' | '7z',
+  limits: { cwd: string; timeoutMs: number; signal?: AbortSignal }
+): Promise<void> {
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
+      cwd: limits.cwd,
+      timeoutMs: limits.timeoutMs,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      networkIsolated: true,
+      stdin: sevenZipEncryptionCheckInput(),
+      signal: limits.signal,
+    });
+    outcome = { listing: result.stdout.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureStderr(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
   const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
@@ -725,17 +768,20 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+  }
   const pwArgs: string[] = [];
   if (options?.password) {
     if (tgt === '7z') {
-      pwArgs.push('-mhe=on', '-p');
+      pwArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     } else if (tgt === 'zip') {
-      pwArgs.push('-mem=AES256', '-p');
+      pwArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     }
   }
   const pwInput =
     options?.password && (tgt === 'zip' || tgt === '7z')
-      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
   await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
@@ -746,6 +792,13 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     stdin: pwInput,
     signal: options?.signal,
   });
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    await assertCreatedArchiveEncrypted(p7zBin, tempOutputPath, tgt, {
+      cwd: tempDir,
+      timeoutMs: timeout,
+      signal: options.signal,
+    });
+  }
   return true;
 }
 
@@ -839,8 +892,15 @@ export async function convertWithNative7z(
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  assertArchivePasswordSafe(options.password);
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
+
+  // Stock 7-Zip builds cannot open or create Zstandard streams; the in-process zstd engine owns them.
+  if (src.includes('zst') || tgt.includes('zst')) {
+    return null;
   }
 
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
@@ -1094,19 +1154,13 @@ async function convertPdfToTextWithPoppler(
 }
 
 function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
-  let requestedPages: number[];
-  if (options.pages) {
-    requestedPages = parsePageRanges(options.pages, pageCount);
-  } else if (typeof options.page === 'number') {
-    if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
-      throw new InvalidPageRangeError(
-        `Page number ${options.page} is out of bounds (1-${pageCount})`
-      );
-    }
-    requestedPages = [options.page];
-  } else {
-    requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-  }
+  const requestedPages =
+    resolvePageSelection(
+      options.page,
+      options.pages,
+      pageCount,
+      (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)
+    ) ?? Array.from({ length: pageCount }, (_, i) => i + 1);
 
   if (requestedPages.length === 0) {
     throw new InvalidPageRangeError('No pages selected for rendering');
@@ -1184,10 +1238,9 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
   const zip = new JSZip();
   const maxPage = requestedPages.at(-1) ?? 1;
-  const padLen = Math.max(3, String(maxPage).length);
 
   for (const item of resolvedFiles) {
-    const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
+    const entryName = pageEntryName(baseName, item.pageNum, maxPage, tgt);
     const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
     zip.file(entryName, fileBytes);
   }

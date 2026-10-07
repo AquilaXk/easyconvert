@@ -4,7 +4,8 @@ import { Readable, Transform, pipeline } from 'node:stream';
 import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
-import { s3Storage } from '../../storage/s3-storage';
+import { storageProvider } from '../../storage';
+import { scopeStorageObjects } from '../../storage/scoped-storage';
 import type { IStorageBackend } from '../../storage/oci-storage';
 import type { ConversionEnginePort } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
@@ -31,6 +32,7 @@ import {
 import { ConversionFailedError, GraphExportError } from '../../types';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
+import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
 
 async function processIntermediatePdfArtifacts(
   graphId: string,
@@ -43,14 +45,14 @@ async function processIntermediatePdfArtifacts(
   return Promise.all(
     inputKeys.map(async (inputKey) => {
       attemptSignal.throwIfAborted();
-      const stored = storage.getObject(inputKey);
+      const stored = await storage.getObject(inputKey);
       if (!stored) {
         throw new Error(`Input artifact "${inputKey}" not found in storage`);
       }
       const transformedBuf = await transformFn(stored.buffer);
       const outFilename = stored.filename || path.basename(inputKey);
       const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-      storage.saveObject(outKey, transformedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+      await storage.saveObject(outKey, transformedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
       return outKey;
     })
   );
@@ -81,13 +83,15 @@ export async function processGraphNodeJob(
   engine?: ConversionEnginePort,
   storage?: IStorageBackend
 ): Promise<ConversionJobResult> {
+  // Scratch files a remote backend stages for this node's inputs are removed when the node ends.
+  const scope = scopeStorageObjects(storage || storageProvider);
   const startTime = Date.now();
   const attemptSignal = job.signal;
   const graphId = job.data.graphId!;
   const nodeId = job.data.graphNodeId!;
   const node = job.data.graphNode as any;
-  const effectiveStorage: IStorageBackend = storage || s3Storage;
-  const effectiveEngine: ConversionEnginePort = engine || dispatchEngine;
+  const effectiveStorage: IStorageBackend = scope.storage;
+  const effectiveEngine: ConversionEnginePort = pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId));
 
   await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
   await job.updateProgress(10);
@@ -121,7 +125,7 @@ export async function processGraphNodeJob(
 
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
@@ -136,7 +140,7 @@ export async function processGraphNodeJob(
           );
 
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         await job.log(`Node "${nodeId}" converted ${inputArtifacts.length} artifact(s) to ${node.targetFormat}`);
@@ -147,7 +151,7 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
@@ -160,7 +164,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -170,7 +174,7 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
@@ -183,7 +187,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -196,7 +200,7 @@ export async function processGraphNodeJob(
         }
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
@@ -222,7 +226,7 @@ export async function processGraphNodeJob(
           );
           const outFilename = `thumbnail.${targetFormat}`;
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -277,8 +281,8 @@ export async function processGraphNodeJob(
           throw new ConversionFailedError(`Merge node "${nodeId}" cannot produce "${targetFmt}"`);
         }
         // Every input must exist and already be in the merged format; nothing is skipped.
-        const inputs = inputArtifacts.map((inputKey) => {
-          const stored = effectiveStorage.getObject(inputKey);
+        const inputs = await Promise.all(inputArtifacts.map(async (inputKey) => {
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
@@ -290,19 +294,19 @@ export async function processGraphNodeJob(
             throw new ConversionFailedError(`Merge node "${nodeId}" input "${inputKey}" is empty`);
           }
           return stored;
-        });
+        }));
         if (targetFmt === 'pdf') {
           const pdfBuffers = inputs.map((stored) => stored.buffer);
           const mergedBuf = await mergePdfBuffers(pdfBuffers);
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          effectiveStorage.saveObject(outKey, mergedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, mergedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         } else {
           const mergedBuf = Buffer.from(inputs.map((stored) => stored.buffer.toString('utf-8')).join('\n\n'), 'utf-8');
           const outFilename = `merged.${targetFmt}`;
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          effectiveStorage.saveObject(outKey, mergedBuf, 'text/plain', outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, mergedBuf, 'text/plain', outFilename, 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
         break;
@@ -314,7 +318,7 @@ export async function processGraphNodeJob(
           throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
         }
         const inputKey = inputArtifacts[0];
-        const stored = effectiveStorage.getObject(inputKey);
+        const stored = await effectiveStorage.getObject(inputKey);
         if (!stored) {
           throw new Error(`Input artifact "${inputKey}" not found in storage`);
         }
@@ -326,7 +330,7 @@ export async function processGraphNodeJob(
         const jsonBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf-8');
         const outFilename = 'metadata.json';
         const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-        effectiveStorage.saveObject(outKey, jsonBuf, 'application/json', outFilename, 24 * 60 * 60 * 1000);
+        await effectiveStorage.saveObject(outKey, jsonBuf, 'application/json', outFilename, 24 * 60 * 60 * 1000);
         outputKeys.push(outKey);
         break;
       }
@@ -347,7 +351,7 @@ export async function processGraphNodeJob(
         const filesToArchive: { filename: string; buffer: Buffer }[] = [];
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) {
             throw new Error(`Artifact "${inputKey}" not found in storage`);
           }
@@ -379,7 +383,7 @@ export async function processGraphNodeJob(
         }
 
         const outKey = `intermediate/${graphId}/${nodeId}/bundle.${targetFmt}`;
-        effectiveStorage.saveObject(outKey, archiveBuf, archiveMime, `bundle.${targetFmt}`, 24 * 60 * 60 * 1000);
+        await effectiveStorage.saveObject(outKey, archiveBuf, archiveMime, `bundle.${targetFmt}`, 24 * 60 * 60 * 1000);
         outputKeys = [outKey];
         await job.log(`Created archive with ${filesToArchive.length} file(s): ${outKey}`);
         break;
@@ -395,18 +399,18 @@ export async function processGraphNodeJob(
         let effectiveFilename: string;
 
         if (inputArtifacts.length > 1) {
-          const parts = inputArtifacts.map((k) => {
-            const st = effectiveStorage.getObject(k);
+          const parts = await Promise.all(inputArtifacts.map(async (k) => {
+            const st = await effectiveStorage.getObject(k);
             if (!st) throw new Error(`Archive artifact "${k}" not found`);
             return { filename: st.filename || path.basename(k), buffer: st.buffer };
-          });
+          }));
           validateMultiVolumeSequence(parts.map((p) => p.filename));
           const stitched = stitchMultiVolumeArchive(parts);
           archiveBuffer = stitched.buffer;
           effectiveFilename = stitched.baseFilename;
         } else {
           const archiveKey = inputArtifacts[0];
-          const stored = effectiveStorage.getObject(archiveKey);
+          const stored = await effectiveStorage.getObject(archiveKey);
           if (!stored) {
             throw new Error(`Archive artifact "${archiveKey}" not found`);
           }
@@ -433,7 +437,7 @@ export async function processGraphNodeJob(
 
         for (const f of extracted) {
           const outKey = `intermediate/${graphId}/${nodeId}/${path.basename(f.filename)}`;
-          effectiveStorage.saveObject(outKey, f.buffer, 'application/octet-stream', path.basename(f.filename), 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, f.buffer, 'application/octet-stream', path.basename(f.filename), 24 * 60 * 60 * 1000);
           outputKeys.push(outKey);
         }
 
@@ -463,11 +467,11 @@ export async function processGraphNodeJob(
         const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
         for (const inputKey of inputArtifacts) {
           attemptSignal.throwIfAborted();
-          const stored = effectiveStorage.getObject(inputKey);
+          const stored = await effectiveStorage.getObject(inputKey);
           if (!stored) continue;
 
           const promotedKey = `results/${graphId}/${stored.filename || path.basename(inputKey)}`;
-          effectiveStorage.saveObject(
+          await effectiveStorage.saveObject(
             promotedKey,
             stored.buffer,
             stored.mimeType,
@@ -512,6 +516,8 @@ export async function processGraphNodeJob(
       await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
     }
     throw err;
+  } finally {
+    await scope.releaseAll();
   }
 }
 
@@ -586,8 +592,8 @@ async function exportArtifactToUrl(
   customerHeaders: Record<string, string> | undefined,
   signal: AbortSignal
 ): Promise<void> {
-  const stat = storage.stat(inputKey);
-  const stream = stat ? storage.openReadStream(inputKey) : null;
+  const stat = await storage.stat(inputKey);
+  const stream = stat ? await storage.openReadStream(inputKey) : null;
   if (!stat || !stream) {
     throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);
   }

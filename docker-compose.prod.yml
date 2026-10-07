@@ -1,0 +1,44 @@
+# Production overlay for docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# It runs the workers with NODE_ENV=production and requires, without a default, the settings that
+# production start-up validates. Compose stops with the message below when one is missing; a driver
+# value the application rejects stops the worker at start-up with a named variable. Nothing here
+# invents a tenancy, a bucket, a credential or a secret.
+#
+#   STORAGE_DRIVER          oci | s3 | local
+#                           oci: set OCI_NAMESPACE, OCI_REGION, OCI_BUCKET, OCI_ACCESS_KEY_ID and
+#                                OCI_SECRET_ACCESS_KEY (OCI_ENDPOINT only to override the endpoint)
+#                           s3:  set S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID and
+#                                S3_SECRET_ACCESS_KEY
+#                           local: objects stay on the shared volume (single node)
+#   STORAGE_SIGNING_SECRET  random secret of at least 32 bytes that signs upload and download URLs
+#   JOB_SECRET_KEK          random secret of at least 32 bytes that seals URLs and headers in queued jobs
+#                           (JOB_SECRET_KEK_PREVIOUS: the old key during a rotation)
+
+x-production-environment: &production-environment
+  - NODE_ENV=production
+  - STORAGE_DRIVER=${STORAGE_DRIVER:?set STORAGE_DRIVER to oci, s3 or local}
+  - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS:-}
+  # Public origin of the application (https://...); the local driver needs it to build upload URLs.
+  - APP_URL=${APP_URL:-}
+  - OCI_NAMESPACE=${OCI_NAMESPACE:-}
+  - OCI_REGION=${OCI_REGION:-}
+  - OCI_BUCKET=${OCI_BUCKET:-}
+  - OCI_ENDPOINT=${OCI_ENDPOINT:-}
+  - OCI_ACCESS_KEY_ID=${OCI_ACCESS_KEY_ID:-}
+  - OCI_SECRET_ACCESS_KEY=${OCI_SECRET_ACCESS_KEY:-}
+  - S3_ENDPOINT=${S3_ENDPOINT:-}
+  - S3_REGION=${S3_REGION:-}
+  - S3_BUCKET=${S3_BUCKET:-}
+  - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
+  - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
+
+services:
+  worker:
+    environment: *production-environment
+
+  worker-gpu:
+    environment: *production-environment

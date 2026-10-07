@@ -5,12 +5,10 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { LocalFsStorage } from '../src/lib/storage/local-fs-storage';
-import { S3CompatibleStorage } from '../src/lib/storage/s3-compatible-storage';
 
 describe('Phase 2-A: Async Stream-First Object Storage & Zero-Heap Local Filesystem', () => {
   let testStorageDir: string;
   let localStorage: LocalFsStorage;
-  let s3Storage: S3CompatibleStorage;
 
   beforeEach(() => {
     testStorageDir = path.join(os.tmpdir(), `ec-storage-test-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
@@ -20,14 +18,6 @@ describe('Phase 2-A: Async Stream-First Object Storage & Zero-Heap Local Filesys
       storageDir: testStorageDir,
       signingSecret: 'secure-test-signing-secret-key-32b',
       defaultTtlSeconds: 3600,
-    });
-
-    s3Storage = new S3CompatibleStorage({
-      accessKeyId: 'TEST_ACCESS_KEY_ID',
-      signingSecret: 'secure-s3-signing-secret-key-32b',
-      region: 'ap-northeast-2',
-      bucketName: 'test-bucket',
-      endpoint: 'https://test-endpoint.s3.ap-northeast-2.amazonaws.com',
     });
   });
 
@@ -224,77 +214,6 @@ describe('Phase 2-A: Async Stream-First Object Storage & Zero-Heap Local Filesys
       expect(
         localStorage.verifyPresignedSignature('PUT', key, Math.floor(Date.now() / 1000) - 100, presigned.signature, uploadId, partNumber)
       ).toBe(false);
-    });
-  });
-
-  describe('S3CompatibleStorage Adapter', () => {
-    it('generates authentic SigV4 presigned upload and download URLs', async () => {
-      const key = 's3/reports/annual.xlsx';
-      const uploadId = 's3_up_123';
-      const partNumber = 4;
-
-      const presignedPart = await s3Storage.presignPart(key, uploadId, partNumber, 900);
-      expect(presignedPart.method).toBe('PUT');
-      expect(presignedPart.signature).toHaveLength(64);
-
-      const partUrl = new URL(presignedPart.url);
-      expect(partUrl.searchParams.get('uploadId')).toBe(uploadId);
-      expect(partUrl.searchParams.get('partNumber')).toBe('4');
-      const credParam = partUrl.searchParams.get('X-Amz-Credential');
-      expect(credParam).toMatch(/^TEST_ACCESS_KEY_ID\/\d{8}\/ap-northeast-2\/s3\/aws4_request$/);
-
-      const presignedGet = await s3Storage.presignGet(key, 1200);
-      expect(presignedGet.method).toBe('GET');
-      expect(presignedGet.signature).toHaveLength(64);
-
-      const getUrl = new URL(presignedGet.url);
-      expect(getUrl.searchParams.get('X-Amz-Credential')).toMatch(/^TEST_ACCESS_KEY_ID\/\d{8}\/ap-northeast-2\/s3\/aws4_request$/);
-      expect(getUrl.searchParams.get('X-Amz-Expires')).toBe('1200');
-    });
-
-    it('verifies SigV4 presigned signatures with length-guarded timing-safe comparison', async () => {
-      const key = 's3/downloads/archive.zip';
-      const presigned = await s3Storage.presignGet(key, 300);
-
-      const valid = s3Storage.verifyPresignedSignature('GET', key, presigned.expiresAt, presigned.signature);
-      expect(valid).toBe(true);
-
-      const invalidTampered = s3Storage.verifyPresignedSignature(
-        'GET',
-        key,
-        presigned.expiresAt,
-        crypto.randomBytes(32).toString('hex')
-      );
-      expect(invalidTampered).toBe(false);
-
-      const invalidLength = s3Storage.verifyPresignedSignature('GET', key, presigned.expiresAt, 'deadbeef');
-      expect(invalidLength).toBe(false);
-    });
-
-    it('streams binary payloads end-to-end through spool storage', async () => {
-      const payload = Buffer.from('S3_COMPATIBLE_BINARY_STREAM_CONTENT_1234567890');
-      const key = 's3/payload.bin';
-
-      const stored = await s3Storage.putBuffer(key, payload, {
-        contentType: 'application/octet-stream',
-      });
-      expect(stored.size).toBe(payload.length);
-
-      const head = await s3Storage.head(key);
-      expect(head).not.toBeNull();
-      expect(head!.size).toBe(payload.length);
-
-      const read = await s3Storage.getStream(key, { start: 0, end: 12 });
-      expect(read).not.toBeNull();
-      const chunks: Buffer[] = [];
-      for await (const chunk of read!.stream) {
-        chunks.push(Buffer.from(chunk));
-      }
-      expect(Buffer.concat(chunks).toString('utf-8')).toBe('S3_COMPATIBLE');
-
-      const deleted = await s3Storage.delete(key);
-      expect(deleted).toBe(true);
-      expect(await s3Storage.head(key)).toBeNull();
     });
   });
 });

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { storageProvider as s3Storage } from '@/lib/storage';
+import { Readable } from 'node:stream';
 import { denyUnlessOwner, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,11 +42,19 @@ export async function GET(
       { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
     );
 
+  const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
   let resolvedKey = fullKey;
-  let stored = s3Storage.getObject(fullKey);
-  if (!stored) {
-    resolvedKey = rawKey;
-    stored = s3Storage.getObject(rawKey);
+  let stored;
+  try {
+    stored = await s3Storage.stat(fullKey);
+    if (!stored) {
+      resolvedKey = rawKey;
+      stored = await s3Storage.stat(rawKey);
+    }
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
   }
   if (!stored) {
     return notFound();
@@ -83,37 +93,21 @@ export async function GET(
   }
 
   const byteRange = range.kind === 'partial' ? { start: range.start, end: range.end } : undefined;
-  let nodeStream: import('node:stream').Readable | null = null;
-  if (typeof s3Storage.getObjectStream === 'function') {
-    nodeStream = s3Storage.getObjectStream(resolvedKey, byteRange);
+  let nodeStream;
+  try {
+    nodeStream = await s3Storage.openReadStream(resolvedKey, byteRange);
+  } catch (err: unknown) {
+    const problem = storageErrorResponse(err, instanceUri);
+    if (problem) return problem;
+    throw err;
+  }
+  if (!nodeStream) {
+    return notFound();
   }
 
-  if (nodeStream) {
-    const { Readable } = await import('node:stream');
-    const webStream = Readable.toWeb(nodeStream);
-    if (range.kind === 'partial') {
-      return new NextResponse(webStream as any, {
-        status: 206,
-        headers: {
-          ...contentHeaders,
-          'Content-Range': satisfiedContentRange(range.start, range.end, stored.size),
-          'Content-Length': String(range.end - range.start + 1),
-        },
-      });
-    }
-
-    return new NextResponse(webStream as any, {
-      status: 200,
-      headers: {
-        ...contentHeaders,
-        'Content-Length': stored.size.toString(),
-      },
-    });
-  }
-
+  const webStream = Readable.toWeb(nodeStream as Readable);
   if (range.kind === 'partial') {
-    const chunkBuffer = stored.buffer.subarray(range.start, range.end + 1);
-    return new NextResponse(new Uint8Array(chunkBuffer), {
+    return new NextResponse(webStream as any, {
       status: 206,
       headers: {
         ...contentHeaders,
@@ -123,7 +117,7 @@ export async function GET(
     });
   }
 
-  return new NextResponse(new Uint8Array(stored.buffer), {
+  return new NextResponse(webStream as any, {
     status: 200,
     headers: {
       ...contentHeaders,

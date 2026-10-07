@@ -9,7 +9,8 @@ import type {
   ConversionResult,
 } from '../types';
 import type { IStorageBackend } from '../storage/oci-storage';
-import { s3Storage } from '../storage/s3-storage';
+import { storageProvider } from '../storage';
+import { scopeStorageObjects } from '../storage/scoped-storage';
 import { convertFile } from '../conversions';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
@@ -17,6 +18,8 @@ import { isUploadKey } from '../storage/key-namespace';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
+import { pageCappedEngine, pageLimitForOwner } from './page-cap';
+import { frameMetadataFields } from '../api/frame-headers';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -68,6 +71,8 @@ export const tsEngine: ConversionEnginePort = {
       engineUsed: 'ts-engine',
       executionTimeMs: Date.now() - startTime,
       ocrExtractedText: res.ocrExtractedText,
+      sourceFrameCount: res.sourceFrameCount,
+      frameUsed: res.frameUsed,
     };
   },
 };
@@ -94,12 +99,12 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
 }
 
 /** Deletes a job's uploaded input upon final attempt failure. */
-function removeJobInput(jobId: string, storageKey: string, storage: IStorageBackend): void {
+async function removeJobInput(jobId: string, storageKey: string, storage: IStorageBackend): Promise<void> {
   if (!isUploadKey(storageKey)) {
     return;
   }
   try {
-    if (!storage.deleteObject(storageKey)) {
+    if (!(await storage.deleteObject(storageKey))) {
       console.warn(`[NodeProcessor] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
     }
   } catch (err) {
@@ -114,14 +119,19 @@ function removeJobInput(jobId: string, storageKey: string, storage: IStorageBack
  */
 export async function processNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
-  engine: ConversionEnginePort = dispatchEngine,
-  storage: IStorageBackend = s3Storage
+  baseEngine: ConversionEnginePort = dispatchEngine,
+  rootStorage: IStorageBackend = storageProvider
 ): Promise<ConversionJobResult> {
   // If this job is part of an orchestrated DAG JobGraph, route directly to the graph node executor
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
-    return processGraphNodeJob(job, engine, storage);
+    return processGraphNodeJob(job, baseEngine, rootStorage);
   }
+  // Every conversion of the job runs under the page limit of its owner's tier.
+  const engine = pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId));
 
+  // Scratch files a remote backend stages for this job's input are removed when the job ends.
+  const scope = scopeStorageObjects(rootStorage);
+  const storage = scope.storage;
   // Job data comes from the queue, not only from the routes: options that are not an object fail
   // the job with a typed error instead of being spread into {} or an index-keyed object.
   if (job.data.options !== undefined) assertConversionOptionsObject(job.data.options);
@@ -143,11 +153,11 @@ export async function processNodeJob(
   try {
     // 1. Fetch input from Storage backend or Base64 payload
     if (job.data.storageKey) {
-      const stored = storage.getObject(job.data.storageKey);
+      const stored = await storage.getObject(job.data.storageKey);
       if (!stored) {
         throw new Error(`Storage object not found for key: "${job.data.storageKey}"`);
       }
-      const stat = typeof storage.stat === 'function' ? storage.stat(job.data.storageKey) : undefined;
+      const stat = typeof storage.stat === 'function' ? await storage.stat(job.data.storageKey) : undefined;
       const objectSize = stat?.size ?? stored.size;
 
       // Objects streamed from disk bypass the limit for engines that read the file path; an object
@@ -305,7 +315,7 @@ export async function processNodeJob(
       fs.existsSync(finalResult.filePath) &&
       typeof storage.saveObjectFromFile === 'function'
     ) {
-      storage.saveObjectFromFile(
+      await storage.saveObjectFromFile(
         resultKey,
         finalResult.filePath,
         finalResult.mimeType,
@@ -313,7 +323,7 @@ export async function processNodeJob(
         oneHourTtlMs
       );
     } else {
-      storage.saveObject(
+      await storage.saveObject(
         resultKey,
         finalResult.buffer,
         finalResult.mimeType,
@@ -328,7 +338,7 @@ export async function processNodeJob(
 
     let downloadUrl = `/api/storage/file/${encodeURIComponent(resultKey)}`;
     if (typeof storage.generatePresignedDownloadUrl === 'function') {
-      const presigned = storage.generatePresignedDownloadUrl(resultKey, 3600);
+      const presigned = await storage.generatePresignedDownloadUrl(resultKey, 3600);
       downloadUrl = presigned.url;
     }
 
@@ -346,6 +356,7 @@ export async function processNodeJob(
       size: finalResult.size,
       durationMs,
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
+      ...frameMetadataFields(finalResult),
     };
   } catch (err) {
     failure = err;
@@ -365,7 +376,8 @@ export async function processNodeJob(
       secureShredBuffer(inputBufferForShredding, 2);
     }
     if (job.data.storageKey && !conversionSucceeded && isFinalFailure(job, failure)) {
-      removeJobInput(job.id, job.data.storageKey, storage);
+      await removeJobInput(job.id, job.data.storageKey, storage);
     }
+    await scope.releaseAll();
   }
 }
