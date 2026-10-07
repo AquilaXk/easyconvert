@@ -41,14 +41,27 @@ const LARGE_TAR = makeTar([
 ]);
 
 const convert = runOpfsConversion;
+/** The large inflate cases stream several MiB through the transformer. */
+const INFLATE_TEST_TIMEOUT_MS = 30_000;
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (route) => {
-  // Inflating needs a disk-backed output; the in-memory route refuses it (edge-opfs-quota.test.ts).
-  const inflateIt = it.skipIf(route === 'chunk-fallback');
+  // Inflating needs a disk-backed output: on the in-memory route each inflate case asserts the refusal
+  // (the server tier then converts) instead of the stream result.
+  const inflateIt = (name: string, body: () => Promise<void>): void => {
+    if (route !== 'chunk-fallback') {
+      it(name, body, INFLATE_TEST_TIMEOUT_MS);
+      return;
+    }
+    it(`${name}: refused on the in-memory route`, async () => {
+      const error = await failure(convert(route, 'gz', 'tar', gzipSync(SMALL_TAR)));
+      expect(error).toBeInstanceOf(EdgeUnsupportedError);
+      expect(error.message).toMatch(/Inflating/);
+    });
+  };
   it.each([
     ['tar', 'tar_gz'],
     ['tar', 'gz'],
@@ -75,16 +88,18 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (
     expect(walkTar(inflated).map((entry) => entry.name)).toEqual(['a.bin', 'b.bin', 'c.bin']);
   });
 
-  inflateIt.each([
+  for (const [source, target] of [
     ['gz', 'tar'],
     ['tar_gz', 'tar'],
-  ])('%s to %s writes exactly the decompressed tar', async (source, target) => {
-    const gz = gzipSync(LARGE_TAR);
-    const { bytes } = await convert(route, source, target, gz);
+  ] as const) {
+    inflateIt(`${source} to ${target} writes exactly the decompressed tar`, async () => {
+      const gz = gzipSync(LARGE_TAR);
+      const { bytes } = await convert(route, source, target, gz);
 
-    expect(bytes.equals(LARGE_TAR)).toBe(true);
-    expect(walkTar(bytes).map((entry) => entry.name)).toEqual(['a.bin', 'b.bin', 'c.bin']);
-  }, 30_000);
+      expect(bytes.equals(LARGE_TAR)).toBe(true);
+      expect(walkTar(bytes).map((entry) => entry.name)).toEqual(['a.bin', 'b.bin', 'c.bin']);
+    });
+  }
 
   inflateIt('refuses a gzip stream whose content is not a tar archive', async () => {
     const notTar = gzipSync(Buffer.from('plain text, not a tar archive\n'.repeat(400)));
