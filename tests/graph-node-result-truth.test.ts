@@ -27,6 +27,7 @@ const EXPECTED_MIME = {
   json: 'application/json',
   pdf: 'application/pdf',
   txt: 'text/plain',
+  opaque: 'application/octet-stream',
 } as const;
 
 let graphSeq = 0;
@@ -176,15 +177,30 @@ describe('graph node results report the stored output', () => {
       expect(result.size).toBe(Buffer.byteLength('extracted text body', 'utf-8'));
     });
 
-    it('fails closed on an entry whose format the registry does not know instead of guessing a type', async () => {
-      const archive = seed('bundle.zip', await zipOf({ 'blob.zzunknown': 'opaque' }), 'application/zip');
+    it.each(['LICENSE', 'blob.zzunknown'])(
+      'stores entry %s, whose name has no registered format, as opaque binary instead of failing the node',
+      async (entryName) => {
+        const archive = seed('bundle.zip', await zipOf({ [entryName]: 'opaque entry body' }), 'application/zip');
 
-      const run = processGraphNodeJob(nodeJob({ op: 'archive.extract' }, [archive]), undefined, s3Storage);
+        const result = await processGraphNodeJob(nodeJob({ op: 'archive.extract' }, [archive]), undefined, s3Storage);
 
-      await expect(run).rejects.toBeInstanceOf(UnknownArtifactFormatError);
-      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow('Artifact "blob.zzunknown" has no format registered, so its MIME type is unknown');
-    });
+        const output = stored(result.resultKey);
+        expect(output.filename).toBe(entryName);
+        expect(output.buffer.toString('utf-8')).toBe('opaque entry body');
+        expect(output.mimeType).toBe(EXPECTED_MIME.opaque);
+        expect(result.mimeType).toBe(EXPECTED_MIME.opaque);
+        expect(result.size).toBe(Buffer.byteLength('opaque entry body', 'utf-8'));
+      }
+    );
+  });
+
+  it('still fails closed on a node output whose format the registry does not know', async () => {
+    const key = seed('upload.zzunknown', Buffer.from('opaque'), 'application/octet-stream');
+    const run = processGraphNodeJob(nodeJob({ op: 'import.upload', storageKey: key }, []), undefined, s3Storage);
+
+    await expect(run).rejects.toBeInstanceOf(UnknownArtifactFormatError);
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow('has no format registered, so its MIME type is unknown');
   });
 
   it('fails with WorkerOutputMissingError when the node output is not in storage', async () => {

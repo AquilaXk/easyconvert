@@ -50,8 +50,8 @@ function registryMimeType(formatId: string): string {
   return definition.mimeType;
 }
 
-/** The registry MIME type of a stored artifact, from its file extension; an unregistered extension fails closed. */
-function registryMimeTypeOfFilename(filename: string): string {
+/** The registry MIME type of a file name from its extension (compound first), or undefined when none is registered. */
+function lookupRegistryMimeTypeOfFilename(filename: string): string | undefined {
   const parts = filename.toLowerCase().split('.');
   const candidates: string[] = [];
   if (parts.length > COMPOUND_EXTENSION_PARTS) {
@@ -66,7 +66,26 @@ function registryMimeTypeOfFilename(filename: string): string {
       return definition.mimeType;
     }
   }
-  throw new UnknownArtifactFormatError(filename);
+  return undefined;
+}
+
+/** The registry MIME type of a stored artifact, from its file extension; an unregistered extension fails closed. */
+function registryMimeTypeOfFilename(filename: string): string {
+  const mimeType = lookupRegistryMimeTypeOfFilename(filename);
+  if (mimeType === undefined) {
+    throw new UnknownArtifactFormatError(filename);
+  }
+  return mimeType;
+}
+
+/**
+ * An extracted entry is the archive's own content, not a conversion output: an entry whose name has no
+ * registered format (`LICENSE`, `.gitignore`) is opaque binary data (RFC 2046, section 4.5.1), not an error.
+ */
+const OPAQUE_ENTRY_MIME_TYPE = 'application/octet-stream';
+
+function archiveEntryMimeType(entryName: string): string {
+  return lookupRegistryMimeTypeOfFilename(entryName) ?? OPAQUE_ENTRY_MIME_TYPE;
 }
 
 /**
@@ -75,13 +94,16 @@ function registryMimeTypeOfFilename(filename: string): string {
  */
 async function describePrimaryOutput(
   storage: IStorageBackend,
-  key: string
+  key: string,
+  isArchiveEntry: boolean
 ): Promise<{ mimeType: string; size: number }> {
   const stat = await storage.stat(key);
   if (!stat) {
     throw new WorkerOutputMissingError(path.basename(key));
   }
-  return { mimeType: registryMimeTypeOfFilename(stat.filename || path.basename(key)), size: stat.size };
+  const filename = stat.filename || path.basename(key);
+  const mimeType = isArchiveEntry ? archiveEntryMimeType(filename) : registryMimeTypeOfFilename(filename);
+  return { mimeType, size: stat.size };
 }
 
 async function processIntermediatePdfArtifacts(
@@ -484,7 +506,7 @@ export async function processGraphNodeJob(
         for (const f of extracted) {
           const outKey = `intermediate/${graphId}/${nodeId}/${path.basename(f.filename)}`;
           const entryName = path.basename(f.filename);
-          await effectiveStorage.saveObject(outKey, f.buffer, registryMimeTypeOfFilename(entryName), entryName, INTERMEDIATE_TTL_MS);
+          await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
 
@@ -542,7 +564,7 @@ export async function processGraphNodeJob(
     // Described before the node is marked completed: an output that cannot be described fails the node.
     const primaryKey = outputKeys[0] || '';
     const primaryOutput = primaryKey
-      ? await describePrimaryOutput(effectiveStorage, primaryKey)
+      ? await describePrimaryOutput(effectiveStorage, primaryKey, node.op === 'archive.extract')
       : { mimeType: NO_OUTPUT_MIME_TYPE, size: 0 };
 
     await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, 1);
