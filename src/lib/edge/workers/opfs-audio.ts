@@ -19,6 +19,7 @@ import { type ChunkTransformerFn, concatBytes, isLastChunk } from './chunk-trans
 import { EdgeUnsupportedError } from './worker-errors';
 
 const BITS_PER_BYTE = 8;
+const FACT_BODY_BYTES = 4;
 const BYTES_PER_INT16 = 2;
 const U8_SILENCE = 128;
 const U8_SHIFT = 8;
@@ -315,7 +316,7 @@ function createImaToPcmTransformer(wrapsWav: boolean): ChunkTransformerFn {
   return createAudioTransformer((first, totalSize) => {
     let factFrames: number | undefined;
     const { format, dataStart, dataBytes } = walkWavChunks(first, totalSize, parseImaFormatBody, (id, view, body, size) => {
-      if (id === 'fact' && size >= BYTES_PER_INT16 * 2) factFrames = view.getUint32(body, true);
+      if (id === 'fact' && size >= FACT_BODY_BYTES) factFrames = view.getUint32(body, true);
     });
     requireWholeUnits(dataBytes, format.blockAlign, 'IMA ADPCM blocks');
     requireAudio(dataBytes);

@@ -157,8 +157,8 @@ export class OpfsStreamTransformer {
     totalSize: number,
     readChunkFn: (offset: number, size: number) => Promise<Uint8Array>,
     writeChunkFn: (offset: number, data: Uint8Array) => Promise<void>,
-    onProgress?: (progress: number, bytesProcessed: number) => void,
-    chunkTransformer?: ChunkTransformerFn
+    onProgress: ((progress: number, bytesProcessed: number) => void) | undefined,
+    chunkTransformer: ChunkTransformerFn
   ): Promise<number> {
     const chunkCount = transformWindowCount(totalSize, this.chunkSize);
     let bytesProcessed = 0;
@@ -173,8 +173,7 @@ export class OpfsStreamTransformer {
       const chunkData = await readChunkFn(offset, currentChunkSize);
 
       // 2. Perform streaming transformation and 3. write each bounded output piece to the destination
-      const result = chunkTransformer ? chunkTransformer(chunkData, offset, totalSize) : chunkData;
-      await forEachOutputPiece(result, async (piece) => {
+      await forEachOutputPiece(chunkTransformer(chunkData, offset, totalSize), async (piece) => {
         this.peakAllocatedBytes = Math.max(this.peakAllocatedBytes, piece.byteLength);
         await writeChunkFn(outputOffset, piece);
         outputOffset += piece.byteLength;

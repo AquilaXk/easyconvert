@@ -40,10 +40,13 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       const readSpy = vi.fn(async (_offset: number, size: number) => new Uint8Array(size));
       const writeSpy = vi.fn(async (_offset: number, _data: Uint8Array) => {});
 
+      // The window machinery is under test, so the transformation is a plain copy supplied by the test itself.
       const processed = await transformer.transformChunked(
         totalVirtualBytes,
         readSpy,
-        writeSpy
+        writeSpy,
+        undefined,
+        (chunk) => chunk
       );
 
       expect(processed).toBe(totalVirtualBytes);

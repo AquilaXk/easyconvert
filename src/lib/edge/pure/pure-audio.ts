@@ -55,6 +55,8 @@ const BITS_PER_BYTE = 8;
 const BYTES_PER_INT16 = 2;
 const UINT32_MAX = 0xffff_ffff;
 const WAV_PCM_HEADER_BYTES = 44;
+/** The id and size words in front of a RIFF body, which the RIFF size does not count. */
+const RIFF_HEADER_BYTES = 8;
 const RAW_PCM_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 16, 24, 32]);
 /** Bit depths of integer PCM the reader accepts in a WAV (the strict walker reads 16, 24 and 32; this adds 8). */
 const WAV_READ_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 16, 24, 32]);
@@ -173,11 +175,7 @@ export function parseWavPcm(
 /**
  * Encodes 16-bit PCM samples into standard RIFF WAV format using Uint8Array and DataView.
  */
-export function encodePcmToWav(
-  samples: Int16Array,
-  sampleRate = 44100,
-  channels = 2
-): Uint8Array {
+export function encodePcmToWav(samples: Int16Array, sampleRate: number, channels: number): Uint8Array {
   if (!Number.isInteger(channels) || channels < 1 || channels > WAV_MAX_CHANNELS) {
     throw refuse(`${channels} channels are not a WAV layout this engine writes`);
   }
@@ -191,7 +189,7 @@ export function encodePcmToWav(
   const byteRate = sampleRate * blockAlign;
   const dataSize = samples.length * BYTES_PER_INT16;
   const totalSize = WAV_PCM_HEADER_BYTES + dataSize;
-  if (totalSize - 8 > UINT32_MAX) throw refuse('the audio is too long for a 32-bit RIFF size');
+  if (totalSize - RIFF_HEADER_BYTES > UINT32_MAX) throw refuse('the audio is too long for a 32-bit RIFF size');
 
   const out = new Uint8Array(totalSize);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
