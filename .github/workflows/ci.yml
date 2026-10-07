@@ -7,8 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  # The unit and integration suites run in parallel shards. `verify`, the required check, passes only
-  # when every shard and the checks job pass.
+  # The unit and integration suites and the registry conformance gate run in parallel shards. `verify`,
+  # the required check, passes only when every shard, every conformance part and the checks job pass.
   tests:
     name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -57,7 +57,61 @@ jobs:
       - name: Run unit and integration tests
         env:
           ORACLE_STRICT_MODE: "1"
-        run: npx --no-install vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+        # The registry conformance gate runs in its own parallel job below.
+        run: npx --no-install vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --exclude tests/registry-engine-conformance.test.ts
+
+  conformance:
+    name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
+    # start it and by the storage tests that read STORAGE_TEST_S3_*.
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
+      # pairs (CONFORMANCE_PART), and part 1 also runs the registry-wide checks.
+      - name: Run the registry conformance gate
+        env:
+          ORACLE_STRICT_MODE: "1"
+          CONFORMANCE_PART: ${{ matrix.part }}/${{ strategy.job-total }}
+        run: npx --no-install vitest run tests/registry-engine-conformance.test.ts
 
   checks:
     runs-on: ubuntu-latest
@@ -136,15 +190,16 @@ jobs:
 
   verify:
     if: always()
-    needs: [tests, checks]
+    needs: [tests, conformance, checks]
     runs-on: ubuntu-latest
     steps:
       - name: Require every shard and the checks job to pass
         env:
           TESTS_RESULT: ${{ needs.tests.result }}
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
         run: |
-          echo "tests: $TESTS_RESULT, checks: $CHECKS_RESULT"
-          if [ "$TESTS_RESULT" != success ] || [ "$CHECKS_RESULT" != success ]; then
+          echo "tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, checks: $CHECKS_RESULT"
+          if [ "$TESTS_RESULT" != success ] || [ "$CONFORMANCE_RESULT" != success ] || [ "$CHECKS_RESULT" != success ]; then
             exit 1
           fi

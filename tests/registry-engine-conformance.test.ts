@@ -85,6 +85,27 @@ const MAX_PROBE_CONCURRENCY = 4;
 const CATEGORY_TIMEOUT_MS = 600_000;
 /** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
 const RAW_SOURCE_TIMEOUT_MS = 900_000;
+
+/**
+ * CONFORMANCE_PART=i/n runs part i of n: every registry pair belongs to exactly one part (by a stable hash
+ * of `source->target`), and the checks that cover the whole registry run in part 1. CI runs the parts in
+ * parallel jobs; unset, the single part 1/1 runs everything.
+ */
+const CONFORMANCE_PART_PATTERN = /^([1-9]\d*)\/([1-9]\d*)$/;
+const [PART_INDEX, PART_COUNT] = ((): [number, number] => {
+  const raw = process.env.CONFORMANCE_PART ?? '1/1';
+  const match = CONFORMANCE_PART_PATTERN.exec(raw);
+  const index = match ? Number(match[1]) : 0;
+  const count = match ? Number(match[2]) : 0;
+  if (!match || index > count) throw new Error(`CONFORMANCE_PART must be i/n with 1 <= i <= n, got "${raw}"`);
+  return [index, count];
+})();
+const IS_FIRST_PART = PART_INDEX === 1;
+
+/** Whether a `source->target` key belongs to this part. */
+function inPart(key: string): boolean {
+  return createHash('sha256').update(key).digest().readUInt32BE(0) % PART_COUNT === PART_INDEX - 1;
+}
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
 // Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
@@ -415,7 +436,8 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
   return { outcome: 'inconclusive', detail: lastError };
 }
 
-function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+/** Every advertised pair the predicate selects, across all parts. */
+function allPairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
   const pairs: [string, string][] = [];
   for (const [source, def] of Object.entries(FORMAT_REGISTRY)) {
     for (const target of def.targetFormats) {
@@ -423,6 +445,11 @@ function pairsFor(predicate: (category: string, target: string) => boolean): [st
     }
   }
   return pairs;
+}
+
+/** The selected pairs that belong to this part. */
+function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+  return allPairsFor(predicate).filter(([source, target]) => inPart(`${source}->${target}`));
 }
 
 const probeCache = new Map<string, Promise<{ outcome: PairOutcome; detail: string }>>();
@@ -617,7 +644,7 @@ function buildShortMediaSample(dir: string, source: string): Buffer | null {
   }
 }
 
-describe('routing-error classifier', () => {
+describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
     expect((routing as Error).message).toMatch(/^Unsupported office conversion from pages to doc$/);
@@ -648,7 +675,7 @@ describe('routing-error classifier', () => {
   });
 });
 
-describe('withdrawn pairs stay withdrawn', () => {
+describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
@@ -768,8 +795,8 @@ describe('every advertised registry pair has an engine path', () => {
     RAW_SOURCE_TIMEOUT_MS
   );
 
-  it('converts every toml pair, as source or target, through a real engine run', async () => {
-    const tomlPairs = pairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
+  it.runIf(IS_FIRST_PART)('converts every toml pair, as source or target, through a real engine run', async () => {
+    const tomlPairs = allPairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
     expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
       'json->toml',
       'toml->json',
@@ -789,8 +816,9 @@ describe('every advertised registry pair has an engine path', () => {
   }, CATEGORY_TIMEOUT_MS);
 
   it('audio and video sources routed outside the media transcoder', async () => {
-    const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');
-    expect(mediaPairs).toContainEqual(['mp3', 'zip']);
+    const isMediaToArchive = (c: string, target: string) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive';
+    expect(allPairsFor(isMediaToArchive)).toContainEqual(['mp3', 'zip']);
+    const mediaPairs = pairsFor(isMediaToArchive);
     expect(await findUnroutedPairs(mediaPairs)).toEqual([]);
   }, CATEGORY_TIMEOUT_MS);
 
@@ -814,7 +842,10 @@ describe('every advertised registry pair has an engine path', () => {
       if (!HAS_FFMPEG) throw new Error('ORACLE_STRICT_MODE=1 requires ffmpeg for the audio target conformance pairs');
       const workDir = mkdtempSync(path.join(os.tmpdir(), 'audio-target-conformance-'));
       try {
-        const pairs = pairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio');
+        // Split by target, not by pair: each target's coverage below is decided within one part.
+        const pairs = allPairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio').filter(
+          ([, target]) => inPart(`audio-target:${target}`)
+        );
         const samples = new Map<string, Buffer | null>();
         for (const [source] of pairs) {
           if (!samples.has(source)) samples.set(source, buildShortMediaSample(workDir, source));
@@ -868,7 +899,7 @@ describe('every advertised registry pair has an engine path', () => {
 describe('inconclusive pairs ratchet', () => {
   // Pairs whose every probe input is rejected before the engine's routing step. They are not
   // proven routable, so each one is listed explicitly; the list may only shrink.
-  it('lists the allowlist sorted and without duplicates', () => {
+  it.runIf(IS_FIRST_PART)('lists the allowlist sorted and without duplicates', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
@@ -877,7 +908,7 @@ describe('inconclusive pairs ratchet', () => {
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
-    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
+    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => inPart(pair) && !current.has(pair))).toEqual([]);
   }, RATCHET_TIMEOUT_MS);
 });
 
@@ -889,9 +920,10 @@ describe('real camera RAW samples', () => {
   /** Every target a RAW source advertises needs a validator below; a new target must add one. */
   const VALIDATED_TARGETS = new Set([...SDR_TARGETS, ...HDR_TARGETS, ...PACKAGING_TARGETS]);
   /** Every advertised pair is checked: the real sample must convert to a valid file. */
-  const rawPairs = RAW_SOURCES.flatMap((source) =>
+  const allRawPairs = RAW_SOURCES.flatMap((source) =>
     FORMAT_REGISTRY[source].targetFormats.map((target) => [source, target] as [string, string])
   );
+  const rawPairs = allRawPairs.filter(([source, target]) => inPart(`${source}->${target}`));
 
   const MAX_PLAUSIBLE_SIDE = 20_000;
   const MAX_ICO_SIDE = 256;
@@ -1080,7 +1112,7 @@ describe('real camera RAW samples', () => {
     expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
     if (RAW_SAMPLES_MISSING.length > 0) {
       throw new OracleToolMissingError(
         'raw-fixtures',
@@ -1091,14 +1123,14 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
     expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
     expect(RAW_SAMPLES_MISSING).toEqual([]);
     expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
   });
 
-  it('has a validator for every target the RAW sources advertise', () => {
-    expect(rawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
+  it.runIf(IS_FIRST_PART)('has a validator for every target the RAW sources advertise', () => {
+    expect(allRawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(rawPairs)(
@@ -1125,7 +1157,7 @@ describe('real camera RAW samples', () => {
   /** Sigma SD14, Merrill and Quattro generations, Raspberry Pi imx219 and imx477. */
   const variantPairs = RAW_VARIANT_MANIFEST.flatMap((entry) =>
     FORMAT_REGISTRY[entry.format].targetFormats.map((target) => [`${entry.format}-${entry.variant}`, target] as [string, string])
-  );
+  ).filter(([name, target]) => inPart(`${name}->${target}`));
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(variantPairs)(
     '%s -> %s converts the real sample to a valid file',
@@ -1164,9 +1196,10 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Mean absolute 8-bit difference allowed between two independent rasterizers of the same page. */
   const RENDERER_MEAN_DIFF_MAX = 12;
 
-  const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
+  const allNativePairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
+  const pairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
   const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target));
   const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
@@ -1258,8 +1291,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     expect(zip.file('content.xml')).not.toBeNull();
   }
 
-  it('lists only pairs the registry advertises', () => {
-    expect(pairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  it.runIf(IS_FIRST_PART)('lists only pairs the registry advertises', () => {
+    expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
   it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
