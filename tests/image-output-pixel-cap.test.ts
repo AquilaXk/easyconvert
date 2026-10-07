@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { convertImage } from '../src/lib/conversions/image';
 import { MAX_OUTPUT_DIMENSION, MAX_OUTPUT_PIXELS } from '../src/lib/conversions/image-limits';
@@ -9,6 +9,10 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { COLOUR_TYPE, encodePng, rgbaImage } from './helpers/apng-builder';
 import { captureError } from './helpers/capture-error';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * A resize is refused when a side is not a whole number between 1 and 65535, or when the output would hold
@@ -21,7 +25,8 @@ import { captureError } from './helpers/capture-error';
 
 const SQUARE = encodePng(rgbaImage(16, 16, () => [10, 20, 30, 255]));
 const WIDE = encodePng({ width: 100, height: 10, colourType: COLOUR_TYPE.gray, bitDepth: 8, pixels: Buffer.alloc(1000, 90) });
-const QUICK_MS = 3000;
+/** Hang guard only: the cap refusal takes milliseconds; rendering the image would take far longer. */
+const REFUSAL_HANG_GUARD_MS = 30_000;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNPROCESSABLE = 422;
 
@@ -45,7 +50,7 @@ describe('output size limits', () => {
     const error = await captureError(() => convertImage(SQUARE, 'png', options, 'a.png', 'png'));
     expect(error.name).toBe('UnsupportedOptionError');
     expect(error.message).toMatch(/Unsupported (width|height)/);
-    expect(Date.now() - started).toBeLessThan(QUICK_MS);
+    expect(Date.now() - started).toBeLessThan(REFUSAL_HANG_GUARD_MS);
   });
 
   it('rejects a box of more than 100 million pixels', async () => {

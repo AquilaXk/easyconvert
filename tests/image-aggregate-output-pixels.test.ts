@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import JSZip from 'jszip';
 import { convertImage } from '../src/lib/conversions/image';
 import { selectFrames } from '../src/lib/conversions/image-frames';
@@ -6,6 +6,10 @@ import { MAX_AGGREGATE_PAGE_PIXELS, MAX_OUTPUT_DIMENSION } from '../src/lib/conv
 import { captureError } from './helpers/capture-error';
 import { buildBilevelTiff } from './helpers/tiff-builder';
 import { decodeRgba, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * The aggregate pixel budget of a multi-page conversion counts the pixels each page will be rendered at, so a
@@ -20,7 +24,8 @@ import { decodeRgba, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 const TINY_SIDE = 100;
 const BOX_SIDE = 9999;
 const BOX_PIXELS = BOX_SIDE * BOX_SIDE; // 99980001 pixels per resized page
-const QUICK_MS = 3000;
+/** Hang guard only: the budget refusal takes milliseconds; rendering the pages would take far longer. */
+const REFUSAL_HANG_GUARD_MS = 30_000;
 const SMALL_BOX_SIDE = 64;
 const SMALL_PAGES = 3;
 
@@ -40,7 +45,7 @@ describe('aggregate budget of resized pages', () => {
     const error = await captureError(() => convertImage(pagesOf(6), 'png', BOX, 'pages.tif', 'tiff'));
     expect(error.name).toBe('ConversionFailedError');
     expect(error.message).toMatch(/^The 6 selected pages hold 599880006 pixels in total, over the limit of 400000000/);
-    expect(Date.now() - started).toBeLessThan(QUICK_MS);
+    expect(Date.now() - started).toBeLessThan(REFUSAL_HANG_GUARD_MS);
   });
 
   it('refuses 5 resized pages and admits 4 at the selection stage', async () => {

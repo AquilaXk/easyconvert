@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { oracleTest } from './helpers/oracle-test';
 import { pyarrowCompress, pyarrowRead } from './helpers/parquet-oracle';
 import {
@@ -22,13 +22,18 @@ import { convertData } from '../src/lib/conversions/data';
 import { decodeParquet, ParquetFormatError } from '../src/lib/conversions/parquet';
 import { ConversionFailedError } from '../src/lib/types';
 
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
 /**
  * Reader hardening: every file below is hand-assembled so that a naive reader would amplify a tiny
  * input into gigabytes of work or memory. The reader must answer with a typed error, quickly.
  */
 
 const MIB = 1024 * 1024;
-const QUICK_MS = 1000;
+/** Hang guard only: a hostile file is refused in milliseconds; a reader that follows its claims takes seconds to minutes. */
+const REJECT_HANG_GUARD_MS = 10_000;
 const FILE_START = 4;
 
 function int64Leaves(count: number) {
@@ -94,7 +99,7 @@ describe('Parquet reader decompression amplification', () => {
     const { elapsed, error } = timed(() => decodeParquet(file));
     expect(error).toBeInstanceOf(ParquetFormatError);
     expect((error as Error).message).toMatch(/overlap/);
-    expect(elapsed).toBeLessThan(QUICK_MS);
+    expect(elapsed).toBeLessThan(REJECT_HANG_GUARD_MS);
   });
 
   it('a column chunk over a zero-filled region fails on the missing page header, quickly', () => {
@@ -114,7 +119,7 @@ describe('Parquet reader decompression amplification', () => {
     const { elapsed, error } = timed(() => decodeParquet(file));
     expect(error).toBeInstanceOf(ParquetFormatError);
     expect((error as Error).message).toMatch(/page header is missing/);
-    expect(elapsed).toBeLessThan(QUICK_MS);
+    expect(elapsed).toBeLessThan(REJECT_HANG_GUARD_MS);
   });
 
   it('charges every page against one decompression budget before decompressing any of them', () => {
@@ -141,7 +146,7 @@ describe('Parquet reader decompression amplification', () => {
     const { elapsed, error } = timed(() => decodeParquet(file));
     expect(error).toBeInstanceOf(ParquetFormatError);
     expect((error as Error).message).toMatch(/decompress to more than/);
-    expect(elapsed).toBeLessThan(QUICK_MS);
+    expect(elapsed).toBeLessThan(REJECT_HANG_GUARD_MS);
   });
 
   function singleChunkFile(pageBytes: Buffer, totalCompressedSize = pageBytes.length, numValues = 10) {

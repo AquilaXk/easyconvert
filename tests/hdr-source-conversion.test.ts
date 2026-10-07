@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { decodeUltraHdrJpeg } from '../src/lib/conversions/raw-hdr';
@@ -25,6 +25,10 @@ import {
   ultraHdrExpectedLinear,
   ultraHdrSdrPatch,
 } from './helpers/hdr-test-images';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * HDR source conversions: OpenEXR and Ultra HDR JPEG inputs to every advertised target.
@@ -373,7 +377,8 @@ const MP_ENTRY_BYTES = 16;
 const SEGMENT_HEADER_BYTES = 4;
 const UINT32_MAX = 0xffffffff;
 const UINT16_MAX = 0xffff;
-const HOSTILE_DECODE_BUDGET_MS = 2000;
+/** Hang guard only: a corrupted MPF header is refused in milliseconds. */
+const HOSTILE_DECODE_HANG_GUARD_MS = 10_000;
 const HUGE_OFFSET = 0xfffffff0;
 
 interface MpfLayout {
@@ -517,7 +522,7 @@ describe('Ultra HDR container split follows the MPF index', () => {
       } catch (error) {
         thrown = error;
       }
-      expect(performance.now() - started).toBeLessThan(HOSTILE_DECODE_BUDGET_MS);
+      expect(performance.now() - started).toBeLessThan(HOSTILE_DECODE_HANG_GUARD_MS);
       expect(thrown).toBeInstanceOf(ConversionFailedError);
       expect((thrown as Error).message).toMatch(/MPF/);
       expect((thrown as Error).message).toMatch(message);

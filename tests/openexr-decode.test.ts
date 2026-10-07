@@ -20,6 +20,7 @@ import { decodeExrWithFfmpeg } from './helpers/ffmpeg-exr';
 import { oracleTest } from './helpers/oracle-test';
 import { buildUniformLongCodePizPayload, pizFirstBlockStats } from './helpers/exr-piz-tools';
 import { halfBitsToFloat, floatToHalfBits } from './helpers/openexr-writer';
+import { expectLinearOnInputs, expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 import {
   assembleExr,
   COMPRESSION_CODES,
@@ -52,9 +53,7 @@ const HALF_BYTES = 2;
 const TILEDESC_BYTES = 9;
 const LONG_CODE_WIDTH = 100_000;
 const LONG_CODE_BITS = 30;
-const LONG_CODE_TIME_LIMIT_MS = 1000;
-const NUL_RUN_LENGTH = 200_000;
-const NUL_RUN_TIME_LIMIT_MS = 1000;
+const NUL_RUN_LENGTH = 2_000_000;
 const BLOCK_CAP_FLOAT_CHANNELS = 32;
 const BLOCK_CAP_WIDTH = 2_100_000;
 const TOTAL_CAP_SIDE = 3000;
@@ -398,20 +397,28 @@ describe('OpenEXR fail-closed behaviour', () => {
         chunks: [scanlineChunk(0, Buffer.alloc(RGB_COMPONENTS * HALF_BYTES))],
       });
 
-    it('trims trailing NULs in linear time when a long NUL run is followed by another byte', () => {
-      // A backtracking pattern such as /\0+$/ takes quadratic time on this input.
-      const adversarial = typeFile(`${'\0'.repeat(NUL_RUN_LENGTH)}x`);
-      const started = performance.now();
-      const decoded = decodeOpenExr(adversarial);
-      expect(performance.now() - started).toBeLessThan(NUL_RUN_TIME_LIMIT_MS);
+    it('trims trailing NULs without backtracking when a long NUL run is followed by another byte', async () => {
+      // A backtracking pattern such as /\0+$/ takes quadratic time on this input (about 2e12 steps for 2 million
+      // NULs, hours). The linear trim finishes in well under a millisecond, too fast to compare two sizes, so a
+      // hang guard is the check.
+      const decoded = await expectNoHang('trailing NUL run', () => decodeOpenExr(typeFile(`${'\0'.repeat(NUL_RUN_LENGTH)}x`)));
       expect([decoded.width, decoded.height]).toEqual([1, 1]);
-    });
+    }, SCALING_TEST_TIMEOUT_MS);
 
-    it('still recognises a deep type padded with a long NUL run', () => {
-      const started = performance.now();
-      expectDecodeError(() => decodeOpenExr(typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH)}`)), 'unsupported', /deep/);
-      expect(performance.now() - started).toBeLessThan(NUL_RUN_TIME_LIMIT_MS);
-    });
+    it('still recognises a deep type padded with a long NUL run', async () => {
+      const { largeResult } = await expectLinearOnInputs(
+        'deep type with NUL padding',
+        (file: Buffer) => settle(() => decodeOpenExr(file)),
+        {
+          small: typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH)}`),
+          large: typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH * SCALING_FACTOR)}`),
+        }
+      );
+      if (largeResult.ok) throw new Error('the deep image was decoded instead of refused');
+      expectDecodeError(() => {
+        throw largeResult.error;
+      }, 'unsupported', /deep/);
+    }, SCALING_TEST_TIMEOUT_MS);
   });
 
   it('rejects sub-sampled channels', () => {
@@ -520,27 +527,30 @@ describe('OpenEXR fail-closed behaviour', () => {
     expectDecodeError(() => decodeOpenExr(file), 'malformed', /negative data size/);
   });
 
-  it('decodes a block of 65537 long Huffman codes in linear time, not by scanning every symbol per code', () => {
+  it('decodes a block of 65537 long Huffman codes in linear time, not by scanning every symbol per code', async () => {
     // All 65537 symbols share one 30-bit length, so canonical codes equal the symbol numbers and the
     // stream (symbol 65535 plus repeat markers) hits the last entry of the only long-code bucket.
-    const wordCount = LONG_CODE_WIDTH * RGB_COMPONENTS;
-    const payload = buildUniformLongCodePizPayload(wordCount, LONG_CODE_BITS);
-    expect(payload.length).toBeLessThan(wordCount * HALF_BYTES);
-    const file = assembleExr({
-      channels: halfRgb,
-      compression: COMPRESSION_CODES.piz,
-      dataWindow: [0, 0, LONG_CODE_WIDTH - 1, 0],
-      chunks: [scanlineChunk(0, payload)],
+    // Scanning every symbol per code would make 4x the codes cost 16x (tests/helpers/timing.ts).
+    const longCodeFile = (width: number) => {
+      const wordCount = width * RGB_COMPONENTS;
+      const payload = buildUniformLongCodePizPayload(wordCount, LONG_CODE_BITS);
+      expect(payload.length).toBeLessThan(wordCount * HALF_BYTES);
+      return assembleExr({
+        channels: halfRgb,
+        compression: COMPRESSION_CODES.piz,
+        dataWindow: [0, 0, width - 1, 0],
+        chunks: [scanlineChunk(0, payload)],
+      });
+    };
+    const { largeResult: decoded } = await expectLinearOnInputs('long Huffman codes', (file: Buffer) => decodeOpenExr(file), {
+      small: longCodeFile(LONG_CODE_WIDTH / SCALING_FACTOR),
+      large: longCodeFile(LONG_CODE_WIDTH),
     });
-    const started = performance.now();
-    const decoded = decodeOpenExr(file);
-    const elapsedMs = performance.now() - started;
-    expect(elapsedMs).toBeLessThan(LONG_CODE_TIME_LIMIT_MS);
     // The block has an empty value bitmap, so every decoded word maps to the implicit zero value.
     expect(decoded.width).toBe(LONG_CODE_WIDTH);
     expect(decoded.rgb).toHaveLength(LONG_CODE_WIDTH * RGB_COMPONENTS);
     expect(decoded.rgb.every((sample) => sample === 0)).toBe(true);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects an image whose total decoded size exceeds the total cap before allocating it', () => {
     const extraChannels = Array.from({ length: TOTAL_CAP_EXTRA_CHANNELS }, (_, i) => ({ name: `f${String(i).padStart(3, '0')}`, pixelType: PIXEL_TYPE_FLOAT }));

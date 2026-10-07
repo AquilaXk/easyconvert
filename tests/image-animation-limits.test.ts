@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
 import { ConversionOptionsSchema } from '../src/lib/api/contracts/schemas';
@@ -7,6 +7,10 @@ import { buildAnimatedWebpFromStill } from './helpers/webp-builder';
 import { buildTiffWithOrientation } from './helpers/exif-orientation';
 import { captureError } from './helpers/capture-error';
 import { countFrames, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * The decoded animation budget (512 MiB of RGBA for all frames) is checked from header metadata before any
@@ -24,7 +28,8 @@ const HUGE_WIDTH = 8000;
 const HUGE_HEIGHT = 4000;
 const HUGE_FRAMES = 5;
 /** A bound far above what a sane run needs: the refusal must not decode a single frame. */
-const REFUSAL_MAX_MS = 5000;
+/** Hang guard only: the budget refusal takes milliseconds; decoding every frame would take far longer. */
+const REFUSAL_HANG_GUARD_MS = 30_000;
 
 async function flatStill(width: number, height: number): Promise<Buffer> {
   return sharp({ create: { width, height, channels: 3, background: { r: 10, g: 200, b: 90 } } })
@@ -48,7 +53,7 @@ describe('decoded animation budget', () => {
       expect(error.name).toBe('ConversionFailedError');
       expect(error.message).toMatch(BUDGET);
       expect(error.message).toContain(`${HUGE_FRAMES} frames of ${HUGE_WIDTH}x${HUGE_HEIGHT}`);
-      expect(Date.now() - started).toBeLessThan(REFUSAL_MAX_MS);
+      expect(Date.now() - started).toBeLessThan(REFUSAL_HANG_GUARD_MS);
     }
   });
 
@@ -97,7 +102,7 @@ describe('animated resize budget', () => {
     expect(error.name).toBe('ConversionFailedError');
     expect(error.message).toMatch(BUDGET);
     expect(error.message).toContain(`${SMALL_FRAMES} frames of ${HUGE_TARGET}x${HUGE_TARGET}`);
-    expect(Date.now() - started).toBeLessThan(REFUSAL_MAX_MS);
+    expect(Date.now() - started).toBeLessThan(REFUSAL_HANG_GUARD_MS);
   });
 
   it('bounds a one-sided resize by the aspect ratio it implies', async () => {

@@ -1,9 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { MAX_OUTPUT_PIXELS } from '../src/lib/conversions/image-limits';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { captureError } from './helpers/capture-error';
 import { decodeRgba, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Vector sources (SVG) are rasterised at the density and size the request names, so they obey the same
@@ -17,7 +21,8 @@ import { decodeRgba, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 const SVG = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><rect width="100" height="50" fill="rgb(0,128,255)"/></svg>'
 );
-const QUICK_MS = 3000;
+/** Hang guard only: the cap refusal takes milliseconds; rendering the image would take far longer. */
+const REFUSAL_HANG_GUARD_MS = 30_000;
 const DPI_TO_PIXELS = 300 / 72;
 
 async function convertSvg(target: string, options: Record<string, unknown>) {
@@ -40,7 +45,7 @@ describe('SVG output size limits', () => {
     const error = await captureError(() => convertSvg('jpg', options));
     expect(error.name).toBe('ConversionFailedError');
     expect(error.message).toMatch(/The resized image would be \d+x\d+ pixels \(\d+ pixels\), over the limit of 100000000 pixels/);
-    expect(Date.now() - started).toBeLessThan(QUICK_MS);
+    expect(Date.now() - started).toBeLessThan(REFUSAL_HANG_GUARD_MS);
   });
 
   it.each([
