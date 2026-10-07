@@ -4,12 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * The engines hand a password to 7-Zip through a bare `-p` switch and stdin, which relies on the
- * interactive prompt of p7zip. Newer 7-Zip builds treat a bare `-p` on extraction as an empty
- * password and never read stdin, so encrypted-archive tests cannot decrypt anything on them.
+ * The engines hand a password to 7-Zip on stdin only: extraction and listing pass no `-p` switch and
+ * answer 7-Zip's own prompt, while creation passes a bare `-p` and answers the prompt twice. A build
+ * without the interactive prompt cannot read a password that way.
  *
- * `resolveStdinPasswordSevenZip` returns the host binary untouched when it supports the stdin
- * prompt, and otherwise a small wrapper that performs the same hand-off (first stdin line becomes
+ * `resolveStdinPasswordSevenZip` returns the host binary untouched when it answers the prompt from
+ * stdin, and otherwise a small wrapper that performs the same hand-off (first stdin line becomes
  * `-p<line>`) before running the real binary. The wrapper changes only how the password reaches 7z;
  * the archives and every containment check under test are unchanged.
  */
@@ -29,7 +29,7 @@ function supportsStdinPassword(sevenZip: string): boolean {
     });
     fs.rmSync(path.join(work, 'probe.txt'));
     try {
-      execFileSync(sevenZip, ['x', '-y', '-p', '-oout', 'probe.zip'], {
+      execFileSync(sevenZip, ['x', '-y', '-oout', 'probe.zip'], {
         cwd: work,
         input: `${PROBE_PASSWORD}\n`,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -49,10 +49,13 @@ const WRAPPER_SOURCE = (realBinary: string): string => `#!${process.execPath}
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const args = process.argv.slice(2);
+const command = args[0];
 const at = args.indexOf('-p');
-if (at !== -1) {
+const readsPassword = command === 'x' || command === 'e' || command === 'l' || command === 't';
+if (at !== -1 || readsPassword) {
   const firstLine = fs.readFileSync(0, 'utf-8').split('\\n')[0];
-  args[at] = '-p' + firstLine;
+  if (at !== -1) args[at] = '-p' + firstLine;
+  else if (firstLine) args.splice(1, 0, '-p' + firstLine);
 }
 const result = spawnSync(${JSON.stringify(realBinary)}, args, { stdio: ['ignore', 'inherit', 'inherit'] });
 process.exit(result.status === null ? 1 : result.status);

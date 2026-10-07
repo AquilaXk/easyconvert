@@ -4,12 +4,22 @@ import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { extractClientIp } from '@/lib/api-keys/ip-utils';
 import {
+  CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS,
+  ClientIpError,
+  UNATTRIBUTED_CLIENT_KEY,
+  rateLimitKey,
+} from '@/lib/security/client-ip';
+import {
   checkLoginRateLimit,
   recordFailedLogin,
   resetLoginAttempts,
 } from '@/lib/auth/login-rate-limiter';
 
 export const dynamic = 'force-dynamic';
+
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const CLIENT_IP_MALFORMED_MESSAGE = 'Client address could not be determined from the request headers.';
+const CLIENT_IP_CONFIG_MESSAGE = "Server misconfiguration: the server's client-IP trust configuration is missing or invalid.";
 
 // Static dummy hash/salt to prevent email enumeration timing attacks
 const DUMMY_HASH = '0'.repeat(128);
@@ -26,7 +36,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const clientIp = extractClientIp(req);
+  // null = unattributed client: no shared per-IP login counter (per-email lockout still applies).
+  let clientIp: string | null;
+  try {
+    const resolvedIp = extractClientIp(req);
+    clientIp = resolvedIp === UNATTRIBUTED_CLIENT_KEY ? null : rateLimitKey(resolvedIp);
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    if (error.status === HTTP_SERVICE_UNAVAILABLE) {
+      return NextResponse.json(
+        { success: false, error: CLIENT_IP_CONFIG_MESSAGE },
+        { status: error.status, headers: { 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) } }
+      );
+    }
+    return NextResponse.json({ success: false, error: CLIENT_IP_MALFORMED_MESSAGE }, { status: error.status });
+  }
 
   try {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
