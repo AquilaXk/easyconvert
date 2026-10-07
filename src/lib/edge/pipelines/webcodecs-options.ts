@@ -78,7 +78,7 @@ function assertEveryRequestedOptionIsApplied(options: ConversionOptions): void {
   const refused = Object.entries(options)
     .filter(([name, value]) => isRequested(value) && !HONOURED_OPTIONS.has(name) && !NOT_ABOUT_MEDIA_OPTIONS.has(name))
     .map(([name]) => name)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   if (refused.length === 1) throw refuse(`does not apply the ${refused[0]} option`);
   if (refused.length > 1) throw refuse(`does not apply the ${refused.join(', ')} options`);
 }
