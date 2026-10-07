@@ -21,9 +21,14 @@ import { userStore } from '../src/lib/auth/user-store';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { buildRateLimitHeaders } from '../src/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
+import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
+
+/** Daily quotas of the account tiers (hand-written from the pricing table: free 25, pro 500, enterprise 10,000). */
+const FREE_DAILY_LIMIT = 25;
+const PRO_DAILY_LIMIT = 500;
 
 let userCounter = 0;
-async function createUniqueTestUser(tier: 'free' | 'starter' | 'pro' | 'enterprise' = 'starter') {
+async function createUniqueTestUser(tier: 'free' | 'pro' | 'enterprise' = 'free') {
   userCounter++;
   const uniqueId = `${Date.now()}_${userCounter}_${Math.random().toString(36).slice(2, 7)}`;
   return userStore.sanitizeUser(
@@ -208,7 +213,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('injects IETF RateLimit headers on successful synchronous conversion', async () => {
-      const user = await createUniqueTestUser('starter');
+      const user = await createUniqueTestUser('free');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'RateLimit Key');
 
       const csvContent = 'id,name\n1,Alice\n2,Bob';
@@ -228,12 +233,8 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const res = await convertRouteHandler(req);
       expect(res.status).toBe(200);
 
-      // Verify RateLimit headers presence
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
-      expect(res.headers.get('RateLimit-Remaining')).toBeDefined();
-      expect(res.headers.get('RateLimit-Reset')).toBeDefined();
-      expect(res.headers.get('RateLimit-Policy')).toContain('w=86400');
-      expect(res.headers.get('X-RateLimit-Limit')).toBeDefined();
+      // The headers report the quota as it stood when the request was admitted: no unit had been spent yet.
+      expectRateLimitHeaders(res.headers, { limit: FREE_DAILY_LIMIT, remaining: FREE_DAILY_LIMIT, tier: 'free' });
 
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -265,7 +266,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res.status).toBe(202);
       expect(res.headers.get('Preference-Applied')).toBe('respond-async');
       expect(res.headers.get('Location')).toMatch(/^\/api\/v1\/jobs\/.+/);
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
+      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(PRO_DAILY_LIMIT));
 
       const body = await res.json();
       expect(body.success).toBe(true);
@@ -339,7 +340,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('formats 400 validation errors using RFC 9457 with RateLimit headers', async () => {
-      const user = await createUniqueTestUser('starter');
+      const user = await createUniqueTestUser('free');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Bad Req Key');
 
       const form = new FormData();
@@ -357,7 +358,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const res = await convertRouteHandler(req);
       expect(res.status).toBe(400);
       expect(res.headers.get('content-type')).toContain('application/problem+json');
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
+      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(FREE_DAILY_LIMIT));
 
       const body = await res.json();
       expect(body.type).toBe('https://api.easyconvert.io/problems/bad-request');

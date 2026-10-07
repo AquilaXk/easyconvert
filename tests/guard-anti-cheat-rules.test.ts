@@ -242,6 +242,75 @@ it('checks substantive properties', () => {
   });
 
   // =========================================================================
+  // 4b. G4c: toBeDefined() on lookups that answer null
+  // =========================================================================
+  describe('Rule G4c: toBeDefined() on a lookup that returns null', () => {
+    function guardOutputFor(source: string): { status: number; output: string } {
+      let result = { status: -1, output: '' };
+      withTempDir((dir) => {
+        const testsDir = path.join(dir, 'tests');
+        fs.mkdirSync(testsDir, { recursive: true });
+        fs.writeFileSync(path.join(testsDir, 'lookup.test.ts'), source);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        result = { status: res.status, output: res.stderr + res.stdout };
+      });
+      return result;
+    }
+
+    it('flags a JSZip entry and a Headers value checked only with toBeDefined (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks an archive entry', async () => {
+  const zip = await JSZip.loadAsync(new Uint8Array());
+  expect(zip.file('word/document.xml')).toBeDefined();
+  expect(await zip.file('word/document.xml')!.async('string')).toBe('<w:document/>');
+});
+it('checks a response header', () => {
+  const res = new Response('', { headers: { 'X-Limit': '5' } });
+  expect(res.headers.get('X-Limit')).toBeDefined();
+  expect(res.status).toBe(200);
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G4c-HOLLOW-NULL-CHECK/g)).toHaveLength(2);
+      expect(output).toContain("expect(zip.file('word/document.xml')).toBeDefined()");
+      expect(output).toContain("expect(res.headers.get('X-Limit')).toBeDefined()");
+    });
+
+    it('follows a local variable bound to the lookup (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a bound header', () => {
+  const location = new Response('', { headers: { Location: '/x' } }).headers.get('Location');
+  expect(location).toBeDefined();
+  expect(location).toMatch(/^\\//);
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output).toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(output).toContain('expect(location).toBeDefined()');
+    });
+
+    it('permits not.toBeNull(), Map.get and an undefined-returning lookup (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks an archive entry strictly', async () => {
+  const zip = await JSZip.loadAsync(new Uint8Array());
+  expect(zip.file('word/document.xml')).not.toBeNull();
+  expect(await zip.file('word/document.xml')!.async('string')).toBe('<w:document/>');
+});
+it('checks a Map lookup, which answers undefined for a missing key', () => {
+  const registry = new Map([['a', 1]]);
+  expect(registry.get('a')).toBeDefined();
+  expect(registry.get('a')).toBe(1);
+});
+          `);
+      expect(output).not.toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(status).toBe(0);
+    });
+  });
+
+  // =========================================================================
   // 5. Ratchet Baseline Enforcement
   // =========================================================================
   describe('Ratchet Baseline Mechanism', () => {

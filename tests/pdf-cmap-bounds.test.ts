@@ -177,5 +177,7 @@ describe('CMaps of one document share a mapping budget', () => {
     });
     if (largeResult.ok) throw new Error('the huge range was accepted');
     expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
+    expect((largeResult.error as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+    expect((largeResult.error as Error).message).toMatch(/range/);
   });
 });

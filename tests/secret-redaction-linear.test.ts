@@ -53,8 +53,8 @@ describe('redaction scales linearly', () => {
       small: repeatTo('password=a token:b ', SMALL),
       large: repeatTo('password=a token:b ', MIB),
     });
-    expect(largeResult).not.toContain('password=a');
-    expect(largeResult).not.toContain('token:b');
+    // An unquoted value runs to the end of the line, and the whole input is one line.
+    expect(largeResult).toBe('password=***');
   }, SCALING_TEST_TIMEOUT_MS);
 });
 

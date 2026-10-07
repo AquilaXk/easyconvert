@@ -48,6 +48,7 @@ describe('SVG parser stays linear on adversarial input', () => {
       REPS
     );
     expect(thrownBy(outcome)).toBeInstanceOf(CadGeometryUnavailableError);
+    expect((thrownBy(outcome) as Error).message).toBe('Malformed SVG: unterminated tag.');
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects repeated unterminated comments with a typed error in linear time', async () => {
@@ -71,6 +72,7 @@ describe('SVG parser stays linear on adversarial input', () => {
       DIGIT_RUN
     );
     expect(thrownBy(outcome)).toBeInstanceOf(UnsupportedOptionError);
+    expect((thrownBy(outcome) as Error).message).toMatch(/^SVG fill value "red {100,}!x" is not a valid colour or paint\.$/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('still honours !important with surrounding whitespace', () => {
@@ -88,6 +90,7 @@ describe('SVG parser stays linear on adversarial input', () => {
   it('rejects a long digit run in a transform argument in linear time', async () => {
     const outcome = await expectLinearParse('transform digits', (n) => `translate(${'1'.repeat(n)}x)`, parseSvgTransform, DIGIT_RUN);
     expect(thrownBy(outcome)).toBeInstanceOf(CadGeometryUnavailableError);
+    expect((thrownBy(outcome) as Error).message).toMatch(/^Unsupported or malformed SVG transform "translate\(1+x\)"\.$/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects a long digit run in stroke-miterlimit in linear time', async () => {
@@ -99,6 +102,7 @@ describe('SVG parser stays linear on adversarial input', () => {
       DIGIT_RUN
     );
     expect(thrownBy(outcome)).toBeInstanceOf(UnsupportedOptionError);
+    expect((thrownBy(outcome) as Error).message).toMatch(/^SVG stroke-miterlimit "1+x" is not supported by metafile encod/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects a colour function padded with whitespace in linear time', async () => {
@@ -121,6 +125,7 @@ describe('SVG parser stays linear on adversarial input', () => {
       { passes: LOOKALIKE_PASSES, minMeasurableMs: LOOKALIKE_MIN_MS }
     );
     expect(thrownBy(outcome)).toBeInstanceOf(CadGeometryUnavailableError);
+    expect((thrownBy(outcome) as Error).message).toBe('Malformed SVG: unterminated CDATA section.');
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('applies <style> rules from CDATA and ignores commented-out styles', () => {

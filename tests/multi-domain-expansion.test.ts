@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
 import { buildTrueTypeFont } from './helpers/mac-font-containers';
 import { CadGeometryUnavailableError } from '../src/lib/types';
+import { zipEntryText } from './helpers/zip-entry';
 
 describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadsheet, Presentation, Document)', () => {
   // A small TrueType font with real glyf outlines, written by the independent test helper
@@ -279,10 +280,10 @@ endsolid Cube`;
 
       // Verify ODS ZIP structure
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.spreadsheet');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<table:table');
       expect(xml).toContain('<table:table-row');
       expect(xml).toContain('Tokyo');
@@ -353,10 +354,10 @@ endsolid Cube`;
       expect(result.filename).toBe('pitch.odp');
 
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.presentation');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<draw:page');
       expect(xml).toContain('EasyConvert Engine');
     });
@@ -370,7 +371,12 @@ endsolid Cube`;
       expect(odpResult.filename).toBe('deck.odp');
 
       const zip = await JSZip.loadAsync(odpResult.buffer);
-      expect(zip.file('content.xml')).toBeDefined();
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.presentation');
+      const content = await zipEntryText(zip, 'content.xml');
+      // Two slides in, two draw:page elements out, with each slide's text.
+      expect(content.match(/<draw:page /g)).toHaveLength(2);
+      expect(content).toContain('Content 1');
+      expect(content).toContain('Content 2');
     });
 
     it('converts Markdown to genuine OpenDocument Text (ODT) archive', async () => {
@@ -382,10 +388,10 @@ endsolid Cube`;
       expect(result.filename).toBe('report.odt');
 
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.text');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<text:h');
       expect(xml).toContain('Executive Brief');
     });

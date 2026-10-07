@@ -10,7 +10,8 @@ import ts from 'typescript';
  * 1. Circular Mocking (G1, G1b): Independent test oracles importing production modules or self-validating inverse pairs.
  * 2. Silent Passes & Positive Guards (G2, G2b): Bypasses on missing CLI tools or positive guards skipping verifications.
  * 3. Production Hardcoded Cheats (G3, G3b, G3c): Dummy string placeholders, fixed truncations, and unreferenced inputs.
- * 4. Hollow & Weak Assertions (G4, G4b): Tautologies and tests composed exclusively of weak assertions.
+ * 4. Hollow & Weak Assertions (G4, G4b, G4c): Tautologies, tests composed exclusively of weak assertions, and
+ *    `toBeDefined()` on lookups that return `null` (not `undefined`) when the entry is missing.
  * 5. Governance (G5, G6): Automation reaching external hosts and built-in imports without the node: prefix.
  * 6. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
  */
@@ -573,8 +574,73 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
       ts.forEachChild(node, checkG4b);
     }
     checkG4b(sf);
+    violations.push(...checkHollowNullChecks(sf, file));
   }
 
+  return violations;
+}
+
+/**
+ * G4c: `expect(x).toBeDefined()` where `x` is a lookup that returns `null` when the entry is missing.
+ * JSZip's `zip.file(name)` and the Fetch API's `Headers.get(name)` (and `URLSearchParams.get`) answer `null`, not
+ * `undefined`, for an absent entry, so `toBeDefined()` passes either way and proves nothing. The subject is either the
+ * call itself or an identifier bound by `const x = <such call>` in the same function. Receivers of `.get(` are limited to
+ * header and search-parameter objects, because `Map.get` does return `undefined` and `toBeDefined()` is meaningful there.
+ */
+const NULL_RETURNING_GET_RECEIVER = /(?:^|\.)(?:headers?|searchParams|URLSearchParams)$/i;
+
+function isNullReturningLookup(expr: ts.Expression, sf: ts.SourceFile): boolean {
+  let node: ts.Expression = expr;
+  while (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node)) node = node.expression;
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  const method = node.expression.name.text;
+  if (method === 'file') return true;
+  return method === 'get' && NULL_RETURNING_GET_RECEIVER.test(node.expression.expression.getText(sf).replace(/\s+/g, ''));
+}
+
+function findLocalInitializer(identifier: ts.Identifier, sf: ts.SourceFile): ts.Expression | undefined {
+  let scope: ts.Node | undefined = identifier.parent;
+  while (scope && !ts.isFunctionLike(scope) && !ts.isSourceFile(scope)) scope = scope.parent;
+  let found: ts.Expression | undefined;
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === identifier.text && n.initializer) {
+      found = n.initializer;
+    }
+    ts.forEachChild(n, visit);
+  };
+  if (scope) visit(scope);
+  void sf;
+  return found;
+}
+
+function checkHollowNullChecks(sf: ts.SourceFile, file: string): Violation[] {
+  const violations: Violation[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'toBeDefined' &&
+      ts.isCallExpression(node.expression.expression) &&
+      node.expression.expression.expression.getText(sf) === 'expect' &&
+      node.expression.expression.arguments.length > 0
+    ) {
+      const subject = node.expression.expression.arguments[0];
+      const resolved = ts.isIdentifier(subject) ? findLocalInitializer(subject, sf) : subject;
+      if (resolved && isNullReturningLookup(resolved, sf)) {
+        const { line, snippet } = getNodeSnippet(sf, node);
+        violations.push({
+          file: path.relative(ROOT_DIR, file),
+          line,
+          rule: 'G4c-HOLLOW-NULL-CHECK',
+          snippet,
+          message:
+            'toBeDefined() on a lookup that returns null (JSZip file(), Headers.get(), URLSearchParams.get()) passes for a missing entry. Assert not.toBeNull() and then the entry content or the exact header value.',
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
   return violations;
 }
 

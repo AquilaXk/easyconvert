@@ -348,7 +348,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
     const postRes = await tusPostHandler(postReq, { params: Promise.resolve({}) });
     expect(postRes.status).toBe(201);
     const location = postRes.headers.get('Location');
-    expect(location).toBeDefined();
+    expect(location).toMatch(/^\/api\/v1\/uploads\/tus\/tus_\d+_[0-9a-f]+$/);
     const sessionId = location!.split('/').pop()!;
     expect(sessionId).toMatch(/^tus_\d+_[a-f0-9]+$/);
 
@@ -460,8 +460,7 @@ describe('TUS 1.0 Resumable Upload Protocol (/api/v1/uploads/tus)', () => {
     expect(patchResB.status).toBe(204);
     expect(patchResB.headers.get('Upload-Offset')).toBe(String(totalLength));
     const storageKey = patchResB.headers.get('X-Storage-Key');
-    expect(storageKey).toBeDefined();
-    expect(storageKey).toContain('tus-sample.txt');
+    expect(storageKey).toMatch(/^conversions\/[^/]+\/tus_\d+_[0-9a-f]+_tus-sample\.txt$/);
 
     // 8. Verify completed storage content
     const storedStream = await localFsStorage.getStream(storageKey!);

@@ -19,6 +19,7 @@ import {
   generateFb2FromText,
   extractTextFromPdf,
 } from '../src/lib/conversions';
+import { zipEntryText } from './helpers/zip-entry';
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
@@ -304,12 +305,17 @@ The voyage was recorded.`;
       expect(epubRes.mimeType).toBe('application/epub+zip');
 
       const zip = await JSZip.loadAsync(epubRes.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('OEBPS/nav.xhtml')).toBeDefined();
-      expect(zip.file('OEBPS/toc.ncx')).toBeDefined();
-      expect(zip.file('OEBPS/styles.css')).toBeDefined();
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/epub+zip');
+      // EPUB 3 navigation document: a <nav epub:type="toc"> listing the chapter; EPUB 2 NCX: a navMap entry for it.
+      const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
+      expect(nav).toContain('<nav epub:type="toc"');
+      expect(nav).toContain('<a href="chapter1.xhtml">guide</a>');
+      const ncx = await zipEntryText(zip, 'OEBPS/toc.ncx');
+      expect(ncx).toContain('<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">');
+      expect(ncx).toContain('<navLabel><text>guide</text></navLabel>');
+      expect(await zipEntryText(zip, 'OEBPS/styles.css')).toContain('table.semantic-table');
 
-      const chapterXml = await zip.file('OEBPS/chapter1.xhtml')!.async('text');
+      const chapterXml = await zipEntryText(zip, 'OEBPS/chapter1.xhtml');
       expect(chapterXml).toContain('<header>');
       expect(chapterXml).toContain('<article>');
       expect(chapterXml).toContain('table');
