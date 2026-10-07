@@ -32,15 +32,14 @@ describe('Format Registry & Lookup Tests', () => {
     const pngTargets = getAvailableTargetFormats('png');
     const targetIds = pngTargets.map((t) => t.id);
 
-    expect(targetIds).toContain('jpg');
-    expect(targetIds).toContain('webp');
-    expect(targetIds).toContain('pdf');
-    expect(targetIds).toContain('zip');
+    // The advertised targets, pinned: a pair added or withdrawn changes these lists on purpose.
+    expect(targetIds).toEqual([
+      'jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'ico', 'pdf', 'zip',
+      'eps', 'icns', 'odd', 'png', 'ps', 'psd', 'xps', 'hocr', 'alto',
+    ]);
 
     const csvTargets = getAvailableTargetFormats('csv');
-    const csvTargetIds = csvTargets.map((t) => t.id);
-    expect(csvTargetIds).toContain('json');
-    expect(csvTargetIds).toContain('tsv');
+    expect(csvTargets.map((t) => t.id)).toEqual(['xlsx', 'json', 'tsv', 'parquet', 'html', 'yaml', 'pdf', 'ods', 'xls', 'zip']);
   });
 
   it('should return empty targets for unknown format', () => {

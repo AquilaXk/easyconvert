@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { oracleTest } from './helpers/oracle-test';
+import { popplerWords } from './helpers/poppler-words';
 import * as zlib from 'node:zlib';
 import { PDFDocument, StandardFonts, PDFHexString, PDFNumber, PDFName, PDFDict, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import {
@@ -31,6 +33,10 @@ import { expectLinearOnInputs, expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOU
 
 /** Unclosed openers in the smaller of the two ReDoS inputs. */
 const UNCLOSED_OPENERS = 20_000;
+/** The line is scaled to its box width, so its end can differ from the box edge by a point or two. */
+const LINE_END_TOLERANCE_PT = 3;
+/** Equal word gaps from one Tw value, as poppler reports them (rounded to 4 decimals). */
+const EQUAL_GAP_TOLERANCE_PT = 0.01;
 
 /**
  * Extracts and decompresses all stream contents from a PDF buffer to inspect operators.
@@ -135,7 +141,7 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(hexTexts).toContain('Fast');
     });
 
-    it('renders line block with Tw word spacing operator and invisible text mode', async () => {
+    oracleTest('renders line block with Tw word spacing operator and invisible text mode', ['pdftotext'], async () => {
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([600, 800]);
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -158,13 +164,24 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       const pdfBytes = await pdfDoc.save();
       const streamText = extractAllTextFromPdfStreams(Buffer.from(pdfBytes));
 
-      // Must activate text rendering mode 3 (invisible)
-      expect(streamText).toContain('3 Tr');
-      // Must include word spacing operator 'Tw' and 'TJ' array
-      expect(streamText).toContain('Tw');
-      expect(streamText).toContain('TJ');
-      expect(streamText).toContain('BT');
-      expect(streamText).toContain('ET');
+      // The page content stream uses the operators the PDF spec defines for this: text rendering mode 3 (invisible,
+      // ISO 32000-1 9.3.6), word spacing Tw (9.3.3) and a TJ array.
+      expect(streamText).toMatch(/\b3 Tr\b/);
+      expect(streamText).toMatch(/-?\d+(?:\.\d+)? Tw\b/);
+      expect(streamText).toMatch(/\[.*\] TJ/);
+      expect(streamText.indexOf('BT')).toBeLessThan(streamText.indexOf('ET'));
+
+      // What a reader recovers from the invisible text (poppler): the four words in order on one baseline. The
+      // line is fitted to its box (first word at the box's left edge, last word ending at its right edge), and the
+      // Tw word spacing makes every gap between neighbours the same width.
+      const words = popplerWords(Buffer.from(pdfBytes));
+      expect(words.map((word) => word.text)).toEqual(['Document', 'Conversion', 'Security', 'Framework']);
+      expect(new Set(words.map((word) => word.y0)).size).toBe(1);
+      expect(words[0].x0).toBeCloseTo(lineBlock.bbox.x, 1);
+      expect(Math.abs(words[3].x1 - (lineBlock.bbox.x + lineBlock.bbox.width))).toBeLessThanOrEqual(LINE_END_TOLERANCE_PT);
+      const gaps = [1, 2, 3].map((index) => words[index].x0 - words[index - 1].x1);
+      expect(gaps.every((gap) => gap > 0)).toBe(true);
+      expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThan(EQUAL_GAP_TOLERANCE_PT);
     });
 
     it('prevents word collision and negative collapsing when words share identical line bounding box', async () => {

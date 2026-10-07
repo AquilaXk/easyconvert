@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import ts from 'typescript';
 
 /**
@@ -55,4 +56,76 @@ export function initializersOf(sf: ts.SourceFile, name: string): string[] {
     }
   });
   return initializers;
+}
+
+export interface ModuleGraph {
+  /** Absolute paths of every source file reachable through value imports from the entry, entry included. */
+  files: string[];
+  /** Module specifiers that name a package or a Node built-in (not a path into the source tree), sorted. */
+  externalSpecifiers: string[];
+}
+
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '/index.ts', '/index.tsx'];
+
+function resolveSourceFile(specifier: string, importer: string, srcRoot: string): string | null {
+  const base = specifier.startsWith('@/') ? path.join(srcRoot, specifier.slice(2)) : path.resolve(path.dirname(importer), specifier);
+  for (const extension of SOURCE_EXTENSIONS) {
+    if (fs.existsSync(base + extension) && fs.statSync(base + extension).isFile()) return base + extension;
+  }
+  return null;
+}
+
+/** Module specifiers a file pulls in at run time: import and re-export declarations, import() and require(). */
+export function runtimeImportSpecifiers(sf: ts.SourceFile): string[] {
+  const specifiers: string[] = [];
+  walk(sf, (n) => {
+    if (ts.isImportDeclaration(n) && !n.importClause?.isTypeOnly && ts.isStringLiteral(n.moduleSpecifier)) {
+      specifiers.push(n.moduleSpecifier.text);
+    } else if (ts.isExportDeclaration(n) && !n.isTypeOnly && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) {
+      specifiers.push(n.moduleSpecifier.text);
+    } else if (ts.isCallExpression(n) && n.arguments.length > 0 && ts.isStringLiteral(n.arguments[0])) {
+      const isDynamicImport = n.expression.kind === ts.SyntaxKind.ImportKeyword;
+      if (isDynamicImport || (ts.isIdentifier(n.expression) && n.expression.text === 'require')) specifiers.push(n.arguments[0].text);
+    }
+  });
+  return specifiers;
+}
+
+/**
+ * Follows the run-time imports of `entry` through the source tree (`@/` maps to `srcRoot`) and returns the files
+ * reached and the packages and built-ins they import. An import that looks like a path but resolves to no file
+ * throws, so a graph is never silently smaller than the real one.
+ */
+export function collectModuleGraph(entry: string, srcRoot: string): ModuleGraph {
+  const files = new Set<string>();
+  const external = new Set<string>();
+  const queue = [path.resolve(entry)];
+  while (queue.length > 0) {
+    const file = queue.pop() as string;
+    if (files.has(file)) continue;
+    files.add(file);
+    for (const specifier of runtimeImportSpecifiers(parseSource(file))) {
+      const isPath = specifier.startsWith('.') || specifier.startsWith('@/');
+      if (!isPath) {
+        external.add(specifier);
+        continue;
+      }
+      const resolved = resolveSourceFile(specifier, file, srcRoot);
+      if (!resolved) throw new Error(`${file} imports "${specifier}", which resolves to no source file`);
+      queue.push(resolved);
+    }
+  }
+  return { files: [...files].sort(), externalSpecifiers: [...external].sort() };
+}
+
+/** Every identifier in the file spelled `name`, as `line:column` positions, so a use can be located. */
+export function identifierUses(sf: ts.SourceFile, name: string): string[] {
+  const uses: string[] = [];
+  walk(sf, (n) => {
+    if (ts.isIdentifier(n) && n.text === name) {
+      const { line, character } = sf.getLineAndCharacterOfPosition(n.getStart(sf));
+      uses.push(`${line + 1}:${character + 1}`);
+    }
+  });
+  return uses;
 }

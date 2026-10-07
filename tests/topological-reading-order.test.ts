@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import * as zlib from 'node:zlib';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { oracleTest } from './helpers/oracle-test';
+import { popplerWords } from './helpers/poppler-words';
 import sharp from 'sharp';
 import {
   detectColumnGutters,
@@ -912,11 +914,7 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
   // 12. Scale Factor Robustness & Negative Value Guarding
   // =========================================================================
   describe('12. Scale Factor and Boundary Robustness', () => {
-    it('gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage([600, 400]);
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
+    oracleTest('treats non-positive or non-finite scale factors in injectInvisibleTextLayer as 1: the text layer is the unscaled one', ['pdftotext'], async () => {
       const ocrResult: OcrResult = {
         text: 'Robustness Test Text',
         confidence: 0.95,
@@ -931,12 +929,22 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
         ],
       };
 
-      // Non-positive and non-finite scale values
-      expect(() => injectInvisibleTextLayer(page, font, ocrResult, 0, 0)).not.toThrow();
-      expect(() => injectInvisibleTextLayer(page, font, ocrResult, -1.5, NaN)).not.toThrow();
+      // The same recognition injected with a scale that is not usable gives the PDF of scale 1, word by word and
+      // box by box as poppler reads them; a different scale gives different boxes, so the comparison is not vacuous.
+      const wordsWithScale = async (scaleX: number, scaleY: number) => {
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([600, 400]);
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        injectInvisibleTextLayer(page, font, ocrResult, scaleX, scaleY);
+        return popplerWords(Buffer.from(await pdfDoc.save()));
+      };
 
-      const pdfBytes = await pdfDoc.save();
-      expect(pdfBytes.length).toBeGreaterThan(0);
+      const unscaled = await wordsWithScale(1, 1);
+      expect(unscaled.map((word) => word.text)).toEqual(['Robustness', 'Test', 'Text']);
+      expect(await wordsWithScale(0, 0)).toEqual(unscaled);
+      expect(await wordsWithScale(-1.5, Number.NaN)).toEqual(unscaled);
+      expect(await wordsWithScale(Number.POSITIVE_INFINITY, -1)).toEqual(unscaled);
+      expect(await wordsWithScale(2, 2)).not.toEqual(unscaled);
     });
   });
 });
