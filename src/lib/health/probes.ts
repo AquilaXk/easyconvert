@@ -8,12 +8,15 @@ import { resolveLocalStorageDir } from '../storage/storage-config';
 /**
  * Live dependency probes behind GET /api/health.
  *
- * Readiness, not liveness: the endpoint answers "should this instance take conversion traffic?".
- * Every component below is one the platform cannot convert without, so a failed probe makes the
- * whole service unhealthy (HTTP 503) and nothing is reported as "degraded". The alternative, a
- * 200 that hides a missing native CLI, is what the previous constant answer did: a load balancer
- * keeps sending jobs to an instance that can only fail them. Redis is probed only when it is
- * configured, so local development without Redis stays healthy.
+ * Readiness, not liveness: the endpoint answers "should this instance take traffic?". Only the
+ * dependencies every request path needs decide that: Redis (when configured) and storage. Without
+ * them no upload, job or download can work, so a failed probe answers 503.
+ *
+ * The native CLIs are advisory. A web instance may run without them (conversions then run on the
+ * worker tier), and a missing CLI fails only the conversions that need it, with a typed 503 of its
+ * own. Taking the whole instance out of rotation for one missing tool would turn a partial outage
+ * into a full one. The admin view reports every CLI so operators see the gap. Redis is probed only
+ * when it is configured, so local development without Redis stays healthy.
  *
  * Probes run in parallel, each under HEALTH_PROBE_TIMEOUT_MS, and the verdict is cached for
  * HEALTH_CACHE_TTL_MS so a load balancer polling every second costs one probe set per TTL. A
@@ -40,7 +43,12 @@ export interface ComponentReport {
   reason?: FailureReason;
   /** Storage only: the configured driver (`local`, `oci` or `s3`). */
   driver?: string;
+  /** Whether a failure of this component makes the instance unhealthy (Redis, storage) or is advisory (CLIs). */
+  required: boolean;
 }
+
+/** What one probe finds; whether it is required is decided when the report is assembled. */
+type ProbeResult = Omit<ComponentReport, 'required'>;
 
 export interface HealthReport {
   status: HealthStatus;
@@ -59,8 +67,8 @@ export class HealthProbeFailure extends Error {
   }
 }
 
-/** Binaries every instance needs, as `[component name, worker binary key]`. 7z is 7zz or 7z. */
-const REQUIRED_BINARIES: ReadonlyArray<readonly [string, NativeBinaryName]> = [
+/** Binaries the conversions use, as `[component name, worker binary key]`. 7z is 7zz or 7z. Advisory. */
+const ADVISORY_BINARIES: ReadonlyArray<readonly [string, NativeBinaryName]> = [
   ['soffice', 'soffice'],
   ['ffmpeg', 'ffmpeg'],
   ['ffprobe', 'ffprobe'],
@@ -75,7 +83,7 @@ function isRedisConfigured(): boolean {
   return Boolean(process.env.REDIS_URL || process.env.REDIS_HOST);
 }
 
-async function probeRedis(): Promise<ComponentReport> {
+async function probeRedis(): Promise<ProbeResult> {
   if (!isRedisConfigured()) return { status: 'not_configured' };
   const options = {
     lazyConnect: true,
@@ -132,7 +140,7 @@ async function loadStorageSelection(): Promise<StorageSelection | undefined> {
   }
 }
 
-async function probeStorage(selection: StorageSelection | undefined): Promise<ComponentReport> {
+async function probeStorage(selection: StorageSelection | undefined): Promise<ProbeResult> {
   if (!selection) throw new HealthProbeFailure('misconfigured');
   const driver = selection.storageConfig.driver;
   try {
@@ -149,7 +157,7 @@ async function probeStorage(selection: StorageSelection | undefined): Promise<Co
   return { status: 'ok', driver };
 }
 
-async function probeBinary(name: NativeBinaryName): Promise<ComponentReport> {
+async function probeBinary(name: NativeBinaryName): Promise<ProbeResult> {
   const resolved = resolveNativeBinary(name);
   if (resolved === null) throw new HealthProbeFailure('missing');
   try {
@@ -161,7 +169,7 @@ async function probeBinary(name: NativeBinaryName): Promise<ComponentReport> {
 }
 
 /** Runs one probe under the probe deadline and turns every outcome into a component report. */
-async function runProbe(probe: () => Promise<ComponentReport>): Promise<ComponentReport> {
+async function runProbe(probe: () => Promise<ProbeResult>): Promise<ProbeResult> {
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new HealthProbeFailure('timeout')), HEALTH_PROBE_TIMEOUT_MS);
@@ -178,22 +186,29 @@ async function runProbe(probe: () => Promise<ComponentReport>): Promise<Componen
   }
 }
 
+/** Components whose failure makes the instance unhealthy. */
+const REQUIRED_COMPONENTS: ReadonlySet<string> = new Set(['redis', 'storage']);
+
 async function collectHealthReport(): Promise<HealthReport> {
   const storageSelection = await loadStorageSelection();
-  const probes: Array<[string, () => Promise<ComponentReport>]> = [
+  const probes: Array<[string, () => Promise<ProbeResult>]> = [
     ['redis', probeRedis],
     ['storage', () => probeStorage(storageSelection)],
-    ...REQUIRED_BINARIES.map(([component, name]): [string, () => Promise<ComponentReport>] => [
+    ...ADVISORY_BINARIES.map(([component, name]): [string, () => Promise<ProbeResult>] => [
       component,
       () => probeBinary(name),
     ]),
   ];
   const results = await Promise.all(probes.map(([, probe]) => runProbe(probe)));
   const components: Record<string, ComponentReport> = {};
+  let healthy = true;
   probes.forEach(([component], index) => {
-    components[component] = results[index];
+    const required = REQUIRED_COMPONENTS.has(component);
+    components[component] = { ...results[index], required };
+    if (required && results[index].status === 'failed') {
+      healthy = false;
+    }
   });
-  const healthy = results.every((result) => result.status !== 'failed');
   return { status: healthy ? 'healthy' : 'unhealthy', checkedAt: new Date().toISOString(), components };
 }
 
