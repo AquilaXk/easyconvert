@@ -1,8 +1,6 @@
 import { isCfbfContainer, parseCfbf } from '../hwp';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
-
-/** Largest compound file the legacy readers accept; everything is held in memory while parsing. */
-export const LEGACY_OFFICE_MAX_INPUT_BYTES = 256 * 1024 * 1024;
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from './legacy-office-limits';
 
 /** Most directory entries (storages and streams) a compound file may declare before it is refused. */
 export const CFB_MAX_DIRECTORY_ENTRIES = 65_536;

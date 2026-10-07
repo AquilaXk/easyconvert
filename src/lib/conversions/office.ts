@@ -14,6 +14,7 @@ import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
+import { readRtfText } from './office/rtf-reader';
 
 export { buildOpenXpsPackage };
 
@@ -376,7 +377,7 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'rtf') {
-    return extractTextFromRtf(inputBuffer.toString('utf-8'));
+    return extractTextFromRtf(inputBuffer);
   }
 
   if (src === 'odt') {
@@ -503,18 +504,12 @@ function extractTextFromTexString(tex: string): string {
 }
 
 /**
- * Strips RTF control words and formats text
+ * Text of an RTF document: groups, \uN escapes with \ucN fallbacks, \'hh bytes in the document or font
+ * code page, and non-text destinations are handled by the tokenizer. Malformed input throws a
+ * LegacyOfficeFormatError (400).
  */
-export function extractTextFromRtf(rtf: string): string {
-  return rtf
-    .replace(/\{\\(?:fonttbl|colortbl|stylesheet)[\s\S]*?\}/g, '')
-    .replace(/\\par[d]?/g, '\n')
-    .replace(/\\tab/g, '\t')
-    .replace(/\\[a-zA-Z]+(-?[0-9]+)?[ ]?/g, '')
-    .replace(/[{}]/g, '')
-    .replace(/\r?\n\s*\r?\n/g, '\n\n')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
+export function extractTextFromRtf(rtf: Buffer): string {
+  return readRtfText(rtf);
 }
 
 /**

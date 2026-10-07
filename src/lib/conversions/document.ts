@@ -550,7 +550,7 @@ export async function convertDocument(
   // Extract text representation according to source format
   let textContent = '';
   if (src === 'rtf') {
-    textContent = extractTextFromRtf(inputBuffer.toString('utf-8'));
+    textContent = extractTextFromRtf(inputBuffer);
   } else if (src === 'odt') {
     textContent = await extractTextFromOdt(inputBuffer);
   } else if (src === 'doc') {
