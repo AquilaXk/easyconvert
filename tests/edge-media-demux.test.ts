@@ -11,6 +11,7 @@ import { demuxMedia } from '../src/lib/edge/workers/webcodecs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import {
+  h264AacMp4,
   requireEncoders,
   runFfmpeg,
   sineInput,
@@ -68,22 +69,6 @@ function expectSamplesMatchPackets(samples: DemuxedMediaSample[], packets: Ffpro
 // ---------------------------------------------------------------------------------------------------
 // Reference-authored MP4 fixtures
 // ---------------------------------------------------------------------------------------------------
-
-const H264_ARGS = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '12'];
-
-function h264AacMp4(extra: string[] = []): Buffer {
-  requireEncoders('libx264', 'aac');
-  return runFfmpeg(
-    [
-      ...testPatternInput({ width: 320, height: 240, fps: 25, seconds: 2 }),
-      ...sineInput(44100, 2),
-      ...H264_ARGS,
-      '-c:a', 'aac', '-shortest',
-      ...extra,
-    ],
-    'mp4'
-  );
-}
 
 describe('demuxMp4 against ffprobe -show_packets -show_streams', () => {
   for (const faststart of [false, true]) {

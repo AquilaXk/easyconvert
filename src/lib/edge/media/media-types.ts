@@ -25,3 +25,25 @@ export interface DemuxedTrackInfo {
   samples: DemuxedMediaSample[];
   audioTrack?: DemuxedTrackInfo;
 }
+
+/** One chunk a WebCodecs encoder produced, in the units the muxers take. */
+export interface EncodedMediaChunk {
+  data: Uint8Array;
+  timestampMicros: number;
+  durationMicros?: number;
+  isKeyFrame: boolean;
+}
+
+/**
+ * What the encoder reported about its own output in `EncodedVideoChunkMetadata.decoderConfig` (or the audio
+ * equivalent): the codec string and the decoder configuration record (avcC, hvcC, AudioSpecificConfig, ...)
+ * that a container has to carry for the chunks to be decodable.
+ */
+export interface EncoderOutputConfig {
+  codec: string;
+  description?: Uint8Array;
+  codedWidth?: number;
+  codedHeight?: number;
+  sampleRate?: number;
+  numberOfChannels?: number;
+}

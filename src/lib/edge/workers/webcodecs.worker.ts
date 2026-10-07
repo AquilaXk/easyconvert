@@ -14,8 +14,15 @@
  * 6. Zero-copy IPC using Transferable Objects (postMessage([buffer])).
  */
 
+import { trimAudioDataStart } from '../media/audio-trim';
 import { demuxMp4 } from '../media/iso-bmff-demux';
-import type { DemuxedMediaSample, DemuxedTrackInfo } from '../media/media-types';
+import type {
+  DemuxedMediaSample,
+  DemuxedTrackInfo,
+  EncodedMediaChunk,
+  EncoderOutputConfig,
+} from '../media/media-types';
+import { OrderedWorkQueue } from '../media/ordered-work-queue';
 import { pcmBlockToAudioData } from '../media/pcm-audio';
 import { demuxWav } from '../media/wav-demux';
 import { EdgeUnsupportedError, serializeWorkerError, type SerializedWorkerError } from './worker-errors';
@@ -1184,27 +1191,118 @@ export function muxFmp4Stream(
 /** Codec strings the demuxer hands to VideoDecoder: an RFC 6381 string, never a bare sample entry name. */
 const WEBCODECS_VIDEO_CODEC_PATTERN = /^(avc1|avc3|hvc1|hev1|vp09|av01)\.[0-9a-zA-Z.]+$/;
 
+/** Decoded frames or audio blocks that may wait for the encoder at once; each pins GPU or heap memory. */
+const MAX_PENDING_DECODED_ITEMS = 8;
+/** Encoded chunks queued inside a decoder before the demuxer pauses. */
+const MAX_DECODE_QUEUE_SIZE = 32;
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/** Resolves on the next `dequeue` event of a codec, or on the next task where the platform has no events. */
+function nextDequeue(codec: any): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (typeof codec.addEventListener === 'function') {
+      codec.addEventListener('dequeue', () => resolve(), { once: true });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+async function waitForDecodeQueue(decoder: any): Promise<void> {
+  while (decoder.decodeQueueSize >= MAX_DECODE_QUEUE_SIZE) {
+    await nextDequeue(decoder);
+  }
+}
+
+/** A codec that has already failed is closed by the platform; closing it again must not hide the failure. */
+function closeQuietly(codec: any): void {
+  try {
+    codec.close();
+  } catch {
+    // InvalidStateError: the codec was closed after an error, and that error is what gets reported
+  }
+}
+
+/** Throws EdgeUnsupportedError unless `isConfigSupported` of the platform class accepts `config`. */
+async function assertConfigSupported(platformClass: any, config: object, label: string, codec: string): Promise<void> {
+  if (typeof platformClass.isConfigSupported !== 'function') {
+    throw new EdgeUnsupportedError(`${label} cannot report whether it supports ${codec} in this browser environment`);
+  }
+  let supported: boolean;
+  try {
+    supported = Boolean((await platformClass.isConfigSupported(config))?.supported);
+  } catch (err) {
+    throw new EdgeUnsupportedError(`${label} rejected the ${codec} configuration: ${toError(err).message}`);
+  }
+  if (!supported) {
+    throw new EdgeUnsupportedError(`${label} does not support ${codec} in this browser environment`);
+  }
+}
+
+/** The decoder configuration an encoder reports with its first output chunk, copied out of the metadata. */
+function captureDecoderConfig(metadata: any): EncoderOutputConfig | undefined {
+  const config = metadata?.decoderConfig;
+  if (!config || typeof config.codec !== 'string') return undefined;
+  let description: Uint8Array | undefined;
+  if (config.description) {
+    const source = config.description;
+    description = ArrayBuffer.isView(source)
+      ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength).slice()
+      : new Uint8Array(source).slice();
+  }
+  return {
+    codec: config.codec,
+    description,
+    codedWidth: config.codedWidth,
+    codedHeight: config.codedHeight,
+    sampleRate: config.sampleRate,
+    numberOfChannels: config.numberOfChannels,
+  };
+}
+
+function videoEncoderConfig(codec: string, width: number, height: number, bitrate: number, framerate: number): object {
+  const config: Record<string, unknown> = { codec, width, height, bitrate, framerate };
+  // Length-prefixed NAL units with the decoder configuration kept out of band: the layout MP4 stores
+  if (codec.startsWith('avc1') || codec.startsWith('avc3')) config.avc = { format: 'avc' };
+  if (codec.startsWith('hvc1') || codec.startsWith('hev1')) config.hevc = { format: 'hevc' };
+  return config;
+}
+
+interface VideoEncodeResult {
+  chunks: EncodedMediaChunk[];
+  /** What the encoder said about its own output; absent when it reported nothing. */
+  decoderConfig?: EncoderOutputConfig;
+}
+
 /**
  * Decodes the demuxed video samples and re-encodes them with the WebCodecs hardware pipeline.
- * Guarantees VideoFrame.close() in try ... finally on every frame. Every frame comes from the input; a
- * missing decoder or an undecodable track throws EdgeUnsupportedError instead of producing substitute frames.
+ * Every frame comes from the input. Frames reach the encoder one at a time in the order the decoder emits them
+ * (presentation order), VideoFrame.close() runs in a finally on every frame, and a missing or unsupporting
+ * decoder or encoder throws EdgeUnsupportedError instead of producing substitute frames.
  */
-async function encodeFramesHardware(
+async function encodeVideoTrack(
   codec: string,
   width: number,
   height: number,
   framerate: number,
   videoBitrate: number,
   flowController: WatermarkFlowController,
-  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
   demuxedTrack: DemuxedTrackInfo,
   onFraction?: (fraction: number) => void
-): Promise<void> {
-  const VideoFrameClass = (globalThis as any).VideoFrame;
-  const VideoDecoderClass = (globalThis as any).VideoDecoder;
-  const EncodedChunkClass = (globalThis as any).EncodedVideoChunk;
+): Promise<VideoEncodeResult> {
+  const g = globalThis as any;
+  const VideoFrameClass = g.VideoFrame;
+  const VideoDecoderClass = g.VideoDecoder;
+  const VideoEncoderClass = g.VideoEncoder;
+  const EncodedChunkClass = g.EncodedVideoChunk;
   if (typeof VideoDecoderClass === 'undefined' || typeof EncodedChunkClass === 'undefined') {
     throw new EdgeUnsupportedError('WebCodecs VideoDecoder or EncodedVideoChunk is not supported in this browser environment');
+  }
+  if (typeof VideoEncoderClass === 'undefined' || typeof VideoFrameClass === 'undefined') {
+    throw new EdgeUnsupportedError('WebCodecs VideoEncoder or VideoFrame is not supported in this browser environment');
   }
   if (demuxedTrack.type !== 'video' || demuxedTrack.samples.length === 0) {
     throw new EdgeUnsupportedError('The input has no video track the edge worker can decode.');
@@ -1213,93 +1311,93 @@ async function encodeFramesHardware(
     throw new EdgeUnsupportedError(`The edge worker cannot decode the "${demuxedTrack.codec}" video track.`);
   }
 
-  let encoderError: Error | null = null;
-  const frameDurationMicros = Math.round(MICROS_PER_SECOND / framerate);
+  const decoderConfig = { codec: demuxedTrack.codec, description: demuxedTrack.description };
+  await assertConfigSupported(VideoDecoderClass, decoderConfig, 'VideoDecoder', demuxedTrack.codec);
+  const encoderConfig = videoEncoderConfig(codec, width, height, videoBitrate, framerate);
+  await assertConfigSupported(VideoEncoderClass, encoderConfig, 'VideoEncoder', codec);
 
-  const encoder = new (globalThis as any).VideoEncoder({
-    output: (chunk: any) => {
-      const chunkData = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(chunkData);
-      encodedChunks.push({
-        data: chunkData,
+  const chunks: EncodedMediaChunk[] = [];
+  let outputConfig: EncoderOutputConfig | undefined;
+  const queue = new OrderedWorkQueue();
+  const frameDurationMicros = Math.round(MICROS_PER_SECOND / framerate);
+  const totalSamples = demuxedTrack.samples.length;
+
+  const encoder = new VideoEncoderClass({
+    output: (chunk: any, metadata: any) => {
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      chunks.push({
+        data,
         timestampMicros: chunk.timestamp,
+        durationMicros: chunk.duration ?? undefined,
         isKeyFrame: chunk.type === 'key',
       });
+      outputConfig ??= captureDecoderConfig(metadata);
       flowController.onDequeue(encoder.encodeQueueSize);
     },
-    error: (err: any) => {
-      encoderError = err instanceof Error ? err : new Error(String(err));
+    error: (err: unknown) => {
+      queue.fail(toError(err));
+      flowController.reset();
     },
   });
-
-  (encoder as any).ondequeue = () => {
+  encoder.ondequeue = () => {
     flowController.onDequeue(encoder.encodeQueueSize);
   };
 
   try {
-    encoder.configure({
-      codec,
-      width,
-      height,
-      bitrate: videoBitrate,
-      framerate,
-    });
+    encoder.configure(encoderConfig);
 
-    let decoderError: Error | null = null;
     let frameIdx = 0;
-    const totalSamples = demuxedTrack.samples.length;
+    const processFrame = async (decodedFrame: any): Promise<void> => {
+      let canvasFrame: any = null;
+      try {
+        await flowController.checkBackpressure(encoder.encodeQueueSize);
+        let frameToEncode = decodedFrame;
+
+        // OffscreenCanvas step for resizing
+        if (decodedFrame.displayWidth !== width || decodedFrame.displayHeight !== height) {
+          if (typeof OffscreenCanvas === 'undefined') {
+            throw new EdgeUnsupportedError('Resizing video needs OffscreenCanvas, which this browser lacks.');
+          }
+          const canvas = new OffscreenCanvas(width, height);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            throw new EdgeUnsupportedError('The browser refused a 2D canvas context for resizing the video.');
+          }
+          ctx.drawImage(decodedFrame, 0, 0, width, height);
+          canvasFrame = new VideoFrameClass(canvas, {
+            timestamp: decodedFrame.timestamp,
+            duration: decodedFrame.duration ?? frameDurationMicros,
+          });
+          frameToEncode = canvasFrame;
+        }
+
+        encoder.encode(frameToEncode, { keyFrame: frameIdx % OUTPUT_KEYFRAME_INTERVAL_FRAMES === 0 });
+        frameIdx++;
+        onFraction?.(frameIdx / totalSamples);
+      } finally {
+        canvasFrame?.close();
+        decodedFrame.close(); // Deterministic VRAM cleanup
+      }
+    };
 
     const decoder = new VideoDecoderClass({
-      output: async (decodedFrame: any) => {
-        let canvasFrame: any = null;
-        try {
-          await flowController.checkBackpressure(encoder.encodeQueueSize);
-          let frameToEncode = decodedFrame;
-
-          // OffscreenCanvas step for resizing
-          if (decodedFrame.displayWidth !== width || decodedFrame.displayHeight !== height) {
-            if (typeof OffscreenCanvas === 'undefined') {
-              throw new EdgeUnsupportedError('Resizing video needs OffscreenCanvas, which this browser lacks.');
-            }
-            const canvas = new OffscreenCanvas(width, height);
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-              throw new EdgeUnsupportedError('The browser refused a 2D canvas context for resizing the video.');
-            }
-            ctx.drawImage(decodedFrame, 0, 0, width, height);
-            canvasFrame = new VideoFrameClass(canvas, {
-              timestamp: decodedFrame.timestamp,
-              duration: decodedFrame.duration ?? frameDurationMicros,
-            });
-            frameToEncode = canvasFrame;
-          }
-
-          encoder.encode(frameToEncode, { keyFrame: frameIdx % OUTPUT_KEYFRAME_INTERVAL_FRAMES === 0 });
-          frameIdx++;
-          onFraction?.(frameIdx / totalSamples);
-        } catch (err: any) {
-          decoderError = err;
-        } finally {
-          if (canvasFrame) {
-            canvasFrame.close();
-          }
-          decodedFrame.close(); // Deterministic VRAM cleanup
-        }
-      },
-      error: (err: any) => {
-        decoderError = err instanceof Error ? err : new Error(String(err));
+      output: (frame: any) =>
+        queue.push(
+          () => processFrame(frame),
+          () => frame.close()
+        ),
+      error: (err: unknown) => {
+        queue.fail(toError(err));
+        flowController.reset();
       },
     });
 
     try {
-      decoder.configure({
-        codec: demuxedTrack.codec,
-        description: demuxedTrack.description,
-      });
-
+      decoder.configure(decoderConfig);
       for (const sample of demuxedTrack.samples) {
-        if (decoderError) throw decoderError;
-        if (encoderError) throw encoderError;
+        await queue.waitBelow(MAX_PENDING_DECODED_ITEMS);
+        await waitForDecodeQueue(decoder);
         decoder.decode(
           new EncodedChunkClass({
             type: sample.isKeyFrame ? 'key' : 'delta',
@@ -1310,16 +1408,25 @@ async function encodeFramesHardware(
         );
       }
       await decoder.flush();
-      if (decoderError) throw decoderError;
+      await queue.drain();
     } finally {
-      decoder.close();
+      closeQuietly(decoder);
     }
 
     await encoder.flush();
-    if (encoderError) throw encoderError;
+    queue.throwIfFailed();
+  } catch (error) {
+    // Stop work still queued behind the failure and release anything waiting on the encoder
+    queue.fail(error);
+    flowController.reset();
+    throw error;
   } finally {
-    encoder.close();
+    closeQuietly(encoder);
+    // Every decoded frame still queued is closed before the failure reaches the caller
+    await queue.settle();
   }
+
+  return { chunks, decoderConfig: outputConfig };
 }
 
 /**
@@ -1473,99 +1580,195 @@ export function muxOggOpus(
 /** Demuxer codec labels of PCM audio start with this; every other label names a compressed codec. */
 const PCM_CODEC_PREFIX = 'pcm-';
 
+interface AudioEncodeResult {
+  chunks: EncodedMediaChunk[];
+  decoderConfig?: EncoderOutputConfig;
+  /** Rate and channel count of the audio that was encoded, as the decoder produced it. */
+  sampleRate: number;
+  channels: number;
+}
+
 /**
- * Encodes the demuxed audio samples with WebCodecs AudioEncoder.
- * Guarantees AudioData.close() in try ... finally on every frame. Only samples that already are PCM become
- * `AudioData`; compressed audio throws EdgeUnsupportedError rather than being reinterpreted as PCM.
+ * Encodes the demuxed audio with WebCodecs. PCM becomes `AudioData` directly; compressed audio goes through an
+ * `AudioDecoder` first, and its output (not the container's claim about it) decides the encoder configuration,
+ * after the encoder delay before time zero is removed. The encoder does not resample or mix, so a requested
+ * rate or channel count that differs from the decoded audio throws EdgeUnsupportedError, as does any missing
+ * or unsupporting decoder or encoder.
  */
-async function encodeAudioHardware(
+async function encodeAudioTrack(
   codec: string,
-  sampleRate: number,
-  channels: number,
   audioBitrate: number,
+  requested: { sampleRate?: number; channels?: number },
   flowController: WatermarkFlowController,
-  encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }>,
   demuxedTrack: DemuxedTrackInfo,
   onFraction?: (fraction: number) => void
-): Promise<void> {
-  let encoderError: Error | null = null;
-
-  const AudioEncoderClass = (globalThis as any).AudioEncoder;
-  const AudioDataClass = (globalThis as any).AudioData;
-
+): Promise<AudioEncodeResult> {
+  const g = globalThis as any;
+  const AudioEncoderClass = g.AudioEncoder;
+  const AudioDataClass = g.AudioData;
   if (typeof AudioEncoderClass === 'undefined' || typeof AudioDataClass === 'undefined') {
     throw new EdgeUnsupportedError('WebCodecs AudioEncoder or AudioData is not supported in this browser environment');
   }
   if (demuxedTrack.type !== 'audio' || demuxedTrack.samples.length === 0) {
     throw new EdgeUnsupportedError('The input has no audio track the edge worker can encode.');
   }
-  if (!demuxedTrack.codec.startsWith(PCM_CODEC_PREFIX)) {
-    throw new EdgeUnsupportedError(
-      `The edge worker cannot decode "${demuxedTrack.codec}" audio, so the server engine converts it.`
-    );
+  const isPcm = demuxedTrack.codec.startsWith(PCM_CODEC_PREFIX);
+  const AudioDecoderClass = g.AudioDecoder;
+  const EncodedAudioChunkClass = g.EncodedAudioChunk;
+  let decoderConfig: object | undefined;
+  if (!isPcm) {
+    if (typeof AudioDecoderClass === 'undefined' || typeof EncodedAudioChunkClass === 'undefined') {
+      throw new EdgeUnsupportedError('WebCodecs AudioDecoder or EncodedAudioChunk is not supported in this browser environment');
+    }
+    decoderConfig = {
+      codec: demuxedTrack.codec,
+      sampleRate: demuxedTrack.sampleRate,
+      numberOfChannels: demuxedTrack.channels,
+      description: demuxedTrack.description,
+    };
+    await assertConfigSupported(AudioDecoderClass, decoderConfig, 'AudioDecoder', demuxedTrack.codec);
   }
 
-  const audioEncoder = new AudioEncoderClass({
-    output: (chunk: any) => {
-      const chunkData = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(chunkData);
-      encodedChunks.push({
-        data: chunkData,
-        timestampMicros: chunk.timestamp,
-        isKeyFrame: true,
-      });
-      flowController.onDequeue(audioEncoder.encodeQueueSize);
-    },
-    error: (err: any) => {
-      encoderError = err instanceof Error ? err : new Error(String(err));
-    },
-  });
+  const chunks: EncodedMediaChunk[] = [];
+  let outputConfig: EncoderOutputConfig | undefined;
+  const queue = new OrderedWorkQueue();
+  let encoder: any;
+  let encodedRate = 0;
+  let encodedChannels = 0;
 
-  (audioEncoder as any).ondequeue = () => {
-    flowController.onDequeue(audioEncoder.encodeQueueSize);
+  const openEncoder = async (sampleRate: number, channels: number): Promise<void> => {
+    if (requested.sampleRate !== undefined && requested.sampleRate !== sampleRate) {
+      throw new EdgeUnsupportedError(`Resampling ${sampleRate} Hz audio to ${requested.sampleRate} Hz is not available at the edge.`);
+    }
+    if (requested.channels !== undefined && requested.channels !== channels) {
+      throw new EdgeUnsupportedError(`Changing ${channels} audio channels to ${requested.channels} is not available at the edge.`);
+    }
+    const config: Record<string, unknown> = { codec, sampleRate, numberOfChannels: channels, bitrate: audioBitrate };
+    // Raw AAC frames with an AudioSpecificConfig, which MP4 stores; ADTS headers are added where a target wants them
+    if (codec.startsWith('mp4a')) config.aac = { format: 'aac' };
+    await assertConfigSupported(AudioEncoderClass, config, 'AudioEncoder', `${codec} at ${sampleRate} Hz, ${channels} channels`);
+    encoder = new AudioEncoderClass({
+      output: (chunk: any, metadata: any) => {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        chunks.push({
+          data,
+          timestampMicros: chunk.timestamp,
+          durationMicros: chunk.duration ?? undefined,
+          isKeyFrame: true,
+        });
+        outputConfig ??= captureDecoderConfig(metadata);
+        flowController.onDequeue(encoder.encodeQueueSize);
+      },
+      error: (err: unknown) => {
+        queue.fail(toError(err));
+        flowController.reset();
+      },
+    });
+    encoder.ondequeue = () => {
+      flowController.onDequeue(encoder.encodeQueueSize);
+    };
+    encoder.configure(config);
+    encodedRate = sampleRate;
+    encodedChannels = channels;
   };
 
+  const feed = async (data: any): Promise<void> => {
+    if (!encoder) {
+      await openEncoder(data.sampleRate, data.numberOfChannels);
+    } else if (data.sampleRate !== encodedRate || data.numberOfChannels !== encodedChannels) {
+      throw new EdgeUnsupportedError('The audio changes its sample rate or channel count mid-stream; the server engine converts it.');
+    }
+    await flowController.checkBackpressure(encoder.encodeQueueSize);
+    encoder.encode(data);
+  };
+
+  const totalSamples = demuxedTrack.samples.length;
   try {
-    audioEncoder.configure({
-      codec,
-      sampleRate,
-      numberOfChannels: channels,
-      bitrate: audioBitrate,
-    });
-
-    const totalSamples = demuxedTrack.samples.length;
-    for (let i = 0; i < totalSamples; i++) {
-      if (encoderError) throw encoderError;
-      await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
-
-      const sample = demuxedTrack.samples[i];
-      const pcm = pcmBlockToAudioData(demuxedTrack.codec, sample.data, channels);
-
-      let audioData: any = null;
-      try {
-        audioData = new AudioDataClass({
+    if (isPcm) {
+      for (let i = 0; i < totalSamples; i++) {
+        queue.throwIfFailed();
+        const sample = demuxedTrack.samples[i];
+        const pcm = pcmBlockToAudioData(demuxedTrack.codec, sample.data, demuxedTrack.channels as number);
+        const audioData = new AudioDataClass({
           format: pcm.format,
-          sampleRate,
+          sampleRate: demuxedTrack.sampleRate,
           numberOfFrames: pcm.frames,
-          numberOfChannels: channels,
+          numberOfChannels: demuxedTrack.channels,
           timestamp: sample.timestampMicros,
           data: pcm.data,
         });
-        audioEncoder.encode(audioData);
-      } finally {
-        if (audioData) {
+        try {
+          await feed(audioData);
+        } finally {
           audioData.close();
         }
+        onFraction?.((i + 1) / totalSamples);
       }
-
-      onFraction?.((i + 1) / totalSamples);
+    } else {
+      let decodedCount = 0;
+      const processDecoded = async (data: any): Promise<void> => {
+        const kept = trimAudioDataStart(data, AudioDataClass);
+        if (kept === null) return;
+        try {
+          await feed(kept);
+        } finally {
+          kept.close();
+        }
+        decodedCount++;
+        onFraction?.(Math.min(1, decodedCount / totalSamples));
+      };
+      const decoder = new AudioDecoderClass({
+        output: (data: any) =>
+          queue.push(
+            () => processDecoded(data),
+            () => data.close()
+          ),
+        error: (err: unknown) => {
+          queue.fail(toError(err));
+          flowController.reset();
+        },
+      });
+      try {
+        decoder.configure(decoderConfig);
+        for (const sample of demuxedTrack.samples) {
+          await queue.waitBelow(MAX_PENDING_DECODED_ITEMS);
+          await waitForDecodeQueue(decoder);
+          decoder.decode(
+            new EncodedAudioChunkClass({
+              type: 'key',
+              timestamp: sample.timestampMicros,
+              duration: sample.durationMicros,
+              data: sample.data,
+            })
+          );
+        }
+        await decoder.flush();
+        await queue.drain();
+      } finally {
+        closeQuietly(decoder);
+      }
     }
 
-    await audioEncoder.flush();
-    if (encoderError) throw encoderError;
+    if (!encoder) {
+      throw new EdgeUnsupportedError('The audio track decoded to no audio the edge worker can encode.');
+    }
+    await encoder.flush();
+    queue.throwIfFailed();
+  } catch (error) {
+    queue.fail(error);
+    flowController.reset();
+    throw error;
   } finally {
-    audioEncoder.close();
+    if (encoder) closeQuietly(encoder);
+    // Every decoded block still queued is closed before the failure reaches the caller
+    await queue.settle();
   }
+
+  if (chunks.length === 0) {
+    throw new EdgeUnsupportedError('The AudioEncoder produced no output for the audio track.');
+  }
+  return { chunks, decoderConfig: outputConfig, sampleRate: encodedRate, channels: encodedChannels };
 }
 
 /**
@@ -1651,33 +1854,6 @@ export function deriveFrameRate(samples: ReadonlyArray<DemuxedMediaSample>): num
   throw new EdgeUnsupportedError('The video track carries no timing the edge worker can derive a frame rate from.');
 }
 
-interface ResolvedAudioParams {
-  sampleRate: number;
-  channels: number;
-}
-
-/**
- * Sample rate and channel count come from the demuxed audio. The edge encoders neither resample nor mix
- * channels, so a request for different values is left to the server engine.
- */
-function resolveAudioParams(track: DemuxedTrackInfo, options: WebCodecsConversionRequest['options'] = {}): ResolvedAudioParams {
-  const { sampleRate, channels } = track;
-  if (!sampleRate || !channels) {
-    throw new EdgeUnsupportedError('The audio track does not state its sample rate and channel count.');
-  }
-  if (options.audioSampleRate !== undefined && options.audioSampleRate !== sampleRate) {
-    throw new EdgeUnsupportedError(
-      `Resampling ${sampleRate} Hz audio to ${options.audioSampleRate} Hz is not available at the edge.`
-    );
-  }
-  if (options.audioChannels !== undefined && options.audioChannels !== channels) {
-    throw new EdgeUnsupportedError(
-      `Changing ${channels} audio channels to ${options.audioChannels} is not available at the edge.`
-    );
-  }
-  return { sampleRate, channels };
-}
-
 /** Maps an encoder's 0..1 fraction onto the percent range `from`..`to` of the whole conversion. */
 function scaledProgress(
   onProgress: ((progress: number) => void) | undefined,
@@ -1714,34 +1890,26 @@ async function convertVideoTrack(
   const audioTrack = demuxedTrack.audioTrack;
   const hasAudio = Boolean(audioTrack && audioTrack.samples.length > 0);
   const videoEnd = hasAudio ? PROGRESS_VIDEO_ENCODED_WITH_AUDIO : PROGRESS_ENCODED;
-  const encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
-  await encodeFramesHardware(
+  const video = await encodeVideoTrack(
     config.codec,
     width,
     height,
     framerate,
     options.videoBitrate || DEFAULT_VIDEO_BITRATE_BPS,
     flowController,
-    encodedChunks,
     demuxedTrack,
     scaledProgress(onProgress, PROGRESS_INPUT_READ, videoEnd)
   );
 
   // Audio track preservation during video transcoding
-  const encodedAudioChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
-  let audioParams: ResolvedAudioParams | undefined;
-
+  let audio: AudioEncodeResult | undefined;
   if (audioTrack && hasAudio) {
-    assertAudioPlatformSupport();
-    audioParams = resolveAudioParams(audioTrack, options);
     const audioCodec = targetFormat === 'webm' ? 'opus' : 'mp4a.40.2';
-    await encodeAudioHardware(
+    audio = await encodeAudioTrack(
       audioCodec,
-      audioParams.sampleRate,
-      audioParams.channels,
       options.audioBitrate || DEFAULT_AUDIO_BITRATE_BPS,
+      { sampleRate: options.audioSampleRate, channels: options.audioChannels },
       flowController,
-      encodedAudioChunks,
       audioTrack,
       scaledProgress(onProgress, PROGRESS_VIDEO_ENCODED_WITH_AUDIO, PROGRESS_ENCODED)
     );
@@ -1751,12 +1919,12 @@ async function convertVideoTrack(
 
   const finalBytes = muxFinalMedia(
     targetFormat,
-    encodedChunks,
+    video.chunks,
     width,
     height,
-    audioParams?.sampleRate,
-    audioParams?.channels,
-    encodedAudioChunks,
+    audio?.sampleRate,
+    audio?.channels,
+    audio?.chunks ?? [],
     options.codec
   );
 
@@ -1777,16 +1945,12 @@ async function convertAudioTrack(
   if (!audioTrack || audioTrack.samples.length === 0) {
     throw new EdgeUnsupportedError('The input has no audio track to convert to an audio container.');
   }
-  const { sampleRate, channels } = resolveAudioParams(audioTrack, options);
 
-  const encodedChunks: Array<{ data: Uint8Array; timestampMicros: number; isKeyFrame: boolean }> = [];
-  await encodeAudioHardware(
+  const audio = await encodeAudioTrack(
     config.codec,
-    sampleRate,
-    channels,
     options.audioBitrate || DEFAULT_AUDIO_BITRATE_BPS,
+    { sampleRate: options.audioSampleRate, channels: options.audioChannels },
     flowController,
-    encodedChunks,
     audioTrack,
     scaledProgress(onProgress, PROGRESS_INPUT_READ, PROGRESS_ENCODED)
   );
@@ -1794,7 +1958,7 @@ async function convertAudioTrack(
   onProgress?.(PROGRESS_MUXING);
 
   // Audio-only targets carry no picture, so the frame size is not used.
-  const finalBytes = muxFinalMedia(targetFormat, encodedChunks, 0, 0, sampleRate, channels, [], options.codec);
+  const finalBytes = muxFinalMedia(targetFormat, audio.chunks, 0, 0, audio.sampleRate, audio.channels, [], options.codec);
 
   onProgress?.(PROGRESS_DONE);
   return { buffer: copyToArrayBuffer(finalBytes), mimeType: config.mimeType };

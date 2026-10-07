@@ -61,3 +61,32 @@ export function testPatternInput(spec: VideoSourceSpec): string[] {
 export function sineInput(sampleRate: number, seconds: number): string[] {
   return ['-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=${sampleRate}:duration=${seconds}`];
 }
+
+const H264_ARGS = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-bf', '2', '-g', '12'];
+
+/** 2 s of 320x240 25 fps H.264 with B-frames and 44.1 kHz mono AAC-LC; `extra` are output arguments. */
+export function h264AacMp4(extra: string[] = []): Buffer {
+  requireEncoders('libx264', 'aac');
+  return runFfmpeg(
+    [
+      ...testPatternInput({ width: 320, height: 240, fps: 25, seconds: 2 }),
+      ...sineInput(44100, 2),
+      ...H264_ARGS,
+      '-c:a', 'aac', '-shortest',
+      ...extra,
+    ],
+    'mp4'
+  );
+}
+
+/** ISO/IEC 14496-3 sampling_frequency_index order. */
+const AAC_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+
+/** The two-byte AudioSpecificConfig of AAC-LC, built from the stream facts the reference probe reports. */
+export function aacLcSpecificConfig(sampleRate: number, channels: number): Uint8Array {
+  const index = AAC_RATES.indexOf(sampleRate);
+  if (index < 0) throw new Error(`no AAC sampling frequency index for ${sampleRate} Hz`);
+  const AAC_LC = 2;
+  const bits = (AAC_LC << 11) | (index << 7) | (channels << 3);
+  return Uint8Array.from([bits >> 8, bits & 0xff]);
+}
