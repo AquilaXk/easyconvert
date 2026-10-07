@@ -9,6 +9,11 @@ import {
   PDFArray,
   PDFDict,
   PDFString,
+  type PDFRef,
+  concatTransformationMatrix,
+  drawObject,
+  popGraphicsState,
+  pushGraphicsState,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 import {
@@ -24,6 +29,7 @@ import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './o
 import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
 import { placeWords, writeTextLayer } from './ocr-text-layer';
+import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
 /** The first allocated CID; CID 0 is reserved for .notdef. */
 const FIRST_TEXT_LAYER_CID = 1;
@@ -1604,7 +1610,8 @@ export async function createLosslessSandwichPdfFromImage(
   scannedImageBuffer: Buffer | Uint8Array,
   ocrResult: OcrResult,
   options: ConversionOptions = {},
-  title: string = 'Searchable Document'
+  title: string = 'Searchable Document',
+  imagePlan: PdfImagePlan | null = null
 ): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle(title);
@@ -1617,22 +1624,34 @@ export async function createLosslessSandwichPdfFromImage(
     scannedImageBuffer[1] === 0xd8 &&
     scannedImageBuffer[2] === 0xff;
 
-  let embeddedImage;
-  if (isJpg) {
-    embeddedImage = await doc.embedJpg(scannedImageBuffer);
+  // A JPEG is embedded as its own DCT data, and a PNG as its own compressed rows when the caller planned that
+  // (pdf-image-passthrough.ts, which needs Node and so stays out of this browser-safe module); any other PNG is
+  // decoded and re-encoded.
+  let imageRef: PDFRef;
+  let imgWidth: number;
+  let imgHeight: number;
+  if (imagePlan !== null) {
+    imageRef = embedImagePlan(doc, imagePlan);
+    imgWidth = imagePlan.width;
+    imgHeight = imagePlan.height;
   } else {
-    embeddedImage = await doc.embedPng(scannedImageBuffer);
+    const embeddedImage = isJpg ? await doc.embedJpg(scannedImageBuffer) : await doc.embedPng(scannedImageBuffer);
+    imageRef = embeddedImage.ref;
+    imgWidth = embeddedImage.width;
+    imgHeight = embeddedImage.height;
   }
-
-  const imgWidth = embeddedImage.width;
-  const imgHeight = embeddedImage.height;
   const { dpi } = ocrResult.imageDpi ?? resolveImageDpi(scannedImageBuffer);
   const pointsPerPixel = POINTS_PER_INCH / dpi;
   const pageWidth = imgWidth * pointsPerPixel;
   const pageHeight = imgHeight * pointsPerPixel;
 
   const page = doc.addPage([pageWidth, pageHeight]);
-  page.drawImage(embeddedImage, { x: 0, y: 0, width: pageWidth, height: pageHeight });
+  page.pushOperators(
+    pushGraphicsState(),
+    concatTransformationMatrix(pageWidth, 0, 0, pageHeight, 0, 0),
+    drawObject(page.node.newXObject('Image', imageRef)),
+    popGraphicsState()
+  );
 
   // The result's boxes are in the pixels of the scan it was made from.
   injectInvisibleTextLayer(

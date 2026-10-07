@@ -41,6 +41,7 @@ import {
   type OcrOrientation,
 } from './ocr-osd';
 import { resolveImageDpi } from './ocr-dpi';
+import { hasPngSignature, planPngPassthrough } from './pdf-image-passthrough';
 import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
@@ -430,7 +431,11 @@ export async function generateSearchablePdf(
   options: ConversionOptions = {},
   title = 'Searchable Document'
 ): Promise<Buffer> {
-  return createLosslessSandwichPdfFromImage(await uprightImage(scannedImageBuffer), ocrResult, options, title);
+  const page = await uprightImage(scannedImageBuffer);
+  // A PNG page goes into the PDF as its own compressed rows (and a bitonal one as CCITT G4) instead of being decoded
+  // and compressed again; a page the plan cannot cover is decoded as before.
+  const imagePlan = hasPngSignature(page) ? planPngPassthrough(page) : null;
+  return createLosslessSandwichPdfFromImage(page, ocrResult, options, title, imagePlan);
 }
 
 /** EXIF orientation value for pixels that are already stored upright. */
