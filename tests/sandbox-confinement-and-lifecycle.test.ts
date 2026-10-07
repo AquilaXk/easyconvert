@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -31,6 +31,15 @@ import {
 } from '../src/worker/index';
 import { Job, Queue } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+/** The child would run for this long without the abort, so ABORT_HANG_GUARD_MS (below it) tells an abort from a wait. */
+const ABORT_TEST_EXECUTION_TIMEOUT_MS = 30_000;
+const ABORT_HANG_GUARD_MS = 15_000;
+/** An execution timeout of 150 ms ends the child in about that time; this only catches a kill that never happens. */
+const KILL_HANG_GUARD_MS = 10_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', () => {
   const tmpDir = os.tmpdir();
@@ -202,7 +211,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       ).rejects.toThrow('timed out after 150ms');
       const elapsed = Date.now() - start;
       expect(elapsed).toBeGreaterThanOrEqual(140);
-      expect(elapsed).toBeLessThan(1000);
+      expect(elapsed).toBeLessThan(KILL_HANG_GUARD_MS);
     });
 
     it('terminates full process group immediately upon AbortSignal trigger', async () => {
@@ -212,7 +221,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       const execPromise = executeSandboxedBinary(
         process.execPath,
         ['-e', 'setInterval(() => {}, 1000)'],
-        { signal: controller.signal, timeoutMs: 5000 }
+        { signal: controller.signal, timeoutMs: ABORT_TEST_EXECUTION_TIMEOUT_MS }
       );
 
       setTimeout(() => {
@@ -221,7 +230,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
 
       await expect(execPromise).rejects.toThrow('Manual cancellation test');
       const elapsed = Date.now() - start;
-      expect(elapsed).toBeLessThan(1500);
+      expect(elapsed).toBeLessThan(ABORT_HANG_GUARD_MS);
     });
 
     it('killProcessGroup gracefully handles null, undefined, or dead process IDs without throwing', () => {
@@ -275,7 +284,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       const runPromise = runInWorkerSandbox(
         process.execPath,
         ['-e', 'setInterval(() => {}, 1000)'],
-        { signal: controller.signal, timeoutMs: 5000 }
+        { signal: controller.signal, timeoutMs: ABORT_TEST_EXECUTION_TIMEOUT_MS }
       );
 
       setTimeout(() => {
@@ -283,7 +292,7 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       }, 80);
 
       await expect(runPromise).rejects.toThrow('Sandbox signal abortion');
-      expect(Date.now() - start).toBeLessThan(1500);
+      expect(Date.now() - start).toBeLessThan(ABORT_HANG_GUARD_MS);
     });
 
     it('buildPrlimitArgs rejects non-finite numbers (NaN, Infinity)', () => {

@@ -17,6 +17,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
 } from '../src/lib/types';
+import { measureInterleaved } from './helpers/timing';
 import { oracleTest } from './helpers/oracle-test';
 import {
   extractFontsWithExternalPdffonts,
@@ -213,20 +214,18 @@ const A4_LANDSCAPE = /Page size:\s+841\.89 x 595\.(?:28|3\d*) pts/;
 const A4_PORTRAIT = /Page size:\s+595\.(?:28|3\d*) x 841\.89 pts/;
 
 /**
- * Times `run` on a small and a large input. Growth well under the square of the size ratio shows
- * the work is linear (a quadratic step would grow by the square); a generous ceiling catches
- * hangs. Used instead of tight wall-clock budgets, which trip under parallel test load.
+ * Times `run` on a small and a large input, interleaved and best of GROWTH_PASSES (tests/helpers/timing.ts), so
+ * load on the runner hits both sizes. Growth well under the square of the size ratio shows the work is linear
+ * (a quadratic step would grow by the square); a generous ceiling catches hangs. Used instead of wall-clock
+ * budgets, which trip under parallel test load.
  */
+const GROWTH_PASSES = 2;
 async function measureGrowth<T>(run: (size: number) => Promise<T>, small: number, large: number): Promise<{ growth: number; largeMs: number; result: T }> {
-  const smallStarted = Date.now();
-  await run(small);
-  const smallMs = Date.now() - smallStarted;
-  const largeStarted = Date.now();
-  const result = await run(large);
-  const largeMs = Date.now() - largeStarted;
-  return { growth: largeMs / Math.max(smallMs, 1), largeMs, result };
+  const measurement = await measureInterleaved(() => run(small), () => run(large), GROWTH_PASSES);
+  return { growth: measurement.ratio, largeMs: measurement.largeMs, result: measurement.largeResult };
 }
 
+/** Hang guard only: a healthy conversion in these tests takes well under a second. */
 const GROWTH_CEILING_MS = 10_000;
 
 /** Settles a promise into its value or its rejection reason. */
@@ -561,22 +560,18 @@ describe('In-process PDF layout limits', () => {
     const SMALL_BYTES = 256 * 1024;
     const TOKEN_BYTES = 4 * SMALL_BYTES;
     const MAX_GROWTH = 8;
-    const CEILING_MS = 10_000;
-    const timed = async (bytes: number): Promise<{ elapsed: number; pdf: Buffer }> => {
-      const started = Date.now();
-      const result = await convertFile(Buffer.from('a'.repeat(bytes), 'utf-8'), 'txt', 'pdf', {}, 'token.txt');
-      return { elapsed: Date.now() - started, pdf: result.buffer };
-    };
-    const small = await timed(SMALL_BYTES);
-    const large = await timed(TOKEN_BYTES);
-    const growth = large.elapsed / Math.max(small.elapsed, 1);
-    expect({ linear: growth < MAX_GROWTH, underCeiling: large.elapsed < CEILING_MS, growth, ms: large.elapsed }).toEqual({
+    const { growth, largeMs, result: large } = await measureGrowth(
+      async (bytes) => (await convertFile(Buffer.from('a'.repeat(bytes), 'utf-8'), 'txt', 'pdf', {}, 'token.txt')).buffer,
+      SMALL_BYTES,
+      TOKEN_BYTES
+    );
+    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, ms: largeMs }).toEqual({
       linear: true,
       underCeiling: true,
       growth,
-      ms: large.elapsed,
+      ms: largeMs,
     });
-    const extracted = withoutWhitespace(pdfText(large.pdf));
+    const extracted = withoutWhitespace(pdfText(large));
     expect(extracted.length).toBe(TOKEN_BYTES);
     expect(extracted).toBe('a'.repeat(TOKEN_BYTES));
   }, 120_000);
@@ -586,27 +581,23 @@ describe('In-process PDF layout limits', () => {
     const SMALL = 25_000;
     const LARGE = 8 * SMALL;
     const MAX_GROWTH = 20;
-    const CEILING_MS = 10_000;
     for (const [label, whitespace] of [
       ['spaces', ' '],
       ['tabs', '\t'],
     ] as const) {
-      const timed = async (count: number): Promise<{ elapsed: number; pdf: Buffer }> => {
-        const started = Date.now();
-        const result = await convertFile(Buffer.from(`start${whitespace.repeat(count)}end`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt');
-        return { elapsed: Date.now() - started, pdf: result.buffer };
-      };
-      const small = await timed(SMALL);
-      const large = await timed(LARGE);
-      const growth = large.elapsed / Math.max(small.elapsed, 1);
-      expect({ label, linear: growth < MAX_GROWTH, underCeiling: large.elapsed < CEILING_MS, growth, ms: large.elapsed }).toEqual({
+      const { growth, largeMs, result: large } = await measureGrowth(
+        async (count) => (await convertFile(Buffer.from(`start${whitespace.repeat(count)}end`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt')).buffer,
+        SMALL,
+        LARGE
+      );
+      expect({ label, linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, ms: largeMs }).toEqual({
         label,
         linear: true,
         underCeiling: true,
         growth,
-        ms: large.elapsed,
+        ms: largeMs,
       });
-      expect(withoutWhitespace(pdfText(large.pdf))).toBe('startend');
+      expect(withoutWhitespace(pdfText(large))).toBe('startend');
     }
   }, 120_000);
 

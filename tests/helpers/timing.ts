@@ -189,6 +189,30 @@ export async function expectSizeIndependent<R = unknown>(
   });
 }
 
+/** How much slower than its in-process reference a candidate may be (a cheap pass versus an adversarial pass). */
+export const REFERENCE_RATIO_BOUND = 4;
+
+/**
+ * Asserts that `candidate` costs no more than `maxRatio` times what `reference` costs, both measured in this
+ * process, interleaved and best of the passes: "a request carrying the adversarial option is not slower than
+ * the same request carrying a plain one". Returns the measurement (largeResult is the candidate's result).
+ */
+export async function expectNoSlowerThanReference<R = unknown>(
+  label: string,
+  reference: () => unknown,
+  candidate: () => R | Promise<R>,
+  options: { maxRatio?: number; passes?: number } = {}
+): Promise<ScalingMeasurement<R>> {
+  const maxRatio = options.maxRatio ?? REFERENCE_RATIO_BOUND;
+  const measurement = await measureInterleaved(reference, candidate, options.passes);
+  const baselineMs = Math.max(measurement.smallMs, SIZE_INDEPENDENT_FLOOR_MS);
+  expect(
+    measurement.largeMs / baselineMs,
+    `${label}: the candidate took ${measurement.largeMs.toFixed(2)} ms against ${measurement.smallMs.toFixed(2)} ms for the reference`
+  ).toBeLessThanOrEqual(maxRatio);
+  return measurement;
+}
+
 /**
  * Default hang guard. Work that is linear in a megabyte-sized input finishes in milliseconds, work that is
  * quadratic needs minutes: 10 s separates them by orders of magnitude on any runner.

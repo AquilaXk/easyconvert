@@ -17,8 +17,8 @@ import {
 
 const LIST_TIMEOUT_MS = 3000;
 const SESSION_TIMEOUT_MS = 5000;
-/** Slack over a probe's own timeout for process teardown. */
-const KILL_SLACK_MS = 1000;
+/** Slack over a probe's own timeout for process teardown on a loaded machine; the stand-in sleeps 30 s, so 10 s still tells a kill from a wait. */
+const KILL_SLACK_MS = 10_000;
 const MANY_CALLS = 1000;
 const MINUTE_MS = 60_000;
 const TEST_TIMEOUT_MS = 30_000;

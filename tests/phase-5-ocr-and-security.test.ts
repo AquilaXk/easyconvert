@@ -27,6 +27,10 @@ import {
   safeExtractAllText,
   safeFindColor,
 } from '../src/lib/conversions/office';
+import { expectLinearOnInputs, expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+
+/** Unclosed openers in the smaller of the two ReDoS inputs. */
+const UNCLOSED_OPENERS = 20_000;
 
 /**
  * Extracts and decompresses all stream contents from a PDF buffer to inspect operators.
@@ -556,38 +560,35 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(t2?.content).toBe('Security Hardening');
     });
 
-    it('safely bounds deeply nested XML hierarchies (64+ levels) without stack overflow', () => {
+    it('safely bounds deeply nested XML hierarchies (64+ levels) without stack overflow', async () => {
       let deepXml = '<w:t>Deeply Nested Secret</w:t>';
       for (let i = 0; i < 70; i++) {
         deepXml = `<layer id="${i}">${deepXml}</layer>`;
       }
 
-      const startTime = Date.now();
       // Default maxDepth = 64 halts at 64th nested level to prevent recursion attacks
-      const firstLayer = safeExtractFirstXmlElement(deepXml, 'layer');
-      const customDepthLayer = safeExtractFirstXmlElement(deepXml, 'layer', { maxDepth: 100 });
-      const textEl = safeExtractFirstXmlElement(deepXml, 'w:t', { maxDepth: 100 });
-      const elapsed = Date.now() - startTime;
+      const { firstLayer, customDepthLayer, textEl } = await expectNoHang('nested extraction', () => ({
+        firstLayer: safeExtractFirstXmlElement(deepXml, 'layer'),
+        customDepthLayer: safeExtractFirstXmlElement(deepXml, 'layer', { maxDepth: 100 }),
+        textEl: safeExtractFirstXmlElement(deepXml, 'w:t', { maxDepth: 100 }),
+      }));
 
       expect(firstLayer?.attrs.id).toBe('64');
       expect(customDepthLayer?.attrs.id).toBe('69');
       expect(textEl?.content).toBe('Deeply Nested Secret');
-      expect(elapsed).toBeLessThan(100); // Must complete instantly
     });
 
-    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines', () => {
-      // Classic ReDoS trigger for /<p:grpSp[\s\S]*?<\/p:grpSp>/:
-      // A huge repeating sequence of opening tags with no closing tag
-      const hostileUnclosed = '<p:grpSp>'.repeat(5000) + 'A'.repeat(50000);
-
-      const start = Date.now();
-      const result = safeExtractXmlElements(hostileUnclosed, 'p:grpSp');
-      const elapsed = Date.now() - start;
-
-      // Because there are no matching closing tags, it must abort gracefully in linear time
-      expect(result.length).toBe(0);
-      expect(elapsed).toBeLessThan(500); // Strict linear bound (regex would hang or timeout)
-    });
+    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines', async () => {
+      // Classic ReDoS trigger for /<p:grpSp[\s\S]*?<\/p:grpSp>/: a huge repeating sequence of opening tags with no
+      // closing tag. Because there are no matching closing tags, it must abort gracefully in linear time:
+      // 4x the openers may cost at most 8x the time, a backtracking pattern 16x (tests/helpers/timing.ts).
+      const hostileUnclosed = (openers: number) => '<p:grpSp>'.repeat(openers) + 'A'.repeat(openers * 10);
+      const { largeResult } = await expectLinearOnInputs('unclosed grpSp', (xml: string) => safeExtractXmlElements(xml, 'p:grpSp'), {
+        small: hostileUnclosed(UNCLOSED_OPENERS),
+        large: hostileUnclosed(UNCLOSED_OPENERS * SCALING_FACTOR),
+      });
+      expect(largeResult.length).toBe(0);
+    }, SCALING_TEST_TIMEOUT_MS);
 
     it('preserves outer table content when parsing nested OpenXML tables', () => {
       const nestedTableXml = `

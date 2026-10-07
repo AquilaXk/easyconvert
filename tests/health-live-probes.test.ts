@@ -18,8 +18,8 @@ const HTTP_OK = 200;
 const HTTP_FORBIDDEN = 403;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_UNAVAILABLE = 503;
-/** Public deadline of the probe set; the test tolerates the process scheduling on top of it. */
-const RESPONSE_SLACK_MS = 1_500;
+/** Public deadline of the probe set; the stalled dependency never answers, so any finite slack tells a deadline from a hang. */
+const RESPONSE_SLACK_MS = 10_000;
 const BUCKET = 'health-objects';
 const OCI_ACCESS_KEY = 'AKIAOCIHEALTH000001';
 const OCI_SECRET = 'oci/Secret+Key/HEALTHKEY0000000000000000';

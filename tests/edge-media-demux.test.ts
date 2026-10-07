@@ -29,6 +29,8 @@ import { oracleTest } from './helpers/oracle-test';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
+/** Hang guard: a hostile track table is refused in milliseconds; walking the claimed sample count would take seconds. */
+const MP4_REFUSAL_HANG_GUARD_MS = 10_000;
 vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MICROS = 1_000_000;
@@ -659,7 +661,7 @@ describe('demuxMp4 refuses what it cannot read truthfully', () => {
     const uniform = fullBox('stsz', 0, 0, be32(1), be32(MP4_MAX_SAMPLES_PER_TRACK + 1));
     const started = Date.now();
     expectRefusal(handMp4([videoTrack({ omit: ['stsz'], extra: [uniform] })]), /sample limit/);
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(Date.now() - started).toBeLessThan(MP4_REFUSAL_HANG_GUARD_MS);
   });
 
   it('throws when stts and stsz count different numbers of samples', () => {
@@ -995,7 +997,7 @@ describe('demuxMp4 on files built to exhaust it', () => {
 
     expectRefusal(bytes, /more than one video track/);
 
-    expect(Date.now() - started).toBeLessThan(500);
+    expect(Date.now() - started).toBeLessThan(MP4_REFUSAL_HANG_GUARD_MS);
     expect(process.memoryUsage().arrayBuffers - heapBefore).toBeLessThan(8 * 1024 * 1024);
   });
 

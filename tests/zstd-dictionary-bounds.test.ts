@@ -34,6 +34,7 @@ import {
   rleTableSequencesBlock,
   type TestBlock,
 } from './helpers/zstd-frames';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -41,7 +42,9 @@ vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIB = 1024 * 1024;
 const BLOCK_MAX = 128 * 1024;
-const FAST_REJECTION_MS = 200;
+const LOW_ENTROPY_BASE_BYTES = 64 * 1024;
+/** Hang guard only: a hostile block is refused in about a millisecond; decoding it in full would take far longer. */
+const REJECTION_HANG_GUARD_MS = 10_000;
 const RLE_BLOCK_SIZE_MAX = 2 ** 21 - 1;
 const FLOOR_BLOCKS = (32 * MIB) / BLOCK_MAX;
 
@@ -98,7 +101,7 @@ describe('dictionary frames decode through the bounded block decoder', () => {
       });
       expect(error).toBeInstanceOf(ConversionFailedError);
       expect((error as Error).message).toMatch(/block maximum|declared content size/);
-      expect(ms).toBeLessThan(FAST_REJECTION_MS);
+      expect(ms).toBeLessThan(REJECTION_HANG_GUARD_MS);
     });
   }
 
@@ -110,7 +113,7 @@ describe('dictionary frames decode through the bounded block decoder', () => {
       error = captureError(() => decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV));
     });
     expect(error).toBeInstanceOf(ConversionFailedError);
-    expect(ms).toBeLessThan(FAST_REJECTION_MS);
+    expect(ms).toBeLessThan(REJECTION_HANG_GUARD_MS);
   });
 
   it('rejects RLE and raw blocks above the block maximum without allocating them', () => {
@@ -144,17 +147,18 @@ describe('dictionary frames decode through the bounded block decoder', () => {
     expect((error as Error).message).toMatch(/Archive bomb detected: compression ratio \(\d+\.\d:1\) exceeds 100:1 limit/);
   });
 
-  it('decodes tens of thousands of sequences in linear time', () => {
+  it('decodes tens of thousands of sequences in linear time', async () => {
     const count = 30000;
-    const frame = dictFrame([compressedBlock(rleTableSequencesBlock(count, 0x61))]);
-    let decoded: Buffer = Buffer.alloc(0);
-    const ms = elapsedMs(() => {
-      decoded = decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV);
-    });
+    const frameOf = (sequences: number) => dictFrame([compressedBlock(rleTableSequencesBlock(sequences, 0x61))]);
+    // 4x the sequences may cost at most 8x the time (tests/helpers/timing.ts); a quadratic decoder costs 16x.
+    const { largeResult: decoded } = await expectLinearOnInputs(
+      'dictionary sequences',
+      (frame: Buffer) => decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV),
+      { small: frameOf(count / SCALING_FACTOR), large: frameOf(count) }
+    );
     expect(decoded.length).toBe(count * 4);
     expect(decoded.every((b) => b === 0x61)).toBe(true);
-    expect(ms).toBeLessThan(1000);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('fails dictionary id mismatches, bad magic and tampered checksums with typed errors', () => {
     const payload = Buffer.from('{"id":1,"name":"typed","status":"active"}\n'.repeat(20));
@@ -180,7 +184,7 @@ describe('dictionary frames decode through the bounded block decoder', () => {
         ConversionFailedError
       );
     });
-    expect(ms).toBeLessThan(FAST_REJECTION_MS);
+    expect(ms).toBeLessThan(REJECTION_HANG_GUARD_MS);
   });
 });
 
@@ -270,18 +274,24 @@ describe('dictionary compression stays inside the 128 KiB block maximum', () => 
     });
   });
 
-  it('bounds the match search so low-entropy input does not make compression quadratic', () => {
-    const rng = makeRng(2024);
-    const input = Buffer.alloc(256 * 1024);
-    for (let i = 0; i < input.length; i++) input[i] = rng() < 0.5 ? 0x30 : 0x31;
-    let frame: Buffer = Buffer.alloc(0);
-    const ms = elapsedMs(() => {
-      frame = compressWithZstdDict(input, DATA_DICTIONARY_JSON_CSV);
-    });
+  it('bounds the match search so low-entropy input does not make compression quadratic', async () => {
+    const lowEntropy = (bytes: number) => {
+      const rng = makeRng(2024);
+      const input = Buffer.alloc(bytes);
+      for (let i = 0; i < input.length; i++) input[i] = rng() < 0.5 ? 0x30 : 0x31;
+      return input;
+    };
+    // 4x the input may cost at most 8x the time; an unbounded match search costs 16x (tests/helpers/timing.ts).
+    const small = lowEntropy(LOW_ENTROPY_BASE_BYTES);
+    const input = lowEntropy(LOW_ENTROPY_BASE_BYTES * SCALING_FACTOR);
+    const { largeResult: frame } = await expectLinearOnInputs(
+      'low-entropy compression',
+      (data: Buffer) => compressWithZstdDict(data, DATA_DICTIONARY_JSON_CSV),
+      { small, large: input }
+    );
     assertFrameChecksum(frame, input);
     expect(Buffer.compare(decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV), input)).toBe(0);
-    expect(ms).toBeLessThan(2000);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   oracleTest('the zstd CLI decodes multi-block frames made against a raw-content dictionary', ['zstd'], () => {
     const bin = getZstdBinaryPath();

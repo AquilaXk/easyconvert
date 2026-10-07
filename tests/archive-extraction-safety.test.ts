@@ -39,8 +39,8 @@ vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const LIMITS = { MAX_FILES: 50_000, MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, MAX_RATIO: 100 };
 const MIB = 1024 * 1024;
-/** Generous wall-clock bound for walking 50,000 entries; a quadratic walk would exceed it by far. */
-const WALK_TIME_BUDGET_MS = 30_000;
+/** Hang guard only: walking 50,000 entries takes seconds; a quadratic walk takes minutes. */
+const WALK_HANG_GUARD_MS = 30_000;
 
 function file(entryPath: string, sizeBytes: number | null = 1): ListedArchiveEntry {
   return { path: entryPath, isDirectory: false, sizeBytes, linkKind: null, isSpecial: false };
@@ -521,7 +521,7 @@ describe('assertExtractionContained', () => {
 
     const tree = assertExtractionContained(root, 50_000, LIMITS);
 
-    expect(performance.now() - started).toBeLessThan(WALK_TIME_BUDGET_MS);
+    expect(performance.now() - started).toBeLessThan(WALK_HANG_GUARD_MS);
     expect(tree.entryCount).toBe(50_000);
     expect(tree.files).toHaveLength(49_900);
   }, 60_000);

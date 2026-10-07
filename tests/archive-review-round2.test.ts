@@ -27,7 +27,7 @@ import {
   createHostileWorkspace,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
-import { expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 
 const LINEAR_PROBE_SMALL = 12_250;
 const LINEAR_PROBE_LARGE = 49_000;
@@ -88,15 +88,18 @@ describe('NEW-1: implied directories count toward the entry cap', () => {
     expect(assertSafeArchiveListing([entry('./a/b'), entry('a//b/', true)], 1_000, small).entryCount).toBe(2);
   });
 
-  it('rejects 300 entries that each imply 254 directories, quickly', () => {
-    const entries = Array.from({ length: FAN_ENTRIES }, (_, i) => entry(`${i}/${'d/'.repeat(FAN_DEPTH)}f`));
-    const started = performance.now();
-
-    const reason = reasonOf(() => assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS));
-
-    expect(reason).toBe('entry-count');
-    expect(performance.now() - started).toBeLessThan(2_000);
-  });
+  it('rejects 300 entries that each imply 254 directories after the work of counting them, not of creating them', async () => {
+    const fan = (entries: number) => Array.from({ length: entries }, (_, i) => entry(`${i}/${'d/'.repeat(FAN_DEPTH)}f`));
+    // 300 entries imply about 76,000 directories, over the 50,000 cap. Linear accounting costs 4x for 4x the
+    // entries (tests/helpers/timing.ts); creating or deduplicating directories pairwise would cost 16x.
+    const { largeResult } = await expectLinearOnInputs(
+      'implied directory accounting',
+      (entries: ListedArchiveEntry[]) => settle(() => assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS)),
+      { small: fan(FAN_ENTRIES), large: fan(FAN_ENTRIES * SCALING_FACTOR) }
+    );
+    expect(largeResult.ok).toBe(false);
+    expect(!largeResult.ok && (largeResult.error as { reason?: string }).reason).toBe('entry-count');
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('accounts 49,000 deep entries under one prefix in linear time', async () => {
     const shared = 'p/'.repeat(100);

@@ -217,7 +217,14 @@ describe('recognizeWithCli', () => {
       const elapsedMs = performance.now() - startedAt;
       // The call must really have taken long enough for a blocking implementation to show.
       expect(elapsedMs).toBeGreaterThan(MAX_EVENT_LOOP_STALL_MS);
-      expect(histogram.max / NS_PER_MS - HISTOGRAM_RESOLUTION_MS).toBeLessThan(MAX_EVENT_LOOP_STALL_MS);
+      // Reference: the same span spent idle, on the same loaded machine. A busy runner delays timers in both
+      // cases; only a blocked loop (a synchronous spawn holds it for the whole call) exceeds the reference.
+      const idle = monitorEventLoopDelay({ resolution: HISTOGRAM_RESOLUTION_MS });
+      idle.enable();
+      await new Promise((resolve) => setTimeout(resolve, elapsedMs));
+      idle.disable();
+      const stallBeyondIdleMs = (histogram.max - idle.max) / NS_PER_MS;
+      expect(stallBeyondIdleMs).toBeLessThan(MAX_EVENT_LOOP_STALL_MS);
     },
     TEST_TIMEOUT_MS
   );

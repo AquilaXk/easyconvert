@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
+import { expectNoSlowerThanReference } from './helpers/timing';
 
 /**
  * AVIF output fidelity. sharp 0.35 tunes lossy AVIF with perceptual (SSIMULACRA2-based) metrics by
@@ -88,7 +89,7 @@ describe('AVIF encoder throughput', () => {
   const LCG_INCREMENT = 12345;
   const LCG_MASK = 0x7fffffff;
   const LCG_SHIFT = 16;
-  const MAX_ENCODE_MS = 10_000;
+  const AVIF_PASSES = 1;
   const TEST_TIMEOUT_MS = 120_000;
 
   /** Smooth gradients with low-amplitude noise, the statistics of a camera picture. */
@@ -108,13 +109,20 @@ describe('AVIF encoder throughput', () => {
     return rgb;
   }
 
-  it('encodes a 4-megapixel photographic raster within the bound', async () => {
-    const png = await sharp(photographicRgb(), { raw: { width: SIDE, height: SIDE, channels: RGB_CHANNELS } }).png().toBuffer();
-    const start = performance.now();
-    const result = await convertFile(png, 'png', 'avif', {}, 'photo.png');
-    const elapsedMs = performance.now() - start;
-    const meta = await sharp(result.buffer).metadata();
+  it('encodes a 4-megapixel photographic raster about as fast as the encoder library does with its own defaults', async () => {
+    const raw = photographicRgb();
+    const rawOptions = { raw: { width: SIDE, height: SIDE, channels: RGB_CHANNELS } } as const;
+    const png = await sharp(raw, rawOptions).png().toBuffer();
+    // Reference: the same pixels through the library's default AVIF encode, measured in this process, interleaved
+    // with the conversion (tests/helpers/timing.ts). A converter that picked a far slower encoder effort would
+    // take several times as long; the machine's speed cancels out.
+    const { largeResult } = await expectNoSlowerThanReference(
+      'AVIF encode',
+      () => sharp(raw, rawOptions).avif().toBuffer(),
+      () => convertFile(png, 'png', 'avif', {}, 'photo.png'),
+      { passes: AVIF_PASSES }
+    );
+    const meta = await sharp(largeResult.buffer).metadata();
     expect({ width: meta.width, height: meta.height, format: meta.format }).toEqual({ width: SIDE, height: SIDE, format: 'heif' });
-    expect(elapsedMs).toBeLessThan(MAX_ENCODE_MS);
   }, TEST_TIMEOUT_MS);
 });
