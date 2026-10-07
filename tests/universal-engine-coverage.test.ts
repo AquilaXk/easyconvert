@@ -183,9 +183,9 @@ describe('Universal Engine Conversion Coverage', () => {
 
     // azw4 -> epub: a Print Replica book is a PDF inside a PalmDB container, not text. Plain text under the .azw4
     // name is refused with a typed error instead of becoming an EPUB of that text.
-    await expect(convertFile(docData, 'azw4', 'epub', {}, 'book.azw4')).rejects.toMatchObject({
+    await expect(convertFile(docData.length < 78 ? Buffer.concat([docData, Buffer.alloc(80)]) : docData, 'azw4', 'epub', {}, 'book.azw4')).rejects.toMatchObject({
       name: 'ConversionFailedError',
-      message: expect.stringMatching(/Print Replica book keeps its pages as a PDF/),
+      message: expect.stringMatching(/not a readable MOBI file/),
     });
 
     // et -> csv

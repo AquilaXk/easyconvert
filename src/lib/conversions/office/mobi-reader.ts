@@ -129,8 +129,17 @@ function trailingBytes(data: Buffer, flags: number): number {
   return total;
 }
 
-/** The plain text of a MOBI, AZW or AZW3 e-book. A book whose text records hold no text throws a typed error. */
-export function readMobiText(file: Buffer): string {
+/** The decompressed text records of an e-book, as stored, with what the headers say about them. */
+export interface MobiRawText {
+  bytes: Buffer;
+  /** Text encoding named by the MOBI header (1252 for a plain PalmDOC book). */
+  encoding: number;
+  /** False for a plain PalmDOC book, whose text is not markup. */
+  isMobi: boolean;
+}
+
+/** Reads and decompresses every text record of a MOBI, AZW, AZW3 or AZW4 book. */
+export function readMobiRawText(file: Buffer): MobiRawText {
   if (file.length < PALMDB_HEADER_BYTES) throw malformed('the file is shorter than a PalmDB header');
   const type = file.toString('latin1', PALMDB_TYPE_OFFSET, PALMDB_TYPE_OFFSET + 4);
   const creator = file.toString('latin1', PALMDB_CREATOR_OFFSET, PALMDB_CREATOR_OFFSET + 4);
@@ -182,10 +191,6 @@ export function readMobiText(file: Buffer): string {
       extraFlags = first.readUInt16BE(MOBI_EXTRA_FLAGS_OFFSET);
     }
   }
-  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) {
-    throw malformed(`text encoding ${encoding} is neither UTF-8 nor Windows-1252`);
-  }
-
   const parts: Buffer[] = [];
   let total = 0;
   for (let index = 1; index <= textRecords; index += 1) {
@@ -196,7 +201,15 @@ export function readMobiText(file: Buffer): string {
     if (total > MOBI_MAX_TEXT_BYTES) throw malformed(`the text is longer than the ${MOBI_MAX_TEXT_BYTES} byte limit`);
     parts.push(text);
   }
-  const bytes = Buffer.concat(parts);
+  return { bytes: Buffer.concat(parts), encoding, isMobi };
+}
+
+/** The plain text of a MOBI, AZW or AZW3 e-book. A book whose text records hold no text throws a typed error. */
+export function readMobiText(file: Buffer): string {
+  const { bytes, encoding, isMobi } = readMobiRawText(file);
+  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) {
+    throw malformed(`text encoding ${encoding} is neither UTF-8 nor Windows-1252`);
+  }
   const markup = encoding === ENCODING_UTF8 ? bytes.toString('utf-8') : decodeWindows1252(bytes);
   const withoutNulls = markup.replace(/\0/g, '');
   const text = isMobi ? htmlToText(withoutNulls) : withoutNulls.replace(/\r\n?/g, '\n').trim();

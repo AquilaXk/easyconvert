@@ -18,6 +18,8 @@ import { readRtfText } from './office/rtf-reader';
 import { readPptSlides } from './office/ppt-reader';
 import { readMobiText } from './office/mobi-reader';
 import { readPmlText } from './office/pml-reader';
+import { extractPrintReplicaPdf } from './office/print-replica';
+import { extract7zArchive, extractRarArchive } from './archive';
 import { htmlToText } from './office/html-text';
 import { decodeWindows1252 } from './office/windows-1252';
 import { EncryptedOfficeDocumentError } from './office/legacy-office-errors';
@@ -134,8 +136,16 @@ export async function convertOffice(
     return convertOpenDocumentGraphicSource(inputBuffer, src, tgt);
   }
 
-  // 12.4 AZW4, CBC, HTMLZ, TXTZ, PML, OEB (Ebooks)
-  if (['azw4', 'cbc', 'htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
+  // 12.35 AZW4 (Print Replica: a PDF inside a PalmDB container) and CBC (a collection of comic archives)
+  if (src === 'azw4') {
+    return viaPdf(await extractPrintReplicaPdf(inputBuffer), tgt, options, baseName);
+  }
+  if (src === 'cbc') {
+    return convertCbcSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 12.4 HTMLZ, TXTZ, PML, OEB (Ebooks)
+  if (['htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
     return convertGenericEbookSource(inputBuffer, src, tgt, options, baseName);
   }
 
@@ -7718,6 +7728,69 @@ export function compareNaturally(a: string, b: string): number {
   return a > b ? 1 : 0;
 }
 
+/** One page of a comic: its name in the archive and a reader that loads and size-checks its bytes. */
+interface ComicPage {
+  name: string;
+  read: () => Promise<Buffer>;
+}
+
+/** The page images of a ZIP comic archive in natural name order; each is read, size-checked and decoded only when bound. */
+function zipComicPages(zip: JSZip, label: string): ComicPage[] {
+  return Object.keys(zip.files)
+    .filter((name) => !zip.files[name].dir && CBZ_IMAGE_PATTERN.test(name) && !CBZ_JUNK_MEMBER_PATTERN.test(name))
+    .sort(compareNaturally)
+    .map((name) => ({
+      name: label === '' ? name : `${label}/${name}`,
+      read: async () => {
+        const declared = (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+        if (declared !== undefined && declared > CBZ_MAX_PAGE_BYTES) {
+          throw new ConversionFailedError(`CBZ page "${name}" declares ${declared} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+        }
+        return zip.files[name].async('nodebuffer');
+      },
+    }));
+}
+
+/**
+ * Binds comic pages into a PDF, one image per A4 page in the order given. A page that cannot be decoded, or no
+ * pages at all, fails with a typed 400 error; no page is replaced by text.
+ */
+async function bindComicPagesToPdf(pages: ComicPage[], format: string, baseName: string): Promise<ConversionResult> {
+  if (pages.length === 0) {
+    throw new ConversionFailedError(`The ${format} archive holds no page images.`);
+  }
+  if (pages.length > CBZ_MAX_PAGES) {
+    throw new ConversionFailedError(`The ${format} archive holds ${pages.length} pages, more than the ${CBZ_MAX_PAGES} page limit.`);
+  }
+
+  const doc = new PDFDocument({ autoFirstPage: false });
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', (err) => reject(err));
+  });
+
+  for (const comicPage of pages) {
+    // Pages are processed one at a time on purpose: each is decoded into memory.
+    const page = await decodeComicPage(await comicPage.read(), comicPage.name, format); // NOSONAR S9382: sequential to bound memory
+    doc.addPage({ size: 'A4' });
+    try {
+      doc.image(page, PDF_PAGE_MARGIN, PDF_PAGE_MARGIN, {
+        fit: [doc.page.width - 2 * PDF_PAGE_MARGIN, doc.page.height - 2 * PDF_PAGE_MARGIN],
+        align: 'center',
+        valign: 'center',
+      });
+    } catch (err) {
+      throw new ConversionFailedError(`${format} page "${comicPage.name}" cannot be embedded: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  doc.end();
+  const buffer = await done;
+  return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+}
+
 /**
  * Comic Book Zip (CBZ) source: a ZIP of page images. A comic has no text layer, so the only conversion is
  * binding the pages into a PDF, one image per page in natural name order. A page that cannot be decoded, or
@@ -7738,53 +7811,113 @@ async function convertCbzSource(
   } catch {
     throw new ConversionFailedError('The CBZ file is not a valid ZIP archive.');
   }
-  const imageNames = Object.keys(zip.files)
-    .filter((name) => !zip.files[name].dir && CBZ_IMAGE_PATTERN.test(name) && !CBZ_JUNK_MEMBER_PATTERN.test(name))
-    .sort(compareNaturally);
-  if (imageNames.length === 0) {
-    throw new ConversionFailedError('The CBZ archive holds no page images.');
-  }
-  if (imageNames.length > CBZ_MAX_PAGES) {
-    throw new ConversionFailedError(`The CBZ archive holds ${imageNames.length} pages, more than the ${CBZ_MAX_PAGES} page limit.`);
-  }
-
-  const doc = new PDFDocument({ autoFirstPage: false });
-  const chunks: Buffer[] = [];
-  const done = new Promise<Buffer>((resolve, reject) => {
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-  });
-
-  for (const name of imageNames) {
-    // Pages are processed one at a time on purpose: each is decoded into memory.
-    const page = await decodeCbzPage(zip, name); // NOSONAR S9382: sequential to bound memory
-    doc.addPage({ size: 'A4' });
-    try {
-      doc.image(page, PDF_PAGE_MARGIN, PDF_PAGE_MARGIN, {
-        fit: [doc.page.width - 2 * PDF_PAGE_MARGIN, doc.page.height - 2 * PDF_PAGE_MARGIN],
-        align: 'center',
-        valign: 'center',
-      });
-    } catch (err) {
-      throw new ConversionFailedError(`CBZ page "${name}" cannot be embedded: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  doc.end();
-  const buffer = await done;
-  return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+  return bindComicPagesToPdf(zipComicPages(zip, ''), 'CBZ', baseName);
 }
 
-/** Reads one page, proves that it decodes, and returns bytes pdfkit can embed (PNG and JPEG as stored). */
-async function decodeCbzPage(zip: JSZip, name: string): Promise<Buffer> {
-  const declared = (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
-  if (declared !== undefined && declared > CBZ_MAX_PAGE_BYTES) {
-    throw new ConversionFailedError(`CBZ page "${name}" declares ${declared} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+/** Comic Book Collection (CBC): the most volumes one collection may list, and the largest volume archive read. */
+const CBC_MAX_VOLUMES = 1000;
+const CBC_MAX_VOLUME_BYTES = 1024 * 1024 * 1024;
+const CBC_LISTING_NAME = 'comics.txt';
+const CBC_VOLUME_PATTERN = /\.(cbz|cbr|cb7)$/i;
+/** A listing line names a volume and its title: `volume.cbz:Title`. */
+const CBC_LISTING_LINE = /^(.+?\.(?:cbz|cbr|cb7))\s*:/i;
+
+/** The page images of one volume of a collection: a CBZ is read lazily, a CBR or CB7 is unpacked by the archive readers. */
+async function cbcVolumePages(name: string, bytes: Buffer): Promise<ComicPage[]> {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.cbz')) {
+    return zipComicPages(await openPackage(bytes, `CBC volume ${name}`), name);
   }
-  const bytes = await zip.files[name].async('nodebuffer');
+  let members: { filename: string; buffer: Buffer }[];
+  try {
+    members = lower.endsWith('.cbr') ? extractRarArchive(bytes) : extract7zArchive(bytes);
+  } catch (err) {
+    throw new ConversionFailedError(`The CBC volume "${name}" cannot be unpacked: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return members
+    .filter((m) => CBZ_IMAGE_PATTERN.test(m.filename) && !CBZ_JUNK_MEMBER_PATTERN.test(m.filename))
+    .sort((a, b) => compareNaturally(a.filename, b.filename))
+    .map((m) => ({
+      name: `${name}/${m.filename}`,
+      read: async () => {
+        if (m.buffer.length > CBZ_MAX_PAGE_BYTES) {
+          throw new ConversionFailedError(`CBC page "${name}/${m.filename}" is ${m.buffer.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+        }
+        return m.buffer;
+      },
+    }));
+}
+
+/**
+ * The pages of a Comic Book Collection: a ZIP of CBZ, CBR and CB7 volumes with an optional `comics.txt` that lists
+ * them (`volume.cbz:Title`, one per line). Volumes the listing names come first in its order, then any other
+ * volume in natural name order; a listed volume that is not in the archive is a typed 400 error.
+ */
+async function readCbcPages(input: Buffer): Promise<ComicPage[]> {
+  const zip = await openPackage(input, 'CBC');
+  const present = Object.keys(zip.files).filter((n) => !zip.files[n].dir && CBC_VOLUME_PATTERN.test(n) && !CBZ_JUNK_MEMBER_PATTERN.test(n));
+  if (present.length === 0) throw new ConversionFailedError('The CBC archive holds no comic volumes (.cbz, .cbr or .cb7).');
+  if (present.length > CBC_MAX_VOLUMES) throw new ConversionFailedError(`The CBC archive holds ${present.length} volumes, more than the ${CBC_MAX_VOLUMES} volume limit.`);
+
+  const listed: string[] = [];
+  const listing = zip.file(CBC_LISTING_NAME);
+  if (listing) {
+    for (const line of (await listing.async('string')).split(/\r?\n/)) {
+      const volume = CBC_LISTING_LINE.exec(line.trim())?.[1];
+      if (volume === undefined || listed.includes(volume)) continue;
+      if (!present.includes(volume)) throw new ConversionFailedError(`The CBC listing names "${volume}", which is not in the archive.`);
+      listed.push(volume);
+    }
+  }
+  const ordered = [...listed, ...present.filter((n) => !listed.includes(n)).sort(compareNaturally)];
+
+  const pages: ComicPage[] = [];
+  for (const volume of ordered) {
+    const bytes = await readPackageEntry(zip, volume, CBC_MAX_VOLUME_BYTES, 'CBC listing'); // NOSONAR S9382: one volume in memory at a time
+    pages.push(...(await cbcVolumePages(volume, bytes))); // NOSONAR S9382: sequential to bound memory
+    if (pages.length > CBZ_MAX_PAGES) throw new ConversionFailedError(`The CBC collection holds more than the ${CBZ_MAX_PAGES} page limit.`);
+  }
+  return pages;
+}
+
+/**
+ * Delivers a PDF made from another source: as the PDF itself, or, for every other target, as the text of its pages
+ * (the text layer, or OCR when the pages are pictures) written in that target. Pages with no recognisable text are a
+ * typed 400 error, never an empty book.
+ */
+async function viaPdf(pdf: Buffer, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  if (tgt === 'pdf') return { buffer: pdf, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdf.length };
+  const { convertFile } = await import('./index');
+  const extractText = async (ocrEnabled: boolean) =>
+    (await convertFile(pdf, 'pdf', 'txt', { ...options, ocrEnabled }, `${baseName}.pdf`)).buffer.toString('utf-8').trim();
+  // The text layer first; pages that are pictures have none, so they are read with OCR.
+  let text = await extractText(false);
+  if (text === '') text = await extractText(true);
+  if (text === '') {
+    throw new ConversionFailedError(`No text was recognised on the pages, so there is nothing to write as .${tgt}.`);
+  }
+  return writeEbookTargetFromText(text, 'pdf', tgt, options, baseName);
+}
+
+/**
+ * Comic Book Collection (CBC) source: every volume's pages, volume after volume, bound like a CBZ. A comic has no
+ * text layer, so the text and e-book targets read the lettering of the bound pages with OCR and answer with a typed
+ * error when none is recognised.
+ */
+async function convertCbcSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const pdf = await bindComicPagesToPdf(await readCbcPages(inputBuffer), 'CBC', baseName);
+  return viaPdf(pdf.buffer, tgt, options, baseName);
+}
+
+/** Proves that a page decodes and returns bytes pdfkit can embed (PNG and JPEG as stored). */
+async function decodeComicPage(bytes: Buffer, name: string, format: string): Promise<Buffer> {
   if (bytes.length > CBZ_MAX_PAGE_BYTES) {
-    throw new ConversionFailedError(`CBZ page "${name}" is ${bytes.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+    throw new ConversionFailedError(`${format} page "${name}" is ${bytes.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
   }
   try {
     if (bytes.length >= BMP_SIGNATURE.length && bytes.toString('latin1', 0, BMP_SIGNATURE.length) === BMP_SIGNATURE) {
@@ -7801,7 +7934,7 @@ async function decodeCbzPage(zip: JSZip, name: string): Promise<Buffer> {
     return await image.png().toBuffer();
   } catch (err) {
     rethrowInputPixelLimit(err);
-    throw new ConversionFailedError(`CBZ page "${name}" cannot be decoded: ${err instanceof Error ? err.message : String(err)}`);
+    throw new ConversionFailedError(`${format} page "${name}" cannot be decoded: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -9600,12 +9733,7 @@ async function readGenericEbookText(input: Buffer, src: string): Promise<string>
     return body;
   }
   if (src === 'pml') return readPmlText(input);
-  if (src === 'cbc') {
-    throw new ConversionFailedError('A CBC comic collection holds comic book archives of page pictures and no text.');
-  }
-  throw new ConversionFailedError(
-    `Reading .${src} files is not supported: a Print Replica book keeps its pages as a PDF inside a PalmDB container this reader does not unpack, so no text can be extracted.`
-  );
+  throw new ConversionFailedError(`Reading .${src} files is not supported.`);
 }
 
 async function convertGenericEbookSource(
@@ -9615,8 +9743,17 @@ async function convertGenericEbookSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const text = await readGenericEbookText(inputBuffer, src);
+  return writeEbookTargetFromText(await readGenericEbookText(inputBuffer, src), src, tgt, options, baseName);
+}
 
+/** Writes the text of an e-book in any target the e-book sources advertise: EPUB, the Palm family, TXT, RTF, rasters and PDF. */
+async function writeEbookTargetFromText(
+  text: string,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
   if (tgt === 'epub') {
     const buffer = await generateEpubFromText(text, src, options, baseName);
     return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };

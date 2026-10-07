@@ -110,3 +110,15 @@ export function buildMobi(options: MobiOptions): Buffer {
   });
   return Buffer.concat([header, ...records]);
 }
+
+const TEXT_RECORD_BYTES = 4096;
+
+/** A whole book from decoded text-record bytes: split into 4096-byte records, PalmDOC compressed when asked. */
+export function buildMobiFromBytes(raw: Buffer, options: { compress: boolean; encoding?: number }): Buffer {
+  const records: Buffer[] = [];
+  for (let at = 0; at < raw.length; at += TEXT_RECORD_BYTES) {
+    const piece = raw.subarray(at, at + TEXT_RECORD_BYTES);
+    records.push(options.compress ? palmDocCompress(piece) : piece);
+  }
+  return buildMobi({ textRecords: records, compression: options.compress ? 2 : 1, encoding: options.encoding ?? 65001, textLength: raw.length });
+}

@@ -402,7 +402,6 @@ describe('other e-book containers', () => {
   });
 
   it.each([
-    ['azw4', Buffer.from('anything'), /Print Replica book keeps its pages as a PDF/],
     ['pml', Buffer.from('\\p  \n'), /The PML book holds no text/],
     ['oeb', Buffer.from('<package/>'), /holds no text: its content documents are separate files/],
   ])('%s without readable text is a typed 400 error', async (src, bytes, message) => {
