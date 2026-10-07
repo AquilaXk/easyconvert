@@ -5,6 +5,7 @@ import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
+import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { deriveQuantizerLevels } from './edge/workers/wasm-engine.worker';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
@@ -95,65 +96,16 @@ export async function tryProcessClientEdge(
 
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
-    onProgress?.(25);
-
-    // Structured data never resolves to L0: the router sends it to the server data engine.
-
-    // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
-    if (isPureCadConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
-      const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Audio conversion (WAV, PCM, MP3)
-    if (isPureAudioConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
-        sampleRate: item.options.audioSampleRate,
-        channels: item.options.audioChannels === 'mono' ? 1 : 2,
-        bitrate: item.options.audioBitrate,
-      });
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
-    if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
-      onProgress?.(50);
-      const res = await convertPureCanvas(item.file, src, tgt, {
-        quality: item.options.quality,
-        width: item.options.width,
-        height: item.options.height,
-        fit: item.options.fit,
-      });
-      onProgress?.(95);
-      const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
+    try {
+      const l0Res = await processL0Conversion(item, src, tgt, onProgress);
+      if (l0Res) return l0Res;
+    } catch (err: unknown) {
+      // The pure engine cannot convert this file (a layout it cannot mix, a mesh it cannot write): the router
+      // names the server tier, which converts the original file. No edge result stands in for it.
+      if (resolveTierAfterEdgeFailure('L0', err)) {
+        throw new ClientEdgeEscalationError('L0', describeEdgeError(err));
+      }
+      throw err;
     }
   }
 
@@ -246,6 +198,79 @@ export async function tryProcessClientEdge(
       // Escalate to the L4 cloud pipeline, keeping the reason
       throw new ClientEdgeEscalationError('L3', describeEdgeError(err));
     }
+  }
+
+  return null;
+}
+
+/**
+ * Helper to process Level 0 (pure isomorphic) conversion: CAD tessellation, audio, canvas transcoding.
+ */
+async function processL0Conversion(
+  item: ConversionQueueItem,
+  src: string,
+  tgt: string,
+  onProgress?: (progress: number) => void
+): Promise<ClientEdgeResult | null> {
+  onProgress?.(25);
+
+  // Structured data never resolves to L0: the router sends it to the server data engine.
+
+  // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
+  if (isPureCadConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const baseName = item.name.replace(/\.[^/.]+$/, '');
+    const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Audio conversion (WAV, PCM, MP3). The source layout and rate stay unless the request names others.
+  if (isPureAudioConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
+      sampleRate: item.options.audioSampleRate,
+      channels: requestedAudioChannels(item.options.audioChannels),
+      bitrate: item.options.audioBitrate,
+    });
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
+  if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
+    onProgress?.(50);
+    const res = await convertPureCanvas(item.file, src, tgt, {
+      quality: item.options.quality,
+      width: item.options.width,
+      height: item.options.height,
+      fit: item.options.fit,
+    });
+    onProgress?.(95);
+    const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
   }
 
   return null;

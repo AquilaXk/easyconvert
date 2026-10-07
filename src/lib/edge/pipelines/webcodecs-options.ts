@@ -107,7 +107,7 @@ function audioBitrateBps(value: unknown): number | undefined {
  * Channel count a request names. Only mono and stereo are channel counts the edge can state; a request that
  * names nothing leaves the count to the source audio, and any other layout is not expressible here.
  */
-function requestedAudioChannels(channels: ConversionOptions['audioChannels']): number | undefined {
+export function requestedAudioChannels(channels: ConversionOptions['audioChannels']): number | undefined {
   if (channels === undefined) return undefined;
   if (channels === 'mono') return MONO_CHANNELS;
   if (channels === 'stereo') return STEREO_CHANNELS;
