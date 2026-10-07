@@ -23,7 +23,12 @@ const HTTP_SERVICE_UNAVAILABLE = 503;
 /** Names that say "a tool, binary, codec or engine is missing here", written down independently of the code. */
 const MISSING_TOOL_NAME = /(Unavailable|Required|NotInstalled)\w*Error$|^Missing(Engine|Binary|Tool)\w*Error$/;
 /** Typed errors whose name matches but that are about the caller's data or storage, not the worker. */
-const NOT_ABOUT_THE_WORKER = new Set(['StorageProviderUnavailableError', 'ArchivePasswordRequiredError']);
+const NOT_ABOUT_THE_WORKER = new Set([
+  'StorageProviderUnavailableError',
+  'ArchivePasswordRequiredError',
+  // A webhook secret request that names no target: a 400 about the caller, not a missing tool.
+  'WebhookTargetRequiredError',
+]);
 
 function sourceFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
