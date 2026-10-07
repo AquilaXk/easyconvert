@@ -343,7 +343,8 @@ describe('WP-46c: Genuine EMF, WMF, and CGM Vector Encoders', () => {
 
   describe('Differential Visual Oracle (LibreOffice soffice)', () => {
     const SOFFICE_TIMEOUT_MS = 60000;
-    const MIN_SSIM = 0.85;
+    /** Plan value. Measured against LibreOffice 24.x + pdftoppm on the sample drawing: EMF 0.992, WMF 0.994. */
+    const MIN_SSIM = 0.9;
     const COMPARE_WIDTH = 400;
     const COMPARE_HEIGHT = 300;
 
