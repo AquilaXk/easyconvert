@@ -286,8 +286,10 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   describe('Pure Audio Engine (pure-audio.ts)', () => {
     it('correctly reports audio format capability', () => {
       expect(isPureAudioConvertible('wav', 'mp3')).toBe(true);
-      expect(isPureAudioConvertible('pcm', 'wav')).toBe(true);
-      expect(isPureAudioConvertible('raw', 'mp3')).toBe(true);
+      // Raw PCM has no header: it is convertible only when the options describe it.
+      expect(isPureAudioConvertible('pcm', 'wav')).toBe(false);
+      expect(isPureAudioConvertible('raw', 'mp3')).toBe(false);
+      expect(isPureAudioConvertible('pcm', 'wav', { source: { sampleRate: 44100, channels: 2, bitDepth: 16 } })).toBe(true);
       expect(isPureAudioConvertible('wav', 'flac')).toBe(false);
       expect(isPureAudioConvertible('mp3', 'aac')).toBe(false);
     });

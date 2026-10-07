@@ -4,7 +4,16 @@
  * Implements pure TypedArray-based WAV parsing, standard RIFF WAV encoding,
  * and pure TypeScript MPEG-1 Layer III (MP3) encoding using Uint8Array and DataView
  * (strictly zero Node.js Buffer dependencies).
+ *
+ * Nothing is assumed about a source: a WAV states its own format and anything but integer PCM or float is refused,
+ * and raw PCM is read only when the caller describes it. A different sample rate or channel layout in the options
+ * is produced by resampling (the project's polyphase resampler) and remixing, never by relabelling the header;
+ * a layout the engine cannot mix is an EdgeUnsupportedError and the server engine converts the file.
  */
+
+import { resampleInterleavedInt16 } from '../../conversions/audio-resampler';
+import { readWavLayout, WAV_MAX_CHANNELS, WAV_MAX_SAMPLE_RATE } from '../media/wav-demux';
+import { EdgeUnsupportedError } from '../workers/worker-errors';
 
 export interface PureAudioResult {
   data: Uint8Array;
@@ -12,14 +21,27 @@ export interface PureAudioResult {
   extension: string;
 }
 
+/** What a header-less PCM source is. Raw PCM cannot say it itself, so a conversion that reads it needs all three. */
+export interface RawPcmFormat {
+  sampleRate: number;
+  channels: number;
+  /** 8 (unsigned), 16, 24 or 32 (signed integers, little-endian). */
+  bitDepth: number;
+}
+
 export interface PureAudioOptions {
+  /** Output sample rate; the audio is resampled to it. Omitted, the source rate stays. */
   sampleRate?: number;
+  /** Output channel count (1 or 2); the audio is remixed to it. Omitted, the source layout stays. */
   channels?: number;
   bitrate?: string;
   title?: string;
+  /** The description of a raw PCM source (`pcm`, `raw`). */
+  source?: RawPcmFormat;
 }
 
 const SUPPORTED_AUDIO_SOURCES = new Set(['wav', 'pcm', 'raw']);
+const RAW_AUDIO_SOURCES = new Set(['pcm', 'raw']);
 const SUPPORTED_AUDIO_TARGETS = new Set(['wav', 'mp3']);
 
 const AUDIO_MIME_MAP: Record<string, string> = {
@@ -27,129 +49,124 @@ const AUDIO_MIME_MAP: Record<string, string> = {
   mp3: 'audio/mpeg',
 };
 
+const MONO = 1;
+const STEREO = 2;
+const BITS_PER_BYTE = 8;
+const BYTES_PER_INT16 = 2;
+const UINT32_MAX = 0xffff_ffff;
+const WAV_PCM_HEADER_BYTES = 44;
+const RAW_PCM_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 16, 24, 32]);
+/** Bit depths of integer PCM the reader accepts in a WAV (the strict walker reads 16, 24 and 32; this adds 8). */
+const WAV_READ_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 16, 24, 32]);
+const INT16_MIN = -32_768;
+const INT16_MAX = 32_767;
+const U8_SILENCE = 128;
+const U8_SHIFT = 8;
+const INT24_SHIFT = 8;
+const INT32_SHIFT = 16;
+
 function writeAscii(view: DataView, offset: number, str: string): void {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));
   }
 }
 
-/**
- * Checks whether the source and target formats are supported by the pure audio engine.
- */
-export function isPureAudioConvertible(sourceFormat: string, targetFormat: string): boolean {
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-  return SUPPORTED_AUDIO_SOURCES.has(src) && SUPPORTED_AUDIO_TARGETS.has(tgt);
+function refuse(message: string): EdgeUnsupportedError {
+  return new EdgeUnsupportedError(`Pure audio: ${message}; the server engine converts this file.`);
+}
+
+/** The raw PCM description a conversion carries, checked; throws EdgeUnsupportedError when it is missing or wrong. */
+function checkedRawFormat(source: RawPcmFormat | undefined): RawPcmFormat {
+  if (!source) {
+    throw refuse('raw PCM has no header, so the source option has to state its sampleRate, channels and bitDepth');
+  }
+  const { sampleRate, channels, bitDepth } = source;
+  if (!Number.isInteger(sampleRate) || sampleRate < 1 || sampleRate > WAV_MAX_SAMPLE_RATE) {
+    throw refuse(`sampleRate ${sampleRate} is not an integer from 1 to ${WAV_MAX_SAMPLE_RATE}`);
+  }
+  if (!Number.isInteger(channels) || channels < 1 || channels > WAV_MAX_CHANNELS) {
+    throw refuse(`channels ${channels} is not an integer from 1 to ${WAV_MAX_CHANNELS}`);
+  }
+  if (!RAW_PCM_BIT_DEPTHS.has(bitDepth)) {
+    throw refuse(`bitDepth ${bitDepth} is not one of ${[...RAW_PCM_BIT_DEPTHS].join(', ')}`);
+  }
+  return source;
 }
 
 /**
- * Parses RIFF WAV bytes into 16-bit PCM samples using pure DataView.
+ * Checks whether the source and target formats are supported by the pure audio engine. A raw PCM source
+ * (`pcm`, `raw`) is supported only when `options.source` describes it.
  */
-export function parseWavPcm(bytes: Uint8Array): {
+export function isPureAudioConvertible(
+  sourceFormat: string,
+  targetFormat: string,
+  options?: Pick<PureAudioOptions, 'source'>
+): boolean {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+  if (!SUPPORTED_AUDIO_SOURCES.has(src) || !SUPPORTED_AUDIO_TARGETS.has(tgt)) return false;
+  return !RAW_AUDIO_SOURCES.has(src) || options?.source !== undefined;
+}
+
+/** Reads `count` integer or float samples of `bitDepth` bits at `offset` into 16-bit samples. */
+function readSamples(view: DataView, offset: number, count: number, bitDepth: number, isFloat: boolean): Int16Array {
+  const samples = new Int16Array(count);
+  const step = bitDepth / BITS_PER_BYTE;
+  for (let i = 0; i < count; i++) {
+    const at = offset + i * step;
+    if (isFloat) {
+      samples[i] = Math.max(INT16_MIN, Math.min(INT16_MAX, Math.round(view.getFloat32(at, true) * INT16_MAX)));
+    } else if (bitDepth === 8) {
+      // Unsigned 8-bit PCM (0..255) -> signed 16-bit
+      samples[i] = (view.getUint8(at) - U8_SILENCE) << U8_SHIFT;
+    } else if (bitDepth === 16) {
+      samples[i] = view.getInt16(at, true);
+    } else if (bitDepth === 24) {
+      samples[i] = (view.getUint8(at) | (view.getUint8(at + 1) << 8) | (view.getInt8(at + 2) << 16)) >> INT24_SHIFT;
+    } else {
+      samples[i] = view.getInt32(at, true) >> INT32_SHIFT;
+    }
+  }
+  return samples;
+}
+
+/**
+ * Reads WAV bytes (or raw PCM that `raw` describes) into interleaved 16-bit samples. The WAV header is read with
+ * the strict RIFF walker: integer PCM at 8, 16, 24 or 32 bits and 32-bit float are read, every other format tag
+ * is an EdgeUnsupportedError, and so is a data chunk that runs past the file or ends inside a frame.
+ */
+export function parseWavPcm(
+  bytes: Uint8Array,
+  raw?: RawPcmFormat
+): {
   samples: Int16Array;
   sampleRate: number;
   channels: number;
 } {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let sampleRate: number;
+  let channels: number;
+  let bitDepth: number;
+  let isFloat = false;
+  let dataStart = 0;
+  let dataBytes = bytes.byteLength;
 
-  // Quick header validation for 'RIFF' and 'WAVE'
-  const isRiff =
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x41 &&
-    bytes[10] === 0x56 &&
-    bytes[11] === 0x45;
-
-  let sampleRate = 44100;
-  let channels = 2;
-  let bitsPerSample = 16;
-  let audioFormat = 1;
-
-  if (isRiff) {
-    let offset = 12;
-    while (offset + 8 <= bytes.length) {
-      const chunkId = String.fromCharCode(
-        bytes[offset],
-        bytes[offset + 1],
-        bytes[offset + 2],
-        bytes[offset + 3]
-      );
-      const chunkSize = view.getUint32(offset + 4, true);
-
-      if (chunkId === 'fmt ' && offset + 24 <= bytes.length) {
-        audioFormat = view.getUint16(offset + 8, true);
-        channels = view.getUint16(offset + 10, true) || 2;
-        sampleRate = view.getUint32(offset + 12, true) || 44100;
-        bitsPerSample = view.getUint16(offset + 22, true) || 16;
-      }
-
-      if (chunkId === 'data') {
-        const dataOffset = offset + 8;
-        const availableBytes = Math.max(0, Math.min(chunkSize, bytes.length - dataOffset));
-
-        if (bitsPerSample === 8) {
-          const sampleCount = availableBytes;
-          const samples = new Int16Array(sampleCount);
-          for (let i = 0; i < sampleCount; i++) {
-            // Unsigned 8-bit PCM (0..255) -> Signed 16-bit (-32768..32767)
-            samples[i] = (bytes[dataOffset + i] - 128) << 8;
-          }
-          return { samples, sampleRate, channels };
-        } else if (bitsPerSample === 24) {
-          const sampleCount = Math.floor(availableBytes / 3);
-          const samples = new Int16Array(sampleCount);
-          for (let i = 0; i < sampleCount; i++) {
-            const b0 = bytes[dataOffset + i * 3];
-            const b1 = bytes[dataOffset + i * 3 + 1];
-            const b2 = bytes[dataOffset + i * 3 + 2];
-            let val = (b2 << 16) | (b1 << 8) | b0;
-            if (val & 0x800000) val |= 0xff000000;
-            samples[i] = val >> 8;
-          }
-          return { samples, sampleRate, channels };
-        } else if (bitsPerSample === 32 && audioFormat === 3) {
-          // 32-bit IEEE float
-          const sampleCount = Math.floor(availableBytes / 4);
-          const samples = new Int16Array(sampleCount);
-          for (let i = 0; i < sampleCount; i++) {
-            const f = view.getFloat32(dataOffset + i * 4, true);
-            samples[i] = Math.max(-32768, Math.min(32767, Math.round(f * 32767)));
-          }
-          return { samples, sampleRate, channels };
-        } else {
-          // Standard 16-bit PCM
-          const sampleCount = Math.floor(availableBytes / 2);
-          const samples = new Int16Array(sampleCount);
-          for (let i = 0; i < sampleCount; i++) {
-            samples[i] = view.getInt16(dataOffset + i * 2, true);
-          }
-          return { samples, sampleRate, channels };
-        }
-      }
-
-      // Word alignment: RIFF chunks must be padded to an even byte boundary
-      const paddedSize = (chunkSize + 1) & ~1;
-      if (paddedSize <= 0 || offset + 8 + paddedSize <= offset) {
-        break;
-      }
-      offset += 8 + paddedSize;
-    }
+  if (raw) {
+    ({ sampleRate, channels, bitDepth } = checkedRawFormat(raw));
+  } else {
+    const layout = readWavLayout(bytes, bytes.byteLength, WAV_READ_BIT_DEPTHS);
+    ({ sampleRate, channels, isFloat } = layout.format);
+    bitDepth = layout.format.bitsPerSample;
+    dataStart = layout.dataStart;
+    dataBytes = layout.dataBytes;
   }
 
-  // Fallback: decode raw payload as 16-bit PCM
-  const fallbackOffset = isRiff ? 44 : 0;
-  const remaining = Math.max(0, bytes.length - fallbackOffset);
-  const sampleCount = Math.floor(remaining / 2);
-  const samples = new Int16Array(Math.max(1152 * channels, sampleCount));
-
-  for (let i = 0; i < sampleCount; i++) {
-    samples[i] = view.getInt16(fallbackOffset + i * 2, true);
+  const frameBytes = (channels * bitDepth) / BITS_PER_BYTE;
+  if (dataBytes % frameBytes !== 0) {
+    throw refuse(`the audio is not a whole number of frames (${dataBytes} bytes of ${frameBytes}-byte frames)`);
   }
-
+  if (dataBytes === 0) throw refuse('the file holds no audio');
+  const samples = readSamples(view, dataStart, (dataBytes / frameBytes) * channels, bitDepth, isFloat);
   return { samples, sampleRate, channels };
 }
 
@@ -161,10 +178,20 @@ export function encodePcmToWav(
   sampleRate = 44100,
   channels = 2
 ): Uint8Array {
-  const blockAlign = channels * 2;
+  if (!Number.isInteger(channels) || channels < 1 || channels > WAV_MAX_CHANNELS) {
+    throw refuse(`${channels} channels are not a WAV layout this engine writes`);
+  }
+  if (!Number.isInteger(sampleRate) || sampleRate < 1 || sampleRate > WAV_MAX_SAMPLE_RATE) {
+    throw refuse(`${sampleRate} Hz is not a sample rate this engine writes`);
+  }
+  if (samples.length % channels !== 0) {
+    throw refuse(`${samples.length} samples are not a whole number of frames of ${channels} channels`);
+  }
+  const blockAlign = channels * BYTES_PER_INT16;
   const byteRate = sampleRate * blockAlign;
-  const dataSize = samples.length * 2;
-  const totalSize = 44 + dataSize;
+  const dataSize = samples.length * BYTES_PER_INT16;
+  const totalSize = WAV_PCM_HEADER_BYTES + dataSize;
+  if (totalSize - 8 > UINT32_MAX) throw refuse('the audio is too long for a 32-bit RIFF size');
 
   const out = new Uint8Array(totalSize);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -372,8 +399,29 @@ export function encodePureMp3(
   return out;
 }
 
+/** Mixes interleaved samples between 1 and 2 channels: mono to both sides, stereo to the mean of the two. */
+function remixChannels(samples: Int16Array, from: number, to: number): Int16Array {
+  if (from === to) return samples;
+  if (from === MONO && to === STEREO) {
+    const out = new Int16Array(samples.length * STEREO);
+    for (let i = 0; i < samples.length; i++) {
+      out[i * STEREO] = samples[i];
+      out[i * STEREO + 1] = samples[i];
+    }
+    return out;
+  }
+  if (from === STEREO && to === MONO) {
+    const out = new Int16Array(samples.length / STEREO);
+    for (let i = 0; i < out.length; i++) out[i] = Math.round((samples[i * STEREO] + samples[i * STEREO + 1]) / STEREO);
+    return out;
+  }
+  throw refuse(`remixing ${from} channels to ${to} channels is not done on the edge (only mono and stereo)`);
+}
+
 /**
- * Converts audio bytes between WAV, PCM, and MP3 purely using typed arrays.
+ * Converts audio bytes between WAV, PCM, and MP3 purely using typed arrays. The source layout and rate are kept
+ * unless the options name others; naming others remixes (mono and stereo) and resamples the samples, never just
+ * the header.
  */
 export function convertPureAudio(
   input: Uint8Array,
@@ -384,13 +432,21 @@ export function convertPureAudio(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
-  if (!isPureAudioConvertible(src, tgt)) {
-    throw new Error(`Pure audio engine does not support conversion from '${src}' to '${tgt}'.`);
+  if (!isPureAudioConvertible(src, tgt, options)) {
+    if (RAW_AUDIO_SOURCES.has(src) && SUPPORTED_AUDIO_TARGETS.has(tgt)) checkedRawFormat(options.source);
+    throw new EdgeUnsupportedError(`Pure audio engine does not support conversion from '${src}' to '${tgt}'.`);
   }
 
-  const { samples, sampleRate, channels } = parseWavPcm(input);
-  const targetSampleRate = options.sampleRate || sampleRate || 44100;
-  const targetChannels = options.channels || channels || 2;
+  const parsed = parseWavPcm(input, RAW_AUDIO_SOURCES.has(src) ? options.source : undefined);
+  const targetChannels = options.channels ?? parsed.channels;
+  const targetSampleRate = options.sampleRate ?? parsed.sampleRate;
+
+  // Remix first (fewer samples to resample when mixing down), then resample.
+  const mixed = remixChannels(parsed.samples, parsed.channels, targetChannels);
+  const samples =
+    targetSampleRate === parsed.sampleRate
+      ? mixed
+      : resampleInterleavedInt16(mixed, parsed.sampleRate, targetSampleRate, targetChannels);
 
   let outputBytes: Uint8Array;
 
@@ -405,7 +461,7 @@ export function convertPureAudio(
       options.title || 'EasyConvert Audio'
     );
   } else {
-    throw new Error(`Unsupported target audio format: ${tgt}`);
+    throw new EdgeUnsupportedError(`Unsupported target audio format: ${tgt}`);
   }
 
   const mimeType = AUDIO_MIME_MAP[tgt] || 'audio/octet-stream';
