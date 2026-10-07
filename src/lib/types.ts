@@ -449,6 +449,10 @@ export interface ConversionJobResult {
   ocrExtracted?: boolean;
   sourceFrameCount?: number;
   frameUsed?: number;
+  /** Engine that produced the output (for example `native-ffmpeg` or `internal-fallback`). */
+  engineUsed?: string;
+  /** Public, redacted reason a fallback happened; absent when the first-choice engine ran. */
+  fallbackReason?: string;
 }
 
 export class ConversionFailedError extends Error {

@@ -4,6 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
@@ -395,6 +396,7 @@ export async function POST(req: NextRequest) {
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
           ...frameMetadataHeaders(conversionResult),
+          ...engineTraceHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -422,6 +424,7 @@ export async function POST(req: NextRequest) {
         downloadUrl,
         expiresAt: userFile.expiresAt,
         ...frameMetadataFields(conversionResult),
+        ...engineTraceFields(conversionResult),
       },
       {
         status: 200,
