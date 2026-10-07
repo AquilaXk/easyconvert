@@ -136,9 +136,13 @@ const DEFAULT_ELEMENT_LEFT = 48;
 const ELEMENT_LINE_ADVANCE = 20;
 const ELEMENT_FIRST_BASELINE = 105;
 
+/** Hex digits in a GUID (128 bits). */
+const GUID_HEX_DIGITS = 32;
+
 /** The GUID that names a font part: derived from the font bytes, so equal fonts share one part. */
 function fontGuid(face: PdfFontFace): string {
-  const hex = createHash('md5').update(face.data).digest('hex').toUpperCase();
+  // Only the first 128 bits of the digest are used: the GUID is an identifier, not a security control.
+  const hex = createHash('sha256').update(face.data).digest('hex').slice(0, GUID_HEX_DIGITS).toUpperCase();
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 

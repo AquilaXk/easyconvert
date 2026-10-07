@@ -523,7 +523,11 @@ const EPUB_PACKAGE_MEDIA_TYPE = 'application/oebps-package+xml';
 /** Spine items that hold readable text: XHTML content documents (EPUB 2 and 3) and HTML. */
 const EPUB_TEXT_MEDIA_TYPES: ReadonlySet<string> = new Set(['application/xhtml+xml', 'text/html']);
 /** Encryption methods that only obfuscate embedded fonts; every other method hides the content itself. */
-const EPUB_FONT_OBFUSCATION_ALGORITHMS: ReadonlySet<string> = new Set(['http://www.idpf.org/2008/embedding', 'http://ns.adobe.com/pdf/enc#RC']);
+// Algorithm identifiers from the EPUB OCF specification: namespace names compared as strings, never fetched.
+const EPUB_FONT_OBFUSCATION_ALGORITHMS: ReadonlySet<string> = new Set([
+  'http://www.idpf.org/2008/embedding', // NOSONAR: a spec-defined identifier, not a network address
+  'http://ns.adobe.com/pdf/enc#RC', // NOSONAR: a spec-defined identifier, not a network address
+]);
 const PARAGRAPH_SEPARATOR = '\n\n';
 
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
@@ -9581,7 +9585,7 @@ async function readGenericEbookText(input: Buffer, src: string): Promise<string>
     const zip = await openPackage(input, src.toUpperCase());
     const mainName = src === 'htmlz' ? 'index.html' : 'index.txt';
     const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
-    const entryName = names.includes(mainName) ? mainName : names.sort().find((name) => (src === 'htmlz' ? /\.(x?html?)$/i : /\.txt$/i).test(name));
+    const entryName = names.includes(mainName) ? mainName : names.sort((a, b) => a.localeCompare(b)).find((name) => (src === 'htmlz' ? /\.(x?html?)$/i : /\.txt$/i).test(name));
     if (!entryName) throw new ConversionFailedError(`The ${src.toUpperCase()} archive has no ${mainName}.`);
     const decoded = decodeXmlBytes(await readPackageEntry(zip, entryName, EPUB_MAX_CHAPTER_BYTES, `${src.toUpperCase()} archive`), `${src.toUpperCase()} text`);
     const text = src === 'htmlz' ? htmlToText(decoded) : decoded.trim();
