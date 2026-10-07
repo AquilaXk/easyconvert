@@ -19,7 +19,7 @@ import {
   incircleExact,
   windingNumberPointInPolygon,
 } from './cad-predicates';
-import { CadGeometryUnavailableError, CadTopologyError, ConversionOptions } from '../types';
+import { CadGeometryError, CadGeometryUnavailableError, CadTopologyError, ConversionOptions } from '../types';
 
 export interface Point3D {
   x: number;
@@ -148,6 +148,7 @@ export function evaluateAllBasisDerivatives(n: number, p: number, u: number, kno
 export function evaluateBSplineCurve(curve: BSplineCurve, u: number): Point3D {
   const { degree, controlPoints, weights, knots } = curve;
   const n = controlPoints.length - 1;
+  assertValidKnotVector('curve', '', knots, controlPoints.length, degree);
 
   let x = 0;
   let y = 0;
@@ -465,6 +466,37 @@ export interface SurfaceEvaluationResult {
   normal: Point3D; // unit normal
 }
 
+/** Knots closer than this are one knot; a knot vector whose usable range is no wider spans nothing. */
+const MIN_KNOT_RANGE = 1e-12;
+
+/**
+ * Refuses a knot vector no B-spline can be evaluated on (NURBS Book, 2.1): the count must be control points
+ * + degree + 1, every knot finite, the sequence non-decreasing, and the usable range (from knot `degree` to
+ * knot `controlPointCount`) wider than zero. Evaluating anyway returns a number for any input, a wrong one.
+ */
+export function assertValidKnotVector(
+  owner: 'curve' | 'surface',
+  axis: string,
+  knots: number[],
+  controlPointCount: number,
+  degree: number
+): void {
+  const label = ['B-spline', owner, axis, 'knot vector'].filter(Boolean).join(' ');
+  const needed = controlPointCount + degree + 1;
+  if (knots.length !== needed) {
+    throw new CadGeometryError(`${label} has ${knots.length} knots, ${needed} needed for ${controlPointCount} control points of degree ${degree}`);
+  }
+  for (let i = 0; i < knots.length; i++) {
+    if (!Number.isFinite(knots[i])) throw new CadGeometryError(`${label} holds a non-finite knot at index ${i}`);
+    if (i > 0 && knots[i] < knots[i - 1]) {
+      throw new CadGeometryError(`${label} decreases at index ${i} (${knots[i]} follows ${knots[i - 1]})`);
+    }
+  }
+  if (knots[controlPointCount] - knots[degree] <= MIN_KNOT_RANGE) {
+    throw new CadGeometryError(`${label} spans no parameter range`);
+  }
+}
+
 /**
  * Evaluates B-spline / NURBS surface point and exact analytical normal at (u, v)
  * using the Cox-de Boor basis function values and derivatives.
@@ -480,6 +512,8 @@ export function evaluateBSplineSurface(
   const nU = numU - 1;
   const nV = numV - 1;
 
+  assertValidKnotVector('surface', 'u', uKnots, numU, uDegree);
+  assertValidKnotVector('surface', 'v', vKnots, numV, vDegree);
   const nuBasis = evaluateAllBasis(nU, uDegree, u, uKnots);
   const nvBasis = evaluateAllBasis(nV, vDegree, v, vKnots);
   const nuDeriv = evaluateAllBasisDerivatives(nU, uDegree, u, uKnots);

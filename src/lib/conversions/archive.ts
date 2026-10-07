@@ -18,6 +18,8 @@ import {
   ArchiveEntryCollisionError,
   ArchivePasswordRequiredError,
   EngineUnavailableError,
+  CorruptStreamError,
+  DecompressionLimitError,
 } from '../types';
 import {
   NativeRenameUnsupportedError,
@@ -455,7 +457,7 @@ function makeExtractedTreeAccessible(root: string): void {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       visited += 1;
       if (visited > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) pending.push(fullPath);
@@ -624,11 +626,16 @@ export async function extractZipArchive(
     }
   }
 
-  const zip = await JSZip.loadAsync(zipBuffer);
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(zipBuffer);
+  } catch (err) {
+    throw new CorruptStreamError(`Invalid ZIP archive: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const entries = Object.entries(zip.files).filter(([filename, f]) => !f.dir && matchArchiveGlob(filename, options.entries));
 
   if (entries.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-    throw new Error(
+    throw new DecompressionLimitError(
       `Archive bomb detected: file count (${entries.length}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
     );
   }
@@ -643,7 +650,7 @@ export async function extractZipArchive(
       typeof headerUncompressedSize === 'number' &&
       headerUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE
     ) {
-      throw new Error(
+      throw new DecompressionLimitError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
@@ -707,7 +714,7 @@ export async function extractZipArchive(
       totalUncompressedSize += buffer.length;
 
       if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
@@ -716,7 +723,7 @@ export async function extractZipArchive(
         zipBuffer.length > 0 &&
         totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
       ) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
@@ -1854,7 +1861,7 @@ export function extractRarArchive(
   options: { password?: string; entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
   if (!rarBuffer || rarBuffer.length < 14) {
-    throw new Error('Invalid RAR archive: buffer too small');
+    throw new CorruptStreamError('Invalid RAR archive: buffer too small');
   }
 
   const isRar4 =
@@ -1877,7 +1884,7 @@ export function extractRarArchive(
     rarBuffer[7] === 0x00;
 
   if (!isRar4 && !isRar5) {
-    throw new Error('Invalid RAR archive: signature mismatch');
+    throw new CorruptStreamError('Invalid RAR archive: signature mismatch');
   }
 
   assertArchivePasswordSafe(options.password);
@@ -1929,15 +1936,15 @@ export function extractRarArchive(
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
             if (extracted.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-              throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+              throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
             }
             const buf = fs.readFileSync(fullPath);
             totalUncompressedSize += buf.length;
             if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-              throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
             }
             if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-              throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+              throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
             const sanitized = sanitizeArchivePath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
@@ -1975,7 +1982,7 @@ export function extractRarArchive(
 
   // Pure TypeScript parser for stored RAR archives with fail-closed validation
   if (isRar5) {
-    throw new Error('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
+    throw new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
   }
 
   const files: { filename: string; buffer: Buffer }[] = [];
@@ -1994,7 +2001,7 @@ export function extractRarArchive(
 
     if (headType === 0x74 && offset + 32 <= rarBuffer.length) {
       if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
 
       const packSize = rarBuffer.readUInt32LE(offset + 7);
@@ -2004,7 +2011,7 @@ export function extractRarArchive(
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
 
       if (unpSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
@@ -2012,7 +2019,7 @@ export function extractRarArchive(
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
-        throw new Error(
+        throw new ConversionFailedError(
           `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
         );
       }
@@ -2023,7 +2030,7 @@ export function extractRarArchive(
         const dataOffset = offset + headSize;
 
         if (dataOffset + packSize > rarBuffer.length) {
-          throw new Error('Corrupted RAR archive: truncated file data');
+          throw new CorruptStreamError('Corrupted RAR archive: truncated file data');
         }
 
         const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
@@ -2031,15 +2038,15 @@ export function extractRarArchive(
         // Verify CRC32
         const computedCrc = crc32(fileBuf);
         if (computedCrc !== fileCrc) {
-          throw new Error(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+          throw new CorruptStreamError(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
         }
 
         totalUncompressedSize += fileBuf.length;
         if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-          throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+          throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
         }
         if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-          throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+          throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
         }
 
         if (sanitizedName && matchArchiveGlob(sanitizedName, options.entries)) {
@@ -2069,7 +2076,7 @@ export function decompressLzma(
   }
 
   if (props.length < 5) {
-    throw new Error('Invalid LZMA properties header: expected at least 5 bytes');
+    throw new CorruptStreamError('Invalid LZMA properties header: expected at least 5 bytes');
   }
 
   const d = props[0];
@@ -2087,7 +2094,7 @@ export function decompressLzma(
   if (dictSize < 4096) dictSize = 4096;
 
   if (unpackSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-    throw new Error(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
+    throw new DecompressionLimitError(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
   }
 
   const outBuf = Buffer.alloc(unpackSize);
@@ -2309,7 +2316,7 @@ export function decompressLzma(
       }
 
       if (rep0 >= outPos) {
-        throw new Error(`Corrupted LZMA stream: rep distance ${rep0} exceeds available decoded data (${outPos})`);
+        throw new CorruptStreamError(`Corrupted LZMA stream: rep distance ${rep0} exceeds available decoded data (${outPos})`);
       }
 
       const copyLen = Math.min(len, unpackSize - outPos);
@@ -2522,47 +2529,47 @@ export function packXz(uncompressed: Buffer): Buffer {
  * Pure TypeScript Authentic XZ Container Unpacker
  */
 export function unpackXz(buf: Buffer): Buffer {
-  if (buf.length < 32) throw new Error('Invalid XZ archive: buffer too small');
+  if (buf.length < 32) throw new CorruptStreamError('Invalid XZ archive: buffer too small');
   const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  if (!buf.subarray(0, 6).equals(magic)) throw new Error('Invalid XZ archive: magic number mismatch');
+  if (!buf.subarray(0, 6).equals(magic)) throw new CorruptStreamError('Invalid XZ archive: magic number mismatch');
 
   const streamFlags = buf.subarray(6, 8);
   const expectedFlagsCrc = buf.readUInt32LE(8);
-  if (crc32(streamFlags) !== expectedFlagsCrc) throw new Error('Invalid XZ archive: header CRC mismatch');
+  if (crc32(streamFlags) !== expectedFlagsCrc) throw new CorruptStreamError('Invalid XZ archive: header CRC mismatch');
 
   const offset = 12;
-  if (offset >= buf.length) throw new Error('Invalid XZ archive: truncated block header');
+  if (offset >= buf.length) throw new CorruptStreamError('Invalid XZ archive: truncated block header');
   const bhSizeEncoded = buf[offset];
   const bhSize = (bhSizeEncoded + 1) * 4;
-  if (offset + bhSize > buf.length) throw new Error('Invalid XZ archive: truncated block header');
+  if (offset + bhSize > buf.length) throw new CorruptStreamError('Invalid XZ archive: truncated block header');
   const bhNoCrc = buf.subarray(offset, offset + bhSize - 4);
   const expectedBhCrc = buf.readUInt32LE(offset + bhSize - 4);
-  if (crc32(bhNoCrc) !== expectedBhCrc) throw new Error('Invalid XZ archive: block header CRC mismatch');
+  if (crc32(bhNoCrc) !== expectedBhCrc) throw new CorruptStreamError('Invalid XZ archive: block header CRC mismatch');
 
   const lzma2Payload = buf.subarray(offset + bhSize);
 
   const footerMagic = buf.subarray(buf.length - 2);
-  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new Error('Invalid XZ archive: footer magic mismatch');
+  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new CorruptStreamError('Invalid XZ archive: footer magic mismatch');
 
   const footerBeforeCrc = buf.subarray(buf.length - 8, buf.length - 2);
   const expectedFooterCrc = buf.readUInt32LE(buf.length - 12);
   if (crc32(footerBeforeCrc) !== expectedFooterCrc) {
-    throw new Error('Invalid XZ archive: footer CRC mismatch');
+    throw new CorruptStreamError('Invalid XZ archive: footer CRC mismatch');
   }
   if (footerBeforeCrc[4] !== streamFlags[0] || footerBeforeCrc[5] !== streamFlags[1]) {
-    throw new Error('Invalid XZ archive: stream flags mismatch between header and footer');
+    throw new CorruptStreamError('Invalid XZ archive: stream flags mismatch between header and footer');
   }
 
   const backwardSize = buf.readUInt32LE(buf.length - 8);
   const indexSize = (backwardSize + 1) * 4;
-  if (buf.length < 12 + indexSize + 12) throw new Error('Invalid XZ archive: invalid index size');
+  if (buf.length < 12 + indexSize + 12) throw new CorruptStreamError('Invalid XZ archive: invalid index size');
   const indexOffset = buf.length - 12 - indexSize;
   const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
 
   const expectedIndexCrc = indexBuf.readUInt32LE(indexBuf.length - 4);
   const indexBodyNoCrc = indexBuf.subarray(0, indexBuf.length - 4);
   if (crc32(indexBodyNoCrc) !== expectedIndexCrc) {
-    throw new Error('Invalid XZ archive: index CRC mismatch');
+    throw new CorruptStreamError('Invalid XZ archive: index CRC mismatch');
   }
 
   let idxCur = 1;
@@ -2587,7 +2594,7 @@ export function unpackXz(buf: Buffer): Buffer {
   const props = Buffer.from([0x14]);
   const uncompressed = decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
   if (crc32(uncompressed) !== checkCrc) {
-    throw new Error('Invalid XZ archive: payload CRC32 mismatch');
+    throw new CorruptStreamError('Invalid XZ archive: payload CRC32 mismatch');
   }
   return uncompressed;
 }
@@ -2608,7 +2615,7 @@ export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {})
 
 export function decompressXz(inputBuffer: Buffer): Buffer {
   if (inputBuffer.length < 32) {
-    throw new Error('Invalid XZ archive: buffer too small');
+    throw new CorruptStreamError('Invalid XZ archive: buffer too small');
   }
   const xzBin = getXzBinaryPath();
   if (xzBin) {
@@ -2849,7 +2856,7 @@ export async function extractWithSpannedStream7z(
 }> {
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
-    throw new Error('7-Zip binary (7z/7za/7zr) not found on system.');
+    throw new EngineUnavailableError('7-Zip', 'binary (7z/7za/7zr) not found on system');
   }
 
   const { sortedParts, metadata } = validateAndSortSplitParts(parts);
@@ -3252,7 +3259,7 @@ function decompress7zFolder(
       : ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
     return decompressBzip2(packSlice, bzipLimit);
   }
-  throw new Error(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
+  throw new ConversionFailedError(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
 }
 
 function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | null {
@@ -3605,7 +3612,7 @@ export function extract7zArchive(
     const folder = folders[f];
     const packSize = f < packSizes.length ? packSizes[f] : nextHeaderOffset - (packOffset - 32);
     if (packOffset + packSize > sevenZipBuffer.length) {
-      throw new Error('Corrupted 7z archive: truncated pack stream');
+      throw new CorruptStreamError('Corrupted 7z archive: truncated pack stream');
     }
 
     const packSlice = Buffer.from(sevenZipBuffer.subarray(packOffset, packOffset + packSize));
@@ -3616,22 +3623,22 @@ export function extract7zArchive(
     const uncompressedData = decompress7zFolder(packSlice, primaryCoder, folder.unpackSize);
 
     if (uncompressedData.length !== folder.unpackSize) {
-      throw new Error(`Corrupted 7z archive: unpack size mismatch (expected ${folder.unpackSize}, got ${uncompressedData.length})`);
+      throw new CorruptStreamError(`Corrupted 7z archive: unpack size mismatch (expected ${folder.unpackSize}, got ${uncompressedData.length})`);
     }
 
     if (folder.crc !== undefined) {
       const computedCrc = crc32(uncompressedData);
       if (computedCrc !== folder.crc) {
-        throw new Error(`Corrupted 7z archive: CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+        throw new CorruptStreamError(`Corrupted 7z archive: CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${computedCrc.toString(16)})`);
       }
     }
 
     totalUncompressedSize += uncompressedData.length;
     if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+      throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
     }
     if (sevenZipBuffer.length > 0 && totalUncompressedSize / sevenZipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+      throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
     }
 
     // Distribute uncompressed folder data to files
@@ -3639,7 +3646,7 @@ export function extract7zArchive(
       let subOffset = 0;
       for (let s = 0; s < folder.unpackSizes.length && fileIdx < filenames.length; s++) {
         if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-          throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+          throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
         }
         const sz = folder.unpackSizes[s];
         const fileBuf = Buffer.from(uncompressedData.subarray(subOffset, subOffset + sz));
@@ -3647,7 +3654,7 @@ export function extract7zArchive(
 
         if (folder.unpackCrcs?.[s] !== undefined) {
           if (crc32(fileBuf) !== folder.unpackCrcs[s]) {
-            throw new Error(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
+            throw new CorruptStreamError(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
           }
         }
 
@@ -3658,7 +3665,7 @@ export function extract7zArchive(
       }
     } else {
       if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
       const fname = fileIdx < filenames.length ? filenames[fileIdx++] : `file_${f}`;
       const sanitizedName = sanitizeArchivePath(fname);
@@ -4596,12 +4603,12 @@ export async function convertArchive(
     try {
       const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
       if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
@@ -4666,12 +4673,12 @@ export async function convertArchive(
     try {
       const uncompressed = decompressXz(effectiveBuffer);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
       if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }

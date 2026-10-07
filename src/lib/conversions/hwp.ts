@@ -589,7 +589,8 @@ export function hwpEquationToMathML(script: string): string {
       mathmlContent += `<mspace width="1em"/>`;
     } else if (tok === '`') {
       mathmlContent += `<mspace width="0.16em"/>`;
-    } else if (tok !== '{' && tok !== '}') {
+    } else if (tok !== '{' && tok !== '}' && !/^\s$/.test(tok)) {
+      // Whitespace only separates tokens in the script; as an operator it would add spacing of its own.
       mathmlContent += `<mo>${tok}</mo>`;
     }
   }

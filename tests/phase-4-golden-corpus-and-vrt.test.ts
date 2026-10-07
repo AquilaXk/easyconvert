@@ -11,7 +11,8 @@ import {
 } from './helpers/corpus-synthesizer';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
-import { evaluateBSplineSurface, evaluateSurfaceCurvature } from '../src/lib/conversions/cad-nurbs';
+import { evaluateBSplineCurve, evaluateBSplineSurface, evaluateSurfaceCurvature } from '../src/lib/conversions/cad-nurbs';
+import { CadGeometryError } from '../src/lib/types';
 import { parseToUnicodeCMap, recursiveXyCut } from '../src/lib/conversions/pdf-utils';
 import { parseHwpDocument, hwpEquationToMathML, hwpEquationToLaTeX } from '../src/lib/conversions/hwp';
 import sharp from 'sharp';
@@ -29,10 +30,34 @@ describe('Phase 4: Universal Golden Binary Corpus & Visual Regression CI Gate (#
       expect(corpus.surface.controlPoints.length).toBe(4);
       expect(corpus.surface.controlPoints[0].length).toBe(4);
 
-      // Verify analytical midpoint evaluation
-      expect(corpus.midPoint.x).toBeGreaterThan(0);
-      expect(corpus.midPoint.y).toBeGreaterThan(0);
-      expect(corpus.midPoint.z).toBeGreaterThan(0);
+      // A bicubic surface with the clamped knot vector [0,0,0,0,1,1,1,1] is a Bezier patch, so its point at (u, v)
+      // is the sum of control points weighted by Bernstein polynomials: an evaluation that shares no code with the
+      // Cox-de Boor routine under test. The midpoint of the corpus is checked, and the evaluator at a grid.
+      const bernstein = (t: number): number[] => [(1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t * t * (1 - t), t ** 3];
+      const bezierPoint = (u: number, v: number) => {
+        const bu = bernstein(u);
+        const bv = bernstein(v);
+        const point = { x: 0, y: 0, z: 0 };
+        corpus.surface.controlPoints.forEach((row, i) =>
+          row.forEach((control, j) => {
+            point.x += bu[i] * bv[j] * control.x;
+            point.y += bu[i] * bv[j] * control.y;
+            point.z += bu[i] * bv[j] * control.z;
+          })
+        );
+        return point;
+      };
+      expect(bezierPoint(0.5, 0.5)).toEqual({ x: 15, y: 15, z: 5.25 });
+      expect(corpus.midPoint).toEqual({ x: 15, y: 15, z: 5.25 });
+      for (const u of [0, 0.125, 0.5, 0.75, 1]) {
+        for (const v of [0, 0.3, 0.5, 1]) {
+          const evaluated = evaluateBSplineSurface(corpus.surface, u, v).point;
+          const expected = bezierPoint(u, v);
+          expect(evaluated.x).toBeCloseTo(expected.x, 9);
+          expect(evaluated.y).toBeCloseTo(expected.y, 9);
+          expect(evaluated.z).toBeCloseTo(expected.z, 9);
+        }
+      }
 
       // Verify analytical Gaussian and Mean curvatures
       expect(Number.isFinite(corpus.curvatures.K)).toBe(true);
@@ -208,10 +233,30 @@ describe('Phase 4: Universal Golden Binary Corpus & Visual Regression CI Gate (#
         uKnots: [1, 0, 2, 0, 1, 0, 1, 0],
       };
 
-      // Evaluating with malformed knots must either return zero/fallback or not crash
-      expect(() => {
-        evaluateBSplineSurface(corruptedSurface, 0.5, 0.5);
-      }).not.toThrow();
+      // A knot vector must not decrease: the surface is refused instead of evaluated to some number.
+      expect(() => evaluateBSplineSurface(corpus.surface, 0.5, 0.5)).not.toThrow();
+      expect(() => evaluateBSplineSurface(corruptedSurface, 0.5, 0.5)).toThrow(CadGeometryError);
+      expect(() => evaluateBSplineSurface(corruptedSurface, 0.5, 0.5)).toThrow(
+        /B-spline surface u knot vector decreases at index 1 \(0 follows 1\)/
+      );
+      // Wrong knot count for 4 control points of degree 3 (8 needed), a NaN knot, and an empty domain.
+      expect(() => evaluateBSplineSurface({ ...corpus.surface, vKnots: [0, 0, 0, 1, 1, 1] }, 0.5, 0.5)).toThrow(
+        /B-spline surface v knot vector has 6 knots, 8 needed for 4 control points of degree 3/
+      );
+      expect(() => evaluateBSplineSurface({ ...corpus.surface, uKnots: [0, 0, 0, 0, Number.NaN, 1, 1, 1] }, 0.5, 0.5)).toThrow(
+        /B-spline surface u knot vector holds a non-finite knot at index 4/
+      );
+      expect(() => evaluateBSplineSurface({ ...corpus.surface, uKnots: [1, 1, 1, 1, 1, 1, 1, 1] }, 0.5, 0.5)).toThrow(
+        /B-spline surface u knot vector spans no parameter range/
+      );
+
+      // The same checks guard curves: a line of 2 control points needs 3 knots, not 2.
+      const line = { degree: 1, controlPoints: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }], knots: [0, 0, 1, 1] };
+      expect(evaluateBSplineCurve(line, 0.5)).toEqual({ x: 5, y: 0, z: 0 });
+      expect(() => evaluateBSplineCurve({ ...line, knots: [0, 1, 1] }, 0.5)).toThrow(CadGeometryError);
+      expect(() => evaluateBSplineCurve({ ...line, knots: [0, 1, 1] }, 0.5)).toThrow(
+        /B-spline curve knot vector has 3 knots, 4 needed for 2 control points of degree 1/
+      );
     });
 
     it('resiliently handles corrupted CMap streams fail-closed', () => {
