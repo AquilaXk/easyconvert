@@ -58,9 +58,11 @@ let resolvedFfmpegPath: string | null = null;
 export function getFfmpegPath(): string | null {
   if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
   const envPath = process.env.FFMPEG_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    resolvedFfmpegPath = envPath;
-    return envPath;
+  if (envPath) {
+    // An explicit override is authoritative, as in the worker's resolver: a path with no file behind it
+    // means the tool is not installed, not that another install should be searched for.
+    resolvedFfmpegPath = fs.existsSync(envPath) ? envPath : '';
+    return resolvedFfmpegPath || null;
   }
   const fixedLocations = [
     '/usr/bin/ffmpeg',
@@ -212,7 +214,7 @@ export async function convertMedia(
   const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
   if (isThumbnail) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for thumbnail extraction.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for thumbnail extraction.');
     }
     return await executeFfmpegThumbnails(inputBuffer, src, tgt, options, baseName);
   }
@@ -221,7 +223,7 @@ export async function convertMedia(
   const isSubtitleExtract = options.subtitles?.mode === 'extract' || ['srt', 'vtt', 'ass'].includes(tgt);
   if (isSubtitleExtract && options.subtitles?.mode === 'extract') {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for subtitle extraction.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for subtitle extraction.');
     }
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
   }
@@ -230,7 +232,7 @@ export async function convertMedia(
   const isPackaging = Boolean(options.packaging) || tgt === 'hls' || tgt === 'dash';
   if (isPackaging) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for ABR media packaging.');
     }
     const resolvedPackaging: MediaPackagingOptions = options.packaging || {
       format: (tgt === 'dash' ? 'dash' : 'hls'),
@@ -241,8 +243,9 @@ export async function convertMedia(
   // If FFmpeg is explicitly requested, fail-closed if not available or if execution fails
   if (options.useFfmpeg) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError(
-        `Native FFmpeg engine requested via options.useFfmpeg but FFmpeg is not available in execution environment.`
+      throw new EngineUnavailableError(
+        'ffmpeg',
+        'Native FFmpeg engine requested via options.useFfmpeg but FFmpeg is not available in execution environment.'
       );
     }
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
@@ -486,7 +489,7 @@ export async function packageHlsDashMedia(
 
   const ffmpegBin = getFfmpegPath();
   if (!ffmpegBin) {
-    throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+    throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for ABR media packaging.');
   }
 
   const tmpDir = os.tmpdir();
