@@ -9,6 +9,7 @@ import { OPFS_CHUNK_SIZE, runOpfsWorkerJob } from '../src/lib/edge/workers/opfs-
 import { EdgeUnsupportedError, rehydrateWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { isOpfsStreamingSupported, resolveConversionTier } from '../src/lib/edge/tier-router';
 import { oracleTest } from './helpers/oracle-test';
+import { createFakeOpfs } from './helpers/opfs-fake';
 import { failure, OPFS_ROUTES, runOpfsConversion, type OpfsRoute } from './helpers/opfs-run';
 import { mulberry32 } from './helpers/audio-signals';
 import { craftEntry, END_OF_ARCHIVE, craftHeader } from './helpers/tar-craft';
@@ -46,6 +47,8 @@ afterEach(() => {
 });
 
 describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (route) => {
+  // Inflating needs a disk-backed output; the in-memory route refuses it (edge-opfs-quota.test.ts).
+  const inflateIt = it.skipIf(route === 'chunk-fallback');
   it.each([
     ['tar', 'tar_gz'],
     ['tar', 'gz'],
@@ -72,7 +75,7 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (
     expect(walkTar(inflated).map((entry) => entry.name)).toEqual(['a.bin', 'b.bin', 'c.bin']);
   });
 
-  it.each([
+  inflateIt.each([
     ['gz', 'tar'],
     ['tar_gz', 'tar'],
   ])('%s to %s writes exactly the decompressed tar', async (source, target) => {
@@ -81,9 +84,9 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (
 
     expect(bytes.equals(LARGE_TAR)).toBe(true);
     expect(walkTar(bytes).map((entry) => entry.name)).toEqual(['a.bin', 'b.bin', 'c.bin']);
-  });
+  }, 30_000);
 
-  it('refuses a gzip stream whose content is not a tar archive', async () => {
+  inflateIt('refuses a gzip stream whose content is not a tar archive', async () => {
     const notTar = gzipSync(Buffer.from('plain text, not a tar archive\n'.repeat(400)));
     const error = await failure(convert(route, 'gz', 'tar', notTar));
     expect(error).toMatchObject({ name: 'EdgeUnsupportedError', message: expect.stringMatching(/not a POSIX ustar/) });
@@ -97,14 +100,14 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
   });
 
-  it('fails a truncated gzip stream with CorruptStreamError', async () => {
+  inflateIt('fails a truncated gzip stream with CorruptStreamError', async () => {
     const gz = gzipSync(SMALL_TAR);
     const error = await failure(convert(route, 'gz', 'tar', gz.subarray(0, gz.length - 12)));
     expect(error).toMatchObject({ name: 'CorruptStreamError', message: expect.stringMatching(/gzip stream is damaged/) });
     expect(error).toBeInstanceOf(CorruptStreamError);
   });
 
-  it('fails a gzip stream with a damaged CRC-32 with CorruptStreamError', async () => {
+  inflateIt('fails a gzip stream with a damaged CRC-32 with CorruptStreamError', async () => {
     const gz = Buffer.from(gzipSync(SMALL_TAR));
     gz[gz.length - 8] ^= 0xff;
     const error = await failure(convert(route, 'gz', 'tar', gz));
@@ -116,7 +119,10 @@ describe.each<OpfsRoute>(OPFS_ROUTES)('OPFS archive streams, %s (issue #480)', (
     const cut = SMALL_TAR.subarray(0, 512 + 100);
     const direct = await failure(convert(route, 'tar', 'tar_gz', cut));
     expect(direct).toMatchObject({ name: 'CorruptStreamError', message: expect.stringMatching(/ends inside an entry/) });
-    const viaGzip = await failure(convert(route, 'gz', 'tar', gzipSync(cut)));
+  });
+
+  inflateIt('fails a gzip of a tar cut inside an entry body with CorruptStreamError', async () => {
+    const viaGzip = await failure(convert(route, 'gz', 'tar', gzipSync(SMALL_TAR.subarray(0, 512 + 100))));
     expect(viaGzip).toMatchObject({ name: 'CorruptStreamError', message: expect.stringMatching(/ends inside an entry/) });
   });
 
@@ -178,6 +184,7 @@ describe('OPFS archive limits and typed errors (issue #480)', () => {
   it('sends CorruptStreamError across the worker boundary and rebuilds the class', async () => {
     const gz = gzipSync(SMALL_TAR);
     const messages: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('navigator', createFakeOpfs().navigator);
     await runOpfsWorkerJob(
       {
         type: 'START_OPFS_STREAM',

@@ -11,11 +11,15 @@
  */
 
 import { ConversionFailedError, CorruptStreamError, DecompressionLimitError } from '../../types';
+import { OPFS_MAX_FILE_BYTES } from '../opfs/limits';
 import { type ChunkTransformerFn, isLastChunk } from './chunk-transformer';
 import { EdgeUnsupportedError } from './worker-errors';
 
-/** Most bytes one gzip input may inflate to; a bigger stream is refused as a decompression bomb. */
-export const OPFS_MAX_DECOMPRESSED_BYTES = 16 * 1024 * 1024 * 1024;
+/**
+ * Most bytes one gzip input may inflate to: the largest file the edge accepts at all. A bigger stream is refused
+ * as a decompression bomb, so a small file cannot fill the user's disk.
+ */
+export const OPFS_MAX_DECOMPRESSED_BYTES = OPFS_MAX_FILE_BYTES;
 /** Input bytes handed to the gzip stream at a time, which bounds how much one write can expand into. */
 const GZIP_FEED_SLICE_BYTES = 64 * 1024;
 /** Output the pump keeps queued before it stops reading, so a slow writer applies backpressure. */

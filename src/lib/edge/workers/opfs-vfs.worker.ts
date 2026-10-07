@@ -12,8 +12,17 @@ import { ConversionFailedError } from '../../types';
 import { type ChunkTransformerFn, forEachOutputPiece } from './chunk-transformer';
 import { createDelimitedStreamTransformer, isStreamableDelimitedPair } from './delimited-stream';
 import { resolveAudioStreamTransformer } from './opfs-audio';
-import { createGunzipTarTransformer, createTarGzipTransformer } from './opfs-archive';
-import { EdgeUnsupportedError, serializeWorkerError, type SerializedWorkerError } from './worker-errors';
+import {
+  createGunzipTarTransformer,
+  createTarGzipTransformer,
+  OPFS_MAX_DECOMPRESSED_BYTES,
+} from './opfs-archive';
+import {
+  EdgeStorageQuotaError,
+  EdgeUnsupportedError,
+  serializeWorkerError,
+  type SerializedWorkerError,
+} from './worker-errors';
 
 export type { ChunkTransformerFn } from './chunk-transformer';
 
@@ -26,6 +35,8 @@ export interface OpfsConversionJob {
   targetFormat: string;
   totalSize: number;
   options?: Record<string, any>;
+  /** Lowers the most bytes an inflating conversion may write; it never raises it above the file size limit. */
+  maxOutputBytes?: number;
 }
 
 export interface OpfsChunkProgress {
@@ -63,6 +74,11 @@ function isGunzipTarPair(src: string, tgt: string): boolean {
   return (src === 'gz' || src === 'tar_gz') && tgt === 'tar';
 }
 
+/** Whether the pair writes far more than it reads, so that only a disk-backed output can hold it. */
+function isExpandingPair(sourceFormat: string, targetFormat: string): boolean {
+  return isGunzipTarPair(sourceFormat.toLowerCase(), targetFormat.toLowerCase());
+}
+
 function buildGrayscaleTransformer(): ChunkTransformerFn {
   let checked = false;
   return (chunk: Uint8Array, _offset: number, totalSize: number) => {
@@ -98,7 +114,8 @@ function buildGrayscaleTransformer(): ChunkTransformerFn {
 export function resolveChunkTransformer(
   sourceFormat?: string,
   targetFormat?: string,
-  options?: Record<string, any>
+  options?: Record<string, any>,
+  limits: { maxOutputBytes?: number } = {}
 ): ChunkTransformerFn {
   const src = (sourceFormat || '').toLowerCase();
   const tgt = (targetFormat || '').toLowerCase();
@@ -108,7 +125,9 @@ export function resolveChunkTransformer(
   if (isStreamableDelimitedPair(src, tgt)) return createDelimitedStreamTransformer(src, tgt, options);
   if (isGrayscalePair(src, tgt)) return buildGrayscaleTransformer();
   if (isTarGzipPair(src, tgt)) return createTarGzipTransformer();
-  if (isGunzipTarPair(src, tgt)) return createGunzipTarTransformer();
+  if (isGunzipTarPair(src, tgt)) {
+    return createGunzipTarTransformer(Math.min(limits.maxOutputBytes ?? OPFS_MAX_DECOMPRESSED_BYTES, OPFS_MAX_DECOMPRESSED_BYTES));
+  }
 
   throw new EdgeUnsupportedError(`Unsupported streaming transformation: ${sourceFormat} to ${targetFormat}`);
 }
@@ -188,8 +207,25 @@ export class OpfsStreamTransformer {
   }
 }
 
+const QUOTA_EXCEEDED_ERROR_NAME = 'QuotaExceededError';
+
+function isQuotaExceeded(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === QUOTA_EXCEEDED_ERROR_NAME;
+}
+
+/** The runtime has no usable OPFS sync access handle (a window, a blocked context): nothing has been converted yet. */
+class SyncAccessUnavailableError extends Error {}
+
+function quotaError(): EdgeStorageQuotaError {
+  return new EdgeStorageQuotaError(
+    'The browser storage quota is used up, so the edge cannot hold this conversion; the server engine converts the file.'
+  );
+}
+
 /**
- * Synchronously streams data through OPFS FileSystemSyncAccessHandle with session isolation.
+ * Synchronously streams data through OPFS FileSystemSyncAccessHandle with session isolation. It throws
+ * SyncAccessUnavailableError, before any data is read, when the runtime cannot open a sync access handle; every
+ * other failure ends the conversion, deletes what it wrote, and is typed (a full quota is EdgeStorageQuotaError).
  */
 export async function streamWithSyncAccessHandle(
   job: OpfsConversionJob,
@@ -197,27 +233,63 @@ export async function streamWithSyncAccessHandle(
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ blob: Blob; outputSize: number }> {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) {
-    throw new Error('OPFS is not supported in this runtime environment');
+    throw new SyncAccessUnavailableError('OPFS is not supported in this runtime environment');
   }
 
   const jobId = job.jobId;
-  const transformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options);
-
-  const root = await navigator.storage.getDirectory();
-  const easyconvertDir = await root.getDirectoryHandle('easyconvert', { create: true });
-  const sessionsDir = await easyconvertDir.getDirectoryHandle('sessions', { create: true });
-  const sessionDir = await sessionsDir.getDirectoryHandle(jobId, { create: true });
-
-  const inputHandle = await sessionDir.getFileHandle('input.bin', { create: true });
-  const outputHandle = await sessionDir.getFileHandle('output.bin', { create: true });
-
+  let sessionsDir: FileSystemDirectoryHandle | null = null;
+  let sessionDir: FileSystemDirectoryHandle | null = null;
+  let outputHandle: FileSystemFileHandle | null = null;
   let inputAccess: any = null;
   let outputAccess: any = null;
 
+  const closeHandles = (): void => {
+    for (const access of [inputAccess, outputAccess]) {
+      try {
+        access?.close();
+      } catch {}
+    }
+    inputAccess = null;
+    outputAccess = null;
+  };
+  /** Removes everything this conversion wrote, once its handles are closed. */
+  const discardSession = async (): Promise<void> => {
+    closeHandles();
+    for (const name of ['output.bin', 'input.bin']) {
+      try {
+        await sessionDir?.removeEntry(name);
+      } catch {}
+    }
+    try {
+      await sessionsDir?.removeEntry(jobId, { recursive: true });
+    } catch {}
+  };
+
+  // Phase 1: open the session. A failure here, other than a full quota, means no handle is available.
   try {
+    const root = await navigator.storage.getDirectory();
+    const easyconvertDir = await root.getDirectoryHandle('easyconvert', { create: true });
+    sessionsDir = await easyconvertDir.getDirectoryHandle('sessions', { create: true });
+    sessionDir = await sessionsDir.getDirectoryHandle(jobId, { create: true });
+    const inputHandle = await sessionDir.getFileHandle('input.bin', { create: true });
+    outputHandle = await sessionDir.getFileHandle('output.bin', { create: true });
+    if (typeof (inputHandle as any).createSyncAccessHandle !== 'function') {
+      throw new SyncAccessUnavailableError('The runtime has no FileSystemSyncAccessHandle (it exists in workers only)');
+    }
     inputAccess = await (inputHandle as any).createSyncAccessHandle();
     outputAccess = await (outputHandle as any).createSyncAccessHandle();
+  } catch (error) {
+    await discardSession();
+    if (isQuotaExceeded(error)) throw quotaError();
+    if (error instanceof SyncAccessUnavailableError) throw error;
+    throw new SyncAccessUnavailableError(error instanceof Error ? error.message : String(error));
+  }
 
+  // Phase 2: convert. From here on a failure is final.
+  try {
+    const transformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options, {
+      maxOutputBytes: job.maxOutputBytes,
+    });
     const totalBytes = file.size;
     const chunkCount = calculateChunkCount(totalBytes, OPFS_CHUNK_SIZE);
     let bytesProcessed = 0;
@@ -255,26 +327,20 @@ export async function streamWithSyncAccessHandle(
     }
     outputAccess.flush();
     onProgress?.(100, bytesProcessed);
-  } finally {
-    // Deterministic release of OS file locks
-    if (inputAccess) {
-      try {
-        inputAccess.close();
-      } catch {}
-    }
-    if (outputAccess) {
-      try {
-        outputAccess.close();
-      } catch {}
-    }
+  } catch (error) {
+    await discardSession();
+    if (isQuotaExceeded(error)) throw quotaError();
+    throw error;
   }
+  // Deterministic release of OS file locks
+  closeHandles();
 
   // Retrieve File directly backed by OPFS disk block (zero JS heap memory copy)
-  const outputFile = await outputHandle.getFile();
+  const outputFile = await (outputHandle as FileSystemFileHandle).getFile();
 
   // Remove temporary input file to immediately reclaim disk space
   try {
-    await sessionDir.removeEntry('input.bin');
+    await sessionDir?.removeEntry('input.bin');
   } catch {}
 
   return {
@@ -291,6 +357,12 @@ async function streamWithChunkTransformer(
   input: Blob | File | ArrayBuffer,
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ buffer?: ArrayBuffer; blob?: Blob; outputSize: number }> {
+  // The in-memory path keeps every output byte in RAM, so it never runs a conversion that expands its input.
+  if (isExpandingPair(job.sourceFormat, job.targetFormat)) {
+    throw new EdgeUnsupportedError(
+      'Inflating an archive needs a disk-backed output (OPFS sync access handles), which this runtime does not have; the server engine converts it.'
+    );
+  }
   const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
   const totalSize = isBlob ? (input as Blob).size : (input as ArrayBuffer).byteLength;
   const transformer = new OpfsStreamTransformer(OPFS_CHUNK_SIZE);
@@ -365,12 +437,12 @@ export async function processOpfsStreaming(
 
   if (hasSyncAccess && (typeof Blob !== 'undefined' && input instanceof Blob)) {
     try {
-      const res = await streamWithSyncAccessHandle(job, input as Blob, onProgress);
-      return res;
+      return await streamWithSyncAccessHandle(job, input as Blob, onProgress);
     } catch (error) {
-      // A verdict on the data or the conversion is final; only a storage failure (no sync access handle off a
-      // worker thread, a full disk) falls back to the in-memory chunk transformer.
-      if (error instanceof ConversionFailedError) throw error;
+      // Only a runtime with no sync access handle (a window; nothing was read yet) falls back to the in-memory
+      // chunk transformer. Any failure after the conversion started, a full quota included, is final: restarting
+      // it in memory would hold the whole output in RAM.
+      if (!(error instanceof SyncAccessUnavailableError)) throw error;
     }
   }
 

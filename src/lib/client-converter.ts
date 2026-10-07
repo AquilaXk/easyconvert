@@ -4,6 +4,7 @@ import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, C
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
+import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
@@ -72,7 +73,7 @@ function describeEdgeError(err: unknown): string {
  */
 export function getEffectiveMaxFileSize(baseMax: number = 100 * 1024 * 1024): number {
   if (typeof window !== 'undefined' && checkOpfsSupport()) {
-    return 2 * 1024 * 1024 * 1024; // 2 GB OPFS VFS ceiling
+    return OPFS_MAX_FILE_BYTES; // 2 GB OPFS VFS ceiling
   }
   return baseMax;
 }
