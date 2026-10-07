@@ -4,12 +4,7 @@ import { beforeAll, describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import {
-  demuxMp4,
-  buildFmp4InitSegment,
-  buildFmp4MediaSegment,
-  muxFmp4Stream,
-} from '../src/lib/edge/workers/webcodecs.worker';
+import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
 import { extractStepBRepMesh, parseStepEntities } from '../src/lib/conversions/cad-nurbs';
 import { decodeWoff2 } from '../src/lib/conversions/font';
@@ -433,43 +428,6 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         }
       );
 
-      it('validates fragmented MP4 (fMP4) segment sequence numbers and decode timestamps', () => {
-        const sampleChunks = [
-          { data: new Uint8Array([0x65, 0x88, 0x80, 0x40]), timestampMicros: 0, isKeyFrame: true },
-          { data: new Uint8Array([0x41, 0x9a, 0x11, 0x22]), timestampMicros: 33333, isKeyFrame: false },
-          { data: new Uint8Array([0x41, 0x9a, 0x33, 0x44]), timestampMicros: 66666, isKeyFrame: false },
-        ];
-
-        const emittedSegments: Uint8Array[] = [];
-        const fullStream = muxFmp4Stream(sampleChunks, 1920, 1080, {
-          fragmentChunkCount: 2,
-          onSegment: (seg) => emittedSegments.push(seg),
-        });
-
-        // Must produce 1 init segment + 2 media segments = 3 total segments
-        expect(emittedSegments).toHaveLength(3);
-
-        // Segment 0: Init segment containing ftyp and moov
-        const initSeg = emittedSegments[0];
-        const initStr = Buffer.from(initSeg).toString('ascii');
-        expect(initStr).toContain('ftyp');
-        expect(initStr).toContain('moov');
-        expect(initStr).toContain('mvex');
-
-        // Segment 1 & 2: Media segments containing moof and mdat
-        for (let i = 1; i <= 2; i++) {
-          const seg = emittedSegments[i];
-          const segStr = Buffer.from(seg).toString('ascii');
-          expect(segStr).toContain('moof');
-          expect(segStr).toContain('mdat');
-          expect(segStr).toContain('mfhd');
-          expect(segStr).toContain('tfhd');
-          expect(segStr).toContain('tfdt');
-          expect(segStr).toContain('trun');
-        }
-
-        expect(fullStream.length).toBeGreaterThan(0);
-      });
     });
 
     describe('2.3 Archive Boundary & CRC-32 Oracle', () => {

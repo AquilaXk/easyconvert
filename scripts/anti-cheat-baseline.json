@@ -211,20 +211,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-hotfix-verification.test.ts",
-    "symbol": "buildMp4MoovBox creates dual-track moov with vide and soun track descriptors",
-    "reason": "Test block \"buildMp4MoovBox creates dual-track moov with vide and soun track descriptors\" contains only weak assertions (8 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-hotfix-verification.test.ts",
-    "symbol": "muxMp4Media embeds both video and audio tracks in fastStart ISO BMFF container",
-    "reason": "Test block \"muxMp4Media embeds both video and audio tracks in fastStart ISO BMFF container\" contains only weak assertions (5 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-1-integrity-and-security.test.ts",
     "symbol": "parses CSV with quoted commas cleanly using Papa.parse without splitting fields",
     "reason": "Test block \"parses CSV with quoted commas cleanly using Papa.parse without splitting fields\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
@@ -242,20 +228,6 @@
     "file": "tests/phase-1-storage-and-streaming.test.ts",
     "symbol": "makes OCI worker output immediately retrievable via S3 storage and download route",
     "reason": "Test block \"makes OCI worker output immediately retrievable via S3 storage and download route\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-2-algorithms-and-edge.test.ts",
-    "symbol": "builds fMP4 initialization segment with ftyp, moov, and mvex boxes",
-    "reason": "Test block \"builds fMP4 initialization segment with ftyp, moov, and mvex boxes\" contains only weak assertions (5 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-2-algorithms-and-edge.test.ts",
-    "symbol": "builds fMP4 media fragment (moof + mdat) with sequence numbers and decode timestamps",
-    "reason": "Test block \"builds fMP4 media fragment (moof + mdat) with sequence numbers and decode timestamps\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
   {

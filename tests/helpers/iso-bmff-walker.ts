@@ -144,3 +144,30 @@ export function extractAvcC(data: Uint8Array): Uint8Array {
   }
   throw new Error('no avcC box in the file');
 }
+
+/** Reads an MPEG-4 descriptor length: seven bits per byte while the high bit is set. */
+function descriptorLength(bytes: Uint8Array, at: number): { length: number; next: number } {
+  let length = 0;
+  let cursor = at;
+  for (;;) {
+    const byte = bytes[cursor++];
+    length = length * 128 + (byte & 0x7f);
+    if ((byte & 0x80) === 0) return { length, next: cursor };
+  }
+}
+
+/** The object type indication and the AudioSpecificConfig of an esds payload (ISO/IEC 14496-1 7.2.6). */
+export function readEsds(payload: Uint8Array): { oti: number; streamType: number; asc: Uint8Array } {
+  let at = 4; // version and flags
+  if (payload[at++] !== 0x03) throw new Error('esds does not start with an ES_Descriptor');
+  at = descriptorLength(payload, at).next;
+  at += 3; // ES_ID and flags
+  if (payload[at++] !== 0x04) throw new Error('esds has no DecoderConfigDescriptor');
+  at = descriptorLength(payload, at).next;
+  const oti = payload[at];
+  const streamType = payload[at + 1];
+  at += 1 + 1 + 3 + 4 + 4;
+  if (payload[at++] !== 0x05) throw new Error('esds has no DecoderSpecificInfo');
+  const { length, next } = descriptorLength(payload, at);
+  return { oti, streamType, asc: payload.slice(next, next + length) };
+}

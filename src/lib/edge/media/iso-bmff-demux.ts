@@ -14,6 +14,7 @@
  */
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
+import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
 import type { DemuxedMediaSample, DemuxedTrackInfo } from './media-types';
 
 /** Samples per track. 100 MB of 64 kbit/s audio is under 700,000 AAC frames. */
@@ -49,18 +50,6 @@ const HEX_RADIX = 16;
 const IDENTITY_MATRIX: readonly number[] = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000];
 const MATRIX_ENTRIES = IDENTITY_MATRIX.length;
 
-/** ISO/IEC 14496-3 Table 1.18, samplingFrequencyIndex 0..12. */
-const AAC_SAMPLE_RATES: readonly number[] = [
-  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
-];
-const AAC_EXPLICIT_RATE_INDEX = 15;
-const AAC_LC_OBJECT_TYPE = 2;
-const AAC_ESCAPE_OBJECT_TYPE = 31;
-const AAC_MAX_CHANNEL_CONFIG = 7;
-/** channelConfiguration 7 is 7.1: eight channels. */
-const AAC_CHANNELS_BY_CONFIG: readonly number[] = [0, 1, 2, 3, 4, 5, 6, 8];
-
-const OTI_MPEG4_AUDIO = 0x40;
 const OTI_MPEG1_AUDIO = 0x6b;
 const OTI_MPEG2_AUDIO = 0x69;
 const ES_DESCRIPTOR_TAG = 0x03;
@@ -384,23 +373,6 @@ function parseEsds(view: DataView, esds: Mp4Box): EsdsInfo {
   throw refuse('esds has no DecoderConfigDescriptor');
 }
 
-class BitReader {
-  private bit = 0;
-
-  constructor(private readonly bytes: Uint8Array) {}
-
-  read(count: number): number {
-    let value = 0;
-    for (let i = 0; i < count; i++) {
-      const byte = this.bytes[this.bit >>> 3];
-      if (byte === undefined) throw refuse('AudioSpecificConfig is truncated');
-      value = (value << 1) | ((byte >>> (7 - (this.bit & 7))) & 1);
-      this.bit++;
-    }
-    return value;
-  }
-}
-
 interface AudioConfig {
   codec: string;
   sampleRate: number;
@@ -410,26 +382,8 @@ interface AudioConfig {
 
 /** ISO/IEC 14496-3 1.6.2.1 AudioSpecificConfig, for AAC-LC only. */
 function aacLcConfig(asc: Uint8Array): AudioConfig {
-  const bits = new BitReader(asc);
-  let objectType = bits.read(5);
-  if (objectType === AAC_ESCAPE_OBJECT_TYPE) objectType = 32 + bits.read(6);
-  if (objectType !== AAC_LC_OBJECT_TYPE) {
-    throw refuse(`AAC audio object type ${objectType} is not AAC-LC, the only profile read at the edge`);
-  }
-  const rateIndex = bits.read(4);
-  let sampleRate: number;
-  if (rateIndex === AAC_EXPLICIT_RATE_INDEX) {
-    sampleRate = bits.read(24);
-  } else if (rateIndex < AAC_SAMPLE_RATES.length) {
-    sampleRate = AAC_SAMPLE_RATES[rateIndex];
-  } else {
-    throw refuse(`AAC sampling frequency index ${rateIndex} is reserved`);
-  }
-  const channelConfig = bits.read(4);
-  if (channelConfig === 0 || channelConfig > AAC_MAX_CHANNEL_CONFIG) {
-    throw refuse(`AAC channel configuration ${channelConfig} needs a program config element`);
-  }
-  return { codec: 'mp4a.40.2', sampleRate, channels: AAC_CHANNELS_BY_CONFIG[channelConfig], description: asc };
+  const config = parseAacLcConfig(asc);
+  return { codec: AAC_LC_CODEC, sampleRate: config.sampleRate, channels: config.channels, description: asc };
 }
 
 function audioConfig(view: DataView, entryType: string, entryChildren: Mp4Box[], entryChannels: number, entryRate: number): AudioConfig {

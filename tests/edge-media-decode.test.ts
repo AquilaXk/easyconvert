@@ -193,11 +193,19 @@ describe('compressed audio is decoded before it is encoded', () => {
     const report = ffprobeReport(new Uint8Array(mp4), 'mp4');
     const video = report.streams.find((s) => s.codec_type === 'video');
     const audio = report.streams.find((s) => s.codec_type === 'audio');
+    // The AAC encoder describes what it encoded: the rate the decoder produced and the source's channels
+    const encodedRate = overrides.decodedAudioSampleRate ?? Number(audio?.sample_rate);
+    const encodedChannels = audio?.channels as number;
     platform = installFakeWebCodecs({
       decodedFrameSize: { width: video?.width ?? 0, height: video?.height ?? 0 },
       decodedAudioFramesPerChunk: AAC_FRAME_SAMPLES,
       videoDecoderConfig: { codec: 'avc1.64000d', description: extractAvcC(new Uint8Array(mp4)) },
-      audioDecoderConfig: { codec: 'mp4a.40.2', sampleRate: Number(audio?.sample_rate), numberOfChannels: audio?.channels },
+      audioDecoderConfig: {
+        codec: 'mp4a.40.2',
+        sampleRate: encodedRate,
+        numberOfChannels: encodedChannels,
+        description: aacLcSpecificConfig(encodedRate, encodedChannels),
+      },
       ...overrides,
     });
     return platform;
@@ -356,7 +364,7 @@ describe('video is decoded and encoded frame for frame', () => {
       decodedAudioFramesPerChunk: AAC_FRAME_SAMPLES,
       asyncVideoEncoder: true,
       videoDecoderConfig: { codec: 'avc1.64000d', description: extractAvcC(new Uint8Array(mp4)) },
-      audioDecoderConfig: { codec: 'mp4a.40.2', sampleRate: 44100, numberOfChannels: 1 },
+      audioDecoderConfig: { codec: 'mp4a.40.2', sampleRate: 44100, numberOfChannels: 1, description: aacLcSpecificConfig(44100, 1) },
     });
 
     await processWebCodecsConversion({

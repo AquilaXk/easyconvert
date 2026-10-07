@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getOracleToolPath, OracleToolMissingError } from './differential-oracle';
@@ -89,4 +89,44 @@ export function aacLcSpecificConfig(sampleRate: number, channels: number): Uint8
   const AAC_LC = 2;
   const bits = (AAC_LC << 11) | (index << 7) | (channels << 3);
   return Uint8Array.from([bits >> 8, bits & 0xff]);
+}
+
+/** Writes `bytes` to a temporary file with `extension`, runs `run(path)` and removes the file. */
+function withFile<T>(bytes: Uint8Array, extension: string, run: (file: string) => T): T {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'ffmpeg-input-'));
+  try {
+    const file = path.join(dir, `input.${extension}`);
+    writeFileSync(file, bytes);
+    return run(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * What the reference decoder says when it decodes every stream of `bytes` to nothing: empty when the file is
+ * a clean, decodable stream, the error log otherwise.
+ */
+export function ffmpegDecodeErrors(bytes: Uint8Array, extension: string): string {
+  return withFile(bytes, extension, (file) => {
+    const result = spawnSync(requireFfmpeg(), ['-v', 'error', '-i', file, '-f', 'null', '-'], {
+      encoding: 'utf8',
+      maxBuffer: MAX_FFMPEG_OUTPUT_BYTES,
+    });
+    return `${result.status === 0 ? '' : `exit ${result.status}: `}${result.stderr}`.trim();
+  });
+}
+
+/** The reference decoder's md5 of every decoded frame of the first video stream. */
+export function ffmpegVideoFrameHashes(bytes: Uint8Array, extension: string): string[] {
+  return withFile(bytes, extension, (file) => {
+    const out = execFileSync(requireFfmpeg(), ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'], {
+      encoding: 'utf8',
+      maxBuffer: MAX_FFMPEG_OUTPUT_BYTES,
+    });
+    return out
+      .split('\n')
+      .filter((line) => line !== '' && !line.startsWith('#'))
+      .map((line) => line.split(',').pop()?.trim() ?? '');
+  });
 }

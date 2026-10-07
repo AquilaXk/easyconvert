@@ -15,6 +15,8 @@ import {
   createOggPageTyped,
   resolveWebCodecsConfig,
 } from '../src/lib/edge/workers/webcodecs.worker';
+import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
+import { walkOggPages } from './helpers/ogg-walker';
 
 describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
   // ==========================================================================
@@ -129,88 +131,38 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
   // 2. WebCodecs Client-Edge Ogg Opus Muxer
   // ==========================================================================
   describe('2. WebCodecs Client-Edge Ogg Opus Muxer (TypedArray Muxer)', () => {
-    it('creates compliant Ogg Opus bytes from EncodedAudioChunk arrays with monotonic 48kHz granule positions', () => {
-      const chunk1 = {
-        data: new Uint8Array([0xc4, 0x10, 0x20, 0x30]),
-        timestampMicros: 0,
-        isKeyFrame: true,
-      };
-      const chunk2 = {
-        data: new Uint8Array([0xc4, 0x40, 0x50, 0x60]),
-        timestampMicros: 20000,
-        isKeyFrame: false,
-      };
+    // The muxer's output is checked against ffprobe and ffmpeg in edge-media-mux.test.ts
 
-      const muxed = muxOggOpus([chunk1, chunk2], 48000, 2);
-      expect(muxed).toBeInstanceOf(Uint8Array);
-      expect(muxed.length).toBeGreaterThan(100);
-
-      // Verify 'OggS' signature at offset 0
-      expect(String.fromCharCode(muxed[0], muxed[1], muxed[2], muxed[3])).toBe('OggS');
-
-      // Verify OpusHead magic
-      const muxedText = new TextDecoder().decode(muxed);
-      expect(muxedText).toContain('OpusHead');
-      expect(muxedText).toContain('OpusTags');
-      expect(muxedText).toContain('EasyConvert WebCodecs Engine');
-
-      // Verify granule position of second audio page
-      // Page 1: BOS (OpusHead), Page 2: OpusTags, Page 3: audio chunk 1 (granule 960), Page 4: audio chunk 2 (granule 1920, EOS flag 0x04)
-      let offset = 0;
-      let pageCount = 0;
-      let lastPageGranule = 0n;
-      let lastPageFlag = 0;
-
-      while (offset + 27 <= muxed.length) {
-        if (
-          muxed[offset] === 0x4f &&
-          muxed[offset + 1] === 0x67 &&
-          muxed[offset + 2] === 0x67 &&
-          muxed[offset + 3] === 0x53
-        ) {
-          pageCount++;
-          const view = new DataView(muxed.buffer, muxed.byteOffset + offset, 27);
-          const flag = view.getUint8(5);
-          const granule = view.getBigInt64(6, true);
-          const segCount = muxed[offset + 26];
-          let payloadLen = 0;
-          for (let s = 0; s < segCount; s++) payloadLen += muxed[offset + 27 + s];
-
-          lastPageGranule = granule;
-          lastPageFlag = flag;
-          offset += 27 + segCount + payloadLen;
-        } else {
-          offset++;
-        }
-      }
-
-      expect(pageCount).toBe(4);
-      expect(lastPageGranule).toBe(1920n);
-      expect(lastPageFlag).toBe(0x04); // EOS
-    });
-
-    it('generates compliant empty EOS page when encodedChunks is empty', () => {
-      const muxed = muxOggOpus([], 48000, 2);
-      expect(muxed).toBeInstanceOf(Uint8Array);
-      expect(muxed.length).toBeGreaterThan(40);
-      expect(muxed[0]).toBe(0x4f); // 'O'
-      expect(muxed[1]).toBe(0x67); // 'g'
-      expect(muxed[2]).toBe(0x67); // 'g'
-      expect(muxed[3]).toBe(0x53); // 'S'
-
-      const muxedText = new TextDecoder().decode(muxed);
-      expect(muxedText).toContain('OpusHead');
-      expect(muxedText).toContain('OpusTags');
-    });
-
-    it('validates CRC-32 checksum calculation in createOggPageTyped', () => {
+    it('writes Ogg pages whose RFC 3533 checksum an independent reader accepts', () => {
       const payload = new Uint8Array([0xc0, 0x01, 0x02]);
       const page = createOggPageTyped(payload, 0x00, 960n, 3, 0x4f505553);
 
-      expect(page).toBeInstanceOf(Uint8Array);
-      const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
-      const crc = view.getUint32(22, true);
-      expect(crc).not.toBe(0);
+      const [read] = walkOggPages(page);
+      expect(read.crcValid).toBe(true);
+      expect(read).toMatchObject({ flags: 0, granule: 960n, sequence: 3, serial: 0x4f505553 });
+      expect(read.packets).toEqual([payload]);
+    });
+
+    it('lets a one-bit change of a page be seen by the checksum', () => {
+      const page = createOggPageTyped(new Uint8Array([0xc0, 0x01, 0x02]), 0x00, 960n, 3, 0x4f505553);
+      page[page.length - 1] ^= 0x01;
+
+      expect(walkOggPages(page)[0].crcValid).toBe(false);
+    });
+
+    it('splits a packet longer than 255 bytes into laced segments that end with a short one', () => {
+      const payload = new Uint8Array(510).fill(7);
+      const page = createOggPageTyped(payload, 0x00, 0n, 0, 1);
+
+      // 510 = 255 + 255, so the packet needs a closing zero-length segment: [255, 255, 0]
+      expect([...page.subarray(26, 30)]).toEqual([3, 255, 255, 0]);
+      expect(walkOggPages(page)[0].packets).toEqual([payload]);
+    });
+
+    it('does not fabricate a page for an empty stream: it refuses', () => {
+      const head = new Uint8Array([0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, 1, 2, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0]);
+
+      expect(() => muxOggOpus([], head)).toThrow(EdgeUnsupportedError);
     });
   });
 

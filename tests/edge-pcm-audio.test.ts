@@ -7,7 +7,7 @@ import { pcmBlockToAudioData } from '../src/lib/edge/media/pcm-audio';
 import { processWebCodecsConversion } from '../src/lib/edge/workers/webcodecs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { getOracleToolPath } from './helpers/differential-oracle';
-import { runFfmpeg, sineInput } from './helpers/ffmpeg-media-fixtures';
+import { aacLcSpecificConfig, runFfmpeg, sineInput } from './helpers/ffmpeg-media-fixtures';
 import { oracleTest } from './helpers/oracle-test';
 import { installFakeWebCodecs } from './helpers/webcodecs-platform-fakes';
 
@@ -88,7 +88,9 @@ describe('the worker feeds the encoder the PCM of the WAV, sample for sample', (
         rmSync(dir, { recursive: true, force: true });
       }
 
-      const platform = installFakeWebCodecs();
+      const platform = installFakeWebCodecs({
+        audioDecoderConfig: { codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2, description: aacLcSpecificConfig(48000, 2) },
+      });
       try {
         await processWebCodecsConversion({
           jobId: 'pcm-oracle',

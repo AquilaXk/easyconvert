@@ -4,9 +4,6 @@ import {
   denormalizeTimestampFromMicros,
   WatermarkFlowController,
   resolveWebCodecsConfig,
-  wrapAacWithAdts,
-  muxWebmVideo,
-  muxMp4Media,
   processWebCodecsConversion,
   demuxMedia,
   demuxMp4,
@@ -18,6 +15,7 @@ import {
 } from '../src/lib/edge/pipelines/webcodecs-pipeline';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
+import { buildAdtsHeader, parseAacLcConfig } from '../src/lib/edge/media/aac';
 import { extractAvcC } from './helpers/iso-bmff-walker';
 import {
   countVideoPackets,
@@ -30,6 +28,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { installFakeWebCodecs } from './helpers/webcodecs-platform-fakes';
 
 const sourceAvcC = (mp4: Buffer): Uint8Array => extractAvcC(new Uint8Array(mp4));
+
+/** AudioSpecificConfig of AAC-LC at 44.1 kHz in stereo: object type 2, frequency index 4, channel configuration 2. */
+const AAC_LC_44100_STEREO_ASC = Uint8Array.from([0x12, 0x10]);
+const AAC_ENCODER_REPORT = { codec: 'mp4a.40.2', description: AAC_LC_44100_STEREO_ASC, sampleRate: 44100, numberOfChannels: 2 };
 
 describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L1)', () => {
   describe('1. Timescale to Microsecond PTS Normalization', () => {
@@ -139,7 +141,14 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         isVideo: true,
       });
 
+      // An ADTS stream is audio/aac; the MP4 container of the m4a target is audio/mp4
       expect(resolveWebCodecsConfig('aac')).toEqual({
+        codec: 'mp4a.40.2',
+        mimeType: 'audio/aac',
+        isVideo: false,
+      });
+
+      expect(resolveWebCodecsConfig('m4a')).toEqual({
         codec: 'mp4a.40.2',
         mimeType: 'audio/mp4',
         isVideo: false,
@@ -214,47 +223,13 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
     });
   });
 
-  describe('5. Container Packaging & Muxers', () => {
-    it('generates ADTS AAC frame header with 0xFFF syncword and length mapping', () => {
-      const rawPayload = new Uint8Array([0x12, 0x34, 0x56]);
-      const adts = wrapAacWithAdts(rawPayload, 44100, 2);
+  describe('5. Container Packaging', () => {
+    it('writes the ADTS header of AAC-LC at 44.1 kHz stereo for a 3-byte frame, field by field', () => {
+      // The AudioSpecificConfig 0x12 0x10 is AAC-LC (2), index 4 (44100 Hz), 2 channels
+      const header = buildAdtsHeader(3, parseAacLcConfig(Uint8Array.from([0x12, 0x10])));
 
-      expect(adts).toHaveLength(rawPayload.length + 7);
-      // Byte 0: 0xFF
-      expect(adts[0]).toBe(0xff);
-      // Byte 1: 0xF1 (syncword 0xFFF + layer 00 + protection absent 1)
-      expect(adts[1]).toBe(0xf1);
-      // Verify payload is correctly appended after 7 header bytes
-      expect(adts.slice(7)).toEqual(rawPayload);
-    });
-
-    it('muxes WebM video with valid EBML header', () => {
-      const chunks = [
-        { data: new Uint8Array([1, 2, 3]), timestampMicros: 0, isKeyFrame: true },
-        { data: new Uint8Array([4, 5, 6]), timestampMicros: 33333, isKeyFrame: false },
-      ];
-      const webm = muxWebmVideo(chunks, 640, 480);
-      expect(webm.length).toBeGreaterThan(30);
-      // EBML ID: 0x1A 0x45 0xDF 0xA3
-      expect(webm[0]).toBe(0x1a);
-      expect(webm[1]).toBe(0x45);
-      expect(webm[2]).toBe(0xdf);
-      expect(webm[3]).toBe(0xa3);
-    });
-
-    it('muxes MP4 video with valid ftyp and mdat boxes', () => {
-      const chunks = [
-        { data: new Uint8Array([10, 20, 30, 40]), timestampMicros: 0, isKeyFrame: true },
-      ];
-      const mp4 = muxMp4Media(chunks, 1280, 720);
-      expect(mp4).toHaveLength(32 + 8 + 4);
-      // 'ftyp' box
-      const ftypTag = String.fromCharCode(...mp4.slice(4, 8));
-      expect(ftypTag).toBe('ftyp');
-      // 'mdat' box
-      const mdatTag = String.fromCharCode(...mp4.slice(36, 40));
-      expect(mdatTag).toBe('mdat');
-      expect(mp4.slice(40)).toEqual(chunks[0].data);
+      // 0xFFF sync, MPEG-4, no CRC | profile 1 (LC), index 4, channels 2 | frame length 3 + 7 = 10 | VBR fullness
+      expect([...header]).toEqual([0xff, 0xf1, 0x50, 0x80, 0x01, 0x5f, 0xfc]);
     });
   });
 
@@ -269,7 +244,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: true });
         const platform = installFakeWebCodecs({
           decodedFrameSize: { width: 160, height: 120 },
-          videoDecoderConfig: { codec: 'avc1.64000a', description: sourceAvcC(mp4) },
+          videoDecoderConfig: { codec: 'vp09.00.10.08' },
         });
         try {
           const progressUpdates: number[] = [];
@@ -289,7 +264,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
     );
 
     it('transcodes real PCM from a WAV to an AAC stream with the sample rate and channels of the source', async () => {
-      const platform = installFakeWebCodecs();
+      const platform = installFakeWebCodecs({ audioDecoderConfig: AAC_ENCODER_REPORT });
       try {
         const source = sineSamples(SOURCE_RATE, SOURCE_CHANNELS, 1);
         const file = new File([toArrayBuffer(wavFromSamples(source, SOURCE_RATE, SOURCE_CHANNELS))], 'input.wav', {
@@ -298,7 +273,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
 
         const result = await convertWithWebCodecs(file, 'wav', 'aac', {});
 
-        expect(result.mimeType).toBe('audio/mp4');
+        expect(result.mimeType).toBe('audio/aac');
         expect(platform.audioEncoderConfigures[0]).toMatchObject({
           codec: 'mp4a.40.2',
           sampleRate: SOURCE_RATE,
@@ -447,7 +422,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
 
   describe('9. WebCodecs Hardware Audio & Video Isolation Invariant', () => {
     it('uses AudioEncoder for audio conversion and NEVER instantiates VideoEncoder with audio codec', async () => {
-      const platform = installFakeWebCodecs();
+      const platform = installFakeWebCodecs({ audioDecoderConfig: AAC_ENCODER_REPORT });
       try {
         const source = sineSamples(44100, 2, 1);
         const result = await processWebCodecsConversion({
@@ -458,7 +433,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
           options: { audioSampleRate: 44100, audioChannels: 2 },
         });
 
-        expect(result.mimeType).toBe('audio/mp4');
+        expect(result.mimeType).toBe('audio/aac');
         expect(platform.audioEncoderConfigures).toHaveLength(1);
         expect(platform.audioEncoderConfigures[0]).toMatchObject({ codec: 'mp4a.40.2' });
         expect(platform.videoEncoderConfigures).toHaveLength(0); // VideoEncoder must NEVER be called for audio!
