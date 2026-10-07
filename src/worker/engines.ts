@@ -20,6 +20,7 @@ import {
   UnsupportedRawCompressionError,
   InvalidRawSensorError,
   RawEngineRequiredError,
+  PayloadLimitError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
@@ -29,6 +30,7 @@ import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
+import { encodeSvgPageToDxf } from '../lib/conversions/vector-dxf';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
@@ -168,6 +170,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/bin/pdftotext',
     '/usr/local/bin/pdftotext',
     '/opt/homebrew/bin/pdftotext',
+  ],
+  pdftops: [
+    ...(process.env.PDFTOPS_PATH ? [process.env.PDFTOPS_PATH] : []),
+    '/usr/bin/pdftops',
+    '/usr/local/bin/pdftops',
+    '/opt/homebrew/bin/pdftops',
   ],
   dcrawEmu: [
     ...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []),
@@ -1232,6 +1240,7 @@ function matchOutputPageFiles(
 }
 
 interface FinalizeMultiPageParams {
+  singleFile?: boolean;
   tempDir: string;
   resolvedFiles: Array<{ file: string; pageNum: number }>;
   requestedPages: number[];
@@ -1244,6 +1253,7 @@ interface FinalizeMultiPageParams {
 
 async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise<WorkerConversionResult> {
   const {
+    singleFile,
     tempDir,
     resolvedFiles,
     requestedPages,
@@ -1254,7 +1264,7 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
     startTime,
   } = params;
 
-  const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
+  const isSingleOutput = singleFile || requestedPages.length === 1 || options.multiPageOutput === 'first';
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
 
   if (isSingleOutput) {
@@ -1303,6 +1313,8 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
 
 interface PopplerRenderParams {
   sandboxPrefix: string;
+  /** The one output file covers every selected page (a multi-page PostScript file), so it is never zipped. */
+  singleFile?: boolean;
   tgt: string;
   input: Buffer | WorkerVfsPayload;
   options: WorkerEngineOptions;
@@ -1327,6 +1339,7 @@ function loadPdfInputBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefine
 async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
   const {
     sandboxPrefix,
+    singleFile,
     tgt,
     input,
     options,
@@ -1360,6 +1373,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
 
           const resolvedFiles = matchOutputPageFiles(files, requestedPages);
           return finalizeMultiPageOutput({
+            singleFile,
             tempDir,
             resolvedFiles,
             requestedPages,
@@ -1510,6 +1524,239 @@ export async function convertWithNativePoppler(
   return null;
 }
 
+/**
+ * Raster targets written by the in-process image encoders: Poppler renders each page to PNG and the encoder
+ * takes the picture from there, the way the camera RAW route hands its decoded image to the same encoders.
+ */
+const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'webp']);
+/** PostScript targets: Poppler's pdftops writes them from the PDF. */
+const POSTSCRIPT_TARGETS: ReadonlySet<string> = new Set(['eps', 'ps']);
+const EPS_TARGET = 'eps';
+const DXF_TARGET = 'dxf';
+const PNG_FORMAT = 'png';
+const SVG_FORMAT = 'svg';
+/** Poppler tools: default and ceiling for the run time, and for the bytes read from a tool's output pipes. */
+const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
+const POPPLER_MAX_TIMEOUT_MS = 120_000;
+const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
+const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
+/** Pages one request may re-encode: the page images are already rendered, the encoders then run once per page. */
+const CHAINED_PAGE_ENCODE_MAX_PAGES = 500;
+
+/** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript and DXF. */
+function isPdfChainTarget(tgt: string): boolean {
+  return (
+    POPPLER_IMAGE_FORMATS.has(tgt) ||
+    tgt === SVG_FORMAT ||
+    ENCODED_RASTER_TARGETS.has(tgt) ||
+    POSTSCRIPT_TARGETS.has(tgt) ||
+    tgt === DXF_TARGET
+  );
+}
+
+interface ChainOutputContext {
+  /** The engine reported for the result: the one that did the page rendering. */
+  engine: WorkerConversionResult['engineUsed'];
+  baseName: string;
+  options: WorkerEngineOptions;
+  input: Buffer | WorkerVfsPayload;
+  startTime: number;
+}
+
+/** Writes a chain's final bytes where the request asked for them, like every other engine does. */
+async function persistChainOutput(buffer: Buffer, extension: string, context: ChainOutputContext): Promise<WorkerConversionResult> {
+  return withSandboxDir('easyconvert-chain-', async (tempDir) => {
+    const outputPath = path.join(tempDir, `output.${extension}`);
+    fs.writeFileSync(outputPath, buffer);
+    const vfsPayload = Buffer.isBuffer(context.input) ? undefined : context.input;
+    const persistedPath = preserveOutput(outputPath, extension, context.options, vfsPayload);
+    return createConversionResult(persistedPath, extension, context.baseName, context.engine, Date.now() - context.startTime);
+  });
+}
+
+/**
+ * Re-encodes every page Poppler rendered. A single page is one file; several pages arrive as the ZIP of per-page
+ * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension.
+ */
+async function reencodeRenderedPages(
+  rendered: WorkerConversionResult,
+  renderedExtension: string,
+  targetExtension: string,
+  encode: (page: Buffer, entryName: string) => Promise<Buffer>,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult> {
+  try {
+    if (!rendered.filename.endsWith('.zip')) {
+      return await persistChainOutput(await encode(rendered.buffer, rendered.filename), targetExtension, context);
+    }
+    const pages = await JSZip.loadAsync(rendered.buffer);
+    const entryNames = Object.keys(pages.files)
+      .filter((name) => !pages.files[name].dir)
+      .sort((a, b) => a.localeCompare(b));
+    if (entryNames.length > CHAINED_PAGE_ENCODE_MAX_PAGES) {
+      throw new PayloadLimitError(
+        `The document has ${entryNames.length} pages; at most ${CHAINED_PAGE_ENCODE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
+      );
+    }
+    const encoded = new JSZip();
+    const renderedSuffix = `.${renderedExtension}`;
+    for (const entryName of entryNames) {
+      const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
+      const page = await pages.files[entryName].async('nodebuffer');
+      encoded.file(`${stem}.${targetExtension}`, await encode(page, entryName));
+    }
+    const zipBuffer = await encoded.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    return await persistChainOutput(zipBuffer, 'zip', context);
+  } finally {
+    // The intermediate pages are an implementation detail of this chain: never leave them on disk.
+    discardPersistedOutput(rendered.filePath, context.input, context.options);
+  }
+}
+
+/** The page images written by an encoder from PNG renders: page selection already happened in Poppler. */
+function encoderOptions(options: WorkerEngineOptions): ConversionOptions {
+  return { ...options, page: undefined, pages: undefined, multiPageOutput: undefined, password: undefined };
+}
+
+/** Options for a chain's first step: its output is an intermediate, so it is never written to the requested path. */
+function intermediateOptions(options: WorkerEngineOptions): WorkerEngineOptions {
+  return { ...options, outputPath: undefined } as WorkerEngineOptions;
+}
+
+/** PDF pages to avif, bmp, gif, ico, psd or webp: pdftoppm renders PNG pages, then the image encoder writes the target. */
+async function convertPdfToEncodedRaster(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult | null> {
+  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, intermediateOptions(options), originalFilename);
+  if (!rendered) return null;
+  const pageOptions = encoderOptions(options);
+  return reencodeRenderedPages(
+    rendered,
+    PNG_FORMAT,
+    tgt,
+    async (page, entryName) => (await convertImage(page, tgt, pageOptions, entryName, PNG_FORMAT)).buffer,
+    context
+  );
+}
+
+/** PDF pages to DXF: pdftocairo draws each page as SVG geometry and the DXF writer turns the geometry into entities. */
+async function convertPdfToDxf(
+  input: Buffer | WorkerVfsPayload,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult | null> {
+  const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
+  if (!rendered) return null;
+  return reencodeRenderedPages(rendered, SVG_FORMAT, DXF_TARGET, async (page) => encodeSvgPageToDxf(page), context);
+}
+
+/** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */
+function isConsecutivePageRun(pages: readonly number[]): boolean {
+  return pages.every((page, index) => index === 0 || page === pages[index - 1] + 1);
+}
+
+/**
+ * PDF pages to PostScript with pdftops. PostScript holds many pages: one file covers the selected pages, which
+ * must be consecutive. EPS holds one picture, so each page becomes its own EPS file and several pages come back
+ * as the ZIP of per-page files every Poppler route returns (`multiPageOutput: 'first'` keeps page one).
+ */
+async function convertPdfToPostScript(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number
+): Promise<WorkerConversionResult | null> {
+  const pdftopsBin = resolveBinary(BINARY_PATHS.pdftops, process.env.PDFTOPS_PATH);
+  if (!pdftopsBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('pdftops', 'pdftops binary is not installed or not in PATH');
+    }
+    return null;
+  }
+  const timeout = Math.min(options.timeoutMs || POPPLER_DEFAULT_TIMEOUT_MS, POPPLER_MAX_TIMEOUT_MS);
+  const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
+  const isEps = tgt === EPS_TARGET;
+  const run = (tempDir: string, args: string[]) =>
+    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal });
+
+  return executePopplerRender({
+    sandboxPrefix: 'easyconvert-poppler-ps-',
+    singleFile: !isEps,
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    filterOutputFile: (f) => f.endsWith(`.${tgt}`),
+    missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
+    renderPages: async (tempDir, inputPath, requestedPages) => {
+      if (isEps) {
+        for (const page of requestedPages) {
+          await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, path.join(tempDir, `page-${page}.eps`)]);
+        }
+        return;
+      }
+      if (!isConsecutivePageRun(requestedPages)) {
+        throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
+      }
+      const pages = options.multiPageOutput === 'first' ? requestedPages.slice(0, 1) : requestedPages;
+      const first = pages[0];
+      const last = pages[pages.length - 1];
+      await run(tempDir, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
+    },
+  });
+}
+
+/**
+ * A rendered PDF as HTML: the document text, page by page, from the in-process PDF reader. It fails with a typed
+ * error when the pages hold no text, so a presentation of pictures never becomes an empty page.
+ */
+async function convertPdfToHtml(
+  pdf: Buffer,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  input: Buffer | WorkerVfsPayload,
+  engine: WorkerConversionResult['engineUsed']
+): Promise<WorkerConversionResult> {
+  const startTime = Date.now();
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const html = await convertFile(pdf, 'pdf', HTML_TARGET, encoderOptions(options), `${baseName}.pdf`);
+  const body = HTML_BODY_PATTERN.exec(html.buffer.toString('utf-8'))?.[1] ?? '';
+  if (body.replace(HTML_TAG_PATTERN, '').trim() === '') {
+    throw new ConversionFailedError('The rendered pages hold no text, so there is nothing to write as HTML.');
+  }
+  return persistChainOutput(html.buffer, HTML_TARGET, { engine, baseName, options, input, startTime });
+}
+
+/**
+ * Turns a PDF into any target a native tool chain writes from PDF pages: Poppler images and SVG, the encoded
+ * rasters (pdftoppm, then the image encoder), PostScript and EPS (pdftops) and DXF (pdftocairo, then the DXF
+ * writer). Returns null for any other target, and for a missing tool unless the caller asked for an error.
+ */
+export async function convertPdfPagesWithNativeTools(
+  input: Buffer | WorkerVfsPayload,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const tgt = validateFormat(targetFormat);
+  if (!isPdfChainTarget(tgt)) return null;
+  const startTime = Date.now();
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const context: ChainOutputContext = { engine: 'native-poppler', baseName, options, input, startTime };
+  if (ENCODED_RASTER_TARGETS.has(tgt)) return convertPdfToEncodedRaster(input, tgt, options, originalFilename, context);
+  if (tgt === DXF_TARGET) return convertPdfToDxf(input, options, originalFilename, context);
+  if (POSTSCRIPT_TARGETS.has(tgt)) return convertPdfToPostScript(input, tgt, options, originalFilename, startTime);
+  return convertWithNativePoppler(input, 'pdf', tgt, options, originalFilename);
+}
+
 /** Targets that package the original camera file instead of rendering its pixels. */
 const RAW_PACKAGING_TARGETS: ReadonlySet<string> = new Set(['zip']);
 const RAW_DECODE_DEFAULT_TIMEOUT_MS = 120_000;
@@ -1610,10 +1857,13 @@ const POSTSCRIPT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
 const POSTSCRIPT_MAX_STDERR_CHARS = 300;
 /** The interpreter runs in its safe mode: the file cannot read or write other files or start programs. */
 const POSTSCRIPT_INTERPRETER_FLAGS: readonly string[] = ['-dSAFER'];
+/** An EPS is a figure, not a page: the PDF page is cropped to its %%BoundingBox instead of the default paper size. */
+const EPS_SOURCE = 'eps';
+const EPS_CROP_FLAG = '-dEPSCrop';
 
 /**
- * Renders PostScript (EPS, PS) with `ps2pdf` and, for targets other than PDF, hands the PDF to Poppler (the
- * same raster and SVG route PDF sources take). Returns null when `ps2pdf` is missing and the caller did not
+ * Renders PostScript (EPS, PS) with `ps2pdf` and, for targets other than PDF, hands the PDF to the native tools
+ * every PDF source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF writer). Returns null when `ps2pdf` is missing and the caller did not
  * ask for an error; with `throwOnUnavailable` a missing interpreter is an EngineUnavailableError.
  */
 export async function convertWithNativePostScript(
@@ -1641,7 +1891,8 @@ export async function convertWithNativePostScript(
     const { inputPath } = resolveInputContext(input, src, tempDir);
     const pdfPath = path.join(tempDir, 'rendered.pdf');
     try {
-      await executeSandboxedBinary(interpreter, [...POSTSCRIPT_INTERPRETER_FLAGS, inputPath, pdfPath], {
+      const flags = src === EPS_SOURCE ? [...POSTSCRIPT_INTERPRETER_FLAGS, EPS_CROP_FLAG] : POSTSCRIPT_INTERPRETER_FLAGS;
+      await executeSandboxedBinary(interpreter, [...flags, inputPath, pdfPath], {
         cwd: tempDir,
         timeoutMs: timeout,
         maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
@@ -1674,7 +1925,7 @@ export async function convertWithNativePostScript(
       return createConversionResult(persistedPath, 'pdf', baseName, 'native-postscript', Date.now() - startTime);
     });
   }
-  return convertWithNativePoppler(pdf, 'pdf', tgt, options, originalFilename);
+  return convertPdfPagesWithNativeTools(pdf, tgt, options, originalFilename);
 }
 
 /**
@@ -1744,6 +1995,13 @@ const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'od
  * are still limited to OFFICE_FORMATS, because LibreOffice cannot write the other formats.
  */
 const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([...OFFICE_FORMATS, 'potx', 'key', 'odg', 'odd']);
+/** Formats LibreOffice also writes back out: a drawing template is saved again as a normalised template (.otg). */
+const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
+/** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
+const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
+const HTML_TARGET = 'html';
+const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
+const HTML_TAG_PATTERN = /<[^>]*>/g;
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
 const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
@@ -1961,7 +2219,8 @@ export async function executeWorkerConversion(
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isNativeTextPdf || isRecalculate || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
@@ -2012,8 +2271,10 @@ export async function executeWorkerConversion(
     }
   }
 
-  // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
-  if (OFFICE_NATIVE_SOURCES.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+  // 1b. Office Documents -> pages via LibreOffice + native PDF tools: Poppler images and SVG, the encoded
+  // rasters, PostScript and EPS, DXF; a presentation LibreOffice only reads also becomes HTML.
+  const isPresentationHtml = PRESENTATION_HTML_SOURCES.has(src) && tgt === HTML_TARGET;
+  if (OFFICE_NATIVE_SOURCES.has(src) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
       intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
@@ -2021,13 +2282,9 @@ export async function executeWorkerConversion(
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
-        const popplerRes = await convertWithNativePoppler(
-          popplerInput,
-          'pdf',
-          tgt,
-          nativeOptions,
-          originalFilename
-        );
+        const popplerRes = isPresentationHtml
+          ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, nativeOptions, originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,
@@ -2072,8 +2329,8 @@ export async function executeWorkerConversion(
     }
   }
 
-  // 1c'. PostScript sources: ps2pdf, then Poppler for raster and SVG targets.
-  if (POSTSCRIPT_SOURCES.has(src) && (tgt === 'pdf' || tgt === 'svg' || POPPLER_IMAGE_FORMATS.has(tgt))) {
+  // 1c'. PostScript sources: ps2pdf, then the native PDF tools for every page target.
+  if (POSTSCRIPT_SOURCES.has(src) && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
     try {
       const psRes = await convertWithNativePostScript(input, src, tgt, nativeOptions, originalFilename);
       if (psRes) {

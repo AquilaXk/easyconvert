@@ -16,6 +16,7 @@ export type ExternalOracleTool =
   | 'pdftotext'
   | 'pdfinfo'
   | 'pdftoppm'
+  | 'pdftops'
   | 'pdftocairo'
   | 'pdffonts'
   | 'pdfimages'

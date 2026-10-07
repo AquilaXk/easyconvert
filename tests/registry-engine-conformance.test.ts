@@ -378,23 +378,24 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 
 /**
  * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
- * for Office-to-Office targets, LibreOffice chained with Poppler pdftoppm for raster targets,
- * Poppler pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
+ * for Office-to-Office targets, LibreOffice (or the PostScript interpreter) chained with Poppler for
+ * page targets (pdftoppm images, the image encoders, pdftops, pdftocairo SVG and DXF), Poppler
+ * pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
  * hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
-  eps: ['jpg', 'pdf', 'png', 'svg', 'tiff'],
-  key: ['pdf', 'pptx'],
-  odd: ['jpg', 'pdf', 'png'],
-  odg: ['jpg', 'pdf', 'png'],
+  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  key: ['html', 'pdf', 'pptx'],
+  odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
+  odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   ppt: ['jpg', 'odp', 'png'],
-  ps: ['jpg', 'pdf', 'png', 'svg', 'tiff'],
+  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
@@ -683,7 +684,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     emf: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'wmf'],
-    eps: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'wmf'],
+    eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
@@ -692,15 +693,12 @@ describe('withdrawn pairs stay withdrawn', () => {
     ibooks: ['epub', 'pdf', 'txt'],
     jpeg: ['svg'],
     jpg: ['svg'],
-    key: ['doc', 'html', 'jpg', 'png', 'ppt', 'xls'],
+    key: ['doc', 'jpg', 'png', 'ppt', 'xls'],
     lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     md: ['doc', 'jpg', 'png', 'rst', 'rtf', 'tex'],
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
     numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
-    // Drawings are rendered by LibreOffice Draw through PDF and Poppler: only PDF, JPEG and PNG come out of that chain.
-    odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'tiff', 'webp'],
-    odg: ['bmp'],
     odp: ['eps', 'md', 'swf'],
     odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
     oxps: ['docx'],
@@ -717,7 +715,7 @@ describe('withdrawn pairs stay withdrawn', () => {
     pptx: ['emf', 'eps', 'key', 'md', 'swf', 'xps'],
     prc: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     prn: ['tsv'],
-    ps: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ps', 'psd', 'webp', 'wmf'],
+    ps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     qpw: ['tsv'],
     rst: ['rtf'],
     sk: ['emf', 'wmf'],
@@ -1166,10 +1164,25 @@ describe('native-engine pairs route through the dispatcher', () => {
   };
   /** Sources whose real input no installed tool can author (Keynote has no writer); their pairs prove only the missing-engine answer. */
   const NO_AUTHORABLE_INPUT = new Set(['key']);
-  /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders are checked in tests/postscript-native-route.test.ts. */
+  /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
   const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
+  const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
+  const HAS_PDFTOPS = isOracleToolAvailable('pdftops');
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
+  /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
+  const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
+  const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
+  /** The signature each encoded raster starts with (BMP, ICO, PSD, GIF, TIFF both byte orders, RIFF/WEBP, ISO BMFF 'ftyp'). */
+  const ENCODED_SIGNATURES: Readonly<Record<string, readonly Buffer[]>> = {
+    bmp: [Buffer.from('BM', 'latin1')],
+    ico: [Buffer.from([0, 0, 1, 0])],
+    psd: [Buffer.from('8BPS', 'latin1')],
+    gif: [Buffer.from('GIF8', 'latin1')],
+    tiff: [Buffer.from('II*\0', 'latin1'), Buffer.from('MM\0*', 'latin1')],
+    webp: [Buffer.from('RIFF', 'latin1')],
+    avif: [],
+  };
   const PDF_SOURCE = 'pdf';
   const SVG_TARGET = 'svg';
   /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
@@ -1181,8 +1194,13 @@ describe('native-engine pairs route through the dispatcher', () => {
   const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source));
-  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target) && !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source));
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source);
+  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
+  const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
+  const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
+  const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
 
@@ -1253,6 +1271,16 @@ describe('native-engine pairs route through the dispatcher', () => {
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
   }
 
+  /** A one-page PostScript figure with a stroked path, a filled shape and a line, in a 200 x 100 box. */
+  function postscriptProbe(): Buffer {
+    return Buffer.from(
+      '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n%%EndComments\n' +
+        '1 0 0 setrgbcolor 2 setlinewidth newpath 20 20 moveto 180 20 lineto stroke\n' +
+        '0 0 0 setrgbcolor 30 60 40 20 rectfill showpage\n',
+      'latin1'
+    );
+  }
+
   async function expectPageImage(buffer: Buffer, target: string): Promise<void> {
     const signature = target === 'png' ? PNG_SIGNATURE : JPEG_SOI;
     expect(buffer.subarray(0, signature.length).equals(signature)).toBe(true);
@@ -1287,6 +1315,28 @@ describe('native-engine pairs route through the dispatcher', () => {
     expect(zip.file('content.xml')).not.toBeNull();
   }
 
+  /** The output of a page target, checked against the signature or first line the format's reference defines. */
+  async function expectPageTargetOutput(buffer: Buffer, target: string): Promise<void> {
+    if (IMAGE_TARGETS.has(target)) {
+      await expectPageImage(buffer, target);
+    } else if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+    } else if (target === 'svg') {
+      expect(buffer.toString('utf-8')).toMatch(/<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    } else if (target === 'eps' || target === 'ps') {
+      expect(buffer.toString('latin1').split('\n')[0]).toBe(target === 'eps' ? '%!PS-Adobe-3.0 EPSF-3.0' : '%!PS-Adobe-3.0');
+    } else if (target === 'dxf') {
+      const lines = buffer.toString('utf-8').trimEnd().split('\n');
+      expect(lines.slice(0, 2).map((l) => l.trim())).toEqual(['0', 'SECTION']);
+      expect(lines.slice(-2).map((l) => l.trim())).toEqual(['0', 'EOF']);
+    } else {
+      const signatures = ENCODED_SIGNATURES[target];
+      expect(signatures.length === 0 || signatures.some((sig) => buffer.subarray(0, sig.length).equals(sig))).toBe(true);
+      if (target === 'avif') expect(buffer.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+      if (target === 'webp') expect(buffer.subarray(8, 12).toString('latin1')).toBe('WEBP');
+    }
+  }
+
   it('lists only pairs the registry advertises', () => {
     expect(pairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
@@ -1315,6 +1365,42 @@ describe('native-engine pairs route through the dispatcher', () => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
       await expectPageImage(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToEncodedPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPS).each(officeToPostscriptPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and pdftops (needs soffice, pdftops)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_PS2PDF || !HAS_PDFTOPPM || !HAS_PDFTOPS || !HAS_PDFTOCAIRO).each(postscriptPairs)(
+    '%s -> %s draws the PostScript page with the interpreter and the page tools (needs ps2pdf; Ghostscript is not in the CI image)',
+    async (source, target) => {
+      if (target === 'pdf') {
+        const pdf = await dispatchConversion(postscriptProbe(), source, target, {}, `probe.${source}`);
+        expect(pdf.engineUsed).toBe('native-postscript');
+        await expectPageTargetOutput(pdf.buffer, target);
+        return;
+      }
+      const result = await dispatchConversion(postscriptProbe(), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
     },
     NATIVE_TIMEOUT_MS
   );

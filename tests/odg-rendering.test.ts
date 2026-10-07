@@ -85,7 +85,7 @@ describe('OpenDocument drawings render through LibreOffice', () => {
 describe('OpenDocument drawings fail closed', () => {
   const drawing = () => sofficeConvert(flatOdg([PAGES[0]]), 'fodg', 'odg', 'odg');
 
-  it.each([['docx'], ['bmp'], ['svg']])('refuses the unlisted target %s with a typed 400 error', async (target) => {
+  it.each([['docx'], ['svg']])('refuses the unlisted target %s with a typed 400 error', async (target) => {
     const input = Buffer.from('PK\u0003\u0004 not a drawing', 'latin1');
     const run = dispatchConversion(input, 'odg', target, {}, 'drawing.odg');
     await expect(run).rejects.toBeInstanceOf(UnsupportedTargetError);

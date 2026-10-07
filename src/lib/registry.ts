@@ -1377,7 +1377,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-keynote-sffkey',
     category: 'presentation',
     description: 'Apple iWork Keynote presentation slideshow file.',
-    targetFormats: ['pptx', 'pdf', 'zip'],
+    targetFormats: ['pptx', 'pdf', 'html', 'zip'],
   },
   keynotes: {
     id: 'keynotes',
@@ -1721,7 +1721,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'tiff'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp'],
   },
   tga: {
     id: 'tga',
@@ -2624,7 +2624,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['pdf', 'jpg', 'png', 'tiff', 'svg'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {
@@ -2795,7 +2795,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.graphics-template',
     category: 'document',
     description: 'OASIS OpenDocument XML-based vector drawing template.',
-    targetFormats: ['pdf', 'jpg', 'png'],
+    targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
   },
   odg: {
     id: 'odg',
@@ -2804,7 +2804,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.graphics',
     category: 'document',
     description: 'OASIS standard vector drawing and graphics document format.',
-    targetFormats: ['pdf', 'jpg', 'png'],
+    targetFormats: ['pdf', 'bmp', 'jpg', 'png'],
   },
   pub: {
     id: 'pub',

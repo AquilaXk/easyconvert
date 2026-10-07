@@ -1,9 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertFile } from '../src/lib/conversions';
 import { decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive, buildSyntheticStoredRarBuffer } from '../src/lib/conversions/archive';
+
+/** The A4 page of the drawing fixture at the 150 dpi Poppler renders by default (210 x 297 mm). */
+const A4_WIDTH_PX_150_DPI = 1240;
+const A4_HEIGHT_PX_150_DPI = 1754;
 
 describe('Universal Engine Conversion Coverage', () => {
   it('converts archive formats (tar.gz, tar.bz2, 7z, rar, etc.) with real binary validation', async () => {
@@ -166,7 +173,7 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.isEmbeddedPreview).toBe(true);
   });
 
-  it('converts document, ebook, and spreadsheet formats (hwp, azw4, et) without disguised PDFs; a drawing is not rendered as text', async () => {
+  it('converts document, ebook, and spreadsheet formats (hwp, azw4, et) without disguised PDFs', async () => {
     const docData = Buffer.from('Hangul Word Processor text sample', 'utf-8');
 
     // hwp -> pdf
@@ -197,10 +204,18 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(resEtJpg.mimeType).toBe('image/jpeg');
     expect(resEtJpg.buffer[0]).toBe(0xff);
     expect(resEtJpg.buffer[1]).toBe(0xd8);
-
-    // odg -> bmp: only LibreOffice Draw can draw a drawing, and it is not offered a BMP writer, so the pair is not advertised
-    await expect(convertFile(docData, 'odg', 'bmp', {}, 'graphic.odg')).rejects.toThrow(
-      /Cannot convert from .+ \(\.odg\) to target format \.bmp/
-    );
   });
+
+  // odg -> bmp: LibreOffice Draw draws the page, Poppler renders it and the BMP encoder writes the picture.
+  oracleTest('converts a real drawing (odg) to a real BMP picture of its page', ['soffice', 'pdftoppm', 'identify'], async () => {
+    const drawing = readFileSync(path.join(__dirname, 'fixtures', 'office-sources', 'drawing-two-pages.odg'));
+    const res = await dispatchConversion(drawing, 'odg', 'bmp', { multiPageOutput: 'first' }, 'graphic.odg');
+    expect(res.filename).toBe('graphic.bmp');
+    expect(res.mimeType).toBe('image/bmp');
+    expect(res.buffer.subarray(0, 2).toString('ascii')).toBe('BM');
+    // The BMP information header holds the pixel size at byte 18 (width) and 22 (height, negative for a top-down image).
+    const [width, height] = [res.buffer.readInt32LE(18), Math.abs(res.buffer.readInt32LE(22))];
+    expect(Math.abs(width - A4_WIDTH_PX_150_DPI)).toBeLessThanOrEqual(1);
+    expect(Math.abs(height - A4_HEIGHT_PX_150_DPI)).toBeLessThanOrEqual(1);
+  }, 240_000);
 });
