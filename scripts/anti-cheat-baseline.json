@@ -1,76 +1,6 @@
 [
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/advanced-conversions-boost.test.ts",
-    "symbol": "converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup",
-    "reason": "Test block \"converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/algorithmic-advancements.test.ts",
-    "symbol": "dynamically evaluates formulas during XLSX to CSV conversion when cached values are absent",
-    "reason": "Test block \"dynamically evaluates formulas during XLSX to CSV conversion when cached values are absent\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/auth-and-api-keys.test.ts",
-    "symbol": "creates valid session cookie header string",
-    "reason": "Test block \"creates valid session cookie header string\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/auth-and-api-keys.test.ts",
-    "symbol": "clears session cookie on logout",
-    "reason": "Test block \"clears session cookie on logout\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/auth-and-api-keys.test.ts",
-    "symbol": "generates mock sandbox OAuth URL when credentials are not configured",
-    "reason": "Test block \"generates mock sandbox OAuth URL when credentials are not configured\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/auth-and-api-keys.test.ts",
-    "symbol": "clearSessionCookie includes Secure flag in production environment",
-    "reason": "Test block \"clearSessionCookie includes Secure flag in production environment\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/cad-watertightness-and-astral-cmap.test.ts",
-    "symbol": "maps 2-byte CID to 4-byte UTF-16BE surrogate pair for astral characters (> 0xFFFF)",
-    "reason": "Test block \"maps 2-byte CID to 4-byte UTF-16BE surrogate pair for astral characters (> 0xFFFF)\" contains only weak assertions (11 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/cad-watertightness-and-astral-cmap.test.ts",
-    "symbol": "generates standard identity CMap when no mappings are provided",
-    "reason": "Test block \"generates standard identity CMap when no mappings are provided\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/document-ocr.test.ts",
-    "symbol": "extracts text from PDF stream with octal and escaped sequences correctly",
-    "reason": "Test block \"extracts text from PDF stream with octal and escaped sequences correctly\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/document-ocr.test.ts",
-    "symbol": "supports PDF single quote and double quote operators with both literal and hex strings",
-    "reason": "Test block \"supports PDF single quote and double quote operators with both literal and hex strings\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/drawingml-scene-graph-affine.test.ts",
     "symbol": "renders 4-node square SmartArt diagram using 2x2 quadrant matrix layout",
     "reason": "Test block \"renders 4-node square SmartArt diagram using 2x2 quadrant matrix layout\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
@@ -106,13 +36,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/ocr-phase-3.test.ts",
-    "symbol": "merges multiple raster images on the same page into unified searchable text",
-    "reason": "Test block \"merges multiple raster images on the same page into unified searchable text\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/oracle-integrity-and-security-audit.test.ts",
     "symbol": "validates authentic FLAC buffer with 34-byte STREAMINFO",
     "reason": "Test block \"validates authentic FLAC buffer with 34-byte STREAMINFO\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
@@ -138,34 +61,6 @@
     "symbol": "creates an Undici Custom Agent that pins IP and blocks private destination lookups",
     "reason": "Test block \"creates an Undici Custom Agent that pins IP and blocks private destination lookups\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-engine-fidelity-codecs-and-ocr.test.ts",
-    "symbol": "generates valid ISO 32000-1 ToUnicode CMap streams for 16-bit and 1-byte code spaces",
-    "reason": "Test block \"generates valid ISO 32000-1 ToUnicode CMap streams for 16-bit and 1-byte code spaces\" contains only weak assertions (9 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-engine-fidelity-codecs-and-ocr.test.ts",
-    "symbol": "injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers",
-    "reason": "Test block \"injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-engine-fidelity-codecs-and-ocr.test.ts",
-    "symbol": "injects invisible text layer into existing PDFs containing indirect PDFRef resources without throwing",
-    "reason": "Test block \"injects invisible text layer into existing PDFs containing indirect PDFRef resources without throwing\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-engine-fidelity-codecs-and-ocr.test.ts",
-    "symbol": "preserves 100% of characters in mixed CJK/Latin strings without tail clipping",
-    "reason": "Test block \"preserves 100% of characters in mixed CJK/Latin strings without tail clipping\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",

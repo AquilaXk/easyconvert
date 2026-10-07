@@ -20,6 +20,23 @@ import { GET as googleCallbackHandler } from '../src/app/api/auth/google/callbac
 import { GET as googleUrlHandler } from '../src/app/api/auth/google/url/route';
 import { NextRequest } from 'next/server';
 
+/** A Set-Cookie field read per RFC 6265 section 4.1.1: `name=value` first, then `;`-separated attributes. */
+function parseSetCookie(header: string): { name: string; value: string; attributes: Record<string, string | true> } {
+  const [pair, ...attributeParts] = header.split('; ');
+  const separator = pair.indexOf('=');
+  const attributes: Record<string, string | true> = {};
+  for (const part of attributeParts) {
+    const at = part.indexOf('=');
+    if (at === -1) attributes[part] = true;
+    else attributes[part.slice(0, at)] = part.slice(at + 1);
+  }
+  return { name: pair.slice(0, separator), value: pair.slice(separator + 1), attributes };
+}
+
+/** Seven days, the session lifetime, in seconds. */
+const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+
 describe('Auth & API Key Infrastructure', () => {
   beforeEach(() => {
     userStore.resetStore();
@@ -132,16 +149,17 @@ describe('Auth & API Key Infrastructure', () => {
 
   describe('Session Cookie & Request Authentication Extraction', () => {
     it('creates valid session cookie header string', () => {
-      const cookie = createSessionCookie('test-token');
-      expect(cookie).toContain('easyconvert_session=test-token');
-      expect(cookie).toContain('HttpOnly');
-      expect(cookie).toContain('SameSite=Lax');
-      expect(cookie).toContain('Path=/');
+      const cookie = parseSetCookie(createSessionCookie('test-token'));
+      expect({ name: cookie.name, value: cookie.value }).toEqual({ name: 'easyconvert_session', value: 'test-token' });
+      // Outside production there is no Secure attribute; the session cookie is script-inaccessible and Lax.
+      expect(cookie.attributes).toEqual({ Path: '/', 'Max-Age': String(SESSION_MAX_AGE_SECONDS), HttpOnly: true, SameSite: 'Lax' });
     });
 
     it('clears session cookie on logout', () => {
-      const clearCookie = clearSessionCookie();
-      expect(clearCookie).toContain('Max-Age=0');
+      const cleared = parseSetCookie(clearSessionCookie());
+      // An empty value with Max-Age=0 makes the browser drop the cookie it set at the same Path.
+      expect({ name: cleared.name, value: cleared.value }).toEqual({ name: 'easyconvert_session', value: '' });
+      expect(cleared.attributes).toEqual({ Path: '/', 'Max-Age': '0', HttpOnly: true, SameSite: 'Lax' });
     });
 
     it('extracts user from cookie in Request', async () => {
@@ -201,9 +219,14 @@ describe('Auth & API Key Infrastructure', () => {
       delete process.env.GOOGLE_CLIENT_ID;
       const url = getGoogleOAuthUrl('http://localhost:3000/api/auth/google/callback');
 
-      expect(url).toContain('/api/auth/google/callback');
-      expect(url).toContain('code=mock_code_');
-      expect(url).toContain('mock=true');
+      const parsed = new URL(url);
+      expect(`${parsed.origin}${parsed.pathname}`).toBe('http://localhost:3000/api/auth/google/callback');
+      const state = parsed.searchParams.get('state');
+      expect(state).toMatch(/^[A-Za-z0-9_-]{16,}$/);
+      // The sandbox code embeds the state it answers, and the callback is told it is a mock.
+      expect(parsed.searchParams.get('code')).toBe(`mock_code_${state}`);
+      expect(parsed.searchParams.get('mock')).toBe('true');
+      expect([...parsed.searchParams.keys()].sort()).toEqual(['code', 'mock', 'state']);
     });
 
     it('exchanges mock code in sandbox mode returning developer profile', async () => {
@@ -647,8 +670,8 @@ describe('Auth & API Key Infrastructure', () => {
       const originalEnv = process.env.NODE_ENV;
       try {
         process.env.NODE_ENV = 'production';
-        const cleared = clearSessionCookie();
-        expect(cleared).toContain('Secure');
+        const cleared = parseSetCookie(clearSessionCookie());
+        expect(cleared.attributes).toEqual({ Path: '/', 'Max-Age': '0', HttpOnly: true, SameSite: 'Lax', Secure: true });
       } finally {
         process.env.NODE_ENV = originalEnv;
       }

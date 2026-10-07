@@ -20,6 +20,8 @@ import {
   extractTextFromPdf,
 } from '../src/lib/conversions';
 import { zipEntryText } from './helpers/zip-entry';
+import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
@@ -237,7 +239,7 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   });
 
   describe('Domain: Document & Ebook Semantic Enhancements', () => {
-    it('converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup', async () => {
+    oracleTest('converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup', ['xmllint'], async () => {
       const text = `# Chapter 1: The Encounter
 The crew arrived at the destination.
 
@@ -251,12 +253,22 @@ The voyage was recorded.`;
       const fb2Buf = generateFb2FromText(text, 'Space Voyage');
       const xml = fb2Buf.toString('utf-8');
 
-      expect(xml).toContain('<FictionBook');
-      expect(xml).toContain('<book-title>Space Voyage</book-title>');
-      expect(xml).toContain('<table>');
-      expect(xml).toContain('<th>Star</th>');
-      expect(xml).toContain('<td>Alpha Centauri</td>');
-      expect(xml).toContain('<section>');
+      // xmllint (libxml2) reads the document; the expectations are the FictionBook 2.0 structure written by hand.
+      expect(xmlWellFormed(xml).ok).toBe(true);
+      const q = (expr: string) => xpathString(xml, expr);
+      expect(q('namespace-uri(/*[local-name()="FictionBook"])')).toBe('http://www.gribuser.ru/xml/fictionbook/2.0');
+      expect(q('string(//*[local-name()="title-info"]/*[local-name()="book-title"])')).toBe('Space Voyage');
+      expect(q('count(//*[local-name()="body"]/*[local-name()="section"])')).toBe('1');
+      // The Markdown table becomes one <table> with a header row and two data rows.
+      expect(q('count(//*[local-name()="table"])')).toBe('1');
+      expect(q('count(//*[local-name()="table"]/*[local-name()="tr"])')).toBe('3');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][1]/*[local-name()="th"][1])')).toBe('Star');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][1]/*[local-name()="th"][3])')).toBe('Type');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][3]/*[local-name()="td"][1])')).toBe('Alpha Centauri');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][3]/*[local-name()="td"][2])')).toBe('4.37 ly');
+      // Paragraphs on either side of the table survive in order.
+      expect(q('string(//*[local-name()="section"]/*[local-name()="p"][1])')).toBe('The crew arrived at the destination.');
+      expect(q('string(//*[local-name()="section"]/*[local-name()="p"][last()])')).toBe('The voyage was recorded.');
     });
 
     it('converts FB2 to HTML and Markdown preserving semantic tables and authors', async () => {
