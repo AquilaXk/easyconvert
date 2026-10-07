@@ -15,7 +15,7 @@ import type {
 } from './object-storage';
 import { StorageSigningSecretMissingError } from './errors';
 import { lazySingleton } from './lazy-singleton';
-import { isProductionRuntime, resolveSigningSecret } from './storage-config';
+import { isProductionRuntime, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -57,10 +57,7 @@ export class LocalFsStorage implements IObjectStorage {
   private gcTimer: NodeJS.Timeout | null = null;
 
   constructor(options?: LocalFsStorageOptions) {
-    this.storageDir =
-      options?.storageDir ||
-      process.env.EASYCONVERT_STORAGE_DIR ||
-      path.resolve(process.cwd(), '.easyconvert/storage');
+    this.storageDir = options?.storageDir || resolveLocalStorageDir();
     this.partsDir = path.join(this.storageDir, '.parts');
     this.defaultTtlSeconds = options?.defaultTtlSeconds || 3600;
 

@@ -127,7 +127,7 @@ export function isScopeAllowed(grantedScopes?: string[], requiredScope?: string)
   return false;
 }
 
-function extractApiKeySecret(request: Request): string | null {
+export function extractApiKeySecret(request: Request): string | null {
   if (!request?.headers || typeof request.headers.get !== 'function') {
     return null;
   }

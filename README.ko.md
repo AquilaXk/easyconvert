@@ -171,7 +171,8 @@ EasyConvert는 동기식 REST 엔드포인트와 장시간 대용량 처리를 �
 
 ### 7. 서비스 헬스체크 및 진단
 - **엔드포인트**: `GET /api/health`
-- **응답**: 시스템 가동 시간, 가용 변환 엔진, 메모리 사용량 및 큐 상태.
+- **응답**: `{"status": "healthy" | "unhealthy"}`와 `200` 또는 `503`. Redis(설정된 경우), 스토리지, 네이티브 도구(soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z, dcraw_emu)를 실시간으로 점검하며 결과는 몇 초간 캐시됩니다.
+- **관리자 상세 보기**: 와일드카드(`*`) 스코프 API 키는 구성 요소별 상태도 받으며, 경로·호스트·자격 증명은 포함되지 않습니다.
 
 ---
 
