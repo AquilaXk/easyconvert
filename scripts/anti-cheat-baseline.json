@@ -190,41 +190,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-golden-testnet.test.ts",
-    "symbol": "converts golden DOCX to TXT with strict structural content oracle",
-    "reason": "Test block \"converts golden DOCX to TXT with strict structural content oracle\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-golden-testnet.test.ts",
-    "symbol": "converts golden XLSX to CSV and verifies Bijective Base-26 column coordinates (AA1)",
-    "reason": "Test block \"converts golden XLSX to CSV and verifies Bijective Base-26 column coordinates (AA1)\" contains only weak assertions (8 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-golden-testnet.test.ts",
-    "symbol": "fails closed when given a truncated/corrupted MP4 container",
-    "reason": "Test block \"fails closed when given a truncated/corrupted MP4 container\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-golden-testnet.test.ts",
-    "symbol": "fails closed when given an invalid zip/docx file buffer",
-    "reason": "Test block \"fails closed when given an invalid zip/docx file buffer\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-golden-testnet.test.ts",
-    "symbol": "fails closed on malformed PDF buffer missing standard header",
-    "reason": "Test block \"fails closed on malformed PDF buffer missing standard header\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-4-security-and-sandbox-hardening.test.ts",
     "symbol": "verifies Dockerfile.worker multi-stage builder and runner configuration",
     "reason": "Test block \"verifies Dockerfile.worker multi-stage builder and runner configuration\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
@@ -249,41 +214,6 @@
     "file": "tests/phase-4-wasm-simd-and-webgpu.test.ts",
     "symbol": "validates syntax and bindings of WGSL compute shaders",
     "reason": "Test block \"validates syntax and bindings of WGSL compute shaders\" contains only weak assertions (9 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-golden-corpus-and-oracle-vrt.test.ts",
-    "symbol": "4.2 fails closed on corrupted DOCX zip with truncated headers",
-    "reason": "Test block \"4.2 fails closed on corrupted DOCX zip with truncated headers\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-golden-corpus-and-oracle-vrt.test.ts",
-    "symbol": "4.3 fails closed on malformed XML in XLSX worksheets",
-    "reason": "Test block \"4.3 fails closed on malformed XML in XLSX worksheets\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-golden-corpus-and-oracle-vrt.test.ts",
-    "symbol": "4.4 fails closed or rejects corrupted CAD STEP with invalid entity references",
-    "reason": "Test block \"4.4 fails closed or rejects corrupted CAD STEP with invalid entity references\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-46"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-golden-corpus-and-oracle-vrt.test.ts",
-    "symbol": "4.7 fails closed and rejects ZipSlip path traversal directory escape payloads",
-    "reason": "Test block \"4.7 fails closed and rejects ZipSlip path traversal directory escape payloads\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-golden-corpus-and-oracle-vrt.test.ts",
-    "symbol": "4.8 handles cyclic xref tables and truncated object streams gracefully",
-    "reason": "Test block \"4.8 handles cyclic xref tables and truncated object streams gracefully\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
   {

@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
-import { SaxesParser } from 'saxes';
-import { ConversionOptions, ConversionResult, CorruptStreamError, DataParseError } from '../types';
+import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
 import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
@@ -42,22 +42,6 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Refuses a section part that is not well-formed XML 1.0. The section is read with tag patterns, which would
- * take the text out of a broken document and report whatever they happened to match, so the part is checked
- * first. Prefixes are not resolved: packages in the wild leave the `hp:` and `hs:` declarations out.
- */
-function assertWellFormedSection(partName: string, xml: string): void {
-  const parser = new SaxesParser({ xmlns: false, position: true, defaultXMLVersion: '1.0', forceXMLVersion: true });
-  parser.on('error', (err) => {
-    throw new DataParseError(`Invalid HWPX package: ${partName} is not well-formed XML (${err.message}).`, {
-      line: parser.line,
-      column: parser.column + 1,
-    });
-  });
-  parser.write(xml).close();
 }
 
 /**
@@ -132,7 +116,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
 
   for (const sFile of sectionFiles) {
     const secXml = await zip.files[sFile].async('text');
-    assertWellFormedSection(sFile, secXml);
+    assertWellFormedXml(sFile, secXml, 'HWPX');
 
     // Extract tables (<hp:tbl> ... </hp:tbl>)
     const tblRegex = /<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi;

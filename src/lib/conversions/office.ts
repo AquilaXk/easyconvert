@@ -5,6 +5,7 @@ import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
@@ -715,6 +716,7 @@ async function readOdtText(input: Buffer): Promise<string> {
     }
   }
   const xml = decodeXmlBytes(await content.async('nodebuffer'), 'ODT content.xml');
+  assertWellFormedXml('content.xml', xml, 'ODT');
   const paragraphs: string[] = [];
   let totalChars = 0;
   for (const element of safeExtractXmlElements(xml, ['text:p', 'text:h'], { maxElements: ODT_MAX_TEXT_CHARS })) {
@@ -737,13 +739,14 @@ async function convertDocxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'DOCX');
   const docXmlFile = zip.file('word/document.xml');
   if (!docXmlFile) {
-    throw new Error('Invalid DOCX format: word/document.xml not found.');
+    throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
   }
 
   const xmlText = await docXmlFile.async('text');
+  assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
 
   // Load chart relationships and parts if present
   const chartMap = new Map<string, string>();
@@ -5587,7 +5590,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   if (sheetEntries.length === 0) {
-    throw new Error('Invalid XLSX workbook: no worksheets found in archive.');
+    throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
   }
 
   // 4. Parse all discovered worksheets
@@ -5600,6 +5603,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     if (!sFile) continue;
 
     const sheetXml = await sFile.async('text');
+    assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];
     const cellMap: Record<string, any> = {};
@@ -5799,7 +5803,7 @@ async function convertXlsxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'XLSX');
   const rawSheets = await parseAllXlsxWorksheets(zip);
 
   // 1. Slicing by print area if range: 'printArea'
@@ -6682,7 +6686,7 @@ async function convertPptxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'PPTX');
 
   // 1. Parse presentation slide size from ppt/presentation.xml (in EMUs, 12700 EMUs = 1 pt)
   let slideWidth = 960; // 16:9 standard width in points (12,192,000 EMUs)
@@ -6715,6 +6719,7 @@ async function convertPptxSource(
 
   for (let i = 0; i < slideFiles.length; i++) {
     const xml = await zip.files[slideFiles[i]].async('text');
+    assertWellFormedXml(slideFiles[i], xml, 'PPTX');
 
     // Extract slide background color
     let backgroundColor: string | undefined;
@@ -6838,6 +6843,7 @@ async function convertOdpSource(
   const contentXmlFile = zip.file('content.xml');
   if (!contentXmlFile) throw new ConversionFailedError('The ODP file has no content.xml.');
   const xml = await contentXmlFile.async('text');
+  assertWellFormedXml('content.xml', xml, 'ODP');
   let pageNum = 1;
   for (const pageEl of safeExtractXmlElements(xml, 'draw:page')) {
     const texts: string[] = [];
@@ -8758,13 +8764,14 @@ export async function convertOdsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'ODS');
   const contentXml = zip.file('content.xml');
   if (!contentXml) {
-    throw new Error('Invalid ODS workbook: content.xml not found.');
+    throw new ConversionFailedError('Invalid ODS workbook: content.xml not found.');
   }
 
   const xml = await contentXml.async('text');
+  assertWellFormedXml('content.xml', xml, 'ODS');
   const rows: string[][] = [];
   const rowElements = safeExtractXmlElements(xml, 'table:table-row');
   for (const rEl of rowElements) {
@@ -9507,23 +9514,18 @@ async function extractRowsForOffice(
   options: ConversionOptions
 ): Promise<string[][]> {
   if (src === 'xlsx') {
-    try {
-      const zip = await JSZip.loadAsync(inputBuffer);
-      const allSheets = await parseAllXlsxWorksheets(zip);
-      if (allSheets.length > 0) {
-        if (allSheets.length === 1) return allSheets[0].rows;
-        const merged: string[][] = [];
-        allSheets.forEach((s, idx) => {
-          if (idx > 0 && s.rows.length > 0) {
-            merged.push([`### Sheet: ${s.name}`]);
-          }
-          merged.push(...s.rows);
-        });
-        return merged;
+    // A workbook that cannot be read is refused: re-reading its ZIP bytes as CSV text would answer with junk rows.
+    const zip = await openPackage(inputBuffer, 'XLSX');
+    const allSheets = await parseAllXlsxWorksheets(zip);
+    if (allSheets.length === 1) return allSheets[0].rows;
+    const merged: string[][] = [];
+    allSheets.forEach((sheet, idx) => {
+      if (idx > 0 && sheet.rows.length > 0) {
+        merged.push([`### Sheet: ${sheet.name}`]);
       }
-    } catch {
-      // fallback
-    }
+      merged.push(...sheet.rows);
+    });
+    return merged;
   }
 
   const text = inputBuffer.toString('utf-8');
@@ -9563,7 +9565,7 @@ export async function extractAllSheetsForOffice(
   options: ConversionOptions = {}
 ): Promise<OfficeWorksheet[]> {
   if (src === 'xlsx') {
-    const zip = await JSZip.loadAsync(inputBuffer);
+    const zip = await openPackage(inputBuffer, 'XLSX');
     return parseAllXlsxWorksheets(zip);
   }
   const rows = await extractRowsForOffice(inputBuffer, src, options);

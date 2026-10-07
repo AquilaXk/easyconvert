@@ -32,12 +32,15 @@ import {
   calculateNormalizedTextSimilarity,
   assertFormatIntegrity,
   getOracleToolDiagnostics,
+  extractTextWithExternalPdftotext,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { convertFile } from '../src/lib/conversions';
 import { demosaicBayerCfa, decodeRawBayerSensor } from '../src/lib/conversions/image';
 import { convertOffice } from '../src/lib/conversions/office';
+import { CadGeometryUnavailableError, ConversionFailedError, DataParseError } from '../src/lib/types';
+import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { decompressZstd, createTarArchive } from '../src/lib/conversions/archive';
 import {
@@ -638,21 +641,34 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
     });
 
     it('4.2 fails closed on corrupted DOCX zip with truncated headers', async () => {
-      await expect(
-        convertOffice(corrupt.docxCorruptedZip, 'docx', 'txt')
-      ).rejects.toThrow();
+      const failure = await convertOffice(corrupt.docxCorruptedZip, 'docx', 'txt').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('The DOCX file is not a valid ZIP package.');
     });
 
     it('4.3 fails closed on malformed XML in XLSX worksheets', async () => {
-      await expect(
-        convertOffice(corrupt.xlsxUnclosedTags, 'xlsx', 'csv')
-      ).rejects.toThrow();
+      // A genuine workbook package whose first worksheet is cut off inside a tag (the fixture's unclosed-tag XML).
+      const workbook = await JSZip.loadAsync(fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.xlsx')));
+      workbook.file('xl/worksheets/sheet1.xml', corrupt.xlsxUnclosedTags.toString('utf-8'));
+      const brokenWorkbook = await workbook.generateAsync({ type: 'nodebuffer' });
+
+      const failure = await convertOffice(brokenWorkbook, 'xlsx', 'csv').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(DataParseError);
+      expect((failure as Error).message).toMatch(/^Invalid XLSX package: xl\/worksheets\/sheet1\.xml is not well-formed XML/);
+    });
+
+    it('4.3b refuses a workbook that is not a ZIP package instead of reading its bytes as CSV', async () => {
+      const failure = await convertOffice(corrupt.xlsxUnclosedTags, 'xlsx', 'csv').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('The XLSX file is not a valid ZIP package.');
     });
 
     it('4.4 fails closed or rejects corrupted CAD STEP with invalid entity references', async () => {
-      await expect(
-        convertVectorCad(corrupt.cadNonManifoldStep, 'step', 'svg')
-      ).rejects.toThrow();
+      const failure = await convertVectorCad(corrupt.cadNonManifoldStep, 'step', 'svg').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(CadGeometryUnavailableError);
+      expect((failure as Error).message).toBe(
+        'Failed to tessellate CAD geometry from step: No valid B-spline surfaces, B-Rep topology, or curves found.'
+      );
     });
 
     it('4.5 fails closed on truncated 7z archive headers', async () => {
@@ -675,20 +691,37 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       ).rejects.toThrow(/Binary null bytes|Unsupported|corrupted|not supported|fail-closed/i);
     });
 
-    it('4.7 fails closed and rejects ZipSlip path traversal directory escape payloads', async () => {
-      // Extracting zip containing ../../etc/passwd must not write outside or must fail safely
-      await expect(
-        convertOffice(corrupt.archiveZipSlip, 'docx', 'txt')
-      ).rejects.toThrow();
+    it('4.7 neutralises ZipSlip entry names in a package and refuses it when the document part is missing', async () => {
+      // JSZip cleans entry names on write, so the entry is written under a same-length placeholder and the name
+      // is patched to the traversal path in the local header and the central directory.
+      const slipPackage = new JSZip();
+      slipPackage.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+      slipPackage.file('xx/xx/etc/passwd', 'root:x:0:0:root:/root:/bin/bash');
+      const placeholderBuffer = await slipPackage.generateAsync({ type: 'nodebuffer' });
+      const slipBuffer = Buffer.from(placeholderBuffer.toString('latin1').split('xx/xx/etc/passwd').join('../../etc/passwd'), 'latin1');
+      expect(slipBuffer.includes(Buffer.from('../../etc/passwd'))).toBe(true);
+
+      // The package reader maps the traversal name to a path below the package root, and the package has no
+      // word/document.xml, so the conversion is refused for the missing part.
+      const entryNames = Object.keys((await JSZip.loadAsync(slipBuffer)).files);
+      expect(entryNames).toContain('etc/passwd');
+      expect(entryNames.filter((name) => name.includes('..'))).toEqual([]);
+
+      const failure = await convertOffice(slipBuffer, 'docx', 'txt').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('Invalid DOCX format: word/document.xml not found.');
     });
 
-    it('4.8 handles cyclic xref tables and truncated object streams gracefully', async () => {
-      // Cyclic xref and truncated streams must not cause unhandled runtime errors
-      const cyclicAst = await parsePdfToAst(corrupt.pdfCyclicXref);
-      expect(cyclicAst).toBeDefined();
+    oracleTest('4.8 reads a cyclic xref table as an empty page and refuses a stream cut off before endstream', ['pdftotext'], async () => {
+      // The reconstructed page of the cyclic-xref file has no content stream: no text, which poppler agrees
+      // with. The cut-off stream has no end marker, so it is refused with the object named.
+      const cyclic = await convertFile(corrupt.pdfCyclicXref, 'pdf', 'txt', {}, 'cyclic.pdf');
+      expect(cyclic.buffer.toString('utf-8')).toBe('');
+      expect(extractTextWithExternalPdftotext(corrupt.pdfCyclicXref)?.trim()).toBe('');
 
-      const truncatedAst = await parsePdfToAst(corrupt.pdfTruncatedStream);
-      expect(truncatedAst).toBeDefined();
+      const failure = await convertFile(corrupt.pdfTruncatedStream, 'pdf', 'txt', {}, 'truncated.pdf').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(PdfStructureError);
+      expect((failure as Error).message).toBe('PDF stream of object 2 is not terminated by endstream.');
     });
 
     it('4.9 assertFormatIntegrity fails closed on truncated/corrupt headers across all formats', () => {

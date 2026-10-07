@@ -1,4 +1,4 @@
-import { PayloadLimitError } from '../types';
+import { CorruptStreamError, PayloadLimitError } from '../types';
 import { PdfDocument } from './pdf-document';
 
 /**
@@ -654,7 +654,7 @@ export function extractStructuredTextFromPdf(pdfBuffer: Buffer): {
   cmaps: Map<string, PdfToUnicodeCMap>;
 } {
   if (!pdfBuffer.includes('%PDF-')) {
-    throw new Error('Invalid PDF document: missing %PDF- header');
+    throw new CorruptStreamError('Invalid PDF document: missing %PDF- header');
   }
 
   // Only the content streams a page draws are decoded (see PdfDocument), each within the stream cap and
