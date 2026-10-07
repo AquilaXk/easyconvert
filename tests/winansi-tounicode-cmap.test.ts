@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import iconv from 'iconv-lite';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { createWinAnsiToUnicodeCMap, ensureStandardFontToUnicode } from '../src/lib/conversions/ocr-pdf-combiner';
+import { PDFDict, PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
+import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/ocr-pdf-combiner';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { lookupCode, readToUnicodeCMap } from './helpers/cmap-reader';
@@ -51,7 +51,10 @@ describe('WinAnsi ToUnicode CMap', () => {
   oracleTest('lets pdftotext read the euro sign, curly quotes and dashes of a standard-font page', ['pdftotext'], async () => {
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.Helvetica);
-    ensureStandardFontToUnicode(doc, font);
+    // The CMap is attached to the font dictionary the way a writer that wants searchable standard-font text does it.
+    await font.embed();
+    const cmapStream = doc.context.stream(createWinAnsiToUnicodeCMap());
+    (doc.context.lookup(font.ref) as PDFDict).set(PDFName.of('ToUnicode'), doc.context.register(cmapStream));
     const page = doc.addPage([400, 100]);
     const line = '\u20ac5 \u201cquoted\u201d \u2013 done \u2014 \u2122';
     page.drawText(line, { x: 20, y: 50, size: 14, font });
