@@ -80,6 +80,8 @@ const PROBE_TIMEOUT_MS = 20_000;
 /** Decoding a 39-megapixel RAW sensor and encoding it (AVIF, GIF, PDF) takes far longer than a probe seed. */
 const RAW_PROBE_TIMEOUT_MS = 180_000;
 const RATCHET_TIMEOUT_MS = 1_800_000;
+/** Upper bound on concurrent probes, whatever the machine offers. */
+const MAX_PROBE_CONCURRENCY = 4;
 const CATEGORY_TIMEOUT_MS = 600_000;
 /** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
 const RAW_SOURCE_TIMEOUT_MS = 900_000;
@@ -435,21 +437,39 @@ function probePairCached(source: string, target: string): Promise<{ outcome: Pai
   return pending;
 }
 
+/**
+ * Probes run this many at a time. Each probe mostly waits on an engine process, so a few in flight keep
+ * the CPUs busy without starving any probe of its timeout.
+ */
+const PROBE_CONCURRENCY = Math.max(1, Math.min(os.availableParallelism(), MAX_PROBE_CONCURRENCY));
+
+/** Probes every pair with bounded concurrency; outcomes come back in the order of `pairs`. */
+async function probeAll(pairs: [string, string][]): Promise<{ outcome: PairOutcome; detail: string }[]> {
+  const outcomes: { outcome: PairOutcome; detail: string }[] = new Array(pairs.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    for (let index = next++; index < pairs.length; index = next++) {
+      const [source, target] = pairs[index];
+      outcomes[index] = await probePairCached(source, target);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, pairs.length) }, lane));
+  return outcomes;
+}
+
 async function findUnroutedPairs(pairs: [string, string][]): Promise<string[]> {
-  const unrouted: string[] = [];
-  for (const [source, target] of pairs) {
-    const { outcome, detail } = await probePairCached(source, target);
-    if (outcome === 'unrouted') unrouted.push(`${source} -> ${target}: ${detail}`);
-  }
-  return unrouted;
+  const outcomes = await probeAll(pairs);
+  return pairs.flatMap(([source, target], index) =>
+    outcomes[index].outcome === 'unrouted' ? [`${source} -> ${target}: ${outcomes[index].detail}`] : []
+  );
 }
 
 async function findInconclusivePairs(pairs: [string, string][]): Promise<string[]> {
-  const inconclusive: string[] = [];
-  for (const [source, target] of pairs) {
-    if ((await probePairCached(source, target)).outcome === 'inconclusive') inconclusive.push(`${source}->${target}`);
-  }
-  return inconclusive.sort();
+  const outcomes = await probeAll(pairs);
+  return pairs
+    .filter((_, index) => outcomes[index].outcome === 'inconclusive')
+    .map(([source, target]) => `${source}->${target}`)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /** Media pairs that reach FFmpeg are opt-in; every other advertised pair is always probed. */
