@@ -10,6 +10,8 @@ import { sofficeConvert } from './soffice-office';
 
 /** LibreOffice CSV export filter: comma separator, double-quote text delimiter, UTF-8, from the first row. */
 const LIBREOFFICE_CSV_FILTER = 'csv:Text - txt - csv (StarCalc):44,34,76,1';
+/** Same filter with the cell contents exported "as shown" (token 9): `34.2%` and `$1,250,000.50` instead of `0.342` and `1250000.5`. */
+const LIBREOFFICE_CSV_AS_SHOWN = 'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,true';
 /** Reads CSV from stdin (UTF-8, newlines untouched as the csv module requires) and prints the rows as JSON. */
 const PYTHON_CSV_READER = [
   'import csv, io, json, sys',
@@ -29,5 +31,11 @@ export function parseCsvWithPython(text: string, delimiter = ','): string[][] {
 /** The rows of the first sheet of an `ods` or `xlsx` package, as an office suite reads them. */
 export function sheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx'): string[][] {
   const csv = sofficeConvert(file, extension, LIBREOFFICE_CSV_FILTER, 'csv').toString('utf-8');
+  return parseCsvWithPython(csv);
+}
+
+/** The rows of the first sheet of an `ods` or `xlsx` package with every cell as the office suite displays it, number formats applied. */
+export function shownSheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx'): string[][] {
+  const csv = sofficeConvert(file, extension, LIBREOFFICE_CSV_AS_SHOWN, 'csv').toString('utf-8');
   return parseCsvWithPython(csv);
 }
