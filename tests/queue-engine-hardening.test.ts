@@ -375,7 +375,12 @@ describe('Phase 3-A: Queue Engine Hardening (Priority ZSET, Atomic Lua Add, Pub/
     });
 
     it('enforces removeOnComplete and removeOnFail in fallback in-memory mode without Redis', async () => {
+      // The in-memory stand-in exists only while no Redis is configured; a configured Redis that has
+      // not connected yet fails closed instead (see queue-redis-down-fail-closed.test.ts).
+      vi.stubEnv('REDIS_URL', '');
+      vi.stubEnv('REDIS_HOST', '');
       const fallbackAdapter = new DistributedBullMQAdapter('fallback-retention-test');
+      vi.unstubAllEnvs();
       const userId = 'usr_fallback_retention';
 
       const jobCompleted = await fallbackAdapter.add('c', { userId }, { removeOnComplete: true });
