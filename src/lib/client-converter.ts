@@ -6,6 +6,7 @@ import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
 import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
+import { canvasToBlob } from './edge/pipelines/canvas-blob';
 import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
 import { deriveQuantizerLevels } from './edge/workers/wasm-engine.worker';
@@ -388,21 +389,7 @@ async function processL1AWebGpuConversion(
       ? 'image/webp'
       : 'image/png';
 
-  let resultBlob: Blob;
-  if ('convertToBlob' in canvas) {
-    resultBlob = await canvas.convertToBlob({
-      type: mimeType,
-      quality: (item.options.quality || 90) / 100,
-    });
-  } else {
-    resultBlob = await new Promise<Blob>((resolve) => {
-      canvas.toBlob(
-        (b: Blob | null) => resolve(b || new Blob([])),
-        mimeType,
-        (item.options.quality || 90) / 100
-      );
-    });
-  }
+  const resultBlob = await canvasToBlob(canvas, mimeType, (item.options.quality || 90) / 100);
 
   onProgress?.(100);
   const resultUrl = URL.createObjectURL(resultBlob);
@@ -518,14 +505,7 @@ async function processL2Conversion(
           }
 
           const mimeType = tgt === 'jpg' || tgt === 'jpeg' ? 'image/jpeg' : (tgt === 'webp' ? 'image/webp' : 'image/png');
-          let resultBlob: Blob;
-          if ('convertToBlob' in canvas) {
-            resultBlob = await canvas.convertToBlob({ type: mimeType, quality: (item.options.quality || 90) / 100 });
-          } else {
-            resultBlob = await new Promise<Blob>((resolve) => {
-              canvas.toBlob((b: Blob | null) => resolve(b || new Blob([])), mimeType, (item.options.quality || 90) / 100);
-            });
-          }
+          const resultBlob = await canvasToBlob(canvas, mimeType, (item.options.quality || 90) / 100);
 
           const resultUrl = URL.createObjectURL(resultBlob);
           return {
