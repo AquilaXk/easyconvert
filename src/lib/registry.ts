@@ -3257,11 +3257,19 @@ export function isFormatCompatibleWithMagicBytes(
   const sniffed = sniffMimeTypeFromMagicBytes(buffer);
 
   // Format mapping groups
+  // ZIP packages: Office Open XML (macro-enabled and template variants included), OpenDocument and its
+  // OpenOffice 1.x predecessors, iWork, Open XPS, comic and Java archives, and the Kingsoft OOXML workbook.
   const zipFormats = new Set([
     'zip', 'docx', 'xlsx', 'pptx', 'epub', 'odt', 'ods', 'odp', 'hwpx',
-    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar', 'odg', 'odd', 'key'
+    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar', 'odg', 'odd', 'key',
+    'docm', 'dotm', 'xlsm', 'xltm', 'pptm', 'potm', 'ppsx', 'ppsm', 'ott', 'ots', 'otp',
+    'sxw', 'sxi', 'sxd', 'xps', 'oxps', 'pages', 'numbers', 'ibooks', 'war', 'ear', 'et', 'wps', 'dps',
   ]);
-  const cfbfFormats = new Set(['doc', 'xls', 'ppt', 'hwp', 'cfbf']);
+  // OLE2 compound files: Office 97-2003 documents and templates, Hangul 5.0, Outlook messages, Visio 2003,
+  // Publisher, and the Kingsoft binary formats.
+  const cfbfFormats = new Set([
+    'doc', 'dot', 'xls', 'xlt', 'ppt', 'pot', 'pps', 'hwp', 'cfbf', 'msg', 'vsd', 'pub', 'et', 'wps', 'dps',
+  ]);
   const pdfFormats = new Set(['pdf', 'ai']);
   const pngFormats = new Set(['png', 'apng']);
   const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif', 'raw']);
@@ -3278,15 +3286,22 @@ export function isFormatCompatibleWithMagicBytes(
   const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
   const webmFormats = new Set(['webm', 'weba']);
   const aviFormats = new Set(['avi']);
-  const sevenZipFormats = new Set(['7z']);
+  const sevenZipFormats = new Set(['7z', 'cb7']);
   const gzipFormats = new Set(['gz', 'tgz', 'gzip']);
   const bzipFormats = new Set(['bz2', 'tbz', 'tbz2']);
   const zstdFormats = new Set(['zst', 'zstd']);
-  const rarFormats = new Set(['rar']);
+  const rarFormats = new Set(['rar', 'cbr']);
 
   // Reject executable binaries immediately (Security Gate)
   if (sniffed === 'application/x-elf' || sniffed === 'application/x-dosexec') {
     return false;
+  }
+
+  // CorelDRAW files are RIFF containers whose form type starts with "CDR" (versions 3 to 9) or ZIP packages (X4 and later).
+  if (cleanExt === 'cdr') {
+    const isRiffCdr = buffer.length >= 12 && Buffer.from(buffer.subarray(0, 4)).toString('latin1') === 'RIFF' && Buffer.from(buffer.subarray(8, 11)).toString('latin1') === 'CDR';
+    const isZipPackage = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
+    return isRiffCdr || isZipPackage;
   }
 
   // If no definitive magic bytes were identified, allow unless declared format has strict signature

@@ -64,3 +64,69 @@ describe('EBML file extensions', () => {
     expect(isFormatCompatibleWithMagicBytes(ebmlHeader('webm'), extension)).toBe(false);
   });
 });
+
+describe('CorelDRAW files', () => {
+  const riff = (formType: string): Buffer => {
+    const header = Buffer.alloc(16);
+    header.write('RIFF', 0, 'latin1');
+    header.writeUInt32LE(8, 4);
+    header.write(formType, 8, 'latin1');
+    return header;
+  };
+
+  it.each(['CDR6', 'CDRX'])('a RIFF container with form type %s passes the gate under the .cdr name', (formType) => {
+    expect(isFormatCompatibleWithMagicBytes(riff(formType), 'cdr')).toBe(true);
+  });
+
+  it('a ZIP package (CorelDRAW X4 and later) passes', () => {
+    expect(isFormatCompatibleWithMagicBytes(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0]), 'cdr')).toBe(true);
+  });
+
+  it.each([
+    ['an SVG document', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>')],
+    ['a RIFF WAVE file', riff('WAVE')],
+    ['plain text', Buffer.from('this is not a drawing at all')],
+  ])('%s under the .cdr name is refused', (_name, bytes) => {
+    expect(isFormatCompatibleWithMagicBytes(bytes, 'cdr')).toBe(false);
+  });
+});
+
+/**
+ * Container of each format, from its specification: Office Open XML and OpenDocument packages are ZIP files
+ * (ECMA-376 Part 2; OASIS ODF 1.3 section 3), Office 97-2003 files are OLE2 compound files ([MS-CFB]),
+ * a comic book archive is a renamed RAR or 7z file.
+ */
+const ZIP_PACKAGE_EXTENSIONS = [
+  'docm', 'xlsm', 'pptm', 'ppsx', 'ott', 'ots', 'otp', 'sxw', 'sxi', 'sxd', 'xps', 'oxps', 'pages', 'numbers', 'ibooks', 'war', 'ear', 'et',
+];
+const COMPOUND_FILE_EXTENSIONS = ['dot', 'xlt', 'pot', 'pps', 'msg', 'vsd', 'pub', 'et', 'wps', 'dps'];
+const ZIP_HEADER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+const COMPOUND_FILE_HEADER = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(16)]);
+const RAR_HEADER = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0, 0, 0, 0, 0]);
+const SEVEN_ZIP_HEADER = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0, 4, 0, 0, 0, 0, 0, 0]);
+const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+
+describe('ZIP-based, OLE2-based and renamed archive formats', () => {
+  it.each(ZIP_PACKAGE_EXTENSIONS)('a ZIP package under the .%s name passes the gate', (extension) => {
+    expect(FORMAT_REGISTRY[extension]?.extension).toBe(extension);
+    expect(isFormatCompatibleWithMagicBytes(ZIP_HEADER, extension)).toBe(true);
+  });
+
+  it.each(COMPOUND_FILE_EXTENSIONS)('an OLE2 compound file under the .%s name passes the gate', (extension) => {
+    expect(FORMAT_REGISTRY[extension]?.extension).toBe(extension);
+    expect(isFormatCompatibleWithMagicBytes(COMPOUND_FILE_HEADER, extension)).toBe(true);
+  });
+
+  it('a RAR archive passes as .cbr and a 7z archive as .cb7', () => {
+    expect(isFormatCompatibleWithMagicBytes(RAR_HEADER, 'cbr')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(SEVEN_ZIP_HEADER, 'cb7')).toBe(true);
+  });
+
+  it.each(['docm', 'ott', 'xps', 'dot', 'msg', 'cbr', 'cb7'])('a PNG image under the .%s name is still refused', (extension) => {
+    expect(isFormatCompatibleWithMagicBytes(PNG_HEADER, extension)).toBe(false);
+  });
+
+  it.each(['docm', 'xps', 'pages'])('a compound file under the ZIP-only name .%s is refused', (extension) => {
+    expect(isFormatCompatibleWithMagicBytes(COMPOUND_FILE_HEADER, extension)).toBe(false);
+  });
+});
