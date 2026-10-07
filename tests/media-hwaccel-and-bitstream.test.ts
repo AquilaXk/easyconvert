@@ -190,7 +190,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       );
     });
 
-    it('gracefully rejects truncated or invalid media buffers', () => {
+    oracleTest('rejects truncated or invalid media buffers by decoding them', ['ffmpeg', 'ffprobe'], () => {
       const brokenBuf = Buffer.from([0x00, 0x01, 0x02]);
       const resAudio = verifyAudioBitstreamWithFfprobe(brokenBuf, 'wav');
       expect(resAudio.valid).toBe(false);

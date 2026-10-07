@@ -16,6 +16,13 @@ import {
 } from '../src/lib/conversions/media';
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { assertDecodedMedia, VIDEO_MIN_SSIM } from './oracles/product/media-oracle';
+
+/** 2 s at 30 fps from the lavfi generators below. */
+const FRAME_RATE = 30;
+/** Source clips are 1 to 5 s; a trim of 1.0 to 3.5 s keeps 75 frames, give or take the seek landing on a frame edge. */
+const TRIM_FRAMES = 75;
+const TRIM_FRAME_TOLERANCE = 1;
 
 describe('WP-44a: Media Video Encoding & Filter Controls', () => {
   describe('1. Profile and Level Validation Gate', () => {
@@ -383,6 +390,13 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
         expect(videoStream.codec_name).toBe('h264');
         expect(videoStream.profile).toBe('High');
         expect(videoStream.level).toBe(41); // ffprobe reports level 4.1 as 41
+
+        // Decoded: every one of the 60 frames comes back, and a CRF 22 encode stays close to the source.
+        const frames = FRAME_RATE * 2;
+        assertDecodedMedia(fs.readFileSync(outputPath), 'mp4', 'video', {
+          streams: { video: 1, audio: 1 },
+          video: { frameCount: frames, reference: { bytes: fs.readFileSync(inputPath), extension: 'mp4' }, minSsim: VIDEO_MIN_SSIM },
+        });
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -404,6 +418,11 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
           '-i', 'testsrc2=size=640x480:rate=30:duration=1',
           '-c:v', 'libx264',
           inputPath,
+        ], { stdio: 'ignore' });
+
+        execFileSync(ffmpeg, [
+          '-y', '-i', inputPath, '-vf', 'crop=300:200:50:50,transpose=1', '-c:v', 'libx264', '-qp', '0',
+          path.join(tmpDir, 'reference.mp4'),
         ], { stdio: 'ignore' });
 
         // Crop to 300x200 (x=50, y=50), rotate 90 -> final dimensions must be 200 width, 300 height
@@ -434,6 +453,13 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
         // Even parity requirement
         expect(videoStream.width % 2).toBe(0);
         expect(videoStream.height % 2).toBe(0);
+
+        // Independent reference: the same crop and clockwise transpose done by ffmpeg's own filters.
+        const reference = fs.readFileSync(path.join(tmpDir, 'reference.mp4'));
+        assertDecodedMedia(fs.readFileSync(outputPath), 'mp4', 'video', {
+          streams: { video: 1 },
+          video: { frameCount: FRAME_RATE, reference: { bytes: reference, extension: 'mp4' }, minSsim: VIDEO_MIN_SSIM },
+        });
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -477,6 +503,17 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
         const duration = Number.parseFloat(info.format.duration);
         expect(Number.isFinite(duration)).toBe(true);
         expect(Math.abs(duration - 2.5)).toBeLessThanOrEqual(0.1);
+
+        // Decoded: 2.5 s at 30 fps is 75 frames, and they are the source frames from 1.0 s on.
+        execFileSync(ffmpeg, [
+          '-y', '-ss', '1.0', '-t', '2.5', '-i', inputPath, '-c:v', 'libx264', '-qp', '0',
+          path.join(tmpDir, 'reference.mp4'),
+        ], { stdio: 'ignore' });
+        const decoded = assertDecodedMedia(fs.readFileSync(outputPath), 'mp4', 'video', {
+          streams: { video: 1 },
+          video: { reference: { bytes: fs.readFileSync(path.join(tmpDir, 'reference.mp4')), extension: 'mp4' } },
+        });
+        expect(Math.abs(decoded.video!.frameCount - TRIM_FRAMES)).toBeLessThanOrEqual(TRIM_FRAME_TOLERANCE);
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }

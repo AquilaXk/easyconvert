@@ -17,6 +17,7 @@ import {
   OracleToolMissingError,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { h264AacMp4, runFfmpeg, sineInput } from './helpers/ffmpeg-media-fixtures';
 import {
   createDeterministicSyntheticStream,
   pipeStreamToStorageMultipart,
@@ -193,12 +194,14 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
     it('detects and rejects hollow MP4 buffer with ftyp/moov/mdat strings but empty descriptors', () => {
       const hollowMp4 = Buffer.from('ftypisommoovmdatTHIS_IS_A_HOLLOW_FAKE_MP4_BUFFER_WITH_ZERO_METADATA');
       expect(() => checkIsoBmffIntegrity(hollowMp4)).toThrow(/Integrity Violation/);
+      expect(() => assertFormatIntegrity(hollowMp4, 'mp4')).toThrow(/Integrity Violation/);
+    });
 
+    oracleTest('the decode verdict rejects a hollow MP4 buffer and says why', ['ffmpeg', 'ffprobe'], () => {
+      const hollowMp4 = Buffer.from('ftypisommoovmdatTHIS_IS_A_HOLLOW_FAKE_MP4_BUFFER_WITH_ZERO_METADATA');
       const verification = verifyVideoBitstreamWithFfprobe(hollowMp4, 'mp4');
       expect(verification.valid).toBe(false);
-      expect(verification.error).toBeDefined();
-
-      expect(() => assertFormatIntegrity(hollowMp4, 'mp4')).toThrow(/Integrity Violation/);
+      expect(verification.error).toMatch(/\S/);
     });
 
     it('rejects MP4 when mdat contains corrupted/missing H.264 NAL units', () => {
@@ -233,11 +236,12 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
     it('detects and rejects hollow Ogg buffer without OpusHead or Vorbis header', () => {
       const hollowOgg = Buffer.from('OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x05HOLLOW_PAYLOAD');
       expect(() => checkOggIntegrity(hollowOgg)).toThrow(/First Ogg page must contain valid OpusHead or Vorbis/);
-
-      const verification = verifyAudioBitstreamWithFfprobe(hollowOgg, 'opus');
-      expect(verification.valid).toBe(false);
-
       expect(() => assertFormatIntegrity(hollowOgg, 'opus')).toThrow(/Integrity Violation/);
+    });
+
+    oracleTest('the decode verdict rejects a hollow Ogg buffer', ['ffmpeg', 'ffprobe'], () => {
+      const hollowOgg = Buffer.from('OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x05HOLLOW_PAYLOAD');
+      expect(verifyAudioBitstreamWithFfprobe(hollowOgg, 'opus').valid).toBe(false);
     });
 
     it('validates authentic Ogg Opus container with OpusHead and OpusTags', () => {
@@ -298,7 +302,9 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
         const fakeBuf = Buffer.alloc(100);
         try {
           const res = verifyVideoBitstreamWithFfprobe(fakeBuf, 'mp4');
-          expect(res).toBeDefined();
+          // An all-zero buffer is no video: the verdict is a decode, so it is invalid and says why.
+          expect(res.valid).toBe(false);
+          expect(res.error).toMatch(/\S/);
         } catch (err: any) {
           expect(err).toBeInstanceOf(OracleToolMissingError);
           expect(err.isOracleSkip).toBe(true);
@@ -396,9 +402,19 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(info.videoCodec).toBe('avc1');
       expect(info.audioCodec).toBe('mp4a');
 
-      const verification = verifyVideoBitstreamWithFfprobe(multiTrackMp4, 'mp4', 'h264');
+      // Structure only: these NAL units are hand-written and decode to nothing, so the decode verdict
+      // is exercised on a reference-authored file below.
+    });
+
+    oracleTest('the decode verdict accepts a reference-encoded video with audio and reports its frames', ['ffmpeg', 'ffprobe'], () => {
+      const mp4 = h264AacMp4();
+      const verification = verifyVideoBitstreamWithFfprobe(mp4, 'mp4', 'h264');
       expect(verification.valid).toBe(true);
       expect(verification.codecName).toBe('h264');
+      // h264AacMp4 is 2 s at 25 fps.
+      expect(verification.frameCount).toBe(50);
+      expect(verification.width).toBe(320);
+      expect(verification.height).toBe(240);
     });
 
     it('detects and rejects truncated ADTS AAC stream occurring after the first valid frame', () => {
@@ -436,7 +452,7 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => checkOggIntegrity(oggPage)).toThrow(/First Ogg page must contain valid OpusHead or Vorbis/);
     });
 
-    it('validates authentic M4A audio container in assertFormatIntegrity and verifyAudioBitstreamWithFfprobe', () => {
+    it('reads the audio sample entry of a hand-built M4A container (structure only)', () => {
       const ftyp = createBox('ftyp', Buffer.concat([Buffer.from('M4A '), Buffer.from([0, 0, 0, 0]), Buffer.from('M4A mp42isom')]));
       const mp4a = createBox('mp4a', Buffer.alloc(36));
       const stsdAudio = createBox('stsd', Buffer.concat([Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]), mp4a]));
@@ -447,9 +463,21 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       const m4a = Buffer.concat([ftyp, moov, mdat]);
 
       expect(() => assertFormatIntegrity(m4a, 'm4a')).not.toThrow();
-      const res = verifyAudioBitstreamWithFfprobe(m4a, 'm4a');
+      const info = checkIsoBmffIntegrity(m4a);
+      expect(info.audioCodec).toBe('mp4a');
+      expect(info.hasMoov).toBe(true);
+      expect(info.hasMdat).toBe(true);
+    });
+
+    oracleTest('the decode verdict accepts a reference-encoded M4A and counts its samples', ['ffmpeg', 'ffprobe'], () => {
+      const m4a = runFfmpeg([...sineInput(44100, 1), '-c:a', 'aac', '-movflags', '+faststart'], 'm4a');
+      const res = verifyAudioBitstreamWithFfprobe(m4a, 'm4a', 'aac');
       expect(res.valid).toBe(true);
       expect(res.formatName).toContain('m4a');
+      expect(res.sampleRate).toBe(44100);
+      // One second of audio, plus at most the 1024-sample AAC priming and padding.
+      expect(res.sampleCount).toBeGreaterThanOrEqual(44100);
+      expect(res.sampleCount).toBeLessThanOrEqual(44100 + 2048);
     });
   });
 

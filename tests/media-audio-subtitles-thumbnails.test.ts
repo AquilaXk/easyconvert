@@ -17,6 +17,18 @@ import {
 } from '../src/lib/conversions/media';
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { assertDecodedMedia } from './oracles/product/media-oracle';
+
+/** AAC priming plus padding: at most two 1024-sample frames. */
+const AAC_PADDING_SAMPLES = 2048;
+/**
+ * lavfi `sine` has a peak of 1/8 full scale (RMS about 2900 of 32768). The ITU-R BS.775 matrix
+ * weights sum to 1 per output channel, so the folded tone keeps that level; a silent or lost
+ * downmix reads 0.
+ */
+const MIN_DOWNMIX_RMS = 1000;
+/** A JPEG thumbnail of the test pattern scored 0.992 against the PNG reference; the floor leaves margin for encoder builds. */
+const THUMBNAIL_MIN_SSIM = 0.98;
 
 describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Thumbnails', () => {
   describe('1. Audio Codec Validation & Container Compatibility Gate', () => {
@@ -467,6 +479,17 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         expect(audioStream.channels).toBe(2);
         expect(audioStream.channel_layout).toBe('stereo');
         expect(audioStream.codec_name).toBe('aac');
+
+        // Decoded: one second at 48 kHz (plus the AAC priming and padding), not silence. The five equal
+        // channels of the 440 Hz source fold to a stereo tone far above the noise floor.
+        const decoded = assertDecodedMedia(result.buffer, 'mp4', 'audio', {
+          streams: { audio: 1, video: 0 },
+          audio: { sampleRate: 48000, channels: 2, samplesPerChannel: 48000, toleranceSamples: AAC_PADDING_SAMPLES },
+        });
+        let energy = 0;
+        for (let i = 0; i < decoded.audio!.pcm.length; i += 2) energy += decoded.audio!.pcm.readInt16LE(i) ** 2;
+        const rms = Math.sqrt(energy / (decoded.audio!.pcm.length / 2));
+        expect(rms).toBeGreaterThan(MIN_DOWNMIX_RMS);
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -517,6 +540,16 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         expect(imgStream.width).toBe(320);
         expect(imgStream.height).toBe(240); // 640x480 scaled to width 320 -> height 240
         expect(imgStream.codec_name).toBe('mjpeg');
+
+        // Decoded: the thumbnail is the source frame at 1.000 s, scaled by ffmpeg's own filter.
+        const referencePath = path.join(tmpDir, 'thumb_reference.png');
+        execFileSync(ffmpeg, [
+          '-y', '-ss', '00:00:01.000', '-i', inputPath, '-frames:v', '1', '-vf', 'scale=320:-2', referencePath,
+        ], { stdio: 'ignore' });
+        assertDecodedMedia(result.buffer, 'jpg', 'video', {
+          streams: { video: 1 },
+          video: { frameCount: 1, reference: { bytes: fs.readFileSync(referencePath), extension: 'png' }, minSsim: THUMBNAIL_MIN_SSIM },
+        });
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -568,6 +601,17 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
         expect(subStream).toBeDefined();
         expect(subStream.codec_name).toBe('mov_text');
+
+        // Decoded: every stream decodes, the picture is the source, and the cue text survives the container.
+        assertDecodedMedia(fs.readFileSync(outputPath), 'mp4', 'video', {
+          streams: { video: 1, audio: 1, subtitle: 1 },
+          video: { frameCount: 25, reference: { bytes: fs.readFileSync(videoPath), extension: 'mp4' } },
+        });
+        const cueText = execFileSync(ffmpeg, ['-v', 'error', '-i', outputPath, '-map', '0:s:0', '-f', 'srt', '-'], {
+          encoding: 'utf-8',
+        });
+        expect(cueText).toContain('Hello EasyConvert Subtitles!');
+        expect(cueText).toContain('00:00:00,100 --> 00:00:00,900');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
