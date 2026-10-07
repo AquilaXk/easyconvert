@@ -11,7 +11,7 @@ import { magickConvert } from './helpers/magick-compare';
  * library behind it), which writes the same T.6 strip for the same raster: every code of both run-length tables,
  * the make-up codes past 2560 pixels, the pass, vertical and horizontal modes, rows that are not a whole number
  * of bytes wide, the EOFB code and the padding must match bit for bit. Pixel-level decoding of the strip inside a
- * PDF is checked in ocr-pdf-png-passthrough.test.ts.
+ * PDF is checked in ocr-pdf-png-passthrough.perf.test.ts.
  */
 
 const TIFF_TAG_STRIP_OFFSETS = 273;
