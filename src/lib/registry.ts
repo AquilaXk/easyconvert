@@ -3274,9 +3274,9 @@ export function isFormatCompatibleWithMagicBytes(
   const wavFormats = new Set(['wav']);
   const flacFormats = new Set(['flac']);
   const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
-  const mp4Formats = new Set(['mp4', 'm4a', 'mov', 'cr3']);
+  const mp4Formats = new Set(['mp4', 'm4a', 'm4b', 'm4v', 'mov', '3gp', '3gpp', '3g2', 'f4v', 'cr3']);
   const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
-  const webmFormats = new Set(['webm']);
+  const webmFormats = new Set(['webm', 'weba']);
   const aviFormats = new Set(['avi']);
   const sevenZipFormats = new Set(['7z']);
   const gzipFormats = new Set(['gz', 'tgz', 'gzip']);
