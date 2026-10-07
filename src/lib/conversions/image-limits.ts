@@ -7,6 +7,9 @@ import { ConversionFailedError, UnsupportedOptionError } from '../types';
 
 const BYTES_PER_MIB = 1024 * 1024;
 
+/** Most pixels a page drawn by an in-process renderer (SVG pages of HWP text and tables) may have; larger pages are refused with HTTP 413. */
+export const MAX_RENDER_PIXELS = 50_000_000;
+
 /** Bytes per pixel of the 8-bit RGBA frames an animation is held and transformed as. */
 export const RGBA_BYTES_PER_PIXEL = 4;
 

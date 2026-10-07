@@ -1,7 +1,7 @@
 import sharp, { type ResizeOptions } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError, EngineUnavailableError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { openInputImage, resizedDimensions } from './image-input-limits';
@@ -77,21 +77,23 @@ export {
   parseSvgPathToBezierPoints,
 };
 
+/**
+ * The canvas size of a CGM is its VDC extent. A drawing that states none, or an empty one, has no size to
+ * read, so it is refused instead of being drawn on a canvas of an invented size.
+ */
 function parseCgmDimensions(cgmText: string): { width: number; height: number } {
-  let width = 800;
-  let height = 600;
   const vdcRegex = /VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i;
   const vdcMatch = vdcRegex.exec(cgmText);
-  if (vdcMatch) {
-    // Either corner order is legal; a reversed y extent only flips the VDC axis.
-    const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
-    const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
-    if (w > 0 && h > 0) {
-      width = Math.round(w);
-      height = Math.round(h);
-    }
+  if (!vdcMatch) {
+    throw new ConversionFailedError('The CGM states no VDC extent (VDCEXT), so its size cannot be read.');
   }
-  return { width, height };
+  // Either corner order is legal; a reversed y extent only flips the VDC axis.
+  const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
+  const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
+  if (!(Math.round(w) > 0 && Math.round(h) > 0)) {
+    throw new ConversionFailedError('The CGM has an empty VDC extent, so its size cannot be read.');
+  }
+  return { width: Math.round(w), height: Math.round(h) };
 }
 
 function parseCgmLines(cgmText: string): string[] {
@@ -263,7 +265,7 @@ export async function convertVectorCad(
 
   // 6. EPS / PS Source
   if (src === 'eps' || src === 'ps') {
-    return convertPostScriptSource(inputBuffer, src, tgt, options, baseName);
+    return convertPostScriptSource(inputBuffer, src, tgt);
   }
 
 
@@ -403,8 +405,8 @@ async function convertSvgSource(
     await assertSvgRenderSize(inputBuffer, density);
     const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
-    const width = meta.width || 600;
-    const height = meta.height || 400;
+    const { width, height } = meta;
+    if (!width || !height) throw new ConversionFailedError('The rendered SVG drawing has no size.');
 
     return new Promise<ConversionResult>((resolve, reject) => {
       const doc = new PDFDocument({
@@ -599,30 +601,12 @@ async function convertDwgSource(
 }
 
 /**
- * Converts PostScript (EPS / PS) Source
+ * Converts PostScript (EPS / PS) Source. Interpreting PostScript needs a PostScript interpreter, which the
+ * in-process engine does not have: the worker renders it with ps2pdf and Poppler, and without them this
+ * fails with a typed 503 error rather than drawing a guess at the page.
  */
-async function convertPostScriptSource(
-  inputBuffer: Buffer,
-  src: string,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  const text = inputBuffer.toString('utf-8');
-  const svg = postScriptToSvg(text, baseName);
-  const cleanSvg = sanitizeSvgDocument(svg);
-  const svgBuf = Buffer.from(cleanSvg, 'utf-8');
-
-  if (tgt === 'svg') {
-    return {
-      buffer: svgBuf,
-      mimeType: 'image/svg+xml',
-      filename: `${baseName}.svg`,
-      size: svgBuf.length,
-    };
-  }
-
-  return convertSvgSource(svgBuf, tgt, options, baseName);
+async function convertPostScriptSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+  throw new EngineUnavailableError('ps2pdf', `Rendering .${src} to ${tgt} needs a PostScript interpreter (ps2pdf) and Poppler; the in-process engine cannot interpret PostScript.`);
 }
 
 /**
@@ -1108,36 +1092,6 @@ async function renderDxfToPdf(
   });
 }
 
-
-/**
- * Converts PostScript commands into SVG
- */
-function postScriptToSvg(ps: string, title: string): string {
-  const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  const lineRegex = /([0-9.-]+)\s+([0-9.-]+)\s+moveto\s+([0-9.-]+)\s+([0-9.-]+)\s+lineto/gi;
-  let m: RegExpExecArray | null;
-
-  while ((m = lineRegex.exec(ps)) !== null) {
-    lines.push({
-      x1: parseFloat(m[1]),
-      y1: parseFloat(m[2]),
-      x2: parseFloat(m[3]),
-      y2: parseFloat(m[4]),
-    });
-  }
-
-  const svgLines = lines
-    .map((l) => `<line x1="${l.x1}" y1="${l.y1}" x2="${l.x2}" y2="${l.y2}" stroke="#5C6BC0" stroke-width="1.5" />`)
-    .join('\n    ');
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
-  <title>${escapeXml(title)}</title>
-  <g>
-    ${svgLines || '<rect x="50" y="50" width="500" height="500" fill="none" stroke="#5C6BC0" stroke-width="2" />'}
-  </g>
-</svg>`;
-}
 
 /**
  * 3D CAD Parser (STEP, STP, IGES, IGS, STL, OBJ)

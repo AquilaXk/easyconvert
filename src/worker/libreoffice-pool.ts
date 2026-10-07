@@ -138,16 +138,22 @@ const MIME_TYPES: Record<string, string> = {
   odt: 'application/vnd.oasis.opendocument.text',
   ods: 'application/vnd.oasis.opendocument.spreadsheet',
   odp: 'application/vnd.oasis.opendocument.presentation',
+  odg: 'application/vnd.oasis.opendocument.graphics',
+  odd: 'application/vnd.oasis.opendocument.graphics-template',
   csv: 'text/csv',
 };
 
 const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
 const PRESENTATION_SOURCES: ReadonlySet<string> = new Set(['pptx', 'ppt', 'odp', 'potx', 'key']);
+const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
+/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export. */
+const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg' };
 
 /** PDF export filter of the LibreOffice component that opens a source format. */
 function pdfExportFilterName(sourceFormat: string): string {
   if (SPREADSHEET_SOURCES.has(sourceFormat)) return 'calc_pdf_Export';
   if (PRESENTATION_SOURCES.has(sourceFormat)) return 'impress_pdf_Export';
+  if (DRAWING_SOURCES.has(sourceFormat)) return 'draw_pdf_Export';
   return 'writer_pdf_Export';
 }
 
@@ -171,7 +177,7 @@ export function resolveLibreOfficeFilter(
     return `${tgt}:${pdfExportFilterName(src)}:${JSON.stringify(buildPdfExportFilterData(options))}`;
   }
 
-  return tgt;
+  return LIBREOFFICE_TARGET_NAMES[tgt] ?? tgt;
 }
 
 /**

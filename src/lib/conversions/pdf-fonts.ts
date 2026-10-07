@@ -111,8 +111,11 @@ const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 interface FontkitFace {
   postscriptName: string | null;
   familyName?: string;
+  unitsPerEm: number;
   directory: { tables: Record<string, unknown> };
   hasGlyphForCodePoint(codePoint: number): boolean;
+  /** Shapes the text with the font's default features; advanceWidth is in font units. */
+  layout(text: string): { advanceWidth: number; glyphs: { id: number }[] };
   /** fontkit's cmap processor; getVariationSelector resolves format-14 variation sequences. */
   _cmapProcessor?: { getVariationSelector?(codePoint: number, selector: number): number };
 }
@@ -135,6 +138,8 @@ export interface PdfFontFace {
   readonly path: string;
   /** Face name inside a font collection (.ttc); undefined for single-face files. */
   readonly collectionFace?: string;
+  /** Index of the face inside its font file; 0 for single-face files. */
+  readonly faceIndex: number;
   readonly data: Buffer;
   readonly font: FontkitFace;
 }
@@ -201,7 +206,7 @@ function loadFace(filePath: string, faceIndex = 0): PdfFontFace | null {
         const collectionFace = isCollection(opened) ? font.postscriptName ?? undefined : undefined;
         if (!isCollection(opened) || collectionFace) {
           faceCounter += 1;
-          face = { id: `UnicodeFont${faceCounter}`, path: filePath, collectionFace, data, font };
+          face = { id: `UnicodeFont${faceCounter}`, path: filePath, collectionFace, faceIndex, data, font };
         }
       }
     }
@@ -637,6 +642,29 @@ export class PdfUnicodeTextWriter {
         this.doc.text(run.text, runOptions);
       }
     });
+  }
+
+  /**
+   * Width of the widest line (text is not wrapped, only broken at newlines) and the tallest line
+   * height among the fonts that draw it, at the document's current font size. Each run is measured
+   * in the font that will draw it.
+   */
+  measure(content: string | readonly PdfTextSegment[]): { width: number; lineHeight: number } {
+    let widest = 0;
+    let lineWidth = 0;
+    let lineHeight = 0;
+    for (const run of this.runs(content)) {
+      this.useFace(run.face);
+      lineHeight = Math.max(lineHeight, this.doc.currentLineHeight(true));
+      run.text.split('\n').forEach((line, index) => {
+        if (index > 0) {
+          widest = Math.max(widest, lineWidth);
+          lineWidth = 0;
+        }
+        lineWidth += this.doc.widthOfString(line);
+      });
+    }
+    return { width: Math.max(widest, lineWidth), lineHeight };
   }
 
   /**

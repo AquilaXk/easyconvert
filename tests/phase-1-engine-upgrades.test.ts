@@ -86,10 +86,9 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
   });
 
   describe('2. Word 97-2003 OLE2 CFBF Unicode Parser Integration', () => {
-    it('gracefully handles raw fallback text in doc files', () => {
+    it('refuses bytes that are not a Word compound file instead of scraping their ASCII', () => {
       const dummyDoc = Buffer.from('This is a legacy binary Word document payload with readable ASCII text.', 'utf-8');
-      const extracted = extractTextFromDoc(dummyDoc);
-      expect(extracted).toContain('legacy binary Word document');
+      expect(() => extractTextFromDoc(dummyDoc)).toThrow(/not an OLE2 compound file/);
     });
   });
 

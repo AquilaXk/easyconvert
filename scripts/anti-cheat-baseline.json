@@ -169,13 +169,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-engine-upgrades.test.ts",
-    "symbol": "gracefully handles raw fallback text in doc files",
-    "reason": "Test block \"gracefully handles raw fallback text in doc files\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-1-hotfix-verification.test.ts",
     "symbol": "strips <script> tags, <foreignObject>, inline on* handlers, and javascript: URIs",
     "reason": "Test block \"strips <script> tags, <foreignObject>, inline on* handlers, and javascript: URIs\" contains only weak assertions (8 weak matcher(s)). Must include at least one substantive check.",

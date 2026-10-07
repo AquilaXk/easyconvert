@@ -122,7 +122,7 @@ export const conversionPaths = {
         '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
         '422': createPdfaProblemResponse(
-          `An idempotency key was reused with a different request payload or parameters. ${PDFA_PROBLEM_DESCRIPTION}`
+          `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),

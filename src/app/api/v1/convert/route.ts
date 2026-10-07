@@ -23,6 +23,7 @@ import {
   ArchiveEntryCollisionError,
   ConversionFailedError,
   PayloadLimitError,
+  EncryptedOfficeDocumentError,
   EngineUnavailableError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -463,6 +464,10 @@ export async function POST(req: NextRequest) {
     }
     if (err instanceof PayloadLimitError || err instanceof InputPixelLimitError) {
       // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
+      return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
+    }
+    if (err instanceof EncryptedOfficeDocumentError) {
+      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof WorkerOutputMissingError) {

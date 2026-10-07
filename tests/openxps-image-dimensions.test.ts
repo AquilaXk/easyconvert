@@ -54,6 +54,6 @@ describe('buildOpenXpsPackage image dimensions', () => {
     const zip = await JSZip.loadAsync(buffer);
     const fpage = await zip.file(PAGE_PART)!.async('string');
     expect([...fpage.matchAll(/<ImageBrush/g)]).toHaveLength(0);
-    expect([...fpage.matchAll(/UnicodeString="([^"]*)"/g)].map((match) => match[1])).toEqual(['t', 'hello']);
+    expect([...fpage.matchAll(/UnicodeString="([^"]*)"/g)].map((match) => match[1])).toEqual(['hello']);
   });
 });
