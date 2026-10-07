@@ -239,6 +239,7 @@ export async function convertDocument(
 
       if (rasterImages.length > 0) {
         const ocrTexts: string[] = [];
+        const ocrTextPages: { pageNumber: number; text: string }[] = [];
         let totalConfidence = 0;
         let count = 0;
 
@@ -246,6 +247,7 @@ export async function convertDocument(
           const ocr = await performOcr(img.buffer, options.ocrLanguage);
           if (ocr && ocr.text) {
             ocrTexts.push(ocr.text);
+            ocrTextPages.push({ pageNumber: img.pageNumber, text: ocr.text });
             const existing = pageOcrResults.get(img.pageNumber);
             if (!existing) {
               pageOcrResults.set(img.pageNumber, ocr);
@@ -291,7 +293,8 @@ export async function convertDocument(
               }
             }
           } else {
-            allTextParts.push(...ocrTexts);
+            // Without a per-page analysis the images come in the order the file stores them, not the page order.
+            allTextParts.push(...[...ocrTextPages].sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text));
           }
           extractedText = allTextParts.join('\n\n').trim();
           ocrInfo = {
@@ -368,7 +371,9 @@ export async function convertDocument(
       }));
     }
 
-    const dlaLayout = dlaBoxes.length > 0 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
+    // The boxes of several scanned pages all start at the top of their own page: analysed together they interleave
+    // by height, so a multi-page scan keeps its text in page order instead of going through the layout analysis.
+    const dlaLayout = dlaBoxes.length > 0 && pageOcrResults.size <= 1 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
 
     if (tgt === 'txt') {
       const textToEmit = dlaLayout && dlaLayout.fullText ? dlaLayout.fullText : extractedText;
