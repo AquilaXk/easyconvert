@@ -9,7 +9,7 @@
  * 3. Zero-Data Retention Header Transmission (X-Zero-Retention: true).
  */
 
-import { ConversionOptions, ConversionQueueItem } from '../../types';
+import { ConversionFailedError, ConversionOptions, ConversionQueueItem } from '../../types';
 import { resolveConversionTier, TierResolution, EdgeCapabilities } from '../tier-router';
 
 /**
@@ -98,10 +98,10 @@ export async function executeServerlessCloudFallback(
   }
 
   const blob = await res.blob();
-  const url =
-    typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-      ? URL.createObjectURL(blob)
-      : `blob:mock-cloud-url-${Date.now()}`;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new ConversionFailedError('This runtime cannot create a download URL for the converted file.');
+  }
+  const url = URL.createObjectURL(blob);
 
   onProgress?.(100);
 

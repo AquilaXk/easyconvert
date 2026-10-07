@@ -1,9 +1,11 @@
 import {
   ConversionFailedError,
+  CorruptStreamError,
   DataEncodingError,
   DataLimitExceededError,
   DataParseError,
   DataRepresentationError,
+  DecompressionLimitError,
   UnsupportedOptionError,
 } from '../../types';
 
@@ -32,14 +34,28 @@ export class EdgeUnsupportedError extends ConversionFailedError {
   }
 }
 
+/**
+ * The browser storage the conversion writes to is full. It is a verdict on this device, not on the file, so the
+ * server tier runs; the partial output is deleted and the work is never restarted in memory.
+ */
+export class EdgeStorageQuotaError extends EdgeUnsupportedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EdgeStorageQuotaError';
+  }
+}
+
 type MessageOnlyError = new (message: string) => ConversionFailedError;
 
 /** Typed errors rebuilt by name; DataParseError is handled separately for its location. */
 const MESSAGE_ONLY_ERRORS: ReadonlyMap<string, MessageOnlyError> = new Map<string, MessageOnlyError>([
   ['ConversionFailedError', ConversionFailedError],
+  ['CorruptStreamError', CorruptStreamError],
   ['DataEncodingError', DataEncodingError],
   ['DataLimitExceededError', DataLimitExceededError],
   ['DataRepresentationError', DataRepresentationError],
+  ['DecompressionLimitError', DecompressionLimitError],
+  ['EdgeStorageQuotaError', EdgeStorageQuotaError],
   ['EdgeUnsupportedError', EdgeUnsupportedError],
   ['UnsupportedOptionError', UnsupportedOptionError],
 ]);

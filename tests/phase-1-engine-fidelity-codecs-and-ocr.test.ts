@@ -6,7 +6,6 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
   convertMedia,
   decodeAudioBuffer,
-  decodeAdtsAac,
   decodeOgg,
   encodeOpusContainer,
   encodeOggContainer,
@@ -23,8 +22,7 @@ import {
   safeEncodeText,
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { performOcr } from '../src/lib/conversions/ocr';
-import { BitReader } from '../src/lib/conversions/media-encoder';
-import { adtsStream, probeStream, silentRawDataBlock } from './helpers/media-lossy-oracle';
+import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { ConversionFailedError, OcrEngineUnavailableError } from '../src/lib/types';
 import { escapeRtf } from '../src/lib/conversions/office';
@@ -66,7 +64,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
   describe('1. Media Codec Bitstream Packaging (ADTS AAC LC & RFC 7845 Ogg Opus)', () => {
     oracleTest('packages AAC LC raw data blocks in an ADTS stream that the reference parser accepts', ['ffmpeg', 'ffprobe'], async () => {
       const wav = createTestWav(44100, 2, 0.2);
-      const aacResult = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'sound.wav');
+      const aacResult = await convertMedia(wav, 'wav', 'aac', {}, 'sound.wav');
 
       expect(aacResult.mimeType).toBe('audio/aac');
       expect(aacResult.filename).toBe('sound.aac');
@@ -96,18 +94,6 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       expect(Number(stream.channels)).toBe(2);
     });
 
-    it('reads mono AAC LC raw data blocks starting with ID_SCE (0x0) from a hand-authored ADTS stream', () => {
-      const payload = silentRawDataBlock(1);
-      const adts = adtsStream([payload], 44100, 1);
-
-      const reader = new BitReader(adts.subarray(7));
-      expect(reader.readBits(3)).toBe(0); // ID_SCE
-
-      const decoded = decodeAdtsAac(adts);
-      expect(decoded.channels).toBe(1);
-      expect(decoded.samples).toHaveLength(1024);
-    });
-
     it('encapsulates RFC 7845 compliant OpusHead and OpusTags headers for opus target format and fails closed without authentic encoder', async () => {
       const packets = [Buffer.from([0xc4, 0x01, 0x02, 0x03]), Buffer.from([0xc4, 0x04, 0x05, 0x06])];
       const opusBuffer = encodeOpusContainer(packets, 48000, 2, 'sample');
@@ -120,7 +106,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       // Verify Fail-Closed for pure TS WAV -> OPUS without native engine
       const wav = createTestWav(48000, 2, 0.2);
       await expect(
-        convertMedia(wav, 'wav', 'opus', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'sample.wav')
+        convertMedia(wav, 'wav', 'opus', { disableNativeEngine: true }, 'sample.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OPUS compression/i);
     });
 
@@ -162,7 +148,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       // Verify Fail-Closed on raw PCM in convertMedia
       const longWav = createTestWav(44100, 2, 1.0);
       await expect(
-        convertMedia(longWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'long_sample.wav')
+        convertMedia(longWav, 'wav', 'ogg', { disableNativeEngine: true }, 'long_sample.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
   });

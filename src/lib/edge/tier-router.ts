@@ -12,6 +12,7 @@
 import { ConversionOptions } from '../types';
 import { isPureCadConvertible } from './pure/pure-cad';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
+import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './workers/opfs-audio';
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
 import { EdgeUnsupportedError } from './workers/worker-errors';
@@ -279,11 +280,13 @@ export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
   'pcm_be:pcm_le',
   'pcm:pcm_u8',
   'pcm:u8',
+  'pcm:wav',
   'wav:pcm_u8',
   'wav:u8',
   'wav:pcm',
   'pcm:adpcm',
   'wav:adpcm',
+  'adpcm:wav',
   'adpcm:pcm',
   'tar:tar_gz',
   'tar:gz',
@@ -300,21 +303,23 @@ export const SUPPORTED_OPFS_STREAMING_CONVERSIONS = new Set<string>([
 ]);
 
 /**
- * Validates whether the given conversion pair is supported by L3 OPFS streaming pipeline.
+ * Validates whether the given conversion pair is supported by L3 OPFS streaming pipeline. A pair is a copy of
+ * nothing: identical formats are not a conversion, and a raw PCM source is only streamed when the options state
+ * what it is (sampleRate, channels, bitDepth), because a header-less stream cannot say it itself.
  */
 export function isOpfsStreamingSupported(
   sourceFormat: string,
   targetFormat: string,
-  options?: ConversionOptions & { allowPassThrough?: boolean }
+  options?: ConversionOptions & RawPcmOptions
 ): boolean {
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
-  if (options?.allowPassThrough && src === tgt) {
-    return true;
-  }
   // The streaming CSV/TSV path decodes UTF-8 only; another input encoding is converted on the server.
   if (isStreamableDelimitedPair(src, tgt) && !isStreamableEncoding(options?.encoding)) {
     return false;
+  }
+  if (isAudioStreamPair(src, tgt)) {
+    return isStreamableAudioPair(src, tgt, options as Record<string, unknown> | undefined);
   }
   return SUPPORTED_OPFS_STREAMING_CONVERSIONS.has(`${src}:${tgt}`);
 }
@@ -634,7 +639,7 @@ export function resolveConversionTier(
       tier: 'L0',
       tierName: 'Edge L0 (Instant)',
       isClientEdge: true,
-      reason: 'Pure TypedArray WAV/PCM/MP3 audio encoding',
+      reason: 'Pure TypedArray WAV audio conversion (source sample format kept)',
     };
   }
 

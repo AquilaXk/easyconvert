@@ -111,13 +111,11 @@ describe('Phase 0: Emergency Security Hardening & Fail-Closed Enforcement', () =
       );
     });
 
-    it('allows identity transformation only when formats match or explicitly opted-in', async () => {
-      const sameFormat = resolveChunkTransformer('bin', 'bin');
-      const testChunk = new Uint8Array([1, 2, 3, 4]);
-      expect(await sameFormat(testChunk, 0, 4)).toEqual(testChunk);
-
-      const optedIn = resolveChunkTransformer('raw', 'dat', { allowPassThrough: true });
-      expect(await optedIn(testChunk, 0, 4)).toEqual(testChunk);
+    it('refuses an identity transformation, including an explicit pass-through opt-in', () => {
+      expect(() => resolveChunkTransformer('bin', 'bin')).toThrow(/Unsupported streaming transformation: bin to bin/);
+      expect(() => resolveChunkTransformer('raw', 'dat', { allowPassThrough: true })).toThrow(
+        /Unsupported streaming transformation: raw to dat/
+      );
     });
   });
 });

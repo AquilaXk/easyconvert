@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { convertFile, BitWriter, encodePureMp3, checkFfmpeg } from '../src/lib/conversions/index';
+import { convertFile, BitWriter, checkFfmpeg } from '../src/lib/conversions/index';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import {
   bestSnrDb,
@@ -177,24 +177,6 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       expect(buf).toHaveLength(2);
       expect(buf[0]).toBe(0b10111000);
       expect(buf[1]).toBe(0b10001100);
-    });
-
-    it('encodes PCM samples to a pure MP3 stream with an ID3v2 header', () => {
-      const samples = new Int16Array(44100 * 0.1); // 0.1s
-      for (let i = 0; i < samples.length; i++) {
-        samples[i] = Math.round(Math.sin((i / 44100) * 440 * 2 * Math.PI) * 16000);
-      }
-
-      const mp3 = encodePureMp3(samples, 44100, 1, '128k', 'Test Pure');
-      expect(mp3.toString('ascii', 0, 3)).toBe('ID3');
-      expect(mp3.length).toBeGreaterThan(100);
-    });
-
-    it('handles empty PCM audio sample buffers gracefully without NaN corruption', () => {
-      const emptySamples = new Int16Array(0);
-      const mp3 = encodePureMp3(emptySamples, 44100, 2, '192k', 'Silent Empty');
-      expect(mp3.toString('ascii', 0, 3)).toBe('ID3');
-      expect(mp3.length).toBeGreaterThan(100);
     });
   });
 });

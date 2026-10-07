@@ -89,6 +89,11 @@ const EIGHT_BIT_PIX_FMT = 'yuv420p';
  * when present, otherwise `FFPROBE_PATH` or a standard location. Throws when none exists.
  */
 export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
+  const override = process.env.FFPROBE_PATH;
+  if (override && !fs.existsSync(override)) {
+    // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
+    throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
+  }
   if (ffmpegBin) {
     const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
     if (fs.existsSync(sibling)) {
@@ -97,7 +102,7 @@ export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
   }
   const found = getInternalFfprobe();
   if (!found) {
-    throw new EngineUnavailableError('ffprobe is required to inspect media streams but was not found.');
+    throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
   }
   return found as FfprobePath;
 }
