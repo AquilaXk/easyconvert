@@ -3,12 +3,12 @@ import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
-import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
-import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
@@ -7615,8 +7615,47 @@ async function convertMobiSource(
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
 }
 
+/** Most pages one comic archive may hold. */
+export const CBZ_MAX_PAGES = 5000;
+/** Largest decoded page image, in bytes, the converter reads out of a comic archive. */
+export const CBZ_MAX_PAGE_BYTES = 256 * 1024 * 1024;
+const CBZ_IMAGE_PATTERN = /\.(png|jpe?g|webp|bmp|gif)$/i;
+/** Archive members that are not pages: macOS resource forks and hidden files. */
+const CBZ_JUNK_MEMBER_PATTERN = /(^|\/)(__MACOSX\/|\.[^/]*$)/;
+const DIGIT_RUN_PATTERN = /(\d+)/;
+const PDF_PAGE_MARGIN = 40;
+const BMP_SIGNATURE = 'BM';
+/** Formats pdfkit embeds as they are; every other page format is decoded and embedded as PNG. */
+const PDF_EMBEDDABLE_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg']);
+
 /**
- * Comic Book Zip (CBZ) Parser & Converter
+ * Orders names the way people number comic pages: digit runs compare by value ("page2" before "page10"),
+ * the rest compares case-insensitively, and equal keys fall back to the raw names so the order is total.
+ */
+export function compareNaturally(a: string, b: string): number {
+  const left = a.toLowerCase().split(DIGIT_RUN_PATTERN);
+  const right = b.toLowerCase().split(DIGIT_RUN_PATTERN);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    if (left[i] === right[i]) continue;
+    const isDigitRun = i % 2 === 1;
+    if (isDigitRun) {
+      const l = left[i].replace(/^0+(?=\d)/, '');
+      const r = right[i].replace(/^0+(?=\d)/, '');
+      if (l.length !== r.length) return l.length - r.length;
+      if (l !== r) return l < r ? -1 : 1;
+    } else {
+      return left[i] < right[i] ? -1 : 1;
+    }
+  }
+  if (left.length !== right.length) return left.length - right.length;
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
+ * Comic Book Zip (CBZ) source: a ZIP of page images. A comic has no text layer, so the only conversion is
+ * binding the pages into a PDF, one image per page in natural name order. A page that cannot be decoded, or
+ * an archive without pages, fails with a typed 400 error; no page is replaced by text.
  */
 async function convertCbzSource(
   inputBuffer: Buffer,
@@ -7624,46 +7663,80 @@ async function convertCbzSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  if (tgt !== 'pdf') {
+    throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
+  }
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(inputBuffer);
+  } catch {
+    throw new ConversionFailedError('The CBZ file is not a valid ZIP archive.');
+  }
   const imageNames = Object.keys(zip.files)
-    .filter((n) => /\.(png|jpe?g|webp|bmp|gif)$/i.test(n))
-    .sort();
-
-  if (tgt === 'pdf') {
-    const doc = new PDFDocument({ autoFirstPage: false });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-
-    for (const name of imageNames) {
-      const imgBuf = await zip.files[name].async('nodebuffer');
-      // Pages are processed one at a time on purpose: pdfkit decodes each into memory.
-      await assertEmbeddableImageWithinLimit(imgBuf); // NOSONAR S9382: sequential to bound memory
-      doc.addPage({ size: 'A4' });
-      try {
-        doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });
-      } catch {
-        renderSafePdfText(doc, `[Image ${name}]`, hasUnicodeFont);
-      }
-    }
-
-    if (imageNames.length === 0) {
-      doc.addPage({ size: 'A4' });
-      doc.fontSize(16);
-      renderSafePdfText(doc, `CBZ Comic: ${baseName} (No images extracted)`, hasUnicodeFont);
-    }
-
-    doc.end();
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+    .filter((name) => !zip.files[name].dir && CBZ_IMAGE_PATTERN.test(name) && !CBZ_JUNK_MEMBER_PATTERN.test(name))
+    .sort(compareNaturally);
+  if (imageNames.length === 0) {
+    throw new ConversionFailedError('The CBZ archive holds no page images.');
+  }
+  if (imageNames.length > CBZ_MAX_PAGES) {
+    throw new ConversionFailedError(`The CBZ archive holds ${imageNames.length} pages, more than the ${CBZ_MAX_PAGES} page limit.`);
   }
 
-  throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
+  const doc = new PDFDocument({ autoFirstPage: false });
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', (err) => reject(err));
+  });
+
+  for (const name of imageNames) {
+    // Pages are processed one at a time on purpose: each is decoded into memory.
+    const page = await decodeCbzPage(zip, name); // NOSONAR S9382: sequential to bound memory
+    doc.addPage({ size: 'A4' });
+    try {
+      doc.image(page, PDF_PAGE_MARGIN, PDF_PAGE_MARGIN, {
+        fit: [doc.page.width - 2 * PDF_PAGE_MARGIN, doc.page.height - 2 * PDF_PAGE_MARGIN],
+        align: 'center',
+        valign: 'center',
+      });
+    } catch (err) {
+      throw new ConversionFailedError(`CBZ page "${name}" cannot be embedded: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  doc.end();
+  const buffer = await done;
+  return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+}
+
+/** Reads one page, proves that it decodes, and returns bytes pdfkit can embed (PNG and JPEG as stored). */
+async function decodeCbzPage(zip: JSZip, name: string): Promise<Buffer> {
+  const declared = (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+  if (declared !== undefined && declared > CBZ_MAX_PAGE_BYTES) {
+    throw new ConversionFailedError(`CBZ page "${name}" declares ${declared} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+  }
+  const bytes = await zip.files[name].async('nodebuffer');
+  if (bytes.length > CBZ_MAX_PAGE_BYTES) {
+    throw new ConversionFailedError(`CBZ page "${name}" is ${bytes.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+  }
+  try {
+    if (bytes.length >= BMP_SIGNATURE.length && bytes.toString('latin1', 0, BMP_SIGNATURE.length) === BMP_SIGNATURE) {
+      // libvips has no BMP loader: the in-process decoder reads the pixels, checking the declared size first.
+      const bmp = decodeBmp(bytes);
+      return await sharp(bmp.raw, { raw: { width: bmp.width, height: bmp.height, channels: bmp.channels } }).png().toBuffer();
+    }
+    const image = await openInputImage(bytes);
+    const format = (await image.metadata()).format ?? '';
+    if (PDF_EMBEDDABLE_FORMATS.has(format)) {
+      await openLimitedSharp(bytes).stats();
+      return bytes;
+    }
+    return await image.png().toBuffer();
+  } catch (err) {
+    rethrowInputPixelLimit(err);
+    throw new ConversionFailedError(`CBZ page "${name}" cannot be decoded: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**

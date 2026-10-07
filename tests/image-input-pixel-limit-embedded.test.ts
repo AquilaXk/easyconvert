@@ -105,10 +105,11 @@ describe('images embedded in documents are held to the input pixel limit', () =>
       await expect(run).rejects.toThrow(/header could not be decoded/);
     });
 
-    it('keeps converting a CBZ page and a PPTX picture in a format pdfkit never decodes', async () => {
+    it('refuses a CBZ page that is no image, but keeps converting a PPTX picture in a format pdfkit never decodes', async () => {
       const notAnImage = Buffer.from('EMF placeholder bytes, not a PNG or a JPEG');
-      const comic = await convertFile(await cbzWithImages([{ name: '001.bmp', data: notAnImage }]), 'cbz', 'pdf', {}, 'ok.cbz');
-      expect(comic.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      const comic = convertFile(await cbzWithImages([{ name: '001.bmp', data: notAnImage }]), 'cbz', 'pdf', {}, 'bad.cbz');
+      await expect(comic).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(comic).rejects.toThrow(/CBZ page "001\.bmp" cannot be decoded/);
       const deck = await convertFile(await pptxWithPicture('chart.emf', notAnImage), 'pptx', 'pdf', {}, 'ok.pptx');
       expect(deck.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
     });
