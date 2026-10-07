@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { SvgSanitizationError } from '../src/lib/types';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+
+/**
+ * Linear-time claims compare the sanitizer on n bytes with 4n bytes of the same adversarial shape, interleaved
+ * and best-of-N (tests/helpers/timing.ts), so a loaded runner slows both sizes and the ratio holds. A quadratic
+ * sanitizer takes 16x; the bound is 8x.
+ */
+const BASE_BYTES = 512 * 1024;
+/** Element counts for the tests that scale the number of tags rather than the number of bytes. */
+const BASE_COUNT = 10_000;
+
+/** A test that compares two input sizes needs more than the 5 s default on a loaded runner. */
+const linearIt = (name: string, body: () => Promise<void>) => it(name, body, SCALING_TEST_TIMEOUT_MS);
+
+/** Builds the adversarial document at both sizes, checks linear scaling, then lets `check` inspect the large output. */
+async function expectLinearSanitization(
+  label: string,
+  build: (bytes: number) => string,
+  check?: (out: string) => void,
+  baseSize: number = BASE_BYTES
+): Promise<void> {
+  const small = build(baseSize);
+  const large = build(baseSize * SCALING_FACTOR);
+  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large });
+  check?.(sanitizeSvgString(large));
+}
 
 /** Independent quote-aware tag tokenizer used as the oracle; it shares no code with the sanitizer. */
 interface ParsedTag {
@@ -165,13 +191,16 @@ describe('on* attribute stripping without leading whitespace (item 4)', () => {
     expect(out).toBe('<svg a="b"');
   });
 
-  it('strips handlers on a large tag in linear time', () => {
-    const attrs = ' a="1"onload=x'.repeat(20000);
-    const start = performance.now();
-    const out = sanitizeSvgString(`<svg${attrs}>`);
-    expect(performance.now() - start).toBeLessThan(1000);
-    expect(out.startsWith('<svg a="1" a="1"')).toBe(true);
-    expect(out).not.toContain('onload');
+  linearIt('strips handlers on a large tag in linear time', async () => {
+    await expectLinearSanitization(
+      'handlers on one tag',
+      (count) => `<svg${' a="1"onload=x'.repeat(count)}>`,
+      (out) => {
+        expect(out.startsWith('<svg a="1" a="1"')).toBe(true);
+        expect(out).not.toContain('onload');
+      },
+      BASE_COUNT
+    );
   });
 });
 
@@ -204,12 +233,13 @@ describe('@import, namespaced elements and animation targets (item 5)', () => {
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  it('strips many distinct prefixed openers in linear time', () => {
-    const payload = `<svg>${Array.from({ length: 20000 }, (_, i) => `<p${i}:script>`).join('')}</svg>`;
-    const start = performance.now();
-    const out = sanitizeSvgString(payload);
-    expect(performance.now() - start).toBeLessThan(1000);
-    expect(out).toBe('<svg></svg>');
+  linearIt('strips many distinct prefixed openers in linear time', async () => {
+    await expectLinearSanitization(
+      'distinct prefixed script openers',
+      (count) => `<svg>${Array.from({ length: count }, (_, i) => `<p${i}:script>`).join('')}</svg>`,
+      (out) => expect(out).toBe('<svg></svg>'),
+      BASE_COUNT
+    );
   });
 
   const hostileAnimations = [
@@ -420,25 +450,24 @@ describe('CSS escape and comment obfuscation (issue #401 item 1)', () => {
     );
   });
 
-  describe('linear time on 5 MB adversarial CSS', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const adversarial: Array<[string, string]> = [
-      ['backslashes', '\\'.repeat(FIVE_MB / 2)],
-      ['escape digits', '\\6'.repeat(FIVE_MB / 3)],
-      ['comment openers', '/*'.repeat(FIVE_MB / 2)],
-      ['closed empty comments', '/**/'.repeat(FIVE_MB / 4)],
-      ['obfuscated imports', '@\\69mport a;'.repeat(Math.floor(FIVE_MB / 13))],
-      ['obfuscated urls', 'u\\72l(http://e/x)'.repeat(Math.floor(FIVE_MB / 18))],
-      ['unterminated urls', 'ur/**/l(http://'.repeat(Math.floor(FIVE_MB / 15))],
+  describe('linear time on adversarial CSS', () => {
+    const adversarial: Array<[string, (n: number) => string]> = [
+      ['backslashes', (n) => '\\'.repeat(n / 2)],
+      ['escape digits', (n) => '\\6'.repeat(n / 3)],
+      ['comment openers', (n) => '/*'.repeat(n / 2)],
+      ['closed empty comments', (n) => '/**/'.repeat(n / 4)],
+      ['obfuscated imports', (n) => '@\\69mport a;'.repeat(Math.floor(n / 13))],
+      ['obfuscated urls', (n) => 'u\\72l(http://e/x)'.repeat(Math.floor(n / 18))],
+      ['unterminated urls', (n) => 'ur/**/l(http://'.repeat(Math.floor(n / 15))],
     ];
 
     for (const [label, css] of adversarial) {
-      it(`handles ${label}`, () => {
-        const start = performance.now();
-        const out = sanitizeSvgString(`<svg><style>${css}</style></svg>`);
-        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
-        expect(cssLeaks(out)).toEqual([]);
+      linearIt(`handles ${label}`, async () => {
+        await expectLinearSanitization(
+          label,
+          (n) => `<svg><style>${css(n)}</style></svg>`,
+          (out) => expect(cssLeaks(out)).toEqual([])
+        );
       });
     }
   });
@@ -561,11 +590,13 @@ describe('namespace-prefixed <style> elements (issue #401 item 4)', () => {
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  it('handles many prefixed style openers in linear time', () => {
-    const payload = `<svg>${Array.from({ length: 20000 }, (_, i) => `<p${i}:style>`).join('')}</svg>`;
-    const start = performance.now();
-    sanitizeSvgString(payload);
-    expect(performance.now() - start).toBeLessThan(1000);
+  linearIt('handles many prefixed style openers in linear time', async () => {
+    await expectLinearSanitization(
+      'distinct prefixed style openers',
+      (count) => `<svg>${Array.from({ length: count }, (_, i) => `<p${i}:style>`).join('')}</svg>`,
+      undefined,
+      BASE_COUNT
+    );
   });
 });
 
@@ -628,19 +659,17 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
     expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
   });
 
-  describe('linear time on 5 MB adversarial entity input', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const adversarial: Array<[string, string]> = [
-      ['bare reference openers', '&#'.repeat(FIVE_MB / 2)],
-      ['unterminated hex run', `&#x${'0'.repeat(FIVE_MB)}`],
-      ['unterminated decimal runs', '&#1'.repeat(FIVE_MB / 3)],
-      ['ampersands', '&'.repeat(FIVE_MB)],
-      ['encoded imports', '&#x40;import a;'.repeat(Math.floor(FIVE_MB / 15))],
-      ['encoded backslash imports', '@&#92;69mport a;'.repeat(Math.floor(FIVE_MB / 16))],
-      ['encoded urls', 'u&#114;l(http://e/x)'.repeat(Math.floor(FIVE_MB / 20))],
-      ['CDATA openers', '<![CDATA['.repeat(FIVE_MB / 9)],
-      ['CDATA pairs', '<![CDATA[&#]]>'.repeat(Math.floor(FIVE_MB / 14))],
+  describe('linear time on adversarial entity input', () => {
+    const adversarial: Array<[string, (n: number) => string]> = [
+      ['bare reference openers', (n) => '&#'.repeat(n / 2)],
+      ['unterminated hex run', (n) => `&#x${'0'.repeat(n)}`],
+      ['unterminated decimal runs', (n) => '&#1'.repeat(n / 3)],
+      ['ampersands', (n) => '&'.repeat(n)],
+      ['encoded imports', (n) => '&#x40;import a;'.repeat(Math.floor(n / 15))],
+      ['encoded backslash imports', (n) => '@&#92;69mport a;'.repeat(Math.floor(n / 16))],
+      ['encoded urls', (n) => 'u&#114;l(http://e/x)'.repeat(Math.floor(n / 20))],
+      ['CDATA openers', (n) => '<![CDATA['.repeat(n / 9)],
+      ['CDATA pairs', (n) => '<![CDATA[&#]]>'.repeat(Math.floor(n / 14))],
     ];
 
     for (const [label, css] of adversarial) {
@@ -648,12 +677,15 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
         ['a <style> body', (c: string) => `<svg><style>${c}</style></svg>`],
         ['a style attribute', (c: string) => `<svg><rect style='${c.replace(/'/g, '&apos;')}'/></svg>`],
       ] as Array<[string, (c: string) => string]>) {
-        it(`handles ${label} in ${place}`, () => {
-          const start = performance.now();
-          const out = sanitizeSvgString(wrap(css));
-          expect(performance.now() - start).toBeLessThan(BUDGET_MS);
-          // The oracle's own CDATA splitter is not linear, so the output scan skips the CDATA-heavy inputs.
-          if (!label.startsWith('CDATA')) expect(cssLeaks(out)).toEqual([]);
+        linearIt(`handles ${label} in ${place}`, async () => {
+          await expectLinearSanitization(
+            label,
+            (n) => wrap(css(n)),
+            (out) => {
+              // The oracle's own CDATA splitter is not linear, so the output scan skips the CDATA-heavy inputs.
+              if (!label.startsWith('CDATA')) expect(cssLeaks(out)).toEqual([]);
+            }
+          );
         });
       }
     }
@@ -702,26 +734,27 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
     }
   });
 
-  describe('linear time on 5 MB adversarial input', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const adversarial: Array<[string, string]> = [
-      ['unterminated comment openers', '<!--'.repeat(FIVE_MB / 4)],
-      ['unterminated PI openers', '<?'.repeat(FIVE_MB / 2)],
-      ['unterminated CDATA openers', '<![CDATA['.repeat(FIVE_MB / 9)],
-      ['terminated decoy comments', '<!-- <a x=" -->'.repeat(FIVE_MB / 15)],
-      ['terminated decoy PIs', '<?p <a x=" ?>'.repeat(Math.floor(FIVE_MB / 13))],
-      ['terminated decoy CDATA', '<![CDATA[ <a x=" ]]>'.repeat(FIVE_MB / 20)],
-      ['decoys followed by real tags', '<!-- <a x=" --><a href="javascript:1" y=""/>'.repeat(Math.floor(FIVE_MB / 46))],
+  describe('linear time on adversarial input', () => {
+    const adversarial: Array<[string, (n: number) => string]> = [
+      ['unterminated comment openers', (n) => '<!--'.repeat(n / 4)],
+      ['unterminated PI openers', (n) => '<?'.repeat(n / 2)],
+      ['unterminated CDATA openers', (n) => '<![CDATA['.repeat(n / 9)],
+      ['terminated decoy comments', (n) => '<!-- <a x=" -->'.repeat(n / 15)],
+      ['terminated decoy PIs', (n) => '<?p <a x=" ?>'.repeat(Math.floor(n / 13))],
+      ['terminated decoy CDATA', (n) => '<![CDATA[ <a x=" ]]>'.repeat(n / 20)],
+      ['decoys followed by real tags', (n) => '<!-- <a x=" --><a href="javascript:1" y=""/>'.repeat(Math.floor(n / 46))],
     ];
 
     for (const [label, body] of adversarial) {
-      it(`handles ${label}`, () => {
-        const start = performance.now();
-        const out = sanitizeSvgString(`<svg>${body}</svg>`);
-        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
-        expect(out.startsWith('<svg>')).toBe(true);
-        expect(out).not.toContain('javascript:1');
+      linearIt(`handles ${label}`, async () => {
+        await expectLinearSanitization(
+          label,
+          (n) => `<svg>${body(n)}</svg>`,
+          (out) => {
+            expect(out.startsWith('<svg>')).toBe(true);
+            expect(out).not.toContain('javascript:1');
+          }
+        );
       });
     }
   });
@@ -755,14 +788,15 @@ describe('</style> inside CDATA does not end the style element (PR #402 review i
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  it('finds the close tag in linear time past many CDATA sections', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    const body = '<![CDATA[</style>]]>'.repeat(FIVE_MB / 20);
-    const start = performance.now();
-    const out = sanitizeSvgString(`<svg><style>${body}@import "http://e";</style></svg>`);
-    expect(performance.now() - start).toBeLessThan(2000);
-    expect(out).not.toContain('@import');
-    expect(out.endsWith('</style></svg>')).toBe(true);
+  linearIt('finds the close tag in linear time past many CDATA sections', async () => {
+    await expectLinearSanitization(
+      'CDATA sections holding close tags',
+      (n) => `<svg><style>${'<![CDATA[</style>]]>'.repeat(n / 20)}@import "http://e";</style></svg>`,
+      (out) => {
+        expect(out).not.toContain('@import');
+        expect(out.endsWith('</style></svg>')).toBe(true);
+      }
+    );
   });
 });
 
@@ -805,25 +839,21 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
     expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
   });
 
-  describe('linear time on 5 MB adversarial CSS', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    const BUDGET_MS = 2000;
-    const adversarial: Array<[string, string]> = [
-      ['unterminated image-set openers', 'image-set('.repeat(FIVE_MB / 10)],
-      ['nested benign image-sets', `${'image-set('.repeat(FIVE_MB / 20)}${')'.repeat(FIVE_MB / 20)}`],
-      ['nested image-sets with an external tail', `${'image-set('.repeat(FIVE_MB / 20)}"http://e/x"${')'.repeat(FIVE_MB / 20)}`],
-      ['url openers', 'url('.repeat(FIVE_MB / 4)],
-      ['whitespace after url(', `url(${' '.repeat(FIVE_MB)}`],
-      ['tab runs inside schemes', 'url(h\t\t\t\t\t\t\t\tt\t\t\t\t'.repeat(FIVE_MB / 28)],
-      ['src openers', 'src("'.repeat(FIVE_MB / 5)],
-      ['backslash authorities', 'url(\\\\'.repeat(FIVE_MB / 6)],
+  describe('linear time on adversarial CSS', () => {
+    const adversarial: Array<[string, (n: number) => string]> = [
+      ['unterminated image-set openers', (n) => 'image-set('.repeat(n / 10)],
+      ['nested benign image-sets', (n) => `${'image-set('.repeat(n / 20)}${')'.repeat(n / 20)}`],
+      ['nested image-sets with an external tail', (n) => `${'image-set('.repeat(n / 20)}"http://e/x"${')'.repeat(n / 20)}`],
+      ['url openers', (n) => 'url('.repeat(n / 4)],
+      ['whitespace after url(', (n) => `url(${' '.repeat(n)}`],
+      ['tab runs inside schemes', (n) => 'url(h\t\t\t\t\t\t\t\tt\t\t\t\t'.repeat(n / 28)],
+      ['src openers', (n) => 'src("'.repeat(n / 5)],
+      ['backslash authorities', (n) => 'url(\\\\'.repeat(n / 6)],
     ];
 
     for (const [label, css] of adversarial) {
-      it(`handles ${label}`, () => {
-        const start = performance.now();
-        sanitizeSvgString(`<svg><style>${css}</style></svg>`);
-        expect(performance.now() - start).toBeLessThan(BUDGET_MS);
+      linearIt(`handles ${label}`, async () => {
+        await expectLinearSanitization(label, (n) => `<svg><style>${css(n)}</style></svg>`);
       });
     }
   });
@@ -922,39 +952,15 @@ describe('external references in presentation attributes (issue #403 item 1)', (
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  describe('linear time on 5 MB adversarial attributes', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
-    /**
-     * Linear work grows about 4x when the input grows 4x; quadratic work grows 16x. Comparing the two
-     * sizes on the same machine keeps the check independent of how busy the runner is; the absolute
-     * cap only stops a pathological run.
-     */
-    const SIZE_FACTOR = 4;
-    const MAX_GROWTH = 8;
-    const ABSOLUTE_CAP_MS = 20_000;
-    /** Timer resolution floor, so a very fast small run cannot inflate the ratio. */
-    const MIN_MEASURED_MS = 5;
-    const RUNS = 2;
+  describe('linear time on adversarial attributes', () => {
     const adversarial: Array<[string, (bytes: number) => string]> = [
       ['url openers', (bytes) => `<rect fill="${'url('.repeat(bytes / 4)}"/>`],
       ['many attributes', (bytes) => `<rect ${'fill="url(http://e/x)" '.repeat(Math.floor(bytes / 24))}/>`],
       ['many elements', (bytes) => '<rect fill="url(http://e/x)"/>'.repeat(Math.floor(bytes / 30))],
     ];
-    const fastest = (body: string): number => {
-      let best = Number.POSITIVE_INFINITY;
-      for (let run = 0; run < RUNS; run += 1) {
-        const start = performance.now();
-        sanitizeSvgString(`<svg>${body}</svg>`);
-        best = Math.min(best, performance.now() - start);
-      }
-      return best;
-    };
     for (const [label, build] of adversarial) {
-      it(`handles ${label}`, () => {
-        const small = fastest(build(FIVE_MB / SIZE_FACTOR));
-        const large = fastest(build(FIVE_MB));
-        expect(large).toBeLessThan(ABSOLUTE_CAP_MS);
-        expect(large / Math.max(small, MIN_MEASURED_MS)).toBeLessThan(MAX_GROWTH);
+      linearIt(`handles ${label}`, async () => {
+        await expectLinearSanitization(label, (bytes) => `<svg>${build(bytes)}</svg>`);
       });
     }
   });
@@ -1004,13 +1010,13 @@ describe('animations writing external references into presentation attributes (i
     });
   }
 
-  it('removes many hostile animations in linear time', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
+  linearIt('removes many hostile animations in linear time', async () => {
     const unit = '<set attributeName="fill" to="url(http://e/x)"/>';
-    const start = performance.now();
-    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
-    expect(performance.now() - start).toBeLessThan(2000);
-    expect(out).toBe('<svg></svg>');
+    await expectLinearSanitization(
+      'hostile animations',
+      (bytes) => `<svg>${unit.repeat(bytes / unit.length)}</svg>`,
+      (out) => expect(out).toBe('<svg></svg>')
+    );
   });
 });
 
@@ -1053,12 +1059,12 @@ describe('animations writing dangerous URIs into any attribute (issue #403 item 
     });
   }
 
-  it('removes many hostile animations in linear time', () => {
-    const FIVE_MB = 5 * 1024 * 1024;
+  linearIt('removes many hostile animations in linear time', async () => {
     const unit = '<set attributeName="x" to="javascript:alert(1)"/>';
-    const start = performance.now();
-    const out = sanitizeSvgString(`<svg>${unit.repeat(FIVE_MB / unit.length)}</svg>`);
-    expect(performance.now() - start).toBeLessThan(2000);
-    expect(out).toBe('<svg></svg>');
+    await expectLinearSanitization(
+      'hostile animations writing URIs',
+      (bytes) => `<svg>${unit.repeat(bytes / unit.length)}</svg>`,
+      (out) => expect(out).toBe('<svg></svg>')
+    );
   });
 });
