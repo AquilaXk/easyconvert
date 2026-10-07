@@ -134,12 +134,6 @@ export interface Parametric2DPoint {
   v: number;
 }
 
-export interface TessellatedMesh {
-  vertices: Array<{ x: number; y: number; z: number }>;
-  faces: Array<[number, number, number]>;
-  normals: Array<{ x: number; y: number; z: number }>;
-}
-
 export interface PdfTextBlock {
   text: string;
   x: number;
@@ -410,7 +404,6 @@ export interface DrawingMlTableCorpus {
   table: NestedTable;
   shapes: DrawingMlShape[];
   drawingMlXml: string;
-  renderSvg: () => { svg: string; shapes: DrawingMlShape[] };
   generateDocxTableXml: () => string;
 }
 
@@ -552,14 +545,6 @@ export function synthesizeDrawingMlTableCorpus(): DrawingMlTableCorpus {
     table: outerTable,
     shapes: sampleShapes,
     drawingMlXml,
-    renderSvg: () => ({
-      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
-  <rect x="10" y="10" width="140" height="36" rx="8" fill="#5C6BC0" stroke="#4A58A9" stroke-width="2"/>
-  <ellipse cx="176" cy="28" rx="16" ry="16" fill="#8E9CE6" stroke="#FFFFFF" stroke-width="1.5"/>
-  <path d="M 0 30 Q 30 5 60 18 T 120 5" fill="none" stroke="#3B4890" stroke-width="2.5"/>
-</svg>`,
-      shapes: sampleShapes,
-    }),
     generateDocxTableXml: () => {
       let tblXml = `<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:tblPr>
@@ -895,9 +880,6 @@ export function synthesizeAudioBitstreamCorpus(durationSeconds = 0.5): AudioBits
 export interface CadNurbsCorpus {
   surface: BSplineSurface;
   midPoint: { x: number; y: number; z: number };
-  curvatures: { K: number; H: number; k1: number; k2: number };
-  adaptiveMesh: TessellatedMesh;
-  trimmedMesh: TessellatedMesh;
   outerLoop: Parametric2DPoint[];
   innerHoles: Parametric2DPoint[][];
 }
@@ -939,44 +921,6 @@ export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
   };
 
   const midPoint = { x: 15, y: 15, z: 5.25 };
-  const curvatures = {
-    K: 0.0011111111337911567,
-    H: -0.03333333367353402,
-    k1: -0.03333333301498951,
-    k2: -0.03333333433207853,
-  };
-
-  // Generate deterministic 9x9 grid mesh (81 vertices, 128 faces)
-  const adaptiveVertices: Array<{ x: number; y: number; z: number }> = [];
-  const adaptiveNormals: Array<{ x: number; y: number; z: number }> = [];
-  const adaptiveFaces: Array<[number, number, number]> = [];
-
-  for (let i = 0; i <= 8; i++) {
-    for (let j = 0; j <= 8; j++) {
-      const u = i / 8;
-      const v = j / 8;
-      adaptiveVertices.push({ x: u * 30, y: v * 30, z: Math.sin(u * Math.PI) * Math.sin(v * Math.PI) * 5.25 });
-      adaptiveNormals.push({ x: 0, y: 0, z: 1 });
-    }
-  }
-
-  for (let i = 0; i < 8; i++) {
-    for (let j = 0; j < 8; j++) {
-      const p1 = i * 9 + j;
-      const p2 = p1 + 1;
-      const p3 = (i + 1) * 9 + j;
-      const p4 = p3 + 1;
-      adaptiveFaces.push([p1, p2, p3]);
-      adaptiveFaces.push([p2, p4, p3]);
-    }
-  }
-
-  const adaptiveMesh: TessellatedMesh = {
-    vertices: adaptiveVertices,
-    faces: adaptiveFaces,
-    normals: adaptiveNormals,
-  };
-
   const outerLoop: Parametric2DPoint[] = [
     { u: 0.0, v: 0.0 },
     { u: 1.0, v: 0.0 },
@@ -993,28 +937,9 @@ export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
     ],
   ];
 
-  // 16 vertices, 24 faces trimmed CDT mesh
-  const trimmedVertices: Array<{ x: number; y: number; z: number }> = [];
-  for (let i = 0; i < 16; i++) {
-    trimmedVertices.push({ x: (i % 4) * 10, y: Math.floor(i / 4) * 10, z: 2.0 });
-  }
-  const trimmedFaces: Array<[number, number, number]> = [];
-  for (let i = 0; i < 24; i++) {
-    trimmedFaces.push([i % 16, (i + 1) % 16, (i + 2) % 16]);
-  }
-
-  const trimmedMesh: TessellatedMesh = {
-    vertices: trimmedVertices,
-    faces: trimmedFaces,
-    normals: trimmedVertices.map(() => ({ x: 0, y: 0, z: 1 })),
-  };
-
   return {
     surface,
     midPoint,
-    curvatures,
-    adaptiveMesh,
-    trimmedMesh,
     outerLoop,
     innerHoles,
   };

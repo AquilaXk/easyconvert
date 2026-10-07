@@ -79,8 +79,13 @@ export function zstdFacts(stream: Buffer): { testPassed: boolean; text: string }
   });
 }
 
+/** Format, size, depth and colour space of a raster image, as ImageMagick `identify` reads it from the bytes. */
+export function imageFacts(image: Buffer): string {
+  return withTempFile(image, 'img', (file) => runTool('identify', ['-format', '%m %wx%h %z-bit %[colorspace]', file]));
+}
+
 export function pngFacts(png: Buffer): string {
-  return withTempFile(png, 'png', (file) => runTool('identify', ['-format', '%m %wx%h %z-bit %[colorspace]', file]));
+  return imageFacts(png);
 }
 
 /** Entry names of a ZIP package and, for each XML or relationship part, whether xmllint finds it well-formed. */
