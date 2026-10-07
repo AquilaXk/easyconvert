@@ -9,6 +9,8 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, requireOracleTool } from './helpers/differential-oracle';
 import { deobfuscateFont, readXps } from './helpers/xps-text-walker';
 
+/** Embedding a CJK font writes megabytes and reads them back; a loaded CI runner needs far more than the 5 s default. */
+const FONT_EMBEDDING_TIMEOUT_MS = 60_000;
 const LINE_COUNT = 200;
 const MIN_PAGES = 4;
 const SFNT_MAGICS = new Set(['00010000', '4f54544f', '74727565', '74746366']);
@@ -64,7 +66,7 @@ describe('XPS text pages', () => {
     expect(textOf(xps.pages).join('')).toBe(token);
   });
 
-  it('embeds the font every Glyphs run names, as an obfuscated font part that decodes to a font file', async () => {
+  it('embeds the font every Glyphs run names, as an obfuscated font part that decodes to a font file', { timeout: FONT_EMBEDDING_TIMEOUT_MS }, async () => {
     const xps = await readXps(await buildOpenXpsPackage([{ lines: ['Café résumé 한국어 日本語'] }], 'fonts'));
     expect(xps.fontParts.length).toBeGreaterThan(0);
     for (const run of xps.pages.flatMap((page) => page.glyphs)) {
@@ -77,7 +79,7 @@ describe('XPS text pages', () => {
     expect(textOf(xps.pages).join('')).toBe('Café résumé 한국어 日本語');
   });
 
-  it('fills each wrapped line up to the right margin, measured with the embedded font by an independent shaper', async () => {
+  it('fills each wrapped line up to the right margin, measured with the embedded font by an independent shaper', { timeout: FONT_EMBEDDING_TIMEOUT_MS }, async () => {
     const sentence = Array.from({ length: 80 }, (_, i) => `measure${i}`).join(' ');
     const xps = await readXps(await buildOpenXpsPackage([{ lines: [sentence] }], 'measure'));
     const contentWidth = A4_WIDTH - 2 * LAYOUT_MARGIN;

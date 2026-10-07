@@ -164,15 +164,21 @@ interface OutputPage {
 /** One Glyphs element per font run; the font part is registered for the page and the package. */
 class GlyphWriter {
   readonly fonts = new Map<string, { face: PdfFontFace; part: string }>();
+  /** Each face is hashed once: its bytes are megabytes, and every text run asks for its URI. */
+  private readonly guids = new Map<PdfFontFace, string>();
 
   constructor(private readonly zip: JSZip) {}
 
   fontUri(face: PdfFontFace): string {
-    const guid = fontGuid(face);
+    let guid = this.guids.get(face);
+    if (guid === undefined) {
+      guid = fontGuid(face);
+      this.guids.set(face, guid);
+    }
     const part = `Resources/Fonts/${guid}.odttf`;
     if (!this.fonts.has(part)) {
       this.fonts.set(part, { face, part });
-      this.zip.file(part, obfuscateFont(face.data, guid));
+      this.zip.file(part, obfuscateFont(face.data, guid), { compression: 'STORE' }); // megabytes of font data compress only slightly (15.5 to 19.5 MB for CJK) and cost seconds to deflate
     }
     // A font collection is addressed by the index of the face inside it.
     return `/${part}${face.collectionFace ? `#${face.faceIndex}` : ''}`;
