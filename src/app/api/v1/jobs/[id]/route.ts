@@ -3,11 +3,15 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { graphScheduler, type GraphExecutionState, type NodeExecutionStatus } from '@/lib/queue/graph';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactForOutput, redactText } from '@/lib/security/redact';
+import { engineTraceFields } from '@/lib/api/engine-trace';
+import type { ConversionJobResult } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
 const PERCENT = 100;
+const JOBS_PATH = '/api/v1/jobs';
 const TERMINAL_NODE_STATUSES: ReadonlySet<NodeExecutionStatus> = new Set<NodeExecutionStatus>([
   'completed',
   'failed',
@@ -20,11 +24,24 @@ function maskedText(text: string | undefined): string | undefined {
   return text === undefined ? undefined : redactText(text);
 }
 
+/** The stored result with its engine fields in the public form: a result written by another version is not trusted. */
+function publicResult(result: ConversionJobResult | undefined): ConversionJobResult | undefined {
+  if (!result) return result;
+  const view: ConversionJobResult = { ...result };
+  delete view.engineUsed;
+  delete view.fallbackReason;
+  return { ...view, ...engineTraceFields(result) };
+}
+
 interface RouteContext {
   params: Promise<{ id: string }>;
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOBS_PATH, () => readJob(req, context));
+}
+
+async function readJob(req: NextRequest, context: RouteContext) {
   const resolvedParams = await Promise.resolve(context.params);
   const jobId = resolvedParams.id;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;
@@ -117,7 +134,8 @@ export async function GET(req: NextRequest, context: RouteContext) {
     failedReason: maskedText(graphState?.failedReason || job.failedReason),
     failedCode: job.failedCode,
     failedStatus: job.failedStatus,
-    result: job.returnvalue,
+    ...engineTraceFields(job.returnvalue ?? {}),
+    result: publicResult(job.returnvalue),
     tasks: redactForOutput(job.data?.tasks),
     graph: redactForOutput(graphState?.graph || job.data?.graph),
     nodes: nodesResponse,
@@ -126,6 +144,10 @@ export async function GET(req: NextRequest, context: RouteContext) {
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOBS_PATH, () => cancelJobRequest(req, context));
+}
+
+async function cancelJobRequest(req: NextRequest, context: RouteContext) {
   const resolvedParams = await Promise.resolve(context.params);
   const jobId = resolvedParams.id;
   const instanceUri = req.nextUrl?.pathname || `/api/v1/jobs/${jobId || ''}`;

@@ -4,6 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
@@ -24,6 +25,8 @@ import {
   PayloadLimitError,
   EngineUnavailableError,
   PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
 
@@ -398,6 +401,7 @@ export async function POST(req: NextRequest) {
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
           ...frameMetadataHeaders(conversionResult),
+          ...engineTraceHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -425,6 +429,7 @@ export async function POST(req: NextRequest) {
         downloadUrl,
         expiresAt: userFile.expiresAt,
         ...frameMetadataFields(conversionResult),
+        ...engineTraceFields(conversionResult),
       },
       {
         status: 200,
@@ -459,6 +464,18 @@ export async function POST(req: NextRequest) {
     if (err instanceof PayloadLimitError || err instanceof InputPixelLimitError) {
       // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
+    }
+    if (err instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: log it, answer 500 without the worker's file name.
+      console.error('[v1/convert] Worker output vanished before it was read:', err);
+      return createProblemDetailsResponse(
+        err.status,
+        WORKER_OUTPUT_MISSING_DETAIL,
+        instanceUri,
+        'Internal Server Error',
+        undefined,
+        rateLimitHeaders
+      );
     }
     if (err instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.

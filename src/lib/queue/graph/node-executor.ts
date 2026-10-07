@@ -29,10 +29,82 @@ import {
   applyPdfWatermark,
   protectPdf,
 } from '../../conversions';
-import { ConversionFailedError, GraphExportError } from '../../types';
+import { ConversionFailedError, GraphExportError, UnknownArtifactFormatError, WorkerOutputMissingError } from '../../types';
+import { getFormatByExtension } from '../../registry';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
 import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+
+const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
+/** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
+const NO_OUTPUT_MIME_TYPE = 'application/octet-stream';
+/** Registry ids made of two dot-separated parts (`tar.gz`) are tried before the last extension alone. */
+const COMPOUND_EXTENSION_PARTS = 2;
+
+/** The MIME type the format registry (the SSOT of formats) names for a format id; an unknown id fails closed. */
+function registryMimeType(formatId: string): string {
+  const definition = getFormatByExtension(formatId);
+  if (!definition) {
+    throw new UnknownArtifactFormatError(formatId);
+  }
+  return definition.mimeType;
+}
+
+/** The registry MIME type of a file name from its extension (compound first), or undefined when none is registered. */
+function lookupRegistryMimeTypeOfFilename(filename: string): string | undefined {
+  const parts = filename.toLowerCase().split('.');
+  const candidates: string[] = [];
+  if (parts.length > COMPOUND_EXTENSION_PARTS) {
+    candidates.push(parts.slice(-COMPOUND_EXTENSION_PARTS).join('.'));
+  }
+  if (parts.length > 1) {
+    candidates.push(parts[parts.length - 1]);
+  }
+  for (const candidate of candidates) {
+    const definition = getFormatByExtension(candidate);
+    if (definition) {
+      return definition.mimeType;
+    }
+  }
+  return undefined;
+}
+
+/** The registry MIME type of a stored artifact, from its file extension; an unregistered extension fails closed. */
+function registryMimeTypeOfFilename(filename: string): string {
+  const mimeType = lookupRegistryMimeTypeOfFilename(filename);
+  if (mimeType === undefined) {
+    throw new UnknownArtifactFormatError(filename);
+  }
+  return mimeType;
+}
+
+/**
+ * An extracted entry is the archive's own content, not a conversion output: an entry whose name has no
+ * registered format (`LICENSE`, `.gitignore`) is opaque binary data (RFC 2046, section 4.5.1), not an error.
+ */
+const OPAQUE_ENTRY_MIME_TYPE = 'application/octet-stream';
+
+function archiveEntryMimeType(entryName: string): string {
+  return lookupRegistryMimeTypeOfFilename(entryName) ?? OPAQUE_ENTRY_MIME_TYPE;
+}
+
+/**
+ * What a completed node reports about its primary output: the registry MIME type of its format and the exact
+ * byte size of the stored object. An output that is not in storage is a server fault, never a size of 0.
+ */
+async function describePrimaryOutput(
+  storage: IStorageBackend,
+  key: string,
+  isArchiveEntry: boolean
+): Promise<{ mimeType: string; size: number }> {
+  const stat = await storage.stat(key);
+  if (!stat) {
+    throw new WorkerOutputMissingError(path.basename(key));
+  }
+  const filename = stat.filename || path.basename(key);
+  const mimeType = isArchiveEntry ? archiveEntryMimeType(filename) : registryMimeTypeOfFilename(filename);
+  return { mimeType, size: stat.size };
+}
 
 async function processIntermediatePdfArtifacts(
   graphId: string,
@@ -52,7 +124,7 @@ async function processIntermediatePdfArtifacts(
       const transformedBuf = await transformFn(stored.buffer);
       const outFilename = stored.filename || path.basename(inputKey);
       const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-      await storage.saveObject(outKey, transformedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+      await storage.saveObject(outKey, transformedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
       return outKey;
     })
   );
@@ -140,7 +212,7 @@ export async function processGraphNodeJob(
           );
 
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
         await job.log(`Node "${nodeId}" converted ${inputArtifacts.length} artifact(s) to ${node.targetFormat}`);
@@ -164,7 +236,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
         break;
@@ -187,7 +259,7 @@ export async function processGraphNodeJob(
             stored.filename
           );
           const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
         break;
@@ -226,7 +298,7 @@ export async function processGraphNodeJob(
           );
           const outFilename = `thumbnail.${targetFormat}`;
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
         break;
@@ -300,13 +372,13 @@ export async function processGraphNodeJob(
           const mergedBuf = await mergePdfBuffers(pdfBuffers);
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          await effectiveStorage.saveObject(outKey, mergedBuf, 'application/pdf', outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         } else {
           const mergedBuf = Buffer.from(inputs.map((stored) => stored.buffer.toString('utf-8')).join('\n\n'), 'utf-8');
           const outFilename = `merged.${targetFmt}`;
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-          await effectiveStorage.saveObject(outKey, mergedBuf, 'text/plain', outFilename, 24 * 60 * 60 * 1000);
+          await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType(targetFmt), outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
         break;
@@ -330,7 +402,7 @@ export async function processGraphNodeJob(
         const jsonBuf = Buffer.from(JSON.stringify(meta, null, 2), 'utf-8');
         const outFilename = 'metadata.json';
         const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
-        await effectiveStorage.saveObject(outKey, jsonBuf, 'application/json', outFilename, 24 * 60 * 60 * 1000);
+        await effectiveStorage.saveObject(outKey, jsonBuf, registryMimeType('json'), outFilename, INTERMEDIATE_TTL_MS);
         outputKeys.push(outKey);
         break;
       }
@@ -362,20 +434,16 @@ export async function processGraphNodeJob(
         }
 
         let archiveBuf: Buffer;
-        let archiveMime: string;
 
         if (targetFmt === 'zip') {
           const zipRes = await createZipArchive(filesToArchive, node.options || {}, `bundle.zip`);
           archiveBuf = zipRes.buffer;
-          archiveMime = 'application/zip';
         } else if (targetFmt === 'tar' || targetFmt === 'tar.gz') {
           const tarRes = createTarArchive(filesToArchive, node.options || {}, `bundle.tar`);
           archiveBuf = targetFmt === 'tar.gz' ? zlib.gzipSync(tarRes.buffer) : tarRes.buffer;
-          archiveMime = targetFmt === 'tar.gz' ? 'application/gzip' : 'application/x-tar';
         } else if (targetFmt === '7z') {
           const sevenZipRes = create7zArchive(filesToArchive, node.options || {}, `bundle.7z`);
           archiveBuf = sevenZipRes.buffer;
-          archiveMime = 'application/x-7z-compressed';
         } else {
           throw new ConversionFailedError(
             `archive.create node "${nodeId}" cannot produce "${targetFmt}"; supported: ${[...ARCHIVE_CREATE_FORMATS].join(', ')}`
@@ -383,7 +451,7 @@ export async function processGraphNodeJob(
         }
 
         const outKey = `intermediate/${graphId}/${nodeId}/bundle.${targetFmt}`;
-        await effectiveStorage.saveObject(outKey, archiveBuf, archiveMime, `bundle.${targetFmt}`, 24 * 60 * 60 * 1000);
+        await effectiveStorage.saveObject(outKey, archiveBuf, registryMimeType(targetFmt), `bundle.${targetFmt}`, INTERMEDIATE_TTL_MS);
         outputKeys = [outKey];
         await job.log(`Created archive with ${filesToArchive.length} file(s): ${outKey}`);
         break;
@@ -437,7 +505,8 @@ export async function processGraphNodeJob(
 
         for (const f of extracted) {
           const outKey = `intermediate/${graphId}/${nodeId}/${path.basename(f.filename)}`;
-          await effectiveStorage.saveObject(outKey, f.buffer, 'application/octet-stream', path.basename(f.filename), 24 * 60 * 60 * 1000);
+          const entryName = path.basename(f.filename);
+          await effectiveStorage.saveObject(outKey, f.buffer, archiveEntryMimeType(entryName), entryName, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
 
@@ -492,17 +561,22 @@ export async function processGraphNodeJob(
     const durationMs = Date.now() - startTime;
     await job.updateProgress(100);
 
+    // Described before the node is marked completed: an output that cannot be described fails the node.
+    const primaryKey = outputKeys[0] || '';
+    const primaryOutput = primaryKey
+      ? await describePrimaryOutput(effectiveStorage, primaryKey, node.op === 'archive.extract')
+      : { mimeType: NO_OUTPUT_MIME_TYPE, size: 0 };
+
     await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, 1);
 
-    const primaryKey = outputKeys[0] || '';
     return {
       jobId: job.id,
       status: 'completed',
       resultKey: primaryKey,
       downloadUrl: primaryKey ? `/api/storage/file/${encodeURIComponent(primaryKey)}` : '',
       filename: path.basename(primaryKey),
-      mimeType: 'application/octet-stream',
-      size: 0,
+      mimeType: primaryOutput.mimeType,
+      size: primaryOutput.size,
       durationMs,
     };
   } catch (err: any) {
@@ -523,7 +597,6 @@ export async function processGraphNodeJob(
 
 /** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */
 const DEFAULT_URL_IMPORT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
-const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function urlImportMaxBytes(): number {
   const configured = Number(process.env.GRAPH_URL_IMPORT_MAX_BYTES);

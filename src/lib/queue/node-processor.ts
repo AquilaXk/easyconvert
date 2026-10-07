@@ -20,6 +20,7 @@ import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-po
 import { dispatchEngine } from './dispatch-engine';
 import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { frameMetadataFields } from '../api/frame-headers';
+import { engineTraceFields } from '../api/engine-trace';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -357,6 +358,7 @@ export async function processNodeJob(
       durationMs,
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
       ...frameMetadataFields(finalResult),
+      ...engineTraceFields(finalResult),
     };
   } catch (err) {
     failure = err;

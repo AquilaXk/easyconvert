@@ -7,8 +7,11 @@ import {
 } from '@/lib/queue/bullmq-engine';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 import { redactText } from '@/lib/security/redact';
+import { withQueueErrors } from '@/lib/api/queue-error-response';
 
 export const dynamic = 'force-dynamic';
+
+const JOB_PATH = '/api/queue/jobs';
 
 // Next.js 15 passes route params as a promise.
 interface JobRouteContext {
@@ -18,7 +21,11 @@ interface JobRouteContext {
 // Jobs created through the authenticated API carry `userId` and are visible only to that user;
 // jobs without an owner (anonymous uploads) keep capability-URL access by job id.
 
-export async function GET(
+export async function GET(req: NextRequest, context: JobRouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOB_PATH, () => readJob(req, context));
+}
+
+async function readJob(
   req: NextRequest,
   { params }: JobRouteContext
 ) {
@@ -118,7 +125,11 @@ export async function GET(
   });
 }
 
-export async function DELETE(
+export async function DELETE(req: NextRequest, context: JobRouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOB_PATH, () => cancelJobRequest(req, context));
+}
+
+async function cancelJobRequest(
   req: NextRequest,
   { params }: JobRouteContext
 ) {
