@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, InvalidSheetIndexError } from '../types';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
@@ -15,6 +15,7 @@ import { assertNoComplexScript } from './ctl';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
+import { readPptSlides } from './office/ppt-reader';
 
 export { buildOpenXpsPackage };
 
@@ -70,9 +71,15 @@ export async function convertOffice(
     return convertOdtSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 8. Other presentation sources (ppt, potx, key)
-  if (['ppt', 'potx', 'key'].includes(src)) {
-    return convertGenericPresentationSource(inputBuffer, src, tgt, options, baseName);
+  // 8. Other presentation sources: PowerPoint 97-2003 binary, PowerPoint templates and Keynote
+  if (src === 'ppt') {
+    return convertPptSource(inputBuffer, tgt, options, baseName);
+  }
+  if (src === 'potx') {
+    return convertPotxSource(inputBuffer, tgt, options, baseName);
+  }
+  if (src === 'key') {
+    throw new EngineUnavailableError('soffice', 'Keynote presentations are read by LibreOffice; the in-process engine has no Keynote reader.');
   }
 
   // 9. EPUB Source
@@ -6807,21 +6814,23 @@ async function convertOdpSource(
 }
 
 /**
- * Generic Presentation Source Parser (PPT, POTX, KEY)
+ * PowerPoint 97-2003 binary source. The slide text comes from the presentation's records in slide order
+ * ([MS-PPT]); malformed or encrypted files throw typed errors instead of producing text.
  */
-async function convertGenericPresentationSource(
+async function convertPptSource(
   inputBuffer: Buffer,
-  src: string,
   tgt: string,
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const text = inputBuffer.toString('utf-8');
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const slides = [{ number: 1, texts: lines.length > 0 ? lines : [baseName] }];
+  const slides = readPptSlides(inputBuffer);
 
   if (tgt === 'txt') {
-    const buffer = Buffer.from(lines.join('\n'), 'utf-8');
+    const text = slides
+      .filter((slide) => slide.texts.length > 0)
+      .map((slide) => slide.texts.join('\n'))
+      .join('\n\n');
+    const buffer = Buffer.from(text, 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
@@ -6837,7 +6846,11 @@ async function convertGenericPresentationSource(
   }
 
   if (tgt === 'pptx') {
-    const pptxBuffer = await generatePptxFromText(text, src, options, baseName);
+    const text = slides
+      .filter((slide) => slide.texts.length > 0)
+      .map((slide) => `# Slide ${slide.number}\n\n` + slide.texts.join('\n'))
+      .join('\n\n---\n\n');
+    const pptxBuffer = await generatePptxFromText(text, 'ppt', options, baseName);
     return {
       buffer: pptxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -6846,7 +6859,49 @@ async function convertGenericPresentationSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
+  throw new Error(`Unsupported conversion from PPT to ${tgt}`);
+}
+
+const POTX_TEMPLATE_MAIN_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml';
+const PPTX_MAIN_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
+const CONTENT_TYPES_PART = '[Content_Types].xml';
+
+/**
+ * PowerPoint template source: an OpenXML package with the slide parts of a presentation, so it is read as
+ * one. A package that is not a ZIP, or has no presentation part, fails with a typed 400 error.
+ */
+async function convertPotxSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(inputBuffer);
+  } catch {
+    throw new ConversionFailedError('The POTX file is not a valid OpenXML package.');
+  }
+  if (!zip.file('ppt/presentation.xml')) {
+    throw new ConversionFailedError('The POTX package has no ppt/presentation.xml part.');
+  }
+  if (tgt === 'pptx') {
+    // The package becomes a presentation: its main part loses the template content type.
+    const contentTypes = zip.file(CONTENT_TYPES_PART);
+    if (!contentTypes) {
+      throw new ConversionFailedError(`The POTX package has no ${CONTENT_TYPES_PART} part.`);
+    }
+    const xml = (await contentTypes.async('text')).replace(POTX_TEMPLATE_MAIN_CONTENT_TYPE, PPTX_MAIN_CONTENT_TYPE);
+    zip.file(CONTENT_TYPES_PART, xml);
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return {
+      buffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      filename: `${baseName}.pptx`,
+      size: buffer.length,
+    };
+  }
+  return convertPptxSource(inputBuffer, tgt, options, baseName);
 }
 
 function generateHtmlFromSlides(

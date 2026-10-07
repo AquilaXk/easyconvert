@@ -1377,7 +1377,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-keynote-sffkey',
     category: 'presentation',
     description: 'Apple iWork Keynote presentation slideshow file.',
-    targetFormats: ['pptx', 'pdf', 'html', 'zip'],
+    targetFormats: ['pptx', 'pdf', 'zip'],
   },
   keynotes: {
     id: 'keynotes',
@@ -3259,7 +3259,7 @@ export function isFormatCompatibleWithMagicBytes(
   // Format mapping groups
   const zipFormats = new Set([
     'zip', 'docx', 'xlsx', 'pptx', 'epub', 'odt', 'ods', 'odp', 'hwpx',
-    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar'
+    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar', 'key'
   ]);
   const cfbfFormats = new Set(['doc', 'xls', 'ppt', 'hwp', 'cfbf']);
   const pdfFormats = new Set(['pdf', 'ai']);
