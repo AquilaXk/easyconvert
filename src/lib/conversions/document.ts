@@ -14,7 +14,7 @@ import {
   TableBorder,
 } from './office';
 import {
-  performOcr,
+  recognizePdfPages,
   generateSearchablePdf,
   OcrResult,
   OcrPageResult,
@@ -244,8 +244,9 @@ export async function convertDocument(
         let totalConfidence = 0;
         let count = 0;
 
-        for (const img of rasterImages) {
-          const ocr = await performOcr(img.buffer, options.ocrLanguage);
+        const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage);
+        for (const [index, img] of rasterImages.entries()) {
+          const ocr = recognized[index];
           if (ocr && ocr.text) {
             ocrTexts.push(ocr.text);
             ocrTextPages.push({ pageNumber: img.pageNumber, text: ocr.text });

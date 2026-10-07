@@ -27,17 +27,12 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
-import {
-  countTextRows,
-  fallbackReadsMore,
-  OCR_SMALL_CROP_MAX_HEIGHT_PX,
-  ocrFallbackPageSegMode,
-  ocrSegmentationFor,
-} from './ocr-config';
+import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { runPdfTextJob } from './pdf-text-geometry';
 import { mapOcrResultToSource } from './ocr-geometry';
 import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
+import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
   OCR_PREPROCESS_STEPS,
   preprocessOcrImage,
@@ -67,13 +62,6 @@ function countWords(text: string | null | undefined): number {
 /** Terminates pooled OCR workers; call on process shutdown. */
 export const shutdownOcrWorkerPool = shutdownSharedOcrWorkerPool;
 
-/** Text rows in an image short enough to be read as one block or line; undefined for taller images. */
-async function countSmallCropTextRows(png: Buffer, height: number | undefined): Promise<number | undefined> {
-  if (height === undefined || height > OCR_SMALL_CROP_MAX_HEIGHT_PX) return undefined;
-  const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
-  return countTextRows(new Uint8Array(data.buffer, data.byteOffset, data.length), info.width, info.height);
-}
-
 /**
  * Optical Character Recognition (OCR) Engine
  * Powered by authentic WebAssembly inference (Tesseract.js) and native Tesseract CLI.
@@ -91,6 +79,19 @@ export async function performOcr(
 ): Promise<OcrResult> {
   const recognized = await recognizePage(imageBuffer, language, steps);
   return calibrateOcrResult(recognized.result, recognized.enginePath);
+}
+
+/**
+ * Recognizes the pages of a PDF side by side, up to `concurrency` at once (by default the number of
+ * pooled workers, capped at OCR_MAX_INFLIGHT_PAGES), and returns the results in the order of `pages`.
+ * The first failure stops further pages from starting and is rethrown.
+ */
+export function recognizePdfPages(
+  pages: ReadonlyArray<{ buffer: Buffer }>,
+  language: string | undefined,
+  concurrency: number = ocrPageConcurrency()
+): Promise<OcrResult[]> {
+  return mapWithConcurrency(pages, concurrency, (page) => performOcr(page.buffer, language));
 }
 
 /** A page as the engine read it, with word scores still raw, and the engine path that produced it. */
@@ -178,10 +179,11 @@ export async function recognizePage(
     );
   }
 
-  // Decode with sharp and re-encode as PNG: the OCR reader opens fewer formats (no AVIF, HEIF,
-  // SVG or many TIFF variants) than the decoder, so it only ever receives a lossless PNG. EXIF
-  // orientation is applied first, so text is recognized as displayed, and the page is prepared
-  // for recognition (see ocr-preprocess.ts), which both engines below then read.
+  // Decode with sharp and hand the pixels over as an uncompressed Netpbm image: the OCR reader
+  // opens fewer formats (no AVIF, HEIF, SVG or many TIFF variants) than the decoder, and a PNG
+  // would be compressed here only to be decompressed again. EXIF orientation is applied first, so
+  // text is recognized as displayed, and the page is prepared for recognition (see
+  // ocr-preprocess.ts), which both engines below then read.
   let prepared: OcrPreprocessResult;
   await assertEncodedImageWithinLimit(imageBuffer);
   try {
@@ -195,7 +197,7 @@ export async function recognizePage(
   // Segmentation follows the page as submitted: an enlarged label is still a label. Its text rows
   // are counted on the prepared image, which scaling and binarization leave in the same number.
   const inputHeight = prepared.geometry.sourceHeight;
-  const inputTextRows = await countSmallCropTextRows(ocrInput, inputHeight);
+  const inputTextRows = prepared.textRows;
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   if (enginePath !== 'cli') {
@@ -484,8 +486,9 @@ export async function performSmartMultiPagePdfOcr(
       new Set(pagesNeedingOcr)
     );
 
-    for (const img of rasterImages) {
-      const ocr = await performOcr(img.buffer, options.ocrLanguage);
+    const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage);
+    for (const [index, img] of rasterImages.entries()) {
+      const ocr = recognized[index];
       if (ocr) {
         const existing = pageOcrResults.get(img.pageNumber);
         if (!existing) {
