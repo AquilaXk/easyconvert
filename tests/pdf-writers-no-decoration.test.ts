@@ -202,15 +202,17 @@ describe('office document writers draw only the document', () => {
   it('refuses an EPUB without text instead of drawing a placeholder', async () => {
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip');
+    zip.file('META-INF/container.xml', '<container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
+    zip.file('OEBPS/content.opf', '<package><manifest><item id="c" href="empty.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>');
     zip.file('OEBPS/empty.xhtml', '<html><body></body></html>');
     const run = convertFile(await zip.generateAsync({ type: 'nodebuffer' }), 'epub', 'pdf', {}, 'empty.epub');
-    await expect(run).rejects.toThrow('The EPUB holds no text to draw in a PDF.');
+    await expect(run).rejects.toThrow('The EPUB holds no text.');
   });
 
   it('refuses an FB2 book without text instead of drawing a placeholder', async () => {
     const fb2 = '<?xml version="1.0"?><FictionBook><description><title-info><book-title>T</book-title></title-info></description><body></body></FictionBook>';
     const run = convertFile(Buffer.from(fb2, 'utf-8'), 'fb2', 'pdf', {}, 'empty.fb2');
-    await expect(run).rejects.toThrow('The FB2 book holds no text to draw in a PDF.');
+    await expect(run).rejects.toThrow('The FB2 book holds no text.');
   });
 });
 
@@ -219,7 +221,7 @@ describe('the writers no longer carry fixed truncations or decorations', () => {
 
   it.each([
     ['data.ts', /slice\(0, 10\)|slice\(0, 200\)|Structured Data Export|ellipsis: true/],
-    ['office.ts', /Epub content|FB2 text content|ellipsis: true|Sheet: \$\{sheet\.name\}`, hasUnicodeFont/],
+    ['office.ts', /Epub content|FB2 text content|ellipsis: true|Sheet: \$\{sheet\.name\}`, hasUnicodeFont|Extracted content from|document content`|ebook content|Electronic Book Content|Presentation slide content|Generated presentation content/],
   ])('%s has none of the removed literals', (file, pattern) => {
     expect(read(file as string)).not.toMatch(pattern as RegExp);
   });

@@ -181,10 +181,12 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res1.filename).toBe('document.pdf');
     expect(res1.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
 
-    // azw4 -> epub
-    const res2 = await convertFile(docData, 'azw4', 'epub', {}, 'book.azw4');
-    expect(res2.filename).toBe('book.epub');
-    expect(res2.buffer.length).toBeGreaterThan(0);
+    // azw4 -> epub: a Print Replica book is a PDF inside a PalmDB container, not text. Plain text under the .azw4
+    // name is refused with a typed error instead of becoming an EPUB of that text.
+    await expect(convertFile(docData, 'azw4', 'epub', {}, 'book.azw4')).rejects.toMatchObject({
+      name: 'ConversionFailedError',
+      message: expect.stringMatching(/Print Replica book keeps its pages as a PDF/),
+    });
 
     // et -> csv
     const csvData = Buffer.from('Name,Value\nItemA,100\nItemB,200', 'utf-8');
