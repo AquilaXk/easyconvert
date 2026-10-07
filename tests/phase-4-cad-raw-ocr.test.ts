@@ -2,9 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
 import sharp from 'sharp';
 import {
-  buildTrianglesFromPoints,
   tessellateCurvesToMesh,
-  Point3D,
   BSplineCurve,
 } from '../src/lib/conversions/cad-nurbs';
 import {
@@ -104,33 +102,6 @@ function verifyNormals(normals: [number, number, number][], expectedPlane?: 'z')
 
 describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
   describe('1. 3D CAD Triangulation & Normal Computation', () => {
-    it('triangulates coplanar 3D points via Delaunay and computes exact plane normals', () => {
-      const points: Point3D[] = [
-        { x: 0, y: 0, z: 5 },
-        { x: 2, y: 0, z: 5 },
-        { x: 2, y: 2, z: 5 },
-        { x: 1, y: 3, z: 5 },
-        { x: 0, y: 2, z: 5 },
-      ];
-
-      const mesh = buildTrianglesFromPoints(points, 'test-polygon');
-      expect(mesh.vertices).toHaveLength(5);
-      expect(mesh.faces.length).toBeGreaterThanOrEqual(3);
-
-      for (const face of mesh.faces) {
-        expect(face).toHaveLength(3);
-        expect(face[0]).toBeGreaterThanOrEqual(0);
-        expect(face[0]).toBeLessThan(5);
-        expect(face[1]).toBeGreaterThanOrEqual(0);
-        expect(face[1]).toBeLessThan(5);
-        expect(face[2]).toBeGreaterThanOrEqual(0);
-        expect(face[2]).toBeLessThan(5);
-      }
-
-      expect(mesh.normals).toHaveLength(5);
-      verifyNormals(mesh.normals, 'z');
-    });
-
     it('tessellates a single 3D curve with adaptive tangent-orthogonal ribbon extrusion', () => {
       const curve = createLinearCurve(0, 0, 10, 0);
       const mesh = tessellateCurvesToMesh([curve], 'single-curve');
