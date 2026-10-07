@@ -37,6 +37,7 @@ runs:
           fonts-noto-color-emoji \
           unrar \
           qpdf \
+          ghostscript \
           libraw-bin
         # Pre-stage Tesseract traineddata assets for offline inference
         find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
