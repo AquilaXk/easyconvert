@@ -6,6 +6,7 @@ import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
+import { deriveQuantizerLevels } from './edge/workers/wasm-engine.worker';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import {
@@ -330,9 +331,8 @@ async function processL1AWebGpuConversion(
   ) {
     const maxColors =
       item.options.colors ?? (item.options.colorDepth ? 1 << item.options.colorDepth : 256);
-    const rLevels = maxColors <= 16 ? 4 : 8;
-    const gLevels = maxColors <= 16 ? 4 : 8;
-    const bLevels = maxColors <= 16 ? 2 : 4;
+    // The same levels the Wasm path derives, so both paths keep at most `maxColors` colours.
+    const { r: rLevels, g: gLevels, b: bLevels } = deriveQuantizerLevels(maxColors);
     task = { type: 'quantize', options: { rLevels, gLevels, bLevels } };
   } else {
     task = { type: 'color-transform', options: { mode: 'grayscale' } };

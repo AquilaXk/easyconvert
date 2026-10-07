@@ -14,6 +14,7 @@ import {
   WasmEngine,
   WasmTaskResult,
 } from '../workers/wasm-engine.worker';
+import { rehydrateWorkerError } from '../workers/worker-errors';
 
 export interface WasmExecutionInfo {
   mode: 'isolated-threads' | 'zero-coop-transferable';
@@ -317,7 +318,8 @@ export class WasmWorkerManager {
           if (isSettled) return;
           isSettled = true;
           cleanup();
-          reject(new Error(data.message || 'Wasm Worker execution error'));
+          // The typed error crosses the boundary as data; rebuild its class so the caller can act on it.
+          reject(rehydrateWorkerError(data.error ?? { message: data.message || 'Wasm Worker execution error' }));
         }
       };
 
