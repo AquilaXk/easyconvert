@@ -175,8 +175,21 @@ function getPerceptualLuminance(buf: Uint8Array | Buffer, idx: number, channels:
   return lum;
 }
 
+/** Side of the square window the structural similarity is measured in (Wang et al., "Image quality assessment: from error visibility to structural similarity", 2004, uniform window). */
+const SSIM_WINDOW = 8;
+/** Distance between neighbouring windows. */
+const SSIM_STRIDE = 4;
+const SSIM_K1 = 0.01;
+const SSIM_K2 = 0.03;
+const PIXEL_PEAK = 255;
+const OPAQUE_ALPHA = 255;
+const RGB_CHANNELS = 3;
+const RGBA_CHANNELS = 4;
+
 /**
- * Computes Structural Similarity Index (SSIM) between two grayscale/color buffers.
+ * Mean structural similarity index of two images: the SSIM of each 8 x 8 window of the luminance plane (stride 4),
+ * averaged. Local statistics are what make it respond to a blur or a shifted edge that leaves the global mean and
+ * variance alone. A plane smaller than a window is compared as one window.
  */
 export function computeSsim(
   bufA: Uint8Array | Buffer,
@@ -185,53 +198,56 @@ export function computeSsim(
   height: number,
   channels: number = 4
 ): number {
-  const n = width * height;
-  if (n === 0) return 1.0;
+  if (width * height === 0) return 1.0;
 
-  let sumA = 0;
-  let sumB = 0;
-
-  for (let i = 0; i < n; i++) {
-    const idx = i * channels;
-    sumA += getPerceptualLuminance(bufA, idx, channels);
-    sumB += getPerceptualLuminance(bufB, idx, channels);
+  const lumaA = new Float64Array(width * height);
+  const lumaB = new Float64Array(width * height);
+  for (let i = 0; i < width * height; i++) {
+    lumaA[i] = getPerceptualLuminance(bufA, i * channels, channels);
+    lumaB[i] = getPerceptualLuminance(bufB, i * channels, channels);
   }
 
-  const meanA = sumA / n;
-  const meanB = sumB / n;
+  const windowW = Math.min(SSIM_WINDOW, width);
+  const windowH = Math.min(SSIM_WINDOW, height);
+  const samples = windowW * windowH;
+  const c1 = (SSIM_K1 * PIXEL_PEAK) ** 2;
+  const c2 = (SSIM_K2 * PIXEL_PEAK) ** 2;
 
-  let varA = 0;
-  let varB = 0;
-  let covAB = 0;
-
-  for (let i = 0; i < n; i++) {
-    const idx = i * channels;
-    const lumA = getPerceptualLuminance(bufA, idx, channels);
-    const lumB = getPerceptualLuminance(bufB, idx, channels);
-
-    const diffA = lumA - meanA;
-    const diffB = lumB - meanB;
-    varA += diffA * diffA;
-    varB += diffB * diffB;
-    covAB += diffA * diffB;
+  let total = 0;
+  let windows = 0;
+  for (let top = 0; top + windowH <= height; top += SSIM_STRIDE) {
+    for (let left = 0; left + windowW <= width; left += SSIM_STRIDE) {
+      let sumA = 0;
+      let sumB = 0;
+      for (let y = top; y < top + windowH; y++) {
+        for (let x = left; x < left + windowW; x++) {
+          sumA += lumaA[y * width + x];
+          sumB += lumaB[y * width + x];
+        }
+      }
+      const meanA = sumA / samples;
+      const meanB = sumB / samples;
+      let varA = 0;
+      let varB = 0;
+      let covAB = 0;
+      for (let y = top; y < top + windowH; y++) {
+        for (let x = left; x < left + windowW; x++) {
+          const dA = lumaA[y * width + x] - meanA;
+          const dB = lumaB[y * width + x] - meanB;
+          varA += dA * dA;
+          varB += dB * dB;
+          covAB += dA * dB;
+        }
+      }
+      const denominatorN = Math.max(1, samples - 1);
+      varA /= denominatorN;
+      varB /= denominatorN;
+      covAB /= denominatorN;
+      total += ((2 * meanA * meanB + c1) * (2 * covAB + c2)) / ((meanA * meanA + meanB * meanB + c1) * (varA + varB + c2));
+      windows += 1;
+    }
   }
-
-  const denomN = Math.max(1, n - 1);
-  varA /= denomN;
-  varB /= denomN;
-  covAB /= denomN;
-
-  // Constants for 8-bit dynamic range L = 255
-  const k1 = 0.01;
-  const k2 = 0.03;
-  const l = 255;
-  const c1 = (k1 * l) ** 2;
-  const c2 = (k2 * l) ** 2;
-
-  const numerator = (2 * meanA * meanB + c1) * (2 * covAB + c2);
-  const denominator = (meanA * meanA + meanB * meanB + c1) * (varA + varB + c2);
-
-  return Math.abs(denominator) < 1e-12 ? 1.0 : Math.max(0, Math.min(1.0, numerator / denominator));
+  return windows === 0 ? 1.0 : Math.max(0, Math.min(1.0, total / windows));
 }
 
 /**
@@ -269,19 +285,27 @@ export async function compareImages(
     includeAA: !antialiasing,
   });
 
-  let sumSquaredError = 0;
+  // PSNR is taken over the colour channels; the alpha channel joins the mean only when an image has transparency,
+  // so that a pair of opaque images is not credited with an extra, always-zero channel.
+  let colourSquaredError = 0;
+  let alphaSquaredError = 0;
+  let hasTransparency = false;
   for (let i = 0; i < totalPixels * 4; i += 4) {
     const dr = bufA[i] - bufB[i];
     const dg = bufA[i + 1] - bufB[i + 1];
     const db = bufA[i + 2] - bufB[i + 2];
     const da = bufA[i + 3] - bufB[i + 3];
-    sumSquaredError += (dr * dr + dg * dg + db * db + da * da) / 4;
+    colourSquaredError += dr * dr + dg * dg + db * db;
+    alphaSquaredError += da * da;
+    if (bufA[i + 3] !== OPAQUE_ALPHA || bufB[i + 3] !== OPAQUE_ALPHA) hasTransparency = true;
   }
 
   const deltaRatio = totalPixels > 0 ? mismatchedPixels / totalPixels : 0;
   const percentage = deltaRatio * 100;
-  const mse = totalPixels > 0 ? sumSquaredError / totalPixels : 0;
-  const psnr = mse <= 1e-12 ? Infinity : 10 * Math.log10((255 * 255) / mse);
+  const channelsAveraged = hasTransparency ? RGBA_CHANNELS : RGB_CHANNELS;
+  const sumSquaredError = hasTransparency ? colourSquaredError + alphaSquaredError : colourSquaredError;
+  const mse = totalPixels > 0 ? sumSquaredError / (totalPixels * channelsAveraged) : 0;
+  const psnr = mse <= 1e-12 ? Infinity : 10 * Math.log10((PIXEL_PEAK * PIXEL_PEAK) / mse);
   const ssim = computeSsim(bufA, bufB, width, height, 4);
 
   let diffImage: Buffer | undefined;

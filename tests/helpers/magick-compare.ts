@@ -44,3 +44,27 @@ export function magickDifferingPixels(a: string, b: string): number {
     throw error;
   }
 }
+
+/** PSNR in dB of two image files as `compare -metric PSNR` reports it (Infinity when identical). */
+export function magickPsnr(a: string, b: string): number {
+  const binary = requireMagickOracle();
+  const file = binary === 'magick' ? 'magick' : 'compare';
+  const args = binary === 'magick' ? ['compare'] : [];
+  let report: string;
+  try {
+    execFileSync(file, [...args, '-metric', 'PSNR', a, b, 'null:'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: COMMAND_TIMEOUT_MS,
+      maxBuffer: MAX_STDERR_BYTES,
+    });
+    // Identical images exit 0 and print "inf" on stderr, which execFileSync does not return.
+    return Infinity;
+  } catch (error) {
+    const failure = error as { status?: number; stderr?: Buffer };
+    if (failure.status !== COMPARE_EXIT_DIFFERENT || !failure.stderr) throw error;
+    report = failure.stderr.toString('utf-8');
+  }
+  const psnr = Number.parseFloat(report.trim().split(/\s+/)[0]);
+  if (!Number.isFinite(psnr)) throw new Error(`compare -metric PSNR printed "${report.trim()}"`);
+  return psnr;
+}
