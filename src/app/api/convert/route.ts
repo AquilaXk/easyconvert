@@ -9,6 +9,8 @@ import {
   ArchiveEntryCollisionError,
   PayloadLimitError,
   PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
@@ -209,6 +211,11 @@ export async function POST(req: NextRequest) {
     if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
       // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert] Worker output vanished before it was read:', error);
+      return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
+import { readPersistedOutput } from './persisted-output';
 import {
   executeSandboxedBinary,
   SandboxedExecutionOptions,
@@ -615,17 +616,8 @@ export class LibreOfficePoolManager {
       engineUsed: 'native-soffice-pool',
       executionTimeMs: Date.now() - startTime,
       get buffer(): Buffer {
-        if (cachedBuffer) return cachedBuffer;
-        if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
-          throw new RangeError(
-            `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
-          );
-        }
-        if (fs.existsSync(persistedPath)) {
-          cachedBuffer = fs.readFileSync(persistedPath);
-          return cachedBuffer;
-        }
-        return Buffer.alloc(0);
+        cachedBuffer ??= readPersistedOutput(persistedPath, stat.size);
+        return cachedBuffer;
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;

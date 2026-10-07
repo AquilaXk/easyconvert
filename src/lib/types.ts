@@ -627,6 +627,27 @@ export class EngineUnavailableError extends EngineMissingError {
   }
 }
 
+/** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
+const WORKER_OUTPUT_MISSING_STATUS = 500;
+
+/** What an API answers for a vanished output; the worker's file name stays in the server log. */
+export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
+
+/**
+ * A conversion produced its output, but the persisted file is gone when the result is read (a swept scratch
+ * directory, a deleted volume). It is a server fault: the job fails with 500, never with an empty artifact.
+ * It is not an `EngineMissingError`, so the queue does not retry it on another worker; a retry would only
+ * redo a conversion whose storage is failing. The message names the output, never its location on disk.
+ */
+export class WorkerOutputMissingError extends ConversionFailedError {
+  readonly status = WORKER_OUTPUT_MISSING_STATUS;
+
+  constructor(outputName: string) {
+    super(`The persisted conversion output "${outputName}" is no longer available`);
+    this.name = 'WorkerOutputMissingError';
+  }
+}
+
 /** An `export.url` node could not deliver an artifact to the destination URL. */
 export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {
