@@ -20,6 +20,7 @@ import { OracleToolMissingError, getOracleToolPath } from './helpers/differentia
 import { withMissingBinary } from './helpers/native-tools';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
@@ -59,6 +60,9 @@ const ROUTING_ERROR_PATTERNS: readonly RegExp[] = [
   /^Unsupported binary or compressed format '\.[^']+' for text extraction/,
   /^Unsupported CAD format: DWG binary encoder unavailable/,
 ];
+
+/** The typed error the in-process archive engine raises for a format that only the native 7-Zip engine reads. */
+const SEVEN_ZIP_ENGINE_MESSAGE = /^Engine '7-Zip' is unavailable: reading \.[\w.]+ archives needs the native 7-Zip engine$/;
 
 function isRoutingError(err: unknown): boolean {
   if (err instanceof UnsupportedTargetError) return true;
@@ -157,6 +161,8 @@ const FIXTURES = new Map<string, Buffer[]>();
 collectFixtures(FIXTURE_ROOT, FIXTURES);
 const PNG_SEED = FIXTURES.get('png')![0];
 const TAR_SEED = FIXTURES.get('tar')![0];
+/** A three-block tar small enough for the compress writer's 9-bit codes (tests/helpers/unix-compress.ts). */
+const SMALL_TAR_SEED = readFileSync(path.join(FIXTURE_ROOT, 'sample.tar'));
 const ZIP_SEED = FIXTURES.get('zip')![0];
 const STEP_SEED = FIXTURES.get('step')![0];
 const DXF_SEED = FIXTURES.get('dxf')![0];
@@ -324,6 +330,14 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // A template is a presentation package whose main part has the template content type.
   potx: buildProbePotx,
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
+  'tar.bz': () => requireDerived('tar.bz2'),
+  // Java packages are ZIP files; a tar compressed with compress is an LZW stream (the builder is checked against gzip in
+  // archive-seven-zip-only-sources.test.ts).
+  jar: () => ZIP_SEED,
+  war: () => ZIP_SEED,
+  ear: () => ZIP_SEED,
+  'tar.z': () => compressLzw(SMALL_TAR_SEED),
+  tz: () => compressLzw(SMALL_TAR_SEED),
   bz: () => requireDerived('tar.bz2'),
   bz2: () => requireDerived('tar.bz2'),
   tbz: () => requireDerived('tar.bz2'),
@@ -485,6 +499,18 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
       const message = err instanceof Error ? err.message : String(err);
       if (isRoutingError(err)) return { outcome: 'unrouted', detail: message };
       lastError = message;
+      // An archive that only the native 7-Zip engine reads is left to it by the in-process engine; the dispatcher
+      // hands it over, and the real archives of tests/fixtures/archive-sources are what resolve the pair.
+      if (err instanceof EngineUnavailableError && SEVEN_ZIP_ENGINE_MESSAGE.test(message)) {
+        try {
+          await withTimeout(dispatchConversion(input, source, target, options, `probe.${source}`), PROBE_TIMEOUT_MS);
+          return { outcome: 'routed', detail: '' };
+        } catch (dispatched) {
+          const dispatchedMessage = dispatched instanceof Error ? dispatched.message : String(dispatched);
+          if (isRoutingError(dispatched)) return { outcome: 'unrouted', detail: dispatchedMessage };
+          lastError = dispatchedMessage;
+        }
+      }
     }
   }
   return { outcome: 'inconclusive', detail: lastError };
@@ -558,6 +584,10 @@ function isTranscoderPair(category: string, target: string): boolean {
   return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
 }
 
+// Besides the font pairs, the list holds every pair of the eight archive sources that no engine reads (ace, alz, arc, lz,
+// lzo, rz, tar.lzo, tzo): the registry advertises them, the converter refuses them with a typed error instead of
+// wrapping the file, and no tool of the CI image can write a sample to prove a route. A reader for one of them removes
+// its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );
