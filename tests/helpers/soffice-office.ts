@@ -69,6 +69,26 @@ export function flatOdg(pages: readonly (readonly string[])[]): Buffer {
   );
 }
 
+const RECT_X_CM = 2;
+const RECT_Y_CM = 10;
+const RECT_WIDTH_CM = 8;
+const RECT_HEIGHT_CM = 5;
+
+/**
+ * Flat OpenDocument drawing with one page: a solid filled rectangle (colour `fillHex`) below one text box
+ * per line, so a renderer that only reads the text cannot reproduce the page.
+ */
+export function flatOdgWithRectangle(lines: readonly string[], fillHex: string): Buffer {
+  const rectangle =
+    `<draw:rect draw:style-name="gr1" svg:x="${RECT_X_CM}cm" svg:y="${RECT_Y_CM}cm" svg:width="${RECT_WIDTH_CM}cm" svg:height="${RECT_HEIGHT_CM}cm"/>`;
+  return Buffer.from(
+    `<?xml version="1.0" encoding="UTF-8"?><office:document ${NS_DECLARATIONS} office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.graphics">` +
+      `<office:automatic-styles><style:style style:name="gr1" style:family="graphic"><style:graphic-properties draw:fill="solid" draw:fill-color="${fillHex}" draw:stroke="none"/></style:style></office:automatic-styles>` +
+      `<office:body><office:drawing><draw:page draw:name="page1" draw:master-page-name="Default">${textFrames(lines)}${rectangle}</draw:page></office:drawing></office:body></office:document>`,
+    'utf-8'
+  );
+}
+
 /**
  * Converts `input` with the soffice CLI, using a throwaway profile. `filter` is the `--convert-to`
  * argument (for example `doc`, `rtf` or `txt:Text`); `outputExtension` is the extension of the result.

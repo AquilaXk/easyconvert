@@ -2795,7 +2795,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.graphics-template',
     category: 'document',
     description: 'OASIS OpenDocument XML-based vector drawing template.',
-    targetFormats: ['pdf', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'png', 'ps', 'psd', 'tiff', 'webp'],
+    targetFormats: ['pdf', 'jpg', 'png'],
   },
   odg: {
     id: 'odg',
@@ -2804,7 +2804,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.oasis.opendocument.graphics',
     category: 'document',
     description: 'OASIS standard vector drawing and graphics document format.',
-    targetFormats: ['pdf', 'bmp', 'jpg', 'png'],
+    targetFormats: ['pdf', 'jpg', 'png'],
   },
   pub: {
     id: 'pub',
@@ -3259,7 +3259,7 @@ export function isFormatCompatibleWithMagicBytes(
   // Format mapping groups
   const zipFormats = new Set([
     'zip', 'docx', 'xlsx', 'pptx', 'epub', 'odt', 'ods', 'odp', 'hwpx',
-    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar', 'key'
+    'dotx', 'xltx', 'potx', 'cbz', 'htmlz', 'txtz', 'jar', 'odg', 'odd', 'key'
   ]);
   const cfbfFormats = new Set(['doc', 'xls', 'ppt', 'hwp', 'cfbf']);
   const pdfFormats = new Set(['pdf', 'ai']);

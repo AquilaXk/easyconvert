@@ -27,6 +27,9 @@ import {
 const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'doc->jpg', 'doc->png', 'doc->rtf',
   'docx->doc', 'docx->jpg', 'docx->png', 'docx->rtf',
+  'key->pdf', 'key->pptx',
+  'odd->jpg', 'odd->pdf', 'odd->png',
+  'odg->jpg', 'odg->pdf', 'odg->png',
   'odp->jpg', 'odp->png', 'odp->ppt',
   'ods->jpg', 'ods->png',
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',

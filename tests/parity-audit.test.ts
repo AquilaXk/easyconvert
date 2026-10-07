@@ -18,6 +18,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'htm->doc', 'htm->jpg', 'htm->png', 'htm->rtf',
   'html->doc', 'html->jpg', 'html->png', 'html->rtf', 'html->tex',
   'md->doc', 'md->jpg', 'md->png', 'md->rst', 'md->rtf', 'md->tex',
+  'odg->bmp', 'odd->avif', 'odd->bmp', 'odd->eps', 'odd->gif', 'odd->ico', 'odd->odd', 'odd->ps', 'odd->psd', 'odd->tiff', 'odd->webp',
   'odt->azw3', 'odt->lrf', 'odt->mobi', 'odt->oeb', 'odt->pdb',
   'pages->doc', 'pages->docx', 'pages->epub', 'pages->jpg', 'pages->pdf', 'pages->png', 'pages->ppt', 'pages->txt',
   'pdb->rtf',

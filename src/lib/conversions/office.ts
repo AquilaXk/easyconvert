@@ -125,7 +125,7 @@ export async function convertOffice(
 
   // 12.3 ODG, ODD (OpenDocument Graphics / Drawing)
   if (['odg', 'odd'].includes(src)) {
-    return convertOpenDocumentGraphicSource(inputBuffer, src, tgt, options, baseName);
+    return convertOpenDocumentGraphicSource(inputBuffer, src, tgt);
   }
 
   // 12.4 AZW4, CBC, HTMLZ, TXTZ, PML, OEB (Ebooks)
@@ -9439,35 +9439,26 @@ async function convertGenericDocumentSource(
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
 }
 
-async function convertOpenDocumentGraphicSource(
-  inputBuffer: Buffer,
-  src: string,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  let content = '';
+const ODF_GRAPHICS_MIMETYPE_PREFIX = 'application/vnd.oasis.opendocument.graphics';
+
+/**
+ * OpenDocument Drawing (ODG) and drawing template (ODD) source. A drawing has no text target, and the
+ * in-process engine has no vector renderer: LibreOffice Draw renders every advertised target, so this
+ * validates the package (a malformed file is a typed 400 error) and then reports the missing engine
+ * with a typed 503 error. It never answers with the drawing's text under another format's name.
+ */
+async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+  let zip: JSZip;
   try {
-    const zip = await JSZip.loadAsync(inputBuffer);
-    const c = zip.file('content.xml');
-    if (c) content = await c.async('text');
+    zip = await JSZip.loadAsync(inputBuffer);
   } catch {
-    content = inputBuffer.toString('utf-8');
+    throw new ConversionFailedError(`The ${src.toUpperCase()} file is not a valid OpenDocument package.`);
   }
-
-  const plainText = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || `${baseName} drawing`;
-
-  if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  const mimetype = await zip.file('mimetype')?.async('text');
+  if (!mimetype?.startsWith(ODF_GRAPHICS_MIMETYPE_PREFIX) || !zip.file('content.xml')) {
+    throw new ConversionFailedError(`The ${src.toUpperCase()} file is not an OpenDocument drawing.`);
   }
-  if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'eps', 'ps', 'ico', 'psd'].includes(tgt)) {
-    const rendered = await renderTextToRaster(plainText, tgt, baseName);
-    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
-  }
-
-  const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.${tgt}`, size: pdfBuffer.length };
+  throw new EngineUnavailableError('soffice', `Rendering a drawing to ${tgt} requires LibreOffice Draw; the in-process engine has no drawing renderer.`);
 }
 
 async function convertGenericEbookSource(

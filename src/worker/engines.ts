@@ -1654,6 +1654,12 @@ export async function convertWithInProcessRawSensor(
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
 const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
+/**
+ * Sources LibreOffice reads and renders: the Office formats plus PowerPoint templates, Keynote
+ * presentations and OpenDocument drawings, none of which the in-process engine can render. Targets
+ * are still limited to OFFICE_FORMATS, because LibreOffice cannot write the other formats.
+ */
+const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([...OFFICE_FORMATS, 'potx', 'key', 'odg', 'odd']);
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
 const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
@@ -1871,7 +1877,7 @@ export async function executeWorkerConversion(
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isNativeTextPdf || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  if (isNativeTextPdf || isRecalculate || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
@@ -1923,7 +1929,7 @@ export async function executeWorkerConversion(
   }
 
   // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
-  if (OFFICE_FORMATS.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+  if (OFFICE_NATIVE_SOURCES.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
       intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);

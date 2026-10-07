@@ -166,7 +166,7 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res2.isEmbeddedPreview).toBe(true);
   });
 
-  it('converts document, ebook, and spreadsheet formats (hwp, azw4, et, odg) without disguised PDFs', async () => {
+  it('converts document, ebook, and spreadsheet formats (hwp, azw4, et) without disguised PDFs; a drawing is not rendered as text', async () => {
     const docData = Buffer.from('Hangul Word Processor text sample', 'utf-8');
 
     // hwp -> pdf
@@ -198,10 +198,9 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(resEtJpg.buffer[0]).toBe(0xff);
     expect(resEtJpg.buffer[1]).toBe(0xd8);
 
-    // odg -> bmp (must be REAL BMP image, not PDF!)
-    const resOdgBmp = await convertFile(docData, 'odg', 'bmp', {}, 'graphic.odg');
-    expect(resOdgBmp.filename).toBe('graphic.bmp');
-    expect(resOdgBmp.mimeType).toBe('image/bmp');
-    expect(resOdgBmp.buffer.subarray(0, 2).toString('ascii')).toBe('BM');
+    // odg -> bmp: only LibreOffice Draw can draw a drawing, and it is not offered a BMP writer, so the pair is not advertised
+    await expect(convertFile(docData, 'odg', 'bmp', {}, 'graphic.odg')).rejects.toThrow(
+      /Cannot convert from .+ \(\.odg\) to target format \.bmp/
+    );
   });
 });
