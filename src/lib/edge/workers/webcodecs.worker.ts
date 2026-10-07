@@ -14,6 +14,10 @@
  * 6. Zero-copy IPC using Transferable Objects (postMessage([buffer])).
  */
 
+import { demuxMp4 } from '../media/iso-bmff-demux';
+import type { DemuxedMediaSample, DemuxedTrackInfo } from '../media/media-types';
+import { pcmBlockToAudioData } from '../media/pcm-audio';
+import { demuxWav } from '../media/wav-demux';
 import { EdgeUnsupportedError, serializeWorkerError, type SerializedWorkerError } from './worker-errors';
 
 /** Target bitrates used when the request does not name one; they are an encoder choice, not stream metadata. */
@@ -73,26 +77,7 @@ export type WebCodecsWorkerMessage =
   | WebCodecsWorkerCompleted
   | WebCodecsWorkerError;
 
-export interface DemuxedMediaSample {
-  data: Uint8Array;
-  timestampMicros: number;
-  durationMicros?: number;
-  isKeyFrame: boolean;
-  type: 'video' | 'audio';
-}
-
-export interface DemuxedTrackInfo {
-  type: 'video' | 'audio';
-  codec: string;
-  timescale: number;
-  width?: number;
-  height?: number;
-  sampleRate?: number;
-  channels?: number;
-  description?: Uint8Array;
-  samples: DemuxedMediaSample[];
-  audioTrack?: DemuxedTrackInfo;
-}
+export type { DemuxedMediaSample, DemuxedTrackInfo } from '../media/media-types';
 
 /**
  * Normalizes an arbitrary container/stream PTS with a given timescale to microseconds.
@@ -232,527 +217,11 @@ export function resolveWebCodecsConfig(targetFormat: string, userCodec?: string)
   }
 }
 
-function readFourCC(view: DataView, offset: number): string {
-  return String.fromCodePoint(
-    view.getUint8(offset),
-    view.getUint8(offset + 1),
-    view.getUint8(offset + 2),
-    view.getUint8(offset + 3)
-  );
-}
+export { demuxMp4 } from '../media/iso-bmff-demux';
+export { demuxWav } from '../media/wav-demux';
 
-interface StblResult {
-  codec?: string;
-  width?: number;
-  height?: number;
-  sampleRate?: number;
-  channels?: number;
-  description?: Uint8Array;
-  stts: Array<{ count: number; delta: number }>;
-  sampleSizes: number[];
-  stsc: Array<{ firstChunk: number; samplesPerChunk: number; sampleDescIndex: number }>;
-  chunkOffsets: number[];
-  syncSamples?: Set<number>;
-}
-
-function parseStts(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
-  if (payloadOffset + 8 > maxOffset) return;
-  const rawEntryCount = view.getUint32(payloadOffset + 4);
-  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 8));
-  for (let i = 0; i < maxEntries; i++) {
-    const eOff = payloadOffset + 8 + i * 8;
-    res.stts.push({ count: view.getUint32(eOff), delta: view.getUint32(eOff + 4) });
-  }
-}
-
-function parseStsz(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
-  if (payloadOffset + 12 > maxOffset) return;
-  const uniformSize = view.getUint32(payloadOffset + 4);
-  const rawSampleCount = view.getUint32(payloadOffset + 8);
-  if (uniformSize > 0) {
-    const maxSamples = Math.min(rawSampleCount, 500_000);
-    for (let i = 0; i < maxSamples; i++) {
-      res.sampleSizes.push(uniformSize);
-    }
-  } else {
-    const maxSamples = Math.min(rawSampleCount, Math.floor((maxOffset - (payloadOffset + 12)) / 4));
-    for (let i = 0; i < maxSamples; i++) {
-      const eOff = payloadOffset + 12 + i * 4;
-      res.sampleSizes.push(view.getUint32(eOff));
-    }
-  }
-}
-
-function parseStsc(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
-  if (payloadOffset + 8 > maxOffset) return;
-  const rawEntryCount = view.getUint32(payloadOffset + 4);
-  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 12));
-  for (let i = 0; i < maxEntries; i++) {
-    const eOff = payloadOffset + 8 + i * 12;
-    res.stsc.push({
-      firstChunk: view.getUint32(eOff),
-      samplesPerChunk: view.getUint32(eOff + 4),
-      sampleDescIndex: view.getUint32(eOff + 8),
-    });
-  }
-}
-
-function parseStco(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult, is64: boolean): void {
-  if (payloadOffset + 8 > maxOffset) return;
-  const rawEntryCount = view.getUint32(payloadOffset + 4);
-  const step = is64 ? 8 : 4;
-  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / step));
-  for (let i = 0; i < maxEntries; i++) {
-    const eOff = payloadOffset + 8 + i * step;
-    const off = is64 ? Number(view.getBigUint64(eOff)) : view.getUint32(eOff);
-    res.chunkOffsets.push(off);
-  }
-}
-
-function parseStss(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
-  if (payloadOffset + 8 > maxOffset) return;
-  const rawEntryCount = view.getUint32(payloadOffset + 4);
-  const maxEntries = Math.min(rawEntryCount, Math.floor((maxOffset - (payloadOffset + 8)) / 4));
-  res.syncSamples = new Set<number>();
-  for (let i = 0; i < maxEntries; i++) {
-    const eOff = payloadOffset + 8 + i * 4;
-    res.syncSamples.add(view.getUint32(eOff));
-  }
-}
-
-function parseStsd(view: DataView, payloadOffset: number, maxOffset: number, res: StblResult): void {
-  if (payloadOffset + 16 > maxOffset) return;
-  const entryCount = view.getUint32(payloadOffset + 4);
-  const entryCur = payloadOffset + 8;
-  if (entryCount === 0 || entryCur + 8 > maxOffset) return;
-
-  const entrySize = view.getUint32(entryCur);
-  const entryCodec = readFourCC(view, entryCur + 4);
-  res.codec = entryCodec;
-
-  if (['avc1', 'hvc1', 'hev1', 'vp09', 'av01'].includes(entryCodec) && entryCur + 36 <= maxOffset) {
-    const w = view.getUint16(entryCur + 32);
-    const h = view.getUint16(entryCur + 34);
-    if (w > 0) res.width = w;
-    if (h > 0) res.height = h;
-
-    let subCur = entryCur + 86;
-    const subEnd = Math.min(maxOffset, entryCur + entrySize);
-    while (subCur + 8 <= subEnd) {
-      const subSize = view.getUint32(subCur);
-      const subType = readFourCC(view, subCur + 4);
-      if (subType === 'avcC' && subSize >= 8 && subCur + subSize <= subEnd) {
-        const descBuf = new Uint8Array(subSize - 8);
-        for (let d = 0; d < subSize - 8; d++) {
-          descBuf[d] = view.getUint8(subCur + 8 + d);
-        }
-        res.description = descBuf;
-        // ISO/IEC 14496-15 5.4.2.1: profile_idc, constraint flags and level_idc follow the version byte
-        if (descBuf.length >= 4) {
-          res.codec = `${entryCodec}.${[1, 2, 3].map((i) => descBuf[i].toString(16).padStart(2, '0')).join('')}`;
-        }
-        break;
-      }
-      subCur += subSize > 0 ? subSize : 8;
-    }
-  } else if (['mp4a', 'opus', 'alac'].includes(entryCodec) && entryCur + 36 <= maxOffset) {
-    res.channels = view.getUint16(entryCur + 24);
-    res.sampleRate = view.getUint32(entryCur + 32) >>> 16;
-  }
-}
-
-function parseStbl(view: DataView, offset: number, size: number, totalLen: number): StblResult {
-  const result: StblResult = {
-    stts: [],
-    sampleSizes: [],
-    stsc: [],
-    chunkOffsets: [],
-  };
-
-  const stblEnd = Math.min(totalLen, offset + size);
-  let cur = offset + 8;
-
-  while (cur + 8 <= stblEnd) {
-    const boxSize = view.getUint32(cur);
-    const boxType = readFourCC(view, cur + 4);
-    let actualSize = boxSize;
-    if (boxSize === 1 && cur + 16 <= stblEnd) {
-      actualSize = Number(view.getBigUint64(cur + 8));
-    } else if (boxSize === 0) {
-      actualSize = stblEnd - cur;
-    }
-
-    if (actualSize < 8 || cur + actualSize > stblEnd) {
-      break;
-    }
-
-    const payloadOffset = cur + (boxSize === 1 ? 16 : 8);
-    const maxOffset = cur + actualSize;
-
-    switch (boxType) {
-      case 'stts':
-        parseStts(view, payloadOffset, maxOffset, result);
-        break;
-      case 'stsz':
-        parseStsz(view, payloadOffset, maxOffset, result);
-        break;
-      case 'stsc':
-        parseStsc(view, payloadOffset, maxOffset, result);
-        break;
-      case 'stco':
-        parseStco(view, payloadOffset, maxOffset, result, false);
-        break;
-      case 'co64':
-        parseStco(view, payloadOffset, maxOffset, result, true);
-        break;
-      case 'stss':
-        parseStss(view, payloadOffset, maxOffset, result);
-        break;
-      case 'stsd':
-        parseStsd(view, payloadOffset, maxOffset, result);
-        break;
-      default:
-        break;
-    }
-
-    cur += actualSize > 0 ? actualSize : 8;
-  }
-
-  return result;
-}
-
-function computeSampleTimestamps(
-  stts: Array<{ count: number; delta: number }>,
-  sampleCount: number
-): { samplePts: number[]; sampleDur: number[] } {
-  const samplePts: number[] = new Array(sampleCount);
-  const sampleDur: number[] = new Array(sampleCount);
-
-  let currentPts = 0;
-  let sIdx = 0;
-  for (const entry of stts) {
-    for (let k = 0; k < entry.count && sIdx < sampleCount; k++) {
-      samplePts[sIdx] = currentPts;
-      sampleDur[sIdx] = entry.delta;
-      currentPts += entry.delta;
-      sIdx++;
-    }
-  }
-  const lastDelta = stts.length > 0 ? (stts.at(-1)?.delta ?? 1000) : 1000;
-  while (sIdx < sampleCount) {
-    samplePts[sIdx] = currentPts;
-    sampleDur[sIdx] = lastDelta;
-    currentPts += lastDelta;
-    sIdx++;
-  }
-  return { samplePts, sampleDur };
-}
-
-function reconstructSamples(
-  buffer: ArrayBuffer,
-  stbl: StblResult,
-  timescale: number,
-  isVideo: boolean
-): DemuxedMediaSample[] {
-  const { chunkOffsets, stsc, sampleSizes, stts, syncSamples } = stbl;
-  if (!chunkOffsets.length || !sampleSizes.length || !stsc.length) {
-    return [];
-  }
-
-  const sampleCount = sampleSizes.length;
-  const { samplePts, sampleDur } = computeSampleTimestamps(stts, sampleCount);
-
-  const samples: DemuxedMediaSample[] = [];
-  let globalSampleIdx = 0;
-  let stscIdx = 0;
-
-  for (let chunkIdx = 0; chunkIdx < chunkOffsets.length && globalSampleIdx < sampleCount; chunkIdx++) {
-    const chunkNumber = chunkIdx + 1;
-
-    while (stscIdx + 1 < stsc.length && stsc[stscIdx + 1].firstChunk <= chunkNumber) {
-      stscIdx++;
-    }
-
-    const samplesInThisChunk = stsc[stscIdx].samplesPerChunk;
-    let currentSampleOffset = chunkOffsets[chunkIdx];
-
-    for (let s = 0; s < samplesInThisChunk && globalSampleIdx < sampleCount; s++) {
-      const size = sampleSizes[globalSampleIdx];
-      if (currentSampleOffset + size <= buffer.byteLength && currentSampleOffset >= 0) {
-        const sampleData = new Uint8Array(buffer, currentSampleOffset, size);
-        const pts = samplePts[globalSampleIdx] ?? 0;
-        const dur = sampleDur[globalSampleIdx] ?? 0;
-
-        let isKeyFrame = true;
-        if (syncSamples) {
-          isKeyFrame = syncSamples.has(globalSampleIdx + 1);
-        } else if (isVideo) {
-          isKeyFrame = globalSampleIdx === 0;
-        }
-
-        samples.push({
-          data: sampleData,
-          timestampMicros: normalizeTimestampToMicros(pts, timescale),
-          durationMicros: normalizeTimestampToMicros(dur, timescale),
-          isKeyFrame,
-          type: isVideo ? 'video' : 'audio',
-        });
-      }
-      currentSampleOffset += size;
-      globalSampleIdx++;
-    }
-  }
-
-  return samples;
-}
-
-/**
- * Demuxes an MP4/ISOBMFF container extracting tracks, timescale, and samples.
- */
-export function demuxMp4(buffer: ArrayBuffer): DemuxedTrackInfo | null {
-  const view = new DataView(buffer);
-  const totalLen = buffer.byteLength;
-  if (totalLen < 8) return null;
-
-  let offset = 0;
-  const tracks: Array<{
-    type: 'video' | 'audio';
-    codec: string;
-    timescale: number;
-    width?: number;
-    height?: number;
-    sampleRate?: number;
-    channels?: number;
-    description?: Uint8Array;
-    samples: DemuxedMediaSample[];
-  }> = [];
-
-  // Parse top-level boxes
-
-  while (offset + 8 <= totalLen) {
-    const boxSize = view.getUint32(offset);
-    const boxType = readFourCC(view, offset + 4);
-
-    let actualSize = boxSize;
-    if (boxSize === 1 && offset + 16 <= totalLen) {
-      actualSize = Number(view.getBigUint64(offset + 8));
-    } else if (boxSize === 0) {
-      actualSize = totalLen - offset;
-    }
-
-    if (actualSize < 8 || offset + actualSize > totalLen) {
-      break;
-    }
-
-    if (boxType === 'moov') {
-      let moovOffset = offset + (boxSize === 1 ? 16 : 8);
-      const moovEnd = offset + actualSize;
-
-      while (moovOffset + 8 <= moovEnd) {
-        const subSize = view.getUint32(moovOffset);
-        const subType = readFourCC(view, moovOffset + 4);
-        const subActual = subSize === 0 ? moovEnd - moovOffset : subSize;
-
-        if (subType === 'trak') {
-          const trakEnd = moovOffset + subActual;
-          let trakCur = moovOffset + 8;
-          let trakW = 0;
-          let trakH = 0;
-          let trakTimescale = 0;
-          let trakIsVideo = true;
-          let trakCodec = '';
-          let trakSampleRate: number | undefined;
-          let trakChannels: number | undefined;
-          let trakDescription: Uint8Array | undefined;
-          const trakSamples: DemuxedMediaSample[] = [];
-
-          while (trakCur + 8 <= trakEnd) {
-            const tSize = view.getUint32(trakCur);
-            const tType = readFourCC(view, trakCur + 4);
-            if (tType === 'tkhd' && tSize >= 84 && trakCur + tSize <= trakEnd) {
-              const tkhdVersion = view.getUint8(trakCur + 8);
-              const wOffset = tkhdVersion === 0 ? trakCur + 76 : trakCur + 88;
-              const hOffset = tkhdVersion === 0 ? trakCur + 80 : trakCur + 92;
-              if (hOffset + 4 <= trakCur + tSize && hOffset + 4 <= trakEnd) {
-                const w = view.getUint32(wOffset) >> 16;
-                const h = view.getUint32(hOffset) >> 16;
-                if (w > 0 && h > 0) {
-                  trakW = w;
-                  trakH = h;
-                }
-              }
-            } else if (tType === 'mdia') {
-              const mdiaEnd = Math.min(trakEnd, trakCur + Math.max(8, tSize));
-              let mdiaCur = trakCur + 8;
-              while (mdiaCur + 8 <= mdiaEnd) {
-                const mSize = view.getUint32(mdiaCur);
-                const mType = readFourCC(view, mdiaCur + 4);
-                if (mType === 'mdhd' && mdiaCur + 28 <= mdiaEnd) {
-                  const version = view.getUint8(mdiaCur + 8);
-                  const trackTs = version === 0 ? view.getUint32(mdiaCur + 20) : view.getUint32(mdiaCur + 28);
-                  if (trackTs > 0) trakTimescale = trackTs;
-                } else if (mType === 'hdlr' && mdiaCur + 20 <= mdiaEnd) {
-                  const handler = readFourCC(view, mdiaCur + 16);
-                  if (handler === 'soun') {
-                    trakIsVideo = false;
-                  } else if (handler === 'vide') {
-                    trakIsVideo = true;
-                  }
-                } else if (mType === 'minf') {
-                  const minfEnd = Math.min(mdiaEnd, mdiaCur + Math.max(8, mSize));
-                  let minfCur = mdiaCur + 8;
-                  while (minfCur + 8 <= minfEnd) {
-                    const miSize = view.getUint32(minfCur);
-                    const miType = readFourCC(view, minfCur + 4);
-                    if (miType === 'stbl') {
-                      const stblData = parseStbl(view, minfCur, miSize, minfEnd);
-                      if (stblData.codec) trakCodec = stblData.codec;
-                      if (stblData.width) trakW = stblData.width;
-                      if (stblData.height) trakH = stblData.height;
-                      if (stblData.sampleRate) trakSampleRate = stblData.sampleRate;
-                      if (stblData.channels) trakChannels = stblData.channels;
-                      if (stblData.description) trakDescription = stblData.description;
-
-                      const extracted = reconstructSamples(buffer, stblData, trakTimescale, trakIsVideo);
-                      if (extracted.length > 0) {
-                        trakSamples.push(...extracted);
-                      }
-                    }
-                    minfCur += miSize >= 8 ? miSize : 8;
-                  }
-                }
-                mdiaCur += mSize >= 8 ? mSize : 8;
-              }
-            }
-            trakCur += tSize >= 8 ? tSize : 8;
-          }
-
-          if (trakCodec === '' || trakTimescale <= 0) {
-            moovOffset += subActual > 0 ? subActual : 8;
-            continue;
-          }
-
-          tracks.push({
-            type: trakIsVideo ? 'video' : 'audio',
-            codec: trakCodec,
-            timescale: trakTimescale,
-            width: trakW > 0 ? trakW : undefined,
-            height: trakH > 0 ? trakH : undefined,
-            sampleRate: trakSampleRate,
-            channels: trakChannels,
-            description: trakDescription,
-            samples: trakSamples,
-          });
-        }
-        moovOffset += subActual > 0 ? subActual : 8;
-      }
-    }
-
-    offset += actualSize;
-  }
-
-  // Resolve tracks
-  const videoTrack = tracks.find((t) => t.type === 'video' && t.samples.length > 0);
-  const audioTrack = tracks.find((t) => t.type === 'audio' && t.samples.length > 0);
-
-  if (videoTrack) {
-    let attachedAudio: DemuxedTrackInfo | undefined;
-    if (audioTrack) {
-      attachedAudio = {
-        type: 'audio',
-        codec: audioTrack.codec,
-        timescale: audioTrack.timescale,
-        sampleRate: audioTrack.sampleRate,
-        channels: audioTrack.channels,
-        description: audioTrack.description,
-        samples: audioTrack.samples,
-      };
-    }
-    return {
-      type: 'video',
-      codec: videoTrack.codec,
-      timescale: videoTrack.timescale,
-      width: videoTrack.width,
-      height: videoTrack.height,
-      sampleRate: audioTrack?.sampleRate,
-      channels: audioTrack?.channels,
-      description: videoTrack.description,
-      samples: videoTrack.samples,
-      audioTrack: attachedAudio,
-    };
-  }
-
-  if (audioTrack) {
-    return {
-      type: 'audio',
-      codec: audioTrack.codec,
-      timescale: audioTrack.timescale,
-      sampleRate: audioTrack.sampleRate,
-      channels: audioTrack.channels,
-      description: audioTrack.description,
-      samples: audioTrack.samples,
-    };
-  }
-
-  return null;
-}
-
-/** Canonical RIFF/WAVE header of a 16-bit PCM file: 'fmt ' directly after the RIFF header, 'data' after it. */
-const WAV_CANONICAL_HEADER_BYTES = 44;
-const WAV_FMT_PCM = 1;
-const WAV_BITS_16 = 16;
-const WAV_FRAME_CHUNK_TARGET_MS = 20;
-const MS_PER_SECOND = 1000;
-
-/**
- * Demuxes a canonical 16-bit PCM WAV container into an audio track; any other WAV layout is not understood.
- */
-export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo | null {
-  const bytes = new Uint8Array(buffer);
-  if (bytes.length < WAV_CANONICAL_HEADER_BYTES) return null;
-  const view = new DataView(buffer);
-  const isCanonical =
-    view.getUint32(0, false) === 0x52494646 && // 'RIFF'
-    view.getUint32(8, false) === 0x57415645 && // 'WAVE'
-    view.getUint32(12, false) === 0x666d7420 && // 'fmt '
-    view.getUint32(16, true) === 16 &&
-    view.getUint16(20, true) === WAV_FMT_PCM &&
-    view.getUint16(34, true) === WAV_BITS_16 &&
-    view.getUint32(36, false) === 0x64617461; // 'data'
-  if (!isCanonical) return null;
-
-  const channels = view.getUint16(22, true);
-  const sampleRate = view.getUint32(24, true);
-  const dataLen = view.getUint32(40, true);
-  if (channels === 0 || sampleRate === 0) return null;
-
-  const bytesPerFrame = channels * (WAV_BITS_16 / 8);
-  const usableBytes = Math.min(dataLen, bytes.length - WAV_CANONICAL_HEADER_BYTES);
-  const framesPerChunk = Math.max(1, Math.floor((sampleRate * WAV_FRAME_CHUNK_TARGET_MS) / MS_PER_SECOND));
-  const totalFrames = Math.floor(usableBytes / bytesPerFrame);
-
-  const samples: DemuxedMediaSample[] = [];
-  for (let frame = 0; frame < totalFrames; frame += framesPerChunk) {
-    const frames = Math.min(framesPerChunk, totalFrames - frame);
-    const start = WAV_CANONICAL_HEADER_BYTES + frame * bytesPerFrame;
-    samples.push({
-      data: bytes.slice(start, start + frames * bytesPerFrame),
-      timestampMicros: Math.round((frame * MICROS_PER_SECOND) / sampleRate),
-      durationMicros: Math.round((frames * MICROS_PER_SECOND) / sampleRate),
-      isKeyFrame: true,
-      type: 'audio',
-    });
-  }
-
-  return {
-    type: 'audio',
-    codec: 'pcm-s16',
-    timescale: sampleRate,
-    sampleRate,
-    channels,
-    samples,
-  };
-}
+/** Containers read as ISO base media files: MP4 and its QuickTime, iTunes video and audio relatives. */
+const ISO_BMFF_FORMATS: ReadonlySet<string> = new Set(['mp4', 'm4v', 'mov', 'm4a']);
 
 /**
  * Container demuxer for the formats the edge worker reads. Any other container (AVI, MKV, WebM, ...) is
@@ -760,18 +229,9 @@ export function demuxWav(buffer: ArrayBuffer): DemuxedTrackInfo | null {
  */
 export function demuxMedia(buffer: ArrayBuffer, format: string): DemuxedTrackInfo {
   const fmt = format.toLowerCase();
-  let track: DemuxedTrackInfo | null = null;
-  if (fmt === 'mp4' || fmt === 'm4v' || fmt === 'mov') {
-    track = demuxMp4(buffer);
-  } else if (fmt === 'wav') {
-    track = demuxWav(buffer);
-  } else {
-    throw new EdgeUnsupportedError(`The edge WebCodecs worker has no demuxer for ${fmt || 'unknown'} input.`);
-  }
-  if (!track || track.samples.length === 0) {
-    throw new EdgeUnsupportedError(`The edge WebCodecs worker could not read any media samples from the ${fmt} input.`);
-  }
-  return track;
+  if (ISO_BMFF_FORMATS.has(fmt)) return demuxMp4(buffer);
+  if (fmt === 'wav') return demuxWav(buffer);
+  throw new EdgeUnsupportedError(`The edge WebCodecs worker has no demuxer for ${fmt || 'unknown'} input.`);
 }
 
 /**
@@ -2010,9 +1470,8 @@ export function muxOggOpus(
   return result;
 }
 
-/** Demuxer codec label of 16-bit little-endian PCM, which WebCodecs takes as `AudioData` format `s16`. */
-const PCM_S16_CODEC = 'pcm-s16';
-const BYTES_PER_S16_SAMPLE = 2;
+/** Demuxer codec labels of PCM audio start with this; every other label names a compressed codec. */
+const PCM_CODEC_PREFIX = 'pcm-';
 
 /**
  * Encodes the demuxed audio samples with WebCodecs AudioEncoder.
@@ -2040,7 +1499,7 @@ async function encodeAudioHardware(
   if (demuxedTrack.type !== 'audio' || demuxedTrack.samples.length === 0) {
     throw new EdgeUnsupportedError('The input has no audio track the edge worker can encode.');
   }
-  if (demuxedTrack.codec !== PCM_S16_CODEC) {
+  if (!demuxedTrack.codec.startsWith(PCM_CODEC_PREFIX)) {
     throw new EdgeUnsupportedError(
       `The edge worker cannot decode "${demuxedTrack.codec}" audio, so the server engine converts it.`
     );
@@ -2080,24 +1539,17 @@ async function encodeAudioHardware(
       await flowController.checkBackpressure(audioEncoder.encodeQueueSize);
 
       const sample = demuxedTrack.samples[i];
-      const frameCount = Math.floor(sample.data.byteLength / (BYTES_PER_S16_SAMPLE * channels));
-      if (frameCount === 0) {
-        throw new EdgeUnsupportedError('The PCM audio holds a sample shorter than one frame.');
-      }
-
-      // A copy keeps the Int16Array aligned however the demuxed slice sits in its buffer.
-      const pcm = new Int16Array(frameCount * channels);
-      new Uint8Array(pcm.buffer).set(sample.data.subarray(0, pcm.byteLength));
+      const pcm = pcmBlockToAudioData(demuxedTrack.codec, sample.data, channels);
 
       let audioData: any = null;
       try {
         audioData = new AudioDataClass({
-          format: 's16',
+          format: pcm.format,
           sampleRate,
-          numberOfFrames: frameCount,
+          numberOfFrames: pcm.frames,
           numberOfChannels: channels,
           timestamp: sample.timestampMicros,
-          data: pcm,
+          data: pcm.data,
         });
         audioEncoder.encode(audioData);
       } finally {

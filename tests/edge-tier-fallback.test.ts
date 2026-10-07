@@ -139,7 +139,7 @@ describe('router fallback to the server tier for what the edge cannot convert (i
       expect(edgeProcessed).toBe(false);
       expect(tierName).toBe(SERVER_TIER_NAME);
       expect(fallback.fallbackFrom).toBe('L1');
-      expect(fallback.escalationReason).toContain('could not read any media samples');
+      expect(fallback.escalationReason).toMatch(/^MP4: .*overruns its parent/s);
     });
 
     it('does not hand the input back or invent a result URL when no server tier may run', async () => {
@@ -153,7 +153,7 @@ describe('router fallback to the server tier for what the edge cannot convert (i
       expect(executeServerlessCloudFallback).not.toHaveBeenCalled();
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError.mock.calls[0][0]).toContain('Edge tier L1 failed');
-      expect(onError.mock.calls[0][0]).toContain('could not read any media samples');
+      expect(onError.mock.calls[0][0]).toMatch(/Edge tier L1 failed: MP4: .*overruns its parent/s);
     });
 
     it('raises no result from tryProcessClientEdge for the unreadable file', async () => {

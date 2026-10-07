@@ -403,7 +403,7 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       mp4Buf.set(moov, ftyp.byteLength);
       mp4Buf.set(mdat, ftyp.byteLength + moov.byteLength);
 
-      expect(demuxMp4(mp4Buf.buffer)).toBeNull();
+      expect(() => demuxMp4(mp4Buf.buffer)).toThrow(/no video or audio track/);
       expect(() => demuxMedia(mp4Buf.buffer, 'mp4')).toThrow(EdgeUnsupportedError);
     });
 

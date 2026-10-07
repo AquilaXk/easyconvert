@@ -4,6 +4,7 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { extractZipArchive } from '../src/lib/conversions/archive';
 import { triangulatePolygonEarcut, Point3D } from '../src/lib/conversions/cad-nurbs';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
+import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { performOcr } from '../src/lib/conversions/ocr';
 import sharp from 'sharp';
 import fs from 'node:fs';
@@ -90,7 +91,8 @@ describe('Skeptical Audit & Robustness Verification', () => {
     buf.write('tkhd', 20, 'ascii');
 
     const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    expect(() => demuxMp4(arrayBuf)).not.toThrow();
+    // A typed refusal, never a RangeError from reading past the box
+    expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
   });
 
   // Confidence calibration is tracked separately; this asserts what was recognized.

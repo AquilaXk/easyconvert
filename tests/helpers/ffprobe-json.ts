@@ -37,6 +37,8 @@ export interface FfprobePacket {
   duration_time?: string;
   size: string;
   flags: string;
+  /** `CRC32:xxxxxxxx` of the packet bytes, present when the probe ran with `-show_data_hash crc32`. */
+  data_hash?: string;
 }
 
 export interface FfprobeReport {
@@ -61,7 +63,7 @@ export function ffprobeReport(bytes: Uint8Array, extension: string): FfprobeRepo
     writeFileSync(file, bytes);
     const out = execFileSync(
       requireFfprobe(),
-      ['-v', 'error', '-show_streams', '-show_packets', '-show_format', '-of', 'json', file],
+      ['-v', 'error', '-show_streams', '-show_packets', '-show_data_hash', 'crc32', '-show_format', '-of', 'json', file],
       { encoding: 'utf8', maxBuffer: MAX_PROBE_OUTPUT_BYTES }
     );
     const parsed = JSON.parse(out) as Partial<FfprobeReport>;

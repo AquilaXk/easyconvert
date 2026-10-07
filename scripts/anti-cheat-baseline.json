@@ -722,13 +722,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/skeptical-audit.test.ts",
-    "symbol": "safely handles corrupted tkhd box with small tSize in demuxMp4",
-    "reason": "Test block \"safely handles corrupted tkhd box with small tSize in demuxMp4\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/skeptical-break.test.ts",
     "symbol": "2. binary STL must be parsed accurately into real vertices, not dummy cube",
     "reason": "Test block \"2. binary STL must be parsed accurately into real vertices, not dummy cube\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
