@@ -181,7 +181,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(wavStream.codec_name).toBe('pcm_s16le');
       expect(Number(wavStream.channels)).toBe(2);
 
-      const aacConv = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'test-audio');
+      const aacConv = await convertMedia(wav, 'wav', 'aac', {}, 'test-audio');
       const aacStream = probeStream(aacConv.buffer, 'aac', 'a');
       expect(aacStream.codec_name).toBe('aac');
       expect(Number(aacStream.sample_rate)).toBe(44100);
@@ -222,7 +222,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
           wav,
           'wav',
           target,
-          { allowPureLossyBitstream: true, disableNativeEngine: true },
+          { disableNativeEngine: true },
           'test.wav'
         ).catch((err: unknown) => err);
         expect(error).toBeInstanceOf(EngineUnavailableError);

@@ -730,10 +730,6 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Bypass native system engine binaries.',
     },
-    allowPureLossyBitstream: {
-      type: 'boolean',
-      description: 'Permit pure software fallback when bitstream transcoding.',
-    },
 
     // Office & PDF export options
     pdfStandard: {
