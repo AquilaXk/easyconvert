@@ -3,6 +3,8 @@ import { parseCgmToSvg } from '../src/lib/conversions/vector-cad';
 
 const TIME_BOUND_MS = 1000;
 const REPS = 30_000;
+/** A CGM states its canvas size; one without a VDC extent is refused. */
+const EXTENT = 'VDCEXT (0,0) (100,100); ';
 
 function elapsedMs(fn: () => void): number {
   const start = performance.now();
@@ -12,18 +14,19 @@ function elapsedMs(fn: () => void): number {
 
 describe('CGM clear-text parsing stays linear on adversarial input', () => {
   it('handles repeated POLYGON keywords without a terminator quickly', () => {
-    const cgm = `BEGMF ${'POLYGON '.repeat(REPS)}`;
+    const cgm = `BEGMF ${EXTENT}${'POLYGON '.repeat(REPS)}`;
     expect(elapsedMs(() => parseCgmToSvg(cgm))).toBeLessThan(TIME_BOUND_MS);
   });
 
   it('handles repeated TEXT heads without a quoted string quickly', () => {
-    const cgm = `BEGMF ${'TEXT (1,1)'.repeat(REPS)}`;
+    const cgm = `BEGMF ${EXTENT}${'TEXT (1,1)'.repeat(REPS)}`;
     expect(elapsedMs(() => parseCgmToSvg(cgm))).toBeLessThan(TIME_BOUND_MS);
   });
 
   it('still extracts polygons, polylines and text from well-formed input', () => {
     const cgm = [
       'BEGMF "x";',
+      'VDCEXT (0,0) (100,100);',
       'POLYGON (1,1) (5,1) (3,4);',
       'POLYLINE\n  (0,0) (9,9);',
       'POLYGON (1,1) (2,2);',

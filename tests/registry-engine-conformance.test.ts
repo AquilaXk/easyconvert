@@ -24,6 +24,10 @@ import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
+import { buildWordBinary } from './helpers/word-binary-builder';
+import { buildMobiFromBytes } from './helpers/mobi-builder';
+import { buildAzw4, textPdf } from './helpers/print-replica-builder';
+import { buildPptBinary } from './helpers/ppt-binary-builder';
 
 /**
  * Registry/engine conformance gate.
@@ -80,9 +84,32 @@ const PROBE_TIMEOUT_MS = 20_000;
 /** Decoding a 39-megapixel RAW sensor and encoding it (AVIF, GIF, PDF) takes far longer than a probe seed. */
 const RAW_PROBE_TIMEOUT_MS = 180_000;
 const RATCHET_TIMEOUT_MS = 1_800_000;
+/** Upper bound on concurrent probes, whatever the machine offers. */
+const MAX_PROBE_CONCURRENCY = 4;
 const CATEGORY_TIMEOUT_MS = 600_000;
 /** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
 const RAW_SOURCE_TIMEOUT_MS = 900_000;
+
+/**
+ * CONFORMANCE_PART=i/n runs part i of n: every registry pair belongs to exactly one part (by a stable hash
+ * of `source->target`), and the checks that cover the whole registry run in part 1. CI runs the parts in
+ * parallel jobs; unset, the single part 1/1 runs everything.
+ */
+const CONFORMANCE_PART_PATTERN = /^([1-9]\d*)\/([1-9]\d*)$/;
+const [PART_INDEX, PART_COUNT] = ((): [number, number] => {
+  const raw = process.env.CONFORMANCE_PART ?? '1/1';
+  const match = CONFORMANCE_PART_PATTERN.exec(raw);
+  const index = match ? Number(match[1]) : 0;
+  const count = match ? Number(match[2]) : 0;
+  if (!match || index > count) throw new Error(`CONFORMANCE_PART must be i/n with 1 <= i <= n, got "${raw}"`);
+  return [index, count];
+})();
+const IS_FIRST_PART = PART_INDEX === 1;
+
+/** Whether a `source->target` key belongs to this part. */
+function inPart(key: string): boolean {
+  return createHash('sha256').update(key).digest().readUInt32BE(0) % PART_COUNT === PART_INDEX - 1;
+}
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
 // Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
@@ -231,11 +258,38 @@ const OBJ_TEXT = Buffer.from(
   'utf-8'
 );
 
+/** The golden presentation with the content type of its main part switched to the template type. */
+async function buildProbePotx(): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(readFileSync(path.join(FIXTURE_ROOT, 'golden', 'office', 'drawingml-shapes-presentation.pptx')));
+  const types = await zip.file('[Content_Types].xml')!.async('string');
+  zip.file('[Content_Types].xml', types.replace('presentationml.presentation.main+xml', 'presentationml.template.main+xml'));
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
   zip.file('page-001.png', PNG_SEED);
   zip.file('page-002.png', PNG_SEED);
   return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+const FB2_PROBE =
+  '<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info><book-title>Probe</book-title></title-info></description>' +
+  '<body><section><title><p>Probe heading</p></title><p>First probe paragraph.</p><p>Second probe paragraph.</p></section></body></FictionBook>';
+
+async function buildProbeZip(name: string, content: string): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file(name, content);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+async function buildProbeCbc(): Promise<Buffer> {
+  const volume = new JSZip();
+  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  const collection = new JSZip();
+  collection.file('comics.txt', 'volume.cbz:Probe volume\n');
+  collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
+  return collection.generateAsync({ type: 'nodebuffer' });
 }
 
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
@@ -252,6 +306,23 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
+  // a MOBI whose text record holds HTML, a Print Replica book around a pdf-lib PDF, a collection of one comic
+  // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
+  // XML, and the HTMLZ and TXTZ ZIP wrappers.
+  azw: () => buildMobiFromBytes(Buffer.from('<html><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>', 'utf-8'), { compress: false }),
+  azw4: async () => buildAzw4([await textPdf(['Probe heading', 'First probe paragraph'])]),
+  cbc: buildProbeCbc,
+  fb2: () => Buffer.from(FB2_PROBE, 'utf-8'),
+  htmlz: () => buildProbeZip('index.html', '<html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>'),
+  txtz: () => buildProbeZip('index.txt', 'Probe heading\n\nFirst probe paragraph.\n'),
+  // Legacy Office sources are read through their own record structure, so the probes are hand-written
+  // documents from tests/helpers (a Word piece table and a PowerPoint record tree), not plain text.
+  doc: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
+  ppt: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
+  // A template is a presentation package whose main part has the template content type.
+  potx: buildProbePotx,
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
   bz: () => requireDerived('tar.bz2'),
   bz2: () => requireDerived('tar.bz2'),
@@ -361,18 +432,24 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 
 /**
  * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
- * for Office-to-Office targets, LibreOffice chained with Poppler pdftoppm for raster targets,
- * Poppler pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
+ * for Office-to-Office targets, LibreOffice (or the PostScript interpreter) chained with Poppler for
+ * page targets (pdftoppm images, the image encoders, pdftops, pdftocairo SVG and DXF), Poppler
+ * pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
  * hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
+  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  key: ['html', 'pdf', 'pptx'],
+  odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
+  odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   ppt: ['jpg', 'odp', 'png'],
+  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
@@ -413,7 +490,8 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
   return { outcome: 'inconclusive', detail: lastError };
 }
 
-function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+/** Every advertised pair the predicate selects, across all parts. */
+function allPairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
   const pairs: [string, string][] = [];
   for (const [source, def] of Object.entries(FORMAT_REGISTRY)) {
     for (const target of def.targetFormats) {
@@ -421,6 +499,11 @@ function pairsFor(predicate: (category: string, target: string) => boolean): [st
     }
   }
   return pairs;
+}
+
+/** The selected pairs that belong to this part. */
+function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+  return allPairsFor(predicate).filter(([source, target]) => inPart(`${source}->${target}`));
 }
 
 const probeCache = new Map<string, Promise<{ outcome: PairOutcome; detail: string }>>();
@@ -435,21 +518,39 @@ function probePairCached(source: string, target: string): Promise<{ outcome: Pai
   return pending;
 }
 
+/**
+ * Probes run this many at a time. Each probe mostly waits on an engine process, so a few in flight keep
+ * the CPUs busy without starving any probe of its timeout.
+ */
+const PROBE_CONCURRENCY = Math.max(1, Math.min(os.availableParallelism(), MAX_PROBE_CONCURRENCY));
+
+/** Probes every pair with bounded concurrency; outcomes come back in the order of `pairs`. */
+async function probeAll(pairs: [string, string][]): Promise<{ outcome: PairOutcome; detail: string }[]> {
+  const outcomes: { outcome: PairOutcome; detail: string }[] = new Array(pairs.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    for (let index = next++; index < pairs.length; index = next++) {
+      const [source, target] = pairs[index];
+      outcomes[index] = await probePairCached(source, target);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, pairs.length) }, lane));
+  return outcomes;
+}
+
 async function findUnroutedPairs(pairs: [string, string][]): Promise<string[]> {
-  const unrouted: string[] = [];
-  for (const [source, target] of pairs) {
-    const { outcome, detail } = await probePairCached(source, target);
-    if (outcome === 'unrouted') unrouted.push(`${source} -> ${target}: ${detail}`);
-  }
-  return unrouted;
+  const outcomes = await probeAll(pairs);
+  return pairs.flatMap(([source, target], index) =>
+    outcomes[index].outcome === 'unrouted' ? [`${source} -> ${target}: ${outcomes[index].detail}`] : []
+  );
 }
 
 async function findInconclusivePairs(pairs: [string, string][]): Promise<string[]> {
-  const inconclusive: string[] = [];
-  for (const [source, target] of pairs) {
-    if ((await probePairCached(source, target)).outcome === 'inconclusive') inconclusive.push(`${source}->${target}`);
-  }
-  return inconclusive.sort();
+  const outcomes = await probeAll(pairs);
+  return pairs
+    .filter((_, index) => outcomes[index].outcome === 'inconclusive')
+    .map(([source, target]) => `${source}->${target}`)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /** Media pairs that reach FFmpeg are opt-in; every other advertised pair is always probed. */
@@ -597,7 +698,7 @@ function buildShortMediaSample(dir: string, source: string): Buffer | null {
   }
 }
 
-describe('routing-error classifier', () => {
+describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
     expect((routing as Error).message).toMatch(/^Unsupported office conversion from pages to doc$/);
@@ -628,7 +729,7 @@ describe('routing-error classifier', () => {
   });
 });
 
-describe('withdrawn pairs stay withdrawn', () => {
+describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
@@ -748,8 +849,8 @@ describe('every advertised registry pair has an engine path', () => {
     RAW_SOURCE_TIMEOUT_MS
   );
 
-  it('converts every toml pair, as source or target, through a real engine run', async () => {
-    const tomlPairs = pairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
+  it.runIf(IS_FIRST_PART)('converts every toml pair, as source or target, through a real engine run', async () => {
+    const tomlPairs = allPairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
     expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
       'json->toml',
       'toml->json',
@@ -769,8 +870,9 @@ describe('every advertised registry pair has an engine path', () => {
   }, CATEGORY_TIMEOUT_MS);
 
   it('audio and video sources routed outside the media transcoder', async () => {
-    const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');
-    expect(mediaPairs).toContainEqual(['mp3', 'zip']);
+    const isMediaToArchive = (c: string, target: string) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive';
+    expect(allPairsFor(isMediaToArchive)).toContainEqual(['mp3', 'zip']);
+    const mediaPairs = pairsFor(isMediaToArchive);
     expect(await findUnroutedPairs(mediaPairs)).toEqual([]);
   }, CATEGORY_TIMEOUT_MS);
 
@@ -794,7 +896,10 @@ describe('every advertised registry pair has an engine path', () => {
       if (!HAS_FFMPEG) throw new Error('ORACLE_STRICT_MODE=1 requires ffmpeg for the audio target conformance pairs');
       const workDir = mkdtempSync(path.join(os.tmpdir(), 'audio-target-conformance-'));
       try {
-        const pairs = pairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio');
+        // Split by target, not by pair: each target's coverage below is decided within one part.
+        const pairs = allPairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio').filter(
+          ([, target]) => inPart(`audio-target:${target}`)
+        );
         const samples = new Map<string, Buffer | null>();
         for (const [source] of pairs) {
           if (!samples.has(source)) samples.set(source, buildShortMediaSample(workDir, source));
@@ -848,7 +953,7 @@ describe('every advertised registry pair has an engine path', () => {
 describe('inconclusive pairs ratchet', () => {
   // Pairs whose every probe input is rejected before the engine's routing step. They are not
   // proven routable, so each one is listed explicitly; the list may only shrink.
-  it('lists the allowlist sorted and without duplicates', () => {
+  it.runIf(IS_FIRST_PART)('lists the allowlist sorted and without duplicates', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
@@ -857,7 +962,7 @@ describe('inconclusive pairs ratchet', () => {
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
-    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
+    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => inPart(pair) && !current.has(pair))).toEqual([]);
   }, RATCHET_TIMEOUT_MS);
 });
 
@@ -869,9 +974,10 @@ describe('real camera RAW samples', () => {
   /** Every target a RAW source advertises needs a validator below; a new target must add one. */
   const VALIDATED_TARGETS = new Set([...SDR_TARGETS, ...HDR_TARGETS, ...PACKAGING_TARGETS]);
   /** Every advertised pair is checked: the real sample must convert to a valid file. */
-  const rawPairs = RAW_SOURCES.flatMap((source) =>
+  const allRawPairs = RAW_SOURCES.flatMap((source) =>
     FORMAT_REGISTRY[source].targetFormats.map((target) => [source, target] as [string, string])
   );
+  const rawPairs = allRawPairs.filter(([source, target]) => inPart(`${source}->${target}`));
 
   const MAX_PLAUSIBLE_SIDE = 20_000;
   const MAX_ICO_SIDE = 256;
@@ -1060,7 +1166,7 @@ describe('real camera RAW samples', () => {
     expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
     if (RAW_SAMPLES_MISSING.length > 0) {
       throw new OracleToolMissingError(
         'raw-fixtures',
@@ -1071,14 +1177,14 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
     expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
     expect(RAW_SAMPLES_MISSING).toEqual([]);
     expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
   });
 
-  it('has a validator for every target the RAW sources advertise', () => {
-    expect(rawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
+  it.runIf(IS_FIRST_PART)('has a validator for every target the RAW sources advertise', () => {
+    expect(allRawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(rawPairs)(
@@ -1105,7 +1211,7 @@ describe('real camera RAW samples', () => {
   /** Sigma SD14, Merrill and Quattro generations, Raspberry Pi imx219 and imx477. */
   const variantPairs = RAW_VARIANT_MANIFEST.flatMap((entry) =>
     FORMAT_REGISTRY[entry.format].targetFormats.map((target) => [`${entry.format}-${entry.variant}`, target] as [string, string])
-  );
+  ).filter(([name, target]) => inPart(`${name}->${target}`));
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(variantPairs)(
     '%s -> %s converts the real sample to a valid file',
@@ -1134,8 +1240,32 @@ describe('native-engine pairs route through the dispatcher', () => {
   const DARK_CHANNEL_MAX = 128;
   /** The CFB stream that holds the main body of a Word or PowerPoint binary file. */
   const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
-  const ODF_MIMETYPE: Readonly<Record<string, string>> = { odp: 'application/vnd.oasis.opendocument.presentation' };
+  const ODF_MIMETYPE: Readonly<Record<string, string>> = {
+    odp: 'application/vnd.oasis.opendocument.presentation',
+    odg: 'application/vnd.oasis.opendocument.graphics',
+    odd: 'application/vnd.oasis.opendocument.graphics-template',
+  };
+  /** Sources whose real input no installed tool can author (Keynote has no writer); their pairs prove only the missing-engine answer. */
+  const NO_AUTHORABLE_INPUT = new Set(['key']);
+  /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
+  const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
+  const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
+  const HAS_PDFTOPS = isOracleToolAvailable('pdftops');
+  const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
+  /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
+  const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
+  const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
+  /** The signature each encoded raster starts with (BMP, ICO, PSD, GIF, TIFF both byte orders, RIFF/WEBP, ISO BMFF 'ftyp'). */
+  const ENCODED_SIGNATURES: Readonly<Record<string, readonly Buffer[]>> = {
+    bmp: [Buffer.from('BM', 'latin1')],
+    ico: [Buffer.from([0, 0, 1, 0])],
+    psd: [Buffer.from('8BPS', 'latin1')],
+    gif: [Buffer.from('GIF8', 'latin1')],
+    tiff: [Buffer.from('II*\0', 'latin1'), Buffer.from('MM\0*', 'latin1')],
+    webp: [Buffer.from('RIFF', 'latin1')],
+    avif: [],
+  };
   const PDF_SOURCE = 'pdf';
   const SVG_TARGET = 'svg';
   /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
@@ -1144,16 +1274,23 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Mean absolute 8-bit difference allowed between two independent rasterizers of the same page. */
   const RENDERER_MEAN_DIFF_MAX = 12;
 
-  const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
+  const allNativePairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target));
-  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target));
+  const pairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source);
+  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
+  const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
+  const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
+  const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
+    if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
@@ -1165,10 +1302,13 @@ describe('native-engine pairs route through the dispatcher', () => {
     xlsx: 'golden/office/multi-sheet-enterprise.xlsx',
     ods: 'golden/office/multi-sheet-enterprise.ods',
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
+    odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx', odd: 'odg' };
+  /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
+  const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
   /** Converts with the soffice CLI directly, outside the engines under test. */
   function sofficeConvert(input: Buffer, from: string, to: string): Buffer {
@@ -1191,7 +1331,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     let input = realInputs.get(source);
     if (!input) {
       const from = DERIVED_FROM[source];
-      input = from ? sofficeConvert(fixture(SEEDS[from]), from, source) : fixture(SEEDS[source]);
+      input = from ? sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source) : fixture(SEEDS[source]);
       realInputs.set(source, input);
     }
     return input;
@@ -1209,8 +1349,20 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (SEEDS[source]) return fixture(SEEDS[source]);
     if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
-    if (source === 'odp') return headerOnlyOdf(ODF_MIMETYPE.odp);
+    if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
+    if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
+    if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
+  }
+
+  /** A one-page PostScript figure with a stroked path, a filled shape and a line, in a 200 x 100 box. */
+  function postscriptProbe(): Buffer {
+    return Buffer.from(
+      '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n%%EndComments\n' +
+        '1 0 0 setrgbcolor 2 setlinewidth newpath 20 20 moveto 180 20 lineto stroke\n' +
+        '0 0 0 setrgbcolor 30 60 40 20 rectfill showpage\n',
+      'latin1'
+    );
   }
 
   async function expectPageImage(buffer: Buffer, target: string): Promise<void> {
@@ -1223,6 +1375,15 @@ describe('native-engine pairs route through the dispatcher', () => {
   }
 
   async function expectOfficeDocument(buffer: Buffer, target: string): Promise<void> {
+    if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+      return;
+    }
+    if (target === 'pptx') {
+      const presentation = await JSZip.loadAsync(buffer);
+      expect(presentation.file('ppt/presentation.xml')).not.toBeNull();
+      return;
+    }
     if (target === 'rtf') {
       expect(buffer.subarray(0, 6).toString('latin1')).toBe('{\\rtf1');
       expect(buffer.toString('latin1').replace(/\s+/g, ' ')).toContain(OFFICE_DOC_TEXT);
@@ -1238,8 +1399,30 @@ describe('native-engine pairs route through the dispatcher', () => {
     expect(zip.file('content.xml')).not.toBeNull();
   }
 
-  it('lists only pairs the registry advertises', () => {
-    expect(pairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  /** The output of a page target, checked against the signature or first line the format's reference defines. */
+  async function expectPageTargetOutput(buffer: Buffer, target: string): Promise<void> {
+    if (IMAGE_TARGETS.has(target)) {
+      await expectPageImage(buffer, target);
+    } else if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+    } else if (target === 'svg') {
+      expect(buffer.toString('utf-8')).toMatch(/<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    } else if (target === 'eps' || target === 'ps') {
+      expect(buffer.toString('latin1').split('\n')[0]).toBe(target === 'eps' ? '%!PS-Adobe-3.0 EPSF-3.0' : '%!PS-Adobe-3.0');
+    } else if (target === 'dxf') {
+      const lines = buffer.toString('utf-8').trimEnd().split('\n');
+      expect(lines.slice(0, 2).map((l) => l.trim())).toEqual(['0', 'SECTION']);
+      expect(lines.slice(-2).map((l) => l.trim())).toEqual(['0', 'EOF']);
+    } else {
+      const signatures = ENCODED_SIGNATURES[target];
+      expect(signatures.length === 0 || signatures.some((sig) => buffer.subarray(0, sig.length).equals(sig))).toBe(true);
+      if (target === 'avif') expect(buffer.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+      if (target === 'webp') expect(buffer.subarray(8, 12).toString('latin1')).toBe('WEBP');
+    }
+  }
+
+  it.runIf(IS_FIRST_PART)('lists only pairs the registry advertises', () => {
+    expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
   it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
@@ -1266,6 +1449,42 @@ describe('native-engine pairs route through the dispatcher', () => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
       await expectPageImage(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToEncodedPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPS).each(officeToPostscriptPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and pdftops (needs soffice, pdftops)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(!HAS_PS2PDF || !HAS_PDFTOPPM || !HAS_PDFTOPS || !HAS_PDFTOCAIRO).each(postscriptPairs)(
+    '%s -> %s draws the PostScript page with the interpreter and the page tools (needs ps2pdf; Ghostscript is not in the CI image)',
+    async (source, target) => {
+      if (target === 'pdf') {
+        const pdf = await dispatchConversion(postscriptProbe(), source, target, {}, `probe.${source}`);
+        expect(pdf.engineUsed).toBe('native-postscript');
+        await expectPageTargetOutput(pdf.buffer, target);
+        return;
+      }
+      const result = await dispatchConversion(postscriptProbe(), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
     },
     NATIVE_TIMEOUT_MS
   );

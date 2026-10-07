@@ -229,7 +229,7 @@ export async function convertDocument(
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
-          throw new Error(`PDF OCR failed: ${cleanMsg}`);
+          throw new ConversionFailedError(`PDF OCR failed: ${cleanMsg}`);
         }
       }
 
@@ -239,6 +239,7 @@ export async function convertDocument(
 
       if (rasterImages.length > 0) {
         const ocrTexts: string[] = [];
+        const ocrTextPages: { pageNumber: number; text: string }[] = [];
         let totalConfidence = 0;
         let count = 0;
 
@@ -246,6 +247,7 @@ export async function convertDocument(
           const ocr = await performOcr(img.buffer, options.ocrLanguage);
           if (ocr && ocr.text) {
             ocrTexts.push(ocr.text);
+            ocrTextPages.push({ pageNumber: img.pageNumber, text: ocr.text });
             const existing = pageOcrResults.get(img.pageNumber);
             if (!existing) {
               pageOcrResults.set(img.pageNumber, ocr);
@@ -291,7 +293,8 @@ export async function convertDocument(
               }
             }
           } else {
-            allTextParts.push(...ocrTexts);
+            // Without a per-page analysis the images come in the order the file stores them, not the page order.
+            allTextParts.push(...[...ocrTextPages].sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text));
           }
           extractedText = allTextParts.join('\n\n').trim();
           ocrInfo = {
@@ -299,10 +302,10 @@ export async function convertDocument(
             confidence: count > 0 ? totalConfidence / count : 0.9,
           };
         } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
-          throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
+          throw new ConversionFailedError('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
       } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
-        throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+        throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
 
@@ -368,7 +371,9 @@ export async function convertDocument(
       }));
     }
 
-    const dlaLayout = dlaBoxes.length > 0 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
+    // The boxes of several scanned pages all start at the top of their own page: analysed together they interleave
+    // by height, so a multi-page scan keeps its text in page order instead of going through the layout analysis.
+    const dlaLayout = dlaBoxes.length > 0 && pageOcrResults.size <= 1 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
 
     if (tgt === 'txt') {
       const textToEmit = dlaLayout && dlaLayout.fullText ? dlaLayout.fullText : extractedText;
@@ -462,7 +467,7 @@ export async function convertDocument(
     if (tgt === 'pdf') {
       if (options.ocrEnabled || isScanned) {
         if (pageOcrResults.size === 0 && !lastOcrResult && pagesNeedingOcr.length > 0) {
-          throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+          throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
 
         if (pageOcrResults.size > 0) {
@@ -482,6 +487,19 @@ export async function convertDocument(
             );
           }
         }
+      }
+      if (options.ocrEnabled || isScanned) {
+        // OCR recognised nothing. That is only acceptable when it had nothing to do: skip_text and every page already has text.
+        if (pageAnalyses.length > 0 && pagesNeedingOcr.length === 0 && !isScanned) {
+          return {
+            buffer: inputBuffer,
+            mimeType: 'application/pdf',
+            filename: `${baseName}.pdf`,
+            size: inputBuffer.length,
+            ocrSkipped: true,
+          };
+        }
+        throw new ConversionFailedError('PDF OCR failed: no text was recognised on any page.');
       }
       return {
         buffer: inputBuffer,
@@ -550,7 +568,7 @@ export async function convertDocument(
   // Extract text representation according to source format
   let textContent = '';
   if (src === 'rtf') {
-    textContent = extractTextFromRtf(inputBuffer.toString('utf-8'));
+    textContent = extractTextFromRtf(inputBuffer);
   } else if (src === 'odt') {
     textContent = await extractTextFromOdt(inputBuffer);
   } else if (src === 'doc') {

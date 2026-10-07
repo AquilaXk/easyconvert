@@ -400,6 +400,8 @@ export interface ConversionResult {
   filename: string;
   size: number;
   ocrExtractedText?: string;
+  /** The request asked for OCR, but every page already had text (skip_text), so the input was returned unchanged. */
+  ocrSkipped?: boolean;
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
@@ -756,6 +758,19 @@ export class DecompressionLimitError extends PayloadLimitError {
   constructor(message: string) {
     super(message);
     this.name = 'DecompressionLimitError';
+  }
+}
+
+/**
+ * A document is encrypted, password protected or DRM protected, so its text cannot be read. The request was
+ * understood and the file is intact; it is the content that is unavailable, so the routes answer HTTP 422
+ * (through `status`) instead of the generic 400 for a malformed input.
+ */
+export class EncryptedOfficeDocumentError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'EncryptedOfficeDocumentError';
   }
 }
 

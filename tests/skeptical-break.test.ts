@@ -91,12 +91,10 @@ endsolid TestModel`;
     expect(csvRes.buffer.toString('utf-8')).toContain('Alice');
   });
 
-  it('5. eps -> svg must be routed to Vector engine, not image engine', async () => {
+  it('5. eps -> svg is routed to the PostScript engine, which needs an interpreter, not to the image engine', async () => {
     const eps = `%!PS-Adobe-3.0 EPSF-3.0\n10 10 moveto 100 100 lineto stroke`;
-    const res = await convertFile(Buffer.from(eps, 'utf-8'), 'eps', 'svg', {}, 'drawing.eps');
-    expect(res.mimeType).toBe('image/svg+xml');
-    expect(res.filename).toBe('drawing.svg');
-    expect(res.buffer.toString('utf-8')).toContain('<svg');
+    const run = convertFile(Buffer.from(eps, 'utf-8'), 'eps', 'svg', {}, 'drawing.eps');
+    await expect(run).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'ps2pdf' });
   });
 
   it('6. odt -> epub must succeed as declared in FORMAT_REGISTRY', async () => {

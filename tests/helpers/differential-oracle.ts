@@ -24,6 +24,7 @@ export type ExternalOracleTool =
   | 'pdftotext'
   | 'pdfinfo'
   | 'pdftoppm'
+  | 'pdftops'
   | 'pdftocairo'
   | 'pdffonts'
   | 'pdfimages'
@@ -48,6 +49,7 @@ export type ExternalOracleTool =
   | 'jq'
   | 'raw-identify'
   | 'dcraw_emu'
+  | 'ps2pdf'
   | 'woff2_decompress'
   | 'woff2_info';
 

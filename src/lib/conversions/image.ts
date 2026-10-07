@@ -321,23 +321,73 @@ export function decodeIcns(buf: Buffer): Buffer {
   return buf.subarray(8);
 }
 
-export function encodePsd(payload: Buffer, width: number, height: number): Buffer {
-  const header = Buffer.alloc(26);
+/** Adobe Photoshop File Format: version 1 files hold at most 30000 pixels on a side. */
+const PSD_MAX_SIDE = 30_000;
+const PSD_CHANNELS = 4;
+const PSD_HEADER_BYTES = 26;
+const PSD_COLOR_MODE_RGB = 3;
+const PSD_COMPRESSION_RLE = 1;
+const PACKBITS_MAX_RUN = 128;
+
+/** Run-length encodes one scanline in the PackBits form the PSD format uses (PSD file format, "Image Data"). */
+function packBitsRow(row: Uint8Array): Buffer {
+  const out: number[] = [];
+  let i = 0;
+  while (i < row.length) {
+    let run = 1;
+    while (i + run < row.length && row[i + run] === row[i] && run < PACKBITS_MAX_RUN) run += 1;
+    if (run >= 2) {
+      // A repeat of `run` bytes is the count byte 257 - run (that is, 1 - run as a signed byte), then the byte.
+      out.push(257 - run, row[i]);
+      i += run;
+      continue;
+    }
+    const start = i;
+    i += 1;
+    while (i < row.length && i - start < PACKBITS_MAX_RUN && row[i] !== row[i + 1]) i += 1;
+    out.push(i - start - 1);
+    for (let k = start; k < i; k += 1) out.push(row[k]);
+  }
+  return Buffer.from(out);
+}
+
+/**
+ * Writes an RGBA picture as a Photoshop (PSD, version 1) file: 8-bit RGB with a fourth alpha channel, one
+ * merged image, planar channels, PackBits compressed. `rgba` is interleaved, row-major, top row first.
+ */
+export function encodePsd(rgba: Buffer, width: number, height: number): Buffer {
+  if (width < 1 || height < 1 || width > PSD_MAX_SIDE || height > PSD_MAX_SIDE) {
+    throw new ConversionFailedError(`A PSD file holds 1 to ${PSD_MAX_SIDE} pixels on a side; the picture is ${width} x ${height}.`);
+  }
+  if (rgba.length !== width * height * PSD_CHANNELS) {
+    throw new ConversionFailedError(`PSD encoding needs ${width * height * PSD_CHANNELS} bytes of RGBA pixels, got ${rgba.length}.`);
+  }
+  const header = Buffer.alloc(PSD_HEADER_BYTES);
   header.write('8BPS', 0, 4, 'ascii');
   header.writeUInt16BE(1, 4); // version 1
-  header.fill(0, 6, 12);
-  header.writeUInt16BE(4, 12); // RGBA
+  header.writeUInt16BE(PSD_CHANNELS, 12);
   header.writeUInt32BE(height, 14);
   header.writeUInt32BE(width, 18);
-  header.writeUInt16BE(8, 22);
-  header.writeUInt16BE(3, 24); // RGB color
+  header.writeUInt16BE(8, 22); // bits per channel
+  header.writeUInt16BE(PSD_COLOR_MODE_RGB, 24);
 
-  const colorModeData = Buffer.alloc(4);
-  const imageResources = Buffer.alloc(4);
-  const layerInfo = Buffer.alloc(4);
-  const comp = Buffer.alloc(2);
+  // Color mode data, image resources and layer and mask information are empty sections (a 4-byte length of 0 each).
+  const emptySections = Buffer.alloc(3 * 4);
+  const compression = Buffer.alloc(2);
+  compression.writeUInt16BE(PSD_COMPRESSION_RLE, 0);
 
-  return Buffer.concat([header, colorModeData, imageResources, layerInfo, comp, payload]);
+  const rowCounts = Buffer.alloc(PSD_CHANNELS * height * 2);
+  const rows: Buffer[] = [];
+  const plane = new Uint8Array(width);
+  for (let channel = 0; channel < PSD_CHANNELS; channel += 1) {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) plane[x] = rgba[(y * width + x) * PSD_CHANNELS + channel];
+      const packed = packBitsRow(plane);
+      rowCounts.writeUInt16BE(packed.length, (channel * height + y) * 2);
+      rows.push(packed);
+    }
+  }
+  return Buffer.concat([header, emptySections, compression, rowCounts, ...rows]);
 }
 
 export function encodePostscript(
@@ -3205,8 +3255,11 @@ export async function convertImage(
       }
 
       case 'psd': {
-        const { data: pngBuf, info } = await pipeline.png().toBuffer({ resolveWithObject: true });
-        outputBuffer = encodePsd(pngBuf, info.width, info.height);
+        const { data: rgbaPixels, info } = await pipeline.toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        if (info.channels !== PSD_CHANNELS) {
+          throw new ConversionFailedError(`PSD encoding needs RGBA pixels; the picture decoded to ${info.channels} channels.`);
+        }
+        outputBuffer = encodePsd(rgbaPixels, info.width, info.height);
         mimeType = 'image/vnd.adobe.photoshop';
         break;
       }
