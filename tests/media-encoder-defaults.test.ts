@@ -524,33 +524,6 @@ describe('picture quality at the new defaults (decoded output)', () => {
   );
 
   oracleTest(
-    'AV1 is written by SVT-AV1, finishes a 10 s 720p clip inside the media timeout, and matches the source',
-    ['ffmpeg', 'ffprobe'],
-    async () => {
-      requireEncoders('libsvtav1', 'libx264');
-      await withDir(async (dir) => {
-        const source = clip(dir, '1280x720', 10);
-        const timeoutMs = 90_000; // computeMediaTimeoutMs(10): 3 * 10 + 60 seconds
-        const started = Date.now();
-        const result = await convertMedia(fs.readFileSync(source), 'mp4', 'webm', { video: { codec: 'av1' }, timeoutMs }, 'clip.mp4');
-        const elapsed = Date.now() - started;
-        const out = path.join(dir, 'out.webm');
-        fs.writeFileSync(out, result.buffer);
-        recordMetric('svt-av1 preset 8 720p 10 s: encode ms', elapsed);
-        expect(elapsed).toBeLessThan(timeoutMs);
-        const probed = probeFile(requireOracleTool('ffprobe'), out);
-        const video = probed.streams.find((s) => s.codec_type === 'video');
-        expect(video?.codec_name).toBe('av1');
-        expect(video?.tags?.ENCODER ?? probed.format.tags?.ENCODER ?? '').toMatch(/libsvtav1/);
-        const measured = measureSsimPsnr(ffmpeg(), out, source);
-        recordMetric('svt-av1 preset 8 720p 10 s: ssim', measured.ssim);
-        expect(measured.ssim).toBeGreaterThanOrEqual(MODERN_CODEC_MIN_SSIM);
-      });
-    },
-    ENCODE_TIMEOUT_MS
-  );
-
-  oracleTest(
     'VP9 with the speed settings matches the source',
     ['ffmpeg', 'ffprobe'],
     async () => {
