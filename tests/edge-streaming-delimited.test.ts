@@ -19,6 +19,7 @@ import {
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * The browser L3 streaming path for large CSV <-> TSV files applies the server's delimited-output
@@ -37,8 +38,8 @@ const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
  * 12 MB/s, so a dozen 4 MiB chunks took 4 s of the 5 s test budget on an idle machine and failed under load).
  */
 const PROPORTIONALITY_CHUNKS = 3;
-/** Generous bound for streaming 4 MiB of quoted CR-only records; a quadratic line count takes tens of seconds. */
-const LINEAR_TIME_BOUND_MS = 2000;
+/** Bytes of quoted CR-only records in the small run; the large run is four times as many (up to 4 MiB). */
+const LINE_COUNT_BASE_BYTES = 1024 * 1024;
 
 const CSV_INPUT =
   'name,formula,note\r\n"Kim, Min",=SUM(A1:A2),"says ""hi"""\r\n이름,-5,"line1\nline2"\r\n"Tab\there",@cmd,+1.5e3\r\n';
@@ -269,14 +270,16 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
   it('records the line of quoted fields in linear time', async () => {
     // A CR-only file holds no LF, so every quoted field asks for the line of a position with no LF after it.
     const record = '"a","b"\r';
-    const input = new TextEncoder().encode(`h1,h2\r${record.repeat(Math.floor((4 * 1024 * 1024) / record.length))}`);
-    const transformer = resolveChunkTransformer('csv', 'tsv', { delimiter: ',' });
-    const started = performance.now();
-    const out = transformer(input, 0, input.byteLength) as Uint8Array;
-    const elapsedMs = performance.now() - started;
-    expect(out.byteLength).toBeGreaterThan(input.byteLength / 2);
-    expect(elapsedMs).toBeLessThan(LINEAR_TIME_BOUND_MS);
-  }, 120_000);
+    const crOnly = (bytes: number) => new TextEncoder().encode(`h1,h2\r${record.repeat(Math.floor(bytes / record.length))}`);
+    // 4x the bytes may cost at most 8x the time (tests/helpers/timing.ts); a quadratic line count takes 16x.
+    const { largeResult } = await expectLinearOnInputs(
+      'csv to tsv',
+      // A transformer finishes after one whole-input call, so each run gets its own.
+      (input: Uint8Array) => resolveChunkTransformer('csv', 'tsv', { delimiter: ',' })(input, 0, input.byteLength) as Uint8Array,
+      { small: crOnly(LINE_COUNT_BASE_BYTES), large: crOnly(LINE_COUNT_BASE_BYTES * SCALING_FACTOR) }
+    );
+    expect(largeResult.byteLength).toBeGreaterThan((LINE_COUNT_BASE_BYTES * SCALING_FACTOR) / 2);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('refuses to buffer a delimiter sample beyond its cap', async () => {
     const transformer = resolveChunkTransformer('csv', 'tsv', {});

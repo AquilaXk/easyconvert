@@ -27,11 +27,10 @@ import {
   createHostileWorkspace,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
+import { expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 const LINEAR_PROBE_SMALL = 12_250;
 const LINEAR_PROBE_LARGE = 49_000;
-const MAX_LINEAR_GROWTH = 8;
-const LINEAR_PROBE_CEILING_MS = 10_000;
 
 /** Second review round of PR #499: implied directories, listing-key whitelist, collision status, remover root. */
 
@@ -40,7 +39,8 @@ const HTTP_UNPROCESSABLE = 422;
 const FAN_ENTRIES = 300;
 /** 'd/' repeated, plus the fan prefix and the leaf, stays within the 256-level depth limit. */
 const FAN_DEPTH = 253;
-const FAN_TIME_BUDGET_MS = 20_000;
+/** Hang guard only: the fan used to create about 76,000 directories; refusing it takes well under a second. */
+const FAN_HANG_GUARD_MS = 20_000;
 const SLOW_TEST_TIMEOUT_MS = 600_000;
 
 function entry(entryPath: string, isDirectory = false): ListedArchiveEntry {
@@ -98,25 +98,18 @@ describe('NEW-1: implied directories count toward the entry cap', () => {
     expect(performance.now() - started).toBeLessThan(2_000);
   });
 
-  it('accounts 49,000 deep entries under one prefix in linear time', () => {
+  it('accounts 49,000 deep entries under one prefix in linear time', async () => {
     const shared = 'p/'.repeat(100);
-    const timeListing = (count: number): { ms: number; entryCount: number } => {
-      const entries = Array.from({ length: count }, (_, i) => entry(`${shared}${i}`));
-      const started = performance.now();
-      const verdict = assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS);
-      return { ms: performance.now() - started, entryCount: verdict.entryCount };
-    };
-
-    timeListing(LINEAR_PROBE_SMALL);
-    const small = timeListing(LINEAR_PROBE_SMALL);
-    const large = timeListing(LINEAR_PROBE_LARGE);
-
-    expect(small.entryCount).toBe(LINEAR_PROBE_SMALL);
-    expect(large.entryCount).toBe(LINEAR_PROBE_LARGE);
+    const listing = (count: number) => Array.from({ length: count }, (_, i) => entry(`${shared}${i}`));
     // 4x the entries: linear work grows about 4x, the old quadratic accounting about 16x.
-    expect(large.ms / Math.max(small.ms, 1)).toBeLessThan(MAX_LINEAR_GROWTH);
-    expect(large.ms).toBeLessThan(LINEAR_PROBE_CEILING_MS);
-  });
+    const { largeResult } = await expectLinearOnInputs(
+      'assertSafeArchiveListing',
+      (entries: ListedArchiveEntry[]) => assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS),
+      { small: listing(LINEAR_PROBE_SMALL), large: listing(LINEAR_PROBE_LARGE) }
+    );
+    expect(largeResult.entryCount).toBe(LINEAR_PROBE_LARGE);
+    expect(assertSafeArchiveListing(listing(LINEAR_PROBE_SMALL), 1_000_000, ARCHIVE_SECURITY_LIMITS).entryCount).toBe(LINEAR_PROBE_SMALL);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('makes the post-extraction walk count directories against the same cap', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-dirs-'));
@@ -169,7 +162,7 @@ describe('NEW-1: implied directories count toward the entry cap', () => {
 
         expect(workerError).toMatchObject({ name: 'UnsafeArchiveError', reason: 'entry-count' });
         expect(libError).toMatchObject({ name: 'UnsafeArchiveError', reason: 'entry-count' });
-        expect(performance.now() - started).toBeLessThan(FAN_TIME_BUDGET_MS);
+        expect(performance.now() - started).toBeLessThan(FAN_HANG_GUARD_MS);
         expect(ws.snapshot()).toEqual(before);
       },
       SLOW_TEST_TIMEOUT_MS

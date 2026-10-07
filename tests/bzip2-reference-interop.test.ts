@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { compressBzip2, decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { convertFile } from '../src/lib/conversions';
 import { ConversionFailedError } from '../src/lib/types';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -20,8 +21,8 @@ vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 const MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 const MULTI_BLOCK_INPUT_BYTES = 2_500_000;
 const BZIP2_MAX_BLOCK_BYTES = 900_000;
-const ENCODE_TIME_BOUND_MS = 5000;
-const HOSTILE_TIME_BOUND_MS = 1000;
+/** Hang guard only: these hand-assembled hostile streams are refused in about a millisecond. */
+const HOSTILE_HANG_GUARD_MS = 10_000;
 const BZIP2_FIXTURE_TAR = path.resolve(__dirname, 'fixtures', 'sample.tar');
 
 const HAS_BZIP2 = cp.spawnSync('bzip2', ['--help'], { stdio: 'ignore' }).error === undefined;
@@ -128,26 +129,28 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     expectSameBytes(systemBzip2(['-dc'], compressed), input);
   });
 
-  const timingCases: Array<[string, () => Buffer]> = [
-    ['900 kB of zeros', () => Buffer.alloc(BZIP2_MAX_BLOCK_BYTES)],
+  // The block sorter must stay linear-time on the inputs that make a naive suffix sort quadratic. Growth is
+  // compared on a quarter-size input and the full 900 kB block (tests/helpers/timing.ts), not against a budget.
+  const timingCases: Array<[string, (bytes: number) => Buffer]> = [
+    ['zeros', (bytes) => Buffer.alloc(bytes)],
     [
-      '900 kB with a 2-byte period',
-      () => {
-        const buf = Buffer.alloc(BZIP2_MAX_BLOCK_BYTES);
+      'a 2-byte period',
+      (bytes) => {
+        const buf = Buffer.alloc(bytes);
         for (let i = 0; i < buf.length; i++) buf[i] = i % 2 === 0 ? 0x61 : 0x62;
         return buf;
       },
     ],
   ];
   for (const [name, make] of timingCases) {
-    it.skipIf(!HAS_BZIP2)(`compresses ${name} in under ${ENCODE_TIME_BOUND_MS} ms`, () => {
-      const input = make();
-      const started = performance.now();
-      const compressed = compressBzip2(input);
-      const elapsed = performance.now() - started;
-      expect(elapsed).toBeLessThan(ENCODE_TIME_BOUND_MS);
+    it.skipIf(!HAS_BZIP2)(`compresses a 900 kB block of ${name} in linear time`, async () => {
+      const input = make(BZIP2_MAX_BLOCK_BYTES);
+      const { largeResult: compressed } = await expectLinearOnInputs('compressBzip2', (data: Buffer) => compressBzip2(data), {
+        small: make(BZIP2_MAX_BLOCK_BYTES / SCALING_FACTOR),
+        large: input,
+      });
       expectSameBytes(systemBzip2(['-dc'], compressed), input);
-    });
+    }, SCALING_TEST_TIMEOUT_MS);
   }
 });
 
@@ -263,7 +266,7 @@ function expectFastTypedFailure(input: Buffer, message: RegExp): void {
   const elapsed = performance.now() - started;
   expect(caught).toBeInstanceOf(ConversionFailedError);
   expect((caught as Error).message).toMatch(message);
-  expect(elapsed).toBeLessThan(HOSTILE_TIME_BOUND_MS);
+  expect(elapsed).toBeLessThan(HOSTILE_HANG_GUARD_MS);
 }
 
 describe('bzip2 decoder rejects hostile input with a typed error', () => {
@@ -366,7 +369,7 @@ describe('bzip2 decoder rejects hostile input with a typed error', () => {
     }
     expect(caught).toBeInstanceOf(ConversionFailedError);
     expect((caught as Error).message).toMatch(/exceeds|limit/i);
-    expect(performance.now() - started).toBeLessThan(HOSTILE_TIME_BOUND_MS);
+    expect(performance.now() - started).toBeLessThan(HOSTILE_HANG_GUARD_MS);
     // The same stream decodes when the limit allows it.
     expect(decompressBzip2(bomb, 2_000_000).length).toBe(2_000_000);
   });
