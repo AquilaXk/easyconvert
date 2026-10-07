@@ -1155,12 +1155,12 @@ export const WebhookSecretRotateRequestSchema = {
     endpointId: {
       type: 'string',
       maxLength: 255,
-      description: 'Optional webhook endpoint identifier to rotate.',
+      description: 'Webhook endpoint identifier to rotate. Either endpointId or apiKeyId is required.',
     },
     apiKeyId: {
       type: 'string',
       maxLength: 255,
-      description: 'Optional API key identifier associated with the webhook.',
+      description: 'API key identifier whose webhook secret to rotate. Either endpointId or apiKeyId is required.',
     },
     graceSeconds: {
       type: 'integer',
