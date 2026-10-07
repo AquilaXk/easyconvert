@@ -88,6 +88,6 @@ describe('size-independence check', () => {
   it('rejects a reader whose work follows the claimed size', async () => {
     await expect(
       expectSizeIndependent('claim walker', claimWalkingWork, { modestSize: MODEST_CLAIM, hugeSize: HUGE_CLAIM })
-    ).rejects.toThrow(/claim walker: a claim of 1000000 took/);
+    ).rejects.toThrow(/claim walker: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
 });

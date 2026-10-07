@@ -41,37 +41,53 @@ export const CONSTANT_RATIO_BOUND = 4;
 /** Multiplier from the time a healthy run needs to the absolute ceiling that only catches a hang. */
 export const HANG_GUARD_MULTIPLE = 10;
 
-export interface ScalingMeasurement {
+export interface ScalingMeasurement<R = unknown> {
   smallMs: number;
   largeMs: number;
   /** largeMs / smallMs. */
   ratio: number;
+  /** What the last large run returned, so the caller can assert on the output of the timed work. */
+  largeResult: R;
 }
 
-async function timeOnce(work: () => unknown): Promise<number> {
+/** The outcome of work that may throw: timing a rejection needs its error as a value. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/** Runs `fn` and returns its result or the error it threw. */
+export function settle<T>(fn: () => T): Settled<T> {
+  try {
+    return { ok: true, value: fn() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+async function timeOnce<T>(work: () => T | Promise<T>): Promise<{ ms: number; value: T }> {
   const started = performance.now();
-  await work();
-  return performance.now() - started;
+  const value = (await work()) as T;
+  return { ms: performance.now() - started, value };
 }
 
 /**
  * Times `small` and `large` alternately for `passes` rounds (after one warm-up of each) and returns the
  * best time of each.
  */
-export async function measureInterleaved(
+export async function measureInterleaved<R = unknown>(
   small: () => unknown,
-  large: () => unknown,
+  large: () => R | Promise<R>,
   passes: number = SCALING_PASSES
-): Promise<ScalingMeasurement> {
+): Promise<ScalingMeasurement<R>> {
   await small();
-  await large();
+  let largeResult = (await large()) as R;
   let smallMs = Number.POSITIVE_INFINITY;
   let largeMs = Number.POSITIVE_INFINITY;
   for (let pass = 0; pass < passes; pass++) {
-    smallMs = Math.min(smallMs, await timeOnce(small));
-    largeMs = Math.min(largeMs, await timeOnce(large));
+    smallMs = Math.min(smallMs, (await timeOnce(small)).ms);
+    const largeRun = await timeOnce<R>(large);
+    largeMs = Math.min(largeMs, largeRun.ms);
+    largeResult = largeRun.value;
   }
-  return { smallMs, largeMs, ratio: largeMs / smallMs };
+  return { smallMs, largeMs, ratio: largeMs / smallMs, largeResult };
 }
 
 export interface ScalingOptions {
@@ -87,11 +103,11 @@ export interface ScalingOptions {
  * Asserts that `run(factor * baseSize)` takes no more than `maxRatio` times as long as `run(baseSize)`.
  * `run` builds its input for the given size and exercises the code under test; it may assert on the output.
  */
-export async function expectLinearScaling(
+export async function expectLinearScaling<R = unknown>(
   label: string,
-  run: (size: number) => unknown,
+  run: (size: number) => R | Promise<R>,
   options: ScalingOptions
-): Promise<ScalingMeasurement> {
+): Promise<ScalingMeasurement<R>> {
   const factor = options.factor ?? SCALING_FACTOR;
   const measurement = await measureInterleaved(
     () => run(options.baseSize),
@@ -106,23 +122,29 @@ export async function expectLinearScaling(
  * Like expectLinearScaling, for a run that takes a prebuilt input: building a multi-megabyte string
  * inside the timed section would measure the builder as well. `large` must be `factor` times `small`.
  */
-export async function expectLinearOnInputs<T>(
+export async function expectLinearOnInputs<T, R = unknown>(
   label: string,
-  run: (input: T) => unknown,
-  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number }
-): Promise<ScalingMeasurement> {
+  run: (input: T) => R | Promise<R>,
+  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number; minMeasurableMs?: number }
+): Promise<ScalingMeasurement<R>> {
   const factor = inputs.factor ?? SCALING_FACTOR;
   const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes);
-  assertLinearRatio(label, measurement, factor, inputs.maxRatio);
+  assertLinearRatio(label, measurement, factor, inputs.maxRatio, inputs.minMeasurableMs);
   return measurement;
 }
 
-function assertLinearRatio(label: string, measurement: ScalingMeasurement, factor: number, maxRatioOverride?: number): void {
+function assertLinearRatio(
+  label: string,
+  measurement: ScalingMeasurement<unknown>,
+  factor: number,
+  maxRatioOverride?: number,
+  minMeasurableMs: number = MIN_MEASURABLE_MS
+): void {
   const maxRatio = maxRatioOverride ?? factor * LINEAR_RATIO_SLACK;
   expect(
     measurement.smallMs,
     `${label}: the small run took ${measurement.smallMs.toFixed(3)} ms, too short to time; use a larger input`
-  ).toBeGreaterThanOrEqual(MIN_MEASURABLE_MS);
+  ).toBeGreaterThanOrEqual(minMeasurableMs);
   expect(
     measurement.ratio,
     `${label}: ${factor}x the input took ${measurement.ratio.toFixed(2)}x as long ` +
@@ -132,28 +154,39 @@ function assertLinearRatio(label: string, measurement: ScalingMeasurement, facto
 
 /**
  * Asserts that work which must not depend on a claimed size (a hostile header that announces a huge
- * allocation, a rejected count) takes about as long for a huge claim as for a modest one: the ratio of the
- * two stays under `maxRatio`. A reader that trusts the claim scales with it and fails the bound.
+ * allocation, a rejected count, a sniff that reads a bounded prefix) takes about as long for a huge input as
+ * for a modest one: the ratio of the two stays under `maxRatio`. A reader that trusts the claim scales with
+ * it and fails the bound. Inputs are prebuilt so that building them is not timed.
  */
-export async function expectSizeIndependent(
+export async function expectSizeIndependentOnInputs<T, R = unknown>(
   label: string,
-  run: (claimedSize: number) => unknown,
-  options: { modestSize: number; hugeSize: number; passes?: number; maxRatio?: number }
-): Promise<ScalingMeasurement> {
-  const maxRatio = options.maxRatio ?? CONSTANT_RATIO_BOUND;
-  const measurement = await measureInterleaved(
-    () => run(options.modestSize),
-    () => run(options.hugeSize),
-    options.passes
-  );
+  run: (input: T) => R | Promise<R>,
+  inputs: { modest: T; huge: T; passes?: number; maxRatio?: number }
+): Promise<ScalingMeasurement<R>> {
+  const maxRatio = inputs.maxRatio ?? CONSTANT_RATIO_BOUND;
+  const measurement = await measureInterleaved(() => run(inputs.modest), () => run(inputs.huge), inputs.passes);
   // The floor keeps a sub-millisecond baseline from turning timer noise into a large ratio.
   const baselineMs = Math.max(measurement.smallMs, SIZE_INDEPENDENT_FLOOR_MS);
   expect(
     measurement.largeMs / baselineMs,
-    `${label}: a claim of ${options.hugeSize} took ${measurement.largeMs.toFixed(2)} ms against ` +
-      `${measurement.smallMs.toFixed(2)} ms for ${options.modestSize}; rejection work must not grow with the claim`
+    `${label}: the larger input took ${measurement.largeMs.toFixed(2)} ms against ` +
+      `${measurement.smallMs.toFixed(2)} ms for the modest one; the work must not grow with the input`
   ).toBeLessThanOrEqual(maxRatio);
   return measurement;
+}
+
+/** expectSizeIndependentOnInputs for work parameterised by a claimed size (a number the code under test is told). */
+export async function expectSizeIndependent<R = unknown>(
+  label: string,
+  run: (claimedSize: number) => R | Promise<R>,
+  options: { modestSize: number; hugeSize: number; passes?: number; maxRatio?: number }
+): Promise<ScalingMeasurement<R>> {
+  return expectSizeIndependentOnInputs(label, run, {
+    modest: options.modestSize,
+    huge: options.hugeSize,
+    passes: options.passes,
+    maxRatio: options.maxRatio,
+  });
 }
 
 /** An absolute hang guard: `expectedMs` is how long a healthy run needs; the ceiling is a multiple of it. */
