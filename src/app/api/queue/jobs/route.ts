@@ -10,6 +10,8 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +37,25 @@ export async function POST(req: NextRequest) {
       await rollbackQuota(reservationId);
     }
     return NextResponse.json({ success: false, error }, { status });
+  };
+
+  const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
+
+  /** A 400 problem, after releasing the quota reservation, for a file name the registry has no format for. */
+  const failUnknownSource = async (filename: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return createProblemDetailsResponse(400, `Could not identify source format for file "${filename}".`, instanceUri);
+  };
+
+  /** The 400 problem for options that break ConversionOptionsSchema, after releasing the quota reservation. */
+  const rejectInvalidOptions = async (candidate: ConversionOptions) => {
+    const problem = legacyOptionsProblem(candidate, instanceUri);
+    if (problem && reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return problem;
   };
 
   try {
@@ -65,9 +86,12 @@ export async function POST(req: NextRequest) {
           return await failWithRollback(400, 'The "options" field must be a JSON object.');
         }
         options = parsed;
+        const optionsProblem = await rejectInvalidOptions(options);
+        if (optionsProblem) return optionsProblem;
       }
 
       if (file) {
+        if (!detectFormatFromFilename(file.name)) return await failUnknownSource(file.name);
         originalFilename = file.name;
         fileSize = file.size;
         const arrayBuffer = await file.arrayBuffer();
@@ -86,6 +110,8 @@ export async function POST(req: NextRequest) {
         return await failWithRollback(400, 'The "options" field must be a JSON object.');
       }
       options = body.options ?? {};
+      const optionsProblem = await rejectInvalidOptions(options);
+      if (optionsProblem) return optionsProblem;
       storageKey = body.storageKey;
       inputBufferBase64 = body.inputBufferBase64;
       fileSize = body.fileSize || 0;
@@ -108,7 +134,8 @@ export async function POST(req: NextRequest) {
     }
 
     const detected = detectFormatFromFilename(originalFilename);
-    const sourceFormat = detected ? detected.extension : originalFilename.split('.').pop() || 'bin';
+    if (!detected) return await failUnknownSource(originalFilename);
+    const sourceFormat = detected.extension;
 
     // Add conversion task to BullMQ Distributed Queue
     const job = await conversionQueue.add(

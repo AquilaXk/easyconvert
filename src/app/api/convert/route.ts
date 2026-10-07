@@ -22,6 +22,7 @@ import {
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,6 +140,13 @@ export async function POST(req: NextRequest) {
         return await failWithRollback(400, 'The "options" field must be a JSON object.');
       }
       options = parsed;
+      const optionsProblem = legacyOptionsProblem(options, instanceUri);
+      if (optionsProblem) {
+        if (reservationId) {
+          await rollbackQuota(reservationId);
+        }
+        return optionsProblem;
+      }
     }
 
     if (options) {

@@ -139,6 +139,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
     ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr')),
   ],
+  ffprobe: [
+    ...(process.env.FFPROBE_PATH ? [process.env.FFPROBE_PATH] : []),
+    '/usr/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
+  ],
   pdfinfo: [
     ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),
     '/usr/bin/pdfinfo',
@@ -200,6 +206,37 @@ function resolveBinary(candidates: string[], envOverride?: string): string | nul
     }
   }
   return null;
+}
+
+/** Native CLIs a health check can ask about, keyed as in BINARY_PATHS. */
+export type NativeBinaryName =
+  | 'soffice'
+  | 'ffmpeg'
+  | 'ffprobe'
+  | 'p7zip'
+  | 'pdftoppm'
+  | 'pdftotext'
+  | 'tesseract'
+  | 'dcrawEmu';
+
+/** The environment variable that overrides each native CLI's location. */
+const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
+  soffice: 'SOFFICE_PATH',
+  ffmpeg: 'FFMPEG_PATH',
+  ffprobe: 'FFPROBE_PATH',
+  p7zip: 'P7ZIP_PATH',
+  pdftoppm: 'PDFTOPPM_PATH',
+  pdftotext: 'PDFTOTEXT_PATH',
+  tesseract: 'TESSERACT_PATH',
+  dcrawEmu: 'DCRAW_EMU_PATH',
+};
+
+/**
+ * Where the worker finds a native CLI: the environment override when one is set, otherwise the
+ * fixed install locations, or null. Reads the environment on every call and runs nothing.
+ */
+export function resolveNativeBinary(name: NativeBinaryName): string | null {
+  return resolveBinary(BINARY_PATHS[name], process.env[NATIVE_BINARY_ENV_VARS[name]]);
 }
 
 /**
