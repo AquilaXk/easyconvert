@@ -38,8 +38,6 @@ export const MIN_MEASURABLE_MS = 1;
 export const SIZE_INDEPENDENT_FLOOR_MS = 5;
 /** Ceiling on how much longer a bounded-work rejection may take when the claimed size grows. */
 export const CONSTANT_RATIO_BOUND = 4;
-/** Multiplier from the time a healthy run needs to the absolute ceiling that only catches a hang. */
-export const HANG_GUARD_MULTIPLE = 10;
 
 export interface ScalingMeasurement<R = unknown> {
   smallMs: number;
@@ -228,9 +226,4 @@ export async function expectNoHang<R>(label: string, run: () => R | Promise<R>, 
   const { ms, value } = await timeOnce<R>(run);
   expect(ms, `${label}: took ${ms.toFixed(0)} ms; the hang guard is ${guardMs} ms`).toBeLessThan(guardMs);
   return value;
-}
-
-/** An absolute hang guard: `expectedMs` is how long a healthy run needs; the ceiling is a multiple of it. */
-export function hangGuardMs(expectedMs: number): number {
-  return expectedMs * HANG_GUARD_MULTIPLE;
 }

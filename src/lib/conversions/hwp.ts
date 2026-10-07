@@ -119,13 +119,16 @@ export function isCfbfContainer(buffer: Buffer): boolean {
   return true;
 }
 
+/** Sector numbers from here up are markers (DIFAT, FAT, end of chain, free), not positions in the file (MS-CFB 2.1). */
+const CFBF_FIRST_RESERVED_SECTOR = 0xfffffffa;
+
 /**
  * Parses an authentic OLE2 CFBF container:
  * 512-byte header, SAT/FAT sectors, Directory Entries, MiniFAT and MiniStream.
  */
 export function parseCfbf(buffer: Buffer): CfbfContainer {
   if (!isCfbfContainer(buffer)) {
-    throw new Error('Invalid CFBF container: Missing OLE2 magic signature.');
+    throw new CorruptStreamError('Invalid CFBF container: Missing OLE2 magic signature.');
   }
 
   // Header fields
@@ -146,7 +149,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const fatSectorIds: number[] = [];
   for (let i = 0; i < 109; i++) {
     const sId = buffer.readUInt32LE(76 + i * 4);
-    if (sId < 0xfffffffa && fatSectorIds.length < fatSectorCount) {
+    if (sId < CFBF_FIRST_RESERVED_SECTOR && fatSectorIds.length < fatSectorCount) {
       fatSectorIds.push(sId);
     }
   }
@@ -154,14 +157,17 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   let currDifatSector = firstDifatSector;
   let difatSectorsRead = 0;
   const visitedDifat = new Set<number>();
-  while (currDifatSector < 0xfffffffa && difatSectorsRead < difatSectorCount && !visitedDifat.has(currDifatSector)) {
+  while (currDifatSector < CFBF_FIRST_RESERVED_SECTOR && difatSectorsRead < difatSectorCount) {
+    if (visitedDifat.has(currDifatSector)) {
+      throw new CorruptStreamError(`Corrupt CFBF container: the DIFAT chain returns to sector ${currDifatSector}.`);
+    }
     visitedDifat.add(currDifatSector);
     const offset = (currDifatSector + 1) * sectorSize;
     if (offset + sectorSize > buffer.length) break;
     const entriesInSector = (sectorSize / 4) - 1;
     for (let i = 0; i < entriesInSector; i++) {
       const sId = buffer.readUInt32LE(offset + i * 4);
-      if (sId < 0xfffffffa && fatSectorIds.length < fatSectorCount) {
+      if (sId < CFBF_FIRST_RESERVED_SECTOR && fatSectorIds.length < fatSectorCount) {
         fatSectorIds.push(sId);
       }
     }
@@ -185,13 +191,18 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
 
   // Helper to read a sector chain from the main FAT
   function readSectorChain(startSector: number, maxBytes?: number): Buffer {
-    if (startSector >= 0xfffffffa) return Buffer.alloc(0);
+    if (startSector >= CFBF_FIRST_RESERVED_SECTOR) return Buffer.alloc(0);
     const chunks: Buffer[] = [];
     let curr = startSector;
     let bytesRead = 0;
     const visited = new Set<number>();
 
-    while (curr < 0xfffffffa && !visited.has(curr)) {
+    while (curr < CFBF_FIRST_RESERVED_SECTOR) {
+      if (visited.has(curr)) {
+        throw new CorruptStreamError(
+          `Corrupt CFBF container: the sector chain starting at sector ${startSector} returns to sector ${curr}.`
+        );
+      }
       visited.add(curr);
       const offset = (curr + 1) * sectorSize;
       if (offset >= buffer.length) break;
@@ -242,7 +253,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
 
   // 4. Build MiniFAT table
   let miniFat: Uint32Array = new Uint32Array(0);
-  if (miniFatSectorCount > 0 && firstMiniFatSector < 0xfffffffa) {
+  if (miniFatSectorCount > 0 && firstMiniFatSector < CFBF_FIRST_RESERVED_SECTOR) {
     const miniFatBuffer = readSectorChain(firstMiniFatSector, miniFatSectorCount * sectorSize);
     miniFat = new Uint32Array(Math.floor(miniFatBuffer.length / 4));
     for (let i = 0; i < miniFat.length; i++) {
@@ -253,19 +264,24 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   // 5. MiniStream buffer (stored in Root Entry starting sector)
   const rootEntry = directoryEntries.find((d) => d.type === 5) || directoryEntries[0];
   let miniStreamBuffer: Buffer = Buffer.alloc(0);
-  if (rootEntry && rootEntry.startingSector < 0xfffffffa && rootEntry.streamSize > 0) {
+  if (rootEntry && rootEntry.startingSector < CFBF_FIRST_RESERVED_SECTOR && rootEntry.streamSize > 0) {
     miniStreamBuffer = Buffer.from(readSectorChain(rootEntry.startingSector, rootEntry.streamSize));
   }
 
   // Helper to read mini sector chain
   function readMiniSectorChain(startMiniSector: number, size: number): Buffer {
-    if (startMiniSector >= 0xfffffffa || miniStreamBuffer.length === 0) return Buffer.alloc(0);
+    if (startMiniSector >= CFBF_FIRST_RESERVED_SECTOR || miniStreamBuffer.length === 0) return Buffer.alloc(0);
     const chunks: Buffer[] = [];
     let curr = startMiniSector;
     let bytesRead = 0;
     const visited = new Set<number>();
 
-    while (curr < 0xfffffffa && !visited.has(curr)) {
+    while (curr < CFBF_FIRST_RESERVED_SECTOR) {
+      if (visited.has(curr)) {
+        throw new CorruptStreamError(
+          `Corrupt CFBF container: the mini sector chain starting at mini sector ${startMiniSector} returns to mini sector ${curr}.`
+        );
+      }
       visited.add(curr);
       const offset = curr * miniSectorSize;
       if (offset >= miniStreamBuffer.length) break;
@@ -356,6 +372,9 @@ export function buildHwpRecord(tagId: number, level: number, payload: Buffer): B
   }
 }
 
+/** A 12-bit record size of 0xfff means the real size follows as a 32-bit word (HWP 5.0 file format, record structure). */
+const HWP_EXTENDED_SIZE_MARKER = 0xfff;
+
 /**
  * Parses sequential HWP 5.0 records from a decompressed stream buffer
  */
@@ -371,23 +390,28 @@ export function parseHwpRecords(buffer: Buffer): HwpRecord[] {
     const level = (header >> 10) & 0x3ff;
     let size = (header >> 20) & 0xfff;
 
-    if (size === 0xfff) {
-      if (offset + 4 > buffer.length) break;
+    if (size === HWP_EXTENDED_SIZE_MARKER) {
+      if (offset + 4 > buffer.length) {
+        throw new CorruptStreamError(`Corrupt HWP record: tag ${tagId} is cut off inside its extended size field.`);
+      }
       size = buffer.readUInt32LE(offset);
       offset += 4;
     }
 
     if (offset + size > buffer.length) {
-      // Malformed or truncated record: take remainder
-      const payload = Buffer.from(buffer.subarray(offset));
-      records.push({ tagId, level, size: payload.length, payload });
-      break;
+      throw new CorruptStreamError(
+        `Corrupt HWP record: tag ${tagId} declares ${size} payload bytes but only ${buffer.length - offset} remain.`
+      );
     }
 
     const payload = Buffer.from(buffer.subarray(offset, offset + size));
     offset += size;
 
     records.push({ tagId, level, size, payload });
+  }
+
+  if (offset < buffer.length) {
+    throw new CorruptStreamError(`Corrupt HWP record stream: ${buffer.length - offset} stray bytes follow the last record.`);
   }
 
   return records;

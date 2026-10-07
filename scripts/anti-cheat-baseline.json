@@ -134,34 +134,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-differential-testnet-and-fuzzing.test.ts",
-    "symbol": "prevents directory traversal attacks (zip-slip) by sanitizing paths",
-    "reason": "Test block \"prevents directory traversal attacks (zip-slip) by sanitizing paths\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-differential-testnet-and-fuzzing.test.ts",
-    "symbol": "fails closed when OLE2 CFBF magic bytes are corrupted",
-    "reason": "Test block \"fails closed when OLE2 CFBF magic bytes are corrupted\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-differential-testnet-and-fuzzing.test.ts",
-    "symbol": "fails closed when OLE2 sector allocation chain forms an infinite cycle",
-    "reason": "Test block \"fails closed when OLE2 sector allocation chain forms an infinite cycle\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-differential-testnet-and-fuzzing.test.ts",
-    "symbol": "fails closed when WOFF2 length headers mismatch or Brotli stream is corrupted",
-    "reason": "Test block \"fails closed when WOFF2 length headers mismatch or Brotli stream is corrupted\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-3-opfs-and-retention.test.ts",
     "symbol": "transforms CSV to TSV while strictly preserving commas within quoted cells",
     "reason": "Test block \"transforms CSV to TSV while strictly preserving commas within quoted cells\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
@@ -207,76 +179,6 @@
     "file": "tests/phase-3-zero-heap-and-sandbox.test.ts",
     "symbol": "assembles unshare isolation arguments with mount, IPC, and PID flags",
     "reason": "Test block \"assembles unshare isolation arguments with mount, IPC, and PID flags\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed when zip archive contains hostile Zip-Slip paths",
-    "reason": "Test block \"fails closed when zip archive contains hostile Zip-Slip paths\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on truncated ZIP archives before central directory",
-    "reason": "Test block \"fails closed on truncated ZIP archives before central directory\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed when footer length claims massive offset beyond file bounds",
-    "reason": "Test block \"fails closed when footer length claims massive offset beyond file bounds\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed when string byte length in PLAIN page exceeds available buffer",
-    "reason": "Test block \"fails closed when string byte length in PLAIN page exceeds available buffer\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed across progressive truncation intervals (10%, 25%, 50%, 75%)",
-    "reason": "Test block \"fails closed across progressive truncation intervals (10%, 25%, 50%, 75%)\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on truncated frame before block header",
-    "reason": "Test block \"fails closed on truncated frame before block header\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on record headers with negative or absurd payload lengths in parseHwpRecords",
-    "reason": "Test block \"fails closed on record headers with negative or absurd payload lengths in parseHwpRecords\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on truncated WAV bitstreams missing subchunk header",
-    "reason": "Test block \"fails closed on truncated WAV bitstreams missing subchunk header\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on corrupted FLAC stream with broken sync word or truncated header",
-    "reason": "Test block \"fails closed on corrupted FLAC stream with broken sync word or truncated header\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-adversarial-fuzzing.test.ts",
-    "symbol": "fails closed on non-audio random noise bitstreams without unhandled crashes",
-    "reason": "Test block \"fails closed on non-audio random noise bitstreams without unhandled crashes\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
   {
