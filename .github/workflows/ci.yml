@@ -58,7 +58,7 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
         # The registry conformance gate runs in its own parallel job below.
-        run: npx --no-install vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --exclude tests/registry-engine-conformance.test.ts
+        run: npx --no-install vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --exclude tests/registry-engine-conformance.test.ts --exclude 'tests/**/*.perf.test.ts'
 
   conformance:
     name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
@@ -158,6 +158,13 @@ jobs:
 
       - name: Run linter
         run: npm run lint
+
+      # Performance suites saturate the CPUs (parallel engine workers, speedup ratios); they run here one
+      # file at a time so they neither starve the timing-sensitive tests in the shards nor get starved.
+      - name: Run performance suites
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npx --no-install vitest run --no-file-parallelism .perf.test.ts
 
       # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
       # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
