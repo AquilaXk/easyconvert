@@ -21,6 +21,8 @@ import {
   buildUnshareIsolationArgs,
   SandboxedProcessError,
 } from '../src/lib/security/process-sandbox';
+import { oracleTest } from './helpers/oracle-test';
+import { readUnshareOptionMeanings } from './helpers/unshare-help';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 
@@ -585,10 +587,24 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
         netNamespace: true,
         pidNamespace: true,
       });
-      expect(args).toContain('-r');
-      expect(args).toContain('-n');
-      expect(args).toContain('-p');
-      expect(args).toContain('--fork');
+      // The capability's own arguments come first; a PID namespace needs --fork so the child is PID 1 of it.
+      expect(args).toEqual(['-r', '-n', '-p', '--fork']);
+    });
+
+    oracleTest('builds only options that util-linux unshare documents, each for the namespace it is meant for', ['unshare'], () => {
+      const meanings = readUnshareOptionMeanings();
+      const args = buildUnshareIsolationArgs(
+        { available: true, path: '/usr/bin/unshare', args: ['-r'] },
+        { netNamespace: true, mountNamespace: true, ipcNamespace: true, pidNamespace: true }
+      );
+      expect(args.map((arg) => [arg, meanings.get(arg)])).toEqual([
+        ['-r', 'map current user to root (implies --user)'],
+        ['-n', 'unshare network namespace'],
+        ['-m', 'unshare mounts namespace'],
+        ['-i', 'unshare System V IPC namespace'],
+        ['-p', 'unshare pid namespace'],
+        ['--fork', 'fork before launching <program>'],
+      ]);
     });
   });
 });

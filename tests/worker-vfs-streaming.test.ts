@@ -13,6 +13,9 @@ import {
 } from '../src/worker/engines';
 import { FileExtensionSpoofError } from '../src/lib/types';
 
+/** Node refuses to read a file into one Buffer past this size (ERR_FS_FILE_TOO_LARGE). */
+const MAX_WHOLE_FILE_READ_BYTES = 2 ** 31;
+
 describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
   let tempDir: string;
 
@@ -79,13 +82,21 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
   });
 
   describe('2. Fail-Closed VFS Anti-Spoofing Header Sniffing', () => {
-    it('allows valid text files on disk without memory bloat', () => {
-      const txtPath = path.join(tempDir, 'valid.txt');
-      fs.writeFileSync(txtPath, 'Valid plain text content for testing.');
+    it('sniffs only the header of a file on disk, so a file too large to load is still checked', () => {
+      // A sparse file just past the 2 GiB limit of Buffer-based reads: text at the start, holes after it.
+      const bigPath = path.join(tempDir, 'big.txt');
+      fs.writeFileSync(bigPath, 'Valid plain text content for testing.');
+      fs.truncateSync(bigPath, MAX_WHOLE_FILE_READ_BYTES + 1);
+      // Control: a whole-file read of it is impossible, so a pass below can only come from reading a header.
+      expect(() => fs.readFileSync(bigPath)).toThrow(/greater than 2 GiB/);
 
-      expect(() => {
-        assertNotSpoofedFileVfs({ inputPath: txtPath }, 'txt', 'valid.txt');
-      }).not.toThrow();
+      expect(assertNotSpoofedFileVfs({ inputPath: bigPath }, 'txt', 'big.txt')).toBeUndefined();
+
+      // The same size with an ELF header is still refused after reading nothing but that header.
+      const elfPath = path.join(tempDir, 'big-elf.txt');
+      fs.writeFileSync(elfPath, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]));
+      fs.truncateSync(elfPath, MAX_WHOLE_FILE_READ_BYTES + 1);
+      expect(() => assertNotSpoofedFileVfs({ inputPath: elfPath }, 'txt', 'big-elf.txt')).toThrow(FileExtensionSpoofError);
     });
 
     it('rejects spoofed ELF binary disguised as txt file on disk (fail-closed)', () => {

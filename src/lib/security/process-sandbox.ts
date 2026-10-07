@@ -587,7 +587,7 @@ export async function executeSandboxedBinary(
   } = options;
 
   if (!binaryPath || typeof binaryPath !== 'string') {
-    throw new Error('Sandboxed execution error: invalid binary path provided.');
+    throw new SandboxedProcessError('Sandboxed execution error: invalid binary path provided.', null, '');
   }
 
   const sandboxEnv = detectSandboxEnvironment();

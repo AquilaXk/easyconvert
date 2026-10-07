@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { load as loadYaml } from 'js-yaml';
+import { execForm, parseDockerfile } from './helpers/dockerfile';
 import {
   yieldToEventLoop,
   measureEventLoopLag,
@@ -196,27 +198,43 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
 
   describe('3. Multi-Stage OCI Container & Defense-in-Depth Specification', () => {
     it('verifies Dockerfile.worker multi-stage builder and runner configuration', () => {
-      const dockerfilePath = path.resolve(__dirname, '../Dockerfile.worker');
-      const dockerfileContent = fs.readFileSync(dockerfilePath, 'utf-8');
+      const stages = parseDockerfile(fs.readFileSync(path.resolve(__dirname, '../Dockerfile.worker'), 'utf-8'));
 
-      expect(dockerfileContent).toContain('AS builder');
-      expect(dockerfileContent).toContain('AS runner');
-      expect(dockerfileContent).toContain('tini');
-      expect(dockerfileContent).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"]');
-      expect(dockerfileContent).toContain('groupadd -g 10001 -r easyconvert');
-      expect(dockerfileContent).toContain('useradd -u 10001 -r -g easyconvert');
-      expect(dockerfileContent).toContain('USER easyconvert:easyconvert');
+      // The image is built in stages and the one that ships is the last: the runner.
+      expect(stages.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'runner']);
+      const runner = stages[stages.length - 1];
+      const instructions = (keyword: string) => runner.instructions.filter((instruction) => instruction.keyword === keyword);
+
+      // The runner installs tini and starts through it (exec form, so signals reach tini as PID 1).
+      expect(instructions('RUN').some((run) => /apt-get install[^&]*\btini\b/.test(run.argument))).toBe(true);
+      const entrypoint = instructions('ENTRYPOINT');
+      expect(entrypoint).toHaveLength(1);
+      expect(execForm(entrypoint[0])).toEqual(['/usr/bin/tini', '-g', '--']);
+
+      // The service account has a fixed uid and gid, is created before it is used, and is the last USER.
+      const accountRun = instructions('RUN').find((run) => run.argument.includes('useradd'));
+      expect(accountRun?.argument).toContain('groupadd -g 10001 -r easyconvert');
+      expect(accountRun?.argument).toContain('useradd -u 10001 -r -g easyconvert');
+      const users = instructions('USER');
+      expect(users[users.length - 1].argument).toBe('easyconvert:easyconvert');
+      expect(users[users.length - 1].index).toBeGreaterThan(accountRun!.index);
+      expect(users.some((user) => user.argument === 'root')).toBe(false);
     });
 
     it('verifies docker-compose.yml security directives (init, cap_drop, no-new-privileges)', () => {
-      const composePath = path.resolve(__dirname, '../docker-compose.yml');
-      const composeContent = fs.readFileSync(composePath, 'utf-8');
+      const compose = loadYaml(fs.readFileSync(path.resolve(__dirname, '../docker-compose.yml'), 'utf-8')) as {
+        services: Record<string, Record<string, unknown>>;
+      };
+      const worker = compose.services.worker;
 
-      expect(composeContent).toContain('init: true');
-      expect(composeContent).toContain('cap_drop:');
-      expect(composeContent).toContain('- ALL');
-      expect(composeContent).toContain('no-new-privileges:true');
-      expect(composeContent).toContain('worker-tmp:/tmp');
+      // Values come from the parsed service: comments in the file mention some of these words.
+      expect(worker.init).toBe(true);
+      expect(worker.cap_drop).toEqual(['ALL']);
+      expect(worker.security_opt).toEqual(['no-new-privileges:true']);
+      expect(worker.read_only).toBe(true);
+      // /tmp is a size-capped tmpfs that cannot run binaries or carry setuid files.
+      expect(worker.tmpfs).toContain('/tmp:size=8g,noexec,nosuid');
+      expect(worker.volumes).not.toContain('worker-tmp:/tmp');
     });
   });
 

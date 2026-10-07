@@ -36,34 +36,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/oracle-integrity-and-security-audit.test.ts",
-    "symbol": "validates authentic FLAC buffer with 34-byte STREAMINFO",
-    "reason": "Test block \"validates authentic FLAC buffer with 34-byte STREAMINFO\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/oracle-integrity-and-security-audit.test.ts",
-    "symbol": "verifies docker-compose.yml defines SYS_ADMIN capability and no-new-privileges for worker isolation",
-    "reason": "Test block \"verifies docker-compose.yml defines SYS_ADMIN capability and no-new-privileges for worker isolation\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/oracle-integrity-and-security-audit.test.ts",
-    "symbol": "sanitizes XML DTD entity expansion (Billion Laughs) and script injection in SVG",
-    "reason": "Test block \"sanitizes XML DTD entity expansion (Billion Laughs) and script injection in SVG\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-0-security-hardening.test.ts",
-    "symbol": "creates an Undici Custom Agent that pins IP and blocks private destination lookups",
-    "reason": "Test block \"creates an Undici Custom Agent that pins IP and blocks private destination lookups\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-1-hotfix-verification.test.ts",
     "symbol": "strips <script> tags, <foreignObject>, inline on* handlers, and javascript: URIs",
     "reason": "Test block \"strips <script> tags, <foreignObject>, inline on* handlers, and javascript: URIs\" contains only weak assertions (8 weak matcher(s)). Must include at least one substantive check.",
@@ -106,20 +78,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-queue-sandbox-lifecycle.test.ts",
-    "symbol": "assembles unshare isolation arguments with network namespace flags",
-    "reason": "Test block \"assembles unshare isolation arguments with network namespace flags\" contains only weak assertions (4 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-1-storage-and-streaming.test.ts",
-    "symbol": "makes OCI worker output immediately retrievable via S3 storage and download route",
-    "reason": "Test block \"makes OCI worker output immediately retrievable via S3 storage and download route\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-2-sota-algorithms.test.ts",
     "symbol": "transpiles HWP big operators and Greek symbols",
     "reason": "Test block \"transpiles HWP big operators and Greek symbols\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
@@ -148,58 +106,9 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-sota-infrastructure.test.ts",
-    "symbol": "rejects invalid or missing binary path fail-closed",
-    "reason": "Test block \"rejects invalid or missing binary path fail-closed\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-sota-infrastructure.test.ts",
-    "symbol": "resets sandbox environment cache cleanly",
-    "reason": "Test block \"resets sandbox environment cache cleanly\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-sota-infrastructure.test.ts",
-    "symbol": "rejects corrupted zst archives fail-closed in convertArchive",
-    "reason": "Test block \"rejects corrupted zst archives fail-closed in convertArchive\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-sota-infrastructure.test.ts",
-    "symbol": "rejects truncated Parquet data page fail-closed",
-    "reason": "Test block \"rejects truncated Parquet data page fail-closed\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-3-zero-heap-and-sandbox.test.ts",
-    "symbol": "assembles unshare isolation arguments with mount, IPC, and PID flags",
-    "reason": "Test block \"assembles unshare isolation arguments with mount, IPC, and PID flags\" contains only weak assertions (6 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-4-golden-corpus-and-vrt.test.ts",
     "symbol": "resiliently handles corrupted B-Spline knot vectors fail-closed",
     "reason": "Test block \"resiliently handles corrupted B-Spline knot vectors fail-closed\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-security-and-sandbox-hardening.test.ts",
-    "symbol": "verifies Dockerfile.worker multi-stage builder and runner configuration",
-    "reason": "Test block \"verifies Dockerfile.worker multi-stage builder and runner configuration\" contains only weak assertions (7 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-4-security-and-sandbox-hardening.test.ts",
-    "symbol": "verifies docker-compose.yml security directives (init, cap_drop, no-new-privileges)",
-    "reason": "Test block \"verifies docker-compose.yml security directives (init, cap_drop, no-new-privileges)\" contains only weak assertions (5 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
   {
@@ -239,13 +148,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/security-api-hardening.test.ts",
-    "symbol": "killProcessGroup gracefully handles undefined or non-existent PID without throwing",
-    "reason": "Test block \"killProcessGroup gracefully handles undefined or non-existent PID without throwing\" contains only weak assertions (2 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/skeptical-audit.test.ts",
     "symbol": "fails closed when extractZipArchive is given a corrupted archive",
     "reason": "Test block \"fails closed when extractZipArchive is given a corrupted archive\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
@@ -277,13 +179,6 @@
     "file": "tests/topological-reading-order.test.ts",
     "symbol": "gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer",
     "reason": "Test block \"gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/worker-vfs-streaming.test.ts",
-    "symbol": "allows valid text files on disk without memory bloat",
-    "reason": "Test block \"allows valid text files on disk without memory bloat\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   }
 ]
