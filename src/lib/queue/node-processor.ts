@@ -21,6 +21,7 @@ import { dispatchEngine } from './dispatch-engine';
 import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
+import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -74,6 +75,7 @@ export const tsEngine: ConversionEnginePort = {
       ocrExtractedText: res.ocrExtractedText,
       sourceFrameCount: res.sourceFrameCount,
       frameUsed: res.frameUsed,
+      metadata: res.metadata,
     };
   },
 };
@@ -359,6 +361,7 @@ export async function processNodeJob(
       ocrExtracted: Boolean(finalResult.ocrExtractedText),
       ...frameMetadataFields(finalResult),
       ...engineTraceFields(finalResult),
+      ...droppedStreamsFields(finalResult),
     };
   } catch (err) {
     failure = err;

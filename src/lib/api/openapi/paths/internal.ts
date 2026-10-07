@@ -14,6 +14,7 @@ import {
   multipartBody,
   requireScope,
   FRAME_RESPONSE_HEADERS,
+  DROPPED_STREAMS_RESPONSE_HEADERS,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -239,7 +240,7 @@ export const internalPaths = {
       responses: {
         '200': {
           ...binaryResponse('Converted file.'),
-          headers: FRAME_RESPONSE_HEADERS,
+          headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS },
         },
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),

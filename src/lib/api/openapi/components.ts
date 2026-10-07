@@ -15,6 +15,7 @@ import {
   PdfProtectOptionsSchema,
   PdfAOptionsSchema,
   PdfaValidationProblemSchema,
+  DroppedStreamsProperties,
   EngineTraceProperties,
 } from '@/lib/api/contracts';
 import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
@@ -81,6 +82,7 @@ export const components = {
         dataUri: { type: 'string' },
         expiresAt: { type: 'number' },
         ...EngineTraceProperties,
+        ...DroppedStreamsProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

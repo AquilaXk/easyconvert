@@ -189,6 +189,7 @@ export function resolveNodeResourceClass(node: any): ResourceClass {
       return 'memory';
     case 'archive.create':
     case 'archive.extract':
+    case 'media.package':
       return 'cpu';
     case 'convert':
       return resolveResourceClass('bin', node.targetFormat || 'bin', 0, node.options);

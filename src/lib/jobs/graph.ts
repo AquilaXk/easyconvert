@@ -628,6 +628,10 @@ export function validateJobGraph(
         inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS.metadata as string;
         break;
       }
+      case 'media.package': {
+        inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS['media.package'] as string;
+        break;
+      }
       case 'thumbnail':
       case 'merge':
       case 'archive.create': {

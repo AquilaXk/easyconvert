@@ -1,6 +1,7 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
 
+import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
 import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
 
@@ -473,6 +474,34 @@ export const ConversionOptionsSchema = {
           enum: ['itu-r-bs775'],
           description: 'ITU-R BS.775 surround-to-stereo downmixing matrix.',
         },
+        loudness: {
+          type: 'object',
+          description:
+            'Opt-in EBU R128 / ITU-R BS.1770-4 loudness normalisation in two passes: a measuring pass, then a linear gain. Needs a single audio track. Without values it normalises to -23 LUFS with a -1 dBTP ceiling.',
+          properties: {
+            preset: {
+              type: 'string',
+              enum: ['ebu-r128', 'streaming', 'podcast'],
+              default: 'ebu-r128',
+              description: 'Starting target: ebu-r128 = -23 LUFS / -1 dBTP / 7 LU, streaming = -14 LUFS / -1 dBTP / 11 LU, podcast = -16 LUFS / -1.5 dBTP / 11 LU.',
+            },
+            integrated: { type: 'number', minimum: -70, maximum: -5, description: 'Integrated loudness target in LUFS.' },
+            truePeak: { type: 'number', minimum: -9, maximum: 0, description: 'True-peak ceiling in dBTP.' },
+            lra: { type: 'number', minimum: 1, maximum: 50, description: 'Loudness range target in LU.' },
+          },
+          additionalProperties: false,
+        },
+        resampler: {
+          type: 'string',
+          enum: ['soxr', 'swr'],
+          description:
+            'Resampler for sample-rate changes. Unset uses soxr (precision 28) when the ffmpeg build has it and the default swresample otherwise, reported in the result metadata; an explicit soxr on a build without it answers 503.',
+        },
+        dither: {
+          type: 'string',
+          enum: ['none', 'rectangular', 'triangular', 'triangular_hp'],
+          description: 'Dither for the reduction to 16-bit PCM output. Defaults to triangular_hp (high-pass shaped TPDF). Other codecs reject it.',
+        },
         track: {
           oneOf: [
             { type: 'integer', minimum: 0 },
@@ -509,6 +538,11 @@ export const ConversionOptionsSchema = {
               properties: {
                 mode: { const: 'crf' },
                 crf: { type: 'number', minimum: 0, maximum: 63 },
+                maxBitrateK: {
+                  type: 'number',
+                  minimum: 1,
+                  description: 'Optional peak-bitrate cap in kbit/s (capped CRF): -maxrate with a buffer of twice that. Unset leaves the rate to quality alone.',
+                },
               },
             },
             {
@@ -519,7 +553,11 @@ export const ConversionOptionsSchema = {
                 bitrateK: { type: 'number', minimum: 1 },
                 maxrateK: { type: 'number', minimum: 1 },
                 bufsizeK: { type: 'number', minimum: 1 },
-                twoPass: { type: 'boolean' },
+                twoPass: {
+                  type: 'boolean',
+                  description:
+                    'Encode in two passes (h264, hevc, vp9; software encoders) so the video bitrate lands closer to bitrateK. Costs about twice the encode time and counts both passes against the job timeout. Other codecs answer 400.',
+                },
               },
             },
             {
@@ -535,7 +573,8 @@ export const ConversionOptionsSchema = {
         },
         preset: {
           type: 'string',
-          description: 'Encoding speed-to-compression ratio preset.',
+          description:
+            'Encoding speed-to-compression preset. h264 and hevc: ultrafast, superfast, veryfast, faster, fast, medium (default), slow, slower or veryslow. av1: an integer from 0 (slowest) to 13, default 8. Other values answer an error.',
         },
         fps: {
           type: 'number',
@@ -561,7 +600,8 @@ export const ConversionOptionsSchema = {
         },
         deinterlace: {
           type: 'boolean',
-          description: 'Apply yadif deinterlacing filter.',
+          description:
+            'Deinterlace interlaced frames with bwdif in send_field mode: one progressive frame per field, so the output frame rate is twice the field-pair rate of the source.',
         },
         scale: {
           type: 'object',
@@ -651,8 +691,17 @@ export const ConversionOptionsSchema = {
           default: 4,
           description: 'Segment duration target in seconds (2..10).',
         },
+        segmentType: {
+          type: 'string',
+          enum: ['ts', 'fmp4'],
+          default: 'ts',
+          description:
+            'HLS segment container: MPEG-2 transport stream (ts) or fragmented MP4 / CMAF (fmp4, ISO/IEC 23000-19, with an EXT-X-MAP init section). MPEG-DASH always uses fmp4.',
+        },
         ladder: {
           type: 'array',
+          minItems: 1,
+          maxItems: 10,
           items: {
             type: 'object',
             required: ['height', 'bitrateK'],
@@ -663,7 +712,8 @@ export const ConversionOptionsSchema = {
               audioBitrateK: { type: 'integer', minimum: 16, maximum: 1024, description: 'Audio bitrate target in kbps.' },
             },
           },
-          description: 'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted.',
+          description:
+            'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted. Rungs taller than the source are dropped, a rung never asks for more bitrate than the source carries, and each rung peaks at 1.07x its bitrate.',
         },
         masterPlaylistName: {
           type: 'string',
@@ -703,9 +753,10 @@ export const ConversionOptionsSchema = {
     },
     duration: {
       type: 'number',
-      minimum: 0,
-      description: 'Maximum duration in seconds to transcode (planned).',
-      'x-easyconvert-status': 'planned',
+      exclusiveMinimum: 0,
+      maximum: 86400,
+      description:
+        'Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400.',
     },
     useFfmpeg: {
       type: 'boolean',
@@ -713,14 +764,24 @@ export const ConversionOptionsSchema = {
     },
     fastStart: {
       type: 'boolean',
-      description: 'Relocate moov atom to beginning of MP4 container for web streaming (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Place the moov atom before the media data of mp4, mov and m4a output for progressive playback. Defaults to true for those containers; false leaves it at the end. true for any other container answers 400.',
     },
     aspectRatio: {
-      type: 'string',
-      pattern: '^\\d+:\\d+$',
-      description: 'Video aspect ratio (e.g. 16:9, 4:3) (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Display aspect ratio. A "W:H" string sets the display ratio without touching the pixels (setdar). The object form adds a mode: "pad" adds black bars and "crop" removes picture, both reshaping the frame to the ratio with even sizes. Terms are whole numbers up to 10000 and the ratio at most 10:1; anything else answers 400.',
+      oneOf: [
+        { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+        {
+          type: 'object',
+          required: ['ratio'],
+          properties: {
+            ratio: { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+            mode: { type: 'string', enum: ['dar', 'pad', 'crop'], default: 'dar' },
+          },
+          additionalProperties: false,
+        },
+      ],
     },
     disableHwaccel: {
       type: 'boolean',
@@ -1047,6 +1108,38 @@ export const EngineTraceProperties = {
   },
 } as const;
 
+/** Input streams a media conversion left out because the target container cannot carry them; absent when none. */
+export const DroppedStreamsProperties = {
+  droppedStreams: {
+    type: 'array',
+    maxItems: MAX_DROPPED_STREAMS,
+    description:
+      'Streams of the input that the output does not contain, for example the subtitle tracks of an mkv converted to avi. The conversion succeeded; this lists what it could not carry. Present only when something was left out. Audio tracks `audio.track` did not choose and subtitles burned into the picture are not listed.',
+    items: {
+      type: 'object',
+      required: ['kind', 'reason'],
+      additionalProperties: false,
+      properties: {
+        index: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Stream index in the input; absent for the chapter list.',
+        },
+        kind: { type: 'string', enum: [...DROPPED_STREAM_KINDS] },
+        codec: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Codec name of the stream, when known.' },
+        language: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Language tag of the stream, when it has one.' },
+        title: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Title of the stream, when it has one.' },
+        reason: {
+          type: 'string',
+          enum: [...DROPPED_STREAM_REASONS],
+          description:
+            '`container_unsupported`: the target container cannot carry this stream. `stream_type_unsupported`: no video-container output carries this kind of stream (data, cover art). `additional_video_track`: only the first video track is kept.',
+        },
+      },
+    },
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
@@ -1117,11 +1210,13 @@ export const JobResourceSchema = {
       description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
     },
     ...EngineTraceProperties,
+    ...DroppedStreamsProperties,
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
       properties: {
         ...EngineTraceProperties,
+        ...DroppedStreamsProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

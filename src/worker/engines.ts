@@ -45,11 +45,23 @@ import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSele
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
+  buildTwoPassArguments,
+  isTwoPassRequested,
+  probePackagingSource,
   probeHardwareAcceleration,
   usesHardwareVideoEncoder,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
-import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
+import {
+  probeMediaDuration,
+  computeMediaTimeoutMs,
+  computePackagingTimeoutMs,
+  plannedRungCount,
+  DEFAULT_MEDIA_TIER_MAX_MS,
+} from '../lib/conversions/media';
+import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
+import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
+import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
@@ -550,7 +562,7 @@ export async function convertWithNativeFfmpeg(
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
       const durationSeconds = probeMediaDuration(inputPath, options);
-      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || 180000);
+      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS);
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
         const parts: { filename: string; buffer: Buffer }[] = [];
@@ -595,10 +607,15 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+        const source = probePackagingSource(inputPath, ffmpegBin);
+        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
         await executeSandboxedBinary(ffmpegBin, args, {
           cwd: outputDir,
-          timeoutMs: timeout,
+          timeoutMs: computePackagingTimeoutMs(
+            source.geometry.durationSec,
+            plannedRungCount(packaging, source),
+            options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS
+          ),
           maxBuffer,
           networkIsolated: true,
           signal: options.signal,
@@ -643,33 +660,42 @@ export async function convertWithNativeFfmpeg(
         return res;
       }
 
-      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
-      const runFfmpeg = (ffmpegArgs: string[]) =>
+      const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
         executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
           cwd: tempDir,
-          timeoutMs: timeout,
+          timeoutMs: limitMs,
           maxBuffer,
           networkIsolated: true,
           signal: options.signal,
         });
+      const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
+      // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
+      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
 
-      try {
-        await runFfmpeg(args);
-      } catch (err) {
-        // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
-        // driver error). Retry exactly once in software; a failed retry reports the original error,
-        // and a cancelled job is never retried.
-        const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
-        if (!hardwareEncoderFailed || options.signal?.aborted) {
-          throw err;
-        }
-        const softwareArgs = buildFfmpegArguments(
-          inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
-        );
+      if (isTwoPassRequested(options)) {
+        // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
+        const passes = buildTwoPassArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        await runTwoPass(passes, twoPassBudgetMs(timeout), runFfmpegWith);
+      } else {
+        const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
         try {
-          await runFfmpeg(softwareArgs);
-        } catch {
-          throw err;
+          await runFfmpeg(args);
+        } catch (err) {
+          // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
+          // driver error). Retry exactly once in software; a failed retry reports the original error,
+          // and a cancelled job is never retried.
+          const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+          if (!hardwareEncoderFailed || options.signal?.aborted) {
+            throw err;
+          }
+          const softwareArgs = buildFfmpegArguments(
+            inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+          );
+          try {
+            await runFfmpeg(softwareArgs);
+          } catch {
+            throw err;
+          }
         }
       }
 
@@ -680,13 +706,18 @@ export async function convertWithNativeFfmpeg(
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-      return createConversionResult(
+      const transcoded = createConversionResult(
         persistedPath,
         tgt,
         baseName,
         'native-ffmpeg',
         Date.now() - startTime
       );
+      transcoded.metadata = {
+        ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
+        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+      };
+      return transcoded;
     });
   } catch (err) {
     if (options.throwOnUnavailable) {

@@ -23,6 +23,8 @@ import { oracleTest } from './helpers/oracle-test';
 
 /** A path that never resolves to a binary: the tool counts as not installed. */
 const MISSING_TOOL_PATH = '/nonexistent/easyconvert-missing-tool';
+/** Triangular dither spans two least-significant bits either way; rounding adds none beyond that. */
+const MAX_DITHER_SAMPLE = 2;
 const FFMPEG_CASE_TIMEOUT_MS = 120_000;
 const SAMPLE_RATE = 44100;
 const AAC_FIXTURE_FRAMES = 4;
@@ -176,7 +178,14 @@ describe('no in-process AAC decoder: an AAC source needs FFmpeg', () => {
 
         const decoded = decodeAudioWithFfmpeg(result.buffer, 'wav', SAMPLE_RATE, channels);
         expect(decoded).toHaveLength(AAC_FIXTURE_FRAMES * SAMPLES_PER_AAC_FRAME * channels);
-        expect(decoded.every((sample) => sample === 0)).toBe(true);
+        // The default 16-bit dither (triangular_hp) adds noise of at most the dither's own amplitude to silence.
+        expect(decoded.every((sample) => Math.abs(sample) <= MAX_DITHER_SAMPLE)).toBe(true);
+
+        // Without dither the decoded silence is exact.
+        const undithered = await convertMedia(adts, 'aac', 'wav', { audio: { dither: 'none' } }, 'tone.aac');
+        const exact = decodeAudioWithFfmpeg(undithered.buffer, 'wav', SAMPLE_RATE, channels);
+        expect(exact).toHaveLength(AAC_FIXTURE_FRAMES * SAMPLES_PER_AAC_FRAME * channels);
+        expect(exact.every((sample) => sample === 0)).toBe(true);
       },
       FFMPEG_CASE_TIMEOUT_MS
     );
