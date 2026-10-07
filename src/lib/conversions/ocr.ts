@@ -36,7 +36,7 @@ import {
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { mapOcrResultToSource } from './ocr-geometry';
+import { appendOcrResultBelow, mapOcrResultToSource } from './ocr-geometry';
 import {
   OCR_PREPROCESS_STEPS,
   preprocessOcrImage,
@@ -491,18 +491,7 @@ export async function performSmartMultiPagePdfOcr(
         if (!existing) {
           pageOcrResults.set(img.pageNumber, ocr);
         } else {
-          pageOcrResults.set(img.pageNumber, {
-            text: `${existing.text}\n\n${ocr.text}`.trim(),
-            confidence:
-              existing.confidence !== null && ocr.confidence !== null
-                ? (existing.confidence + ocr.confidence) / 2
-                : (existing.confidence ?? ocr.confidence),
-            wordCount: existing.wordCount + ocr.wordCount,
-            lines: [...existing.lines, ...ocr.lines],
-            lineBlocks: [...(existing.lineBlocks || []), ...(ocr.lineBlocks || [])],
-            imageWidth: Math.max(existing.imageWidth || 0, img.width),
-            imageHeight: (existing.imageHeight || 0) + img.height,
-          });
+          pageOcrResults.set(img.pageNumber, appendOcrResultBelow(existing, ocr, img.width, img.height));
         }
       }
     }

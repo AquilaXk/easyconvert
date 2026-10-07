@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapOcrResultToSource, type OcrGeometry } from '../src/lib/conversions/ocr-geometry';
+import { appendOcrResultBelow, mapOcrResultToSource, type OcrGeometry } from '../src/lib/conversions/ocr-geometry';
 import type { OcrLayoutGroup, OcrLineBlock, OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 
 /**
@@ -77,5 +77,50 @@ describe('mapping recognized layout back to the source page', () => {
     expect(first.bbox).toEqual({ x: 50, y: 100, width: 300, height: 30 });
     expect(first.words[0].bbox).toEqual({ x: 50, y: 100, width: 100, height: 30 });
     expect([mapped.imageWidth, mapped.imageHeight]).toEqual([500, 400]);
+  });
+});
+
+describe('appendOcrResultBelow', () => {
+  const block: OcrLayoutGroup = { bbox: { x: 10, y: 20, width: 300, height: 80 } };
+  const paragraph: OcrLayoutGroup = {};
+  const FIRST_HEIGHT = 400;
+  const SECOND_HEIGHT = 250;
+
+  function result(text: string, lineBlocks: OcrLineBlock[], imageHeight: number): OcrResult {
+    return { text, confidence: 80, wordCount: 1, lines: [text], lineBlocks, imageWidth: 500, imageHeight };
+  }
+
+  it("moves the appended image's boxes down by the height merged so far, in every geometric field", () => {
+    const first = result('top', [line('top', 30, block, paragraph)], FIRST_HEIGHT);
+    const second = result('bottom', [line('bottom', 30, block, paragraph)], SECOND_HEIGHT);
+
+    const merged = appendOcrResultBelow(first, second, 500, SECOND_HEIGHT);
+
+    const [kept, moved] = merged.lineBlocks as OcrLineBlock[];
+    // The first image is untouched; the second one starts where the first ends.
+    expect(kept.bbox.y).toBe(30);
+    expect(moved.bbox).toEqual({ x: 100, y: 30 + FIRST_HEIGHT, width: 600, height: 60 });
+    expect(moved.words[0].bbox.y).toBe(30 + FIRST_HEIGHT);
+    expect(moved.baseline).toEqual({ x0: 100, y0: 78 + FIRST_HEIGHT, x1: 700, y1: 82 + FIRST_HEIGHT });
+    expect(moved.block?.bbox).toEqual({ x: 10, y: 20 + FIRST_HEIGHT, width: 300, height: 80 });
+    // The inputs are not modified.
+    expect(second.lineBlocks?.[0].bbox.y).toBe(30);
+    expect(merged.imageHeight).toBe(FIRST_HEIGHT + SECOND_HEIGHT);
+    expect(merged.text).toBe('top\n\nbottom');
+    expect(merged.lines).toEqual(['top', 'bottom']);
+    expect(merged.wordCount).toBe(2);
+    expect(merged.confidence).toBe(80);
+  });
+
+  it('keeps lines of one block or paragraph sharing one shifted group object', () => {
+    const first = result('top', [], FIRST_HEIGHT);
+    const second = result('bottom', [line('a', 0, block, paragraph), line('b', 70, block, paragraph)], SECOND_HEIGHT);
+
+    const merged = appendOcrResultBelow(first, second, 500, SECOND_HEIGHT);
+    const [a, b] = merged.lineBlocks as OcrLineBlock[];
+
+    expect(a.block).toBe(b.block);
+    expect(a.paragraph).toBe(b.paragraph);
+    expect(a.block).not.toBe(block);
   });
 });
