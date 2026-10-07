@@ -1,7 +1,9 @@
 import { ConversionFailedError } from '../../types';
 
 const MALFORMED_STATUS = 400;
-const ENCRYPTED_STATUS = 422;
+
+/** The encrypted-document error lives with the other status-carrying errors so the routes can map it; re-exported for the readers. */
+export { EncryptedOfficeDocumentError } from '../../types';
 
 /**
  * A legacy Office file (Word 97-2003 binary, RTF, PowerPoint 97-2003 binary) is malformed, truncated,
@@ -13,15 +15,5 @@ export class LegacyOfficeFormatError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'LegacyOfficeFormatError';
-  }
-}
-
-/** A legacy Office file is encrypted or password protected, so its text cannot be read. Maps to HTTP 422. */
-export class EncryptedOfficeDocumentError extends ConversionFailedError {
-  readonly status = ENCRYPTED_STATUS;
-
-  constructor(message: string) {
-    super(message);
-    this.name = 'EncryptedOfficeDocumentError';
   }
 }

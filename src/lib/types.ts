@@ -716,6 +716,19 @@ export class DecompressionLimitError extends PayloadLimitError {
   }
 }
 
+/**
+ * A document is encrypted, password protected or DRM protected, so its text cannot be read. The request was
+ * understood and the file is intact; it is the content that is unavailable, so the routes answer HTTP 422
+ * (through `status`) instead of the generic 400 for a malformed input.
+ */
+export class EncryptedOfficeDocumentError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'EncryptedOfficeDocumentError';
+  }
+}
+
 /** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
 export class CorruptStreamError extends ConversionFailedError {
   readonly status = 400;

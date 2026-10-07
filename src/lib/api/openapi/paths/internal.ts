@@ -244,7 +244,7 @@ export const internalPaths = {
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
         '422': {
-          description: `Page count exceeds the tier limit, or: ${PDFA_PROBLEM_DESCRIPTION}`,
+          description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read, or: ${PDFA_PROBLEM_DESCRIPTION}`,
           content: {
             ...createErrorResponse('').content,
             'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
@@ -280,7 +280,7 @@ export const internalPaths = {
           },
         },
         '401': createProblemResponse('Authentication required.'),
-        '422': createPdfaProblemResponse(PDFA_PROBLEM_DESCRIPTION),
+        '422': createPdfaProblemResponse(`The document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
