@@ -111,8 +111,11 @@ const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 interface FontkitFace {
   postscriptName: string | null;
   familyName?: string;
+  unitsPerEm: number;
   directory: { tables: Record<string, unknown> };
   hasGlyphForCodePoint(codePoint: number): boolean;
+  /** Shapes the text with the font's default features; advanceWidth is in font units. */
+  layout(text: string): { advanceWidth: number; glyphs: { id: number }[] };
   /** fontkit's cmap processor; getVariationSelector resolves format-14 variation sequences. */
   _cmapProcessor?: { getVariationSelector?(codePoint: number, selector: number): number };
 }
@@ -135,6 +138,8 @@ export interface PdfFontFace {
   readonly path: string;
   /** Face name inside a font collection (.ttc); undefined for single-face files. */
   readonly collectionFace?: string;
+  /** Index of the face inside its font file; 0 for single-face files. */
+  readonly faceIndex: number;
   readonly data: Buffer;
   readonly font: FontkitFace;
 }
@@ -201,7 +206,7 @@ function loadFace(filePath: string, faceIndex = 0): PdfFontFace | null {
         const collectionFace = isCollection(opened) ? font.postscriptName ?? undefined : undefined;
         if (!isCollection(opened) || collectionFace) {
           faceCounter += 1;
-          face = { id: `UnicodeFont${faceCounter}`, path: filePath, collectionFace, data, font };
+          face = { id: `UnicodeFont${faceCounter}`, path: filePath, collectionFace, faceIndex, data, font };
         }
       }
     }
