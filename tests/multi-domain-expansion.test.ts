@@ -5,6 +5,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { buildTrueTypeFont } from './helpers/mac-font-containers';
 import { CadGeometryUnavailableError } from '../src/lib/types';
 import { zipEntryText } from './helpers/zip-entry';
+import { readDxf } from './helpers/dxf-reader';
 
 describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadsheet, Presentation, Document)', () => {
   // A small TrueType font with real glyf outlines, written by the independent test helper
@@ -93,7 +94,7 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
   // 2. VECTOR & 2D/3D CAD CONVERSIONS (SVG, DXF, DWG, STEP, STL, OBJ, IGES)
   // =========================================================================
   describe('Vector & CAD Conversion Engine', () => {
-    it('converts SVG vector graphics to AutoCAD ASCII DXF with LINE and CIRCLE entities', async () => {
+    it('converts SVG vector graphics to AutoCAD ASCII DXF with a LINE and a circle outline', async () => {
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
         <line x1="10" y1="10" x2="100" y2="100" />
         <circle cx="50" cy="50" r="30" />
@@ -104,12 +105,13 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(result.mimeType).toBe('image/vnd.dxf');
       expect(result.filename).toBe('blueprint.dxf');
 
-      const dxf = result.buffer.toString('utf-8');
-      expect(dxf).toContain('SECTION');
-      expect(dxf).toContain('ENTITIES');
-      expect(dxf).toContain('LINE');
-      expect(dxf).toContain('CIRCLE');
-      expect(dxf).toContain('EOF');
+      // The DXF read back by the hand-written group-code reader: the line, then the circle as a closed outline
+      // whose vertices all lie 30 units from its centre (50, 50), with Y pointing up on the 200 unit page.
+      const { entities } = readDxf(result.buffer.toString('utf-8'));
+      expect(entities.map((entity) => entity.type)).toEqual(['LINE', 'POLYLINE']);
+      expect(entities[0].points.map(({ x, y }) => [x, y])).toEqual([[10, 190], [100, 100]]);
+      expect(entities[1].closed).toBe(true);
+      for (const point of entities[1].points) expect(Math.hypot(point.x - 50, point.y - 150)).toBeCloseTo(30, 3);
     });
 
     it('converts AutoCAD DXF drawing to standard SVG vector document', async () => {

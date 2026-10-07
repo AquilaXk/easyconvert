@@ -20,6 +20,7 @@ import {
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
+import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
 
 export {
@@ -584,7 +585,7 @@ async function convertDwgSource(
   const raw = inputBuffer.toString('utf-8');
 
   if (!raw.includes('SECTION') || !raw.includes('ENTITIES')) {
-    throw new Error('Unsupported CAD format: DWG binary decoder unavailable');
+    throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary decoder unavailable');
   }
 
   const dxfBuf = Buffer.from(raw, 'utf-8');
@@ -667,106 +668,12 @@ async function convert3dCad(
 
 
 /**
- * Converts SVG XML path and geometry elements into AutoCAD DXF ASCII format
+ * Converts an SVG drawing into AutoCAD DXF ASCII text: the same geometry the page draws (transforms applied,
+ * curves flattened, Y pointing up) written by the R12 writer in vector-dxf.ts. A drawing without any outline
+ * is refused with a ConversionFailedError instead of being answered with a made-up line.
  */
 export function svgToDxf(svgContent: string): string {
-  const entities: string[] = [];
-
-  // 1. Lines (<line x1="" y1="" x2="" y2="" />)
-  const lineRegex = /<line\s+[^>]*?x1="([^"]+)"[^>]*?y1="([^"]+)"[^>]*?x2="([^"]+)"[^>]*?y2="([^"]+)"[^>]*?\/?>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = lineRegex.exec(svgContent)) !== null) {
-    const [, x1, y1, x2, y2] = m;
-    entities.push(`  0\nLINE\n  8\n0\n 10\n${parseFloat(x1) || 0}\n 20\n${-(parseFloat(y1) || 0)}\n 11\n${parseFloat(x2) || 0}\n 21\n${-(parseFloat(y2) || 0)}`);
-  }
-
-  // 2. Rectangles (<rect x="" y="" width="" height="" />)
-  const rectRegex = /<rect\s+[^>]*?x="([^"]+)"[^>]*?y="([^"]+)"[^>]*?width="([^"]+)"[^>]*?height="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = rectRegex.exec(svgContent)) !== null) {
-    const x = parseFloat(m[1]) || 0;
-    const y = parseFloat(m[2]) || 0;
-    const w = parseFloat(m[3]) || 0;
-    const h = parseFloat(m[4]) || 0;
-    entities.push(
-      `  0\nLWPOLYLINE\n  8\n0\n 90\n4\n 70\n1\n 10\n${x}\n 20\n${-y}\n 10\n${x + w}\n 20\n${-y}\n 10\n${x + w}\n 20\n${-(y + h)}\n 10\n${x}\n 20\n${-(y + h)}`
-    );
-  }
-
-  // 3. Circles (<circle cx="" cy="" r="" />)
-  const circleRegex = /<circle\s+[^>]*?cx="([^"]+)"[^>]*?cy="([^"]+)"[^>]*?r="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = circleRegex.exec(svgContent)) !== null) {
-    const cx = parseFloat(m[1]) || 0;
-    const cy = parseFloat(m[2]) || 0;
-    const r = parseFloat(m[3]) || 0;
-    entities.push(`  0\nCIRCLE\n  8\n0\n 10\n${cx}\n 20\n${-cy}\n 40\n${r}`);
-  }
-
-  // 4. Polygons / Polylines (<polygon points="..." />)
-  const polyRegex = /<(?:polygon|polyline)\s+[^>]*?points="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = polyRegex.exec(svgContent)) !== null) {
-    const pts = m[1].trim().split(/[\s,]+/).map(Number);
-    if (pts.length >= 4) {
-      const numPts = Math.floor(pts.length / 2);
-      let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${numPts}\n 70\n1`;
-      for (let i = 0; i < numPts; i++) {
-        polyDxf += `\n 10\n${pts[i * 2]}\n 20\n${-pts[i * 2 + 1]}`;
-      }
-      entities.push(polyDxf);
-    }
-  }
-
-  // 5. Paths with Cubic / Quadratic Bezier curves (<path d="..." />)
-  const pathRegex = /<path\s+[^>]*?d="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = pathRegex.exec(svgContent)) !== null) {
-    const dAttr = m[1];
-    const subpaths = parseSvgPathToBezierPoints(dAttr);
-    for (const sub of subpaths) {
-      if (sub.length < 2) continue;
-      let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${sub.length}\n 70\n0`;
-      for (const pt of sub) {
-        polyDxf += `\n 10\n${pt.x.toFixed(4)}\n 20\n${(-pt.y).toFixed(4)}`;
-      }
-      entities.push(polyDxf);
-    }
-  }
-
-  // Fallback entity if no recognized shapes
-  if (entities.length === 0) {
-    entities.push('  0\nLINE\n  8\n0\n 10\n0.0\n 20\n0.0\n 11\n100.0\n 21\n100.0');
-  }
-
-  return `  0
-SECTION
-  2
-HEADER
-  9
-$ACADVER
-  1
-AC1015
-  0
-ENDSEC
-  0
-SECTION
-  2
-TABLES
-  0
-ENDSEC
-  0
-SECTION
-  2
-BLOCKS
-  0
-ENDSEC
-  0
-SECTION
-  2
-ENTITIES
-${entities.join('\n')}
-  0
-ENDSEC
-  0
-EOF
-`;
+  return encodeSvgPageToDxf(Buffer.from(svgContent, 'utf-8')).toString('utf-8');
 }
 
 /**
@@ -1720,7 +1627,7 @@ export function encodeIges(mesh: CadMesh3D): string {
 }
 
 function dxfToDwg(_dxfString: string): Buffer {
-  throw new Error('Unsupported CAD format: DWG binary encoder unavailable');
+  throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
 }
 
 function escapeXml(str: string): string {

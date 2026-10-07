@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readDxf } from './helpers/dxf-reader';
 import sharp from 'sharp';
 import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
@@ -148,7 +149,7 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       expect(bspline.knots).toEqual([0, 0, 0, 0, 1, 1, 1, 1]);
     });
 
-    it('parses SVG path commands with Cubic and Quadratic Bezier curves into DXF LWPOLYLINE', () => {
+    it('parses SVG path commands with Cubic and Quadratic Bezier curves into one flattened DXF polyline', () => {
       const svg = `<svg width="200" height="200">
         <path d="M 10 10 C 20 20, 40 20, 50 10 S 80 0, 90 10 Q 120 50, 150 10 Z" fill="none" stroke="black"/>
       </svg>`;
@@ -157,10 +158,20 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       expect(subpaths.length).toBeGreaterThan(0);
       expect(subpaths[0].length).toBeGreaterThan(5);
 
-      const dxf = svgToDxf(svg);
-      expect(dxf).toContain('LWPOLYLINE');
-      expect(dxf).toContain('ENTITIES');
-      expect(dxf).toContain('EOF');
+      // The closed path (M, C, S, Q, Z) is one closed polyline that starts at the path's first point and follows
+      // the curves: vertices lie within the path's bounding box, y flipped for DXF (page height 200).
+      const { entities } = readDxf(svgToDxf(svg));
+      expect(entities).toHaveLength(1);
+      expect(entities[0].type).toBe('POLYLINE');
+      expect(entities[0].closed).toBe(true);
+      expect(entities[0].points.length).toBeGreaterThan(20);
+      expect([entities[0].points[0].x, entities[0].points[0].y]).toEqual([10, 190]);
+      for (const point of entities[0].points) {
+        expect(point.x).toBeGreaterThanOrEqual(10);
+        expect(point.x).toBeLessThanOrEqual(150);
+        expect(200 - point.y).toBeGreaterThanOrEqual(0);
+        expect(200 - point.y).toBeLessThanOrEqual(50);
+      }
     });
   });
 
