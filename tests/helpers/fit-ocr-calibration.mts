@@ -25,6 +25,7 @@ import {
 } from './ocr-calibration-set';
 import { labelWords, splitWords } from './ocr-word-labels';
 import { requireTessdata } from './ocr-fixtures';
+import { getOracleToolPath } from './differential-oracle';
 
 const LANGUAGES: readonly CalibrationLanguage[] = ['eng', 'kor'];
 const PATHS: readonly OcrEnginePath[] = ['wasm', 'cli'];
@@ -33,7 +34,9 @@ const DATA_HASH_CHARS = 16;
 const TABLE_DECIMALS = 6;
 
 function engineVersion(): string {
-  return execFileSync('tesseract', ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const tesseract = getOracleToolPath('tesseract');
+  if (!tesseract) throw new Error('tesseract is required to record the engine version of a calibration table');
+  return execFileSync(tesseract, ['--version'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     .split('\n')[0]
     .trim();
 }
