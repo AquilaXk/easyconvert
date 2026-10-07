@@ -312,8 +312,8 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
       const files = [{ filename: 'stored.txt', buffer: Buffer.from('Stored archive test') }];
       const zipRes = await createZipArchive(files);
 
-      const storageKey = `test_inspect_${Date.now()}`;
-      storageProvider.saveObject(storageKey, zipRes.buffer, 'application/zip', 'archive.zip', 3600000);
+      const storageKey = `conversions/${testUser.id}/test_inspect_${Date.now()}.zip`;
+      await storageProvider.saveObject(storageKey, zipRes.buffer, 'application/zip', 'archive.zip', 3600000);
 
       const req = new NextRequest('http://localhost:3000/api/v1/archives/inspect', {
         method: 'POST',

@@ -9,8 +9,18 @@ import {
   ObjectStat,
   PayloadTooLargeForMemoryError,
   StoredObjectMissingError,
+  StorageSigningSecretMissingError,
   getMaxInMemoryBytes,
 } from './errors';
+import { lazySingleton } from './lazy-singleton';
+import {
+  LOCAL_DIRECT_PART_PATH,
+  LOCAL_EMULATION_ACCESS_KEY_ID,
+  LOCAL_EMULATION_REGION,
+  isProductionRuntime,
+  resolveAppBaseUrl,
+  resolveSigningSecret,
+} from './storage-config';
 
 export * from './errors';
 
@@ -49,6 +59,11 @@ export interface StoredObject {
   expiresAt: number;
   filePath?: string;
   metadata?: Record<string, string>;
+  /**
+   * Frees resources held for this read, such as a scratch file a remote backend staged for it. The
+   * object itself stays in storage. Absent when there is nothing to free (local backends).
+   */
+  release?: () => Promise<void>;
 }
 
 export type OciStoredObject = StoredObject;
@@ -59,45 +74,105 @@ export interface PresignedUrlResult {
   signature: string;
 }
 
+/** A result that a local backend returns directly and a remote backend returns after a network call. */
+export type MaybePromise<T> = T | Promise<T>;
+
+/** What callers may know about an open multipart upload session. */
+export interface UploadSessionInfo {
+  uploadId: string;
+  key: string;
+  filename: string;
+  mimeType: string;
+  totalSize: number;
+  partSize: number;
+  totalParts: number;
+  createdAt: number;
+  ownerUserId?: string;
+}
+
+/**
+ * Job-oriented storage used by the API routes, the queue, and the worker. `kind` says where the
+ * bytes live: `local` backends keep them on this host's disk and answer synchronously; `remote`
+ * backends keep them in the S3-compatible object store and answer asynchronously. Every caller
+ * must `await` the results, which is a no-op for a local backend.
+ */
 export interface IStorageBackend {
   readonly providerName: string;
-  initiateMultipartUpload(filename: string, mimeType: string, totalSize: number, ownerUserId?: string): MultipartUploadInit;
-  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): UploadedPart;
-  completeMultipartUpload(uploadId: string, expectedParts?: { partNumber: number; etag?: string }[]): MultipartUploadComplete;
-  abortMultipartUpload(uploadId: string): boolean;
-  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): StoredObject;
-  saveObjectFromFile?(key: string, filePath: string, mimeType: string, filename: string, ttlMs?: number): StoredObject;
+  readonly kind: 'local' | 'remote';
+  initiateMultipartUpload(
+    filename: string,
+    mimeType: string,
+    totalSize: number,
+    ownerUserId?: string,
+    partSize?: number
+  ): MaybePromise<MultipartUploadInit>;
+  uploadPart(uploadId: string, partNumber: number, buffer: Buffer): MaybePromise<UploadedPart>;
+  /** Receives one part from a request body; the limits throw an error with `statusCode` 413. */
+  uploadPartStream?(
+    uploadId: string,
+    partNumber: number,
+    stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+    maxPartBytes?: number,
+    maxTotalBytes?: number,
+    currentSessionBytes?: number
+  ): Promise<UploadedPart>;
+  completeMultipartUpload(
+    uploadId: string,
+    expectedParts?: { partNumber: number; etag?: string }[]
+  ): MaybePromise<MultipartUploadComplete>;
+  abortMultipartUpload(uploadId: string): MaybePromise<boolean>;
+  getUploadSession?(uploadId: string): MaybePromise<UploadSessionInfo | undefined>;
+  getUploadOwner?(uploadId: string): MaybePromise<string | undefined>;
+  /** Parts received so far for an open session, in any order; undefined when the session is unknown. */
+  getUploadedParts?(
+    uploadId: string
+  ): MaybePromise<Array<{ partNumber: number; etag: string; size: number }> | undefined>;
+  saveObject(key: string, buffer: Buffer, mimeType: string, filename: string, ttlMs?: number): MaybePromise<StoredObject>;
+  saveObjectFromFile?(
+    key: string,
+    filePath: string,
+    mimeType: string,
+    filename: string,
+    ttlMs?: number
+  ): MaybePromise<StoredObject>;
   saveObjectFromStream(
     key: string,
     stream: NodeJS.ReadableStream,
     meta: { filename: string; mimeType: string; size?: number },
     ttlMs?: number
   ): Promise<StoredObject>;
-  getObject(key: string): StoredObject | undefined;
-  stat(key: string): ObjectStat | null;
-  openReadStream(key: string, range?: { start: number; end: number }): NodeJS.ReadableStream | null;
-  getObjectStream?(key: string, range?: { start: number; end: number }): fs.ReadStream | null;
-  deleteObject(key: string): boolean;
-  deleteByPrefix?(prefix: string): number;
-  getActiveSessionsCount(): number;
-  getObjectsCount(): number;
+  getObject(key: string): MaybePromise<StoredObject | undefined>;
+  /** Size, ETag, type and name of an object without reading it. */
+  stat(key: string): MaybePromise<ObjectStat | null>;
+  openReadStream(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
+  getObjectStream?(key: string, range?: { start: number; end: number }): MaybePromise<NodeJS.ReadableStream | null>;
+  deleteObject(key: string): MaybePromise<boolean>;
+  deleteByPrefix?(prefix: string): MaybePromise<number>;
+  /** Open upload sessions, or null when the backend cannot count them (sessions live on the object store). */
+  getActiveSessionsCount(): MaybePromise<number | null>;
+  /** Stored objects, or null when the backend cannot count them cheaply. */
+  getObjectsCount(): MaybePromise<number | null>;
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
-  generatePresignedUploadUrl?(key: string, partNumber: number, uploadId: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedUploadUrl?(
+    key: string,
+    partNumber: number,
+    uploadId: string,
+    expiresInSeconds?: number
+  ): MaybePromise<PresignedUrlResult>;
   generatePresignedUploadPartUrl?(
     key: string,
     uploadId: string,
     partNumber: number,
-    expiresInSeconds?: number,
-    localEmulation?: boolean
-  ): PresignedUrlResult;
+    expiresInSeconds?: number
+  ): MaybePromise<PresignedUrlResult>;
   generatePresignedHmacPartUrl?(
     key: string,
     uploadId: string,
     partNumber: number,
     expiresInSeconds?: number
   ): PresignedUrlResult;
-  generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): PresignedUrlResult;
+  generatePresignedDownloadUrl?(key: string, expiresInSeconds?: number): MaybePromise<PresignedUrlResult>;
   verifyPresignedSignature?(
     method: 'GET' | 'PUT',
     key: string,
@@ -112,15 +187,17 @@ export interface IStorageBackend {
 import { globalSharedObjects } from './shared-store';
 
 /**
- * Oracle Cloud Infrastructure (OCI) Object Storage Service
- * Implements OCI Native Object Storage Multipart & OCI S3-Compatibility API.
+ * Local-disk backend that mirrors the OCI Object Storage multipart workflow. It is selected by
+ * STORAGE_DRIVER=local and never talks to OCI: URLs it mints point at this application and are
+ * verified here with the signing secret.
  */
 export class OciObjectStorageService implements IStorageBackend {
   readonly providerName: string = 'oci';
+  readonly kind = 'local' as const;
   private sessions = new Map<string, OciMultipartSession>();
   private objects = new Map<string, OciStoredObject>();
   readonly config: OciStorageConfig;
-  private readonly signingSecret: string;
+  private readonly configuredSigningSecret: string | undefined;
 
   // OCI Object Storage recommended minimum part size: 5MB
   readonly DEFAULT_PART_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -129,12 +206,12 @@ export class OciObjectStorageService implements IStorageBackend {
 
   constructor(customConfig?: Partial<OciStorageConfig>, options?: { signingSecret?: string }) {
     const namespace = customConfig?.namespace || process.env.OCI_NAMESPACE;
-    if (!namespace && process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
+    if (!namespace && isProductionRuntime()) {
       throw new Error('Missing required OCI_NAMESPACE environment variable in production');
     }
     const resolvedNamespace = namespace || 'default';
     const region = customConfig?.region || process.env.OCI_REGION || 'ap-seoul-1';
-    const bucketName = customConfig?.bucketName || process.env.OCI_BUCKET_NAME || 'easyconvert-transcode-bucket';
+    const bucketName = customConfig?.bucketName || process.env.OCI_BUCKET || process.env.OCI_BUCKET_NAME || 'easyconvert-transcode-bucket';
     const endpoint =
       customConfig?.endpoint ||
       process.env.OCI_ENDPOINT ||
@@ -147,19 +224,11 @@ export class OciObjectStorageService implements IStorageBackend {
       endpoint,
     };
 
-    const secret =
-      options?.signingSecret ||
-      process.env.STORAGE_SIGNING_SECRET ||
-      process.env.OCI_SIGNING_SECRET;
-
-    if (!secret) {
-      if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
-        throw new Error('Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production');
-      }
-      this.signingSecret = crypto.randomBytes(32).toString('hex');
-    } else {
-      this.signingSecret = secret;
+    const secret = options?.signingSecret || resolveSigningSecret();
+    if (!secret && isProductionRuntime()) {
+      throw new Error('Missing required STORAGE_SIGNING_SECRET environment variable in production');
     }
+    this.configuredSigningSecret = secret;
 
     this.gcTimer = setInterval(() => {
       this.sweepExpiredObjects();
@@ -719,7 +788,8 @@ export class OciObjectStorageService implements IStorageBackend {
   }
 
   /**
-   * Generates a signed Presigned Upload URL for direct client-to-storage multipart chunk PUT
+   * Signed URL on this application for one part of a local multipart session; it is checked with
+   * verifyPresignedSignature (HMAC over the method, key, upload id, part number and expiry).
    */
   generatePresignedUploadUrl(
     key: string,
@@ -729,24 +799,10 @@ export class OciObjectStorageService implements IStorageBackend {
   ): PresignedUrlResult {
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
-    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
-    const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
-    const url = `${endpoint}/${key}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&expires=${expiresAt}&signature=${signature}`;
-    return { url, expiresAt, signature };
-  }
-
-  /**
-   * Generates a signed Presigned Download URL for secure time-limited direct object retrieval
-   */
-  generatePresignedDownloadUrl(
-    key: string,
-    expiresInSeconds: number = 3600
-  ): PresignedUrlResult {
-    const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
-    const stringToSign = `GET\n${key}\n${expiresAt}`;
-    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
-    const endpoint = this.config.endpoint || 'https://storage.easyconvert.app';
-    const url = `${endpoint}/${key}?expires=${expiresAt}&signature=${signature}`;
+    const signature = crypto.createHmac('sha256', this.getSigningSecret()).update(stringToSign).digest('hex');
+    const url =
+      `${resolveAppBaseUrl()}${LOCAL_DIRECT_PART_PATH}?uploadId=${encodeURIComponent(uploadId)}` +
+      `&partNumber=${partNumber}&key=${encodeURIComponent(key)}&expires=${expiresAt}&signature=${signature}`;
     return { url, expiresAt, signature };
   }
 
@@ -766,7 +822,7 @@ export class OciObjectStorageService implements IStorageBackend {
       method === 'PUT'
         ? `PUT\n${key}\n${uploadId || ''}\n${partNumber ?? ''}\n${expiresAt}`
         : `GET\n${key}\n${expiresAt}`;
-    const expectedSig = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
+    const expectedSig = crypto.createHmac('sha256', this.getSigningSecret()).update(stringToSign).digest('hex');
     try {
       const sigBuf = Buffer.from(signature, 'hex');
       const expectedBuf = Buffer.from(expectedSig, 'hex');
@@ -777,39 +833,28 @@ export class OciObjectStorageService implements IStorageBackend {
     }
   }
 
+  /** The configured signing secret; signing without one is refused rather than done with an invented secret. */
   getSigningSecret(): string {
-    return this.signingSecret;
+    if (!this.configuredSigningSecret) {
+      throw new StorageSigningSecretMissingError();
+    }
+    return this.configuredSigningSecret;
   }
 
   generatePresignedUploadPartUrl(
     key: string,
     uploadId: string,
     partNumber: number,
-    expiresInSeconds: number = 900,
-    localEmulation: boolean = false
+    expiresInSeconds: number = 900
   ): PresignedUrlResult {
-    const region = this.config.region || 'us-east-1';
-    const accessKeyId = 'DEV_ACCESS_KEY_ID';
-    const endpoint = localEmulation
-      ? (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part'
-      : (this.config.endpoint || 'https://storage.easyconvert.app') + `/${key}`;
-
-    const queryParams: Record<string, string | number> = {
-      uploadId,
-      partNumber,
-    };
-    if (localEmulation) {
-      queryParams.key = key;
-    }
-
     const res = presignSigV4QueryUrl({
       method: 'PUT',
-      url: endpoint,
-      queryParams,
+      url: `${resolveAppBaseUrl()}${LOCAL_DIRECT_PART_PATH}`,
+      queryParams: { uploadId, partNumber, key },
       credentials: {
-        accessKeyId,
-        secretAccessKey: this.signingSecret,
-        region,
+        accessKeyId: LOCAL_EMULATION_ACCESS_KEY_ID,
+        secretAccessKey: this.getSigningSecret(),
+        region: LOCAL_EMULATION_REGION,
         service: 's3',
       },
       expiresInSeconds,
@@ -830,18 +875,20 @@ export class OciObjectStorageService implements IStorageBackend {
   ): PresignedUrlResult {
     const expiresAt = Date.now() + expiresInSeconds * 1000;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
-    const signature = crypto.createHmac('sha256', this.signingSecret).update(stringToSign).digest('hex');
-    const baseUrl = (process.env.APP_URL || 'http://localhost:3000') + '/api/v1/uploads/direct/part';
+    const signature = crypto.createHmac('sha256', this.getSigningSecret()).update(stringToSign).digest('hex');
+    const baseUrl = `${resolveAppBaseUrl()}${LOCAL_DIRECT_PART_PATH}`;
     const url = `${baseUrl}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}&key=${encodeURIComponent(key)}&expiresAt=${expiresAt}&signature=${signature}`;
     return { url, expiresAt, signature };
   }
 }
 
 /**
- * Standard S3-Compatible Cloud Storage Backend (AWS S3, MinIO, Cloudflare R2).
+ * Local-disk stand-in with the shape of a generic S3-compatible backend, for development and
+ * tests. Real S3-compatible storage is S3CompatibleStorage (STORAGE_DRIVER=s3).
  */
 export class S3CompatibleStorageBackend implements IStorageBackend {
   readonly providerName: string = 's3-compatible';
+  readonly kind = 'local' as const;
   private backend: OciObjectStorageService;
 
   constructor() {
@@ -931,10 +978,6 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     return this.backend.generatePresignedUploadUrl(key, partNumber, uploadId, expiresInSeconds);
   }
 
-  generatePresignedDownloadUrl(key: string, expiresInSeconds?: number): PresignedUrlResult {
-    return this.backend.generatePresignedDownloadUrl(key, expiresInSeconds);
-  }
-
   verifyPresignedSignature(
     method: 'GET' | 'PUT',
     key: string,
@@ -954,10 +997,9 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     key: string,
     uploadId: string,
     partNumber: number,
-    expiresInSeconds?: number,
-    localEmulation?: boolean
+    expiresInSeconds?: number
   ): PresignedUrlResult {
-    return this.backend.generatePresignedUploadPartUrl(key, uploadId, partNumber, expiresInSeconds, localEmulation);
+    return this.backend.generatePresignedUploadPartUrl(key, uploadId, partNumber, expiresInSeconds);
   }
 
   generatePresignedHmacPartUrl(
@@ -970,9 +1012,17 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
   }
 }
 
-export const ociStorage: IStorageBackend = new OciObjectStorageService();
+/**
+ * The local-disk OCI-shaped backend. It never talks to OCI, so it must not demand an OCI namespace
+ * of a deployment that stores objects elsewhere (STORAGE_DRIVER=s3) or on local disk.
+ */
+const LOCAL_BACKEND_NAMESPACE = 'local';
+export const ociStorage: OciObjectStorageService = lazySingleton(
+  OciObjectStorageService.prototype,
+  () => new OciObjectStorageService({ namespace: process.env.OCI_NAMESPACE || LOCAL_BACKEND_NAMESPACE })
+);
 // Backward-compatible alias
-export const s3Storage: IStorageBackend = ociStorage;
+export const s3Storage = ociStorage;
 
 /**
  * Factory for resolving storage backend provider.

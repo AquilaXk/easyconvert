@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,8 +12,8 @@ export async function GET() {
     queue: conversionQueue.name,
     counts,
     storage: {
-      activeUploadSessions: s3Storage.getActiveSessionsCount(),
-      storedObjects: s3Storage.getObjectsCount(),
+      activeUploadSessions: await storageProvider.getActiveSessionsCount(),
+      storedObjects: await storageProvider.getObjectsCount(),
     },
     system: {
       uptimeSeconds: Math.floor(process.uptime()),

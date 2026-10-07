@@ -192,7 +192,7 @@ describe('/api/storage/file response headers (#249)', () => {
     expect(res.headers.get('cache-control')).toBe('private, no-store');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('accept-ranges')).toBe('bytes');
-    expect(res.headers.get('etag')).toBe(storageProvider.getObject(key)?.etag);
+    expect(res.headers.get('etag')).toBe((await storageProvider.getObject(key))?.etag);
     expect(res.headers.get('content-length')).toBe(String(FIXTURE_SIZE));
     expect(res.headers.get('content-type')).toBe(MIME_TYPE);
   });

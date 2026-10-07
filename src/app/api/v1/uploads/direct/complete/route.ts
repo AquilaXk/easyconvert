@@ -1,16 +1,31 @@
-import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
-import { assertNotSpoofedFilePath } from '@/lib/security/file-guard';
-import { FileExtensionSpoofError, FORMAT_REGISTRY } from '@/lib/registry';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { storageProvider } from '@/lib/storage';
+import { readObjectHeader } from '@/lib/storage/object-header';
+import { assertNotSpoofedFile } from '@/lib/registry';
+import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
 export const dynamic = 'force-dynamic';
 
 interface DirectUploadCompleteBody {
   uploadId?: string;
   parts?: Array<{ partNumber: number; etag: string }>;
+}
+
+function internalError(instanceUri: string) {
+  return createProblemDetailsResponse(500, 'Storage operation error', instanceUri, 'Internal Server Error');
+}
+
+/** Deletes a rejected assembled object; a response is returned only when the store fails the delete. */
+async function purgeAssembled(key: string, instanceUri: string) {
+  try {
+    await storageProvider.deleteObject(key);
+    return undefined;
+  } catch (err: unknown) {
+    return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -51,8 +66,22 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (!storageProvider.getUploadSession) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider does not support upload sessions.',
+      instanceUri,
+      'Not Implemented'
+    );
+  }
+
   // 3. Session & Ownership validation (fail-closed against cross-user discovery)
-  const session = s3Storage.getUploadSession(uploadId);
+  let session;
+  try {
+    session = await storageProvider.getUploadSession(uploadId);
+  } catch (err: unknown) {
+    return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
+  }
   if (!session) {
     return createProblemDetailsResponse(
       404,
@@ -62,7 +91,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (session.ownerUserId && session.ownerUserId !== auth.user.id) {
+  // A session without an owner belongs to server-side code, never to a caller.
+  if (session.ownerUserId !== auth.user.id) {
     return createProblemDetailsResponse(
       404,
       `Upload session "${uploadId}" not found.`,
@@ -75,22 +105,39 @@ export async function POST(req: NextRequest) {
   const sessionMimeType = session.mimeType;
 
   // 4. Assemble multipart stream
-  let completedObject: ReturnType<typeof s3Storage.completeMultipartUpload>;
+  let completedObject: Awaited<ReturnType<typeof storageProvider.completeMultipartUpload>>;
   try {
-    completedObject = s3Storage.completeMultipartUpload(uploadId, parts);
+    completedObject = await storageProvider.completeMultipartUpload(uploadId, parts);
   } catch (err: any) {
+    return (
+      storageErrorResponse(err, instanceUri) ??
+      createProblemDetailsResponse(400, err?.message || 'Failed to complete multipart assembly.', instanceUri, 'Bad Request')
+    );
+  }
+
+  // Parts of an object-store upload go straight to the store, past this application's size
+  // limits, so the assembled object must be exactly the size that was declared.
+  if (storageProvider.kind === 'remote' && completedObject.size !== session.totalSize) {
+    const purged = await purgeAssembled(completedObject.key, instanceUri);
+    if (purged) return purged;
     return createProblemDetailsResponse(
       400,
-      err?.message || 'Failed to complete multipart assembly.',
+      `Uploaded size ${completedObject.size} bytes does not match the declared totalSize ${session.totalSize} bytes.`,
       instanceUri,
       'Bad Request'
     );
   }
 
-  // 5. Verify magic bytes on assembled file using assertNotSpoofedFilePath on first 64 KiB
-  const stored = s3Storage.getObject(completedObject.key);
-  if (!stored?.filePath) {
-    s3Storage.deleteObject(completedObject.key);
+  // 5. Verify magic bytes on the assembled object (first 64 KiB)
+  let header: Buffer | null;
+  try {
+    header = await readObjectHeader(storageProvider, completedObject.key);
+  } catch (err: unknown) {
+    return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
+  }
+  if (!header) {
+    const purged = await purgeAssembled(completedObject.key, instanceUri);
+    if (purged) return purged;
     return createProblemDetailsResponse(
       500,
       'Assembled file not found in storage. Operation failed closed.',
@@ -100,27 +147,22 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const ext = sessionFilename
-      ? path.extname(sessionFilename).replace(/^\./, '').toLowerCase().trim()
-      : '';
-    let declaredFormat = ext;
-    if (!declaredFormat && sessionMimeType && sessionMimeType !== 'application/octet-stream') {
-      const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === sessionMimeType);
-      if (found) {
-        declaredFormat = found.extension;
-      } else {
-        const subtype = sessionMimeType.split('/').pop()?.toLowerCase().trim();
-        declaredFormat = subtype || 'bin';
-      }
-    }
-    if (!declaredFormat) {
-      declaredFormat = 'bin';
-    }
-
-    assertNotSpoofedFilePath(stored.filePath, declaredFormat, sessionFilename);
+    const declaredFormat = resolveDeclaredFormat(sessionFilename, sessionMimeType);
+    assertNotSpoofedFile(header, declaredFormat, sessionFilename);
   } catch (err: unknown) {
-    // Purge spoofed file immediately
-    s3Storage.deleteObject(completedObject.key);
+    // Purge the assembled object immediately: it matches no declared format
+    const purged = await purgeAssembled(completedObject.key, instanceUri);
+    if (purged) return purged;
+
+    if (err instanceof UnknownDeclaredFormatError) {
+      return createProblemDetailsResponse(
+        400,
+        err.message,
+        instanceUri,
+        'Unknown Format',
+        UNKNOWN_FORMAT_PROBLEM_TYPE
+      );
+    }
 
     const errorMessage = err instanceof Error ? err.message : 'File content magic bytes mismatch.';
     return createProblemDetailsResponse(

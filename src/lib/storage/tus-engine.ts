@@ -4,10 +4,12 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
 import Redis from 'ioredis';
-import { localFsStorage } from './index';
+import { localFsStorage } from './local-fs-storage';
+import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
-import { FORMAT_REGISTRY } from '../registry';
+import { resolveDeclaredFormat } from './declared-format';
+import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
 export class TusOffsetMismatchError extends Error {
   constructor(public readonly expectedOffset: number) {
@@ -41,6 +43,14 @@ export class TusUploadExceededLengthError extends Error {
   constructor(exceededBytes: number, uploadLength: number) {
     super(`Uploaded bytes (${exceededBytes}) exceed declared Upload-Length (${uploadLength})`);
     this.name = 'TusUploadExceededLengthError';
+  }
+}
+
+/** The metadata sent when creating an upload cannot be accepted (for example a content type that is not a header value). */
+export class TusInvalidMetadataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TusInvalidMetadataError';
   }
 }
 
@@ -313,7 +323,25 @@ function rollbackChunk(binPath: string, clientOffset: number): void {
   }
 }
 
+/** Remaining lifetime of a finished upload's object, but never less than an hour. */
+function objectTtlSeconds(session: TusSession): number {
+  return Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000));
+}
+
 async function finalizeTusSession(session: TusSession, binPath: string): Promise<void> {
+  if (storageProvider.kind === 'remote') {
+    // The staged file is the only copy until the object store has it; a failed store fails the upload.
+    await objectStorage.putStream(session.key, fs.createReadStream(binPath), {
+      contentType: session.mimeType,
+      filename: session.filename,
+      ttlSeconds: objectTtlSeconds(session),
+      size: session.uploadLength,
+    });
+    // The object store holds the upload now; the staged copy would only occupy local disk.
+    await fs.promises.rm(binPath, { force: true });
+    return;
+  }
+
   const { metaPath, binPath: targetBinPath } = localFsStorage.getPathsForKey(session.key);
   try {
     const parentDir = path.dirname(targetBinPath);
@@ -366,7 +394,7 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
     await localFsStorage.putStream(session.key, readStream, {
       contentType: session.mimeType,
       filename: session.filename,
-      ttlSeconds: Math.max(3600, Math.floor((session.expiresAt - Date.now()) / 1000)),
+      ttlSeconds: objectTtlSeconds(session),
     });
   }
 }
@@ -430,6 +458,11 @@ export class TusEngine {
 
     const filename = parsed.filename || parsed.name || `upload-${id}.bin`;
     const mimeType = parsed.filetype || parsed.contentType || 'application/octet-stream';
+    if (!isValidContentType(mimeType)) {
+      throw new TusInvalidMetadataError(
+        `The upload's content type must be a printable ASCII content type of at most ${MAX_CONTENT_TYPE_LENGTH} characters.`
+      );
+    }
     const now = Date.now();
     const expiresAt = now + (params.ttlSeconds || this.defaultTtlSeconds) * 1000;
 
@@ -578,23 +611,9 @@ export class TusEngine {
         isComplete = true;
         session.completed = true;
 
-        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath)
-        const ext = path.extname(session.filename);
-        let declaredFormat = ext ? ext.replace(/^\./, '').toLowerCase().trim() : '';
-        if (!declaredFormat && session.mimeType) {
-          const found = Object.values(FORMAT_REGISTRY).find((f) => f.mimeType === session.mimeType);
-          if (found) {
-            declaredFormat = found.extension;
-          } else {
-            const sub = session.mimeType.split('/').pop()?.toLowerCase().trim();
-            declaredFormat = sub || 'bin';
-          }
-        }
-        if (!declaredFormat) {
-          declaredFormat = 'bin';
-        }
-
+        // Verify first 64 KiB magic bytes (assertNotSpoofedFilePath) against the declared format
         try {
+          const declaredFormat = resolveDeclaredFormat(session.filename, session.mimeType);
           assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
         } catch (err) {
           session.completed = false;
@@ -605,7 +624,17 @@ export class TusEngine {
           throw err;
         }
 
-        await finalizeTusSession(session, binPath);
+        try {
+          await finalizeTusSession(session, binPath);
+        } catch (err) {
+          // The object store did not take the upload: rewind the last chunk so the client can resend it.
+          session.completed = false;
+          rollbackChunk(binPath, clientOffset);
+          session.uploadOffset = clientOffset;
+          await this.sessionStore.saveSession(session);
+          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          throw err;
+        }
       }
 
       await this.sessionStore.saveSession(session);
