@@ -355,6 +355,8 @@ export interface ConversionResult {
   filename: string;
   size: number;
   ocrExtractedText?: string;
+  /** The request asked for OCR, but every page already had text (skip_text), so the input was returned unchanged. */
+  ocrSkipped?: boolean;
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];

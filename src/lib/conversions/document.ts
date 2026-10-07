@@ -229,7 +229,7 @@ export async function convertDocument(
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
           const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
-          throw new Error(`PDF OCR failed: ${cleanMsg}`);
+          throw new ConversionFailedError(`PDF OCR failed: ${cleanMsg}`);
         }
       }
 
@@ -299,10 +299,10 @@ export async function convertDocument(
             confidence: count > 0 ? totalConfidence / count : 0.9,
           };
         } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
-          throw new Error('PDF OCR failed: Optical character recognition failed to detect readable text.');
+          throw new ConversionFailedError('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
       } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
-        throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+        throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
       }
     }
 
@@ -462,7 +462,7 @@ export async function convertDocument(
     if (tgt === 'pdf') {
       if (options.ocrEnabled || isScanned) {
         if (pageOcrResults.size === 0 && !lastOcrResult && pagesNeedingOcr.length > 0) {
-          throw new Error('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+          throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
         }
 
         if (pageOcrResults.size > 0) {
@@ -482,6 +482,19 @@ export async function convertDocument(
             );
           }
         }
+      }
+      if (options.ocrEnabled || isScanned) {
+        // OCR recognised nothing. That is only acceptable when it had nothing to do: skip_text and every page already has text.
+        if (pageAnalyses.length > 0 && pagesNeedingOcr.length === 0 && !isScanned) {
+          return {
+            buffer: inputBuffer,
+            mimeType: 'application/pdf',
+            filename: `${baseName}.pdf`,
+            size: inputBuffer.length,
+            ocrSkipped: true,
+          };
+        }
+        throw new ConversionFailedError('PDF OCR failed: no text was recognised on any page.');
       }
       return {
         buffer: inputBuffer,
