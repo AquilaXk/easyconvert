@@ -35,6 +35,7 @@ import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
+import { readPersistedOutput } from './persisted-output';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
@@ -350,18 +351,8 @@ export function createConversionResult(
     engineUsed,
     executionTimeMs,
     get buffer(): Buffer {
-      if (cachedBuffer) return cachedBuffer;
-      // V8 Buffer max size is 2GB - 1 byte (2147483647)
-      if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
-        throw new RangeError(
-          `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
-        );
-      }
-      if (fs.existsSync(persistedFilePath)) {
-        cachedBuffer = fs.readFileSync(persistedFilePath);
-        return cachedBuffer;
-      }
-      return Buffer.alloc(0);
+      cachedBuffer ??= readPersistedOutput(persistedFilePath, stat.size);
+      return cachedBuffer;
     },
     set buffer(b: Buffer) {
       cachedBuffer = b;

@@ -12,6 +12,7 @@ import {
   multipartBody,
   requireScope,
   FRAME_RESPONSE_HEADERS,
+  ENGINE_RESPONSE_HEADERS,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -101,7 +102,7 @@ export const conversionPaths = {
       responses: {
         '200': {
           description: 'Successful conversion returning file metadata or raw binary stream.',
-          headers: FRAME_RESPONSE_HEADERS,
+          headers: { ...FRAME_RESPONSE_HEADERS, ...ENGINE_RESPONSE_HEADERS },
           content: {
             'application/json': {
               schema: {

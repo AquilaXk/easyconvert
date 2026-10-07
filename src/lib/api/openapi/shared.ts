@@ -1,4 +1,5 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
+import { ENGINE_USED_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS } from '@/lib/api/engine-trace';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
 import {
@@ -20,6 +21,19 @@ export const FRAME_RESPONSE_HEADERS = {
   [FRAME_USED_HEADER]: {
     description: '1-based frame or page a single-image output was taken from. Sent only when one frame was chosen.',
     schema: { type: 'integer', minimum: 1 },
+  },
+} as const;
+
+/** Response headers naming the engine of a raw binary conversion result. */
+export const ENGINE_RESPONSE_HEADERS = {
+  [ENGINE_USED_HEADER]: {
+    description: 'Engine that produced the raw output, for example `native-ffmpeg` or `internal-fallback`.',
+    schema: { type: 'string' },
+  },
+  [FALLBACK_REASON_HEADER]: {
+    description:
+      'Why a first-choice engine did not produce the output. Sent only when a fallback happened; redacted, one line, printable ASCII.',
+    schema: { type: 'string', maxLength: MAX_FALLBACK_REASON_CHARS },
   },
 } as const;
 
