@@ -39,6 +39,8 @@ export type ExternalOracleTool =
   | '7z'
   | 'tar'
   | 'zstd'
+  | 'bzip2'
+  | 'xz'
   | 'unshare'
   | 'magick'
   | 'identify'

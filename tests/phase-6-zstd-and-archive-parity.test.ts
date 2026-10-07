@@ -22,7 +22,6 @@ import {
   extract7zArchive,
   createRarArchive,
   extractRarArchive,
-  buildSyntheticStoredRarBuffer,
   convertWithNative7z,
   getXzBinaryPath,
   get7zBinaryPath,
@@ -31,6 +30,12 @@ import { decodeZstdCompressedBlockWithDict } from '../src/lib/conversions/zstd-d
 import { getZstdBinaryPath } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
 
 describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
   const sha256 = (b: Buffer | Uint8Array): string =>
@@ -381,7 +386,7 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       // D8 Enforcement: Production RAR creation is permanently disabled
       expect(() => createRarArchive(testFiles, {}, 'dataset.rar')).toThrow(ConversionFailedError);
 
-      const rarBuffer = buildSyntheticStoredRarBuffer(testFiles);
+      const rarBuffer = storedRar(testFiles);
 
       // Verify RAR4 signature: 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00
       expect(rarBuffer.subarray(0, 7)).toEqual(

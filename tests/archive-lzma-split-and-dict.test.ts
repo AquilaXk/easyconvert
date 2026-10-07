@@ -20,8 +20,13 @@ import {
   convertArchive,
   createRarArchive,
   extractRarArchive,
-  buildSyntheticStoredRarBuffer,
 } from '../src/lib/conversions';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
 
 describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching & RFC 9842 Zstd Dict (#133)', () => {
   const sha256 = (b: Buffer | Uint8Array): string =>
@@ -293,7 +298,7 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
 
     it('stitches multi-volume RAR archive parts and successfully extracts original files', () => {
       const content = Buffer.from('Multi-volume RAR test payload data.\n'.repeat(40));
-      const rarBuffer = buildSyntheticStoredRarBuffer([
+      const rarBuffer = storedRar([
         { filename: 'document.txt', buffer: content },
       ]);
 
@@ -375,7 +380,7 @@ describe('Archive Domain: Pure TS LZMA/LZMA2, Multi-Volume Splitting/Stitching &
 
     it('integrates multi-volume stitching on input in convertArchive via archiveParts', async () => {
       const originalContent = Buffer.from('Stitched input test content.\n'.repeat(30));
-      const rarBuffer = buildSyntheticStoredRarBuffer([
+      const rarBuffer = storedRar([
         { filename: 'source.txt', buffer: originalContent },
       ]);
       const parts = splitArchive(rarBuffer, 'source.rar', 60, 'rar');

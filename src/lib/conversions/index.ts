@@ -173,7 +173,6 @@ import {
   repairZipArchive,
   resolveArchiveEntryCollisions,
   matchArchiveGlob,
-  buildSyntheticStoredRarBuffer,
   validateMultiVolumeSequence,
 } from './archive';
 
@@ -349,7 +348,6 @@ export {
   repairZipArchive,
   resolveArchiveEntryCollisions,
   matchArchiveGlob,
-  buildSyntheticStoredRarBuffer,
   validateMultiVolumeSequence,
   detectFfmpegEnvironment,
   type FfmpegEnvironmentInfo,

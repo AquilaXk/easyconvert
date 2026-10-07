@@ -8,7 +8,6 @@ import {
   decompressLzma2,
   createRarArchive,
   extractRarArchive,
-  buildSyntheticStoredRarBuffer,
   convertArchive,
   convertMedia,
   decodeAudioBuffer,
@@ -24,6 +23,12 @@ import {
 } from '../src/lib/conversions';
 import { bestSnrDb, decodeAudioWithFfmpeg, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -195,7 +200,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       // D8 contract: createRarArchive is disabled
       expect(() => createRarArchive(files, {}, 'bundle.rar')).toThrow();
 
-      const rarBuffer = buildSyntheticStoredRarBuffer(files);
+      const rarBuffer = storedRar(files);
       expect(rarBuffer.subarray(0, 7)).toEqual(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
 
       const extracted = extractRarArchive(rarBuffer);

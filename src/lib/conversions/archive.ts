@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { FORMAT_REGISTRY } from '../registry';
 import zlib from 'node:zlib';
 import {
   ConversionOptions,
@@ -152,14 +153,6 @@ export function crc32(buf: Buffer | Uint8Array): number {
     c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   }
   return (c ^ 0xffffffff) >>> 0;
-}
-
-function rarHeaderCrc(headerWithoutCrc: Buffer): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < headerWithoutCrc.length; i++) {
-    c = CRC32_TABLE[(c ^ headerWithoutCrc[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) & 0xffff;
 }
 
 const PATH_SLASH_CHAR_CODE = 0x2f;
@@ -1732,76 +1725,6 @@ export function extractTarArchive(
   }
 
   return files;
-}
-
-/**
- * @internal Creates a synthetic uncompressed RAR v2 archive buffer strictly for testing
- * archive splitting, stitching, and decompression. Production RAR creation is disabled per D8.
- */
-export function buildSyntheticStoredRarBuffer(
-  files: { filename: string; buffer: Buffer }[]
-): Buffer {
-  const blocks: Buffer[] = [];
-
-  // 1. Marker block (7 bytes)
-  blocks.push(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
-
-  // 2. Main archive header (type 0x73)
-  const mainHeadData = Buffer.alloc(11);
-  mainHeadData.writeUInt8(0x73, 0); // HEAD_TYPE
-  mainHeadData.writeUInt16LE(0x0000, 1); // HEAD_FLAGS
-  mainHeadData.writeUInt16LE(13, 3); // HEAD_SIZE = 2 (CRC) + 11 = 13
-  mainHeadData.writeUInt16LE(0, 5); // RESERVED1
-  mainHeadData.writeUInt32LE(0, 7); // RESERVED2
-
-  const mainCrc = rarHeaderCrc(mainHeadData);
-  const mainHead = Buffer.alloc(13);
-  mainHead.writeUInt16LE(mainCrc, 0);
-  mainHeadData.copy(mainHead, 2);
-  blocks.push(mainHead);
-
-  // 3. File headers and data for each file
-  for (const file of files) {
-    const filenameBuf = Buffer.from(file.filename, 'utf-8');
-    const nameSize = filenameBuf.length;
-    const headSize = 7 + 25 + nameSize; // 32 + nameSize
-
-    const fileHeadData = Buffer.alloc(headSize - 2);
-    fileHeadData.writeUInt8(0x74, 0); // HEAD_TYPE (FILE_HEAD)
-    fileHeadData.writeUInt16LE(0x8000, 1); // HEAD_FLAGS (LHD_LONG_BLOCK: file data follows)
-    fileHeadData.writeUInt16LE(headSize, 3); // HEAD_SIZE
-    fileHeadData.writeUInt32LE(file.buffer.length, 5); // PACK_SIZE
-    fileHeadData.writeUInt32LE(file.buffer.length, 9); // UNP_SIZE
-    fileHeadData.writeUInt8(3, 13); // HOST_OS (Unix)
-    fileHeadData.writeUInt32LE(crc32(file.buffer), 14); // FILE_CRC
-    fileHeadData.writeUInt32LE(0x50000000, 18); // FTIME (standard DOS time)
-    fileHeadData.writeUInt8(20, 22); // UNP_VER (2.0)
-    fileHeadData.writeUInt8(0x30, 23); // METHOD (0x30 = STORE / uncompressed)
-    fileHeadData.writeUInt16LE(nameSize, 24); // NAME_SIZE
-    fileHeadData.writeUInt32LE(0x00000020, 26); // ATTR (archive file)
-    filenameBuf.copy(fileHeadData, 30); // FILE_NAME
-
-    const fileCrc = rarHeaderCrc(fileHeadData);
-    const fileHead = Buffer.alloc(headSize);
-    fileHead.writeUInt16LE(fileCrc, 0);
-    fileHeadData.copy(fileHead, 2);
-
-    blocks.push(fileHead);
-    blocks.push(file.buffer);
-  }
-
-  // 4. End of archive block (type 0x7B)
-  const endHeadData = Buffer.alloc(5);
-  endHeadData.writeUInt8(0x7b, 0); // HEAD_TYPE (ENDARC_HEAD)
-  endHeadData.writeUInt16LE(0x4000, 1); // HEAD_FLAGS
-  endHeadData.writeUInt16LE(7, 3); // HEAD_SIZE
-  const endCrc = rarHeaderCrc(endHeadData);
-  const endHead = Buffer.alloc(7);
-  endHead.writeUInt16LE(endCrc, 0);
-  endHeadData.copy(endHead, 2);
-  blocks.push(endHead);
-
-  return Buffer.concat(blocks);
 }
 
 export function createRarArchive(
@@ -4378,6 +4301,23 @@ async function inspectRarBuffer(
   };
 }
 
+/** Archive sources that are ZIP packages with another name: read with the ZIP reader. */
+const ZIP_PACKAGE_SOURCES: ReadonlySet<string> = new Set(['jar', 'war', 'ear']);
+const BZIP2_TAR_SOURCES: ReadonlySet<string> = new Set(['tar.bz2', 'tbz2', 'tbz', 'tar.bz']);
+const BZIP2_SOURCES: ReadonlySet<string> = new Set([...BZIP2_TAR_SOURCES, 'bz2', 'bz']);
+/** Archive sources only the native 7-Zip engine reads. */
+const NATIVE_SEVEN_ZIP_SOURCES: ReadonlySet<string> = new Set([
+  'arj', 'cab', 'cpio', 'deb', 'dmg', 'img', 'iso', 'lha', 'lzma', 'rpm', 'tar.z', 'tz', 'z',
+]);
+
+function unreadableArchiveSource(src: string): ConversionFailedError {
+  if (NATIVE_SEVEN_ZIP_SOURCES.has(src)) {
+    // A worker pool can be mixed: the queue retries an engine error on a worker that has 7-Zip.
+    return new EngineUnavailableError('7-Zip', `reading .${src} archives needs the native 7-Zip engine`);
+  }
+  return new ConversionFailedError(`Cannot read .${src} archives: no engine reads this format.`);
+}
+
 /**
  * Describes an archive without extracting it. Unsafe entries are reported, not refused: links, absolute or
  * traversing names and duplicated paths come back as per-entry flags with `extractable: false` and the
@@ -4559,7 +4499,7 @@ export async function convertArchive(
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   let skippedLinks: string[] = [];
-  if (src === 'zip') {
+  if (src === 'zip' || ZIP_PACKAGE_SOURCES.has(src)) {
     const hasZipMagic =
       effectiveBuffer.length >= 4 &&
       effectiveBuffer[0] === 0x50 &&
@@ -4599,7 +4539,7 @@ export async function convertArchive(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
     }
-  } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
+  } else if (BZIP2_SOURCES.has(src)) {
     try {
       const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
@@ -4612,7 +4552,7 @@ export async function convertArchive(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
-      if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+      if (BZIP2_TAR_SOURCES.has(src) || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
@@ -4713,6 +4653,8 @@ export async function convertArchive(
     'xz',
     'txz',
     'tar.xz',
+    ...ZIP_PACKAGE_SOURCES,
+    'tar.bz',
   ]);
   function isValidEmptyArchive(format: string, buffer: Buffer): boolean {
     if (format === 'zip') {
@@ -4731,7 +4673,12 @@ export async function convertArchive(
       throw new ConversionFailedError(
         `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
       );
+    } else if (FORMAT_REGISTRY[src]?.category === 'archive') {
+      // An archive this engine cannot read is never "converted" by packing the archive file into the target as one
+      // entry. 7-Zip reads many of these formats (the native engine does); for the others nothing does.
+      throw unreadableArchiveSource(src);
     } else {
+      // A source that is not an archive (a document, an image) is packed into the target as the one file it is.
       files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
     }
   }
