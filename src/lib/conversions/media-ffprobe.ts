@@ -149,6 +149,8 @@ export interface InputStream {
   /** Rate averaged over the stream (frames / duration), when it differs from the base rate. */
   averageFrameRate?: { num: number; den: number };
   bitRateK?: number;
+  /** Track title from the stream's tags, when it has one. */
+  title?: string;
 }
 
 interface RawStream {
@@ -161,6 +163,7 @@ interface RawStream {
   avg_frame_rate?: unknown;
   bit_rate?: unknown;
   disposition?: { attached_pic?: unknown };
+  tags?: { title?: unknown };
   side_data_list?: Array<{ rotation?: unknown }>;
 }
 
@@ -215,6 +218,7 @@ function toInputStream(raw: RawStream): InputStream {
     frameRate: parseFrameRate(raw.r_frame_rate),
     averageFrameRate: parseFrameRate(raw.avg_frame_rate),
     bitRateK: Number.isFinite(bitRate) && bitRate > 0 ? Math.round(bitRate / BITS_PER_KILOBIT) : undefined,
+    title: typeof raw.tags?.title === 'string' && raw.tags.title !== '' ? raw.tags.title : undefined,
   };
 }
 

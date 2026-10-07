@@ -22,6 +22,8 @@ import {
 } from './media-audio-targets';
 import {
   FfprobePath,
+  InputStream,
+  probeInputStreams,
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
@@ -30,6 +32,14 @@ import {
   probeVideoGeometry,
   VideoGeometry,
 } from './media-ffprobe';
+import {
+  BITMAP_SUBTITLE_CODECS,
+  CHAPTER_CONTAINERS,
+  planStreamMapping,
+  StreamMapPlan,
+  VARIABLE_FRAME_RATE_CONTAINERS,
+  VideoContainer,
+} from './media-stream-plan';
 import {
   capLadderToSource,
   forcedKeyframeExpression,
@@ -265,6 +275,24 @@ function resolveVideoCodec(requested: string): VideoCodecName {
     );
   }
   return name as VideoCodecName;
+}
+
+/** Codec of an external soft subtitle track when no input stream decided it: text containers convert, others copy. */
+const SOFT_SUBTITLE_CODEC_BY_CONTAINER: Readonly<Record<string, string>> = {
+  mp4: 'mov_text',
+  mov: 'mov_text',
+  webm: 'webvtt',
+};
+/** Highest output frame rate a request may name. */
+const MAX_OUTPUT_FPS = 240;
+/** Output label of the filter graph that overlays a bitmap subtitle onto the picture. */
+const BURN_GRAPH_OUTPUT = '[vout]';
+/** Re-encoded audio starts at zero, with the first-sample drift corrected, so audio and video stay in step. */
+const AUDIO_SYNC_FILTER = 'aresample=async=1:first_pts=0';
+
+/** True when the request names an output frame rate (`video.fps` or the legacy `videoFps`). */
+function hasRequestedFrameRate(options: ConversionOptions): boolean {
+  return options.video?.fps !== undefined || options.videoFps !== undefined;
 }
 
 const CHANNELS_BY_LAYOUT_NAME: Readonly<Record<string, number>> = { mono: 1, stereo: 2, '5.1': 6, '7.1': 8 };
@@ -503,8 +531,55 @@ export function buildFfmpegArguments(
   }
 
   // Stream mapping
+  // The input is probed so every audio track, every subtitle the container can carry and (for mkv) the
+  // attachments are mapped explicitly, instead of ffmpeg's one-audio, one-subtitle default selection.
+  // A missing input file (argument-only callers) keeps the earlier selection rules.
+  const inputStreams: InputStream[] | undefined =
+    !audioSpec && isVideo && fs.existsSync(inputPath)
+      ? probeInputStreams(inputPath, resolveFfprobeBinary(ffmpegBin))
+      : undefined;
+  const burnRequested = options.subtitles?.mode === 'burn';
+  const embeddedBurn = burnRequested && !options.subtitles?.input;
+  let burnSubtitleStream: InputStream | undefined;
+  if (embeddedBurn && !inputStreams) {
+    throw new InvalidMediaOptionError("Subtitle 'burn' mode requires an input subtitle file path.");
+  }
+  if (embeddedBurn && inputStreams) {
+    const subtitleStreams = inputStreams.filter((stream) => stream.type === 'subtitle');
+    const wanted = options.subtitles?.streamIndex ?? 0;
+    if (!Number.isInteger(wanted) || wanted < 0 || wanted >= subtitleStreams.length) {
+      throw new InvalidMediaOptionError(
+        `Subtitle 'burn' mode needs an input subtitle file, or an input with subtitle stream ${wanted}; the input has ${subtitleStreams.length}.`
+      );
+    }
+    burnSubtitleStream = subtitleStreams[wanted];
+  }
+  const burnBitmapStream =
+    burnSubtitleStream && BITMAP_SUBTITLE_CODECS.has(burnSubtitleStream.codecName) ? burnSubtitleStream : undefined;
+  let streamPlan: StreamMapPlan | undefined;
   if (audioSpec) {
     outputArgs.push(...audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin));
+  } else if (inputStreams) {
+    streamPlan = planStreamMapping({
+      streams: inputStreams,
+      container: tgt as VideoContainer,
+      audioTrack: options.audio?.track,
+      burnSubtitles: burnRequested,
+    });
+    for (const operand of streamPlan.maps) {
+      // A bitmap subtitle is overlaid by a filter graph, whose output replaces the stored video stream.
+      const isVideoOperand = streamPlan.videoIndex !== undefined && operand === `0:${streamPlan.videoIndex}`;
+      outputArgs.push('-map', burnBitmapStream && isVideoOperand ? BURN_GRAPH_OUTPUT : operand);
+    }
+    if (options.subtitles?.mode === 'soft') {
+      outputArgs.push('-map', '1:0');
+    }
+    if (CHAPTER_CONTAINERS.has(tgt)) {
+      outputArgs.push('-map_metadata', '0', '-map_chapters', '0');
+    }
+    for (const { outputIndex, name } of streamPlan.handlerNames) {
+      outputArgs.push(`-metadata:s:${outputIndex}`, `handler_name=${name}`);
+    }
   } else if (options.subtitles?.mode === 'soft') {
     outputArgs.push('-map', '0:v');
     if (options.audio?.track === 'all') {
@@ -532,15 +607,18 @@ export function buildFfmpegArguments(
     }
   }
 
+  if (streamPlan?.subtitleCodec) {
+    outputArgs.push('-c:s', streamPlan.subtitleCodec);
+  }
   if (options.subtitles?.mode === 'soft') {
-    if (tgt === 'mp4' || tgt === 'mov') {
-      outputArgs.push('-c:s', 'mov_text');
-    } else if (tgt === 'webm') {
-      outputArgs.push('-c:s', 'webvtt');
-    } else if (tgt === 'mkv') {
-      outputArgs.push('-c:s', options.subtitles.format === 'ass' ? 'ass' : 'srt');
-    } else {
-      outputArgs.push('-c:s', 'copy');
+    // For mp4, mov and webm the plan above already set the one codec every subtitle track is written with.
+    const codecSetByPlan = Boolean(streamPlan?.subtitleCodec) && tgt !== 'mkv';
+    if (tgt === 'mkv') {
+      // Only the external track is converted; embedded tracks stay as they are (`-c:s copy` above).
+      const externalTrack = streamPlan ? `:${streamPlan.subtitleCount}` : '';
+      outputArgs.push(`-c:s${externalTrack}`, options.subtitles.format === 'ass' ? 'ass' : 'srt');
+    } else if (!codecSetByPlan) {
+      outputArgs.push('-c:s', SOFT_SUBTITLE_CODEC_BY_CONTAINER[tgt] ?? 'copy');
     }
   }
 
@@ -707,17 +785,21 @@ export function buildFfmpegArguments(
       }
     }
 
-    // Stage 5: fps
-    if (typeof videoOpts?.fps === 'number' && Number.isFinite(videoOpts.fps) && videoOpts.fps > 0 && videoOpts.fps <= 240) {
-      videoFilters.push(`fps=${videoOpts.fps}`);
+    // Stage 5: fps. One control only: the fps filter. The output option -r is never emitted next to it.
+    const requestedFps = videoOpts?.fps ?? options.videoFps;
+    if (requestedFps !== undefined) {
+      if (typeof requestedFps !== 'number' || !Number.isFinite(requestedFps) || requestedFps <= 0 || requestedFps > MAX_OUTPUT_FPS) {
+        throw new InvalidMediaOptionError(`Invalid frame rate ${requestedFps}. Allowed: more than 0 and at most ${MAX_OUTPUT_FPS}.`);
+      }
+      videoFilters.push(`fps=${requestedFps}`);
     }
 
     // Stage 6: subtitles burn (prior to even dimension normalization)
-    if (options.subtitles?.mode === 'burn') {
-      if (!options.subtitles.input) {
-        throw new InvalidMediaOptionError("Subtitle 'burn' mode requires an input subtitle file path.");
-      }
-      videoFilters.push(`subtitles='${escapeFfmpegFilterPath(options.subtitles.input)}'`);
+    if (burnRequested && !burnBitmapStream) {
+      // An external file, or a text subtitle stream of the input itself (`si` counts subtitle streams).
+      const source = options.subtitles?.input ?? inputPath;
+      const stream = options.subtitles?.input ? '' : `:si=${options.subtitles?.streamIndex ?? 0}`;
+      videoFilters.push(`subtitles='${escapeFfmpegFilterPath(source)}'${stream}`);
     }
 
     // Stage 7: Even dimension normalization (ALWAYS LAST filter before format)
@@ -728,7 +810,13 @@ export function buildFfmpegArguments(
       videoFilters.push('format=nv12,hwupload');
     }
 
-    if (videoFilters.length > 0) {
+    if (burnBitmapStream && streamPlan?.videoIndex !== undefined) {
+      // Picture subtitles are overlaid at the source size, before any crop or scale moves the picture.
+      outputArgs.push(
+        '-filter_complex',
+        `[0:${streamPlan.videoIndex}][0:${burnBitmapStream.index}]overlay=format=auto:eof_action=pass,${videoFilters.join(',')}${BURN_GRAPH_OUTPUT}`
+      );
+    } else if (videoFilters.length > 0) {
       outputArgs.push('-vf', videoFilters.join(','));
     }
 
@@ -838,10 +926,6 @@ export function buildFfmpegArguments(
         outputArgs.push('-b:v', `${Math.floor(options.videoBitrate)}k`);
       }
 
-      if (typeof options.videoFps === 'number' && Number.isFinite(options.videoFps) && options.videoFps > 0 && options.videoFps <= 240) {
-        outputArgs.push('-r', options.videoFps.toString());
-      }
-
       if (tgt === 'mp4' || tgt === 'mov') {
         outputArgs.push('-movflags', '+faststart');
       }
@@ -871,6 +955,12 @@ export function buildFfmpegArguments(
     } else if (tgt === 'avi') {
       outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
     }
+  }
+
+  // Timing: keep the source's own frame timestamps (variable frame rate) unless a rate was requested,
+  // in which case the fps filter has already produced a constant rate.
+  if (isVideo && !hasRequestedFrameRate(options) && VARIABLE_FRAME_RATE_CONTAINERS.has(tgt)) {
+    outputArgs.push('-fps_mode', 'passthrough');
   }
 
   // Unified Audio Encoding & Filter Configuration
@@ -927,6 +1017,10 @@ export function buildFfmpegArguments(
 
   // Audio filters and ITU-R BS.775 downmix
   const audioFilters: string[] = [];
+  if (isVideo) {
+    // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
+    audioFilters.push(AUDIO_SYNC_FILTER);
+  }
   if (audioSpec?.fixedChannels !== undefined) {
     outputArgs.push('-ac', String(audioSpec.fixedChannels));
   } else if (options.audio?.downmix === 'itu-r-bs775') {

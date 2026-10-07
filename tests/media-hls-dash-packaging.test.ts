@@ -34,17 +34,17 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
   describe('1. Packaging Options Validation & Fail-Closed Gate', () => {
     it('fails closed when packaging options or format is missing', () => {
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', null as any);
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', null as any);
       }).toThrowError(InvalidMediaOptionError);
 
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {} as any);
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {} as any);
       }).toThrowError(InvalidMediaOptionError);
     });
 
     it('fails closed when unsupported packaging format is specified', () => {
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'smoothstreaming' as any,
         });
       }).toThrowError(InvalidMediaOptionError);
@@ -52,21 +52,21 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
     it('rejects segmentSeconds outside the 2..10 range or non-integer values', () => {
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           segmentSeconds: 1,
         });
       }).toThrowError(InvalidMediaOptionError);
 
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           segmentSeconds: 11,
         });
       }).toThrowError(InvalidMediaOptionError);
 
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           segmentSeconds: 3.5,
         });
@@ -75,7 +75,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
     it('accepts valid segmentSeconds within the 2..10 range', () => {
       for (const seg of [2, 4, 6, 8, 10]) {
-        const args = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        const args = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           segmentSeconds: seg,
         }, null, SOURCE_1080P_30FPS);
@@ -87,7 +87,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
     it('rejects empty ladder array', () => {
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [],
         });
@@ -97,7 +97,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
     it('rejects invalid ladder rung parameters', () => {
       // Invalid height (< 144)
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 100, bitrateK: 2000 }],
         });
@@ -105,7 +105,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
       // Invalid height (> 4320)
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 5000, bitrateK: 2000 }],
         });
@@ -113,7 +113,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
       // Invalid bitrateK (< 50)
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 20 }],
         });
@@ -121,7 +121,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
       // Invalid fps (<= 0)
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 2000, fps: -5 }],
         });
@@ -129,7 +129,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
       // Invalid audioBitrateK (< 16)
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           ladder: [{ height: 720, bitrateK: 2000, audioBitrateK: 8 }],
         });
@@ -138,14 +138,14 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
     it('rejects unsupported video and audio codecs for ABR packaging', () => {
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           videoCodec: 'flv' as any,
         });
       }).toThrowError(InvalidMediaOptionError);
 
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           audioCodec: 'mp3' as any,
         });
@@ -221,7 +221,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
         { height: 360, bitrateK: 600, fps: 24, audioBitrateK: 64 },
       ];
 
-      const args = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out_custom', {
+      const args = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out_custom', {
         format: 'hls',
         segmentSeconds: 6,
         ladder: customLadder,
@@ -251,14 +251,14 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
     });
 
     it('treats h265 as an alias of hevc and still rejects prores', () => {
-      const args = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out_h265', {
+      const args = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out_h265', {
         format: 'hls',
         videoCodec: 'h265' as any,
       }, null, SOURCE_1080P_30FPS);
       expect(args[args.indexOf('-c:v:0') + 1]).toBe('libx265');
 
       expect(() => {
-        buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', {
+        buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', {
           format: 'hls',
           videoCodec: 'prores' as any,
         });
@@ -268,7 +268,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
 
   describe('3. MPEG-DASH ABR Packaging Command Generation', () => {
     it('generates compliant MPEG-DASH packaging command with adaptation sets', () => {
-      const args = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out_dash', {
+      const args = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out_dash', {
         format: 'dash',
         segmentSeconds: 4,
         videoCodec: 'h264',
@@ -292,7 +292,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
     });
 
     it('supports custom manifest name and VP9 codec for DASH', () => {
-      const args = buildHlsDashArguments('/tmp/in.webm', '/tmp/out_dash2', {
+      const args = buildHlsDashArguments('/nonexistent/in.webm', '/tmp/out_dash2', {
         format: 'dash',
         segmentSeconds: 5,
         masterPlaylistName: 'video_manifest.mpd',

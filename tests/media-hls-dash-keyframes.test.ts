@@ -89,7 +89,7 @@ describe('segment planning (pure)', () => {
 
   it('emits GOP, forced keyframes, scene-cut off and equal min/max keyint on every rung', () => {
     const args = buildHlsDashArguments(
-      '/tmp/in.mp4',
+      '/nonexistent/in.mp4',
       '/tmp/out',
       { format: 'hls', segmentSeconds: 4, ladder: [{ height: 720, bitrateK: 2500 }, { height: 360, bitrateK: 800 }] },
       null,
@@ -108,7 +108,7 @@ describe('segment planning (pure)', () => {
   it('caps each rung at 1.07x the declared rate with a 1.5x buffer', () => {
     expect(rungRateCaps(2500)).toEqual({ maxrateK: 2675, bufsizeK: 3750 });
     const args = buildHlsDashArguments(
-      '/tmp/in.mp4',
+      '/nonexistent/in.mp4',
       '/tmp/out',
       { format: 'hls', ladder: [{ height: 720, bitrateK: 2500 }] },
       null,
@@ -144,7 +144,7 @@ describe('segment planning (pure)', () => {
 
   it('plans an input of 480 px height as a single 480p rung in the arguments', () => {
     const args = buildHlsDashArguments(
-      '/tmp/in.mp4',
+      '/nonexistent/in.mp4',
       '/tmp/out',
       { format: 'hls' },
       null,
@@ -157,7 +157,7 @@ describe('segment planning (pure)', () => {
 
   it('tags HEVC as hvc1 and switches HLS to fMP4 segments with an init section on request', () => {
     const args = buildHlsDashArguments(
-      '/tmp/in.mp4',
+      '/nonexistent/in.mp4',
       '/tmp/out',
       { format: 'hls', videoCodec: 'hevc', segmentType: 'fmp4', ladder: [{ height: 360, bitrateK: 800 }] },
       null,
@@ -171,7 +171,7 @@ describe('segment planning (pure)', () => {
 
   it('rejects an unknown segmentType, TS for DASH, odd and duplicate rung heights', () => {
     const build = (packaging: object) => () =>
-      buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', packaging as never, null, geometry());
+      buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', packaging as never, null, geometry());
     expect(build({ format: 'hls', segmentType: 'mp4' })).toThrow(InvalidMediaOptionError);
     expect(build({ format: 'dash', segmentType: 'ts' })).toThrow(InvalidMediaOptionError);
     expect(build({ format: 'hls', ladder: [{ height: 481, bitrateK: 1000 }] })).toThrow(/even height/);
@@ -530,9 +530,9 @@ describe('MPEG-DASH keyframe alignment', () => {
 });
 
 it('keeps the keyframe cadence independent of the audio presence', () => {
-  const withAudio = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] }, null, geometry({ height: 360 }));
+  const withAudio = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] }, null, geometry({ height: 360 }));
   const without = buildHlsDashArguments(
-    '/tmp/in.mp4',
+    '/nonexistent/in.mp4',
     '/tmp/out',
     { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] },
     null,

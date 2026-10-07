@@ -285,7 +285,7 @@ export async function convertMedia(
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {
       // Invalid options are the caller's error (HTTP 400); keep their type.
-      if (err instanceof InvalidMediaOptionError || err instanceof EngineUnavailableError) {
+      if (err instanceof InvalidMediaOptionError || err instanceof EngineUnavailableError || isTypedConversionError(err)) {
         throw err;
       }
       throw new ConversionFailedError(
@@ -312,6 +312,11 @@ export async function convertMedia(
 
   // Pure TypeScript zero-dependency pipeline for the lossless targets (WAV, FLAC)
   return processMediaPure(inputBuffer, src, tgt, options, baseName);
+}
+
+/** A ConversionFailedError subclass (no video stream, too many streams, ...): a verdict on the input that keeps its type. */
+function isTypedConversionError(err: unknown): err is ConversionFailedError {
+  return err instanceof ConversionFailedError && err.constructor !== ConversionFailedError;
 }
 
 export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([

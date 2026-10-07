@@ -88,11 +88,14 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args).toContain('+faststart');
       expect(args[args.indexOf('-c:a') + 1]).toBe('aac');
       expect(args[args.indexOf('-b:a') + 1]).toBe('256k');
-      expect(args[args.indexOf('-r') + 1]).toBe('30');
+      // One frame-rate control: the fps filter, never -r next to it.
+      expect(args).not.toContain('-r');
+      expect(args[args.indexOf('-vf') + 1]).toContain('fps=30');
+      expect(args).not.toContain('-fps_mode');
     });
 
     it('generates VP9 and Opus arguments for WebM container', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.webm', 'mp4', 'webm', {});
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.webm', 'mp4', 'webm', {});
       expect(args[0]).toBe('-y');
       expect(args[args.length - 1]).toBe('/tmp/out.webm');
       expect(args[args.indexOf('-c:v') + 1]).toBe('libvpx-vp9');
@@ -130,7 +133,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args[0]).toBe('-y');
       expect(args[args.length - 1]).toBe('/tmp/out.mp4');
       expect(args[args.indexOf('-ac') + 1]).toBe('1');
-      expect(args[args.indexOf('-filter:a') + 1]).toBe('volume=0.8');
+      expect(args[args.indexOf('-filter:a') + 1]).toBe('aresample=async=1:first_pts=0,volume=0.8');
       expect(args[args.indexOf('-ar') + 1]).toBe('48000');
       expect(args[args.indexOf('-vf') + 1]).toBe(
         'scale=1920:1080:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2'
