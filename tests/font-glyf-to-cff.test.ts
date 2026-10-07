@@ -29,6 +29,7 @@ import {
 } from './helpers/font-oracles';
 import { buildGlyfFont, type GlyfFontSpec, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { assembleSfnt } from './helpers/mac-font-containers';
+import { expectSizeIndependentOnInputs, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 
 /**
  * TrueType (glyf) to OpenType CFF conversion.
@@ -688,7 +689,6 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
   const FULL_TURN = 2 * Math.PI;
   const SHARED_COMPONENTS = 1000;
   const COMPOSITE_GLYPHS = 1000;
-  const FAST_REJECT_MS = 1000;
   const RSS_GROWTH_LIMIT_BYTES = 400 * 1024 * 1024;
   const BYTES_PER_MB = 1024 * 1024;
   const SMALL_FONT_BYTES = 100 * 1024;
@@ -707,27 +707,25 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     return buildGlyfFont({ family: 'Amplifier', glyphs });
   }
 
-  it.each([
-    [SHARED_COMPONENTS, COMPOSITE_GLYPHS], // 37 KB expanding to 32 million points
-    [SHARED_COMPONENTS * 2, COMPOSITE_GLYPHS * 3], // 76 KB expanding to 192 million points
-  ])('rejects a small font whose composites expand to tens of millions of points (%i components, %i glyphs), quickly and without large allocations', (shared, composites) => {
-    const font = amplifierFont(shared, composites);
-    expect(font.length).toBeLessThan(SMALL_FONT_BYTES);
+  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations', async () => {
+    // 37 KB expanding to 32 million points, against 76 KB expanding to 192 million: the amplification guard
+    // refuses both after the same work, so the time must not follow the claimed expansion (tests/helpers/timing.ts).
+    const modest = amplifierFont(SHARED_COMPONENTS, COMPOSITE_GLYPHS);
+    const huge = amplifierFont(SHARED_COMPONENTS * 2, COMPOSITE_GLYPHS * 3);
+    expect(modest.length).toBeLessThan(SMALL_FONT_BYTES);
+    expect(huge.length).toBeLessThan(SMALL_FONT_BYTES);
     const rssBefore = process.memoryUsage().rss;
-    const started = performance.now();
-    let caught: unknown;
-    try {
-      convertFontToOpenTypeCff(font);
-    } catch (error) {
-      caught = error;
-    }
-    const elapsed = performance.now() - started;
+    const { largeResult } = await expectSizeIndependentOnInputs(
+      'composite amplification',
+      (font: Buffer) => settle(() => convertFontToOpenTypeCff(font)),
+      { modest, huge }
+    );
     const rssGrowth = process.memoryUsage().rss - rssBefore;
-    expect(caught, 'conversion must throw').toBeInstanceOf(ConversionFailedError);
-    expect((caught as Error).message).toMatch(/points|expand/i);
-    expect(elapsed).toBeLessThan(FAST_REJECT_MS);
+    if (largeResult.ok) throw new Error('the amplifying font was converted instead of rejected');
+    expect(largeResult.error, 'conversion must throw').toBeInstanceOf(ConversionFailedError);
+    expect((largeResult.error as Error).message).toMatch(/points|expand/i);
     expect(rssGrowth, `rss grew by ${Math.round(rssGrowth / BYTES_PER_MB)} MB`).toBeLessThan(RSS_GROWTH_LIMIT_BYTES);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('converts a Hangul-style font: 11,172 compact composites of three shared jamo outlines', () => {
     // Each syllable is 3 components (about 30 bytes) and flattens to 180 points, so the 2.0 million

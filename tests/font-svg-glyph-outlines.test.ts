@@ -36,6 +36,7 @@ import {
 } from './helpers/font-oracles';
 import { readWoff2Reference } from './helpers/woff2-reference';
 import { buildGlyfFont } from './helpers/glyf-font-builder';
+import { expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * SVG font glyph outlines: the d attribute of every glyph becomes a real outline in TTF, OTF,
@@ -529,7 +530,6 @@ describe('SVG font: only default glyph forms enter the cmap (SVG 1.1 section 20.
 });
 
 describe('SVG font: output point counts are bounded while paths are converted', () => {
-  const FAST_REJECT_MS = 1000;
   const AMPLIFIED_GLYPHS = 100;
   const ARC_REPEATS = MAX_SVG_PATH_COMMANDS_PER_GLYPH - 1;
   const TRUETYPE_POINT_LIMIT = 0xffff;
@@ -537,7 +537,6 @@ describe('SVG font: output point counts are bounded while paths are converted', 
   const CUBIC_GLYPHS = 30;
   const BUDGET_GLYPHS = 70;
   const BUDGET_CUBICS = 1100;
-  const BUDGET_REJECT_MS = 10_000;
   // Each of these cubics needs about 27 quadratic pieces, so a few dozen of them already exceed 65,535 points.
   const WIDE_CUBIC = 'C32000 0 -32000 0 0 0';
   const BIG_ARC = 'a12000 12000 0 1 1 1 0';
@@ -547,37 +546,53 @@ describe('SVG font: output point counts are bounded while paths are converted', 
     return Array.from({ length: count }, (_, i) => `<glyph unicode="&#x${(0x4e00 + i).toString(16)};" horiz-adv-x="500" d="${d}"/>`).join('');
   }
 
-  async function timedFailure(svg: string): Promise<{ failure: unknown; elapsed: number }> {
-    const started = performance.now();
-    const failure = await failureOf(convertSvg('ttf', svg));
-    return { failure, elapsed: performance.now() - started };
+  /**
+   * "Without converting them all": a font with four times as many hostile glyphs must be refused after about
+   * the same work as the small one, because the conversion stops at the first glyph or shared budget that is
+   * exceeded (tests/helpers/timing.ts). Converting every glyph would make the larger font take about 4x.
+   */
+  async function expectEarlyRejection(label: string, modestSvg: string, hugeSvg: string): Promise<unknown> {
+    const { largeResult } = await expectSizeIndependentOnInputs(
+      label,
+      (svg: string) => failureOf(convertSvg('ttf', svg)),
+      { modest: modestSvg, huge: hugeSvg }
+    );
+    return largeResult;
   }
 
   it('rejects glyphs whose arcs expand into far more curve pieces than the path allows, without converting them all', async () => {
-    const { failure, elapsed } = await timedFailure(svgWith(glyphsWithPath(AMPLIFIED_GLYPHS, BIG_ARC, ARC_REPEATS)));
+    const failure = await expectEarlyRejection(
+      'arc amplification',
+      svgWith(glyphsWithPath(AMPLIFIED_GLYPHS, BIG_ARC, ARC_REPEATS)),
+      svgWith(glyphsWithPath(AMPLIFIED_GLYPHS * SCALING_FACTOR, BIG_ARC, ARC_REPEATS))
+    );
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(/more than \d+ points|too many segments/i);
-    expect(elapsed).toBeLessThan(FAST_REJECT_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('stops converting once the glyphs of the font together pass the shared point budget', async () => {
     // About 59,000 points per glyph (below the per-glyph limit): 70 of them pass the 4,000,000 point budget.
-    const glyphs = glyphsWithPath(BUDGET_GLYPHS, WIDE_CUBIC, BUDGET_CUBICS);
-    const { failure, elapsed } = await timedFailure(svgWith(glyphs));
+    const failure = await expectEarlyRejection(
+      'shared point budget',
+      svgWith(glyphsWithPath(BUDGET_GLYPHS, WIDE_CUBIC, BUDGET_CUBICS)),
+      svgWith(glyphsWithPath(BUDGET_GLYPHS * SCALING_FACTOR, WIDE_CUBIC, BUDGET_CUBICS))
+    );
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(/points together/);
-    expect(elapsed).toBeLessThan(BUDGET_REJECT_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('stops converting a glyph as soon as it passes the 65,535 points of the glyf format', async () => {
-    const { failure, elapsed } = await timedFailure(svgWith(glyphsWithPath(CUBIC_GLYPHS, WIDE_CUBIC, CUBIC_REPEATS)));
+    const failure = await expectEarlyRejection(
+      'per-glyph point limit',
+      svgWith(glyphsWithPath(CUBIC_GLYPHS, WIDE_CUBIC, CUBIC_REPEATS)),
+      svgWith(glyphsWithPath(CUBIC_GLYPHS * SCALING_FACTOR, WIDE_CUBIC, CUBIC_REPEATS))
+    );
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(new RegExp(`more than ${TRUETYPE_POINT_LIMIT} points`));
-    expect(elapsed).toBeLessThan(FAST_REJECT_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('SVG font: fonts with the most glyphs a 16-bit glyph id can address', () => {

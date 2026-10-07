@@ -189,6 +189,23 @@ export async function expectSizeIndependent<R = unknown>(
   });
 }
 
+/**
+ * Default hang guard. Work that is linear in a megabyte-sized input finishes in milliseconds, work that is
+ * quadratic needs minutes: 10 s separates them by orders of magnitude on any runner.
+ */
+export const DEFAULT_HANG_GUARD_MS = 10_000;
+
+/**
+ * For adversarial inputs that a linear scan finishes in well under a millisecond (a single `indexOf`
+ * over the input), so that no two sizes can be compared reliably: runs `run` once and asserts that it
+ * finishes within the hang guard. It catches an algorithm that never finishes, not one that is merely slow.
+ */
+export async function expectNoHang<R>(label: string, run: () => R | Promise<R>, guardMs: number = DEFAULT_HANG_GUARD_MS): Promise<R> {
+  const { ms, value } = await timeOnce<R>(run);
+  expect(ms, `${label}: took ${ms.toFixed(0)} ms; the hang guard is ${guardMs} ms`).toBeLessThan(guardMs);
+  return value;
+}
+
 /** An absolute hang guard: `expectedMs` is how long a healthy run needs; the ceiling is a multiple of it. */
 export function hangGuardMs(expectedMs: number): number {
   return expectedMs * HANG_GUARD_MULTIPLE;
