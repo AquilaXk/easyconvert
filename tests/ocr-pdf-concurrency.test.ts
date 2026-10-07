@@ -30,7 +30,11 @@ const TEST_TIMEOUT_MS = 300_000;
 const SLOW_RUNNER = process.env.EASYCONVERT_SLOW_RUNNER === '1';
 const FOUR_PAGES = 4;
 const TWENTY_PAGES = 20;
-const MAX_PARALLEL_TIME_RATIO = 0.6;
+/**
+ * At least a 1.25x speedup from parallel pages. Shards share runner CPUs with other test files, so the bound
+ * leaves room for that load; the in-flight limit itself is asserted structurally above.
+ */
+const MAX_PARALLEL_TIME_RATIO = 0.8;
 /** Best of this many runs: other test files share the CPUs, so a single pair of runs can be slowed unevenly. */
 const TIMING_RUNS = 6;
 const MIN_CPUS_FOR_TIMING = 4;
