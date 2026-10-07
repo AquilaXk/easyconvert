@@ -1467,6 +1467,8 @@ const MIN_RUNG_HEIGHT = 144;
 const MAX_RUNG_HEIGHT = 4320;
 const MAX_RUNG_BITRATE_K = 50_000;
 const MAX_RUNG_FPS = 240;
+/** Most rungs a ladder may have: every rung is a full encode, so the count bounds the work a request can ask for. */
+export const MAX_LADDER_RUNGS = 10;
 const MIN_RUNG_AUDIO_BITRATE_K = 16;
 const MAX_RUNG_AUDIO_BITRATE_K = 1024;
 /** Audio bitrate of the first, second and later rungs when the ladder gives none. */
@@ -1495,6 +1497,9 @@ export function probePackagingSource(inputPath: string, ffmpegBin?: string | nul
 function validateLadder(ladder: readonly MediaLadderRung[]): void {
   if (!Array.isArray(ladder) || ladder.length === 0) {
     throw new InvalidMediaOptionError('Packaging ladder must be a non-empty array of rungs.');
+  }
+  if (ladder.length > MAX_LADDER_RUNGS) {
+    throw new InvalidMediaOptionError(`Packaging ladder has ${ladder.length} rungs; it may have at most ${MAX_LADDER_RUNGS} rungs.`);
   }
   const seenHeights = new Set<number>();
   for (const rung of ladder) {

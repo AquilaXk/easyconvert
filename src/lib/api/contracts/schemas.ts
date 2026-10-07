@@ -699,6 +699,8 @@ export const ConversionOptionsSchema = {
         },
         ladder: {
           type: 'array',
+          minItems: 1,
+          maxItems: 10,
           items: {
             type: 'object',
             required: ['height', 'bitrateK'],

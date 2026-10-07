@@ -178,6 +178,18 @@ describe('segment planning (pure)', () => {
     expect(build({ format: 'hls', ladder: [{ height: 480, bitrateK: 1000 }, { height: 480, bitrateK: 900 }] })).toThrow(/Duplicate/);
   });
 
+  it('bounds the ladder at 10 rungs, in the builder and in the request schema', () => {
+    const rungs = (n: number) => Array.from({ length: n }, (_, i) => ({ height: 144 + 2 * i, bitrateK: 200 + i }));
+    const build = (n: number) => () => buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', { format: 'hls', ladder: rungs(n) }, null, geometry({ height: 4320 }));
+    expect(build(10)).not.toThrow();
+    expect(build(11)).toThrow(/at most 10 rungs/);
+    expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'hls', ladder: rungs(10) } }).ok).toBe(true);
+    const tooMany = validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'hls', ladder: rungs(11) } });
+    expect(tooMany.ok).toBe(false);
+    if (tooMany.ok) throw new Error('schema accepted 11 rungs');
+    expect(tooMany.problem.invalidParams?.map((p) => p.name)).toEqual(['packaging.ladder']);
+  });
+
   it('scales the timeout with the clip duration and the rung count, under the tier ceiling', () => {
     // A 10 minute clip on a 3 rung ladder must get more than the old fixed 120 s.
     expect(computePackagingTimeoutMs(600, 3)).toBeGreaterThan(120_000);
