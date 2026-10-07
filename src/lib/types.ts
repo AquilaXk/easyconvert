@@ -648,6 +648,14 @@ export class WorkerOutputMissingError extends ConversionFailedError {
   }
 }
 
+/** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named. */
+export class UnknownArtifactFormatError extends ConversionFailedError {
+  constructor(artifactName: string) {
+    super(`Artifact "${artifactName}" has no format registered, so its MIME type is unknown`);
+    this.name = 'UnknownArtifactFormatError';
+  }
+}
+
 /** An `export.url` node could not deliver an artifact to the destination URL. */
 export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {
