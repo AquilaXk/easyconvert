@@ -8,6 +8,8 @@ import path from 'node:path';
  */
 
 const TESTS_DIR = __dirname;
+/** Files that quote the gate as text (fixtures of the guard's self-test) rather than use it. */
+const GATE_FIXTURE_FILES = new Set(['guard-anti-cheat-rules.test.ts']);
 const REDIS_GATE = /skipIf\(\s*!\s*(?:process\.env\.)?REDIS_URL\s*\)/;
 
 describe('Redis-mode suites', () => {
@@ -16,7 +18,7 @@ describe('Redis-mode suites', () => {
     const script = packageJson.scripts['test:redis'];
     const gated = fs
       .readdirSync(TESTS_DIR)
-      .filter((name) => name.endsWith('.test.ts') && name !== path.basename(__filename))
+      .filter((name) => name.endsWith('.test.ts') && name !== path.basename(__filename) && !GATE_FIXTURE_FILES.has(name))
       .filter((name) => REDIS_GATE.test(fs.readFileSync(path.join(TESTS_DIR, name), 'utf-8')))
       .sort();
     expect(gated.length).toBeGreaterThan(0);
