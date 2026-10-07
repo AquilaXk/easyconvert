@@ -29,10 +29,22 @@ import {
   applyPdfWatermark,
   protectPdf,
 } from '../../conversions';
-import { ConversionFailedError, GraphExportError, UnknownArtifactFormatError, WorkerOutputMissingError } from '../../types';
+import {
+  ConversionFailedError,
+  GraphExportError,
+  MediaPackagingOptions,
+  UnknownArtifactFormatError,
+  WorkerOutputMissingError,
+} from '../../types';
 import { getFormatByExtension } from '../../registry';
 import { mergePdfBuffers, extractArtifactMetadata } from '../../jobs';
-import { ARCHIVE_CREATE_FORMATS, MERGE_FORMATS, THUMBNAIL_FORMATS, requestedTargetFormat } from '../../jobs/graph-operations';
+import {
+  ARCHIVE_CREATE_FORMATS,
+  MEDIA_PACKAGE_OUTPUT_FORMAT,
+  MERGE_FORMATS,
+  THUMBNAIL_FORMATS,
+  requestedTargetFormat,
+} from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -131,6 +143,8 @@ async function processIntermediatePdfArtifacts(
 }
 
 const DEFAULT_THUMBNAIL_EDGE_PX = 256;
+/** Packaging format of a media.package node that names none. */
+const DEFAULT_PACKAGING_FORMAT = 'hls';
 
 /** Extension of a stored artifact; artifacts without one cannot be routed to a converter. */
 function artifactExtension(filename: string | undefined, key: string): string {
@@ -301,6 +315,35 @@ export async function processGraphNodeJob(
           await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
         }
+        break;
+      }
+
+      case 'media.package': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const packaging: MediaPackagingOptions = node.options?.packaging ?? { format: DEFAULT_PACKAGING_FORMAT };
+        for (const inputKey of inputArtifacts) {
+          attemptSignal.throwIfAborted();
+          const stored = await effectiveStorage.getObject(inputKey);
+          if (!stored) {
+            throw new Error(`Input artifact "${inputKey}" not found in storage`);
+          }
+          const srcExt = artifactExtension(stored.filename, inputKey);
+          // The engine packages for the format it is asked to produce and answers one ZIP.
+          const packaged = await effectiveEngine.convert(
+            stored.buffer,
+            srcExt,
+            packaging.format,
+            { ...(node.options || {}), packaging },
+            stored.filename
+          );
+          const outKey = `intermediate/${graphId}/${nodeId}/${packaged.filename}`;
+          await effectiveStorage.saveObject(outKey, packaged.buffer, registryMimeType(MEDIA_PACKAGE_OUTPUT_FORMAT), packaged.filename, INTERMEDIATE_TTL_MS);
+          outputKeys.push(outKey);
+        }
+        await job.log(`Node "${nodeId}" packaged ${inputArtifacts.length} artifact(s) as ${packaging.format}`);
         break;
       }
 

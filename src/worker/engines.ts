@@ -42,6 +42,8 @@ import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSele
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
+  buildTwoPassArguments,
+  isTwoPassRequested,
   probePackagingSource,
   probeHardwareAcceleration,
   usesHardwareVideoEncoder,
@@ -55,6 +57,7 @@ import {
   DEFAULT_MEDIA_TIER_MAX_MS,
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
+import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
@@ -639,35 +642,42 @@ export async function convertWithNativeFfmpeg(
         return res;
       }
 
-      const runFfmpeg = (ffmpegArgs: string[]) =>
+      const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
         executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
           cwd: tempDir,
-          timeoutMs: timeout,
+          timeoutMs: limitMs,
           maxBuffer,
           networkIsolated: true,
           signal: options.signal,
         });
+      const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
       const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
-      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
 
-      try {
-        await runFfmpeg(args);
-      } catch (err) {
-        // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
-        // driver error). Retry exactly once in software; a failed retry reports the original error,
-        // and a cancelled job is never retried.
-        const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
-        if (!hardwareEncoderFailed || options.signal?.aborted) {
-          throw err;
-        }
-        const softwareArgs = buildFfmpegArguments(
-          inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
-        );
+      if (isTwoPassRequested(options)) {
+        // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
+        const passes = buildTwoPassArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        await runTwoPass(passes, twoPassBudgetMs(timeout), runFfmpegWith);
+      } else {
+        const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
         try {
-          await runFfmpeg(softwareArgs);
-        } catch {
-          throw err;
+          await runFfmpeg(args);
+        } catch (err) {
+          // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
+          // driver error). Retry exactly once in software; a failed retry reports the original error,
+          // and a cancelled job is never retried.
+          const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+          if (!hardwareEncoderFailed || options.signal?.aborted) {
+            throw err;
+          }
+          const softwareArgs = buildFfmpegArguments(
+            inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+          );
+          try {
+            await runFfmpeg(softwareArgs);
+          } catch {
+            throw err;
+          }
         }
       }
 

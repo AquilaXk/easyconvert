@@ -79,7 +79,7 @@ describe('POST /api/convert', () => {
   it.each([
     ['a number above its maximum', { quality: QUALITY_OVER_MAXIMUM }, 'quality'],
     ['a string where an integer is required', { quality: 'high' }, 'quality'],
-    ['a planned option the engines do not read yet', { aspectRatio: '16:9' }, 'aspectRatio'],
+    ['a malformed aspect ratio', { aspectRatio: 'wide' }, 'aspectRatio'],
   ])('answers 400 with the offending option named for %s', async (_label, options, name) => {
     const res = await convertRoute(multipart('/api/convert', convertForm(pngFile(), 'jpg', options)));
     expect(res.status).toBe(HTTP_BAD_REQUEST);
@@ -142,7 +142,7 @@ describe('POST /api/queue/jobs', () => {
 
   it.each([
     ['a number above its maximum', { quality: QUALITY_OVER_MAXIMUM }, 'quality'],
-    ['a planned option the engines do not read yet', { aspectRatio: '16:9' }, 'aspectRatio'],
+    ['a malformed aspect ratio', { aspectRatio: 'wide' }, 'aspectRatio'],
   ])('answers 400 with the offending option named for %s (JSON body)', async (_label, options, name) => {
     const effects = spyOnEffects();
     const res = await queueJobsRoute(

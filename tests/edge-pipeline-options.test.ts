@@ -49,6 +49,7 @@ describe('the options the edge pipeline passes to the worker', () => {
     ['thumbnail', { thumbnail: { at: ['00:00:01'] } }],
     ['packaging', { packaging: { format: 'hls' } }],
     ['duration', { duration: 5 }],
+    ['aspectRatio', { aspectRatio: '4:3' }],
     ['useFfmpeg', { useFfmpeg: true }],
     ['fastStart', { fastStart: true }],
     ['disableHwaccel', { disableHwaccel: true }],

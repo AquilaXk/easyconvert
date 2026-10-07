@@ -10,6 +10,7 @@ export const GRAPH_OPERATIONS = [
   'ocr',
   'optimize',
   'thumbnail',
+  'media.package',
   'watermark',
   'pdf.watermark',
   'pdf.protect',
@@ -61,17 +62,22 @@ export const MERGE_FORMATS: ReadonlySet<string> = new Set(['pdf', 'txt']);
 /** Archive formats an archive.create node can produce. */
 export const ARCHIVE_CREATE_FORMATS: ReadonlySet<string> = new Set(['zip', 'tar', 'tar.gz', '7z']);
 
+/** Output of a media.package node: the playlist or manifest and every segment, in one ZIP. */
+export const MEDIA_PACKAGE_OUTPUT_FORMAT = 'zip';
+
 /** Allowed output formats for operations limited to a fixed set. */
 export const RESTRICTED_OUTPUT_FORMATS: Readonly<Partial<Record<GraphOperation, ReadonlySet<string>>>> = {
   thumbnail: THUMBNAIL_FORMATS,
   merge: MERGE_FORMATS,
   'archive.create': ARCHIVE_CREATE_FORMATS,
+  'media.package': new Set([MEDIA_PACKAGE_OUTPUT_FORMAT]),
 };
 
 /** Output format of operations that always produce the same format. */
 export const FIXED_OUTPUT_FORMATS: Readonly<Partial<Record<GraphOperation, string>>> = {
   ocr: 'pdf',
   metadata: 'json',
+  'media.package': MEDIA_PACKAGE_OUTPUT_FORMAT,
 };
 
 /** Returns the canonical operation for a canonical or legacy name, or undefined when unknown. */

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -28,6 +29,7 @@ import {
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
+  probeInputDuration,
   probeVideoColorTransfer,
   resolveFfprobeBinary,
   probeVideoGeometry,
@@ -285,6 +287,132 @@ function resolveVideoCodec(requested: string): VideoCodecName {
     );
   }
   return name as VideoCodecName;
+}
+
+/** One pass of a two-pass encode: the pass number and the prefix of the pass log files. */
+export interface TwoPassStage {
+  pass: 1 | 2;
+  /** File name prefix of the pass logs; written in the job's working directory, which is removed afterwards. */
+  logPrefix: string;
+}
+
+/** Codecs with an encoder that writes and reads a rate-control pass log through ffmpeg (SVT-AV1 does not). */
+const TWO_PASS_CODECS: ReadonlySet<string> = new Set(['h264', 'hevc', 'vp9']);
+/** A pass log prefix goes into `-passlogfile` and x265's colon-separated parameter list: no separators or spaces. */
+const PASS_LOG_PREFIX_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+/** Longest an output may be asked to run: one day. */
+const MAX_OUTPUT_DURATION_SEC = 86_400;
+/** A requested duration may exceed the probed one by this much: container durations are rounded. */
+const DURATION_EPSILON_SEC = 0.001;
+/** Terms of an aspect ratio, and the widest ratio padding or cropping may produce (bounds the padded frame). */
+const MAX_ASPECT_TERM = 10_000;
+const MAX_ASPECT_RATIO = 10;
+const ASPECT_RATIO_PATTERN = /^(\d{1,5}):(\d{1,5})$/;
+
+/** True when the request asks for a two-pass VBR encode; such a request must be built with buildTwoPassArguments. */
+export function isTwoPassRequested(options: ConversionOptions): boolean {
+  const twoPass = (options.video?.rateControl as { twoPass?: unknown } | undefined)?.twoPass;
+  if (twoPass === undefined || twoPass === false) return false;
+  if (twoPass !== true) {
+    throw new InvalidMediaOptionError(`Invalid twoPass ${JSON.stringify(twoPass)}. Must be true or false.`);
+  }
+  return true;
+}
+
+/** Pass-specific encoder arguments: x265 takes its pass and stats file as parameters, the others as ffmpeg options. */
+function twoPassEncoderArgs(stage: TwoPassStage, codec: string): string[] {
+  if (codec === 'hevc') {
+    return ['-x265-params', `pass=${stage.pass}:stats=${stage.logPrefix}`];
+  }
+  return ['-pass', String(stage.pass), '-passlogfile', stage.logPrefix];
+}
+
+function assertTwoPassSupported(options: ConversionOptions, tgt: string, codec: string): void {
+  const rateControl = options.video?.rateControl;
+  if (rateControl?.mode !== 'vbr') {
+    throw new InvalidMediaOptionError(`twoPass needs rateControl.mode 'vbr' with a bitrate; mode '${rateControl?.mode ?? 'unset'}' has no target rate to reach.`);
+  }
+  if (!TWO_PASS_CODECS.has(codec)) {
+    throw new InvalidMediaOptionError(
+      `twoPass is available for h264, hevc and vp9; '${codec}' has no rate-control pass through ffmpeg (SVT-AV1 and ProRes ignore -pass).`
+    );
+  }
+  if (tgt === 'avi') {
+    throw new InvalidMediaOptionError("twoPass is not available for the 'avi' target.");
+  }
+}
+
+/** The output length cap in seconds, checked against the input when it can be read. */
+function resolveOutputDuration(options: ConversionOptions, inputPath: string, ffmpegBin?: string | null): number | undefined {
+  const duration = options.duration;
+  if (duration === undefined) return undefined;
+  if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > MAX_OUTPUT_DURATION_SEC) {
+    throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
+  }
+  if (fs.existsSync(inputPath)) {
+    const sourceDuration = probeInputDuration(inputPath, resolveFfprobeBinary(ffmpegBin));
+    if (duration > sourceDuration + DURATION_EPSILON_SEC) {
+      throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
+    }
+  }
+  return duration;
+}
+
+/** `+faststart` (moov before mdat) is the default for mp4, mov and m4a; `false` omits it and `true` elsewhere is an error. */
+function resolveFastStart(options: ConversionOptions, tgt: string, capable: boolean): boolean {
+  const requested = options.fastStart;
+  if (requested === undefined) return capable;
+  if (typeof requested !== 'boolean') {
+    throw new InvalidMediaOptionError(`Invalid fastStart ${JSON.stringify(requested)}. Must be true or false.`);
+  }
+  if (requested && !capable) {
+    throw new InvalidMediaOptionError(`fastStart applies to mp4, mov and m4a output; the '${tgt}' target has no moov box to move.`);
+  }
+  return requested;
+}
+
+interface AspectPlan {
+  num: number;
+  den: number;
+  mode: 'dar' | 'pad' | 'crop';
+}
+
+function resolveAspectRatio(requested: ConversionOptions['aspectRatio']): AspectPlan | undefined {
+  if (requested === undefined) return undefined;
+  const ratio = typeof requested === 'string' ? requested : requested?.ratio;
+  const mode = typeof requested === 'string' ? 'dar' : (requested?.mode ?? 'dar');
+  const match = typeof ratio === 'string' ? ASPECT_RATIO_PATTERN.exec(ratio) : null;
+  if (!match) {
+    throw new InvalidMediaOptionError(`Invalid aspectRatio ${JSON.stringify(requested)}. Use W:H with whole numbers, e.g. "16:9".`);
+  }
+  const num = Number(match[1]);
+  const den = Number(match[2]);
+  if (num < 1 || den < 1 || num > MAX_ASPECT_TERM || den > MAX_ASPECT_TERM || num / den > MAX_ASPECT_RATIO || den / num > MAX_ASPECT_RATIO) {
+    throw new InvalidMediaOptionError(`Invalid aspectRatio ${num}:${den}. Each term is 1 to ${MAX_ASPECT_TERM} and the ratio at most ${MAX_ASPECT_RATIO}:1.`);
+  }
+  if (mode !== 'dar' && mode !== 'pad' && mode !== 'crop') {
+    throw new InvalidMediaOptionError(`Invalid aspectRatio mode ${JSON.stringify(mode)}. Allowed: dar, pad, crop.`);
+  }
+  return { num, den, mode };
+}
+
+/**
+ * Filters that reshape the picture to the ratio, keeping even sizes (4:2:0 needs them): pad adds black bars
+ * to the smaller side, crop removes from the larger one, both centred. Each ends with a square pixel aspect, so
+ * the displayed ratio is the frame's own width over height.
+ */
+function aspectReshapeFilter(plan: AspectPlan): string | undefined {
+  const { num, den } = plan;
+  if (plan.mode === 'pad') {
+    return (
+      `pad=w='max(iw\\,ceil(ih*${num}/${den}/2)*2)':h='max(ih\\,ceil(iw*${den}/${num}/2)*2)'` +
+      ":x='(ow-iw)/2':y='(oh-ih)/2':color=black,setsar=1"
+    );
+  }
+  if (plan.mode === 'crop') {
+    return `crop=w='min(iw\\,floor(ih*${num}/${den}/2)*2)':h='min(ih\\,floor(iw*${den}/${num}/2)*2)',setsar=1`;
+  }
+  return undefined;
 }
 
 /** x264 and x265 presets a caller may name; `placebo` is left out because its cost is unbounded for a service. */
@@ -554,6 +682,29 @@ export function buildLoudnessMeasureArguments(
 }
 
 /**
+ * Arguments of a two-pass VBR encode: the analysing pass (video only, to a null sink) and the encode that
+ * reads its statistics. Both read and write the pass log `logPrefix` in the process's working directory, so
+ * the caller runs them in a job directory it removes afterwards. A request that is not two-pass is rejected.
+ */
+export function buildTwoPassArguments(
+  inputPath: string,
+  outputPath: string,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  ffmpegBin: string | null | undefined,
+  logPrefix: string,
+  loudnessStage?: LoudnessStage
+): [string[], string[]] {
+  if (!isTwoPassRequested(options)) {
+    throw new InvalidMediaOptionError('Two-pass arguments were requested without rateControl.twoPass.');
+  }
+  const build = (pass: 1 | 2) =>
+    buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage, { pass, logPrefix });
+  return [build(1), build(2)];
+}
+
+/**
  * Builds optimized, compliant FFmpeg argument array with hardware acceleration,
  * strict filter graph ordering, rate control, and profile/level validation.
  *
@@ -568,7 +719,8 @@ export function buildFfmpegArguments(
   options: ConversionOptions = {},
   ffmpegBin?: string | null,
   overrideTimestamp?: string,
-  loudnessStage?: LoudnessStage
+  loudnessStage?: LoudnessStage,
+  passStage?: TwoPassStage
 ): string[] {
   const globalArgs: string[] = ['-y'];
   const inputArgs: string[] = [];
@@ -641,6 +793,26 @@ export function buildFfmpegArguments(
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
   const audioSpec = isAudioOnlyTarget(tgt) ? resolveAudioTargetSpec(tgt) : undefined;
+
+  const twoPass = isTwoPassRequested(options);
+  if (twoPass && !isVideo) {
+    throw new InvalidMediaOptionError(`twoPass applies to video targets; '${tgt}' is not one.`);
+  }
+  if (twoPass && !passStage) {
+    throw new ConversionFailedError('A twoPass request needs both passes; build the arguments with buildTwoPassArguments.');
+  }
+  if (passStage && !PASS_LOG_PREFIX_PATTERN.test(passStage.logPrefix)) {
+    throw new ConversionFailedError(`Invalid pass log prefix "${passStage.logPrefix}".`);
+  }
+  const outputDuration = resolveOutputDuration(options, inputPath, ffmpegBin);
+  if (outputDuration !== undefined) {
+    outputArgs.push('-t', String(outputDuration));
+  }
+  const fastStart = resolveFastStart(options, tgt, tgt === 'mp4' || tgt === 'mov' || audioSpec?.muxer === 'ipod');
+  const aspect = resolveAspectRatio(options.aspectRatio);
+  if (aspect && !isVideo) {
+    throw new InvalidMediaOptionError(`aspectRatio applies to video targets; '${tgt}' is not one.`);
+  }
 
   if (options.subtitles?.mode === 'burn' && !isVideo) {
     throw new InvalidMediaOptionError("Subtitle 'burn' mode is only supported for video targets.");
@@ -717,18 +889,21 @@ export function buildFfmpegArguments(
       audioTrack: options.audio?.track,
       burnSubtitles: burnRequested,
     });
+    // The analysing pass of a two-pass encode reads the picture only.
+    const analysisOnly = passStage?.pass === 1;
     for (const operand of streamPlan.maps) {
       // A bitmap subtitle is overlaid by a filter graph, whose output replaces the stored video stream.
       const isVideoOperand = streamPlan.videoIndex !== undefined && operand === `0:${streamPlan.videoIndex}`;
+      if (analysisOnly && !isVideoOperand) continue;
       outputArgs.push('-map', burnBitmapStream && isVideoOperand ? BURN_GRAPH_OUTPUT : operand);
     }
-    if (options.subtitles?.mode === 'soft') {
+    if (options.subtitles?.mode === 'soft' && !analysisOnly) {
       outputArgs.push('-map', '1:0');
     }
-    if (CHAPTER_CONTAINERS.has(tgt)) {
+    if (CHAPTER_CONTAINERS.has(tgt) && !analysisOnly) {
       outputArgs.push('-map_metadata', '0', '-map_chapters', '0');
     }
-    for (const { outputIndex, name } of streamPlan.handlerNames) {
+    for (const { outputIndex, name } of analysisOnly ? [] : streamPlan.handlerNames) {
       outputArgs.push(`-metadata:s:${outputIndex}`, `handler_name=${name}`);
     }
   } else if (options.subtitles?.mode === 'soft') {
@@ -758,10 +933,10 @@ export function buildFfmpegArguments(
     }
   }
 
-  if (streamPlan?.subtitleCodec) {
+  if (streamPlan?.subtitleCodec && passStage?.pass !== 1) {
     outputArgs.push('-c:s', streamPlan.subtitleCodec);
   }
-  if (options.subtitles?.mode === 'soft') {
+  if (options.subtitles?.mode === 'soft' && passStage?.pass !== 1) {
     // For mp4, mov and webm the plan above already set the one codec every subtitle track is written with.
     const codecSetByPlan = Boolean(streamPlan?.subtitleCodec) && tgt !== 'mkv';
     if (tgt === 'mkv') {
@@ -864,7 +1039,8 @@ export function buildFfmpegArguments(
     let isVideotoolbox = false;
     let isQsv = false;
 
-    if (!disableHw && !tenBit && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+    // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
+    if (!disableHw && !tenBit && !twoPass && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
       if (codec === 'h264') {
         if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
         else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;
@@ -877,9 +1053,8 @@ export function buildFfmpegArguments(
       }
     }
 
-    // 2-pass on hardware acceleration rejection
-    if (rateControl?.mode === 'vbr' && rateControl.twoPass && (isVaapi || isNvenc || isVideotoolbox || isQsv)) {
-      throw new InvalidMediaOptionError('Hardware accelerated video encoders do not support 2-pass encoding.');
+    if (twoPass) {
+      assertTwoPassSupported(options, tgt, codec);
     }
 
     // 6. Strict Filter Graph Construction
@@ -936,6 +1111,12 @@ export function buildFfmpegArguments(
       }
     }
 
+    // Stage 4b: aspect ratio by padding or cropping (the default mode only sets the display ratio, below)
+    const reshape = aspect ? aspectReshapeFilter(aspect) : undefined;
+    if (reshape) {
+      videoFilters.push(reshape);
+    }
+
     // Stage 5: fps. One control only: the fps filter. The output option -r is never emitted next to it.
     const requestedFps = videoOpts?.fps ?? options.videoFps;
     if (requestedFps !== undefined) {
@@ -955,6 +1136,11 @@ export function buildFfmpegArguments(
 
     // Stage 7: Even dimension normalization (ALWAYS LAST filter before format)
     videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+
+    // Stage 7b: display aspect ratio without touching the pixels
+    if (aspect?.mode === 'dar') {
+      videoFilters.push(`setdar=${aspect.num}/${aspect.den}`);
+    }
 
     // Stage 8: Format upload (for VAAPI)
     if (isVaapi) {
@@ -1051,7 +1237,7 @@ export function buildFfmpegArguments(
 
       outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
 
-      if (tgt === 'mp4' || tgt === 'mov') {
+      if ((tgt === 'mp4' || tgt === 'mov') && fastStart && passStage?.pass !== 1) {
         outputArgs.push('-movflags', '+faststart');
       }
     } else if (tgt === 'webm') {
@@ -1065,6 +1251,18 @@ export function buildFfmpegArguments(
     } else if (tgt === 'avi') {
       outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
     }
+
+    if (passStage) {
+      outputArgs.push(...twoPassEncoderArgs(passStage, codec));
+    }
+  }
+
+  // The analysing pass writes its statistics and no media: no audio, no subtitles, a null sink.
+  if (passStage?.pass === 1) {
+    if (isVideo && !hasRequestedFrameRate(options) && VARIABLE_FRAME_RATE_CONTAINERS.has(tgt)) {
+      outputArgs.push('-fps_mode', 'passthrough');
+    }
+    return [...globalArgs, ...inputArgs, ...outputArgs, '-an', '-sn', '-dn', '-f', 'null', os.devNull];
   }
 
   // Timing: keep the source's own frame timestamps (variable frame rate) unless a rate was requested,
@@ -1237,7 +1435,7 @@ export function buildFfmpegArguments(
     outputArgs.push('-filter:a', audioFilters.join(','));
   }
 
-  if (audioSpec?.muxer === 'ipod') {
+  if (audioSpec?.muxer === 'ipod' && fastStart) {
     outputArgs.push('-movflags', '+faststart');
   }
 

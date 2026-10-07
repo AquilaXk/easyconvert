@@ -1,4 +1,4 @@
-import type { ConversionOptions } from '@/lib/types';
+import type { ConversionOptions, MediaPackagingOptions } from '@/lib/types';
 
 export type NodeId = string;
 
@@ -94,6 +94,14 @@ export interface ThumbnailNode {
   options?: ConversionOptions & { thumbnail?: { width?: number; height?: number; format?: 'jpg' | 'png' } };
 }
 
+/** Adaptive-bitrate packaging (HLS or MPEG-DASH) of a video; the output is one ZIP with the manifest and segments. */
+export interface MediaPackageNode {
+  op: 'media.package';
+  input: NodeId;
+  targetFormat?: 'zip';
+  options?: ConversionOptions & { packaging?: MediaPackagingOptions };
+}
+
 export interface MergeNode {
   op: 'merge';
   input: NodeId[];
@@ -117,6 +125,7 @@ export type GraphNode =
   | OcrNode
   | OptimizeNode
   | ThumbnailNode
+  | MediaPackageNode
   | MergeNode
   | MetadataNode
   | WatermarkNode

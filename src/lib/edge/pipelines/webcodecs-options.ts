@@ -46,7 +46,7 @@ const NOT_ABOUT_MEDIA = [
 /** Media options the edge worker has no way to apply. */
 const NOT_APPLIED = [
   'audio', 'audioVolume', 'video', 'trim', 'subtitles', 'thumbnail', 'packaging', 'videoResolution', 'videoFps',
-  'duration', 'useFfmpeg', 'fastStart', 'disableHwaccel',
+  'duration', 'aspectRatio', 'useFfmpeg', 'fastStart', 'disableHwaccel',
 ] as const satisfies readonly (keyof ConversionOptions)[];
 
 type Classified = (typeof HONOURED)[number] | (typeof NOT_ABOUT_MEDIA)[number] | (typeof NOT_APPLIED)[number];

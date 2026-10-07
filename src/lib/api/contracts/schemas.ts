@@ -552,7 +552,11 @@ export const ConversionOptionsSchema = {
                 bitrateK: { type: 'number', minimum: 1 },
                 maxrateK: { type: 'number', minimum: 1 },
                 bufsizeK: { type: 'number', minimum: 1 },
-                twoPass: { type: 'boolean' },
+                twoPass: {
+                  type: 'boolean',
+                  description:
+                    'Encode in two passes (h264, hevc, vp9; software encoders) so the video bitrate lands closer to bitrateK. Costs about twice the encode time and counts both passes against the job timeout. Other codecs answer 400.',
+                },
               },
             },
             {
@@ -746,9 +750,10 @@ export const ConversionOptionsSchema = {
     },
     duration: {
       type: 'number',
-      minimum: 0,
-      description: 'Maximum duration in seconds to transcode (planned).',
-      'x-easyconvert-status': 'planned',
+      exclusiveMinimum: 0,
+      maximum: 86400,
+      description:
+        'Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400.',
     },
     useFfmpeg: {
       type: 'boolean',
@@ -756,14 +761,24 @@ export const ConversionOptionsSchema = {
     },
     fastStart: {
       type: 'boolean',
-      description: 'Relocate moov atom to beginning of MP4 container for web streaming (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Place the moov atom before the media data of mp4, mov and m4a output for progressive playback. Defaults to true for those containers; false leaves it at the end. true for any other container answers 400.',
     },
     aspectRatio: {
-      type: 'string',
-      pattern: '^\\d+:\\d+$',
-      description: 'Video aspect ratio (e.g. 16:9, 4:3) (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Display aspect ratio. A "W:H" string sets the display ratio without touching the pixels (setdar). The object form adds a mode: "pad" adds black bars and "crop" removes picture, both reshaping the frame to the ratio with even sizes. Terms are whole numbers up to 10000 and the ratio at most 10:1; anything else answers 400.',
+      oneOf: [
+        { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+        {
+          type: 'object',
+          required: ['ratio'],
+          properties: {
+            ratio: { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+            mode: { type: 'string', enum: ['dar', 'pad', 'crop'], default: 'dar' },
+          },
+          additionalProperties: false,
+        },
+      ],
     },
     disableHwaccel: {
       type: 'boolean',

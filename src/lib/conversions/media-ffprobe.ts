@@ -294,7 +294,7 @@ function planningFrameRate(stream: InputStream): { num: number; den: number } | 
 }
 
 /** Duration of the input container in seconds, from ffprobe; throws when it cannot be read. */
-function probeContainerDuration(filePath: string, ffprobe: FfprobePath): number {
+export function probeInputDuration(filePath: string, ffprobe: FfprobePath): number {
   const out = runFfprobe(ffprobe, filePath, ['-show_entries', 'format=duration']);
   const parsed = Number.parseFloat(out);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -322,7 +322,7 @@ export function probeVideoGeometry(filePath: string, ffprobe: FfprobePath): Vide
     fpsDen: rate.den,
     width: size.width,
     height: size.height,
-    durationSec: probeContainerDuration(filePath, ffprobe),
+    durationSec: probeInputDuration(filePath, ffprobe),
     bitrateK: stream.bitRateK,
   };
 }

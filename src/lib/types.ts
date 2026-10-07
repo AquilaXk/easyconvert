@@ -204,11 +204,18 @@ export interface ConversionOptions {
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
   videoBitrate?: number;
+  /** Longest output in seconds (an output-side limit): more than 0 and at most the input's duration. */
   duration?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
   useFfmpeg?: boolean;
+  /** Place the moov box before the media data of mp4, mov and m4a output (default true there); true elsewhere is an error. */
   fastStart?: boolean;
+  /**
+   * Display aspect ratio as "W:H" (set without touching the pixels), or an object that also reshapes the picture:
+   * `pad` adds black bars, `crop` removes picture, both to the ratio with even sizes.
+   */
+  aspectRatio?: string | AspectRatioOptions;
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
   // Office & PDF export options
@@ -223,6 +230,13 @@ export interface ConversionOptions {
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
+}
+
+export interface AspectRatioOptions {
+  /** "W:H", whole numbers, e.g. "4:3". */
+  ratio: string;
+  /** `dar` sets the display ratio only (default), `pad` adds bars, `crop` removes picture. */
+  mode?: 'dar' | 'pad' | 'crop';
 }
 
 export interface VideoRateControlCrf {
@@ -240,6 +254,7 @@ export interface VideoRateControlVbr {
   bitrateK: number;
   maxrateK?: number;
   bufsizeK?: number;
+  /** Run the encode in two passes (h264, hevc, vp9): the second reaches the target bitrate more exactly. */
   twoPass?: boolean;
 }
 

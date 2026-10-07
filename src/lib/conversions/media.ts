@@ -17,13 +17,16 @@ import { executeSandboxedBinary, SandboxedProcessError } from '../security/proce
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
+  buildTwoPassArguments,
   DEFAULT_PACKAGING_LADDER,
+  isTwoPassRequested,
   PackagingSource,
   probePackagingSource,
   usesHardwareVideoEncoder,
 } from './media-ffmpeg-args';
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
+import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStream } from './media-encoder';
 import {
   resampleInterleavedInt16,
@@ -394,36 +397,49 @@ async function executeFfmpegTranscode(
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
     const durationSeconds = probeMediaDuration(inputPath, options);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
-    const runFfmpeg = (ffmpegArgs: string[]) =>
+    const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
-        timeoutMs,
+        timeoutMs: limitMs,
         maxBuffer: 50 * 1024 * 1024,
         networkIsolated: true,
         signal: options.signal,
+        ...(cwd ? { cwd } : {}),
       });
+    const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);
     // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
     const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
 
-    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
-    try {
-      await runFfmpeg(args);
-    } catch (err) {
-      // An advertised hardware encoder can still fail at runtime (missing device or driver).
-      // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
-      // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
-      // matching them would miss real hardware failures. The cost is a second run for an input that
-      // fails in software too, which then reports the original error. A cancelled job is never retried.
-      const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
-      if (!hardwareEncoderFailed || options.signal?.aborted) {
-        throw err;
-      }
-      const softwareArgs = buildFfmpegArguments(
-        inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
-      );
+    if (isTwoPassRequested(options)) {
+      // Pass logs live in a job directory of their own, removed whether the passes succeed or fail.
+      const passDir = fs.mkdtempSync(path.join(tmpDir, 'easyconvert_pass_'));
       try {
-        await runFfmpeg(softwareArgs);
-      } catch {
-        throw err;
+        const passes = buildTwoPassArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        await runTwoPass(passes, twoPassBudgetMs(timeoutMs), (passArgs, limitMs) => runFfmpegWith(passArgs, limitMs, passDir));
+      } finally {
+        fs.rmSync(passDir, { recursive: true, force: true });
+      }
+    } else {
+      const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
+      try {
+        await runFfmpeg(args);
+      } catch (err) {
+        // An advertised hardware encoder can still fail at runtime (missing device or driver).
+        // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
+        // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
+        // matching them would miss real hardware failures. The cost is a second run for an input that
+        // fails in software too, which then reports the original error. A cancelled job is never retried.
+        const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+        if (!hardwareEncoderFailed || options.signal?.aborted) {
+          throw err;
+        }
+        const softwareArgs = buildFfmpegArguments(
+          inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+        );
+        try {
+          await runFfmpeg(softwareArgs);
+        } catch {
+          throw err;
+        }
       }
     }
 
