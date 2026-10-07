@@ -513,6 +513,14 @@ function svtAv1Args(rateControl: VideoRateControl | undefined, preset: string | 
 }
 
 /** Bitrate controls shared by every video container: VBR, CBR, the capped CRF peak and the legacy videoBitrate. */
+/**
+ * MPEG-4 Part 2 (Xvid-compatible) constant quantiser for the avi target: 2-3 is the visually transparent
+ * range of this codec; 3 keeps files moderate.
+ */
+const MPEG4_DEFAULT_QSCALE = 3;
+/** Rate-distortion macroblock decisions, trellis quantisation, four motion vectors and AC prediction. */
+const MPEG4_QUALITY_ARGS: readonly string[] = ['-mbd', 'rd', '-trellis', '2', '-flags', '+mv4+aic'];
+
 function bitrateControlArgs(rateControl: VideoRateControl | undefined, options: ConversionOptions, codec: string): string[] {
   const args: string[] = [];
   if (rateControl?.mode === 'vbr') {
@@ -1265,7 +1273,12 @@ export function buildFfmpegArguments(
       }
       outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
     } else if (tgt === 'avi') {
-      outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID');
+      // The MP3 encoder's priming gives the audio a negative start; shifting every stream to make it
+      // non-negative moves the video by one frame in AVI (a frame lost at 0.04 s). Keep the timestamps.
+      outputArgs.push('-c:v', 'mpeg4', '-vtag', 'XVID', ...MPEG4_QUALITY_ARGS, '-avoid_negative_ts', 'disabled');
+      const rateArgs = bitrateControlArgs(rateControl, options, 'mpeg4');
+      // Without a requested rate, constant quality instead of the encoder's 200 kbit/s default.
+      outputArgs.push(...(rateArgs.length > 0 ? rateArgs : ['-q:v', String(MPEG4_DEFAULT_QSCALE)]));
     }
 
     if (passStage) {

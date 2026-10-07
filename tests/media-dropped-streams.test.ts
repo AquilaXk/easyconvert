@@ -28,8 +28,8 @@ import type { DroppedStream } from '../src/lib/types';
 const CHAPTER_TOLERANCE_SEC = 0.001;
 const TRIM_START_SEC = 1;
 const ENCODE_TIMEOUT_MS = 120_000;
-/** The avi target encodes MPEG-4 Part 2 at the encoder's default 200 kbit/s, which scores 0.89 on this detailed clip. */
-const AVI_MIN_SSIM = 0.85;
+/** The avi target encodes MPEG-4 Part 2 at constant quality; held to the same floor as every video target. */
+const AVI_MIN_SSIM = 0.95;
 
 function dropped(result: { metadata?: Record<string, unknown> }): DroppedStream[] {
   return (result.metadata?.droppedStreams as DroppedStream[] | undefined) ?? [];
