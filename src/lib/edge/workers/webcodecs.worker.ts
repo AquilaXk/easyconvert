@@ -22,11 +22,13 @@ import type {
   DemuxedTrackInfo,
   EncodedMediaChunk,
   EncoderOutputConfig,
+  VideoColour,
 } from '../media/media-types';
 import { muxMp4 } from '../media/mp4-mux';
 import { muxOggOpus } from '../media/ogg-opus-mux';
 import { OrderedWorkQueue } from '../media/ordered-work-queue';
 import { pcmBlockToAudioData } from '../media/pcm-audio';
+import { survivesCanvasRedraw, toWebCodecsColorSpace } from '../media/video-colour';
 import { muxWebm } from '../media/webm-mux';
 import { demuxWav } from '../media/wav-demux';
 import { EdgeUnsupportedError, serializeWorkerError, type SerializedWorkerError } from './worker-errors';
@@ -349,6 +351,15 @@ function captureDecoderConfig(metadata: any): EncoderOutputConfig | undefined {
   };
 }
 
+/** A resize redraws the picture through a canvas, which hands the encoder BT.709 pictures whatever the source was. */
+function assertCanvasKeepsColour(track: DemuxedTrackInfo): void {
+  if (track.colour && !survivesCanvasRedraw(track.colour)) {
+    throw new EdgeUnsupportedError(
+      "Resizing video redraws it through a canvas, which cannot keep the video's colour description; the server engine converts it."
+    );
+  }
+}
+
 function videoEncoderConfig(codec: string, width: number, height: number, bitrate: number, framerate: number): object {
   const config: Record<string, unknown> = { codec, width, height, bitrate, framerate };
   // Length-prefixed NAL units with the decoder configuration kept out of band: the layout MP4 stores
@@ -397,7 +408,9 @@ async function encodeVideoTrack(
     throw new EdgeUnsupportedError(`The edge worker cannot decode the "${demuxedTrack.codec}" video track.`);
   }
 
-  const decoderConfig = { codec: demuxedTrack.codec, description: demuxedTrack.description };
+  const decoderConfig: Record<string, unknown> = { codec: demuxedTrack.codec, description: demuxedTrack.description };
+  if (demuxedTrack.colour) decoderConfig.colorSpace = toWebCodecsColorSpace(demuxedTrack.colour);
+  if (width !== demuxedTrack.width || height !== demuxedTrack.height) assertCanvasKeepsColour(demuxedTrack);
   await assertConfigSupported(VideoDecoderClass, decoderConfig, 'VideoDecoder', demuxedTrack.codec);
   const encoderConfig = videoEncoderConfig(codec, width, height, videoBitrate, framerate);
   await assertConfigSupported(VideoEncoderClass, encoderConfig, 'VideoEncoder', codec);
@@ -442,6 +455,7 @@ async function encodeVideoTrack(
 
         // OffscreenCanvas step for resizing
         if (decodedFrame.displayWidth !== width || decodedFrame.displayHeight !== height) {
+          assertCanvasKeepsColour(demuxedTrack);
           if (typeof OffscreenCanvas === 'undefined') {
             throw new EdgeUnsupportedError('Resizing video needs OffscreenCanvas, which this browser lacks.');
           }
@@ -710,7 +724,7 @@ async function encodeAudioTrack(
 }
 
 interface MuxStreams {
-  video?: { encoded: VideoEncodeResult; codec: string; width: number; height: number };
+  video?: { encoded: VideoEncodeResult; codec: string; width: number; height: number; colour?: VideoColour };
   audio?: { encoded: AudioEncodeResult; codec: string };
 }
 
@@ -735,6 +749,7 @@ function muxFinalMedia(targetFormat: string, streams: MuxStreams): Uint8Array {
         config: reportedConfig(streams.video.encoded.decoderConfig, streams.video.codec),
         width: streams.video.width,
         height: streams.video.height,
+        colour: streams.video.colour,
       }
     : undefined;
   const audio = streams.audio
@@ -875,7 +890,7 @@ async function convertVideoTrack(
   onProgress?.(PROGRESS_MUXING);
 
   const finalBytes = muxFinalMedia(targetFormat, {
-    video: { encoded: video, codec: config.codec, width, height },
+    video: { encoded: video, codec: config.codec, width, height, colour: demuxedTrack.colour },
     audio: audio ? { encoded: audio, codec: audioCodec } : undefined,
   });
 

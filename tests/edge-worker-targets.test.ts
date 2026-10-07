@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveWebCodecsConfig, processWebCodecsConversion } from '../src/lib/edge/workers/webcodecs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { walkWebm } from './helpers/ebml-walker';
-import { aacLcSpecificConfig } from './helpers/ffmpeg-media-fixtures';
+import { aacLcSpecificConfig, requireEncoders, runFfmpeg, testPatternInput } from './helpers/ffmpeg-media-fixtures';
 import { ffprobeReport } from './helpers/ffprobe-json';
 import { extractAvcC, listBoxes, payloadOf, readEsds, readFtyp, walkTracks, type IsoBox } from './helpers/iso-bmff-walker';
 import { ffmpegTestVideoMp4, sineSamples, toArrayBuffer, wavFromSamples } from './helpers/media-lossy-oracle';
@@ -241,5 +241,145 @@ describe('what the edge worker writes for each video target', () => {
     expect((error as Error).message).toBe(
       'WebM output: avc1.4d401e is not a codec WebM carries (VP8, VP9 and AV1 are); the server engine converts this file.'
     );
+  });
+});
+
+describe('the colour of the source picture in the edge worker', () => {
+  let platform: FakePlatform | undefined;
+  afterEach(() => {
+    platform?.restore();
+    platform = undefined;
+  });
+
+  const ENCODER_AVCC = Uint8Array.from([1, 0x4d, 0x40, 0x1e, 0xff, 0xe1, 0, 5, 0x67, 0x4d, 0x40, 0x1e, 0x95, 1, 0, 3, 0x68, 0xee, 0x3c]);
+  const SMPTE170M = ['-colorspace', 'smpte170m', '-color_primaries', 'smpte170m', '-color_trc', 'smpte170m', '-color_range', 'tv'];
+
+  /** 1 s of 160x120 H.264 whose colr is whatever `colourArgs` ask the reference encoder to write. */
+  function colourSource(colourArgs: string[]): Buffer {
+    requireEncoders('libx264');
+    return runFfmpeg(
+      [...testPatternInput({ width: 160, height: 120, fps: 25, seconds: 1 }), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-g', '25', ...colourArgs],
+      'mp4'
+    );
+  }
+
+  function convert(mp4: Buffer, targetFormat: string, options: Record<string, unknown> = {}) {
+    return processWebCodecsConversion({ jobId: 'colour', sourceFormat: 'mp4', targetFormat, fileBuffer: toArrayBuffer(mp4), options });
+  }
+
+  const COLOUR_CASES = [
+    {
+      label: 'BT.601 limited range',
+      args: SMPTE170M,
+      probed: ['smpte170m', 'smpte170m', 'smpte170m', 'tv'],
+      colorSpace: { primaries: 'smpte170m', transfer: 'smpte170m', matrix: 'smpte170m', fullRange: false },
+    },
+    {
+      label: 'BT.2020 with PQ',
+      args: ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-color_range', 'tv'],
+      probed: ['bt2020nc', 'bt2020', 'smpte2084', 'tv'],
+      colorSpace: { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false },
+    },
+    {
+      label: 'BT.2020 with HLG, full range',
+      args: ['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-color_range', 'pc'],
+      probed: ['bt2020nc', 'bt2020', 'arib-std-b67', 'pc'],
+      colorSpace: { primaries: 'bt2020', transfer: 'hlg', matrix: 'bt2020-ncl', fullRange: true },
+    },
+  ];
+
+  for (const { label, args, probed, colorSpace } of COLOUR_CASES) {
+    oracleTest(`hands the decoder the colour space the file states: ${label}`, ['ffmpeg', 'ffprobe'], async () => {
+      const mp4 = colourSource(args);
+      const stream = ffprobeReport(new Uint8Array(mp4), 'mp4').streams[0];
+      expect([stream.color_space, stream.color_primaries, stream.color_transfer, stream.color_range]).toEqual(probed);
+      platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'avc1.4d401e', description: ENCODER_AVCC } });
+
+      await convert(mp4, 'mp4');
+
+      expect(platform.videoDecoderConfigures).toHaveLength(1);
+      expect(platform.videoDecoderConfigures[0].colorSpace).toEqual(colorSpace);
+    });
+  }
+
+  oracleTest('states no colour space to the decoder for a file that has none', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource([]);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'avc1.4d401e', description: ENCODER_AVCC } });
+
+    await convert(mp4, 'mp4');
+
+    expect(Object.keys(platform.videoDecoderConfigures[0]).sort()).toEqual(['codec', 'description']);
+  });
+
+  oracleTest('refuses a colour code point WebCodecs has no name for, before decoding', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource(SMPTE170M);
+    // ITU-T H.273 code point 22 (EBU Tech 3213), written over the primaries of the reference file's colr
+    const EBU_TECH_3213 = 22;
+    const colrAt = mp4.indexOf('colrnclx');
+    expect(colrAt).toBeGreaterThan(0);
+    mp4.writeUInt16BE(EBU_TECH_3213, colrAt + 'colrnclx'.length);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'avc1.4d401e', description: ENCODER_AVCC } });
+
+    const error = await convert(mp4, 'mp4').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect((error as Error).message).toBe(
+      'The video states colour primaries code point 22, which WebCodecs has no name for; the server engine converts this file.'
+    );
+    expect(platform.videoChunksDecoded).toHaveLength(0);
+  });
+
+  oracleTest('writes the source colour into an MP4 output as an nclx colr', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource(SMPTE170M);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'avc1.4d401e', description: ENCODER_AVCC } });
+
+    const result = await convert(mp4, 'mp4');
+    const bytes = new Uint8Array(result.buffer);
+
+    const entry = walkTracks(bytes)[0].entries[0];
+    const colr = entry.children.find((box) => box.type === 'colr') as IsoBox;
+    // ISO/IEC 14496-12 12.1.5: 'nclx', primaries, transfer and matrix as 16 bits, then the range in the top bit
+    expect(Array.from(payloadOf(bytes, colr))).toEqual([0x6e, 0x63, 0x6c, 0x78, 0, 6, 0, 6, 0, 6, 0]);
+  });
+
+  oracleTest('writes no colr for a source that states no colour', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource([]);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'avc1.4d401e', description: ENCODER_AVCC } });
+
+    const result = await convert(mp4, 'mp4');
+
+    const entry = walkTracks(new Uint8Array(result.buffer))[0].entries[0];
+    expect(entry.children.map((box) => box.type)).toEqual(['avcC']);
+  });
+
+  oracleTest('writes the source colour into a WebM output as a Colour element', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource(['-colorspace', 'bt2020nc', '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-color_range', 'pc']);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 }, videoDecoderConfig: { codec: 'vp09.00.10.08' } });
+
+    const result = await convert(mp4, 'webm');
+
+    // Matroska Colour: H.273 code points, and Range 2 for full range
+    expect(walkWebm(new Uint8Array(result.buffer)).tracks[0].colour).toEqual({ matrix: 9, range: 2, transfer: 18, primaries: 9 });
+  });
+
+  oracleTest('refuses a resize of a picture whose colour a canvas redraw would change', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource(SMPTE170M);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 } });
+
+    const error = await convert(mp4, 'mp4', { width: 80, height: 60 }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(EdgeUnsupportedError);
+    expect((error as Error).message).toBe(
+      "Resizing video redraws it through a canvas, which cannot keep the video's colour description; the server engine converts it."
+    );
+  });
+
+  oracleTest('lets a BT.709 limited-range picture on to the canvas check', ['ffmpeg', 'ffprobe'], async () => {
+    const mp4 = colourSource(['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv']);
+    platform = installFakeWebCodecs({ decodedFrameSize: { width: 160, height: 120 } });
+
+    const error = await convert(mp4, 'mp4', { width: 80, height: 60 }).catch((e: unknown) => e);
+
+    expect((error as Error).message).toBe('Resizing video needs OffscreenCanvas, which this browser lacks.');
   });
 });

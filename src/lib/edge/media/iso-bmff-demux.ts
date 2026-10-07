@@ -15,7 +15,7 @@
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
 import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
-import type { DemuxedMediaSample, DemuxedTrackInfo } from './media-types';
+import type { DemuxedMediaSample, DemuxedTrackInfo, VideoColour } from './media-types';
 
 /** Samples per track. 100 MB of 64 kbit/s audio is under 700,000 AAC frames. */
 export const MP4_MAX_SAMPLES_PER_TRACK = 1_000_000;
@@ -45,6 +45,12 @@ const AUDIO_ENTRY_VERSION_OFFSET = 8;
 const AUDIO_ENTRY_CHANNELS_OFFSET = 16;
 const AUDIO_ENTRY_RATE_OFFSET = 24;
 const FIXED_POINT_SHIFT = 16;
+const FIXED_POINT_ONE = 1 << FIXED_POINT_SHIFT;
+/** colr (ISO/IEC 14496-12 12.1.5): colour type, then primaries, transfer and matrix as 16-bit code points. */
+const COLR_TYPE_NCLX = 'nclx';
+const COLR_TYPE_NCLC = 'nclc';
+const COLR_ICC_TYPES: ReadonlySet<string> = new Set(['prof', 'rICC']);
+const NCLX_FULL_RANGE_FLAG = 0x80;
 const TKHD_FLAG_ENABLED = 0x1;
 const EDIT_RATE_ONE = 1;
 const EMPTY_EDIT_MEDIA_TIME = -1;
@@ -299,6 +305,49 @@ function av1Config(view: DataView, config: Mp4Box): VideoConfig {
   let depth = 8;
   if (highBitDepth) depth = twelveBit ? 12 : 10;
   return { codec: `av01.${profile}.${dec2(level)}${tier}.${dec2(depth)}`, description: record };
+}
+
+/**
+ * What the visual sample entry says about how the picture is shown. The edge decodes and re-encodes the coded
+ * pictures only, so anything that changes the displayed picture (a non-square pixel, a clean aperture crop, an
+ * ICC profile) would be lost: those throw. The colour code points are returned so they can follow the pictures.
+ */
+function readPictureMetadata(view: DataView, entryChildren: Mp4Box[]): VideoColour | undefined {
+  const pasp = optionalChild(entryChildren, 'pasp');
+  if (pasp) {
+    const cursor = new Cursor(view, pasp.payload, pasp.end, 'pasp');
+    const horizontal = cursor.u32();
+    const vertical = cursor.u32();
+    if (horizontal === 0 || horizontal !== vertical) {
+      throw refuse(`the video has pixel aspect ratio ${horizontal}:${vertical}, which the edge would present as square pixels`);
+    }
+  }
+  if (optionalChild(entryChildren, 'clap')) {
+    throw refuse('the video carries a clean aperture (clap) crop the edge would drop');
+  }
+
+  let nclx: VideoColour | undefined;
+  let nclc: VideoColour | undefined;
+  let hasProfile = false;
+  for (const colr of entryChildren.filter((entryChild) => entryChild.type === 'colr')) {
+    const cursor = new Cursor(view, colr.payload, colr.end, 'colr');
+    const type = String.fromCharCode(cursor.u8(), cursor.u8(), cursor.u8(), cursor.u8());
+    if (type === COLR_TYPE_NCLX || type === COLR_TYPE_NCLC) {
+      const colour = { primaries: cursor.u16(), transfer: cursor.u16(), matrix: cursor.u16(), fullRange: false };
+      if (type === COLR_TYPE_NCLX) {
+        nclx ??= { ...colour, fullRange: (cursor.u8() & NCLX_FULL_RANGE_FLAG) !== 0 };
+      } else {
+        nclc ??= colour;
+      }
+    } else if (COLR_ICC_TYPES.has(type)) {
+      hasProfile = true;
+    } else {
+      throw refuse(`the video has a colr box of colour type "${type}", which is not read`);
+    }
+  }
+  const colour = nclx ?? nclc;
+  if (!colour && hasProfile) throw refuse('the video carries an ICC profile (colr) the edge cannot pass on');
+  return colour;
 }
 
 function videoConfig(view: DataView, entryType: string, entryChildren: Mp4Box[]): VideoConfig {
@@ -646,13 +695,21 @@ interface ParsedTrack {
   description?: Uint8Array;
   width?: number;
   height?: number;
+  colour?: VideoColour;
   sampleRate?: number;
   channels?: number;
   samples: DemuxedMediaSample[];
 }
 
-/** tkhd: enabled flag, and for video the 3x3 matrix, which must be the identity. */
-function readTrackHeader(view: DataView, tkhd: Mp4Box, checkMatrix: boolean): { enabled: boolean } {
+interface TrackHeader {
+  enabled: boolean;
+  /** Presentation size of a video track in pixels (the 16.16 fixed-point fields of tkhd); only read with the matrix. */
+  displayWidth?: number;
+  displayHeight?: number;
+}
+
+/** tkhd: enabled flag, and for video the 3x3 matrix, which must be the identity, and the presentation size. */
+function readTrackHeader(view: DataView, tkhd: Mp4Box, checkMatrix: boolean): TrackHeader {
   const { cursor, version, flags } = openFullBox(view, tkhd);
   const enabled = (flags & TKHD_FLAG_ENABLED) !== 0;
   if (!checkMatrix || !enabled) return { enabled };
@@ -664,7 +721,7 @@ function readTrackHeader(view: DataView, tkhd: Mp4Box, checkMatrix: boolean): { 
       throw refuse('the video track carries a display transform (rotation, flip or scale) the edge would drop');
     }
   }
-  return { enabled };
+  return { enabled, displayWidth: cursor.u32() / FIXED_POINT_ONE, displayHeight: cursor.u32() / FIXED_POINT_ONE };
 }
 
 function readMediaTimescale(view: DataView, mdhd: Mp4Box): number {
@@ -747,7 +804,15 @@ function parseTrack(
     const width = view.getUint16(entry.box.payload + VISUAL_ENTRY_WIDTH_OFFSET);
     const height = view.getUint16(entry.box.payload + VISUAL_ENTRY_WIDTH_OFFSET + 2);
     if (width === 0 || height === 0) throw refuse(`${entry.type} sample entry states no frame size`);
-    track = { codec: config.codec, description: config.description, width, height };
+    // Read first: a non-square pixel makes writers scale the tkhd size too, and pasp names the cause
+    const colour = readPictureMetadata(view, entryChildren);
+    const header = readTrackHeader(view, requiredChild(parts, 'tkhd', 'trak'), true);
+    if (header.displayWidth !== width || header.displayHeight !== height) {
+      throw refuse(
+        `the track header presents ${header.displayWidth}x${header.displayHeight} but the pictures are coded ${width}x${height}; the edge would drop that scaling`
+      );
+    }
+    track = { codec: config.codec, description: config.description, width, height, colour };
   } else {
     const version = view.getUint16(entry.box.payload + AUDIO_ENTRY_VERSION_OFFSET);
     if (version !== 0) throw refuse(`audio sample entry version ${version} is not read`);
@@ -799,6 +864,7 @@ function toTrackInfo(track: ParsedTrack): DemuxedTrackInfo {
     timescale: track.timescale,
     width: track.width,
     height: track.height,
+    colour: track.colour,
     sampleRate: track.sampleRate,
     channels: track.channels,
     description: track.description,

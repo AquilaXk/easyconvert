@@ -24,6 +24,11 @@ const ID_SEEK_PRE_ROLL = 0x56bb;
 const ID_VIDEO = 0xe0;
 const ID_PIXEL_WIDTH = 0xb0;
 const ID_PIXEL_HEIGHT = 0xba;
+const ID_COLOUR = 0x55b0;
+const ID_MATRIX_COEFFICIENTS = 0x55b1;
+const ID_RANGE = 0x55b9;
+const ID_TRANSFER_CHARACTERISTICS = 0x55ba;
+const ID_PRIMARIES = 0x55bb;
 const ID_AUDIO = 0xe1;
 const ID_SAMPLING_FREQUENCY = 0xb5;
 const ID_CHANNELS = 0x9f;
@@ -62,6 +67,8 @@ export interface WalkedTrack {
   seekPreRollNs?: number;
   width?: number;
   height?: number;
+  /** The video's Colour master element, with its fields as the numbers stored (Matroska Colour element). */
+  colour?: { matrix?: number; range?: number; transfer?: number; primaries?: number };
   samplingFrequency?: number;
   channels?: number;
 }
@@ -188,6 +195,20 @@ function parseTrack(data: Uint8Array, entry: EbmlElement): WalkedTrack {
     const fields = listElements(data, video.payload, video.end);
     track.width = uintOf(data, one(fields, ID_PIXEL_WIDTH) as EbmlElement);
     track.height = uintOf(data, one(fields, ID_PIXEL_HEIGHT) as EbmlElement);
+    const colour = one(fields, ID_COLOUR);
+    if (colour) {
+      const colourFields = listElements(data, colour.payload, colour.end);
+      const numberOf = (id: number): number | undefined => {
+        const found = one(colourFields, id);
+        return found ? uintOf(data, found) : undefined;
+      };
+      track.colour = {
+        matrix: numberOf(ID_MATRIX_COEFFICIENTS),
+        range: numberOf(ID_RANGE),
+        transfer: numberOf(ID_TRANSFER_CHARACTERISTICS),
+        primaries: numberOf(ID_PRIMARIES),
+      };
+    }
   }
   const audio = one(parts, ID_AUDIO);
   if (audio) {

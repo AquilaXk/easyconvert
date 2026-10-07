@@ -11,6 +11,14 @@ export interface DemuxedMediaSample {
   type: 'video' | 'audio';
 }
 
+/** Colour description of a video as ISO/IEC 23091-2 code points (the numbers of an MP4 `colr` nclx box). */
+export interface VideoColour {
+  primaries: number;
+  transfer: number;
+  matrix: number;
+  fullRange: boolean;
+}
+
 export interface DemuxedTrackInfo {
   type: 'video' | 'audio';
   /** WebCodecs codec string (RFC 6381 style) for compressed tracks, or a `pcm-*` label for PCM audio. */
@@ -22,6 +30,8 @@ export interface DemuxedTrackInfo {
   channels?: number;
   /** Decoder configuration record as WebCodecs takes it: avcC, hvcC or AudioSpecificConfig bytes. */
   description?: Uint8Array;
+  /** Video only: the file's colour description (`colr`), absent when the file states none. */
+  colour?: VideoColour;
   samples: DemuxedMediaSample[];
   audioTrack?: DemuxedTrackInfo;
 }

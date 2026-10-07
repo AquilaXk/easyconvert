@@ -25,6 +25,15 @@ export interface FfprobeStream {
   duration?: string;
   nb_frames?: string;
   codec_tag_string?: string;
+  pix_fmt?: string;
+  /** Colour description ffprobe read from the file (names, as `bt709` or `smpte170m`); absent or `unknown` when unstated. */
+  color_space?: string;
+  color_transfer?: string;
+  color_primaries?: string;
+  /** `tv` (limited) or `pc` (full). */
+  color_range?: string;
+  /** Pixel aspect ratio as `num:den`. */
+  sample_aspect_ratio?: string;
 }
 
 export interface FfprobePacket {

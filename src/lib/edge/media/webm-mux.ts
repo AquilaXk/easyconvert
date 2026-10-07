@@ -10,7 +10,8 @@
  */
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
-import type { EncodedMediaChunk, EncoderOutputConfig } from './media-types';
+import type { EncodedMediaChunk, EncoderOutputConfig, VideoColour } from './media-types';
+import { isStorableColour } from './video-colour';
 
 export const WEBM_MUX_MAX_BLOCKS_PER_TRACK = 1_000_000;
 
@@ -117,6 +118,8 @@ export interface WebmVideoInput {
   config: EncoderOutputConfig;
   width: number;
   height: number;
+  /** The source's colour description; written as the track's Colour element. */
+  colour?: VideoColour;
 }
 
 export interface WebmAudioInput {
@@ -167,6 +170,11 @@ const ID = {
   VIDEO: 0xe0,
   PIXEL_WIDTH: 0xb0,
   PIXEL_HEIGHT: 0xba,
+  COLOUR: 0x55b0,
+  MATRIX_COEFFICIENTS: 0x55b1,
+  RANGE: 0x55b9,
+  TRANSFER_CHARACTERISTICS: 0x55ba,
+  PRIMARIES: 0x55bb,
   AUDIO: 0xe1,
   SAMPLING_FREQUENCY: 0xb5,
   CHANNELS: 0x9f,
@@ -203,6 +211,24 @@ function requireIncreasing(kind: string, chunks: EncodedMediaChunk[]): void {
   }
 }
 
+/** Range values of the Matroska Colour element: 1 is broadcast (limited), 2 is full. */
+const COLOUR_RANGE_LIMITED = 1;
+const COLOUR_RANGE_FULL = 2;
+
+/** The Colour master element: H.273 code points are stored as they are, the range flag as Matroska's Range. */
+function colourElement(colour: VideoColour): Uint8Array {
+  if (!isStorableColour(colour)) {
+    throw refuse('the colour description holds colour code points that are not whole numbers from 0 to 255');
+  }
+  return element(
+    ID.COLOUR,
+    uint(ID.MATRIX_COEFFICIENTS, colour.matrix),
+    uint(ID.RANGE, colour.fullRange ? COLOUR_RANGE_FULL : COLOUR_RANGE_LIMITED),
+    uint(ID.TRANSFER_CHARACTERISTICS, colour.transfer),
+    uint(ID.PRIMARIES, colour.primaries)
+  );
+}
+
 function videoTrackEntry(input: WebmVideoInput): Uint8Array {
   const codec = input.config.codec;
   let codecId: string;
@@ -231,7 +257,12 @@ function videoTrackEntry(input: WebmVideoInput): Uint8Array {
     uint(ID.FLAG_LACING, 0),
     text(ID.CODEC_ID, codecId),
     ...(codecPrivate ? [element(ID.CODEC_PRIVATE, codecPrivate)] : []),
-    element(ID.VIDEO, uint(ID.PIXEL_WIDTH, input.width), uint(ID.PIXEL_HEIGHT, input.height))
+    element(
+      ID.VIDEO,
+      uint(ID.PIXEL_WIDTH, input.width),
+      uint(ID.PIXEL_HEIGHT, input.height),
+      ...(input.colour ? [colourElement(input.colour)] : [])
+    )
   );
 }
 

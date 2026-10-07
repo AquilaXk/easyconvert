@@ -15,7 +15,8 @@
 
 import { EdgeUnsupportedError } from '../workers/worker-errors';
 import { AAC_LC_CODEC, OTI_MPEG4_AUDIO, parseAacLcConfig } from './aac';
-import type { EncodedMediaChunk, EncoderOutputConfig } from './media-types';
+import type { EncodedMediaChunk, EncoderOutputConfig, VideoColour } from './media-types';
+import { isStorableColour } from './video-colour';
 
 /** Samples one track may hold, the same cap the demuxer applies. */
 export const MP4_MUX_MAX_SAMPLES_PER_TRACK = 1_000_000;
@@ -105,6 +106,8 @@ export interface Mp4VideoInput {
   config: EncoderOutputConfig;
   width: number;
   height: number;
+  /** The source's colour description; written as `colr` (and into a vpcC) so the output states what the pictures are. */
+  colour?: VideoColour;
 }
 
 export interface Mp4AudioInput {
@@ -144,39 +147,63 @@ const VISUAL_DEPTH = 0x18;
 const VISUAL_PREDEFINED_MINUS_ONE = 0xffff;
 const DPI_72 = 0x480000;
 
-/** VisualSampleEntry (ISO/IEC 14496-12 12.1.3) around one codec configuration box. */
-function visualEntry(type: string, width: number, height: number, configBox: Uint8Array): Uint8Array {
+const COLR_NCLX_FULL_RANGE_FLAG = 0x80;
+
+/** colr of colour type nclx (ISO/IEC 14496-12 12.1.5): code points of ISO/IEC 23091-2 and the range flag. */
+function colrBox(colour: VideoColour): Uint8Array {
+  return box(
+    'colr', ascii('nclx'), u16(colour.primaries), u16(colour.transfer), u16(colour.matrix),
+    [colour.fullRange ? COLR_NCLX_FULL_RANGE_FLAG : 0]
+  );
+}
+
+/** VisualSampleEntry (ISO/IEC 14496-12 12.1.3) around one codec configuration box, then the colour if known. */
+function visualEntry(type: string, width: number, height: number, configBox: Uint8Array, colour?: VideoColour): Uint8Array {
   return box(
     type,
     new Array(6).fill(0), u16(1), // reserved, data_reference_index
     new Array(VISUAL_ENTRY_PREFIX_BYTES - 8).fill(0),
     u16(width), u16(height), u32(DPI_72), u32(DPI_72), u32(0), u16(1),
     new Array(COMPRESSOR_NAME_BYTES).fill(0), u16(VISUAL_DEPTH), u16(VISUAL_PREDEFINED_MINUS_ONE),
-    configBox
+    configBox,
+    ...(colour ? [colrBox(colour)] : [])
   );
 }
 
 const VP9_DEFAULT_CHROMA = 1;
-const VP9_DEFAULT_COLOUR = 1;
-const VP9_DEFAULT_FULL_RANGE = 0;
+/** BT.709 code points, limited range: what a VP9 codec string means when it states no colour. */
+const VP9_DEFAULT_COLOUR: VideoColour = { primaries: 1, transfer: 1, matrix: 1, fullRange: false };
 const VPCC_VERSION = 1;
 const VP9_MIN_CODEC_FIELDS = 3;
 
+function describeColour(colour: VideoColour): string {
+  return `${colour.primaries}/${colour.transfer}/${colour.matrix} ${colour.fullRange ? 'full' : 'limited'} range`;
+}
+
 /**
  * vpcC (VP Codec ISO Media File Format Binding 2.2) from a `vp09.PP.LL.DD[.CC.cp.tc.mc.FF]` codec string. The
- * optional fields take the defaults the binding names (4:2:0 co-located, BT.709 colour, limited range).
+ * optional fields take the colour of the source when it has one, else the defaults the binding names (4:2:0
+ * co-located, BT.709 colour, limited range). A codec string that states a colour other than the source's throws.
  */
-function vp9ConfigBox(codec: string): Uint8Array {
+function vp9ConfigBox(codec: string, source?: VideoColour): Uint8Array {
   const fields = codec.split('.').slice(1).map((part) => Number(part));
   if (fields.length < VP9_MIN_CODEC_FIELDS || fields.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
     throw refuse(`${codec} is not a VP9 codec string with profile, level and bit depth`);
   }
   const [profile, level, bitDepth] = fields;
   const chroma = fields[3] ?? VP9_DEFAULT_CHROMA;
-  const primaries = fields[4] ?? VP9_DEFAULT_COLOUR;
-  const transfer = fields[5] ?? VP9_DEFAULT_COLOUR;
-  const matrix = fields[6] ?? VP9_DEFAULT_COLOUR;
-  const fullRange = fields[7] ?? VP9_DEFAULT_FULL_RANGE;
+  const fallback = source ?? VP9_DEFAULT_COLOUR;
+  const stated: VideoColour = {
+    primaries: fields[4] ?? fallback.primaries,
+    transfer: fields[5] ?? fallback.transfer,
+    matrix: fields[6] ?? fallback.matrix,
+    fullRange: fields[7] === undefined ? fallback.fullRange : fields[7] === 1,
+  };
+  if (source && describeColour(stated) !== describeColour(source)) {
+    throw refuse(`the codec string ${codec} states colour ${describeColour(stated)}, not the source's ${describeColour(source)}`);
+  }
+  const { primaries, transfer, matrix } = stated;
+  const fullRange = stated.fullRange ? 1 : 0;
   return fullBox(
     'vpcC', VPCC_VERSION, 0,
     [profile, level, (bitDepth << 4) | (chroma << 1) | fullRange, primaries, transfer, matrix],
@@ -185,20 +212,23 @@ function vp9ConfigBox(codec: string): Uint8Array {
 }
 
 function videoSampleEntry(input: Mp4VideoInput): SampleEntry {
-  const { config, width, height } = input;
+  const { config, width, height, colour } = input;
   const codec = config.codec;
+  if (colour && !isStorableColour(colour)) {
+    throw refuse('the colour description holds colour code points that are not whole numbers from 0 to 255');
+  }
   if (codec.startsWith('avc1.')) {
-    return { box: visualEntry('avc1', width, height, box('avcC', requireDescription(config, 'avcC'))), brand: 'avc1' };
+    return { box: visualEntry('avc1', width, height, box('avcC', requireDescription(config, 'avcC')), colour), brand: 'avc1' };
   }
   if (codec.startsWith('hvc1.') || codec.startsWith('hev1.')) {
     // The encoder's HEVC output keeps its parameter sets in hvcC, which is what an hvc1 entry means
-    return { box: visualEntry('hvc1', width, height, box('hvcC', requireDescription(config, 'hvcC'))) };
+    return { box: visualEntry('hvc1', width, height, box('hvcC', requireDescription(config, 'hvcC')), colour) };
   }
   if (codec.startsWith('vp09.')) {
-    return { box: visualEntry('vp09', width, height, vp9ConfigBox(codec)) };
+    return { box: visualEntry('vp09', width, height, vp9ConfigBox(codec, colour), colour) };
   }
   if (codec.startsWith('av01.')) {
-    return { box: visualEntry('av01', width, height, box('av1C', requireDescription(config, 'av1C'))), brand: 'av01' };
+    return { box: visualEntry('av01', width, height, box('av1C', requireDescription(config, 'av1C')), colour), brand: 'av01' };
   }
   throw refuse(`${codec} has no MP4 sample entry in this muxer`);
 }

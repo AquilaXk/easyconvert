@@ -369,12 +369,13 @@ const AVCC = [1, 0x64, 0x00, 0x1f, 0xff, 0xe1, ...be16(SPS.length), ...SPS, 1, .
 const ASC_LC_44100_STEREO = [0x12, 0x10];
 const IDENTITY_MATRIX = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000];
 
-function avc1Entry(width: number, height: number, avcC: number[] = AVCC): Uint8Array {
+function avc1Entry(width: number, height: number, avcC: number[] = AVCC, extraBoxes: Uint8Array[] = []): Uint8Array {
   return box(
     'avc1',
     new Array(6).fill(0), be16(1), new Array(16).fill(0), be16(width), be16(height),
     be32(0x480000), be32(0x480000), be32(0), be16(1), new Array(32).fill(0), be16(0x18), be16(0xffff),
-    box('avcC', avcC)
+    box('avcC', avcC),
+    ...extraBoxes
   );
 }
 
@@ -756,6 +757,124 @@ describe('demuxMp4 refuses what it cannot read truthfully', () => {
   it('throws on a descriptor length that runs past the esds box', () => {
     const broken = fullBox('esds', 0, 0, [0x03, 0x7f, 0, 1, 0]);
     expectRefusal(handMp4([audioTrack({ entry: mp4aEntry(2, 44100, broken) })]), /esds/);
+  });
+});
+
+/** ISO/IEC 14496-12 12.1.4 `colr` of colour type nclx: three ISO/IEC 23091-2 code points and the range bit. */
+function colrNclx(primaries: number, transfer: number, matrix: number, fullRange: boolean): Uint8Array {
+  return box('colr', ascii('nclx'), be16(primaries), be16(transfer), be16(matrix), [fullRange ? 0x80 : 0]);
+}
+
+describe('demuxMp4 and the picture metadata the edge has to honour', () => {
+  const CODE_POINT_SMPTE170M = 6;
+  const CODE_POINT_BT709 = 1;
+  const CODE_POINT_UNSPECIFIED = 2;
+  const withEntryBoxes = (...boxes: Uint8Array[]): Uint8Array =>
+    handMp4([videoTrack({ entry: avc1Entry(320, 240, AVCC, boxes) })]);
+
+  oracleTest('reports the colour description the reference tools read from colr', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = h264AacMp4(['-colorspace', 'smpte170m', '-color_primaries', 'smpte170m', '-color_trc', 'smpte170m', '-color_range', 'tv']);
+    const stream = streamOf(ffprobeReport(new Uint8Array(mp4), 'mp4'), 'video');
+    expect([stream.color_space, stream.color_primaries, stream.color_transfer, stream.color_range]).toEqual([
+      'smpte170m', 'smpte170m', 'smpte170m', 'tv',
+    ]);
+
+    expect(demuxMp4(toArrayBuffer(mp4)).colour).toEqual({
+      primaries: CODE_POINT_SMPTE170M,
+      transfer: CODE_POINT_SMPTE170M,
+      matrix: CODE_POINT_SMPTE170M,
+      fullRange: false,
+    });
+  });
+
+  oracleTest('reports full range from the nclx range bit', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = h264AacMp4(['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'pc']);
+    expect(streamOf(ffprobeReport(new Uint8Array(mp4), 'mp4'), 'video').color_range).toBe('pc');
+
+    expect(demuxMp4(toArrayBuffer(mp4)).colour).toEqual({
+      primaries: CODE_POINT_BT709,
+      transfer: CODE_POINT_BT709,
+      matrix: CODE_POINT_BT709,
+      fullRange: true,
+    });
+  });
+
+  oracleTest('states no colour for a file that carries none', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = h264AacMp4();
+    const stream = streamOf(ffprobeReport(new Uint8Array(mp4), 'mp4'), 'video');
+    expect(stream.color_space ?? 'unknown').toBe('unknown');
+
+    expect(demuxMp4(toArrayBuffer(mp4)).colour).toBeUndefined();
+  });
+
+  oracleTest('refuses a non-square pixel aspect ratio, which the output would present as square', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = h264AacMp4(['-vf', 'setsar=4/3']);
+    expect(streamOf(ffprobeReport(new Uint8Array(mp4), 'mp4'), 'video').sample_aspect_ratio).toBe('4:3');
+
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(EdgeUnsupportedError);
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(/pixel aspect ratio 4:3/);
+  });
+
+  oracleTest('refuses a track header that presents a different size than the coded pictures', ['ffmpeg', 'ffprobe'], () => {
+    const mp4 = new Uint8Array(h264AacMp4());
+    const tkhd = findPath(mp4, listBoxes(mp4), ['moov', 'trak', 'tkhd'])[0];
+    // ISO/IEC 14496-12 8.3.2: in a version 0 tkhd the 16.16 width follows the matrix, 76 bytes into the payload.
+    const TKHD_V0_WIDTH_OFFSET = 76;
+    expect(new DataView(mp4.buffer, mp4.byteOffset).getUint32(tkhd.payloadStart + TKHD_V0_WIDTH_OFFSET)).toBe(320 * 0x10000);
+    new DataView(mp4.buffer, mp4.byteOffset).setUint32(tkhd.payloadStart + TKHD_V0_WIDTH_OFFSET, 640 * 0x10000);
+
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(EdgeUnsupportedError);
+    expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(/track header presents 640x240 but the pictures are coded 320x240/);
+  });
+
+  it('refuses a track header whose size has a fractional part', () => {
+    const bytes = handMp4([videoTrack()]);
+    const tkhd = findPath(bytes, listBoxes(bytes), ['moov', 'trak', 'tkhd'])[0];
+    new DataView(bytes.buffer, bytes.byteOffset).setUint32(tkhd.payloadStart + 76, (320 * 0x10000) | 0x8000);
+
+    expect(() => demux(bytes)).toThrow(/track header presents 320.5x240 but the pictures are coded 320x240/);
+  });
+
+  it('reads a 1:1 pasp as no aspect change', () => {
+    expect(demux(withEntryBoxes(box('pasp', be32(1), be32(1)))).width).toBe(320);
+    expect(demux(withEntryBoxes(box('pasp', be32(5), be32(5)))).width).toBe(320);
+  });
+
+  it('refuses pasp spacing that is not 1:1, and spacing of zero', () => {
+    expect(() => demux(withEntryBoxes(box('pasp', be32(16), be32(11))))).toThrow(/pixel aspect ratio 16:11/);
+    expect(() => demux(withEntryBoxes(box('pasp', be32(0), be32(1))))).toThrow(/pixel aspect ratio 0:1/);
+  });
+
+  it('refuses a clean aperture box, which crops the displayed picture', () => {
+    // ISO/IEC 14496-12 12.1.4.1: cleanApertureWidth, Height, horizOff and vertOff, each a numerator and denominator
+    const clap = box('clap', be32(300), be32(1), be32(220), be32(1), be32(0), be32(1), be32(0), be32(1));
+    expect(() => demux(withEntryBoxes(clap))).toThrow(EdgeUnsupportedError);
+    expect(() => demux(withEntryBoxes(clap))).toThrow(/clean aperture/);
+  });
+
+  it('refuses an ICC profile, which the edge cannot pass to the encoder or the output', () => {
+    const icc = box('colr', ascii('prof'), new Array(16).fill(0));
+    expect(() => demux(withEntryBoxes(icc))).toThrow(/ICC profile/);
+    expect(() => demux(withEntryBoxes(box('colr', ascii('rICC'), [0])))).toThrow(/ICC profile/);
+  });
+
+  it('reads nclx values as stored, unspecified included, and the QuickTime nclc as limited range', () => {
+    expect(demux(withEntryBoxes(colrNclx(9, 16, 9, true))).colour).toEqual({ primaries: 9, transfer: 16, matrix: 9, fullRange: true });
+    expect(demux(withEntryBoxes(colrNclx(CODE_POINT_UNSPECIFIED, CODE_POINT_UNSPECIFIED, CODE_POINT_UNSPECIFIED, false))).colour).toEqual({
+      primaries: CODE_POINT_UNSPECIFIED, transfer: CODE_POINT_UNSPECIFIED, matrix: CODE_POINT_UNSPECIFIED, fullRange: false,
+    });
+    const nclc = box('colr', ascii('nclc'), be16(1), be16(1), be16(6));
+    expect(demux(withEntryBoxes(nclc)).colour).toEqual({ primaries: 1, transfer: 1, matrix: 6, fullRange: false });
+  });
+
+  it('refuses a colr box that is cut short, and a colour type it does not know', () => {
+    expect(() => demux(withEntryBoxes(box('colr', ascii('nclx'), be16(1), be16(1))))).toThrow(EdgeUnsupportedError);
+    expect(() => demux(withEntryBoxes(box('colr', ascii('abcd'), [0, 0])))).toThrow(/colour type "abcd"/);
+  });
+
+  it('prefers an nclx description over an ICC profile that comes with it', () => {
+    const track = demux(withEntryBoxes(box('colr', ascii('prof'), [0, 0, 0, 0]), colrNclx(1, 1, 1, false)));
+    expect(track.colour).toEqual({ primaries: 1, transfer: 1, matrix: 1, fullRange: false });
   });
 });
 

@@ -275,6 +275,46 @@ describe('muxMp4 writes what the encoder reported', () => {
     expect([...vpcC]).toEqual([1, 0, 0, 0, 0, 10, 0x82, 1, 1, 1, 0, 0]);
   });
 
+  oracleTest('H.264: the source colour description becomes an nclx colr that the reference reads back', ['ffmpeg', 'ffprobe'], () => {
+    const source = h264Mp4();
+    expect(streamOf(ffprobeReport(new Uint8Array(source), 'mp4'), 'video').color_space ?? 'unknown').toBe('unknown');
+    const video = { ...videoSource(source), colour: { primaries: 5, transfer: 6, matrix: 5, fullRange: true } };
+
+    const out = muxMp4({ video, majorBrand: 'isom' });
+
+    const entry = walkTracks(out)[0].entries[0];
+    expect(entry.children.map((box) => box.type)).toEqual(['avcC', 'colr']);
+    // 'nclx', primaries 5, transfer 6, matrix 5 as 16 bits, range flag in the top bit
+    expect(Array.from(payloadOf(out, entry.children[1]))).toEqual([0x6e, 0x63, 0x6c, 0x78, 0, 5, 0, 6, 0, 5, 0x80]);
+    const outVideo = streamOf(ffprobeReport(out, 'mp4'), 'video');
+    expect([outVideo.color_primaries, outVideo.color_transfer, outVideo.color_space, outVideo.color_range]).toEqual([
+      'bt470bg', 'smpte170m', 'bt470bg', 'pc',
+    ]);
+    expect(ffmpegDecodeErrors(out, 'mp4')).toBe('');
+  });
+
+  it('writes the colour of a source into the vpcC of VP9 as well, where the codec string states none', () => {
+    const colour = { primaries: 9, transfer: 16, matrix: 9, fullRange: true };
+
+    const out = muxMp4({ video: { chunks: videoChunks(2), config: { codec: 'vp09.00.10.08' }, width: 64, height: 48, colour }, majorBrand: 'isom' });
+
+    const entry = walkTracks(out)[0].entries[0];
+    expect(entry.children.map((box) => box.type)).toEqual(['vpcC', 'colr']);
+    // version 1, flags 0, profile 0, level 10, 8 bit | 4:2:0 co-located | full range, then BT.2020, PQ, BT.2020 nc
+    expect([...payloadOf(out, entry.children[0])]).toEqual([1, 0, 0, 0, 0, 10, 0x83, 9, 16, 9, 0, 0]);
+    expect(Array.from(payloadOf(out, entry.children[1]))).toEqual([0x6e, 0x63, 0x6c, 0x78, 0, 9, 0, 16, 0, 9, 0x80]);
+  });
+
+  it('refuses a VP9 codec string whose colour disagrees with the source colour', () => {
+    const colour = { primaries: 9, transfer: 16, matrix: 9, fullRange: true };
+    const config = { codec: 'vp09.00.10.08.01.01.01.01.00' };
+
+    const run = () => muxMp4({ video: { chunks: videoChunks(2), config, width: 64, height: 48, colour }, majorBrand: 'isom' });
+
+    expect(run).toThrow(EdgeUnsupportedError);
+    expect(run).toThrow(/the codec string vp09\.00\.10\.08\.01\.01\.01\.01\.00 states colour 1\/1\/1 limited range, not the source's 9\/16\/9 full range/);
+  });
+
   oracleTest('AV1: av01 with the encoder\'s av1C', ['ffmpeg', 'ffprobe'], () => {
     requireEncoders('libaom-av1');
     const source = runFfmpeg(
@@ -494,6 +534,15 @@ describe('muxMp4 refuses what it cannot describe truthfully', () => {
   it('refuses a frame size that is not a whole positive number', () => {
     expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), width: 0 }, majorBrand: 'isom' }), /frame size/);
   });
+
+  it('refuses a colour description that is not whole code points', () => {
+    const colour = (overrides: Partial<{ primaries: number; transfer: number; matrix: number }>) => ({
+      primaries: 1, transfer: 1, matrix: 1, fullRange: false, ...overrides,
+    });
+    expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), colour: colour({ primaries: 300 }) }, majorBrand: 'isom' }), /colour code points/);
+    expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), colour: colour({ matrix: 1.5 }) }, majorBrand: 'isom' }), /colour code points/);
+    expectRefusal(() => muxMp4({ video: { ...video(videoChunks(2)), colour: colour({ transfer: -1 }) }, majorBrand: 'isom' }), /colour code points/);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -648,6 +697,38 @@ describe('muxWebm writes the codec the encoder reported', () => {
     expect(streamOf(outReport, 'video').codec_name).toBe('vp8');
     expectSamePackets(packetsOf(outReport, streamOf(outReport, 'video')), packetsOf(sourceReport, streamOf(sourceReport, 'video')));
     expect(ffmpegDecodeErrors(out, 'webm')).toBe('');
+  });
+
+  oracleTest('VP9: the source colour description becomes a Colour element that the reference reads back', ['ffmpeg', 'ffprobe'], () => {
+    requireEncoders('libvpx-vp9');
+    const source = runFfmpeg(
+      [...testPatternInput({ ...SOURCE_VIDEO, seconds: 1 }), '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-b:v', '200k', '-deadline', 'realtime', '-auto-alt-ref', '0', '-f', 'webm'],
+      'webm'
+    );
+    const walkedSource = walkWebm(new Uint8Array(source));
+    const track = walkedSource.tracks[0];
+    expect(track.colour?.primaries).toBeUndefined();
+    const colour = { primaries: 9, transfer: 16, matrix: 9, fullRange: false };
+
+    const out = muxWebm({
+      video: { chunks: webmChunks(walkedSource, track.number), config: { codec: 'vp09.00.10.08' }, width: track.width as number, height: track.height as number, colour },
+    });
+
+    // Matroska Colour: H.273 code points, Range 1 for broadcast (limited) range
+    expect(expectWebmStructure(out).tracks[0].colour).toEqual({ matrix: 9, range: 1, transfer: 16, primaries: 9 });
+    const outVideo = streamOf(ffprobeReport(out, 'webm'), 'video');
+    // The matrix is not compared: a VP9 key frame header carries its own colour space, which the reference prefers
+    expect([outVideo.color_primaries, outVideo.color_transfer, outVideo.color_range]).toEqual(['bt2020', 'smpte2084', 'tv']);
+    expect(ffmpegDecodeErrors(out, 'webm')).toBe('');
+  });
+
+  it('writes no Colour element for a video whose colour is not stated', () => {
+    expect(walkWebm(muxWebm({ video: vp9() })).tracks[0].colour).toBeUndefined();
+  });
+
+  it('refuses a colour description that is not whole code points', () => {
+    const colour = { primaries: 256, transfer: 1, matrix: 1, fullRange: false };
+    expectRefusal(() => muxWebm({ video: { ...vp9(), colour } }), /colour code points/);
   });
 
   oracleTest('AV1: V_AV1 with the av1C as CodecPrivate', ['ffmpeg', 'ffprobe'], () => {
