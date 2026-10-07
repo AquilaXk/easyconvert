@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { encodeSyntheticParquet } from './synthetic-parquet-encoder';
+import { pyarrowWrite, type ReferenceColumnKind } from './parquet-oracle';
 
 // ============================================================================
 // Types & Interfaces (Independent of Production Conversion Modules)
@@ -758,6 +758,35 @@ export interface ParquetColumnarCorpus {
   verifyRoundTrip: () => Record<string, unknown>[];
 }
 
+/** Row counts with a committed golden file under tests/fixtures/golden/data. */
+export const PARQUET_GOLDEN_FILES: ReadonlyMap<number, string> = new Map([
+  [30, 'columnar-30-records.parquet'],
+  [50, 'columnar-50-records.parquet'],
+  [60, 'columnar-snappy-records.parquet'],
+]);
+
+const CORPUS_PARQUET_COLUMNS: ReadonlyArray<[string, ReferenceColumnKind]> = [
+  ['transaction_id', 'int64'],
+  ['account_code', 'string'],
+  ['category', 'string'],
+  ['region', 'string'],
+  ['amount', 'double'],
+  ['tax_rate', 'double'],
+  ['is_cleared', 'bool'],
+  ['timestamp', 'int64'],
+  ['execution_latency_ms', 'double'],
+  ['notes', 'string'],
+];
+
+/** Writes the corpus records as a Snappy-compressed Parquet file with the reference writer (pyarrow). */
+export function writeCorpusParquet(records: Record<string, unknown>[]): Buffer {
+  const columns: Record<string, (string | number | boolean | null)[]> = {};
+  for (const [name] of CORPUS_PARQUET_COLUMNS) {
+    columns[name] = records.map((record) => record[name] as string | number | boolean | null);
+  }
+  return pyarrowWrite(columns, [...CORPUS_PARQUET_COLUMNS], 'snappy');
+}
+
 export function synthesizeParquetColumnarCorpus(rowCount = 60): ParquetColumnarCorpus {
   const regions = ['APAC', 'EMEA', 'NA', 'LATAM'];
   const categories = ['Infrastructure', 'Security', 'Algorithmic', 'Media', 'Vector'];
@@ -781,20 +810,15 @@ export function synthesizeParquetColumnarCorpus(rowCount = 60): ParquetColumnarC
     });
   }
 
-  const fixturePath = path.join(__dirname, '../fixtures/golden/data/columnar-snappy-records.parquet');
-  const fixture30 = path.join(__dirname, '../fixtures/golden/data/columnar-30-records.parquet');
-  const fixture50 = path.join(__dirname, '../fixtures/golden/data/columnar-50-records.parquet');
-
-  let buffer: Buffer;
-  if (rowCount === 60 && fs.existsSync(fixturePath)) {
-    buffer = fs.readFileSync(fixturePath);
-  } else if (rowCount === 30 && fs.existsSync(fixture30)) {
-    buffer = fs.readFileSync(fixture30);
-  } else if (rowCount === 50 && fs.existsSync(fixture50)) {
-    buffer = fs.readFileSync(fixture50);
-  } else {
-    buffer = encodeSyntheticParquet(records);
-  }
+  // The committed goldens (tests/fixtures/golden/data, see its PROVENANCE) and any other size are written by the
+  // reference Parquet writer (pyarrow, Snappy), never by an encoder of this project, so every file is one the
+  // reference reader reads. A size without a committed file needs python3 with pyarrow and throws
+  // OracleToolMissingError without it.
+  const goldenFile = PARQUET_GOLDEN_FILES.get(rowCount);
+  const buffer =
+    goldenFile && fs.existsSync(path.join(__dirname, '../fixtures/golden/data', goldenFile))
+      ? fs.readFileSync(path.join(__dirname, '../fixtures/golden/data', goldenFile))
+      : writeCorpusParquet(records);
 
   const schemas: ColumnSchema[] = [
     { name: 'transaction_id', type: ParquetType.INT64 },

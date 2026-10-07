@@ -156,7 +156,7 @@ async function buildRawCorpus(): Promise<RawCorpusItem[]> {
     category: 'cad',
     format: 'dxf',
     buffer: dxf.buffer,
-    description: 'AutoCAD DXF release R12/2000 drawing with LINE, CIRCLE, ARC, and 3DFACE layer entities',
+    description: 'AutoCAD DXF (AC1015) drawing with two LINE, one CIRCLE, one 3DFACE and one TEXT entity on two layers',
   });
 
   // 9. Media: Bayer CFA RAW Sensor Frame
@@ -274,16 +274,17 @@ export async function generateGoldenCorpus(
     let verified = false;
     if (verify) {
       try {
+        // `verified` means the integrity check ran and passed; a format without one (raw, otf), or a check that
+        // could not run because its tool is missing, leaves it false.
         if (item.format !== 'raw' && item.format !== 'otf') {
           assertFormatIntegrity(item.buffer, item.format);
+          verified = true;
         }
-        verified = true;
       } catch (err: unknown) {
         if (err instanceof OracleToolMissingError || (err as any)?.isOracleSkip) {
           if (process.env.ORACLE_STRICT_MODE === '1') {
             throw err;
           }
-          verified = true;
         } else {
           const errorMsg = err instanceof Error ? err.message : String(err);
           throw new Error(`Corpus synthesis verification failed for ${item.name} (${item.format}): ${errorMsg}`);
