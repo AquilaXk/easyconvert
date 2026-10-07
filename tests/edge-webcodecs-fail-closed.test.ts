@@ -167,5 +167,66 @@ describe('WebCodecs worker never synthesizes media (issue #479)', () => {
       expect((outcome as { error: unknown }).error).toBeInstanceOf(EdgeUnsupportedError);
       expect(createObjectUrl).not.toHaveBeenCalled();
     });
+
+    it('refuses a channel layout it cannot state instead of writing stereo', async () => {
+      const file = new File([toArrayBuffer(aviBytes())], 'clip.avi');
+
+      const error = await convertWithWebCodecs(file, 'avi', 'aac', { audioChannels: '5.1' }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(EdgeUnsupportedError);
+      expect((error as Error).message).toBe('The edge worker cannot write 5.1 audio.');
+    });
+  });
+
+  describe('across the real worker message loop', () => {
+    interface WorkerLikeScope {
+      onmessage?: (event: { data: unknown }) => unknown;
+      postMessage: (message: unknown, transfer?: unknown[]) => void;
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    });
+
+    it('delivers the worker ERROR message to the caller as an EdgeUnsupportedError', async () => {
+      // The module attaches its message handler only where there is no `window`, as in a dedicated worker.
+      let pageSideWorker: { onmessage?: (event: { data: unknown }) => void } | undefined;
+      const scope: WorkerLikeScope = {
+        postMessage: (message) => {
+          queueMicrotask(() => pageSideWorker?.onmessage?.({ data: message }));
+        },
+      };
+      vi.stubGlobal('self', scope);
+      vi.resetModules();
+      const { convertWithWebCodecs: convertThroughWorker } = await import('../src/lib/edge/pipelines/webcodecs-pipeline');
+
+      class PageSideWorker {
+        public onmessage?: (event: { data: unknown }) => void;
+        public onerror?: (event: { message: string }) => void;
+        constructor() {
+          pageSideWorker = this;
+        }
+        postMessage(data: unknown): void {
+          void scope.onmessage?.({ data });
+        }
+        terminate(): void {}
+      }
+      vi.stubGlobal('Worker', PageSideWorker);
+      vi.stubGlobal('window', globalThis);
+
+      const file = new File([toArrayBuffer(aviBytes())], 'clip.avi');
+      const outcome = await convertThroughWorker(file, 'avi', 'mp4', {}).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error })
+      );
+
+      expect(outcome).not.toHaveProperty('result');
+      const { error } = outcome as { error: Error };
+      expect(error.name).toBe('EdgeUnsupportedError');
+      expect(error.message).toContain('no demuxer for avi');
+      const { EdgeUnsupportedError: RebuiltClass } = await import('../src/lib/edge/workers/worker-errors');
+      expect(error).toBeInstanceOf(RebuiltClass);
+    });
   });
 });

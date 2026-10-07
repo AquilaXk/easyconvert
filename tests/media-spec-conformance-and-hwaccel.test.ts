@@ -265,17 +265,25 @@ describe('Media Spec Conformance & Hardware Acceleration (#179)', () => {
     });
 
     it('routes video formats (mp4, webm) to L1 only when hasWebCodecsVideo is true', () => {
-      const resVideo = resolveConversionTier('avi', 'mp4', 5000, {}, {
+      const resVideo = resolveConversionTier('mov', 'mp4', 5000, {}, {
         hasWebCodecsVideo: true,
         hasWebCodecsAudio: false,
       });
       expect(resVideo.tier).toBe('L1');
 
-      const resVideoNoCodecs = resolveConversionTier('avi', 'mp4', 5000, {}, {
+      const resVideoNoCodecs = resolveConversionTier('mov', 'mp4', 5000, {}, {
         hasWebCodecsVideo: false,
         hasWebCodecsAudio: true, // Only audio is supported
       });
       expect(resVideoNoCodecs.tier).toBe('L4');
+
+      // The edge worker has no AVI demuxer, so AVI goes to the server tier even where WebCodecs exists
+      const resAvi = resolveConversionTier('avi', 'mp4', 5000, {}, {
+        hasWebCodecsVideo: true,
+        hasWebCodecsAudio: false,
+      });
+      expect(resAvi.tier).toBe('L4');
+      expect(resAvi.isClientEdge).toBe(false);
     });
   });
 

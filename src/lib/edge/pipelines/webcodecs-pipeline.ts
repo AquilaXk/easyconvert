@@ -4,13 +4,15 @@
  * Coordinates execution between the main application thread and the WebCodecs Worker:
  * - Direct zero-copy transfer of input ArrayBuffer.
  * - Telemetry streaming (progress 0% -> 100%).
- * - Fail-closed error propagation.
+ * - Fail-closed error propagation: the worker's typed errors keep their class across the boundary, so an
+ *   EdgeUnsupportedError reaches the tier router, which runs the server tier.
  * - Deterministic cleanup of object URLs.
  */
 
 import { ConversionOptions } from '../../types';
-import { checkWebCodecsSupport } from '../tier-router';
-import { processWebCodecsConversion } from '../workers/webcodecs.worker';
+import { checkWebCodecsSupport, EDGE_VIDEO_TARGET_FORMATS } from '../tier-router';
+import { processWebCodecsConversion, type WebCodecsConversionRequest } from '../workers/webcodecs.worker';
+import { EdgeUnsupportedError, rehydrateWorkerError } from '../workers/worker-errors';
 
 export interface WebCodecsPipelineResult {
   blob: Blob;
@@ -19,18 +21,52 @@ export interface WebCodecsPipelineResult {
   mimeType: string;
 }
 
+const KBPS = 1000;
+const MONO_CHANNELS = 1;
+const STEREO_CHANNELS = 2;
+const AUDIO_TARGET_FORMATS: ReadonlySet<string> = new Set(['m4a', 'aac', 'opus']);
+
 /**
  * Checks whether current client runtime has WebCodecs hardware media support.
  */
 export async function isWebCodecsEligible(targetFormat: string): Promise<boolean> {
   const caps = await checkWebCodecsSupport();
   const tgt = targetFormat.toLowerCase();
-  const isVideo = ['mp4', 'webm', 'mov'].includes(tgt);
-  const isAudio = ['m4a', 'aac', 'opus'].includes(tgt);
 
-  if (isVideo) return caps.video;
-  if (isAudio) return caps.audio;
+  if (EDGE_VIDEO_TARGET_FORMATS.has(tgt)) return caps.video;
+  if (AUDIO_TARGET_FORMATS.has(tgt)) return caps.audio;
   return caps.video || caps.audio;
+}
+
+/**
+ * Channel count a request names. Only mono and stereo are channel counts the edge can state; a request that
+ * names nothing leaves the count to the source audio, and any other layout is not expressible here.
+ */
+function requestedAudioChannels(channels: ConversionOptions['audioChannels']): number | undefined {
+  if (channels === undefined) return undefined;
+  if (channels === 'mono') return MONO_CHANNELS;
+  if (channels === 'stereo') return STEREO_CHANNELS;
+  throw new EdgeUnsupportedError(`The edge worker cannot write ${channels} audio.`);
+}
+
+function toWorkerOptions(options: ConversionOptions): WebCodecsConversionRequest['options'] {
+  return {
+    width: options.width,
+    height: options.height,
+    videoBitrate: options.videoBitrate,
+    audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * KBPS : undefined,
+    audioSampleRate: options.audioSampleRate,
+    audioChannels: requestedAudioChannels(options.audioChannels),
+    codec: options.videoCodec,
+  };
+}
+
+function toPipelineResult(buffer: ArrayBuffer, mimeType: string): WebCodecsPipelineResult {
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new EdgeUnsupportedError('This runtime cannot hand out a result URL for the converted media.');
+  }
+  const blob = new Blob([buffer], { type: mimeType });
+  return { blob, url: URL.createObjectURL(blob), size: blob.size, mimeType };
 }
 
 /**
@@ -48,6 +84,7 @@ export async function convertWithWebCodecs(
       ? `webcodecs-${crypto.randomUUID()}`
       : `webcodecs-${Date.now()}`;
   const arrayBuffer = await file.arrayBuffer();
+  const workerOptions = toWorkerOptions(options);
 
   onProgress?.(5);
 
@@ -66,28 +103,10 @@ export async function convertWithWebCodecs(
       } catch {
         // If worker instantiation fails (e.g., test environment), fallback to in-process execution
         processWebCodecsConversion(
-          {
-            jobId,
-            sourceFormat,
-            targetFormat,
-            fileBuffer: arrayBuffer,
-            options: {
-              width: options.width,
-              height: options.height,
-              videoBitrate: options.videoBitrate,
-              audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
-              audioSampleRate: options.audioSampleRate,
-              audioChannels: options.audioChannels === 'mono' ? 1 : 2,
-              codec: options.videoCodec,
-            },
-          },
+          { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer, options: workerOptions },
           onProgress
         )
-          .then((res) => {
-            const blob = new Blob([res.buffer], { type: res.mimeType });
-            const url = URL.createObjectURL(blob);
-            resolve({ blob, url, size: blob.size, mimeType: res.mimeType });
-          })
+          .then((res) => resolve(toPipelineResult(res.buffer, res.mimeType)))
           .catch(reject);
         return;
       }
@@ -108,15 +127,18 @@ export async function convertWithWebCodecs(
         } else if (data.type === 'COMPLETED') {
           if (isSettled) return;
           isSettled = true;
-          const blob = new Blob([data.buffer], { type: data.mimeType });
-          const url = URL.createObjectURL(blob);
           cleanup();
-          resolve({ blob, url, size: blob.size, mimeType: data.mimeType });
+          try {
+            resolve(toPipelineResult(data.buffer, data.mimeType));
+          } catch (err) {
+            reject(err);
+          }
         } else if (data.type === 'ERROR') {
           if (isSettled) return;
           isSettled = true;
           cleanup();
-          reject(new Error(data.message || 'WebCodecs conversion pipeline error'));
+          // The typed error crosses the boundary as data; rebuild its class so the router can act on it.
+          reject(rehydrateWorkerError(data.error ?? { message: data.message || 'WebCodecs conversion pipeline error' }));
         }
       };
 
@@ -136,15 +158,7 @@ export async function convertWithWebCodecs(
           sourceFormat,
           targetFormat,
           fileBuffer: transferBuffer,
-          options: {
-            width: options.width,
-            height: options.height,
-            videoBitrate: options.videoBitrate,
-            audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
-            audioSampleRate: options.audioSampleRate,
-            audioChannels: options.audioChannels === 'mono' ? 1 : 2,
-            codec: options.videoCodec,
-          },
+          options: workerOptions,
         },
         [transferBuffer]
       );
@@ -153,33 +167,8 @@ export async function convertWithWebCodecs(
 
   // Node.js or Test environment fallback
   const result = await processWebCodecsConversion(
-    {
-      jobId,
-      sourceFormat,
-      targetFormat,
-      fileBuffer: arrayBuffer.slice(0),
-      options: {
-        width: options.width,
-        height: options.height,
-        videoBitrate: options.videoBitrate,
-        audioBitrate: options.audioBitrate ? Number.parseInt(options.audioBitrate, 10) * 1000 : undefined,
-        audioSampleRate: options.audioSampleRate,
-        audioChannels: options.audioChannels === 'mono' ? 1 : 2,
-        codec: options.videoCodec,
-      },
-    },
+    { jobId, sourceFormat, targetFormat, fileBuffer: arrayBuffer.slice(0), options: workerOptions },
     onProgress
   );
-
-  const blob = new Blob([result.buffer], { type: result.mimeType });
-  const url = typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-    ? URL.createObjectURL(blob)
-    : `blob:mock-edge-url-${Date.now()}`;
-
-  return {
-    blob,
-    url,
-    size: blob.size,
-    mimeType: result.mimeType,
-  };
+  return toPipelineResult(result.buffer, result.mimeType);
 }
