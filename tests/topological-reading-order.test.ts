@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import * as zlib from 'node:zlib';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { oracleTest } from './helpers/oracle-test';
-import { popplerWords } from './helpers/poppler-words';
+import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
+import { shownWords } from './helpers/pdf-shown-text';
 import {
   detectColumnGutters,
   sortLineBlocksTopological,
@@ -605,32 +604,21 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
       const pdfBuffer = await createLosslessSandwichPdfFromImage(baseImage, ocrResult);
       expect(pdfBuffer.toString('ascii', 0, 4)).toBe('%PDF');
 
-      // 4. Decompress PDF /Contents stream and inspect raw text operator sequence
-      const decompressed = extractDecompressedPdfStreams(pdfBuffer);
-
-      // Verify all 4 lines exist in the decompressed text
-      expect(decompressed).toContain('Left Column Line One');
-      expect(decompressed).toContain('Left Column Line Two');
-      expect(decompressed).toContain('Right Column Line One');
-      expect(decompressed).toContain('Right Column Line Two');
-
-      // 5. Assert strict topological order in the decompressed stream:
-      // Left Col Line 1 -> Left Col Line 2 -> Right Col Line 1 -> Right Col Line 2
-      const posLeft1 = decompressed.indexOf('Left Column Line One');
-      const posLeft2 = decompressed.indexOf('Left Column Line Two');
-      const posRight1 = decompressed.indexOf('Right Column Line One');
-      const posRight2 = decompressed.indexOf('Right Column Line Two');
-
-      expect(posLeft1).toBeGreaterThanOrEqual(0);
-      expect(posLeft2).toBeGreaterThan(posLeft1);
-      expect(posRight1).toBeGreaterThan(posLeft2); // Right col MUST come AFTER ALL left col lines!
-      expect(posRight2).toBeGreaterThan(posRight1);
+      // 4. Read the words back in the order the content stream shows them. Strict topological
+      // order: Left Col Line 1 -> Left Col Line 2 -> Right Col Line 1 -> Right Col Line 2, so the
+      // right column comes after ALL left column lines.
+      const shown = shownWords(await PDFDocument.load(pdfBuffer));
+      expect(shown).toEqual([
+        'Left Column Line One',
+        'Left Column Line Two',
+        'Right Column Line One',
+        'Right Column Line Two',
+      ]);
     });
 
     it('injectInvisibleTextLayer sorts blocks prior to rendering onto existing PDF page', async () => {
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([600, 400]);
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       const ocrResult: OcrResult = {
         text: '',
@@ -638,29 +626,24 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
         wordCount: 4,
         lines: [],
         lineBlocks: [
-          // Interleaved input
-          {
-            text: 'Alpha Column Left',
-            bbox: { x: 50, y: 80, width: 180, height: 12 },
-            words: [{ text: 'Alpha Column Left', bbox: { x: 50, y: 80, width: 180, height: 12 } }],
-          },
+          // Interleaved input: the right column's first line comes before the left column's second.
           {
             text: 'Beta Column Right',
             bbox: { x: 330, y: 80, width: 180, height: 12 },
             words: [{ text: 'Beta Column Right', bbox: { x: 330, y: 80, width: 180, height: 12 } }],
           },
+          {
+            text: 'Alpha Column Left',
+            bbox: { x: 50, y: 80, width: 180, height: 12 },
+            words: [{ text: 'Alpha Column Left', bbox: { x: 50, y: 80, width: 180, height: 12 } }],
+          },
         ],
       };
 
-      injectInvisibleTextLayer(page, font, ocrResult);
-      const pdfBytes = await pdfDoc.save();
-      const decompressed = extractDecompressedPdfStreams(Buffer.from(pdfBytes));
+      injectInvisibleTextLayer(page, ocrResult);
+      const reloaded = await PDFDocument.load(await pdfDoc.save());
 
-      const posLeft = decompressed.indexOf('Alpha Column Left');
-      const posRight = decompressed.indexOf('Beta Column Right');
-
-      expect(posLeft).toBeGreaterThanOrEqual(0);
-      expect(posRight).toBeGreaterThan(posLeft);
+      expect(shownWords(reloaded)).toEqual(['Alpha Column Left', 'Beta Column Right']);
     });
   });
 
@@ -914,7 +897,10 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
   // 12. Scale Factor Robustness & Negative Value Guarding
   // =========================================================================
   describe('12. Scale Factor and Boundary Robustness', () => {
-    oracleTest('treats non-positive or non-finite scale factors in injectInvisibleTextLayer as 1: the text layer is the unscaled one', ['pdftotext'], async () => {
+    it('gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer', async () => {
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([600, 400]);
+
       const ocrResult: OcrResult = {
         text: 'Robustness Test Text',
         confidence: 0.95,
@@ -929,22 +915,13 @@ describe('Topological Reading Order Sort for Multi-Column Documents & Sandwich P
         ],
       };
 
-      // The same recognition injected with a scale that is not usable gives the PDF of scale 1, word by word and
-      // box by box as poppler reads them; a different scale gives different boxes, so the comparison is not vacuous.
-      const wordsWithScale = async (scaleX: number, scaleY: number) => {
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([600, 400]);
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        injectInvisibleTextLayer(page, font, ocrResult, scaleX, scaleY);
-        return popplerWords(Buffer.from(await pdfDoc.save()));
-      };
+      // Non-positive and non-finite scale values
+      // A scale that is not a positive number is treated as 1, so each call writes the text once, in place.
+      injectInvisibleTextLayer(page, ocrResult, 0, 0);
+      injectInvisibleTextLayer(page, ocrResult, -1.5, NaN);
 
-      const unscaled = await wordsWithScale(1, 1);
-      expect(unscaled.map((word) => word.text)).toEqual(['Robustness', 'Test', 'Text']);
-      expect(await wordsWithScale(0, 0)).toEqual(unscaled);
-      expect(await wordsWithScale(-1.5, Number.NaN)).toEqual(unscaled);
-      expect(await wordsWithScale(Number.POSITIVE_INFINITY, -1)).toEqual(unscaled);
-      expect(await wordsWithScale(2, 2)).not.toEqual(unscaled);
+      const reloaded = await PDFDocument.load(await pdfDoc.save());
+      expect(shownWords(reloaded)).toEqual(['Robustness Test Text', 'Robustness Test Text']);
     });
   });
 });

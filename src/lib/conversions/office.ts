@@ -369,10 +369,10 @@ export async function extractTextContentForOffice(
     if (!extracted || extracted.trim() === '' || options.ocrEnabled) {
       const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
       if (embeddedImg) {
-        const ocr = await performOcr(embeddedImg, options.ocrLanguage);
+        const ocr = await performOcr(embeddedImg, options.ocrLanguage, undefined, options.ocrDetectOrientation);
         if (ocr.text) extracted = ocr.text;
       } else {
-        const ocr = await performOcr(inputBuffer, options.ocrLanguage);
+        const ocr = await performOcr(inputBuffer, options.ocrLanguage, undefined, options.ocrDetectOrientation);
         if (ocr.text) extracted = ocr.text;
       }
     } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {

@@ -62,7 +62,8 @@ describe('OCR text layer font resources', () => {
 
     const usedFonts = [...pageContent(doc).matchAll(/\/([^\s/]+)\s+[\d.]+\s+Tf/g)].map((m) => m[1]);
 
-    expect(usedFonts.length).toBe(OCR_RESULT.lineBlocks!.length);
+    // One Tf per word, each naming the font under its page resource key.
+    expect(usedFonts.length).toBe(OCR_RESULT.lineBlocks!.flatMap((block) => block.words).length);
     for (const name of usedFonts) {
       expect(fontKeys).toContain(name);
     }

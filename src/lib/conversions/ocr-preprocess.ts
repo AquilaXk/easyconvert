@@ -2,8 +2,10 @@ import sharp, { type Sharp } from 'sharp';
 import { OcrPreprocessError } from '../types';
 import { oddWindow, sauvolaBinarize } from './ocr-sauvola';
 import { estimateSkew, lineHeightFromProfile } from './ocr-text-metrics';
-import { identityGeometry, type OcrGeometry } from './ocr-geometry';
+import { identityGeometry, type OcrGeometry, type OcrQuarterTurn } from './ocr-geometry';
 import { CliSemaphore } from './ocr-cli';
+import { countTextRows, OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
+import { encodePbm, encodePgm, encodePpm, isBitonal } from './pnm';
 
 /**
  * Prepares a page image for recognition: lines of text are levelled (deskew), scaled up to a size
@@ -51,14 +53,19 @@ export const SAUVOLA_WINDOW_LINE_FACTOR = 1.5;
  * the grey levels from anti-aliasing carry the glyph shapes that a hard threshold removes.
  */
 export const OCR_BINARIZE_MIN_LINE_PX = 20;
-export const OCR_PNG_COMPRESSION_LEVEL = 3;
 const GRAY_CHANNELS = 1;
+const RGB_CHANNELS = 3;
 const GRAY_LEVELS = 256;
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
 export interface OcrPreprocessResult {
-  /** PNG the recognizer reads. */
+  /**
+   * The page as a Netpbm image, which the recognizers read without a codec: P4 for a bitonal page,
+   * P5 for gray, P6 for colour. It holds the same pixels the steps produced, uncompressed.
+   */
   image: Buffer;
+  /** Text rows of a page whose source is short enough to be read as a label or line; undefined for taller pages. */
+  textRows?: number;
   geometry: OcrGeometry;
   /** Median text line height of the source in pixels, measured along the text, or null when no line was found. */
   lineHeightPx: number | null;
@@ -155,14 +162,75 @@ function turn(page: GrayPage, degrees: number, paper: number): Promise<GrayPage>
 }
 
 /**
- * No resolution is written into the PNG: with a 300 dpi hint the WebAssembly engine read the golden
- * pages at a mean 2.7% character error rate, without it at 0.6% (Korean layout analysis
- * suffered most), so the recognizer estimates the resolution itself as it does for any image.
+ * No resolution is written into the image: with a 300 dpi hint the WebAssembly engine read the
+ * golden pages at a mean 2.7% character error rate, without it at 0.6% (Korean layout analysis
+ * suffered most), so the recognizer estimates the resolution itself. A Netpbm header has no
+ * resolution field, so that holds by construction.
  */
-async function encodePng(pixels: Uint8Array, width: number, height: number): Promise<Buffer> {
-  return sharp(pixels, { raw: { width, height, channels: GRAY_CHANNELS } })
-    .png({ compressionLevel: OCR_PNG_COMPRESSION_LEVEL })
-    .toBuffer();
+function encodeGrayPage(pixels: Uint8Array, width: number, height: number): Buffer {
+  return isBitonal(pixels) ? encodePbm(pixels, width, height) : encodePgm(pixels, width, height);
+}
+
+interface DecodedPage {
+  data: Buffer;
+  width: number;
+  height: number;
+  channels: typeof GRAY_CHANNELS | typeof RGB_CHANNELS;
+}
+
+/** Decodes the page upright (EXIF orientation applied) and flat on white, as 8-bit gray or RGB samples. */
+async function decodeUprightPage(source: Buffer): Promise<DecodedPage> {
+  const { space } = await sharp(source).metadata();
+  const gray = space === 'b-w' || space === 'grey16';
+  const { data, info } = await sharp(source)
+    .rotate()
+    .flatten({ background: '#ffffff' })
+    .toColourspace(gray ? 'b-w' : 'srgb')
+    .raw({ depth: 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== GRAY_CHANNELS && info.channels !== RGB_CHANNELS) {
+    throw new OcrPreprocessError(`Expected a gray or RGB page, decoded ${info.channels} channels.`);
+  }
+  return { data, width: info.width, height: info.height, channels: info.channels };
+}
+
+function encodeDecodedPage(page: DecodedPage): Buffer {
+  if (page.channels === RGB_CHANNELS) return encodePpm(page.data, page.width, page.height);
+  return encodeGrayPage(page.data, page.width, page.height);
+}
+
+/** Text rows of a short page, counted on its gray pixels; undefined for a taller page. */
+async function smallCropTextRows(page: DecodedPage, sourceHeight: number): Promise<number | undefined> {
+  if (sourceHeight > OCR_SMALL_CROP_MAX_HEIGHT_PX) return undefined;
+  const gray =
+    page.channels === GRAY_CHANNELS
+      ? page.data
+      : await sharp(page.data, { raw: { width: page.width, height: page.height, channels: page.channels } })
+          .greyscale()
+          .raw()
+          .toBuffer();
+  return countTextRows(new Uint8Array(gray.buffer, gray.byteOffset, gray.length), page.width, page.height);
+}
+
+/** Geometry of a page that was only turned by quarters: no rescale, no levelling. */
+function quarterTurnGeometry(
+  sourceWidth: number,
+  sourceHeight: number,
+  turnedWidth: number,
+  turnedHeight: number,
+  quarterTurn: OcrQuarterTurn
+): OcrGeometry {
+  if (quarterTurn === 0) return identityGeometry(sourceWidth, sourceHeight);
+  return {
+    sourceWidth,
+    sourceHeight,
+    quarterTurnDegrees: quarterTurn,
+    scaledWidth: turnedWidth,
+    scaledHeight: turnedHeight,
+    outputWidth: turnedWidth,
+    outputHeight: turnedHeight,
+    rotationDegrees: 0,
+  };
 }
 
 const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PREPROCESS_MAX_QUEUED, 'page preparations');
@@ -175,23 +243,52 @@ const preparationSlots = new CliSemaphore(OCR_PREPROCESS_MAX_CONCURRENCY, OCR_PR
  */
 export function preprocessOcrImage(
   source: Buffer,
-  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS
+  steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
+  quarterTurn: OcrQuarterTurn = 0
 ): Promise<OcrPreprocessResult> {
-  return preparationSlots.run(() => prepare(source, steps));
+  return preparationSlots.run(() => prepare(source, steps, quarterTurn));
 }
 
-async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPreprocessResult> {
+/**
+ * Turns an 8-bit page clockwise by a multiple of 90 degrees. Exact: every pixel moves, none is
+ * resampled, and the page keeps its channels.
+ */
+async function turnByQuarters(page: DecodedPage, degrees: OcrQuarterTurn): Promise<DecodedPage> {
+  if (degrees === 0) return page;
+  const { data, info } = await sharp(page.data, {
+    raw: { width: page.width, height: page.height, channels: page.channels },
+  })
+    .rotate(degrees)
+    // A turned gray page comes back as three channels unless it is asked for as gray.
+    .toColourspace(page.channels === GRAY_CHANNELS ? 'b-w' : 'srgb')
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== page.channels) {
+    throw new OcrPreprocessError(`Turning the page changed its channels from ${page.channels} to ${info.channels}.`);
+  }
+  return { data, width: info.width, height: info.height, channels: page.channels };
+}
+
+async function prepare(
+  source: Buffer,
+  steps: OcrPreprocessSteps,
+  quarterTurn: OcrQuarterTurn
+): Promise<OcrPreprocessResult> {
   const meta = await sharp(source).metadata();
   const swapped = meta.orientation !== undefined && meta.orientation >= 5;
   const width = (swapped ? meta.height : meta.width) ?? 0;
   const height = (swapped ? meta.width : meta.height) ?? 0;
-  const unchanged = async (lineHeightPx: number | null, skewDegrees: number): Promise<OcrPreprocessResult> => ({
-    image: await sharp(source).rotate().png().toBuffer(),
-    geometry: identityGeometry(width, height),
-    lineHeightPx,
-    skewDegrees,
-    applied: { rescale: false, deskew: false, binarize: false },
-  });
+  const unchanged = async (lineHeightPx: number | null, skewDegrees: number): Promise<OcrPreprocessResult> => {
+    const page = await turnByQuarters(await decodeUprightPage(source), quarterTurn);
+    return {
+      image: encodeDecodedPage(page),
+      textRows: await smallCropTextRows(page, page.height),
+      geometry: quarterTurnGeometry(width, height, page.width, page.height, quarterTurn),
+      lineHeightPx,
+      skewDegrees,
+      applied: { rescale: false, deskew: false, binarize: false },
+    };
+  };
   const enabled = steps.rescale || steps.deskew || steps.binarize;
   if (!enabled || width * height > OCR_PREPROCESS_MAX_PIXELS) return unchanged(null, 0);
 
@@ -199,8 +296,12 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
   const held = { page: await decodeGray(source) };
   const sourceWidth = held.page.width;
   const sourceHeight = held.page.height;
+  if (quarterTurn !== 0) {
+    const turnedPage = await turnByQuarters({ ...held.page, channels: GRAY_CHANNELS }, quarterTurn);
+    held.page = { data: turnedPage.data, width: turnedPage.width, height: turnedPage.height };
+  }
   const analysis = await analysisCopy(held.page);
-  const analysisScale = analysis.width / sourceWidth;
+  const analysisScale = analysis.width / held.page.width;
   const rough = await sauvolaBinarize(analysis.data, analysis.width, analysis.height, {
     windowSize: OCR_ANALYSIS_WINDOW_PX,
   });
@@ -211,7 +312,7 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
   const lineHeightPx = measured === null ? null : measured / analysisScale;
   const paper = steps.deskew ? paperLevel(analysis) : 0;
 
-  const scale = steps.rescale ? planRescale(lineHeightPx, sourceWidth, sourceHeight) : 1;
+  const scale = steps.rescale ? planRescale(lineHeightPx, held.page.width, held.page.height) : 1;
   if (scale > 1) held.page = await enlarge(held.page, scale);
   const scaledWidth = held.page.width;
   const scaledHeight = held.page.height;
@@ -229,11 +330,20 @@ async function prepare(source: Buffer, steps: OcrPreprocessSteps): Promise<OcrPr
     binarizeWindow === null
       ? held.page.data
       : await sauvolaBinarize(held.page.data, held.page.width, held.page.height, { windowSize: binarizeWindow });
+  const finalPage: DecodedPage = {
+    data: Buffer.from(pixels.buffer, pixels.byteOffset, pixels.length),
+    width: held.page.width,
+    height: held.page.height,
+    channels: GRAY_CHANNELS,
+  };
   return {
-    image: await encodePng(pixels, held.page.width, held.page.height),
+    image: encodeGrayPage(pixels, held.page.width, held.page.height),
+    // A label is judged by its height as submitted, before it is enlarged; after a quarter turn that is its width.
+    textRows: await smallCropTextRows(finalPage, quarterTurn === 90 || quarterTurn === 270 ? sourceWidth : sourceHeight),
     geometry: {
       sourceWidth,
       sourceHeight,
+      ...(quarterTurn === 0 ? {} : { quarterTurnDegrees: quarterTurn }),
       scaledWidth,
       scaledHeight,
       outputWidth: held.page.width,

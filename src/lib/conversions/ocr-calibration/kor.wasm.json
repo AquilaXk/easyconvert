@@ -1,0 +1,52 @@
+{
+  "language": "kor",
+  "enginePath": "wasm",
+  "x": [
+    0.000787,
+    0.228404,
+    0.420816,
+    0.597477,
+    0.756327,
+    0.829767,
+    0.866087,
+    0.895213,
+    0.935213
+  ],
+  "y": [
+    0.011236,
+    0.06383,
+    0.244898,
+    0.522523,
+    0.561224,
+    0.72093,
+    0.886957,
+    0.893617,
+    0.935044
+  ],
+  "provenance": {
+    "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
+    "engine": "tesseract 5.3.4",
+    "languageData": "kor.traineddata sha256:6b85e11d9bbf0786",
+    "fittedOn": {
+      "pages": [
+        "ko_a",
+        "ko_b",
+        "ko_c"
+      ],
+      "degradations": [
+        "clean300",
+        "dpi60",
+        "blur",
+        "noise-1",
+        "noise-2",
+        "heavy-noise-1",
+        "heavy-noise-2",
+        "faded",
+        "dpi100noise"
+      ],
+      "words": 1940,
+      "correctWords": 1515
+    },
+    "generator": "tests/helpers/fit-ocr-calibration.mts"
+  }
+}

@@ -3,33 +3,33 @@ import {
   PDFFont,
   PDFPage,
   StandardFonts,
-  pushGraphicsState,
-  popGraphicsState,
-  beginText,
-  endText,
-  setFontAndSize,
-  setTextRenderingMode,
-  TextRenderingMode,
-  setTextMatrix,
-  showText,
-  PDFOperator,
-  PDFOperatorNames,
   PDFNumber,
   PDFHexString,
   PDFName,
   PDFArray,
   PDFDict,
   PDFString,
+  type PDFRef,
+  concatTransformationMatrix,
+  drawObject,
+  popGraphicsState,
+  pushGraphicsState,
 } from 'pdf-lib';
 import { ConversionOptions } from '../types';
 import {
-  GLYPH_UNITS_PER_EM,
+  GLYPHLESS_ASCENT,
+  GLYPHLESS_DESCENT,
   LazyToUnicodeStream,
   TextLayerCidMap,
   WIDE_GLYPH_ADVANCE,
   buildToUnicodeCMapFromCids,
   glyphAdvanceForCodePoint,
 } from './ocr-text-layer-font';
+import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './ocr-word-merge';
+import type { OcrOrientation } from './ocr-osd';
+import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
+import { placeWords, writeTextLayer } from './ocr-text-layer';
+import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
 /** The first allocated CID; CID 0 is reserved for .notdef. */
 const FIRST_TEXT_LAYER_CID = 1;
@@ -58,6 +58,10 @@ export interface OcrBBox {
 export interface OcrWord {
   text: string;
   bbox: OcrBBox;
+  /**
+   * Probability that the word is correct, 0..1. It is calibrated when the result says
+   * `confidenceCalibrated`, and the engine's raw score divided by 100 otherwise.
+   */
   confidence?: number;
 }
 
@@ -90,6 +94,12 @@ export interface OcrLineBlock {
   /** Paragraph (hOCR `ocr_par`) holding this line, when the source had one. */
   paragraph?: OcrLayoutGroup;
   baseline?: OcrBaseline;
+  /**
+   * Direction the text runs in the page as scanned, in degrees clockwise from the x axis (y points
+   * down); absent for horizontal text. Set when the page was turned or levelled before recognition,
+   * so that a line without a baseline still has its direction.
+   */
+  angleDegrees?: number;
   /** Height of the text row (hOCR `x_size`), in pixels. */
   rowHeight?: number;
   /** Height of the tallest ascender above the x-height (hOCR `x_ascenders`), in pixels. */
@@ -108,11 +118,18 @@ export interface OcrPageResult {
   lines?: string[];
   /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
   language?: string;
+  /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
+  wordMerge?: OcrWordMerge;
+  /** What orientation detection found and did; the boxes are in the page's orientation as scanned. */
+  orientation?: OcrOrientation;
 }
 
 export interface OcrResult {
   text: string;
+  /** Mean word confidence weighted by word length in characters, 0..1; null when no word has one. */
   confidence: number | null;
+  /** Whether the word and page confidences are calibrated probabilities; false for raw engine scores. */
+  confidenceCalibrated?: boolean;
   wordCount: number;
   lines: string[];
   lineBlocks?: OcrLineBlock[];
@@ -121,6 +138,12 @@ export interface OcrResult {
   pages?: OcrPageResult[];
   /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
   language?: string;
+  /** Whether the word boxes were rebuilt into whole words from the page text; see ocr-word-merge.ts. */
+  wordMerge?: OcrWordMerge;
+  /** What orientation detection found and did; the boxes are in the page's orientation as scanned. */
+  orientation?: OcrOrientation;
+  /** Resolution of the scan, from its header or assumed (`assumed` true); the searchable PDF is sized with it. */
+  imageDpi?: ImageDpi;
 }
 
 export interface ColumnGutter {
@@ -910,6 +933,14 @@ export function sortLineBlocksTopological(
   return result;
 }
 
+const ENGINE_CONFIDENCE_PERCENT_SCALE = 100;
+
+/** The engine reports a word score in percent; it is kept as a fraction, or undefined when it has none. */
+function engineConfidence(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.min(1, value / ENGINE_CONFIDENCE_PERCENT_SCALE);
+}
+
 function finiteOrUndefined(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -946,8 +977,9 @@ export function parseTesseractBlocks(
   pageWidth?: number,
   pageHeight?: number,
   language?: string
-): { lines: string[]; lineBlocks: OcrLineBlock[] } {
+): { lines: string[]; lineBlocks: OcrLineBlock[]; wordMerge?: OcrWordMerge } {
   const lineBlocks: OcrLineBlock[] = [];
+  const mergeOutcomes: OcrWordMerge[] = [];
   if (!blocks || blocks.length === 0) return { lines: [], lineBlocks: [] };
 
   for (const block of blocks) {
@@ -967,7 +999,7 @@ export function parseTesseractBlocks(
             if (!wText) continue;
             words.push({
               text: wText,
-              confidence: typeof w.confidence === 'number' && !isNaN(w.confidence) ? w.confidence : undefined,
+              confidence: engineConfidence(w.confidence),
               bbox: {
                 x: w.bbox.x0,
                 y: w.bbox.y0,
@@ -979,6 +1011,14 @@ export function parseTesseractBlocks(
               },
             });
           }
+        }
+
+        // The engine's own line text keeps the original spacing, which the per-character boxes of
+        // CJK text do not carry; whole words are rebuilt from it.
+        if (words.length > 0) {
+          const merged = mergeWordsWithPageText(text, words);
+          words.splice(0, words.length, ...merged.words);
+          mergeOutcomes.push(merged.wordMerge);
         }
 
         lineBlocks.push({
@@ -1007,7 +1047,7 @@ export function parseTesseractBlocks(
   const sortedLineBlocks = sortLineBlocksTopological(lineBlocks, pageWidth, pageHeight);
   const lines = sortedLineBlocks.map((b) => b.text);
 
-  return { lines, lineBlocks: sortedLineBlocks };
+  return { lines, lineBlocks: sortedLineBlocks, wordMerge: combineWordMerge(mergeOutcomes) };
 }
 
 /**
@@ -1109,9 +1149,9 @@ export function buildMinimalTrueTypeFont(): Buffer {
   head.writeUInt16BE(0x0003, 16); // flags
   head.writeUInt16BE(1000, 18); // unitsPerEm
   head.writeInt16BE(-1000, 36); // xMin
-  head.writeInt16BE(-200, 38); // yMin
+  head.writeInt16BE(-GLYPHLESS_DESCENT, 38); // yMin
   head.writeInt16BE(1000, 40); // xMax
-  head.writeInt16BE(1000, 42); // yMax
+  head.writeInt16BE(GLYPHLESS_ASCENT, 42); // yMax
   head.writeUInt16BE(0, 44); // macStyle
   head.writeUInt16BE(6, 46); // lowestRecPPEM
   head.writeInt16BE(2, 48); // fontDirectionHint
@@ -1121,8 +1161,8 @@ export function buildMinimalTrueTypeFont(): Buffer {
   // 2. Table 'hhea' (36 bytes)
   const hhea = Buffer.alloc(36);
   hhea.writeUInt32BE(0x00010000, 0); // version 1.0
-  hhea.writeInt16BE(1000, 4); // ascender
-  hhea.writeInt16BE(-200, 6); // descender
+  hhea.writeInt16BE(GLYPHLESS_ASCENT, 4); // ascender
+  hhea.writeInt16BE(-GLYPHLESS_DESCENT, 6); // descender
   hhea.writeInt16BE(0, 8); // lineGap
   hhea.writeUInt16BE(1000, 10); // advanceWidthMax
   hhea.writeInt16BE(0, 12); // minLeftSideBearing
@@ -1161,11 +1201,11 @@ export function buildMinimalTrueTypeFont(): Buffer {
   os2.writeUInt16BE(0x0040, 62); // fsSelection (REGULAR)
   os2.writeUInt16BE(0x0020, 64); // usFirstCharIndex
   os2.writeUInt16BE(0xffff, 66); // usLastCharIndex
-  os2.writeInt16BE(1000, 68); // sTypoAscender
-  os2.writeInt16BE(-200, 70); // sTypoDescender
+  os2.writeInt16BE(GLYPHLESS_ASCENT, 68); // sTypoAscender
+  os2.writeInt16BE(-GLYPHLESS_DESCENT, 70); // sTypoDescender
   os2.writeInt16BE(0, 72); // sTypoLineGap
-  os2.writeUInt16BE(1000, 74); // usWinAscent
-  os2.writeUInt16BE(200, 76); // usWinDescent
+  os2.writeUInt16BE(GLYPHLESS_ASCENT, 74); // usWinAscent
+  os2.writeUInt16BE(GLYPHLESS_DESCENT, 76); // usWinDescent
 
   // 5. Table 'hmtx' (4 bytes)
   const hmtx = Buffer.alloc(4);
@@ -1379,11 +1419,11 @@ export function ensureUnicodeFont(doc: PDFDocument): UnicodeFontInfo {
     Type: 'FontDescriptor',
     FontName: 'EasyConvert-ToUnicode',
     Flags: 4,
-    FontBBox: [-1000, -1000, 1000, 1000],
+    FontBBox: [-1000, -GLYPHLESS_DESCENT, 1000, GLYPHLESS_ASCENT],
     ItalicAngle: 0,
-    Ascent: 1000,
-    Descent: -200,
-    CapHeight: 800,
+    Ascent: GLYPHLESS_ASCENT,
+    Descent: -GLYPHLESS_DESCENT,
+    CapHeight: GLYPHLESS_ASCENT,
     StemV: 80,
     FontFile2: fontStreamRef,
   });
@@ -1460,33 +1500,6 @@ export function registerFontOnPage(page: PDFPage, fontInfo: UnicodeFontInfo): vo
 }
 
 /**
- * Injects ISO 32000-1 /ToUnicode CMap stream into standard Type 1 fonts.
- */
-export function ensureStandardFontToUnicode(doc: PDFDocument, font: PDFFont): void {
-  if ((font as any)._hasToUnicodeCMap) return;
-  (font as any)._hasToUnicodeCMap = true;
-
-  const embedder = (font as any).embedder;
-  if (embedder && typeof embedder.embedIntoContext === 'function') {
-    const origEmbed = embedder.embedIntoContext.bind(embedder);
-    embedder.embedIntoContext = (context: any, ref: any) => {
-      const resultRef = origEmbed(context, ref);
-      const targetRef = resultRef || ref;
-      if (targetRef) {
-        const fontDict = context.lookup(targetRef) as any;
-        if (fontDict && !fontDict.get(PDFName.of('ToUnicode'))) {
-          const cmap = createWinAnsiToUnicodeCMap();
-          const cmapStream = context.flateStream(cmap);
-          const cmapRef = context.register(cmapStream);
-          fontDict.set(PDFName.of('ToUnicode'), cmapRef);
-        }
-      }
-      return resultRef;
-    };
-  }
-}
-
-/**
  * Serializes text code points to exact 4-character hex strings (<XXXX>) without UTF-16BE BOM.
  * Encodes BMP characters as <XXXX> and astral plane characters (> 0xFFFF) as high/low surrogate pairs <XXXXYYYY>.
  */
@@ -1548,413 +1561,12 @@ export function safeEncodeText(font: PDFFont, text: string): PDFHexString | null
 }
 
 /**
- * Computes an ISO 32000-1 2D affine skew/rotation transformation matrix
- * [cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm for rotated or skewed OCR bounding boxes.
- */
-export function computeAffineTransformationMatrix(
-  bbox: OcrBBox,
-  pageHeight: number,
-  scaleX: number = 1.0,
-  scaleY: number = 1.0
-): [number, number, number, number, number, number] {
-  const scaledX = bbox.x * scaleX;
-  const scaledY = pageHeight - (bbox.y + bbox.height) * scaleY;
-
-  // Resolve rotation angle in radians (all OCR angle/rotation properties default to degrees)
-  let theta = 0;
-  if (bbox.rotationRadians !== undefined) {
-    theta = bbox.rotationRadians;
-  } else if (bbox.rotationDegrees !== undefined) {
-    theta = (bbox.rotationDegrees * Math.PI) / 180;
-  } else if (bbox.rotation !== undefined) {
-    theta = (bbox.rotation * Math.PI) / 180;
-  } else if (bbox.angle !== undefined) {
-    theta = (bbox.angle * Math.PI) / 180;
-  }
-
-  // Resolve skew angles in radians (skewX = horizontal shear, skewY = vertical shear)
-  const skewX = bbox.skewX ?? 0;
-  const skewY = bbox.skewY ?? 0;
-
-  const cosT = Math.cos(theta);
-  const sinT = Math.sin(theta);
-  const tanSkewX = Math.tan(skewX);
-  const tanSkewY = Math.tan(skewY);
-
-  // 2D Affine concatenation: R(θ) * S(skewX, skewY)
-  // R = [cosθ, sinθ; -sinθ, cosθ], S = [1, tan(skewY); tan(skewX), 1]
-  const a = cosT + tanSkewX * sinT;
-  const b = sinT + tanSkewY * cosT;
-  const c = -sinT + tanSkewX * cosT;
-  const d = cosT - tanSkewY * sinT;
-  const e = scaledX;
-  const f = scaledY;
-
-  return [a, b, c, d, e, f];
-}
-
-/**
- * Builds an ISO 32000-1 TJ array operator and word spacing (Tw) parameter
- * with character kerning offsets between words or characters.
- */
-export function buildTJArrayWithKerning(
-  doc: PDFDocument,
-  font: PDFFont,
-  words: Array<{ text: string; bbox?: OcrBBox }>,
-  fontSize: number,
-  tz: number = 100,
-  scaleX: number = 1.0,
-  originX: number = 0
-): { tjArray: any; wordSpacing: number; activeFontName: string } {
-  const tjArray = PDFArray.withContext(doc.context);
-  let activeFontName = font.name;
-
-  // Determine if any word contains non-WinAnsi / CJK characters
-  let hasNonWinAnsi = false;
-  for (const w of words) {
-    for (let i = 0; i < w.text.length; i++) {
-      const code = w.text.charCodeAt(i);
-      if (!((code >= 32 && code <= 126) || (code >= 160 && code <= 255))) {
-        hasNonWinAnsi = true;
-        break;
-      }
-    }
-    if (hasNonWinAnsi) break;
-  }
-
-  let unicodeFont: UnicodeFontInfo | null = null;
-  if (hasNonWinAnsi) {
-    unicodeFont = ensureUnicodeFont(doc);
-    activeFontName = unicodeFont.fontName;
-  } else {
-    ensureStandardFontToUnicode(doc, font);
-    activeFontName = font.name;
-  }
-
-  const spaceWidthPt = hasNonWinAnsi
-    ? fontSize * 0.5 * (tz / 100)
-    : font.widthOfTextAtSize(' ', fontSize) * (tz / 100);
-
-  // Compute gaps between words
-  const gaps: number[] = [];
-  for (let i = 0; i < words.length - 1; i++) {
-    const w0 = words[i];
-    const w1 = words[i + 1];
-    if (w0.bbox && w1.bbox && w1.bbox.x > w0.bbox.x) {
-      const gap = Math.max(0, (w1.bbox.x - (w0.bbox.x + w0.bbox.width)) * scaleX);
-      gaps.push(gap > 0 ? gap : spaceWidthPt);
-    } else {
-      gaps.push(spaceWidthPt);
-    }
-  }
-
-  // Calculate word spacing (Tw).
-  // Note: ISO 32000-1 §9.3.3 specifies that Tw is ignored for composite fonts (Type 0 / CIDFonts).
-  // For Type 0 fonts, all spacing adjustments are expressed directly in the TJ kerning array.
-  let wordSpacing = 0;
-  if (!hasNonWinAnsi && gaps.length > 0) {
-    const avgGap = gaps.reduce((acc, g) => acc + g, 0) / gaps.length;
-    // Tw is in unscaled text-space units (scaled by tz / 100 when rendered in user space)
-    wordSpacing = Math.max(0, (avgGap - spaceWidthPt) / (tz / 100));
-  }
-
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i];
-    const trimmed = w.text.trim();
-    if (!trimmed) continue;
-
-    // Relative X offset for the first word if originX is specified
-    if (i === 0 && w.bbox && originX > 0 && w.bbox.x * scaleX > originX) {
-      const leadingGap = Math.max(0, w.bbox.x * scaleX - originX);
-      if (leadingGap > 1) {
-        const leadingKerning = -Math.round((leadingGap * 1000) / (fontSize * (tz / 100)));
-        if (leadingKerning !== 0) {
-          tjArray.push(PDFNumber.of(leadingKerning));
-        }
-      }
-    }
-
-    // Word text encoded
-    if (unicodeFont) {
-      tjArray.push(PDFHexString.of(unicodeFont.encodeText(trimmed)));
-    } else {
-      const enc = safeEncodeText(font, trimmed);
-      if (enc) tjArray.push(enc);
-    }
-
-    // Gap to next word
-    if (i < words.length - 1) {
-      // Push explicit space glyph to ensure PDF viewers copy text with spaces
-      if (unicodeFont) {
-        tjArray.push(PDFHexString.of(unicodeFont.encodeText(' ')));
-      } else {
-        const spaceEnc = safeEncodeText(font, ' ');
-        if (spaceEnc) tjArray.push(spaceEnc);
-      }
-
-      // Compute kerning offset for this specific gap
-      const gap = gaps[i];
-      const residual = gap - spaceWidthPt - wordSpacing * (tz / 100);
-      if (Math.abs(residual) >= 0.1) {
-        const kerning = -Math.round((residual * 1000) / (fontSize * (tz / 100)));
-        if (kerning !== 0) {
-          tjArray.push(PDFNumber.of(kerning));
-        }
-      }
-    }
-  }
-
-  return { tjArray, wordSpacing, activeFontName };
-}
-
-/**
- * Returns the page's /Resources /Font key for an embedded font, registering the font on the page
- * once. Tf must name this key, not the font's BaseFont name, or readers cannot select the font.
- */
-function resolveFontResourceKey(page: PDFPage, font: PDFFont): string {
-  const { Font } = page.node.normalizedEntries();
-  for (const [key, value] of Font.entries()) {
-    if (value === font.ref) {
-      return key.decodeText();
-    }
-  }
-  return page.node.newFontDictionary(font.name, font.ref).decodeText();
-}
-
-function emitInvisibleTextOperators(
-  page: PDFPage,
-  font: PDFFont,
-  matrix: [number, number, number, number, number, number],
-  activeFontName: string,
-  fontSize: number,
-  wordSpacing: number,
-  tz: number,
-  showTextOp: any
-): void {
-  // The standard font is selected by its page resource key; the Unicode font registers itself
-  // under its own name through registerFontOnPage.
-  const fontResourceName = activeFontName === font.name ? resolveFontResourceKey(page, font) : activeFontName;
-  const [a, b, c, d, e, f] = matrix;
-  page.pushOperators(
-    pushGraphicsState(),
-    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [
-      PDFNumber.of(Number(a.toFixed(6))),
-      PDFNumber.of(Number(b.toFixed(6))),
-      PDFNumber.of(Number(c.toFixed(6))),
-      PDFNumber.of(Number(d.toFixed(6))),
-      PDFNumber.of(Number(e.toFixed(4))),
-      PDFNumber.of(Number(f.toFixed(4))),
-    ]),
-    setTextRenderingMode(TextRenderingMode.Invisible), // 3 Tr
-    beginText(),
-    setFontAndSize(fontResourceName, fontSize),
-    PDFOperator.of(PDFOperatorNames.SetWordSpacing, [PDFNumber.of(Number(wordSpacing.toFixed(3)))]), // Tw
-    PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [PDFNumber.of(Math.round(tz))]), // Tz
-    setTextMatrix(1, 0, 0, 1, 0, 0), // 1 0 0 1 0 0 Tm
-    showTextOp,
-    endText(),
-    popGraphicsState()
-  );
-}
-
-/**
- * Renders an OCR line block with ISO 32000-1 compliant word spacing (Tw)
- * and TJ array operator with character kerning offsets, positioned using
- * a 2D affine skew/rotation transformation matrix ([cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm).
- */
-export function renderLineBlockWithSpacing(
-  page: PDFPage,
-  font: PDFFont,
-  block: OcrLineBlock,
-  pageHeight: number,
-  scaleX: number = 1.0,
-  scaleY: number = 1.0
-): void {
-  const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
-  const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
-  const scaledWidth = Math.max(1, block.bbox.width * safeScaleX);
-  const scaledHeight = Math.max(1, block.bbox.height * safeScaleY);
-  const maxAvailableWidth = Math.max(10, page.getSize().width - block.bbox.x * safeScaleX - 5);
-  const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
-
-  const words =
-    block.words && block.words.length > 0
-      ? block.words.filter((w) => w.text.trim().length > 0)
-      : block.text
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean)
-          .map((t) => ({ text: t, bbox: block.bbox }));
-
-  if (words.length === 0) return;
-
-  // Estimate typography units (1000 per em): CJK = 1000, Latin = 500, space = 300
-  let estUnits = 0;
-  for (const w of words) {
-    // per code point, as the text layer font advances (an astral character is one glyph)
-    for (const ch of w.text) estUnits += glyphAdvanceForCodePoint(ch.codePointAt(0) as number);
-  }
-  estUnits += Math.max(0, words.length - 1) * 300;
-
-  const maxFontForWidth = estUnits > 0 ? (targetWidth / estUnits) * 1000 : 72;
-  const maxFontForHeight = scaledHeight * 0.85;
-  const validFontH = Number.isFinite(maxFontForHeight) && maxFontForHeight > 0 ? maxFontForHeight : 12;
-  const validFontW = Number.isFinite(maxFontForWidth) && maxFontForWidth > 0 ? maxFontForWidth : 72;
-  const fontSize = Math.max(6, Math.min(72, validFontH, validFontW));
-
-  const estimatedWidth = (estUnits / 1000) * fontSize;
-  let tz = 100;
-  if (estimatedWidth > 0 && targetWidth > 0) {
-    tz = Math.max(70, Math.min(130, (targetWidth / estimatedWidth) * 100));
-  }
-
-  const originX = block.bbox.x * safeScaleX;
-  const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
-    page.doc,
-    font,
-    words,
-    fontSize,
-    tz,
-    safeScaleX,
-    originX
-  );
-
-  if (activeFontName === ensureUnicodeFont(page.doc).fontName) {
-    const unicodeFont = ensureUnicodeFont(page.doc);
-    registerFontOnPage(page, unicodeFont);
-  }
-
-  const matrix = computeAffineTransformationMatrix(
-    block.bbox,
-    pageHeight,
-    safeScaleX,
-    safeScaleY
-  );
-
-  emitInvisibleTextOperators(
-    page,
-    font,
-    matrix,
-    activeFontName,
-    fontSize,
-    wordSpacing,
-    tz,
-    PDFOperator.of(PDFOperatorNames.ShowTextAdjusted, [tjArray])
-  );
-}
-
-/**
- * Embeds an invisible text element on a PDF page with accurate positioning and metrics.
- */
-export function embedInvisibleText(
-  page: PDFPage,
-  font: PDFFont,
-  text: string,
-  bbox: OcrBBox,
-  pageHeight: number,
-  scaleX: number = 1.0,
-  scaleY: number = 1.0
-): void {
-  renderTextItem(page, font, text, bbox, pageHeight, scaleX, scaleY);
-}
-
-export function renderTextItem(
-  page: PDFPage,
-  font: PDFFont,
-  text: string,
-  bbox: OcrBBox,
-  pageHeight: number,
-  scaleX: number,
-  scaleY: number
-): void {
-  const trimmed = text.trim();
-  if (!trimmed) return;
-
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length > 1) {
-    renderLineBlockWithSpacing(
-      page,
-      font,
-      { text: trimmed, bbox, words: words.map((w) => ({ text: w, bbox })) },
-      pageHeight,
-      scaleX,
-      scaleY
-    );
-    return;
-  }
-
-  const scaledWidth = bbox.width * scaleX;
-  const scaledHeight = bbox.height * scaleY;
-  const fontSize = Math.max(6, Math.min(72, scaledHeight * 0.85));
-
-  let hasNonWinAnsi = false;
-  for (let i = 0; i < trimmed.length; i++) {
-    const code = trimmed.charCodeAt(i);
-    if (!((code >= 32 && code <= 126) || (code >= 160 && code <= 255))) {
-      hasNonWinAnsi = true;
-      break;
-    }
-  }
-
-  ensureStandardFontToUnicode(page.doc, font);
-  let activeFontName = font.name;
-  let encodedText: PDFHexString | null = null;
-  let tz = 100;
-
-  if (hasNonWinAnsi) {
-    const unicodeFont = ensureUnicodeFont(page.doc);
-    registerFontOnPage(page, unicodeFont);
-    activeFontName = unicodeFont.fontName;
-    encodedText = PDFHexString.of(unicodeFont.encodeText(trimmed));
-
-    let estimatedWidth = 0;
-    for (const ch of trimmed) {
-      estimatedWidth += (glyphAdvanceForCodePoint(ch.codePointAt(0) as number) / GLYPH_UNITS_PER_EM) * fontSize;
-    }
-    const maxAvailableWidth = Math.max(10, page.getSize().width - bbox.x * scaleX - 5);
-    const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
-    if (estimatedWidth > 0 && targetWidth > 0) {
-      tz = Math.max(70, Math.min(130, (targetWidth / estimatedWidth) * 100));
-    }
-  } else {
-    encodedText = safeEncodeText(font, trimmed);
-    try {
-      const rawWidth = font.widthOfTextAtSize(trimmed, fontSize);
-      if (rawWidth > 0 && scaledWidth > 0) {
-        const maxAvailableWidth = Math.max(10, page.getSize().width - bbox.x * scaleX - 5);
-        const targetWidth = Math.min(scaledWidth, maxAvailableWidth);
-        tz = Math.max(70, Math.min(130, (targetWidth / rawWidth) * 100));
-      }
-    } catch {
-      tz = 100;
-    }
-  }
-
-  if (!encodedText) return;
-
-  const matrix = computeAffineTransformationMatrix(bbox, pageHeight, scaleX, scaleY);
-
-  emitInvisibleTextOperators(
-    page,
-    font,
-    matrix,
-    activeFontName,
-    fontSize,
-    0,
-    tz,
-    showText(encodedText)
-  );
-}
-
-/**
- * Injects an invisible searchable text layer into a PDF page's /Contents stream.
- * Uses PDF rendering mode 3 (3 Tr = Neither fill nor stroke), horizontal scaling (Tz),
- * word spacing (Tw / TJ array operator with character kerning offsets),
- * and 2D affine transformation matrices ([cos(θ), sin(θ), -sin(θ), cos(θ), x, y] cm).
+ * Writes the invisible text layer of a recognized page onto a PDF page (see ocr-text-layer.ts).
+ * `scaleX` and `scaleY` are points per pixel of the scan the result's boxes are in. Throws
+ * OcrGeometryUnavailableError when the result has text but no boxes to place it with.
  */
 export function injectInvisibleTextLayer(
   page: PDFPage,
-  font: PDFFont,
   ocrResult: OcrResult,
   scaleX: number = 1.0,
   scaleY: number = 1.0
@@ -1962,38 +1574,19 @@ export function injectInvisibleTextLayer(
   const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
   const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
   const { height: pageHeight, width: pageWidth } = page.getSize();
-  const rawBlocks = ocrResult.lineBlocks || [];
-  const blocks = sortLineBlocksTopological(rawBlocks, pageWidth, pageHeight);
-
-  if (blocks.length > 0) {
-    for (const block of blocks) {
-      if (!block.text) continue;
-      renderLineBlockWithSpacing(page, font, block, pageHeight, safeScaleX, safeScaleY);
-    }
-  } else if (ocrResult.lines && ocrResult.lines.length > 0) {
-    // Fallback: estimate equidistant text lines
-    const lineCount = ocrResult.lines.length;
-    const lineHeight = Math.min(24, pageHeight / (lineCount + 2));
-
-    for (let i = 0; i < lineCount; i++) {
-      const lineText = ocrResult.lines[i];
-      if (!lineText.trim()) continue;
-
-      const y = 40 + i * lineHeight;
-      renderLineBlockWithSpacing(
-        page,
-        font,
-        {
-          text: lineText,
-          bbox: { x: 40, y, width: Math.max(10, pageWidth - 80), height: lineHeight },
-          words: [],
-        },
-        pageHeight,
-        safeScaleX,
-        safeScaleY
-      );
-    }
-  }
+  // Engine results come in reading order already (parseTesseractBlocks sorts them in the frame the
+  // page was read in); a page that was turned must keep that order, because sorting by position in
+  // the page as scanned would read its lines the wrong way. Results built by hand are sorted.
+  const rawBlocks = ocrResult.lineBlocks ?? [];
+  const turned = (ocrResult.orientation?.rotationApplied ?? 0) !== 0;
+  const lineBlocks = turned
+    ? rawBlocks
+    : sortLineBlocksTopological(rawBlocks, ocrResult.imageWidth ?? pageWidth / safeScaleX, ocrResult.imageHeight ?? pageHeight / safeScaleY);
+  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageHeight);
+  if (words.length === 0) return;
+  const font = ensureUnicodeFont(page.doc);
+  registerFontOnPage(page, font);
+  writeTextLayer(page, words, font);
 }
 
 /**
@@ -2006,7 +1599,6 @@ export async function createLosslessSandwichPdfFromPdf(
   pageOcrResults: Map<number, OcrResult>
 ): Promise<Buffer> {
   const doc = await PDFDocument.load(originalPdfBuffer);
-  const font = await doc.embedFont(StandardFonts.Helvetica);
 
   const numPages = doc.getPageCount();
   for (let i = 0; i < numPages; i++) {
@@ -2023,29 +1615,33 @@ export async function createLosslessSandwichPdfFromPdf(
     const scaleX = pageWidth / imgWidth;
     const scaleY = pageHeight / imgHeight;
 
-    injectInvisibleTextLayer(page, font, ocrResult, scaleX, scaleY);
+    injectInvisibleTextLayer(page, ocrResult, scaleX, scaleY);
   }
 
   const pdfBytes = await doc.save();
   return Buffer.from(pdfBytes);
 }
 
+/** PDF user space unit: 1/72 inch. */
+const POINTS_PER_INCH = 72;
+
 /**
  * Generates a Lossless Sandwich PDF from a single scanned bitmap image.
  * Uses pdf-lib (zero PDFKit reliance) to embed the visual bitmap at full fidelity
- * and layer invisible searchable text on top with millimetric accuracy.
+ * and layer invisible searchable text on top, with the page as large as the scan was:
+ * pixels x 72 / dpi points, using the resolution the image (or the OCR result) declares and
+ * OCR_DEFAULT_DPI when neither does.
  */
 export async function createLosslessSandwichPdfFromImage(
   scannedImageBuffer: Buffer | Uint8Array,
   ocrResult: OcrResult,
   options: ConversionOptions = {},
-  title: string = 'Searchable Document'
+  title: string = 'Searchable Document',
+  imagePlan: PdfImagePlan | null = null
 ): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle(title);
   doc.setCreator('EasyConvert Lossless Sandwich PDF Engine');
-
-  const font = await doc.embedFont(StandardFonts.Helvetica);
 
   // Embed image: try PNG or JPG based on magic bytes
   const isJpg =
@@ -2054,25 +1650,42 @@ export async function createLosslessSandwichPdfFromImage(
     scannedImageBuffer[1] === 0xd8 &&
     scannedImageBuffer[2] === 0xff;
 
-  let embeddedImage;
-  if (isJpg) {
-    embeddedImage = await doc.embedJpg(scannedImageBuffer);
+  // A JPEG is embedded as its own DCT data, and a PNG as its own compressed rows when the caller planned that
+  // (pdf-image-passthrough.ts, which needs Node and so stays out of this browser-safe module); any other PNG is
+  // decoded and re-encoded.
+  let imageRef: PDFRef;
+  let imgWidth: number;
+  let imgHeight: number;
+  if (imagePlan !== null) {
+    imageRef = embedImagePlan(doc, imagePlan);
+    imgWidth = imagePlan.width;
+    imgHeight = imagePlan.height;
   } else {
-    embeddedImage = await doc.embedPng(scannedImageBuffer);
+    const embeddedImage = isJpg ? await doc.embedJpg(scannedImageBuffer) : await doc.embedPng(scannedImageBuffer);
+    imageRef = embeddedImage.ref;
+    imgWidth = embeddedImage.width;
+    imgHeight = embeddedImage.height;
   }
+  const { dpi } = ocrResult.imageDpi ?? resolveImageDpi(scannedImageBuffer);
+  const pointsPerPixel = POINTS_PER_INCH / dpi;
+  const pageWidth = imgWidth * pointsPerPixel;
+  const pageHeight = imgHeight * pointsPerPixel;
 
-  const imgWidth = embeddedImage.width || ocrResult.imageWidth || 595.28;
-  const imgHeight = embeddedImage.height || ocrResult.imageHeight || 841.89;
+  const page = doc.addPage([pageWidth, pageHeight]);
+  page.pushOperators(
+    pushGraphicsState(),
+    concatTransformationMatrix(pageWidth, 0, 0, pageHeight, 0, 0),
+    drawObject(page.node.newXObject('Image', imageRef)),
+    popGraphicsState()
+  );
 
-  const page = doc.addPage([imgWidth, imgHeight]);
-  page.drawImage(embeddedImage, {
-    x: 0,
-    y: 0,
-    width: imgWidth,
-    height: imgHeight,
-  });
-
-  injectInvisibleTextLayer(page, font, ocrResult, 1.0, 1.0);
+  // The result's boxes are in the pixels of the scan it was made from.
+  injectInvisibleTextLayer(
+    page,
+    ocrResult,
+    pageWidth / (ocrResult.imageWidth || imgWidth),
+    pageHeight / (ocrResult.imageHeight || imgHeight)
+  );
 
   const pdfBytes = await doc.save();
   return Buffer.from(pdfBytes);

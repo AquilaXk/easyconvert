@@ -92,6 +92,8 @@ describe.skipIf(!HAS_ENG)('OCR of EXIF-rotated photos (needs eng.traineddata)', 
     const result = await performOcr(photo, 'eng');
     const pdf = await PDFDocument.load(await generateSearchablePdf(photo, result));
     const { width, height } = pdf.getPage(0).getSize();
-    expect([width, height]).toEqual([480, 160]);
+    // The photo's Exif declares 72 dpi, so the page is the upright image in points: pixels x 72 / 72.
+    expect(width).toBeCloseTo(480, 6);
+    expect(height).toBeCloseTo(160, 6);
   }, 120_000);
 });

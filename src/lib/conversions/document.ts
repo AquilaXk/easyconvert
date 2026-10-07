@@ -14,7 +14,7 @@ import {
   TableBorder,
 } from './office';
 import {
-  performOcr,
+  recognizePdfPages,
   generateSearchablePdf,
   OcrResult,
   OcrPageResult,
@@ -43,6 +43,7 @@ import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { appendOcrResultBelow } from './ocr-geometry';
+import { characterWeightedConfidence } from './ocr-calibration';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
@@ -244,8 +245,9 @@ export async function convertDocument(
         let totalConfidence = 0;
         let count = 0;
 
-        for (const img of rasterImages) {
-          const ocr = await performOcr(img.buffer, options.ocrLanguage);
+        const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage, undefined, options.ocrDetectOrientation);
+        for (const [index, img] of rasterImages.entries()) {
+          const ocr = recognized[index];
           if (ocr && ocr.text) {
             ocrTexts.push(ocr.text);
             ocrTextPages.push({ pageNumber: img.pageNumber, text: ocr.text });
@@ -308,7 +310,7 @@ export async function convertDocument(
               width,
               height,
               text: lb.text,
-              confidence: (lb as any).confidence ?? ocr.confidence ?? 1.0,
+              confidence: characterWeightedConfidence([lb]) ?? ocr.confidence ?? undefined,
             });
           }
         } else if (ocr.lines && ocr.lines.length > 0) {
@@ -326,7 +328,7 @@ export async function convertDocument(
                 width,
                 height,
                 text: l.text || '',
-                confidence: l.confidence ?? ocr.confidence ?? 1.0,
+                confidence: l.confidence ?? ocr.confidence ?? undefined,
               });
             } else if (typeof l === 'string') {
               dlaBoxes.push({
@@ -335,7 +337,7 @@ export async function convertDocument(
                 width: 500,
                 height: 20,
                 text: l,
-                confidence: ocr.confidence ?? 1.0,
+                confidence: ocr.confidence ?? undefined,
               });
               lineY += 24;
             }
