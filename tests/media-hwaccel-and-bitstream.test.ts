@@ -12,6 +12,7 @@ import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engin
 import { convertMedia } from '../src/lib/conversions/media';
 import { EngineUnavailableError } from '../src/lib/types';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
+import { avcProfileAndLevelHex, ffprobeReport } from './helpers/ffprobe-json';
 import {
   verifyAudioBitstreamWithFfprobe,
   verifyVideoBitstreamWithFfprobe,
@@ -150,7 +151,9 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
 
       const track = demuxMp4(toArrayBuffer(mp4));
       expect(track?.type).toBe('video');
-      expect(track?.codec).toBe('avc1');
+      const probed = ffprobeReport(new Uint8Array(mp4), 'mp4').streams.find((stream) => stream.codec_type === 'video');
+      const { profileIdc, level } = avcProfileAndLevelHex(probed!);
+      expect(track?.codec).toMatch(new RegExp(`^avc1\\.${profileIdc}[0-9a-f]{2}${level}$`));
       expect(track?.samples.length).toBe(25);
       expect(track?.samples[0].isKeyFrame).toBe(true);
     });

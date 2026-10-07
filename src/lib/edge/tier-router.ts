@@ -14,8 +14,18 @@ import { isPureCadConvertible } from './pure/pure-cad';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isPureAudioConvertible } from './pure/pure-audio';
 import { isPureCanvasConvertible, isCanvasSupported } from './pure/pure-canvas';
+import { EdgeUnsupportedError } from './workers/worker-errors';
 
 export type ConversionTier = 'L0' | 'L1' | 'L1A' | 'L2' | 'L3' | 'L4';
+
+/** Video containers the edge worker demuxes (ISO/IEC 14496-12 files); every other video source goes to the server. */
+export const EDGE_VIDEO_SOURCE_FORMATS: ReadonlySet<string> = new Set(['mp4', 'm4v', 'mov']);
+/** Video containers the edge worker writes. */
+export const EDGE_VIDEO_TARGET_FORMATS: ReadonlySet<string> = new Set(['mp4', 'webm']);
+/** Sources the edge worker reads audio from: PCM WAV, or the audio track of an ISO BMFF file. */
+export const EDGE_AUDIO_SOURCE_FORMATS: ReadonlySet<string> = new Set(['wav', 'm4a', 'mp4', 'm4v', 'mov']);
+
+const SERVER_TIER_NAME = 'Cloud (Zero-Retention)';
 
 export interface WebGpuCapabilities {
   hasWebGpu: boolean;
@@ -514,6 +524,15 @@ export function shouldOffloadToMicroVM(
   return evaluateMicroVMOffload(sourceFormat, fileSize, options, capabilities).shouldOffload;
 }
 
+function serverTierBecauseEdgeCannotRead(sourceFormat: string): TierResolution {
+  return {
+    tier: 'L4',
+    tierName: SERVER_TIER_NAME,
+    isClientEdge: false,
+    reason: `The edge WebCodecs worker has no demuxer for ${sourceFormat.toUpperCase()} input; the server engine converts it`,
+  };
+}
+
 /**
  * Resolves the optimal conversion tier given format pair, file size, options, and capabilities.
  */
@@ -634,15 +653,24 @@ export function resolveConversionTier(
     };
   }
 
-  // 5. Level 1: WebCodecs Hardware Media
-  const isVideoTarget = ['mp4', 'webm', 'mov'].includes(tgt);
+  // 5. Level 1: WebCodecs Hardware Media. The worker only reads the containers it has a demuxer for;
+  // anything else is converted by the server engine rather than guessed at.
+  const isVideoTarget = EDGE_VIDEO_TARGET_FORMATS.has(tgt);
   if (isVideoTarget && capabilities?.hasWebCodecsVideo) {
+    if (!EDGE_VIDEO_SOURCE_FORMATS.has(src)) {
+      return serverTierBecauseEdgeCannotRead(src);
+    }
     return {
       tier: 'L1',
       tierName: 'Edge L1 (Hardware VPU)',
       isClientEdge: true,
       reason: 'WebCodecs GPU/VPU hardware-accelerated media pipeline',
     };
+  }
+
+  const isEdgeAudioTarget = tgt === 'opus' || tgt === 'aac' || tgt === 'm4a';
+  if (isEdgeAudioTarget && capabilities?.hasWebCodecsAudio && !EDGE_AUDIO_SOURCE_FORMATS.has(src)) {
+    return serverTierBecauseEdgeCannotRead(src);
   }
 
   if (tgt === 'opus') {
@@ -720,5 +748,22 @@ export function resolveConversionTier(
     tierName: 'Cloud (Zero-Retention)',
     isClientEdge: false,
     reason: 'Format conversion requires cloud serverless engine',
+  };
+}
+
+/**
+ * The tier that must run after an edge tier failed with `error`. An EdgeUnsupportedError is a verdict on
+ * capability (no demuxer, decoder or encoder), so the server tier runs and produces the real output; the edge
+ * result is never substituted. Any other failure is not decided here and returns null.
+ */
+export function resolveTierAfterEdgeFailure(failedTier: ConversionTier, error: unknown): TierResolution | null {
+  if (!(error instanceof EdgeUnsupportedError)) {
+    return null;
+  }
+  return {
+    tier: 'L4',
+    tierName: SERVER_TIER_NAME,
+    isClientEdge: false,
+    reason: `Edge ${failedTier} cannot convert this file: ${error.message}`,
   };
 }

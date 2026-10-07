@@ -1,6 +1,6 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, checkOpfsSupport, ConversionTier } from './edge/tier-router';
+import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, ConversionTier } from './edge/tier-router';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
@@ -172,8 +172,13 @@ export async function tryProcessClientEdge(
         tier: 'L1',
         tierName: 'Edge L1 (Hardware VPU)',
       };
-    } catch {
-      // Adaptive cascade fallback: if WebCodecs hardware encoder fails or is unsupported,
+    } catch (err: unknown) {
+      // The worker has no demuxer, decoder or encoder for this file: the router names the server tier, which
+      // converts the original file. No edge result stands in for it.
+      if (resolveTierAfterEdgeFailure('L1', err)) {
+        throw new ClientEdgeEscalationError('L1', describeEdgeError(err));
+      }
+      // Adaptive cascade fallback: if WebCodecs hardware encoder fails,
       // cascade gracefully to L2 (Wasm) or L4 (Cloud Fallback)
       const l2Res = await processL2Conversion(item, src, tgt, onProgress);
       if (l2Res) return l2Res;

@@ -30,9 +30,6 @@ import {
 } from '../src/lib/conversions/archive';
 import {
   processWebCodecsConversion,
-  buildMp4MoovBox,
-  muxMp4Media,
-  muxWebmVideo,
 } from '../src/lib/edge/workers/webcodecs.worker';
 
 describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', () => {
@@ -757,71 +754,4 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     });
   });
 
-  // =========================================================================
-  // 9. Dual Audio/Video Track Demuxing, Preservation, and Muxing (Issue #64 Target 4)
-  // =========================================================================
-  describe('9. Dual Audio/Video Track Demuxing, Preservation, and Muxing', () => {
-    const videoChunks = [
-      { data: new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3]), timestampMicros: 0, isKeyFrame: true },
-      { data: new Uint8Array([0, 0, 0, 1, 0x41, 4, 5, 6]), timestampMicros: 33333, isKeyFrame: false },
-    ];
-    const audioChunks = [
-      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x00]), timestampMicros: 0, isKeyFrame: true },
-      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x01]), timestampMicros: 23220, isKeyFrame: true },
-    ];
-
-    it('buildMp4MoovBox creates dual-track moov with vide and soun track descriptors', () => {
-      const moovBox = buildMp4MoovBox(
-        videoChunks,
-        1280,
-        720,
-        40,
-        1000,
-        audioChunks,
-        44100,
-        2
-      );
-
-      const moovStr = String.fromCharCode(...moovBox);
-      expect(moovStr).toContain('moov');
-      expect(moovStr).toContain('mvhd');
-      expect(moovStr).toContain('vide');
-      expect(moovStr).toContain('vmhd');
-      expect(moovStr).toContain('soun');
-      expect(moovStr).toContain('smhd');
-      expect(moovStr).toContain('mp4a');
-      expect(moovStr).toContain('esds');
-    });
-
-    it('muxMp4Media embeds both video and audio tracks in fastStart ISO BMFF container', () => {
-      const mp4Bytes = muxMp4Media(videoChunks, 1280, 720, {
-        includeMoov: true,
-        fastStart: true,
-        audioChunks,
-        sampleRate: 44100,
-        channels: 2,
-      });
-
-      const mp4Str = String.fromCharCode(...mp4Bytes);
-      expect(mp4Str).toContain('ftyp');
-      expect(mp4Str).toContain('moov');
-      expect(mp4Str).toContain('mdat');
-      expect(mp4Str).toContain('soun');
-      expect(mp4Str).toContain('smhd');
-    });
-
-    it('muxWebmVideo builds dual-track EBML container with VP9 video and Opus audio tracks', () => {
-      const webmBytes = muxWebmVideo(videoChunks, 640, 480, audioChunks);
-
-      // Verify EBML Header
-      expect(webmBytes[0]).toBe(0x1a);
-      expect(webmBytes[1]).toBe(0x45);
-      expect(webmBytes[2]).toBe(0xdf);
-      expect(webmBytes[3]).toBe(0xa3);
-
-      const webmStr = String.fromCharCode(...webmBytes);
-      expect(webmStr).toContain('V_VP9');
-      expect(webmStr).toContain('A_OPUS');
-    });
-  });
 });

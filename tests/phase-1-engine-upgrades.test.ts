@@ -12,6 +12,7 @@ import { UnsupportedTargetError } from '../src/lib/types';
 import PDFDocument from 'pdfkit';
 import { countVideoPackets, ffmpegTestVideoMp4, toArrayBuffer } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { avcProfileAndLevelHex, ffprobeReport } from './helpers/ffprobe-json';
 
 describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
   describe('1. Spreadsheet Sparse Cell & Inline String Parsing', () => {
@@ -106,7 +107,10 @@ describe('Phase 1: Core Domain High-Fidelity Engine Upgrades', () => {
 
           expect(demuxed).not.toBeNull();
           expect(demuxed?.type).toBe('video');
-          expect(demuxed?.codec).toBe('avc1');
+          // RFC 6381 string from the reference decoder's view of the same stream: avc1.<profile><constraints><level>
+          const probed = ffprobeReport(new Uint8Array(mp4), 'mp4').streams.find((stream) => stream.codec_type === 'video');
+          const { profileIdc, level } = avcProfileAndLevelHex(probed!);
+          expect(demuxed?.codec).toMatch(new RegExp(`^avc1\\.${profileIdc}[0-9a-f]{2}${level}$`));
           expect(demuxed?.width).toBe(320);
           expect(demuxed?.height).toBe(240);
           expect(demuxed?.samples.length).toBe(referencePackets);

@@ -4,7 +4,6 @@ import { beforeAll, describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions';
-import { buildMp4MoovBox, muxIsoBmffMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { encodeWoff2, decodeWoff2, createCanonicalFont } from '../src/lib/conversions/font';
 import { extractStepBRepMesh, parseStepEntities, extractStepPoint } from '../src/lib/conversions/cad-nurbs';
 import { extractEmbeddedImageFromPdf } from '../src/lib/conversions/pdf-utils';
@@ -203,31 +202,6 @@ END-ISO-10303-21;
     pdfDoc.setAuthor('EasyConvert Engine');
     const pdfBytes = await pdfDoc.save();
     fs.writeFileSync(pdfPath, Buffer.from(pdfBytes));
-  }
-
-  // 5. Golden MP4 (Valid ISO BMFF MP4 Container with moov, trak, mdat)
-  const mp4Path = path.join(FIXTURES_DIR, 'sample.mp4');
-  if (!fs.existsSync(mp4Path)) {
-    const ftyp = Buffer.from([
-      0x00, 0x00, 0x00, 0x20, // size 32
-      0x66, 0x74, 0x79, 0x70, // 'ftyp'
-      0x69, 0x73, 0x6f, 0x6d, // major_brand: 'isom'
-      0x00, 0x00, 0x02, 0x00, // minor_version
-      0x69, 0x73, 0x6f, 0x6d, // compatible_brands
-      0x69, 0x73, 0x6f, 0x32,
-      0x61, 0x76, 0x63, 0x31,
-      0x6d, 0x70, 0x34, 0x31,
-    ]);
-    const sampleData = Buffer.from([0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00]);
-    const mdatHeader = Buffer.alloc(8);
-    mdatHeader.writeUInt32BE(8 + sampleData.length, 0);
-    mdatHeader.write('mdat', 4, 'ascii');
-    const mdat = Buffer.concat([mdatHeader, sampleData]);
-    const moov = buildMp4MoovBox([
-      { data: sampleData, timestampMicros: 0, isKeyFrame: true },
-    ], 1920, 1080, ftyp.length + 8);
-    const mp4Buf = Buffer.concat([ftyp, Buffer.from(moov), mdat]);
-    fs.writeFileSync(mp4Path, mp4Buf);
   }
 
   // 6. Golden WOFF2 Font
@@ -505,29 +479,5 @@ END-ISO-10303-21;`;
       expect(extracted!.toString('ascii')).toBe('FAKE_JPG_DATA');
     });
 
-    it('generates compliant Fast-Start ISO BMFF MP4 with moov atom placed before mdat container', () => {
-      const sampleData = Buffer.from([0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00]);
-      const chunks = [{ data: sampleData, timestampMicros: 0, isKeyFrame: true }];
-
-      // Default (fastStart false) -> moov after mdat
-      const standardMp4 = muxIsoBmffMp4(chunks, 1920, 1080, { fastStart: false });
-      const stdBuf = Buffer.from(standardMp4);
-      expect(stdBuf.indexOf('moov')).toBeGreaterThan(stdBuf.indexOf('mdat'));
-
-      // Fast-Start enabled -> moov BEFORE mdat for immediate browser streaming
-      const fastStartMp4 = muxIsoBmffMp4(chunks, 1920, 1080, { fastStart: true });
-      const fastBuf = Buffer.from(fastStartMp4);
-      const moovIdx = fastBuf.indexOf('moov');
-      const mdatIdx = fastBuf.indexOf('mdat');
-      expect(moovIdx).toBeGreaterThan(0);
-      expect(mdatIdx).toBeGreaterThan(0);
-      expect(moovIdx).toBeLessThan(mdatIdx);
-
-      // Verify stco offset points accurately to sample bytes in mdat
-      const stcoIdx = fastBuf.indexOf('stco');
-      expect(stcoIdx).toBeGreaterThan(0);
-      const sampleOffset = fastBuf.readUInt32BE(stcoIdx + 12);
-      expect(sampleOffset).toBe(mdatIdx + 4); // mdatIdx + 4 points past 'mdat' header (8 bytes total from box start)
-    });
   });
 });

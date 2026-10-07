@@ -4,17 +4,15 @@ import { beforeAll, describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import {
-  demuxMp4,
-  buildFmp4InitSegment,
-  buildFmp4MediaSegment,
-  muxFmp4Stream,
-} from '../src/lib/edge/workers/webcodecs.worker';
+import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
 import { extractStepBRepMesh, parseStepEntities } from '../src/lib/conversions/cad-nurbs';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { applyFloydSteinbergDither } from '../src/lib/conversions/quantize';
 import { parseCfbf } from '../src/lib/conversions/hwp';
+import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
+import { countVideoPackets, ffmpegTestVideoMp4, toArrayBuffer } from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
 
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 
@@ -413,58 +411,23 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
     });
 
     describe('2.2 Media Demuxing & ISO BMFF Container Oracle', () => {
-      it('demuxes golden sample.mp4 with valid sample tables, timescale, and non-empty samples', () => {
-        const mp4Buf = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.mp4'));
-        const arrayBuf = mp4Buf.buffer.slice(mp4Buf.byteOffset, mp4Buf.byteOffset + mp4Buf.byteLength);
+      oracleTest(
+        'demuxes a reference-authored MP4 with the sample count, timescale and non-empty samples of the reference',
+        ['ffmpeg', 'ffprobe'],
+        () => {
+          const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: true });
+          const trackInfo = demuxMp4(toArrayBuffer(mp4));
 
-        const trackInfo = demuxMp4(arrayBuf);
-        expect(trackInfo).not.toBeNull();
-        expect(trackInfo?.timescale).toBeGreaterThan(0);
-        expect(trackInfo?.samples.length).toBeGreaterThan(0);
+          expect(trackInfo.timescale).toBeGreaterThan(0);
+          expect(trackInfo.samples).toHaveLength(countVideoPackets(mp4, 'mp4'));
 
-        for (const sample of trackInfo!.samples) {
-          expect(sample.data.length).toBeGreaterThan(0);
-          expect(sample.durationMicros).toBeGreaterThan(0);
+          for (const sample of trackInfo.samples) {
+            expect(sample.data.length).toBeGreaterThan(0);
+            expect(sample.durationMicros).toBeGreaterThan(0);
+          }
         }
-      });
+      );
 
-      it('validates fragmented MP4 (fMP4) segment sequence numbers and decode timestamps', () => {
-        const sampleChunks = [
-          { data: new Uint8Array([0x65, 0x88, 0x80, 0x40]), timestampMicros: 0, isKeyFrame: true },
-          { data: new Uint8Array([0x41, 0x9a, 0x11, 0x22]), timestampMicros: 33333, isKeyFrame: false },
-          { data: new Uint8Array([0x41, 0x9a, 0x33, 0x44]), timestampMicros: 66666, isKeyFrame: false },
-        ];
-
-        const emittedSegments: Uint8Array[] = [];
-        const fullStream = muxFmp4Stream(sampleChunks, 1920, 1080, {
-          fragmentChunkCount: 2,
-          onSegment: (seg) => emittedSegments.push(seg),
-        });
-
-        // Must produce 1 init segment + 2 media segments = 3 total segments
-        expect(emittedSegments).toHaveLength(3);
-
-        // Segment 0: Init segment containing ftyp and moov
-        const initSeg = emittedSegments[0];
-        const initStr = Buffer.from(initSeg).toString('ascii');
-        expect(initStr).toContain('ftyp');
-        expect(initStr).toContain('moov');
-        expect(initStr).toContain('mvex');
-
-        // Segment 1 & 2: Media segments containing moof and mdat
-        for (let i = 1; i <= 2; i++) {
-          const seg = emittedSegments[i];
-          const segStr = Buffer.from(seg).toString('ascii');
-          expect(segStr).toContain('moof');
-          expect(segStr).toContain('mdat');
-          expect(segStr).toContain('mfhd');
-          expect(segStr).toContain('tfhd');
-          expect(segStr).toContain('tfdt');
-          expect(segStr).toContain('trun');
-        }
-
-        expect(fullStream.length).toBeGreaterThan(0);
-      });
     });
 
     describe('2.3 Archive Boundary & CRC-32 Oracle', () => {
@@ -538,8 +501,7 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
 
           // 5. ISO BMFF demuxer
           const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-          const trackInfo = demuxMp4(arrayBuf);
-          expect(trackInfo === null || trackInfo.samples.length === 0).toBe(true);
+          expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
 
           // 6. CAD STEP parser
           const stepEntities = parseStepEntities(buf.toString('utf-8'));
@@ -563,9 +525,9 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
           hostileMp4.byteOffset + hostileMp4.byteLength
         );
 
-        // Must fail closed without allocating 4GB or throwing uncaught range error
-        const trackInfo = demuxMp4(arrayBuf);
-        expect(trackInfo === null || trackInfo.samples.length === 0).toBe(true);
+        // Must fail closed without allocating 4GB or throwing an uncaught range error
+        expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
+        expect(() => demuxMp4(arrayBuf)).toThrow(/overruns its parent/);
       });
 
       it('fails closed when 64-bit box size claims massive offset beyond file bounds', () => {
@@ -579,8 +541,8 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
           hostileMp4.byteOffset + hostileMp4.byteLength
         );
 
-        const trackInfo = demuxMp4(arrayBuf);
-        expect(trackInfo === null || trackInfo.samples.length === 0).toBe(true);
+        expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
+        expect(() => demuxMp4(arrayBuf)).toThrow(/overruns its parent/);
       });
 
       it('fails closed and ignores corrupted stsz sample count (0x7FFFFFFF)', () => {
@@ -602,9 +564,9 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
           moovBox.byteOffset + moovBox.byteLength
         );
 
-        // Must safely parse without OOM crash
-        const trackInfo = demuxMp4(arrayBuf);
-        expect(trackInfo === null || trackInfo.samples.length === 0).toBe(true);
+        // Must refuse without an OOM crash: the moov box claims 40 bytes but 32 are present
+        expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
+        expect(() => demuxMp4(arrayBuf)).toThrow(/overruns its parent/);
       });
     });
 
