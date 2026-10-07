@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertMedia } from '../src/lib/conversions/media';
 import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
+import { ConversionOptionsSchema } from '../src/lib/api/contracts/schemas';
+import { GET as getOpenApiSpec } from '../src/app/api/openapi.json/route';
 import { EngineUnavailableError } from '../src/lib/types';
 import {
   adtsStream,
@@ -210,4 +212,18 @@ describe('ffprobe missing while FFmpeg is present', () => {
     },
     FFMPEG_CASE_TIMEOUT_MS
   );
+});
+
+const RETIRED_OPTION = 'allowPureLossyBitstream';
+
+describe('the retired allowPureLossyBitstream option', () => {
+  it('is gone from the conversion options contract', () => {
+    expect(Object.keys(ConversionOptionsSchema.properties).filter((name) => name === RETIRED_OPTION)).toEqual([]);
+  });
+
+  it('is gone from the published OpenAPI document', async () => {
+    const spec = await (await getOpenApiSpec()).json();
+    const published = Object.keys(spec.components.schemas.ConversionOptions.properties);
+    expect(published.filter((name) => name === RETIRED_OPTION)).toEqual([]);
+  });
 });

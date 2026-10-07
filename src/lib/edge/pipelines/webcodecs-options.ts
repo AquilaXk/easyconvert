@@ -39,7 +39,7 @@ const NOT_ABOUT_MEDIA = [
   'escapeFormulas', 'hasHeaders', 'sheetMode', 'sheetIndex', 'range', 'lineEnding', 'recalculate',
   'compressionLevel', 'archiveCoder', 'splitVolumeBytes', 'zstdDict', 'archiveParts', 'useNative7z', 'solid',
   'collisionPolicy', 'entries', 'skipLinks', 'repair', 'timeoutMs', 'signal', 'disableNativeEngine',
-  'allowPureLossyBitstream', 'pdfStandard', 'pdfVersion', 'libreOfficeFilter', 'losslessImageCompression',
+  'pdfStandard', 'pdfVersion', 'libreOfficeFilter', 'losslessImageCompression',
   'imageDpi', 'jpegQuality', 'watermark', 'protect', 'pdfa',
 ] as const satisfies readonly (keyof ConversionOptions)[];
 

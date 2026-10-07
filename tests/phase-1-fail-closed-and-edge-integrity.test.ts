@@ -337,7 +337,7 @@ ENDMF;
       ).rejects.toThrow(ConversionFailedError);
     });
 
-    it('allows lossless FLAC without the native engine but refuses pure MP3 even with allowPureLossyBitstream', async () => {
+    it('allows lossless FLAC without the native engine but refuses MP3', async () => {
       const wav = createTestWav();
 
       const flacRes = await convertMedia(wav, 'wav', 'flac', { disableNativeEngine: true }, 'test.wav');
@@ -348,7 +348,7 @@ ENDMF;
         wav,
         'wav',
         'mp3',
-        { disableNativeEngine: true, allowPureLossyBitstream: true },
+        { disableNativeEngine: true },
         'test.wav'
       ).catch((err: unknown) => err);
       expect(mp3Error).toBeInstanceOf(EngineUnavailableError);
