@@ -242,7 +242,10 @@ describe('runClientEdgeOcr', () => {
       expect(extracted.replace(/\s+/g, ' ').trim()).toBe(RECOGNIZED_TEXT);
       const loaded = await PDFDocument.load(fs.readFileSync(pdfPath));
       expect(loaded.getPageCount()).toBe(1);
-      expect(loaded.getPage(0).getSize()).toEqual({ width: SCAN_WIDTH, height: SCAN_HEIGHT });
+      // The scan declares no resolution, so the page is sized at the default 300 dpi: pixels x 72 / 300.
+      const size = loaded.getPage(0).getSize();
+      expect(size.width).toBeCloseTo((SCAN_WIDTH * 72) / 300, 6);
+      expect(size.height).toBeCloseTo((SCAN_HEIGHT * 72) / 300, 6);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

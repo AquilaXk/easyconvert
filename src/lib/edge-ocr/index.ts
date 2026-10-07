@@ -1,7 +1,8 @@
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
 import { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 import { calibrateOcrResult, characterWeightedConfidence } from '../conversions/ocr-calibration';
+import { resolveImageDpi } from '../conversions/ocr-dpi';
 
 export interface EdgeOcrResult {
   blob: Blob;
@@ -33,6 +34,8 @@ const OCR_LANGUAGE_CODES: Readonly<Record<string, string>> = {
   zh: 'chi_sim',
 };
 const DEFAULT_OCR_LANGUAGE = 'eng';
+/** PDF user space unit: 1/72 inch. */
+const POINTS_PER_INCH = 72;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 /** Edge OCR only produces a searchable PDF; other OCR targets go through the normal flow. */
@@ -161,16 +164,20 @@ export async function runClientEdgeOcr(
   const doc = await PDFDocument.create();
   doc.setTitle(fileName);
   doc.setCreator('EasyConvert Client-Side Edge OCR');
-  const font = await doc.embedFont(StandardFonts.Helvetica);
 
   const embeddedImage = isJpg ? await doc.embedJpg(fileBytes) : await doc.embedPng(fileBytes);
   const { width, height } = embeddedImage;
+  // The page is as large as the scan was: pixels x 72 / dpi, with the resolution the file declares
+  // or the documented default, which is recorded on the result.
+  const imageDpi = resolveImageDpi(fileBytes);
+  const pointsPerPixel = POINTS_PER_INCH / imageDpi.dpi;
   ocrResult.imageWidth = width;
   ocrResult.imageHeight = height;
+  ocrResult.imageDpi = imageDpi;
 
-  const page = doc.addPage([width, height]);
-  page.drawImage(embeddedImage, { x: 0, y: 0, width, height });
-  injectInvisibleTextLayer(page, font, ocrResult, 1.0, 1.0);
+  const page = doc.addPage([width * pointsPerPixel, height * pointsPerPixel]);
+  page.drawImage(embeddedImage, { x: 0, y: 0, width: width * pointsPerPixel, height: height * pointsPerPixel });
+  injectInvisibleTextLayer(page, ocrResult, pointsPerPixel, pointsPerPixel);
 
   onProgress?.(90);
   const pdfBytes = await doc.save();

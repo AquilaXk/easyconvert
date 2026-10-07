@@ -491,13 +491,6 @@
   },
   {
     "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/phase-5-ocr-and-security.test.ts",
-    "symbol": "renders line block with Tw word spacing operator and invisible text mode",
-    "reason": "Test block \"renders line block with Tw word spacing operator and invisible text mode\" contains only weak assertions (5 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-48"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
     "file": "tests/phase-6-synthetic-corpus-and-oracle-vrt.test.ts",
     "symbol": "1.3 validates format integrity across all synthesized files via assertFormatIntegrity",
     "reason": "Test block \"1.3 validates format integrity across all synthesized files via assertFormatIntegrity\" contains only weak assertions (1 weak matcher(s)). Must include at least one substantive check.",
@@ -704,13 +697,6 @@
     "file": "tests/status-and-unit-converter.test.ts",
     "symbol": "verifies official logo.svg and icon.svg contain the circular emblem badge, EC monogram, lavender arrow, and valid XML",
     "reason": "Test block \"verifies official logo.svg and icon.svg contain the circular emblem badge, EC monogram, lavender arrow, and valid XML\" contains only weak assertions (17 weak matcher(s)). Must include at least one substantive check.",
-    "owningWP": "WP-03"
-  },
-  {
-    "rule": "G4b-WEAK-ONLY-ASSERTIONS",
-    "file": "tests/topological-reading-order.test.ts",
-    "symbol": "gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer",
-    "reason": "Test block \"gracefully handles non-positive or non-finite scale factors in injectInvisibleTextLayer\" contains only weak assertions (3 weak matcher(s)). Must include at least one substantive check.",
     "owningWP": "WP-03"
   },
   {

@@ -1,18 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import * as zlib from 'node:zlib';
-import { PDFDocument, StandardFonts, PDFHexString, PDFNumber, PDFName, PDFDict, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFArray, PDFDocument, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import {
-  computeAffineTransformationMatrix,
-  buildTJArrayWithKerning,
-  renderLineBlockWithSpacing,
   createLosslessSandwichPdfFromPdf,
-  injectInvisibleTextLayer,
-  ensureUnicodeFont,
-  OcrBBox,
-  OcrLineBlock,
-  OcrWord,
   OcrResult,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { shownWords } from './helpers/pdf-shown-text';
 import {
   sniffMimeTypeFromMagicBytes,
   isFormatCompatibleWithMagicBytes,
@@ -28,343 +20,40 @@ import {
   safeFindColor,
 } from '../src/lib/conversions/office';
 
-/**
- * Extracts and decompresses all stream contents from a PDF buffer to inspect operators.
- */
-function extractAllTextFromPdfStreams(pdfBuffer: Buffer): string {
-  const binary = pdfBuffer.toString('binary');
-  let combined = binary;
-  const streamRegex = /stream[\r\n]+([\s\S]*?)[\r\n]+endstream/g;
-  let match: RegExpExecArray | null;
-  while ((match = streamRegex.exec(binary)) !== null) {
-    const raw = Buffer.from(match[1], 'binary');
-    try {
-      combined += '\n' + zlib.inflateSync(raw).toString('latin1');
-    } catch {
-      try {
-        combined += '\n' + zlib.inflateRawSync(raw).toString('latin1');
-      } catch {}
-    }
-  }
-  // Also decode hex string literals like <526F7461746564> into readable text
-  const decoded = combined.replace(/<([0-9A-Fa-f]{2,})>/g, (_, hex) => {
-    try {
-      return Buffer.from(hex, 'hex').toString('utf-8');
-    } catch {
-      return hex;
-    }
-  });
-  return combined + '\n' + decoded;
+/** The decoded content stream of the first page. */
+function pageContentOf(doc: PDFDocument): string {
+  const contents = doc.getPage(0).node.Contents();
+  const streams = contents instanceof PDFArray ? contents.asArray() : [contents];
+  return streams
+    .map((ref) => Buffer.from(decodePDFRawStream(doc.context.lookup(ref) as PDFRawStream).decode()).toString('latin1'))
+    .join('\n');
 }
 
 describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () => {
   // =========================================================================
-  // 1. ISO 32000-1 Word Spacing & TJ Kerning Offsets
+  // 1. Text on a rotated baseline
   // =========================================================================
-  describe('1. ISO 32000-1 Compliant Word Spacing & TJ Kerning Operators', () => {
-    it('computes accurate TJ array with character kerning offsets and word spacing', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontSize = 12;
-
-      const words: OcrWord[] = [
-        { text: 'EasyConvert', bbox: { x: 50, y: 100, width: 60, height: 12 } },
-        { text: 'Autonomous', bbox: { x: 125, y: 100, width: 70, height: 12 } },
-        { text: 'Engine', bbox: { x: 210, y: 100, width: 45, height: 12 } },
-      ];
-
-      const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
-        pdfDoc,
-        font,
-        words,
-        fontSize
-      );
-
-      expect(activeFontName).toBe(font.name);
-      expect(wordSpacing).toBeGreaterThanOrEqual(0);
-
-      // Inspect TJ array contents
-      const items = tjArray.asArray();
-      expect(items.length).toBeGreaterThanOrEqual(5);
-
-      // First item is encoded 'EasyConvert'
-      expect(items[0]).toBeInstanceOf(PDFHexString);
-      expect((items[0] as PDFHexString).decodeText()).toBe('EasyConvert');
-
-      // Second item is explicit space glyph ' '
-      expect(items[1]).toBeInstanceOf(PDFHexString);
-      expect((items[1] as PDFHexString).decodeText()).toBe(' ');
-
-      // Verify all words appear in order
-      const hexStrings = items
-        .filter((item: any) => item instanceof PDFHexString)
-        .map((h: any) => (h as PDFHexString).decodeText());
-      expect(hexStrings).toContain('EasyConvert');
-      expect(hexStrings).toContain('Autonomous');
-      expect(hexStrings).toContain('Engine');
-    });
-
-    it('handles adjacent words with zero gap gracefully without false kerning blowup', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontSize = 12;
-
-      const words: OcrWord[] = [
-        { text: 'Super', bbox: { x: 50, y: 100, width: 30, height: 12 } },
-        { text: 'Fast', bbox: { x: 80, y: 100, width: 25, height: 12 } },
-      ];
-
-      const { tjArray, wordSpacing } = buildTJArrayWithKerning(
-        pdfDoc,
-        font,
-        words,
-        fontSize
-      );
-
-      const items = tjArray.asArray();
-      expect(items.length).toBeGreaterThanOrEqual(2);
-
-      const hexTexts = items
-        .filter((item: any) => item instanceof PDFHexString)
-        .map((h: any) => (h as PDFHexString).decodeText());
-      expect(hexTexts).toContain('Super');
-      expect(hexTexts).toContain('Fast');
-    });
-
-    it('renders line block with Tw word spacing operator and invisible text mode', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage([600, 800]);
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-
-      const lineBlock: OcrLineBlock = {
-        text: 'Document Conversion Security Framework',
-        bbox: { x: 50, y: 100, width: 350, height: 16 },
-        words: [
-          { text: 'Document', bbox: { x: 50, y: 100, width: 75, height: 16 } },
-          { text: 'Conversion', bbox: { x: 135, y: 100, width: 85, height: 16 } },
-          { text: 'Security', bbox: { x: 230, y: 100, width: 60, height: 16 } },
-          { text: 'Framework', bbox: { x: 300, y: 100, width: 100, height: 16 } },
-        ],
-      };
-
-      // Render line block into page stream
-      renderLineBlockWithSpacing(page, font, lineBlock, 800);
-
-      // Compile PDF and verify operators in page content
-      const pdfBytes = await pdfDoc.save();
-      const streamText = extractAllTextFromPdfStreams(Buffer.from(pdfBytes));
-
-      // Must activate text rendering mode 3 (invisible)
-      expect(streamText).toContain('3 Tr');
-      // Must include word spacing operator 'Tw' and 'TJ' array
-      expect(streamText).toContain('Tw');
-      expect(streamText).toContain('TJ');
-      expect(streamText).toContain('BT');
-      expect(streamText).toContain('ET');
-    });
-
-    it('prevents word collision and negative collapsing when words share identical line bounding box', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontSize = 12;
-
-      // Words that don't have separate sub-word bboxes (all share the same line bbox)
-      const sharedBbox: OcrBBox = { x: 50, y: 100, width: 150, height: 14 };
-      const words: OcrWord[] = [
-        { text: 'Autonomous', bbox: sharedBbox },
-        { text: 'Security', bbox: sharedBbox },
-        { text: 'Guard', bbox: sharedBbox },
-      ];
-
-      const { tjArray, wordSpacing } = buildTJArrayWithKerning(
-        pdfDoc,
-        font,
-        words,
-        fontSize
-      );
-
-      // Fallback word spacing must be non-negative and preserve space glyphs
-      expect(wordSpacing).toBe(0);
-      const items = tjArray.asArray();
-      // Kerning offsets must not collapse the space glyph to zero
-      const numbers = items.filter((it: any) => it instanceof PDFNumber).map((n: any) => n.asNumber());
-      // No large positive kerning (> 200) that would negate the space advance
-      for (const num of numbers) {
-        expect(num).toBeLessThanOrEqual(0); // non-positive kerning means cursor moves right or stays
-      }
-    });
-
-    it('enforces ISO 32000-1 §9.3.3 Type 0 composite font word spacing parity for CJK text', async () => {
-      const pdfDoc = await PDFDocument.create();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontSize = 14;
-
-      const words: OcrWord[] = [
-        { text: '전자문서', bbox: { x: 50, y: 100, width: 60, height: 14 } },
-        { text: '보안', bbox: { x: 120, y: 100, width: 30, height: 14 } },
-        { text: '프레임워크', bbox: { x: 160, y: 100, width: 70, height: 14 } },
-      ];
-
-      const { tjArray, wordSpacing, activeFontName } = buildTJArrayWithKerning(
-        pdfDoc,
-        font,
-        words,
-        fontSize
-      );
-
-      // In ISO 32000-1, Tw has no effect on CIDFonts / Type 0 fonts, so wordSpacing must be 0
-      expect(wordSpacing).toBe(0);
-      expect(activeFontName).toBe('ECToUnicodeFont');
-
-      // TJ array must contain explicit space glyphs and exact kerning offsets
-      const items = tjArray.asArray();
-      expect(items.length).toBeGreaterThanOrEqual(5);
-
-      const hexTexts = items
-        .filter((it: any) => it instanceof PDFHexString)
-        .map((h: any) => (h as PDFHexString).asString());
-
-      // CIDs are dense, so the space glyph is whichever CID the font's ToUnicode maps to U+0020.
-      const type0: PDFDict = pdfDoc.context.lookup(ensureUnicodeFont(pdfDoc).fontRef, PDFDict);
-      const cmapStream = pdfDoc.context.lookup(type0.get(PDFName.of('ToUnicode'))) as PDFRawStream;
-      const cmap = Buffer.from(decodePDFRawStream(cmapStream).decode()).toString('latin1');
-      const spaceCid = /<([0-9A-F]{4})> <0020>/.exec(cmap)?.[1];
-      expect(spaceCid).toBeDefined();
-      expect(hexTexts.filter((h: string) => h === spaceCid)).toHaveLength(words.length - 1);
-      expect(hexTexts.filter((h: string) => !/^(?:[0-9A-F]{4})+$/.test(h))).toEqual([]);
-    });
-  });
-
-  // =========================================================================
-  // 2. 2D Affine Skew and Rotation Transformation Matrix
-  // =========================================================================
-  describe('2. 2D Affine Skew and Rotation Transformation Matrix', () => {
-    it('computes exact identity matrix for 0 degrees rotation', () => {
-      const bbox: OcrBBox = { x: 100, y: 50, width: 60, height: 20, rotationDegrees: 0 };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      expect(matrix[0]).toBeCloseTo(1, 4);
-      expect(matrix[1]).toBeCloseTo(0, 4);
-      expect(matrix[2]).toBeCloseTo(0, 4);
-      expect(matrix[3]).toBeCloseTo(1, 4);
-      expect(matrix[4]).toBe(100);
-      expect(matrix[5]).toBe(730);
-    });
-
-    it('computes exact 90 degrees rotation matrix [0, 1, -1, 0, x, y]', () => {
-      const bbox: OcrBBox = { x: 150, y: 80, width: 40, height: 20, rotationDegrees: 90 };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      expect(matrix[0]).toBeCloseTo(0, 4);
-      expect(matrix[1]).toBeCloseTo(1, 4);
-      expect(matrix[2]).toBeCloseTo(-1, 4);
-      expect(matrix[3]).toBeCloseTo(0, 4);
-      expect(matrix[4]).toBe(150);
-      expect(matrix[5]).toBe(700);
-    });
-
-    it('computes exact 180 degrees rotation matrix [-1, 0, 0, -1, x, y]', () => {
-      const bbox: OcrBBox = { x: 50, y: 25, width: 30, height: 10, rotationDegrees: 180 };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      expect(matrix[0]).toBeCloseTo(-1, 4);
-      expect(matrix[1]).toBeCloseTo(0, 4);
-      expect(matrix[2]).toBeCloseTo(0, 4);
-      expect(matrix[3]).toBeCloseTo(-1, 4);
-      expect(matrix[4]).toBe(50);
-      expect(matrix[5]).toBe(765);
-    });
-
-    it('computes exact 270 (-90) degrees rotation matrix [0, -1, 1, 0, x, y]', () => {
-      const bbox: OcrBBox = { x: 80, y: 40, width: 50, height: 15, rotationDegrees: 270 };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      expect(matrix[0]).toBeCloseTo(0, 4);
-      expect(matrix[1]).toBeCloseTo(-1, 4);
-      expect(matrix[2]).toBeCloseTo(1, 4);
-      expect(matrix[3]).toBeCloseTo(0, 4);
-      expect(matrix[4]).toBe(80);
-      expect(matrix[5]).toBe(745);
-    });
-
-    it('computes affine skew matrix with correct shear axes when horizontal and vertical skew are present', () => {
-      const skewXRad = (10 * Math.PI) / 180;
-      const skewYRad = (5 * Math.PI) / 180;
-      const bbox: OcrBBox = {
-        x: 300,
-        y: 100,
-        width: 100,
-        height: 20,
-        rotationDegrees: 0,
-        skewX: skewXRad,
-        skewY: skewYRad,
-      };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      expect(matrix[0]).toBeCloseTo(1, 4);
-      // matrix[1] is b: vertical shear factor tan(skewY)
-      expect(matrix[1]).toBeCloseTo(Math.tan(skewYRad), 4);
-      // matrix[2] is c: horizontal shear factor tan(skewX)
-      expect(matrix[2]).toBeCloseTo(Math.tan(skewXRad), 4);
-      expect(matrix[3]).toBeCloseTo(1, 4);
-      expect(matrix[4]).toBe(300);
-      expect(matrix[5]).toBe(680);
-    });
-
-    it('correctly handles small document deskew angles (e.g. 2 degrees) as degrees, not radians', () => {
-      const bbox: OcrBBox = {
-        x: 100,
-        y: 50,
-        width: 60,
-        height: 20,
-        rotation: 2, // 2 degrees tilt from scan deskewing
-      };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      const rad2 = (2 * Math.PI) / 180;
-      expect(matrix[0]).toBeCloseTo(Math.cos(rad2), 4);
-      expect(matrix[1]).toBeCloseTo(Math.sin(rad2), 4);
-      expect(matrix[2]).toBeCloseTo(-Math.sin(rad2), 4);
-      expect(matrix[3]).toBeCloseTo(Math.cos(rad2), 4);
-    });
-
-    it('computes exact affine matrix product R * S for combined rotation and shear', () => {
-      const thetaDeg = 30;
-      const thetaRad = (thetaDeg * Math.PI) / 180;
-      const skewXRad = (10 * Math.PI) / 180;
-      const skewYRad = (5 * Math.PI) / 180;
-      const bbox: OcrBBox = {
-        x: 50,
-        y: 50,
-        width: 100,
-        height: 20,
-        rotationDegrees: thetaDeg,
-        skewX: skewXRad,
-        skewY: skewYRad,
-      };
-      const matrix = computeAffineTransformationMatrix(bbox, 800);
-      const cosT = Math.cos(thetaRad);
-      const sinT = Math.sin(thetaRad);
-      const tanX = Math.tan(skewXRad);
-      const tanY = Math.tan(skewYRad);
-
-      expect(matrix[0]).toBeCloseTo(cosT + tanX * sinT, 4);
-      expect(matrix[1]).toBeCloseTo(sinT + tanY * cosT, 4);
-      expect(matrix[2]).toBeCloseTo(-sinT + tanX * cosT, 4);
-      expect(matrix[3]).toBeCloseTo(cosT - tanY * sinT, 4);
-    });
-
-    it('injects invisible text layer with affine transformation matrix onto rotated OCR bounding boxes', async () => {
+  describe('1. Text on a rotated baseline', () => {
+    it('writes each word of a line on a 45 degree baseline with the matching text matrix', async () => {
       const pdfDoc = await PDFDocument.create();
       pdfDoc.addPage([595, 842]);
       const basePdfBytes = await pdfDoc.save();
 
+      // The baseline runs from (100, 224) to (200, 324) in pixels with y down: 45 degrees clockwise on the scan.
       const ocrResult: OcrResult = {
         text: 'Rotated Stamp',
-        confidence: 96,
+        confidence: 0.96,
         wordCount: 2,
         lines: ['Rotated Stamp'],
         lineBlocks: [
           {
             text: 'Rotated Stamp',
-            bbox: { x: 100, y: 200, width: 120, height: 24, rotationDegrees: 45 },
+            bbox: { x: 100, y: 200, width: 120, height: 124 },
+            baseline: { x0: 100, y0: 224, x1: 200, y1: 324 },
+            rowHeight: 24,
             words: [
-              { text: 'Rotated', bbox: { x: 100, y: 200, width: 55, height: 24 } },
-              { text: 'Stamp', bbox: { x: 160, y: 200, width: 60, height: 24 } },
+              { text: 'Rotated', bbox: { x: 100, y: 200, width: 55, height: 124 } },
+              { text: 'Stamp', bbox: { x: 160, y: 200, width: 60, height: 124 } },
             ],
           },
         ],
@@ -375,11 +64,15 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       const sandwichPdf = await createLosslessSandwichPdfFromPdf(Buffer.from(basePdfBytes), pageMap);
       expect(sandwichPdf.length).toBeGreaterThan(basePdfBytes.length);
 
-      const streamText = extractAllTextFromPdfStreams(sandwichPdf);
-      // Verify transformation matrix operator 'cm' exists in the content stream
-      expect(streamText).toMatch(/[-0-9.]+\s+[-0-9.]+\s+[-0-9.]+\s+[-0-9.]+\s+[-0-9.]+\s+[-0-9.]+\s+cm/);
-      expect(streamText).toContain('Rotated');
-      expect(streamText).toContain('Stamp');
+      const content = pageContentOf(await PDFDocument.load(sandwichPdf));
+      // A baseline at 45 degrees clockwise on the scan is a text matrix rotated by -45 degrees in PDF space
+      // (y up): [cos -sin... ] = [0.707107 -0.707107 0.707107 0.707107 x y].
+      const matrices = [...content.matchAll(/(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) Tm/g)];
+      expect(matrices).toHaveLength(2);
+      for (const matrix of matrices) {
+        expect(matrix.slice(1, 5).map(Number)).toEqual([0.707107, -0.707107, 0.707107, 0.707107]);
+      }
+      expect(shownWords(await PDFDocument.load(sandwichPdf))).toEqual(['Rotated', 'Stamp']);
     });
   });
 
@@ -703,12 +396,9 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       const loadedDoc = await PDFDocument.load(sandwichPdf);
       expect(loadedDoc.getPageCount()).toBe(1);
 
-      const streamText = extractAllTextFromPdfStreams(sandwichPdf);
-      expect(streamText).toContain('Confidential');
-      expect(streamText).toContain('Financial');
-      expect(streamText).toContain('Report');
+      expect(shownWords(loadedDoc)).toEqual(['Confidential', 'Financial', 'Report']);
       // Verify invisible rendering mode Tr 3
-      expect(streamText).toContain('3 Tr');
+      expect(pageContentOf(loadedDoc)).toContain('3 Tr');
     });
   });
 });

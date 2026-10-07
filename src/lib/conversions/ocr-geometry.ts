@@ -159,9 +159,28 @@ function mapRowMeasure(value: number | undefined, g: OcrGeometry): number | unde
   return value * (orientedHeight / g.scaledHeight);
 }
 
+/** Length of the probe that finds the direction text runs in after mapping, in prepared-image pixels. */
+const DIRECTION_PROBE_PX = 100;
+const ANGLE_DECIMALS = 2;
+
+/**
+ * The direction the text of a line runs in on the source page, in degrees clockwise from the x
+ * axis (y down), or undefined when it is horizontal. The recognizer reads its lines left to right
+ * in the prepared image, so the direction is where a step to the right there lands on the source.
+ */
+function mapLineAngle(block: OcrLineBlock, g: OcrGeometry): number | undefined {
+  const centerX = block.bbox.x + block.bbox.width / 2;
+  const centerY = block.bbox.y + block.bbox.height / 2;
+  const [x0, y0] = mapPointToSource(centerX, centerY, g);
+  const [x1, y1] = mapPointToSource(centerX + DIRECTION_PROBE_PX, centerY, g);
+  const degrees = Number(((Math.atan2(y1 - y0, x1 - x0) / DEGREES_TO_RADIANS)).toFixed(ANGLE_DECIMALS));
+  return degrees === 0 ? undefined : degrees;
+}
+
 function mapLineBlock(block: OcrLineBlock, g: OcrGeometry, cache: GroupCache): OcrLineBlock {
   return {
     ...block,
+    angleDegrees: mapLineAngle(block, g),
     bbox: mapBoxToSource(block.bbox, g),
     words: block.words.map((word) => mapWord(word, g)),
     block: mapLayoutGroup(block.block, g, cache),

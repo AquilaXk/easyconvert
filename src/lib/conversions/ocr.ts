@@ -40,6 +40,7 @@ import {
   readOrientation,
   type OcrOrientation,
 } from './ocr-osd';
+import { resolveImageDpi } from './ocr-dpi';
 import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
@@ -231,12 +232,18 @@ export async function recognizePage(
 
   await assertEncodedImageWithinLimit(imageBuffer);
   if (detectOrientation === true) assertOrientationDetectable();
+  // What the page declares about its size, for the searchable PDF; undeclared is recorded as assumed.
+  const imageDpi = resolveImageDpi(imageBuffer);
+  const finish = (page: RecognizedPage, orientation: OcrOrientation): RecognizedPage => ({
+    ...page,
+    result: { ...page.result, orientation, imageDpi },
+  });
 
   const attempt = (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: LanguageData) =>
     recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language });
   const first = await attempt(0, requestedLanguage, requestedData);
-  if (detectOrientation === false) return withOrientation(first, { status: 'disabled', rotationApplied: 0 });
-  if (!looksMisread(first.result)) return withOrientation(first, { status: 'not-needed', rotationApplied: 0 });
+  if (detectOrientation === false) return finish(first, { status: 'disabled', rotationApplied: 0 });
+  if (!looksMisread(first.result)) return finish(first, { status: 'not-needed', rotationApplied: 0 });
 
   // The page reads badly, so it may be sideways, upside down or in another script: look at it. The
   // engine's turn is kept only when reading again scores better, so a doubtful reading costs
@@ -245,7 +252,7 @@ export async function recognizePage(
   const scriptLanguage = normalizedLang === 'auto' ? languageForScript(detection.orientation) : null;
   const scriptData = scriptLanguage === null ? undefined : locateLanguageData(scriptLanguage);
   const switchTo = scriptLanguage !== null && scriptData && scriptLanguage !== requestedLanguage ? scriptLanguage : null;
-  if (detection.quarterTurn === 0 && switchTo === null) return withOrientation(first, detection.orientation);
+  if (detection.quarterTurn === 0 && switchTo === null) return finish(first, detection.orientation);
   let second: RecognizedPage;
   try {
     second = await attempt(
@@ -255,21 +262,17 @@ export async function recognizePage(
     );
   } catch (err) {
     if (detectOrientation === true) throw err;
-    return withOrientation(first, { ...detection.orientation, status: 'unavailable', rotationApplied: 0 });
+    return finish(first, { ...detection.orientation, status: 'unavailable', rotationApplied: 0 });
   }
   if (readingQuality(second.result) >= readingQuality(first.result) + OSD_MIN_QUALITY_GAIN) {
-    return withOrientation(second, switchTo === null ? detection.orientation : { ...detection.orientation, languageFromScript: switchTo });
+    return finish(second, switchTo === null ? detection.orientation : { ...detection.orientation, languageFromScript: switchTo });
   }
-  return withOrientation(first, { ...detection.orientation, status: 'not-better', rotationApplied: 0 });
+  return finish(first, { ...detection.orientation, status: 'not-better', rotationApplied: 0 });
 }
 
 interface LanguageData {
   dir: string;
   gzip: boolean;
-}
-
-function withOrientation(page: RecognizedPage, orientation: OcrOrientation): RecognizedPage {
-  return { ...page, result: { ...page.result, orientation } };
 }
 
 /** How well a page was read, 0..1: the mean raw word score weighted by characters; 0 when no word was read. */

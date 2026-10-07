@@ -19,6 +19,14 @@ export const TO_UNICODE_BFCHAR_BLOCK_LIMIT = 100;
 /** Glyph space units per em in the text layer font. */
 export const GLYPH_UNITS_PER_EM = 1000;
 export const WIDE_GLYPH_ADVANCE = GLYPH_UNITS_PER_EM;
+/**
+ * Ascent and descent (1/1000 em) of the text layer font. They divide a text row the way a row of
+ * Latin text is divided: from the top of the ascenders to the baseline is 77% of the row and from the
+ * baseline to the bottom of the descenders 23%. A word set at the row's height therefore spans the row
+ * in a viewer's selection, with the baseline where the engine found it.
+ */
+export const GLYPHLESS_ASCENT = 770;
+export const GLYPHLESS_DESCENT = 230;
 /** Glyph advance (1/1000 em) advertised for Latin-1 code points. */
 export const NARROW_GLYPH_ADVANCE = 500;
 const NARROW_GLYPH_MAX_CODE_POINT = 0xff;
