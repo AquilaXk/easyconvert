@@ -3,8 +3,8 @@ import { bdPsnr, bdRate, type RdPoint } from '../bench/bd-rate';
 import { BdRateInputError } from '../bench/errors';
 
 /**
- * Worked example: the two four-point rate-distortion curves ("Sample 1") that ship with the public Bjontegaard
- * metric reference implementations of VCEG-M33 (G. Bjontegaard, "Calculation of average PSNR differences between
+ * Worked example: the two four-point rate-distortion curves ("Sample 1") published as the usage example of
+ * open implementations of the VCEG-M33 method (G. Bjontegaard, "Calculation of average PSNR differences between
  * RD-curves", ITU-T SG16/Q6 VCEG-M33, 2001): rates in kbit/s, quality in dB PSNR.
  *
  * The expected values below are hand-entered. The published inputs carry no printed result, so the values come from
@@ -25,7 +25,7 @@ const TEST: RdPoint[] = [
 ];
 const EXPECTED_SAMPLE_1_BD_RATE_PERCENT = 31.397374054908013;
 
-/** Second published curve pair (high bit-rate "Test 1" of the FAU-LMS bjontegaard package, BSD-3-Clause). */
+/** Second published four-point curve pair (high bit rates, rates in kbit/s, PSNR in dB). */
 const ANCHOR_2: RdPoint[] = [
   { rate: 9487.76, quality: 40.037 },
   { rate: 4593.6, quality: 38.615 },
