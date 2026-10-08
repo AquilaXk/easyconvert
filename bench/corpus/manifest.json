@@ -1,5 +1,5 @@
 {
-  "totalBytes": 3046193,
+  "totalBytes": 2804887,
   "files": [
     {
       "file": "clip.mp4",
@@ -48,8 +48,8 @@
     },
     {
       "file": "scan.png",
-      "bytes": 399662,
-      "sha256": "dc8798e01e4c1b085f1f6ff7fa2c68b5b749661c8434b421b00dde40a67f4a74"
+      "bytes": 158356,
+      "sha256": "6d57b08e6abf172f15b293cafb614ea1fc34c814b4f673fb634271461507b6e8"
     },
     {
       "file": "screenshot.png",

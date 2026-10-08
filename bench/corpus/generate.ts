@@ -107,10 +107,10 @@ function makeLineArt(): void {
 function makeScan(): void {
   fs.writeFileSync(out('scan.gt.txt'), `${SCAN_TEXT}\n`);
   run('convert', [
-    '-size', '1400x520', 'xc:white', '-font', 'DejaVu-Serif', '-pointsize', '30', '-fill', 'black',
-    '-interline-spacing', '8', '-annotate', '+60+80', SCAN_TEXT,
-    '-rotate', '0.4', '-background', 'white', '-gravity', 'center', '-crop', '1380x500+0+0', '+repage',
-    '-blur', '0x0.7', '-seed', '5', '-attenuate', '0.25', '+noise', 'Gaussian', '-colorspace', 'Gray', '-depth', '8', '-strip',
+    '-size', '860x280', 'xc:white', '-font', 'DejaVu-Serif', '-pointsize', '16', '-fill', 'black',
+    '-interline-spacing', '4', '-annotate', '+40+50', SCAN_TEXT,
+    '-rotate', '0.6', '-background', 'white', '-gravity', 'center', '-crop', '840x260+0+0', '+repage',
+    '-blur', '0x1.0', '-seed', '5', '-attenuate', '0.8', '+noise', 'Gaussian', '-colorspace', 'Gray', '-depth', '8', '-strip',
     out('scan.png'),
   ]);
 }

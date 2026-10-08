@@ -16,7 +16,7 @@ total against the 5 MB budget. Regenerate with `npx tsx bench/corpus/generate.ts
 | `clip.mp4` | short video (H.264, 320x240, 24 fps, 2 s, no audio) | ffmpeg `mandelbrot` source encoded with x264 at CRF 14 |
 | `speech.wav` | speech (16 kHz mono PCM, 7.9 s) | ffmpeg `flite` filter (voice `slt`) reading a pangram text |
 | `music.wav` | music (44.1 kHz stereo PCM, 4 s) | ffmpeg `aevalsrc` plucked-note chords (sums of decaying sines) |
-| `scan.png` + `scan.gt.txt` | scanned page for OCR (grey PNG) | text of `scan.gt.txt` rendered with `convert`, rotated 0.4 degrees, blurred, noise added |
+| `scan.png` + `scan.gt.txt` | scanned page for OCR (grey PNG) | text of `scan.gt.txt` rendered with `convert`, rotated 0.6 degrees, blurred, noise added (a deliberately poor scan, 16 pt text) |
 | `report.docx` + `report.gt.txt` | office document | built with jszip from the text of `report.gt.txt`: headings, paragraphs and a table, fixed timestamps |
 | `data/records.jsonl` | compressible structured data | seeded generator (mulberry32) of 5000 JSON-lines log records |
 
