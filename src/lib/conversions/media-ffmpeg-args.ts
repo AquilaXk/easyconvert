@@ -1393,15 +1393,16 @@ export function buildFfmpegArguments(
     audioFormatArgs.push('-ar', String(options.audio.sampleRate));
   } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
     audioFormatArgs.push('-ar', String(options.audioSampleRate));
-  } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
-    audioFormatArgs.push('-ar', String(audioSpec.defaultSampleRate));
   } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(inputPath)) {
-    // The caller set no rate: bring an input the encoder cannot code into its supported set.
+    // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
+    // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
     const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track));
     if (resampleRate !== undefined) {
       audioFormatArgs.push('-ar', String(resampleRate));
     }
+  } else if (audioSpec?.defaultSampleRate !== undefined && specEncoderInUse) {
+    audioFormatArgs.push('-ar', String(audioSpec.defaultSampleRate));
   }
   outputArgs.push(...audioFormatArgs);
 
