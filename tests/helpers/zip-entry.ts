@@ -15,7 +15,7 @@ export class ZipEntryMissingError extends Error {
 export async function zipEntryText(zip: JSZip, entryName: string): Promise<string> {
   const entry = zip.file(entryName);
   if (entry === null) throw new ZipEntryMissingError(entryName, Object.keys(zip.files));
-  return entry.async('string');
+  return await entry.async('string');
 }
 
 export async function zipEntryBytes(zip: JSZip, entryName: string): Promise<Buffer> {

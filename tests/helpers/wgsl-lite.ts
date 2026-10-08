@@ -88,14 +88,14 @@ export function parseWgsl(source: string): WgslModule {
       .map((field) => field.trim())
       .filter(Boolean)
       .map((field) => {
-        const parts = /^(\w+)\s*:\s*(.+)$/.exec(field);
+        const parts = /^(\w+)\s*:(.+)$/.exec(field);
         if (!parts) throw new WgslSyntaxError(`malformed struct member "${field}" in ${match[1]}`);
         return { name: parts[1], type: parts[2].trim() };
       }),
   }));
 
   const bindings: WgslBinding[] = [
-    ...code.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var<\s*(\w+)\s*(?:,\s*(\w+)\s*)?>\s*(\w+)\s*:\s*([^;]+);/g),
+    ...code.matchAll(/@group\((\d+)\)\s*@binding\((\d+)\)\s*var<\s*(\w+)\s*(?:,\s*(\w+)\s*)?>\s*(\w+)\s*:([^;]+);/g),
   ].map((match) => ({
     group: Number(match[1]),
     binding: Number(match[2]),
@@ -106,7 +106,7 @@ export function parseWgsl(source: string): WgslModule {
   }));
 
   const entryPoints: WgslEntryPoint[] = [
-    ...code.matchAll(/@(compute|vertex|fragment)\s*(?:@workgroup_size\(([^)]*)\))?\s*fn\s+(\w+)/g),
+    ...code.matchAll(/@(compute|vertex|fragment)\s*(?:@workgroup_size\(([^)]*)\)\s*)?fn\s+(\w+)/g),
   ].map((match) => ({
     stage: match[1],
     name: match[3],

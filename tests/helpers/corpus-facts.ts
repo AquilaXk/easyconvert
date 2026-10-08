@@ -36,7 +36,7 @@ export function pdfFacts(pdf: Buffer): { pages: number; title: string; text: str
     const info = runTool('pdfinfo', [file]);
     return {
       pages: Number(/^Pages:\s+(\d+)$/m.exec(info)?.[1]),
-      title: /^Title:\s+(.*)$/m.exec(info)?.[1] ?? '',
+      title: /^Title:(.*)$/m.exec(info)?.[1].trim() ?? '',
       text: runTool('pdftotext', ['-layout', file, '-']).replace(/\s+/g, ' ').trim(),
     };
   });

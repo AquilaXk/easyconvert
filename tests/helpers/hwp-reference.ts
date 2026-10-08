@@ -70,7 +70,7 @@ function paragraphText(payload: Buffer): string {
     } else if (unit === LINE_BREAK) {
       text += '\n';
     } else if (unit >= FIRST_PRINTABLE) {
-      text += String.fromCharCode(unit);
+      text += String.fromCodePoint(unit);
     }
   }
   return text;
@@ -101,7 +101,7 @@ export function readHwpWithReference(hwp: Buffer): HwpReferenceContent {
     const streamPaths = [...listing.matchAll(/^Path = (.+)$/gm)]
       .map((match) => match[1])
       .filter((entry) => entry !== file && !/^(BodyText|BinData|Scripts|DocOptions)$/.test(entry))
-      .sort();
+      .sort((a, b) => a.localeCompare(b));
     const out = path.join(dir, 'streams');
     execFileSync(sevenZip, ['x', `-o${out}`, '-y', file], { encoding: 'utf-8', timeout: SEVEN_ZIP_TIMEOUT_MS });
 

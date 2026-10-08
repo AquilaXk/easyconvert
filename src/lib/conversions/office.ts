@@ -5191,7 +5191,7 @@ const THOUSANDS_SEPARATOR = /[0#?],[0#?]/;
  */
 function numberFormatFirstSection(formatCode: string): string {
   return formatCode
-    .replace(/\[\$([^\]-]*)(?:-[^\]]*)?\]/g, '$1')
+    .replace(/\[\$([^\]-]*)[^\]]*\]/g, '$1')
     .replace(/\[[^\]]*\]/g, '')
     .split(';')[0];
 }

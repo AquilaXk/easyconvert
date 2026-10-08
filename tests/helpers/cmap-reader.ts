@@ -26,7 +26,7 @@ function utf16BeToString(hex: string): string {
   const clean = hex.replace(/\s+/g, '');
   if (clean.length % 4 !== 0) throw new Error(`destination <${clean}> is not whole UTF-16BE code units`);
   let out = '';
-  for (let i = 0; i < clean.length; i += 4) out += String.fromCharCode(Number.parseInt(clean.slice(i, i + 4), 16));
+  for (let i = 0; i < clean.length; i += 4) out += String.fromCodePoint(Number.parseInt(clean.slice(i, i + 4), 16));
   return out;
 }
 
@@ -76,8 +76,8 @@ export function lookupCode(cmap: ToUnicodeCMap, code: number): string | undefine
   for (const range of cmap.bfranges) {
     if (code >= range.first && code <= range.last) {
       const head = range.destination.slice(0, -1);
-      const lastUnit = range.destination.charCodeAt(range.destination.length - 1) + (code - range.first);
-      return head + String.fromCharCode(lastUnit);
+      const lastUnit = range.destination.codePointAt(range.destination.length - 1)! + (code - range.first);
+      return head + String.fromCodePoint(lastUnit);
     }
   }
   return undefined;

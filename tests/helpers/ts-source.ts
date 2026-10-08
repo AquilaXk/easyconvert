@@ -115,7 +115,7 @@ export function collectModuleGraph(entry: string, srcRoot: string): ModuleGraph 
       queue.push(resolved);
     }
   }
-  return { files: [...files].sort(), externalSpecifiers: [...external].sort() };
+  return { files: [...files].sort((a, b) => a.localeCompare(b)), externalSpecifiers: [...external].sort((a, b) => a.localeCompare(b)) };
 }
 
 /** Every identifier in the file spelled `name`, as `line:column` positions, so a use can be located. */

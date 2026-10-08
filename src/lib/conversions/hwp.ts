@@ -513,7 +513,7 @@ export function decodeHwpText(buffer: Buffer): string {
   }
   let result = '';
   for (let index = 0; index < units.length; index += HWP_TEXT_CHUNK_UNITS) {
-    result += String.fromCharCode(...units.slice(index, index + HWP_TEXT_CHUNK_UNITS));
+    result += String.fromCodePoint(...units.slice(index, index + HWP_TEXT_CHUNK_UNITS));
   }
   return result;
 }
