@@ -6,6 +6,7 @@ import path from 'node:path';
 import { compressLzma2Async, compressLzmaAsync, compressLzma2, compressLzma } from '../src/lib/conversions/lzma-encoder';
 import { compressZstd, compressZstdAsync, ZSTD_POOL_MIN_LEVEL } from '../src/lib/conversions/zstd';
 import { create7zArchive, create7zArchiveAsync, extract7zArchive, packXz, packXzAsync } from '../src/lib/conversions/archive';
+import { encodeFlacStream, encodeFlacStreamAsync } from '../src/lib/conversions/flac-encoder';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -144,4 +145,42 @@ describe('create7zArchiveAsync', () => {
     const stored = await create7zArchiveAsync(files, { compressionLevel: 0 }, 'stored.7z');
     expect(stored.buffer.equals(create7zArchive(files, { compressionLevel: 0 }, 'stored.7z').buffer)).toBe(true);
   }, TEST_TIMEOUT_MS);
+});
+
+describe('encodeFlacStreamAsync', () => {
+  const SAMPLE_RATE = 44100;
+  const CHANNELS = 2;
+  const SECONDS = 12;
+
+  function tone(): Int16Array {
+    const samples = new Int16Array(SAMPLE_RATE * CHANNELS * SECONDS);
+    let seed = 99;
+    for (let i = 0; i < samples.length; i++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const frame = Math.floor(i / CHANNELS);
+      samples[i] = Math.round(9000 * Math.sin(frame * 0.031 + (i % CHANNELS)) + 3000 * Math.sin(frame * 0.0071) + ((seed >>> 24) - 128));
+    }
+    return samples;
+  }
+
+  it('returns the stream of encodeFlacStream', async () => {
+    const samples = tone();
+    const viaPool = await encodeFlacStreamAsync(samples, SAMPLE_RATE, CHANNELS);
+    expect(viaPool.equals(encodeFlacStream(samples, SAMPLE_RATE, CHANNELS))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest('the stream built on a pool thread passes `flac -t` and decodes to the samples with ffmpeg', ['flac', 'ffmpeg'], async () => {
+    const samples = tone();
+    const stream = await encodeFlacStreamAsync(samples, SAMPLE_RATE, CHANNELS);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'poolflac-'));
+    const file = path.join(dir, 'pool.flac');
+    fs.writeFileSync(file, stream);
+    execFileSync(getOracleToolPath('flac')!, ['-t', '-s', file]);
+    const pcm = execFileSync(getOracleToolPath('ffmpeg')!, ['-v', 'error', '-i', file, '-f', 's16le', '-'], { maxBuffer: 1 << 28 });
+    expect(pcm.equals(Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  it('rejects a channel count the encoder does not support with its typed error', async () => {
+    await expect(encodeFlacStreamAsync(tone(), SAMPLE_RATE, 9)).rejects.toThrow(/channel/i);
+  });
 });

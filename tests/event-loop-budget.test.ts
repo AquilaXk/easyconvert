@@ -13,6 +13,7 @@ import { buildGlyfFont, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { SeededRandom, sourceText, zipfText } from './helpers/archive-corpus';
+import { encodeFlacStream, encodeFlacStreamAsync } from '../src/lib/conversions/flac-encoder';
 import { compressZstd, compressZstdAsync } from '../src/lib/conversions/zstd';
 import { create7zArchiveAsync, extract7zArchive, packXz, packXzAsync, unpackXz } from '../src/lib/conversions/archive';
 
@@ -165,5 +166,16 @@ describe('event loop stays free during CPU-bound encodes', () => {
     expect(maxMs).toBeLessThan(BUDGET_MS);
     const restored = extract7zArchive(value.buffer);
     for (const f of files) expect(restored.find((r) => r.filename === f.filename)!.buffer.equals(f.buffer)).toBe(true);
+  }, TEST_TIMEOUT_MS);
+  it('a 3-minute stereo FLAC encode keeps the loop delay under the budget and equals the synchronous stream', async () => {
+    const frames = 44100 * 180;
+    const samples = new Int16Array(frames * 2);
+    const rng = new SeededRandom(71);
+    for (let i = 0; i < samples.length; i++) samples[i] = Math.round(8000 * Math.sin((i >> 1) * 0.02 + (i & 1)) + rng.below(512) - 256);
+    const { value, maxMs } = await withLoopMonitor(() => encodeFlacStreamAsync(samples, 44100, 2));
+    expect(maxMs).toBeLessThan(BUDGET_MS);
+    expect(value.subarray(0, 4).toString('latin1')).toBe('fLaC');
+    const head = samples.subarray(0, 44100 * 2 * 10);
+    expect((await encodeFlacStreamAsync(head.slice(), 44100, 2)).equals(encodeFlacStream(head, 44100, 2))).toBe(true);
   }, TEST_TIMEOUT_MS);
 });

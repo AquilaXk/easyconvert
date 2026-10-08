@@ -1,4 +1,5 @@
 import { encodeBzip2Block, type BitStream } from '../conversions/bzip2';
+import { encodeFlacStream, type FlacTaskPayload } from '../conversions/flac-encoder';
 import { compressLzma, compressLzma2, type LzmaCompressOptions } from '../conversions/lzma-encoder';
 import { compressZstd, type ZstdCompressOptions } from '../conversions/zstd';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
@@ -77,6 +78,11 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
   demosaicTiles: (raw): HandlerResult => {
     runDemosaicTiles(raw as DemosaicTilesPayload);
     return { result: null, silent: true };
+  },
+
+  flac: (raw): HandlerResult => {
+    const payload = raw as FlacTaskPayload;
+    return transferableBytes(encodeFlacStream(payload.samples, payload.sampleRate, payload.channels, payload.options));
   },
 
   lzma: (raw): HandlerResult => {
