@@ -343,8 +343,8 @@ interface RecognitionAttempt {
  * everywhere, and the recognizer reads confident words from the lit part and nothing from the rest) or the
  * reading is poor. The alternatives are the page as submitted (enlarging blurred, noisy text can cost more than
  * it gains) and the page binarized (a hard threshold can destroy small or blurred strokes). An alternative is
- * kept only when it recognizes clearly more confident text, so a good page is never read twice and a page that an
- * alternative would only damage keeps its first reading.
+ * kept only when it recognizes at least as much confident text as the reading so far, so a good page is never
+ * read twice and a page that an alternative would only damage keeps its first reading.
  */
 async function recognizeAttempt(attempt: RecognitionAttempt): Promise<RecognizedPage> {
   const { steps } = attempt;
@@ -357,11 +357,10 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
   if (steps.binarize && plain.prepared.binarizable) alternatives.push(steps);
   let best = plain;
   let bestEvidence = readingEvidence(plain.page.result);
-  const required = bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN;
   for (const alternative of alternatives) {
     const candidate = await readPreparedPage(attempt, alternative);
     const evidence = readingEvidence(candidate.page.result);
-    if (evidence >= required && evidence > bestEvidence) {
+    if (evidence >= bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN) {
       best = candidate;
       bestEvidence = evidence;
     }

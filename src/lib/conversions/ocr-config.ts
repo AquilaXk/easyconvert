@@ -109,7 +109,9 @@ export function fallbackReadsMore(firstWordCount: number, retryWordCount: number
  */
 export const OCR_ALTERNATIVE_TRIGGER_QUALITY = 0.9;
 /**
- * A second reading replaces the first only when it recognizes at least this many times as much confident
- * text: a page it merely rewrites is left as it was.
+ * A second reading replaces the first when it recognizes at least this many times as much confident text. The
+ * first reading is only questioned because it looked poor, so a second one that does as well is as good: the
+ * confident characters of two readings of one page differ by a character or two when the readings are alike, and
+ * any larger loss (binarizing blurred text, enlarging noise) shows as a drop well beyond that.
  */
-export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1.1;
+export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1;
