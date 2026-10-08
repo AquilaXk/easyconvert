@@ -8,6 +8,9 @@ import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
+import { decodeBmp } from './bmp';
+import { decodeIco, decodeIcns } from './ico';
+import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
@@ -60,6 +63,9 @@ import {
 } from './raw-hdr';
 
 export {
+  decodeBmp,
+  decodeIco,
+  decodeIcns,
   quantizeMedianCut,
   quantizeNeuQuant,
   quantizeWuOklab,
@@ -177,73 +183,6 @@ export function encodeBmp(raw: Buffer, width: number, height: number, channels: 
   return buf;
 }
 
-/** Bit depths a BMP can declare (Microsoft BITMAPINFOHEADER). */
-const BMP_BITS_PER_PIXEL = new Set([1, 4, 8, 16, 24, 32]);
-
-export function decodeBmp(buf: Buffer): { raw: Buffer; width: number; height: number; channels: 4 } {
-  if (buf.length < 54 || buf.toString('ascii', 0, 2) !== 'BM') {
-    throw new ConversionFailedError('Invalid BMP file: missing BM header signature.');
-  }
-
-  const pixelOffset = buf.readUInt32LE(10);
-  const width = buf.readInt32LE(18);
-  const height = buf.readInt32LE(22);
-  const bpp = buf.readUInt16LE(28);
-
-  if (width <= 0 || height === 0) {
-    throw new ConversionFailedError(`Invalid BMP dimensions: ${width}x${height}`);
-  }
-  if (!BMP_BITS_PER_PIXEL.has(bpp)) {
-    throw new ConversionFailedError(`Invalid BMP: ${bpp} bits per pixel is not a BMP bit depth.`);
-  }
-
-  const isBottomUp = height > 0;
-  const absHeight = Math.abs(height);
-  assertInputPixels(width, absHeight);
-
-  const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
-  // The declared canvas must be backed by the file: a header cannot make the decoder allocate it for nothing.
-  if (pixelOffset + rowSize * absHeight > buf.length) {
-    throw new ConversionFailedError(
-      `Invalid BMP: the header declares ${width}x${absHeight} pixels at ${bpp} bits (${rowSize * absHeight} bytes of pixel data from offset ${pixelOffset}), but the file ends at byte ${buf.length}.`
-    );
-  }
-  const rawRgba = Buffer.alloc(width * absHeight * 4);
-
-  for (let y = 0; y < absHeight; y++) {
-    const srcY = isBottomUp ? absHeight - 1 - y : y;
-    const rowOffset = pixelOffset + srcY * rowSize;
-
-    for (let x = 0; x < width; x++) {
-      const dstIdx = (y * width + x) * 4;
-
-      if (bpp === 24) {
-        const srcIdx = rowOffset + x * 3;
-        rawRgba[dstIdx] = buf[srcIdx + 2]; // R
-        rawRgba[dstIdx + 1] = buf[srcIdx + 1]; // G
-        rawRgba[dstIdx + 2] = buf[srcIdx]; // B
-        rawRgba[dstIdx + 3] = 255; // Alpha
-      } else if (bpp === 32) {
-        const srcIdx = rowOffset + x * 4;
-        rawRgba[dstIdx] = buf[srcIdx + 2];
-        rawRgba[dstIdx + 1] = buf[srcIdx + 1];
-        rawRgba[dstIdx + 2] = buf[srcIdx];
-        rawRgba[dstIdx + 3] = buf[srcIdx + 3];
-      } else {
-        // Fallback for 8-bit or unhandled bpp
-        const srcIdx = rowOffset + Math.min(x, rowSize - 1);
-        const val = buf[srcIdx] || 0;
-        rawRgba[dstIdx] = val;
-        rawRgba[dstIdx + 1] = val;
-        rawRgba[dstIdx + 2] = val;
-        rawRgba[dstIdx + 3] = 255;
-      }
-    }
-  }
-
-  return { raw: rawRgba, width, height: absHeight, channels: 4 };
-}
-
 export function encodeIco(pngBuffer: Buffer, width: number, height: number): Buffer {
   const icoHeader = Buffer.alloc(22);
   icoHeader.writeUInt16LE(0, 0); // Reserved, must be 0
@@ -265,24 +204,6 @@ export function encodeIco(pngBuffer: Buffer, width: number, height: number): Buf
   return Buffer.concat([icoHeader, pngBuffer]);
 }
 
-export function decodeIco(buf: Buffer): Buffer {
-  if (buf.length < 22 || buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) {
-    throw new Error('Invalid ICO file: missing ICO header.');
-  }
-
-  const count = buf.readUInt16LE(4);
-  if (count === 0) throw new Error('Empty ICO file.');
-
-  const imgSize = buf.readUInt32LE(14);
-  const imgOffset = buf.readUInt32LE(18);
-
-  if (imgOffset + imgSize > buf.length) {
-    throw new Error('Corrupted ICO file: image data offset exceeds buffer size.');
-  }
-
-  return buf.subarray(imgOffset, imgOffset + imgSize);
-}
-
 export function encodeIcns(pngBuffer: Buffer): Buffer {
   const chunkHeader = Buffer.alloc(8);
   chunkHeader.write('ic08', 0, 4, 'ascii'); // 256x256 icon
@@ -294,33 +215,6 @@ export function encodeIcns(pngBuffer: Buffer): Buffer {
   icnsHeader.writeUInt32BE(totalLength, 4);
 
   return Buffer.concat([icnsHeader, chunkHeader, pngBuffer]);
-}
-
-export function decodeIcns(buf: Buffer): Buffer {
-  if (buf.length < 16 || buf.toString('ascii', 0, 4) !== 'icns') {
-    throw new Error('Invalid ICNS file: missing icns header.');
-  }
-  let offset = 8;
-  while (offset + 8 <= buf.length) {
-    const chunkType = buf.toString('ascii', offset, offset + 4);
-    const chunkSize = buf.readUInt32BE(offset + 4);
-    if (chunkSize <= 8 || offset + chunkSize > buf.length) break;
-
-    const chunkData = buf.subarray(offset + 8, offset + chunkSize);
-    if (
-      (chunkData.length >= 8 && chunkData[0] === 0x89 && chunkData[1] === 0x50) ||
-      (chunkData.length >= 3 && chunkData[0] === 0xff && chunkData[1] === 0xd8)
-    ) {
-      return chunkData;
-    }
-    offset += chunkSize;
-  }
-  const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const pngIdx = buf.indexOf(pngSig);
-  if (pngIdx !== -1) {
-    return buf.subarray(pngIdx);
-  }
-  return buf.subarray(8);
 }
 
 export function encodePostscript(
@@ -2499,6 +2393,16 @@ async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: Conversio
   assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
 }
 
+/** True for an ICO or CUR file: named by its extension or recognised by the icon directory header (type 1 or 2). */
+function isIconContainer(buffer: Buffer, sourceFormat: string): boolean {
+  if (sourceFormat === 'ico' || sourceFormat === 'cur') return true;
+  const hasDirectoryHeader = buffer.length >= ICON_DIRECTORY_SIGNATURE_BYTES && buffer[0] === 0 && buffer[1] === 0 && buffer[3] === 0;
+  return hasDirectoryHeader && (buffer[2] === 1 || buffer[2] === 2);
+}
+
+/** Bytes of the icon directory header that identify the container: reserved 0, type 1 or 2, high byte 0. */
+const ICON_DIRECTORY_SIGNATURE_BYTES = 4;
+
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
 const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
 /** Colourspaces whose pixels an embedded RGB ICC profile describes unchanged. */
@@ -2692,27 +2596,9 @@ export async function convertImage(
         raw: { width: rawDemosaiced.width, height: rawDemosaiced.height, channels: 3 },
       });
     } else if (src === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-      const decoded = decodeBmp(activeBuffer);
-      pipeline = sharp(decoded.raw, {
-        raw: { width: decoded.width, height: decoded.height, channels: 4 },
-      });
-    } else if (
-      src === 'ico' ||
-      (activeBuffer.length >= 4 &&
-        activeBuffer[0] === 0 &&
-        activeBuffer[1] === 0 &&
-        activeBuffer[2] === 1 &&
-        activeBuffer[3] === 0)
-    ) {
-      const payload = decodeIco(activeBuffer);
-      if (payload.subarray(0, 2).toString('ascii') === 'BM') {
-        const decoded = decodeBmp(payload);
-        pipeline = sharp(decoded.raw, {
-          raw: { width: decoded.width, height: decoded.height, channels: 4 },
-        });
-      } else {
-        pipeline = await openInputImage(payload);
-      }
+      pipeline = await pipelineFromBitmap(decodeBmp(activeBuffer));
+    } else if (isIconContainer(activeBuffer, src)) {
+      pipeline = await pipelineFromIcon(decodeIco(activeBuffer, requestedResizeOf(options) ?? undefined));
     } else if (src === 'icns' || activeBuffer.subarray(0, 4).toString('ascii') === 'icns') {
       const payload = decodeIcns(activeBuffer);
       pipeline = await openInputImage(payload);
@@ -3314,14 +3200,10 @@ async function decodePdfPages(
   };
 
   if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
-    const decoded = decodeBmp(activeBuffer);
-    return { pages: [await toPage(sharp(decoded.raw, { raw: { width: decoded.width, height: decoded.height, channels: 4 } }))] };
+    return { pages: [await toPage(await pipelineFromBitmap(decodeBmp(activeBuffer)))] };
   }
-  if (
-    sourceFormat === 'ico' ||
-    (activeBuffer.length >= 4 && activeBuffer[0] === 0 && activeBuffer[1] === 0 && activeBuffer[2] === 1 && activeBuffer[3] === 0)
-  ) {
-    return { pages: [await toPage(await openInputImage(decodeIco(activeBuffer)))] };
+  if (isIconContainer(activeBuffer, sourceFormat ?? '')) {
+    return { pages: [await toPage(await pipelineFromIcon(decodeIco(activeBuffer, requestedResizeOf(options) ?? undefined)))] };
   }
 
   // A PDF holds several pages, so a multi-page source keeps all of them here (pdf is not a tiff target).
