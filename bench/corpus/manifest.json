@@ -1,0 +1,65 @@
+{
+  "totalBytes": 3046193,
+  "files": [
+    {
+      "file": "clip.mp4",
+      "bytes": 374912,
+      "sha256": "0c15e7bfe55b4b4b971e8bf29051d46f01cbc89eeb9e9fe7d4fac55dd433d347"
+    },
+    {
+      "file": "data/records.jsonl",
+      "bytes": 651013,
+      "sha256": "d561dceeb0cfde354fdd9400661788f17d7e4b99d8e9d73dbbe19c6e3dacc78c"
+    },
+    {
+      "file": "lineart.png",
+      "bytes": 95791,
+      "sha256": "f155f2c783a9626e9b549263e72b2c5bd0e0f856c1508555cf674c6a376fbd81"
+    },
+    {
+      "file": "music.wav",
+      "bytes": 705644,
+      "sha256": "6b62570f08055f9f2b3c376381b0134b4a29f35a5f3d01348d04b61dfb7bdd16"
+    },
+    {
+      "file": "photo-a.jpg",
+      "bytes": 113064,
+      "sha256": "46e3f7f8ae1afd8e91cff2e954d62e2bec230397944ee389ad7f685f84c525aa"
+    },
+    {
+      "file": "photo-b.png",
+      "bytes": 392255,
+      "sha256": "891112bcf6ebb073b7e364c7765e1566d91364fea614cf52e8af0d7e188517cd"
+    },
+    {
+      "file": "report.docx",
+      "bytes": 1504,
+      "sha256": "5723087aed0b26c1fb0c99245ffdf96180d8dbd99a194d65b293c190e60e1b51"
+    },
+    {
+      "file": "report.gt.txt",
+      "bytes": 618,
+      "sha256": "80ad41e98759452bbe7700372f7aa40458529f6363ee4896aff1d8ea7180dceb"
+    },
+    {
+      "file": "scan.gt.txt",
+      "bytes": 639,
+      "sha256": "7f6eddca4578650caf6b8e125d648e5c5cc281014980974ebff62e869b4f46b6"
+    },
+    {
+      "file": "scan.png",
+      "bytes": 399662,
+      "sha256": "dc8798e01e4c1b085f1f6ff7fa2c68b5b749661c8434b421b00dde40a67f4a74"
+    },
+    {
+      "file": "screenshot.png",
+      "bytes": 58727,
+      "sha256": "5a49a476a3f48b9d682acd20b931aff1322f56cc712d4a74e9f0af191edc9b12"
+    },
+    {
+      "file": "speech.wav",
+      "bytes": 252364,
+      "sha256": "ea112972d60fc21150f64e3e1a3cf3c7dab1b46d1b0e99fb214f690ffd5020c3"
+    }
+  ]
+}
