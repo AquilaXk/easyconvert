@@ -27,7 +27,13 @@ import {
   OcrPageResult,
 } from './ocr-pdf-combiner';
 import { extractRasterImagesFromPdf } from './pdf-rasterizer';
-import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
+import {
+  fallbackReadsMore,
+  OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
+  OCR_ALTERNATIVE_TRIGGER_QUALITY,
+  ocrFallbackPageSegMode,
+  ocrSegmentationFor,
+} from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { runPdfTextJob } from './pdf-text-geometry';
 import { appendOcrResultBelow, mapOcrResultToSource, orientedSize, type OcrQuarterTurn } from './ocr-geometry';
@@ -42,10 +48,16 @@ import {
 } from './ocr-osd';
 import { resolveImageDpi } from './ocr-dpi';
 import { hasPngSignature, planPngPassthrough } from './pdf-image-passthrough';
-import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
+import {
+  calibrateOcrResult,
+  characterWeightedConfidence,
+  confidenceWeightedCharacters,
+  type OcrEnginePath,
+} from './ocr-calibration';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
   OCR_PREPROCESS_STEPS,
+  OCR_UNEVEN_BACKGROUND_RATIO,
   preprocessOcrImage,
   type OcrPreprocessResult,
   type OcrPreprocessSteps,
@@ -113,6 +125,8 @@ export function recognizePdfPages(
 export interface RecognizedPage {
   result: OcrResult;
   enginePath: OcrEnginePath;
+  /** How the page was prepared for the reading that was kept. */
+  preparation?: { binarized: boolean; unevenBackground: number };
 }
 
 export interface OcrRecognitionOptions {
@@ -307,9 +321,49 @@ interface RecognitionAttempt {
   language: string;
 }
 
-/** Prepares the page (turned by `quarterTurn`) and reads it with the WebAssembly engine, then the native tool. */
+/**
+ * Reads the page prepared with rescaling and levelling only, and looks for a better preparation only when that
+ * reading calls for it: the page is unevenly lit (one threshold cannot separate its ink from its paper
+ * everywhere, and the recognizer reads confident words from the lit part and nothing from the rest) or the
+ * reading is poor. The alternatives are the page as submitted (enlarging blurred, noisy text can cost more than
+ * it gains) and the page binarized (a hard threshold can destroy small or blurred strokes). An alternative is
+ * kept only when it recognizes clearly more confident text, so a good page is never read twice and a page that an
+ * alternative would only damage keeps its first reading.
+ */
 async function recognizeAttempt(attempt: RecognitionAttempt): Promise<RecognizedPage> {
-  const { imageBuffer, steps, quarterTurn, tesseractLang, enginePath, language } = attempt;
+  const { steps } = attempt;
+  const plain = await readPreparedPage(attempt, { ...steps, binarize: false });
+  const needed =
+    plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO || readingQuality(plain.page.result) < OCR_ALTERNATIVE_TRIGGER_QUALITY;
+  if (!needed) return plain.page;
+  const alternatives: OcrPreprocessSteps[] = [];
+  if (plain.prepared.applied.rescale) alternatives.push({ ...steps, rescale: false, binarize: false });
+  if (steps.binarize && plain.prepared.binarizable) alternatives.push(steps);
+  let best = plain;
+  let bestEvidence = readingEvidence(plain.page.result);
+  const required = bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN;
+  for (const alternative of alternatives) {
+    const candidate = await readPreparedPage(attempt, alternative);
+    const evidence = readingEvidence(candidate.page.result);
+    if (evidence >= required && evidence > bestEvidence) {
+      best = candidate;
+      bestEvidence = evidence;
+    }
+  }
+  return best.page;
+}
+
+/** How much of a page was read, and how well: confident characters recognized (see confidenceWeightedCharacters). */
+function readingEvidence(result: OcrResult): number {
+  return confidenceWeightedCharacters(result.lineBlocks ?? []);
+}
+
+/** Prepares the page (turned by `quarterTurn`) with `steps` and reads it with the WebAssembly engine, then the native tool. */
+async function readPreparedPage(
+  attempt: RecognitionAttempt,
+  steps: OcrPreprocessSteps
+): Promise<{ page: RecognizedPage; prepared: OcrPreprocessResult }> {
+  const { imageBuffer, quarterTurn, tesseractLang, enginePath, language } = attempt;
   const localLangPath = attempt.languageData.dir;
   const isGzip = attempt.languageData.gzip;
 
@@ -388,7 +442,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
           },
           prepared.geometry
         );
-        return { result, enginePath: 'wasm' };
+        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared), prepared };
       }
     } catch (err: any) {
       if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
@@ -412,12 +466,16 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
       }),
       prepared.geometry
     );
-    return { result, enginePath: 'cli' };
+    return { page: withPreparation({ result, enginePath: 'cli' }, prepared), prepared };
   }
 
   throw new OcrEngineUnavailableError(
     `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}'.`
   );
+}
+
+function withPreparation(page: RecognizedPage, prepared: OcrPreprocessResult): RecognizedPage {
+  return { ...page, preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground } };
 }
 
 /**

@@ -39,12 +39,13 @@ function requireEnglishData(): void {
 }
 
 describe('page preparation on the native CLI path', () => {
-  // en_c is read at 2.0% at 72 dpi (and en_a at 0.8%) without the preparation steps.
-  for (const [page, variant] of [
-    ['en_a', 'shade'],
-    ['en_c', 'dpi72'],
-    ['en_a', 'skew3'],
-  ]) {
+  // en_c is read at 2.0% at 72 dpi (and en_a at 0.8%) without the preparation steps. An unevenly lit page is
+  // prepared twice, without and with binarization, and so reaches the engine twice before the CLI reads it.
+  for (const [page, variant, engineAttempts] of [
+    ['en_a', 'shade', 2],
+    ['en_c', 'dpi72', 1],
+    ['en_a', 'skew3', 1],
+  ] as const) {
     oracleTest(
       `reads the ${variant} ${page} page through the CLI with CER <= ${MAX_CER_PERCENT}%`,
       ['tesseract'],
@@ -54,7 +55,7 @@ describe('page preparation on the native CLI path', () => {
         poolRun.mockRejectedValue(new Error('WebAssembly engine unavailable in this test'));
         const source = fs.readFileSync(path.join(FIXTURE_DIR, `${page}__${variant}.png`));
         const result = await performOcr(source, 'eng');
-        expect(poolRun).toHaveBeenCalledTimes(1);
+        expect(poolRun).toHaveBeenCalledTimes(engineAttempts);
         const truth = fs.readFileSync(path.join(FIXTURE_DIR, `${page}.gt.txt`), 'utf-8');
         expect(characterErrorRatePercent(truth, result.text)).toBeLessThanOrEqual(MAX_CER_PERCENT);
         const { width, height } = await sharp(source).metadata();
