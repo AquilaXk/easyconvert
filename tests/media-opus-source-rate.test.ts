@@ -133,3 +133,30 @@ describe('Opus rate-quality against libopus fed the source directly', () => {
     }, TEST_TIMEOUT_MS);
   }
 });
+
+/** Other lossy targets with the reference encoder's own arguments: the project must add nothing that costs quality. */
+const LOSSY_PARITY: ReadonlyArray<{ target: string; codec: 'aac' | 'mp3' | 'vorbis' | 'opus'; encoder: string[] }> = [
+  { target: 'aac', codec: 'aac', encoder: ['-c:a', 'aac', '-f', 'adts'] },
+  { target: 'm4a', codec: 'aac', encoder: ['-c:a', 'aac', '-f', 'ipod'] },
+  { target: 'mp3', codec: 'mp3', encoder: ['-c:a', 'libmp3lame', '-f', 'mp3'] },
+  { target: 'ogg', codec: 'vorbis', encoder: ['-c:a', 'libvorbis', '-f', 'ogg'] },
+  { target: 'weba', codec: 'opus', encoder: ['-c:a', 'libopus', '-f', 'webm'] },
+];
+const PARITY_KBPS = 32;
+
+describe('every lossy audio target matches its reference encoder on speech', () => {
+  for (const { target, codec, encoder } of LOSSY_PARITY) {
+    oracleTest(`${target}: SNR and size at ${PARITY_KBPS} kbit/s equal the reference's`, ['ffmpeg', 'ffprobe'], async () => {
+      const source = path.join(CORPUS, 'speech.wav');
+      const converted = await convertMedia(fs.readFileSync(source), 'wav', target, { audio: { codec, bitrateK: PARITY_KBPS } }, 'speech.wav');
+      const oursFile = path.join(workDir, `parity-ours.${target}`);
+      fs.writeFileSync(oursFile, converted.buffer);
+      const refFile = path.join(workDir, `parity-ref.${target}`);
+      ffmpeg(['-i', source, '-vn', '-map_metadata', '-1', ...encoder, '-b:a', `${PARITY_KBPS}k`, refFile]);
+      const ours = measurePoint(oursFile, source);
+      const ref = measurePoint(refFile, source);
+      expect(ours.snr).toBeGreaterThanOrEqual(ref.snr - SNR_TOLERANCE_DB);
+      expect(ours.rate).toBeLessThanOrEqual(ref.rate * (1 + SIZE_TOLERANCE));
+    }, TEST_TIMEOUT_MS);
+  }
+});
