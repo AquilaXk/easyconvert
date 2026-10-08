@@ -35,6 +35,8 @@ import {
   ocrSegmentationFor,
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
+import { locateLanguageData, locateLanguagesData } from './ocr-language-data';
+import { OCR_AUTO_LANGUAGE, resolveOcrLanguages } from './ocr-languages';
 import { runPdfTextJob } from './pdf-text-geometry';
 import { appendOcrResultBelow, mapOcrResultToSource, orientedSize, trimOverreachingWords, type OcrQuarterTurn } from './ocr-geometry';
 import {
@@ -142,25 +144,6 @@ export interface OcrRecognitionOptions {
   detectOrientation?: boolean;
 }
 
-const TESSDATA_DIRS = (): string[] => [
-  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
-  process.cwd(),
-  '/usr/share/tesseract-ocr/5/tessdata',
-  '/usr/share/tesseract-ocr/4.00/tessdata',
-  '/usr/share/tessdata',
-  '/opt/homebrew/share/tessdata',
-  '/usr/local/share/tessdata',
-];
-
-/** Locates local or system pre-downloaded traineddata for zero-network offline inference. */
-function locateLanguageData(tesseractLang: string): { dir: string; gzip: boolean } | undefined {
-  for (const dir of TESSDATA_DIRS()) {
-    if (fs.existsSync(path.join(dir, `${tesseractLang}.traineddata.gz`))) return { dir, gzip: true };
-    if (fs.existsSync(path.join(dir, `${tesseractLang}.traineddata`))) return { dir, gzip: false };
-  }
-  return undefined;
-}
-
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
 
 function findTesseractCli(): string | undefined {
@@ -204,46 +187,9 @@ export async function recognizePage(
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
   const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation } = options;
-  const langMap: Record<string, string> = {
-    auto: 'eng',
-    en: 'eng',
-    eng: 'eng',
-    ko: 'kor',
-    kor: 'kor',
-    de: 'deu',
-    deu: 'deu',
-    fr: 'fra',
-    fra: 'fra',
-    es: 'spa',
-    spa: 'spa',
-    ja: 'jpn',
-    jpn: 'jpn',
-    jpn_vert: 'jpn_vert',
-    ja_vert: 'jpn_vert',
-    zh: 'chi_sim',
-    chi_sim: 'chi_sim',
-    chi_sim_vert: 'chi_sim_vert',
-    zh_vert: 'chi_sim_vert',
-    zh_sim_vert: 'chi_sim_vert',
-    chi_tra: 'chi_tra',
-    zh_tra: 'chi_tra',
-    chi_tra_vert: 'chi_tra_vert',
-    zh_tra_vert: 'chi_tra_vert',
-  };
-  const normalizedLang = (language || 'auto').toLowerCase().replace(/-/g, '_');
-  const requestedLanguage = langMap[normalizedLang];
-  if (!requestedLanguage) {
-    throw new OcrLanguageUnavailableError(
-      `Unsupported or unrecognized OCR language: '${language}'. Supported languages: ${Object.keys(langMap).join(', ')}.`
-    );
-  }
-
-  const requestedData = locateLanguageData(requestedLanguage);
-  if (!requestedData) {
-    throw new OcrLanguageUnavailableError(
-      `OCR language '${language}' (${requestedLanguage}.traineddata) is not available locally.`
-    );
-  }
+  const requested = resolveOcrLanguages(language);
+  const requestedLanguage = requested.joined;
+  const requestedData = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
 
   await assertEncodedImageWithinLimit(imageBuffer);
   if (detectOrientation === true) assertOrientationDetectable();
@@ -264,7 +210,7 @@ export async function recognizePage(
   // engine's turn is kept only when reading again scores better, so a doubtful reading costs
   // time and never a page that was read correctly.
   const detection = await detectPageOrientation(imageBuffer, detectOrientation === true);
-  const scriptLanguage = normalizedLang === 'auto' ? languageForScript(detection.orientation) : null;
+  const scriptLanguage = requested.auto ? languageForScript(detection.orientation) : null;
   const scriptData = scriptLanguage === null ? undefined : locateLanguageData(scriptLanguage);
   const switchTo = scriptLanguage !== null && scriptData && scriptLanguage !== requestedLanguage ? scriptLanguage : null;
   if (detection.quarterTurn === 0 && switchTo === null) return finish(first, detection.orientation);
@@ -442,7 +388,7 @@ async function readPreparedPage(
           },
           prepared.geometry
         ));
-        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared), prepared };
+        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath), prepared };
       }
     } catch (err: any) {
       if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
@@ -468,7 +414,7 @@ async function readPreparedPage(
         prepared.geometry
       )
     );
-    return { page: withPreparation({ result, enginePath: 'cli' }, prepared), prepared };
+    return { page: withPreparation({ result, enginePath: 'cli' }, prepared, localLangPath), prepared };
   }
 
   throw new OcrEngineUnavailableError(
@@ -476,8 +422,12 @@ async function readPreparedPage(
   );
 }
 
-function withPreparation(page: RecognizedPage, prepared: OcrPreprocessResult): RecognizedPage {
-  return { ...page, preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground } };
+function withPreparation(page: RecognizedPage, prepared: OcrPreprocessResult, languageDataDirectory: string): RecognizedPage {
+  return {
+    ...page,
+    result: { ...page.result, languageDataDirectory },
+    preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground },
+  };
 }
 
 /**

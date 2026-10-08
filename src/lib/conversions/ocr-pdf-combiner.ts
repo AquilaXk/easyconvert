@@ -144,6 +144,8 @@ export interface OcrResult {
   orientation?: OcrOrientation;
   /** Resolution of the scan, from its header or assumed (`assumed` true); the searchable PDF is sized with it. */
   imageDpi?: ImageDpi;
+  /** Directory the recognition's language data was read from; for diagnostics, never sent to a client. */
+  languageDataDirectory?: string;
 }
 
 export interface ColumnGutter {
