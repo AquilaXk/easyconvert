@@ -7,6 +7,7 @@ import { encodeDecodedAnimation, joinPageTiffs, zipPageImages } from './image-fr
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
+import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
@@ -320,75 +321,6 @@ export function decodeIcns(buf: Buffer): Buffer {
     return buf.subarray(pngIdx);
   }
   return buf.subarray(8);
-}
-
-/** Adobe Photoshop File Format: version 1 files hold at most 30000 pixels on a side. */
-const PSD_MAX_SIDE = 30_000;
-const PSD_CHANNELS = 4;
-const PSD_HEADER_BYTES = 26;
-const PSD_COLOR_MODE_RGB = 3;
-const PSD_COMPRESSION_RLE = 1;
-const PACKBITS_MAX_RUN = 128;
-
-/** Run-length encodes one scanline in the PackBits form the PSD format uses (PSD file format, "Image Data"). */
-function packBitsRow(row: Uint8Array): Buffer {
-  const out: number[] = [];
-  let i = 0;
-  while (i < row.length) {
-    let run = 1;
-    while (i + run < row.length && row[i + run] === row[i] && run < PACKBITS_MAX_RUN) run += 1;
-    if (run >= 2) {
-      // A repeat of `run` bytes is the count byte 257 - run (that is, 1 - run as a signed byte), then the byte.
-      out.push(257 - run, row[i]);
-      i += run;
-      continue;
-    }
-    const start = i;
-    i += 1;
-    while (i < row.length && i - start < PACKBITS_MAX_RUN && row[i] !== row[i + 1]) i += 1;
-    out.push(i - start - 1);
-    for (let k = start; k < i; k += 1) out.push(row[k]);
-  }
-  return Buffer.from(out);
-}
-
-/**
- * Writes an RGBA picture as a Photoshop (PSD, version 1) file: 8-bit RGB with a fourth alpha channel, one
- * merged image, planar channels, PackBits compressed. `rgba` is interleaved, row-major, top row first.
- */
-export function encodePsd(rgba: Buffer, width: number, height: number): Buffer {
-  if (width < 1 || height < 1 || width > PSD_MAX_SIDE || height > PSD_MAX_SIDE) {
-    throw new ConversionFailedError(`A PSD file holds 1 to ${PSD_MAX_SIDE} pixels on a side; the picture is ${width} x ${height}.`);
-  }
-  if (rgba.length !== width * height * PSD_CHANNELS) {
-    throw new ConversionFailedError(`PSD encoding needs ${width * height * PSD_CHANNELS} bytes of RGBA pixels, got ${rgba.length}.`);
-  }
-  const header = Buffer.alloc(PSD_HEADER_BYTES);
-  header.write('8BPS', 0, 4, 'ascii');
-  header.writeUInt16BE(1, 4); // version 1
-  header.writeUInt16BE(PSD_CHANNELS, 12);
-  header.writeUInt32BE(height, 14);
-  header.writeUInt32BE(width, 18);
-  header.writeUInt16BE(8, 22); // bits per channel
-  header.writeUInt16BE(PSD_COLOR_MODE_RGB, 24);
-
-  // Color mode data, image resources and layer and mask information are empty sections (a 4-byte length of 0 each).
-  const emptySections = Buffer.alloc(3 * 4);
-  const compression = Buffer.alloc(2);
-  compression.writeUInt16BE(PSD_COMPRESSION_RLE, 0);
-
-  const rowCounts = Buffer.alloc(PSD_CHANNELS * height * 2);
-  const rows: Buffer[] = [];
-  const plane = new Uint8Array(width);
-  for (let channel = 0; channel < PSD_CHANNELS; channel += 1) {
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) plane[x] = rgba[(y * width + x) * PSD_CHANNELS + channel];
-      const packed = packBitsRow(plane);
-      rowCounts.writeUInt16BE(packed.length, (channel * height + y) * 2);
-      rows.push(packed);
-    }
-  }
-  return Buffer.concat([header, emptySections, compression, rowCounts, ...rows]);
 }
 
 export function encodePostscript(
@@ -2567,6 +2499,48 @@ async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: Conversio
   assertPixelBudget(target.width, target.height, HDR_FLOAT_PIXEL_BUDGET);
 }
 
+/** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
+const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
+/** Colourspaces whose pixels an embedded RGB ICC profile describes unchanged. */
+const PROFILE_PRESERVING_SPACES: ReadonlySet<string> = new Set(['srgb', 'rgb16']);
+
+/**
+ * Renders the pipeline as a flat PSD: 16-bit sources stay 16-bit, alpha stays alpha, an RGB source's ICC profile
+ * and density are written as image resources unless metadata is stripped. The size limit is checked from the
+ * header (after the requested resize) before the picture is decoded.
+ */
+async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions): Promise<Buffer> {
+  const source = await pipeline.metadata();
+  if (source.width !== undefined && source.height !== undefined) {
+    const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+    const upright = swapsSides ? { width: source.height, height: source.width } : { width: source.width, height: source.height };
+    const target = resizedDimensions(upright.width, upright.height, options);
+    if (Math.max(target.width, target.height) > PSD_MAX_SIDE) {
+      throw new UnsupportedOptionError(
+        `A PSD file holds at most ${PSD_MAX_SIDE} pixels on a side; the picture would be ${target.width} x ${target.height}. Use a smaller size; PSB output is not supported.`
+      );
+    }
+  }
+  const sixteenBit = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
+  const { data, info } = await pipeline
+    .toColourspace(sixteenBit ? 'rgb16' : 'srgb')
+    .raw({ depth: sixteenBit ? 'ushort' : 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== RGB_CHANNEL_COUNT && info.channels !== RGB_CHANNEL_COUNT + 1) {
+    throw new ConversionFailedError(`PSD encoding needs RGB or RGBA pixels; the picture decoded to ${info.channels} channels.`);
+  }
+  const keepsProfile = options.stripMetadata !== true && source.icc !== undefined && PROFILE_PRESERVING_SPACES.has(source.space ?? '');
+  return encodePsd({
+    width: info.width,
+    height: info.height,
+    channels: info.channels as PsdChannels,
+    depth: sixteenBit ? 16 : 8,
+    samples: data,
+    icc: keepsProfile ? source.icc : undefined,
+    densityPpi: options.stripMetadata === true ? undefined : source.density,
+  });
+}
+
 export async function convertImage(
   inputBuffer: Buffer,
   targetFormat: string,
@@ -3256,11 +3230,7 @@ export async function convertImage(
       }
 
       case 'psd': {
-        const { data: rgbaPixels, info } = await pipeline.toColourspace('srgb').ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-        if (info.channels !== PSD_CHANNELS) {
-          throw new ConversionFailedError(`PSD encoding needs RGBA pixels; the picture decoded to ${info.channels} channels.`);
-        }
-        outputBuffer = encodePsd(rgbaPixels, info.width, info.height);
+        outputBuffer = await encodePsdFromPipeline(pipeline, options);
         mimeType = 'image/vnd.adobe.photoshop';
         break;
       }

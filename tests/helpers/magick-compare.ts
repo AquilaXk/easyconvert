@@ -24,13 +24,17 @@ export function magickConvert(args: string[]): void {
   runConvert(args);
 }
 
-/** Number of pixels that differ between two image files, as `compare -metric AE` counts them; 0 is identical. */
-export function magickDifferingPixels(a: string, b: string): number {
+/**
+ * Number of pixels that differ between two image files, as `compare -metric AE` counts them; 0 is identical.
+ * `fuzzPercent` treats colours within that share of the full range as equal.
+ */
+export function magickDifferingPixels(a: string, b: string, fuzzPercent = 0): number {
   const binary = requireMagickOracle();
   const file = binary === 'magick' ? 'magick' : 'compare';
   const args = binary === 'magick' ? ['compare'] : [];
+  const fuzz = fuzzPercent > 0 ? ['-fuzz', `${fuzzPercent}%`] : [];
   try {
-    execFileSync(file, [...args, '-metric', 'AE', a, b, 'null:'], {
+    execFileSync(file, [...args, ...fuzz, '-metric', 'AE', a, b, 'null:'], {
       stdio: ['ignore', 'ignore', 'pipe'],
       timeout: COMMAND_TIMEOUT_MS,
       maxBuffer: MAX_STDERR_BYTES,
