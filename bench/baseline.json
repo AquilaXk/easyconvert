@@ -247,8 +247,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 215.8308318657249,
-      "delta": 215.8308318657249,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "audio/speech.wav->opus/bitrate": {
@@ -257,8 +257,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 24.42729519102832,
-      "delta": 0.036494962934803254,
+      "ours": 24.390800228093518,
+      "delta": 0,
       "ratio": null
     },
     "audio/speech.wav->opus/loudness_shift": {
@@ -277,8 +277,8 @@
         "abs": 0.5,
         "rel": 0
       },
-      "ours": 24.3451,
-      "delta": -1.1641000000000012,
+      "ours": 25.5092,
+      "delta": 0,
       "ratio": null
     },
     "audio/speech.wav->opus/throughput": {
@@ -1127,8 +1127,8 @@
         "abs": 0.75,
         "rel": 0
       },
-      "ours": 0.7836990595611284,
-      "delta": 0.6269592476489028,
+      "ours": 0,
+      "delta": -0.1567398119122257,
       "ratio": null
     },
     "ocr/scan.png->pdf/throughput": {
@@ -1147,8 +1147,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9826086956521739,
-      "delta": -0.017391304347826098,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "video/clip.mp4->h264/bd_rate_psnr": {
