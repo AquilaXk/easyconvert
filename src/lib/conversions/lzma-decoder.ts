@@ -1,4 +1,36 @@
 import { CorruptStreamError, DecompressionLimitError } from '../types';
+import {
+  ALIGN,
+  ALIGN_BITS,
+  BIT_MODEL_TOTAL_BITS,
+  END_POS_MODEL_INDEX,
+  IS_MATCH,
+  IS_REP,
+  IS_REP0_LONG,
+  IS_REP_G0,
+  IS_REP_G1,
+  IS_REP_G2,
+  LEN_CHOICE,
+  LEN_CHOICE2,
+  LEN_CODER,
+  LEN_HIGH,
+  LEN_LOW,
+  LEN_LOW_SYMBOLS,
+  LEN_MID,
+  LEN_MID_SYMBOLS,
+  LEN_TO_POS_STATES,
+  LITERAL,
+  LITERAL_CODER_SIZE,
+  MATCH_LEN_MIN,
+  MOVE_BITS,
+  POS_SLOT,
+  POS_SLOT_BITS,
+  POS_SPECIAL,
+  PROB_INIT,
+  REP_LEN_CODER,
+  STATE_AFTER_LITERAL,
+  probabilityCount,
+} from './lzma-model';
 
 /**
  * LZMA and LZMA2 decoder (LZMA specification by Igor Pavlov; the .xz file format 1.1 for the LZMA2 chunk layer).
@@ -17,49 +49,11 @@ const LZMA_LC_MAX = 8;
 const LZMA_LP_MAX = 4;
 const LZMA_PB_MAX = 4;
 const LZMA2_LC_LP_MAX = 4;
-const PROBS_INIT = 1024;
-const BIT_MODEL_TOTAL_BITS = 11;
-const MOVE_BITS = 5;
 const TOP_VALUE = 0x01000000;
 const RC_INIT_BYTES = 5;
 
-const STATES = 12;
-const POS_STATES_MAX = 16;
-const LEN_LOW_SYMBOLS = 8;
-const LEN_MID_SYMBOLS = 8;
-const LEN_HIGH_SYMBOLS = 256;
-const MATCH_LEN_MIN = 2;
-const MATCH_LEN_MAX = 273;
-const END_POS_MODEL_INDEX = 14;
-const FULL_DISTANCES = 1 << (END_POS_MODEL_INDEX >> 1);
-const POS_SLOT_BITS = 6;
-const LEN_TO_POS_STATES = 4;
-const ALIGN_BITS = 4;
-const LITERAL_CODER_SIZE = 0x300;
-
-// Offsets of the model's parts inside the single probability array.
-const IS_MATCH = 0;
-const IS_REP = IS_MATCH + STATES * POS_STATES_MAX;
-const IS_REP_G0 = IS_REP + STATES;
-const IS_REP_G1 = IS_REP_G0 + STATES;
-const IS_REP_G2 = IS_REP_G1 + STATES;
-const IS_REP0_LONG = IS_REP_G2 + STATES;
-const POS_SLOT = IS_REP0_LONG + STATES * POS_STATES_MAX;
-const POS_SPECIAL = POS_SLOT + LEN_TO_POS_STATES * (1 << POS_SLOT_BITS);
-const ALIGN = POS_SPECIAL + FULL_DISTANCES - END_POS_MODEL_INDEX + 1;
-const LEN_CODER = ALIGN + (1 << ALIGN_BITS);
-const LEN_CHOICE = 0;
-const LEN_CHOICE2 = 1;
-const LEN_LOW = 2;
-const LEN_MID = LEN_LOW + POS_STATES_MAX * LEN_LOW_SYMBOLS;
-const LEN_HIGH = LEN_MID + POS_STATES_MAX * LEN_MID_SYMBOLS;
-const LEN_CODER_SIZE = LEN_HIGH + LEN_HIGH_SYMBOLS;
-const REP_LEN_CODER = LEN_CODER + LEN_CODER_SIZE;
-const LITERAL = REP_LEN_CODER + LEN_CODER_SIZE;
-
 const MAX_UINT32 = 0xffffffff;
 const END_MARKER_DISTANCE = MAX_UINT32;
-const MATCH_STATE_AFTER_LITERAL = [0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 4, 5];
 
 function corrupt(detail: string): CorruptStreamError {
   return new CorruptStreamError(`Corrupt LZMA data: ${detail}`);
@@ -113,13 +107,13 @@ export class LzmaDecoder {
     this.lc = props.lc;
     this.lp = props.lp;
     this.pb = props.pb;
-    const size = LITERAL + (LITERAL_CODER_SIZE << (props.lc + props.lp));
+    const size = probabilityCount(props.lc, props.lp);
     if (this.probs.length !== size) this.probs = new Uint16Array(size);
   }
 
   /** Resets the probability model, the state and the repeat distances (an LZMA2 state reset). */
   resetState(): void {
-    this.probs.fill(PROBS_INIT);
+    this.probs.fill(PROB_INIT);
     this.state = 0;
     this.rep0 = this.rep1 = this.rep2 = this.rep3 = 0;
   }
@@ -241,7 +235,7 @@ export class LzmaDecoder {
           }
         }
         out[outPos++] = symbol & 0xff;
-        state = MATCH_STATE_AFTER_LITERAL[state];
+        state = STATE_AFTER_LITERAL[state];
         continue;
       }
       range -= bound;
