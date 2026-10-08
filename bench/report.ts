@@ -165,7 +165,7 @@ export function validateReport(value: unknown): BenchReport {
     if (version !== null && typeof version !== 'string') fail(`tools.${name}`, 'a string or null');
     toolVersions[name] = version as string | null;
   }
-  const rows = (obj.rows as unknown[]).map(validateRow);
+  const rows = (obj.rows as unknown[]).map((row, index) => validateRow(row, index));
   const seen = new Set<string>();
   for (const row of rows) {
     if (seen.has(row.id)) fail('rows', `unique, but ${row.id} repeats`);

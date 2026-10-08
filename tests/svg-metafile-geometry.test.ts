@@ -3,7 +3,7 @@ import { encodeEmf, encodeWmf, encodeCgm, estimateMetafileBytes } from '../src/l
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
 import { emfOracleRecords, emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOraclePoints, cgmOraclePolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
-import { expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
+import { expectLinearOnInputs, expectNoSlowerThanReference, expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${rootAttrs}>${body}</svg>`, 'utf-8');
@@ -769,20 +769,31 @@ describe('SVG document model for metafile encoders', () => {
 
   describe('fill-rule analysis budget', () => {
     it('fails fast with a typed error when a nonzero CGM fill is too complex to verify (300 strips)', async () => {
-      // Alternate orientation so overlapping strips cancel (winding 0), forcing a full analysis. The analysis has a
-      // budget, so four times the strips is refused after about the same work (tests/helpers/timing.ts), not after
-      // analysing them all.
+      // Alternate orientation so overlapping strips cancel (winding 0), forcing a full analysis. Every strip crosses
+      // every other, so an unbudgeted analysis grows with the square of the strip count. The budget caps it, leaving
+      // only the parse of the path text, which grows with the input: four times the strips must cost at most linear
+      // time (tests/helpers/timing.ts), where the uncapped analysis takes about sixteen times as long.
       const stripDoc = (count: number) => svgDoc(`<path fill="#000" d="${strips(count)}"/>`, 'width="300" height="400"');
-      const { largeResult } = await expectSizeIndependentOnInputs('CGM fill analysis', (svg: Buffer) => settle(() => encodeCgm(svg)), {
-        modest: stripDoc(STRIPS),
-        huge: stripDoc(STRIPS * SCALING_FACTOR),
+      const { largeResult } = await expectLinearOnInputs('CGM fill analysis', (svg: Buffer) => settle(() => encodeCgm(svg)), {
+        small: stripDoc(STRIPS),
+        large: stripDoc(STRIPS * SCALING_FACTOR),
       });
       if (largeResult.ok) throw new Error('the over-complex fill was encoded instead of refused');
       expect(largeResult.error).toBeInstanceOf(CadGeometryUnavailableError);
       expect((largeResult.error as Error).message).toMatch(/too complex/);
+
+      // The refusal costs a bounded multiple of reading the same path under evenodd, which needs no analysis; an
+      // uncapped analysis of these strips takes over a thousand times as long.
+      const evenodd = svgDoc(`<path fill="#000" fill-rule="evenodd" d="${strips(STRIPS * SCALING_FACTOR)}"/>`, 'width="300" height="400"');
+      const nonzero = stripDoc(STRIPS * SCALING_FACTOR);
+      await expectNoSlowerThanReference('CGM fill budget', () => encodeCgm(evenodd), () => settle(() => encodeCgm(nonzero)), {
+        maxRatio: FILL_BUDGET_OVERHEAD_RATIO_BOUND,
+      });
     }, SCALING_TEST_TIMEOUT_MS);
 
     const STRIPS = 150;
+    /** Refusing measured about 8x the evenodd read of the same path; uncapped analysis about 1800x. */
+    const FILL_BUDGET_OVERHEAD_RATIO_BOUND = 32;
     const PAST_CAP_POINTS = 500_001;
     const LONGEST_POINT_LIST = 1_200_000;
     /** Below the 2.4x of a reader that parses the whole list, above the 1x of one that stops at the cap. */
