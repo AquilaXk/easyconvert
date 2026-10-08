@@ -131,12 +131,17 @@ describe('what a PDF render is allowed to cost', () => {
 
   it('refuses a page whose render would exceed the pixel limit with a 413 before drawing it', async () => {
     const pdf = await blankPdf(1, [20_000, 20_000]);
-    await expect(recognizeRenderedPdfPages(pdf, undefined, {})).rejects.toBeInstanceOf(InputPixelLimitError);
+    const refused = recognizeRenderedPdfPages(pdf, undefined, {});
+    await expect(refused).rejects.toBeInstanceOf(InputPixelLimitError);
+    // 20000 pt at 300 dpi is ceil(20000 x 300 / 72) = 83334 pixels a side.
+    await expect(refused).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413, width: 83334, height: 83334 });
   });
 
   it(`refuses more than ${OCR_MAX_RENDERED_PAGES} pages with a 413`, async () => {
     const pdf = await blankPdf(OCR_MAX_RENDERED_PAGES + 1);
-    await expect(recognizeRenderedPdfPages(pdf, undefined, {})).rejects.toBeInstanceOf(PayloadLimitError);
+    const refused = recognizeRenderedPdfPages(pdf, undefined, {});
+    await expect(refused).rejects.toBeInstanceOf(PayloadLimitError);
+    await expect(refused).rejects.toMatchObject({ name: 'PayloadLimitError', status: 413 });
   });
 
   it('answers 503 and reads no image objects in their place when pdftoppm is not installed', async () => {
@@ -144,7 +149,12 @@ describe('what a PDF render is allowed to cost', () => {
     const exists = fs.existsSync.bind(fs);
     vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => (String(candidate).includes('pdftoppm') ? false : exists(candidate)));
     vi.stubEnv('PDFTOPPM_PATH', '');
-    await expect(recognizeRenderedPdfPages(pdf, undefined, {})).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+    const refused = recognizeRenderedPdfPages(pdf, undefined, {});
+    await expect(refused).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+    await expect(refused).rejects.toMatchObject({
+      name: 'OcrEngineUnavailableError',
+      message: 'Rendering PDF pages for OCR needs Poppler pdftoppm, which is not installed on this server.',
+    });
     vi.unstubAllEnvs();
   });
 });

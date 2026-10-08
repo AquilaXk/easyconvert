@@ -91,7 +91,10 @@ describe('the engine path of a page', () => {
         thrown = err;
       }
       expect(thrown).toBeInstanceOf(OcrEngineUnavailableError);
-      expect((thrown as Error).message).toContain('worker.recognize is not a function');
+      expect(thrown).toMatchObject({
+        name: 'OcrEngineUnavailableError',
+        message: 'The OCR WebAssembly engine failed: worker.recognize is not a function.',
+      });
     },
     PAGE_TIMEOUT_MS
   );
@@ -116,7 +119,12 @@ describe('the engine path of a page', () => {
       poolRun.mockRejectedValue(new WebAssembly.RuntimeError('unreachable'));
       const exists = fs.existsSync.bind(fs);
       vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => (/\/tesseract$/.test(String(candidate)) ? false : exists(candidate)));
-      await expect(performOcr(fixtureImage('en_a', 'clean300'), 'eng')).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+      const refused = performOcr(fixtureImage('en_a', 'clean300'), 'eng');
+      await expect(refused).rejects.toBeInstanceOf(OcrEngineUnavailableError);
+      await expect(refused).rejects.toMatchObject({
+        name: 'OcrEngineUnavailableError',
+        message: "OCR engine (Tesseract) is unavailable or failed to execute for language 'eng'.",
+      });
     },
     PAGE_TIMEOUT_MS
   );
