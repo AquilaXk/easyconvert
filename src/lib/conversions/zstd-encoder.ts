@@ -13,11 +13,9 @@ import {
   estimateHuffmanBits,
   writeHuffmanTableDescription,
 } from './zstd-huffman';
+import { ZstdOptimalParser } from './zstd-optimal';
+import * as seqCodes from './zstd-seq-codes';
 import {
-  LL_BASELINE,
-  LL_BITS,
-  ML_BASELINE,
-  ML_BITS,
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_FSE_ACCURACY_LOG_MIN,
   ZSTD_LL_DEFAULT_ACCURACY_LOG,
@@ -68,6 +66,11 @@ export interface ZstdLevelParams {
    * positions into the chains; the middle of a long match mostly repeats positions the finder already knows.
    */
   interiorInsertCap?: number;
+  /**
+   * Parse with the optimal parser (zstd-optimal.ts): a binary-tree finder searched `searchDepth` deep, matches of
+   * `niceLength` or more taken at once. The chain and hash fields are not used then.
+   */
+  optimal?: boolean;
 }
 
 const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
@@ -102,13 +105,13 @@ const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
   // level 15
   { windowLog: 23, hashLog: 21, chainLog: 22, searchDepth: 192, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
   // level 16
-  { windowLog: 23, hashLog: 22, chainLog: 22, searchDepth: 256, minMatch: 4, niceLength: 256, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 0, searchDepth: 16, minMatch: 4, niceLength: 64, lazyDepth: 0, skipStrength: 0, insertMatchInterior: true, optimal: true },
   // level 17
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 320, minMatch: 4, niceLength: 384, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 0, searchDepth: 24, minMatch: 4, niceLength: 96, lazyDepth: 0, skipStrength: 0, insertMatchInterior: true, optimal: true },
   // level 18
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 448, minMatch: 4, niceLength: 512, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 0, searchDepth: 32, minMatch: 4, niceLength: 128, lazyDepth: 0, skipStrength: 0, insertMatchInterior: true, optimal: true },
   // level 19
-  { windowLog: 23, hashLog: 22, chainLog: 23, searchDepth: 640, minMatch: 4, niceLength: 768, lazyDepth: 2, skipStrength: 0, insertMatchInterior: true },
+  { windowLog: 23, hashLog: 22, chainLog: 0, searchDepth: 64, minMatch: 4, niceLength: 256, lazyDepth: 0, skipStrength: 0, insertMatchInterior: true, optimal: true },
 ];
 
 /** Search parameters for a level in 1..19. */
@@ -123,8 +126,7 @@ export function getZstdLevelParams(level: number): ZstdLevelParams {
 const HASH_MULTIPLIER_A = 2654435761;
 const HASH_MULTIPLIER_B = 2246822519;
 const HASH_READ_BYTES = 8;
-const REP_MIN_MATCH = 3;
-const MIN_MATCH_CODE_LENGTH = 3;
+const REP_MIN_MATCH = seqCodes.ZSTD_MIN_MATCH;
 /** Approximate fixed cost of a sequence: literal-length and match-length symbols plus their extras. */
 const MATCH_OVERHEAD_BITS = 10;
 /** Approximate cost of the offset symbol beyond the offset's own extra bits. */
@@ -155,9 +157,6 @@ const BLOCK_TYPE_RAW = 0;
 const BLOCK_TYPE_RLE = 1;
 const BLOCK_TYPE_COMPRESSED = 2;
 const BITS_PER_BYTE = 8;
-const SMALL_CODE_LOOKUP_SIZE = 64;
-const MATCH_CODE_LOOKUP_SIZE = 128;
-const LL_LARGE_CODE_BIAS = 19;
 /** Most bytes one sequence can add to the bitstream: 16 + 16 + 31 extra bits and three FSE states of up to 9 bits. */
 const SEQUENCE_MAX_BYTES = 16;
 /** Offsets up to 2^24 fit one accumulator write next to the pending bits; larger ones are written in two parts. */
@@ -165,44 +164,18 @@ const OFFSET_WINDOW_BITS_MAX = 24;
 const OFFSET_LOW_BITS = 16;
 const OFFSET_LOW_MASK = (1 << OFFSET_LOW_BITS) - 1;
 const OFFSET_LOW_RADIX = 1 << OFFSET_LOW_BITS;
-/** Typed copies of the code tables: module-local, so no accessor call per use under CommonJS interop. */
-const LL_BASELINE_TABLE = Uint32Array.from(LL_BASELINE);
-const LL_BITS_TABLE = Uint8Array.from(LL_BITS);
-const ML_BASELINE_TABLE = Uint32Array.from(ML_BASELINE);
-const ML_BITS_TABLE = Uint8Array.from(ML_BITS);
-const ML_LARGE_CODE_BIAS = 36;
+// Hoisted into module constants: under a CommonJS loader an imported binding is an accessor call on every use.
+const LL_BASELINE_TABLE = seqCodes.LL_BASELINE_TABLE;
+const LL_BITS_TABLE = seqCodes.LL_BITS_TABLE;
+const ML_BASELINE_TABLE = seqCodes.ML_BASELINE_TABLE;
+const ML_BITS_TABLE = seqCodes.ML_BITS_TABLE;
+const llCodeOf = seqCodes.llCodeOf;
+const mlCodeOf = seqCodes.mlCodeOf;
 
 /** Worst-case compressed size of `inputLength` bytes (raw blocks plus framing). */
 export function zstdBlocksBound(inputLength: number): number {
   const blocks = Math.max(1, Math.ceil(inputLength / ZSTD_BLOCK_SIZE_MAX));
   return inputLength + blocks * BLOCK_HEADER_BYTES;
-}
-
-// ---------------------------------------------------------------------------
-// Code lookup
-// ---------------------------------------------------------------------------
-
-function buildLookup(baselines: readonly number[], size: number, valueBias: number): Uint8Array {
-  const lookup = new Uint8Array(size);
-  let code = 0;
-  for (let v = 0; v < size; v++) {
-    const value = v + valueBias;
-    while (code + 1 < baselines.length && baselines[code + 1] <= value) code++;
-    lookup[v] = code;
-  }
-  return lookup;
-}
-
-const LL_CODE_LOOKUP = buildLookup(LL_BASELINE, SMALL_CODE_LOOKUP_SIZE, 0);
-const ML_CODE_LOOKUP = buildLookup(ML_BASELINE, MATCH_CODE_LOOKUP_SIZE, MIN_MATCH_CODE_LENGTH);
-
-function llCodeOf(litLen: number): number {
-  return litLen < SMALL_CODE_LOOKUP_SIZE ? LL_CODE_LOOKUP[litLen] : highBit32(litLen) + LL_LARGE_CODE_BIAS;
-}
-
-function mlCodeOf(matchLen: number): number {
-  const base = matchLen - MIN_MATCH_CODE_LENGTH;
-  return base < MATCH_CODE_LOOKUP_SIZE ? ML_CODE_LOOKUP[base] : highBit32(base) + ML_LARGE_CODE_BIAS;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +582,8 @@ function chooseSymbolMode(
 
 export class ZstdBlockEncoder {
   private readonly data: Uint8Array;
-  private readonly finder: MatchFinder;
+  private readonly finder: MatchFinder | null;
+  private readonly optimal: ZstdOptimalParser | null;
   private readonly store: SequenceStore;
   private readonly literals = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
   private readonly llCodes: Uint8Array;
@@ -628,7 +602,8 @@ export class ZstdBlockEncoder {
 
   constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
     this.data = data;
-    this.finder = new MatchFinder(data, params, windowSize);
+    this.optimal = params.optimal ? new ZstdOptimalParser(data, params, windowSize) : null;
+    this.finder = params.optimal ? null : new MatchFinder(data, params, windowSize);
     const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
     this.store = new SequenceStore(capacity);
     this.llCodes = new Uint8Array(capacity);
@@ -711,23 +686,25 @@ export class ZstdBlockEncoder {
     if (size >= RLE_BLOCK_MIN_LENGTH && this.isRunOfOneByte(blockStart, blockEnd)) {
       this.writeBlockHeader(out, pos, last, BLOCK_TYPE_RLE, size);
       out[pos + BLOCK_HEADER_BYTES] = this.data[blockStart];
+      this.optimal?.skipBlock(blockEnd);
       return pos + BLOCK_HEADER_BYTES + 1;
     }
 
-    const finder = this.finder;
-    finder.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
-    finder.rep1 = this.committedRep1;
-    finder.rep2 = this.committedRep2;
-    finder.rep3 = this.committedRep3;
-    const trailing = finder.parseBlock(blockStart, blockEnd, this.store);
+    const parser = this.optimal ?? this.finder;
+    if (parser === null) throw new Error('Zstandard encoder: no parser configured.');
+    if (parser instanceof MatchFinder) parser.literalBits = this.estimateLiteralBits(blockStart, blockEnd);
+    parser.rep1 = this.committedRep1;
+    parser.rep2 = this.committedRep2;
+    parser.rep3 = this.committedRep3;
+    const trailing = parser.parseBlock(blockStart, blockEnd, this.store);
     const payloadStart = pos + BLOCK_HEADER_BYTES;
     // A compressed block is only worth emitting when it is strictly smaller than the raw payload.
     const cap = payloadStart + size - 1;
     const end = this.emitCompressedPayload(blockStart, blockEnd, trailing, out, payloadStart, cap);
     if (end >= 0) {
-      this.committedRep1 = finder.rep1;
-      this.committedRep2 = finder.rep2;
-      this.committedRep3 = finder.rep3;
+      this.committedRep1 = parser.rep1;
+      this.committedRep2 = parser.rep2;
+      this.committedRep3 = parser.rep3;
       this.writeBlockHeader(out, pos, last, BLOCK_TYPE_COMPRESSED, end - payloadStart);
       return end;
     }
