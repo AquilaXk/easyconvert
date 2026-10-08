@@ -17,7 +17,11 @@ import { expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT
  * of the text once per occurrence.
  */
 const MIB = 1024 * 1024;
-const SMALL = MIB / 4;
+/** Sixteen times the input: linear work (with allocator and GC growth) measured 17-24x, quadratic work 256x. */
+const GROWTH_FACTOR = 16;
+const SMALL = MIB / GROWTH_FACTOR;
+/** Twice the growth factor, as the shared linear bound allows, and far below the 256x of a rescanning scanner. */
+const MAX_GROWTH_RATIO = GROWTH_FACTOR * 2;
 
 function repeatTo(unit: string, size: number): string {
   return unit.repeat(Math.ceil(size / unit.length));
@@ -37,13 +41,14 @@ const SHAPES: Record<string, string> = {
 };
 
 describe('redaction scales linearly', () => {
-  // 4x the input may cost at most 8x the time, interleaved and best of N (tests/helpers/timing.ts); a scanner
-  // that re-reads the rest of the text once per occurrence costs 16x. No wall-clock budget is involved.
+  // 16x the input may cost at most 32x the time, interleaved and best of N (tests/helpers/timing.ts); a scanner
+  // that re-reads the rest of the text once per occurrence costs 256x. No wall-clock budget is involved.
   for (const [name, unit] of Object.entries(SHAPES)) {
-    it(`${name}: 4x the input costs under 8x`, async () => {
+    it(`${name}: ${GROWTH_FACTOR}x the input costs under ${MAX_GROWTH_RATIO}x`, async () => {
       await expectLinearOnInputs(name, (text: string) => redactText(text), {
         small: repeatTo(unit, SMALL),
         large: repeatTo(unit, MIB),
+        factor: GROWTH_FACTOR,
       });
     }, SCALING_TEST_TIMEOUT_MS);
   }
@@ -52,6 +57,7 @@ describe('redaction scales linearly', () => {
     const { largeResult } = await expectLinearOnInputs('repeated pairs', (text: string) => redactText(text), {
       small: repeatTo('password=a token:b ', SMALL),
       large: repeatTo('password=a token:b ', MIB),
+      factor: GROWTH_FACTOR,
     });
     // An unquoted value runs to the end of the line, and the whole input is one line.
     expect(largeResult).toBe('password=***');
