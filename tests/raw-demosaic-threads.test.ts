@@ -23,21 +23,13 @@ import { expectNoSlowerThanReference } from './helpers/timing';
  * AHD and AMaZE computed on several threads. The tiles of a frame are independent, so the thread count must not change
  * a single byte: the output is compared with the digests recorded from the implementation that existed before the tile
  * rewrite (the goldens of raw-demosaic-equivalence.test.ts) and with the single-thread run, at 1, 2, 4 and 8 threads.
- * The speed-up is measured against the single-thread run in the same process.
+ * The speed-up of four threads over one is measured in raw-demosaic-threads.perf.test.ts.
  */
-// skip-ok: explicit opt-out (RAW_DEMOSAIC_SKIP_TIMING=1) of the speed-up ratio on a slow shared runner, never set in CI.
-const SKIP_TIMING = process.env.RAW_DEMOSAIC_SKIP_TIMING === '1';
 const GOLDEN: { entries: GoldenEntry[] } = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'));
 const THREAD_COUNTS = [1, 2, 4, 8] as const;
 const SEAM_TILE = 16;
 const TEST_TIMEOUT_MS = 300_000;
-const SPEED_WIDTH = 2000;
-const SPEED_HEIGHT = 1500;
 const MIN_SPEEDUP_CORES = 2;
-/** Speed-up of 4 threads over 1 on four cores (measured about 3.8x for AMaZE and 4.4x for AHD); the floor allows for load. */
-const MIN_SPEEDUP = 2.2;
-const BUSY_FRACTION = 0.55;
-const SPEED_CORES = 4;
 
 const ENGINES: Record<DemosaicName, (sensor: BayerSensorData, options?: DemosaicOptions) => DemosaicResult> = {
   ahd: demosaicAhdBayerCfa,
@@ -163,20 +155,4 @@ describe('a failing tile thread', () => {
     expect(caught).toBeInstanceOf(ConversionFailedError);
     expect((caught as Error).message).toMatch(/A demosaic tile thread failed: .*(null|undefined)/);
   }, TEST_TIMEOUT_MS);
-});
-
-describe.skipIf(SKIP_TIMING || skipUnless('4 CPU cores', os.availableParallelism() >= SPEED_CORES))('speed-up of four threads over one', () => {
-  for (const method of ['amaze', 'ahd'] as DemosaicName[]) {
-    it(`${method} is at least ${MIN_SPEEDUP}x faster on a ${SPEED_WIDTH}x${SPEED_HEIGHT} frame`, async () => {
-      const sensor = mosaic(SPEED_WIDTH, SPEED_HEIGHT);
-      const floor = Math.min(MIN_SPEEDUP, SPEED_CORES * BUSY_FRACTION);
-      const measurement = await expectNoSlowerThanReference(
-        method,
-        () => ENGINES[method](sensor, { buildRgb8: false, threads: 1 }),
-        () => ENGINES[method](sensor, { buildRgb8: false, threads: SPEED_CORES }),
-        { maxRatio: 1 / floor, passes: 3 }
-      );
-      expect((measurement.largeResult as DemosaicResult).threads).toBe(SPEED_CORES);
-    }, TEST_TIMEOUT_MS);
-  }
 });
