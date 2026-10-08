@@ -9,6 +9,7 @@ import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground }
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
+import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { classifyContent, withoutOpaqueAlpha, type ContentClass } from './image-content';
 import {
   AVIF_EFFORT,
@@ -67,6 +68,7 @@ import {
   XYZ_D65_TO_DISPLAY_P3_MATRIX,
   XYZ_D65_TO_REC2020_MATRIX,
   encodeOpenExr,
+  encodeOpenExrAsync,
   decodeOpenExr,
   encodeUltraHdrJpeg,
   decodeUltraHdrJpeg,
@@ -2447,6 +2449,19 @@ function isIconContainer(buffer: Buffer, sourceFormat: string): boolean {
 /** Bytes of the icon directory header that identify the container: reserved 0, type 1 or 2, high byte 0. */
 const ICON_DIRECTORY_SIGNATURE_BYTES = 4;
 
+/** Targets that can store more than 8 bits per sample, and whose output depth follows the input's. */
+const DEPTH_AWARE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'png', 'tiff']);
+
+/**
+ * The 16-bit colourspace a PNG or TIFF is written in when the input has 16 bits per sample (grey stays grey), or
+ * undefined for 8-bit inputs and when the request asks for 8 bits. Without it the library reduces the picture to
+ * 8 bits on its way out.
+ */
+function deepColourspaceOf(meta: Metadata | undefined, options: ConversionOptions): 'rgb16' | 'grey16' | undefined {
+  if (meta?.depth !== SHARP_SIXTEEN_BIT_DEPTH || options.colorDepth === 8) return undefined;
+  return meta.space === 'b-w' || meta.space === 'grey16' ? 'grey16' : 'rgb16';
+}
+
 /** True when the colour has no hue (or is absent, which flattens onto white): a grey picture stays grey on it. */
 function isNeutralColour(colour: { r: number; g: number; b: number } | undefined): boolean {
   return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
@@ -2763,8 +2778,11 @@ export async function convertImage(
   // The kernel is checked even when the request does not resize, so a typo is never silently ignored.
   resolveKernel(options);
 
-  // A grey source stays a one-component picture in JPEG: three components that always agree only cost bytes.
-  const inputSpace = fmt === 'jpg' || fmt === 'jpeg' ? (await pipeline.metadata()).space : undefined;
+  // What the input is, before any resize: a grey source stays a one-component picture in JPEG (three components
+  // that always agree only cost bytes), and a source with 16 bits per sample keeps them in PNG and TIFF.
+  const inputMeta = DEPTH_AWARE_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
+  const inputSpace = inputMeta?.space;
+  const deepColourspace = deepColourspaceOf(inputMeta, options);
 
   // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline.
   const content: ContentClass = LOSSY_CONTENT_TARGETS.has(fmt) && !frameSelection?.keepsAnimation ? await classifyContent(pipeline) : 'photo';
@@ -2876,7 +2894,7 @@ export async function convertImage(
               .toBuffer();
           }
         } else {
-          outputBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+          outputBuffer = await (deepColourspace ? pipeline.toColourspace(deepColourspace) : pipeline).png({ compressionLevel: 8 }).toBuffer();
         }
         mimeType = 'image/png';
         break;
@@ -2911,7 +2929,7 @@ export async function convertImage(
             icc
           );
         } else {
-          outputBuffer = await pipeline.tiff(buildTiffOptions(options)).toBuffer();
+          outputBuffer = await (deepColourspace ? pipeline.toColourspace(deepColourspace) : pipeline).tiff(buildTiffOptions(options)).toBuffer();
         }
         mimeType = 'image/tiff';
         break;
@@ -2919,7 +2937,7 @@ export async function convertImage(
 
       case 'exr': {
         if (rawDemosaiced && rawDemosaiced.rgbFloat) {
-          outputBuffer = encodeOpenExr(
+          outputBuffer = await encodeOpenExrAsync(
             rawDemosaiced.rgbFloat,
             rawDemosaiced.width,
             rawDemosaiced.height,
@@ -2947,7 +2965,7 @@ export async function convertImage(
           }
 
           if (hdrFloat && imgW > 0 && imgH > 0) {
-            outputBuffer = encodeOpenExr(hdrFloat, imgW, imgH, options.outputDepth !== 32);
+            outputBuffer = await encodeOpenExrAsync(hdrFloat, imgW, imgH, options.outputDepth !== 32);
           } else {
             await assertFloatBudgetBeforeDecode(pipeline, options);
             const { data, info } = await pipeline
@@ -2959,7 +2977,7 @@ export async function convertImage(
             for (let i = 0; i < data.length; i++) {
               floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
             }
-            outputBuffer = encodeOpenExr(floatPix, info.width, info.height, options.outputDepth !== 32);
+            outputBuffer = await encodeOpenExrAsync(floatPix, info.width, info.height, options.outputDepth !== 32);
           }
         }
         mimeType = 'image/x-exr';
@@ -3208,6 +3226,40 @@ async function decodePdfPages(
   return { pages: [await toPage(openLimitedSharp(selection.source, selection.input))], ...frameFields };
 }
 
+/** True when the file starts with the JPEG start-of-image marker and a following marker. */
+function looksLikeJpeg(buffer: Buffer): boolean {
+  return buffer.length >= JPEG_SOI_MARKER.length && buffer.subarray(0, JPEG_SOI_MARKER.length).equals(JPEG_SOI_MARKER);
+}
+
+/**
+ * The PDF of a JPEG that goes in unchanged, or null when it must be decoded instead: not a JPEG, a coding the PDF
+ * filter does not read (arithmetic, lossless, 12-bit), a header that cannot be read, or a file the image library
+ * cannot decode (a truncated scan: the decoding path then answers the typed error). The declared size is checked
+ * against the input pixel limit first (HTTP 413).
+ */
+async function jpegPassthroughPdf(
+  buffer: Buffer,
+  options: ConversionOptions,
+  baseName: string,
+  sourceFormat?: string
+): Promise<ConversionResult | null> {
+  if (sourceFormat !== undefined && sourceFormat !== '' && !JPEG_SOURCE_FORMATS.has(sourceFormat.toLowerCase())) return null;
+  if (!looksLikeJpeg(buffer)) return null;
+  const plan = planJpegPassthrough(buffer);
+  if (plan === null) return null;
+  assertInputPixels(plan.width, plan.height);
+  try {
+    await openLimitedSharp(buffer).stats();
+  } catch (err) {
+    rethrowInputPixelLimit(err);
+    return null;
+  }
+  const pdf = await buildJpegPdf(buffer, plan, { orientation: options.orientation });
+  return { buffer: pdf, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdf.length };
+}
+
+const JPEG_SOURCE_FORMATS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'jpe', 'jfif']);
+
 async function convertImageToPdf(
   inputBuffer: Buffer,
   options: ConversionOptions,
@@ -3217,6 +3269,12 @@ async function convertImageToPdf(
   let activeBuffer = inputBuffer;
   if (sourceFormat === 'svg' || isSvg(activeBuffer)) {
     activeBuffer = sanitizeSvgBuffer(activeBuffer);
+  }
+
+  // A JPEG that a PDF can carry as it is goes in byte for byte (OCR needs pixels, so it takes the decoding path).
+  if (!options.ocrEnabled) {
+    const passthrough = await jpegPassthroughPdf(activeBuffer, options, baseName, sourceFormat);
+    if (passthrough) return passthrough;
   }
 
   let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
