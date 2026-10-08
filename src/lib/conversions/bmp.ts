@@ -456,7 +456,9 @@ function decodeBitmap(buf: Buffer, base: number, pixelOffset: number | null, opt
   // Dimensions come from the header alone, so the pixel limit is answered (413) before the file is judged.
   assertInputPixels(width, rows);
 
-  const dataStart = pixelOffset ?? base + header.headerBytes + header.maskBytes + (palette ? palette.length * (header.isCore ? CORE_PALETTE_ENTRY_BYTES : PALETTE_ENTRY_BYTES) : 0);
+  const paletteEntryBytes = header.isCore ? CORE_PALETTE_ENTRY_BYTES : PALETTE_ENTRY_BYTES;
+  const paletteBytes = palette ? palette.length * paletteEntryBytes : 0;
+  const dataStart = pixelOffset ?? base + header.headerBytes + header.maskBytes + paletteBytes;
   if (dataStart > buf.length || dataStart < base + header.headerBytes) {
     fail(`the pixel data offset ${dataStart} is outside the ${buf.length}-byte file.`);
   }
