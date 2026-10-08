@@ -47,6 +47,8 @@ const BIDI_CONTROLS = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 const POPPLER_TOOLS: ExternalOracleTool[] = ['pdftotext', 'pdffonts', 'pdfinfo', 'fc-list'];
 const LIBREOFFICE_TOOLS: ExternalOracleTool[] = ['soffice', ...POPPLER_TOOLS];
 const LIBREOFFICE_TIMEOUT_MS = 180_000;
+/** The first conversion loads and subsets the CJK fonts, which takes seconds on a loaded runner. */
+const FONT_EMBEDDING_TIMEOUT_MS = 60_000;
 const UNASSIGNED_CODE_POINT = '͸';
 
 type TextSource = 'txt' | 'md' | 'html' | 'hwp';
@@ -380,7 +382,7 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
         expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(lines.join(' ')));
         expectEmbeddedFontsOnly(result.buffer);
         expectNoBranding(result.buffer);
-      });
+      }, FONT_EMBEDDING_TIMEOUT_MS);
     }
   }
 
@@ -394,7 +396,7 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     expect(pages).toBeGreaterThanOrEqual(2);
     expect(withoutWhitespace(pdfText(result.buffer))).toBe(withoutWhitespace(lines.join('')));
     expectNoBranding(result.buffer);
-  });
+  }, FONT_EMBEDDING_TIMEOUT_MS);
 
   oracleTest('renders hwp tables row by row without truncating long cells', POPPLER_TOOLS, async () => {
     const longCell = '이 셀에는 열 너비보다 훨씬 긴 문장이 들어 있어서 여러 줄로 나뉘어야 하며 말줄임표로 잘리면 안 됩니다.';
