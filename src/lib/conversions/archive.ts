@@ -39,6 +39,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
+import { crc32 } from './crc32';
 import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
 import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -138,23 +139,7 @@ export {
   type ZstdDictionaryStreamOptions,
 };
 
-// Standard CRC32 table
-const CRC32_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
-  let c = i;
-  for (let j = 0; j < 8; j++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  CRC32_TABLE[i] = c >>> 0;
-}
-
-export function crc32(buf: Buffer | Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
+export { crc32 };
 
 const PATH_SLASH_CHAR_CODE = 0x2f;
 
