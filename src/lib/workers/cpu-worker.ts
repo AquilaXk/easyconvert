@@ -22,8 +22,8 @@ port.on('message', (message: TaskMessage) => {
   }
   Promise.resolve()
     .then(() => handler(message.payload))
-    .then(({ result, transfer }) => {
-      port.postMessage({ id: message.id, ok: true, result }, transfer ?? []);
+    .then(({ result, transfer, silent }) => {
+      if (silent !== true) port.postMessage({ id: message.id, ok: true, result }, transfer ?? []);
     })
     .catch((error: unknown) => {
       const failure = error as { name?: string; message?: string; status?: number };

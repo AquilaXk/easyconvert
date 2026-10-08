@@ -1,6 +1,7 @@
 import { encodeBzip2Block, type BitStream } from '../conversions/bzip2';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
+import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
 import zlib from 'node:zlib';
 
 /**
@@ -12,6 +13,8 @@ import zlib from 'node:zlib';
 export interface HandlerResult {
   result: unknown;
   transfer?: ArrayBuffer[];
+  /** No reply message is sent: the caller learns of completion by other means (shared memory) and holds no listener. */
+  silent?: boolean;
 }
 
 export type CpuTaskHandler = (payload: unknown) => HandlerResult | Promise<HandlerResult>;
@@ -49,6 +52,11 @@ export interface Woff2Payload {
 }
 
 export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
+  demosaicTiles: (raw): HandlerResult => {
+    runDemosaicTiles(raw as DemosaicTilesPayload);
+    return { result: null, silent: true };
+  },
+
   woff2: (raw): HandlerResult => {
     const payload = raw as Woff2Payload;
     return transferableBytes(encodeWoff2Container(payload.flavor, payload.tables));

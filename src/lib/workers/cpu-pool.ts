@@ -131,6 +131,17 @@ export function resolveCpuWorkerEntry(): WorkerEntry {
   throw new EngineUnavailableError('cpu-pool', `build ${WORKER_FILE}.js with "npm run build:cpu-worker" or install the development dependencies`);
 }
 
+/**
+ * Starts one thread running the CPU task entry (bundled or from source). The thread does not keep the process alive. Used
+ * by the pool and by callers that need a thread they can wait for synchronously.
+ */
+export function spawnCpuWorker(entry: WorkerEntry = resolveCpuWorkerEntry()): Worker {
+  const resourceLimits = { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB };
+  const worker = entry.kind === 'compiled' ? new Worker(entry.file, { resourceLimits }) : new Worker(entry.bootstrap, { eval: true, resourceLimits });
+  worker.unref();
+  return worker;
+}
+
 function defaultPoolSize(): number {
   return Math.max(1, Math.min(os.availableParallelism() - 1, CPU_POOL_MAX));
 }
@@ -236,11 +247,7 @@ export class CpuPool {
   }
 
   private startWorker(): Slot {
-    const entry = typeof this.entry === 'function' ? this.entry() : this.entry;
-    const resourceLimits = { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB };
-    const worker = entry.kind === 'compiled' ? new Worker(entry.file, { resourceLimits }) : new Worker(entry.bootstrap, { eval: true, resourceLimits });
-    // An idle pool must not keep the process alive.
-    worker.unref();
+    const worker = spawnCpuWorker(typeof this.entry === 'function' ? this.entry() : this.entry);
     const slot: Slot = { worker, task: null, timer: null };
     worker.on('message', (reply: WorkerReply) => this.onReply(slot, reply));
     worker.on('error', (error: Error & { code?: string }) => {

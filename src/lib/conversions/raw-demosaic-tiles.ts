@@ -573,31 +573,119 @@ function copyTile(dst: Float32Array, dstWidth: number, src: Float32Array, base: 
   }
 }
 
-export function runFrame(width: number, height: number, tile: number, engine: TileEngine, out: OutputStage, falseColorPasses: number): void {
-  const pixels = width * height;
-  const suppress = falseColorPasses > 0;
-  const gFull = suppress ? new Float32Array(pixels) : null;
-  const rFull = suppress ? new Float32Array(pixels) : null;
-  const bFull = suppress ? new Float32Array(pixels) : null;
-  for (let y0 = 0; y0 < height; y0 += tile) {
+export type DemosaicEngineKind = 'amaze' | 'ahd';
+
+/** Whole-frame planes that tiles are copied into when false-colour suppression runs after the tiles. */
+export interface FramePlanes {
+  green: Float32Array;
+  red: Float32Array;
+  blue: Float32Array;
+}
+
+/**
+ * Everything needed to compute the tiles of one frame. It is plain data (typed arrays, numbers, small objects), so it can
+ * be sent to a worker thread; arrays that the workers write (`out`, `planes`) and the sensor samples then live in shared
+ * memory.
+ */
+export interface TileJob {
+  kind: DemosaicEngineKind;
+  width: number;
+  height: number;
+  tile: number;
+  input: SensorInput;
+  calibration: Calibration;
+  layout: CfaLayout;
+  out: OutputStage;
+  planes: FramePlanes | null;
+}
+
+/** Number of rows of tiles in a frame. */
+export function tileRowCount(height: number, tile: number): number {
+  return Math.ceil(height / tile);
+}
+
+function createEngine(job: TileJob): TileEngine {
+  const frame = createTileFrame(job.width, job.height, job.tile);
+  return job.kind === 'amaze'
+    ? createAmazeEngine(frame, job.input, job.calibration, job.layout, job.tile)
+    : createAhdEngine(frame, job.input, job.calibration, job.layout, job.tile);
+}
+
+/**
+ * Computes the rows of tiles firstRow, firstRow + step, firstRow + 2 step, ... and writes them to the output stage (or to
+ * the whole-frame planes). Tiles do not depend on each other, so any partition of the rows into such sequences gives
+ * the same bytes.
+ */
+export function runTileRows(job: TileJob, firstRow: number, step: number): void {
+  const { width, height, tile, out, planes } = job;
+  const engine = createEngine(job);
+  for (let row = firstRow; row * tile < height; row += step) {
+    const y0 = row * tile;
     const th = Math.min(tile, height - y0);
     for (let x0 = 0; x0 < width; x0 += tile) {
       const tw = Math.min(tile, width - x0);
       const stride = tw + 2 * TILE_HALO;
       const base = TILE_HALO * stride + TILE_HALO;
       engine.compute(x0, y0, tw, th);
-      if (gFull && rFull && bFull) {
-        copyTile(gFull, width, engine.green, base, stride, x0, y0, tw, th);
-        copyTile(rFull, width, engine.redDiff, base, stride, x0, y0, tw, th);
-        copyTile(bFull, width, engine.blueDiff, base, stride, x0, y0, tw, th);
+      if (planes !== null) {
+        copyTile(planes.green, width, engine.green, base, stride, x0, y0, tw, th);
+        copyTile(planes.red, width, engine.redDiff, base, stride, x0, y0, tw, th);
+        copyTile(planes.blue, width, engine.blueDiff, base, stride, x0, y0, tw, th);
       } else {
         emitRegion(out, engine.green, engine.redDiff, engine.blueDiff, base, stride, x0, y0, tw, th);
       }
     }
   }
-  if (gFull && rFull && bFull) {
-    const filtered = suppressFalseColor(rFull, bFull, width, height, falseColorPasses);
-    emitRegion(out, gFull, filtered.red, filtered.blue, 0, width, 0, 0, width, height);
+}
+
+/** The step after the tiles: false-colour suppression over the whole frame, then the output of every pixel. */
+export function finishFrame(job: TileJob, falseColorPasses: number): void {
+  const { planes, out, width, height } = job;
+  if (planes === null) return;
+  const filtered = suppressFalseColor(planes.red, planes.blue, width, height, falseColorPasses);
+  emitRegion(out, planes.green, filtered.red, filtered.blue, 0, width, 0, 0, width, height);
+}
+
+/** One thread: every tile row, then the finishing step. */
+export function runFrame(job: TileJob, falseColorPasses: number): void {
+  runTileRows(job, 0, 1);
+  finishFrame(job, falseColorPasses);
+}
+
+/**
+ * Tile rows of a frame for one worker thread. The caller waits on `control` instead of on a reply: control[DONE] counts
+ * finished threads, control[FAILED] counts failed ones, and `errorText` receives the first failure's message
+ * (control[ERROR_LENGTH] is its length). The counter is advanced last, whatever happened, so the waiter always wakes.
+ */
+export interface DemosaicTilesPayload {
+  job: TileJob;
+  firstRow: number;
+  step: number;
+  control: Int32Array;
+  errorText: Uint8Array;
+}
+
+export const DEMOSAIC_CONTROL_DONE = 0;
+export const DEMOSAIC_CONTROL_FAILED = 1;
+export const DEMOSAIC_CONTROL_ERROR_LENGTH = 2;
+export const DEMOSAIC_CONTROL_LENGTH = 4;
+export const DEMOSAIC_ERROR_TEXT_BYTES = 1024;
+
+/** Runs a payload on the calling (worker) thread and reports through its control block. */
+export function runDemosaicTiles(payload: DemosaicTilesPayload): void {
+  const { job, firstRow, step, control, errorText } = payload;
+  try {
+    runTileRows(job, firstRow, step);
+  } catch (error) {
+    const text = new TextEncoder().encode(error instanceof Error ? error.message : String(error)).subarray(0, DEMOSAIC_ERROR_TEXT_BYTES);
+    // Only the first failure writes its message.
+    if (Atomics.add(control, DEMOSAIC_CONTROL_FAILED, 1) === 0) {
+      errorText.set(text);
+      Atomics.store(control, DEMOSAIC_CONTROL_ERROR_LENGTH, text.length);
+    }
+  } finally {
+    Atomics.add(control, DEMOSAIC_CONTROL_DONE, 1);
+    Atomics.notify(control, DEMOSAIC_CONTROL_DONE);
   }
 }
 
