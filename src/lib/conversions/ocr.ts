@@ -36,7 +36,7 @@ import {
 } from './ocr-config';
 import { recognizeWithCli } from './ocr-cli';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { appendOcrResultBelow, mapOcrResultToSource, orientedSize, type OcrQuarterTurn } from './ocr-geometry';
+import { appendOcrResultBelow, mapOcrResultToSource, orientedSize, trimOverreachingWords, type OcrQuarterTurn } from './ocr-geometry';
 import {
   decideOrientation,
   languageForScript,
@@ -428,7 +428,7 @@ async function readPreparedPage(
           tesseractLang
         );
         const words = fullText.split(/\s+/).filter(Boolean);
-        const result = mapOcrResultToSource(
+        const result = trimOverreachingWords(mapOcrResultToSource(
           {
             text: fullText,
             confidence: characterWeightedConfidence(lineBlocks),
@@ -441,7 +441,7 @@ async function readPreparedPage(
             wordMerge,
           },
           prepared.geometry
-        );
+        ));
         return { page: withPreparation({ result, enginePath: 'wasm' }, prepared), prepared };
       }
     } catch (err: any) {
@@ -455,16 +455,18 @@ async function readPreparedPage(
   // 3. Try System Native Tesseract CLI if available
   const tesseractCli = findTesseractCli();
   if (tesseractCli) {
-    const result = mapOcrResultToSource(
-      await recognizeWithCli({
-        cliPath: tesseractCli,
-        tessdataDir: localLangPath,
-        tesseractLang,
-        image: ocrInput,
-        imageHeight: inputHeight,
-        textRows: inputTextRows,
-      }),
-      prepared.geometry
+    const result = trimOverreachingWords(
+      mapOcrResultToSource(
+        await recognizeWithCli({
+          cliPath: tesseractCli,
+          tessdataDir: localLangPath,
+          tesseractLang,
+          image: ocrInput,
+          imageHeight: inputHeight,
+          textRows: inputTextRows,
+        }),
+        prepared.geometry
+      )
     );
     return { page: withPreparation({ result, enginePath: 'cli' }, prepared), prepared };
   }
