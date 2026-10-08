@@ -137,7 +137,9 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     [
       'a 2-byte period',
       (bytes) => {
-        const buf = Buffer.alloc(bytes);
+        // An odd length keeps the block from being an exact repetition of "ab", which the sorter shortcuts: both sizes
+        // then take the same general path (tests/bzip2-bwt.test.ts times the exact repetition).
+        const buf = Buffer.alloc(bytes % 2 === 0 ? bytes - 1 : bytes);
         for (let i = 0; i < buf.length; i++) buf[i] = i % 2 === 0 ? 0x61 : 0x62;
         return buf;
       },

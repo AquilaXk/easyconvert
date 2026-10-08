@@ -7,6 +7,7 @@
  */
 
 import { ConversionFailedError } from '../types';
+import { burrowsWheelerTransform, BwtWorkspace } from './bzip2-bwt';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
@@ -211,77 +212,6 @@ class BitReader {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Encoder: BWT by prefix doubling over cyclic rotations
-// ---------------------------------------------------------------------------------------------
-
-interface BwtResult {
-  lColumn: Uint8Array;
-  origPtr: number;
-}
-
-/** Sorts all cyclic rotations of `block` in O(n log n) (prefix doubling, counting sort). */
-function burrowsWheelerTransform(block: Uint8Array): BwtResult {
-  const n = block.length;
-  const lColumn = new Uint8Array(n);
-  if (n === 1) {
-    lColumn[0] = block[0];
-    return { lColumn, origPtr: 0 };
-  }
-
-  let p = new Int32Array(n);
-  let pn = new Int32Array(n);
-  let c = new Int32Array(n);
-  let cn = new Int32Array(n);
-  const cnt = new Int32Array(Math.max(n, BZ_ALPHABET));
-
-  for (let i = 0; i < n; i++) cnt[block[i]]++;
-  for (let i = 1; i < BZ_ALPHABET; i++) cnt[i] += cnt[i - 1];
-  for (let i = n - 1; i >= 0; i--) p[--cnt[block[i]]] = i;
-
-  let classes = 1;
-  c[p[0]] = 0;
-  for (let i = 1; i < n; i++) {
-    if (block[p[i]] !== block[p[i - 1]]) classes++;
-    c[p[i]] = classes - 1;
-  }
-
-  for (let h = 1; h < n && classes < n; h *= 2) {
-    for (let i = 0; i < n; i++) {
-      const shifted = p[i] - h;
-      pn[i] = shifted < 0 ? shifted + n : shifted;
-    }
-    cnt.fill(0, 0, classes);
-    for (let i = 0; i < n; i++) cnt[c[pn[i]]]++;
-    for (let i = 1; i < classes; i++) cnt[i] += cnt[i - 1];
-    for (let i = n - 1; i >= 0; i--) p[--cnt[c[pn[i]]]] = pn[i];
-
-    cn[p[0]] = 0;
-    classes = 1;
-    for (let i = 1; i < n; i++) {
-      const curA = c[p[i]];
-      const prevA = c[p[i - 1]];
-      let curSecond = p[i] + h;
-      if (curSecond >= n) curSecond -= n;
-      let prevSecond = p[i - 1] + h;
-      if (prevSecond >= n) prevSecond -= n;
-      if (curA !== prevA || c[curSecond] !== c[prevSecond]) classes++;
-      cn[p[i]] = classes - 1;
-    }
-    const swap = c;
-    c = cn;
-    cn = swap;
-  }
-
-  let origPtr = 0;
-  for (let i = 0; i < n; i++) {
-    const idx = p[i];
-    if (idx === 0) origPtr = i;
-    lColumn[i] = block[idx === 0 ? n - 1 : idx - 1];
-  }
-  return { lColumn, origPtr };
-}
-
-// ---------------------------------------------------------------------------------------------
 // Encoder: length-limited Huffman code construction
 // ---------------------------------------------------------------------------------------------
 
@@ -366,9 +296,9 @@ function chooseTreeCount(symbolCount: number): number {
 // Encoder: one block
 // ---------------------------------------------------------------------------------------------
 
-function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number): void {
+function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number, workspace: BwtWorkspace): void {
   const n = rle1Block.length;
-  const { lColumn, origPtr } = burrowsWheelerTransform(rle1Block);
+  const { lColumn, origPtr } = burrowsWheelerTransform(rle1Block, workspace);
 
   const unseqToSeq = new Int16Array(BZ_ALPHABET).fill(-1);
   const inUse = new Uint8Array(BZ_ALPHABET);
@@ -560,6 +490,7 @@ export function compressBzip2(input: Buffer): Buffer {
 
   const rle1Capacity = Math.min(blockLimit, Math.ceil((input.length * BZ_RLE1_RUN_BYTES) / BZ_RLE1_MIN_RUN)) + BZ_RLE1_RUN_BYTES;
   const rle1 = new Uint8Array(rle1Capacity);
+  const workspace = new BwtWorkspace();
   let combinedCrc = 0;
   let pos = 0;
   while (pos < input.length) {
@@ -579,7 +510,7 @@ export function compressBzip2(input: Buffer): Buffer {
     }
     const blockCrc = computeBzBlockCrc(input.subarray(start, pos));
     combinedCrc = combineCrc(combinedCrc, blockCrc);
-    encodeBlock(bw, rle1.subarray(0, n), blockCrc);
+    encodeBlock(bw, rle1.subarray(0, n), blockCrc, workspace);
   }
 
   BZ_END_MAGIC.forEach((b) => bw.writeByte(b));
