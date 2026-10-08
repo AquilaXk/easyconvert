@@ -587,8 +587,26 @@ function checkHollowAssertions(targetDir?: string): Violation[] {
  * `undefined`, for an absent entry, so `toBeDefined()` passes either way and proves nothing. The subject is either the
  * call itself or an identifier bound by `const x = <such call>` in the same function. Receivers of `.get(` are limited to
  * header and search-parameter objects, because `Map.get` does return `undefined` and `toBeDefined()` is meaningful there.
+ * The receiver may be an alias (`const h = res.headers; expect(h.get('etag'))`) or `new Headers(...)`.
  */
 const NULL_RETURNING_GET_RECEIVER = /(?:^|\.)(?:headers?|searchParams|URLSearchParams)$/i;
+
+/** `new Headers(...)` and `new URLSearchParams(...)` answer null from `.get` like the objects named above. */
+const NULL_RETURNING_GET_CONSTRUCTORS = new Set(['Headers', 'URLSearchParams']);
+/** How many `const alias = other` steps a `.get` receiver is followed through (`const h = res.headers`). */
+const MAX_RECEIVER_ALIAS_DEPTH = 3;
+
+/** Whether the object a `.get(` is called on is a header or search-parameter object, looking through local aliases. */
+function isNullReturningGetReceiver(receiver: ts.Expression, sf: ts.SourceFile, depth = 0): boolean {
+  let node: ts.Expression = receiver;
+  while (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node)) node = node.expression;
+  if (ts.isNewExpression(node)) return NULL_RETURNING_GET_CONSTRUCTORS.has(node.expression.getText(sf));
+  if (ts.isIdentifier(node) && depth < MAX_RECEIVER_ALIAS_DEPTH) {
+    const initializer = findLocalInitializer(node, sf);
+    if (initializer) return isNullReturningGetReceiver(initializer, sf, depth + 1);
+  }
+  return NULL_RETURNING_GET_RECEIVER.test(node.getText(sf).replace(/\s+/g, ''));
+}
 
 function isNullReturningLookup(expr: ts.Expression, sf: ts.SourceFile): boolean {
   let node: ts.Expression = expr;
@@ -596,7 +614,7 @@ function isNullReturningLookup(expr: ts.Expression, sf: ts.SourceFile): boolean 
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
   const method = node.expression.name.text;
   if (method === 'file') return true;
-  return method === 'get' && NULL_RETURNING_GET_RECEIVER.test(node.expression.expression.getText(sf).replace(/\s+/g, ''));
+  return method === 'get' && isNullReturningGetReceiver(node.expression.expression, sf);
 }
 
 function findLocalInitializer(identifier: ts.Identifier, sf: ts.SourceFile): ts.Expression | undefined {

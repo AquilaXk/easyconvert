@@ -291,6 +291,59 @@ it('checks a bound header', () => {
       expect(output).toContain('expect(location).toBeDefined()');
     });
 
+    it('follows an alias of the headers object and a Headers built in the test (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a header through an alias', () => {
+  const res = new Response('', { headers: { ETag: '"abc"' } });
+  const h = res.headers;
+  expect(h.get('etag')).toBeDefined();
+  expect(res.status).toBe(200);
+});
+it('checks a header through two aliases', () => {
+  const res = new Response('', { headers: { ETag: '"abc"' } });
+  const first = res.headers;
+  const second = first;
+  expect(second.get('etag')).toBeDefined();
+});
+it('checks a Headers object built in the test', () => {
+  const sent = new Headers({ 'X-Limit': '5' });
+  expect(sent.get('x-limit')).toBeDefined();
+});
+it('checks a bound value read through an alias', () => {
+  const res = new Response('', { headers: { Location: '/x' } });
+  const h = res.headers;
+  const location = h.get('Location');
+  expect(location).toBeDefined();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G4c-HOLLOW-NULL-CHECK/g)).toHaveLength(4);
+      expect(output).toContain("expect(h.get('etag')).toBeDefined()");
+      expect(output).toContain("expect(second.get('etag')).toBeDefined()");
+      expect(output).toContain("expect(sent.get('x-limit')).toBeDefined()");
+      expect(output).toContain('expect(location).toBeDefined()');
+    });
+
+    it('permits an alias of a Map, which answers undefined for a missing key (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a Map through an alias', () => {
+  const registry = new Map([['a', 1]]);
+  const alias = registry;
+  expect(alias.get('a')).toBeDefined();
+  expect(alias.get('a')).toBe(1);
+});
+it('checks a Headers value strictly', () => {
+  const h = new Headers({ ETag: '"abc"' });
+  expect(h.get('etag')).not.toBeNull();
+  expect(h.get('etag')).toBe('"abc"');
+});
+          `);
+      expect(output).not.toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(status).toBe(0);
+    });
+
     it('permits not.toBeNull(), Map.get and an undefined-returning lookup (negative case)', () => {
       const { status, output } = guardOutputFor(`
 import { it, expect } from 'vitest';
