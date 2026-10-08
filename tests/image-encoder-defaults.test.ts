@@ -211,6 +211,18 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(avifInfo(writeIn('translucent.avif', (await convertImage(translucent, 'avif', {}, 't.png', 'png')).buffer)).alpha).toMatch(/Present|premultiplied/i);
   });
 
+  it('keeps a 16-bit alpha channel whose only deviation is one step below full', async () => {
+    const samples = new Uint16Array(WIDTH * HEIGHT * 4).fill(65_535);
+    samples[3] = 65_534;
+    const png16 = await sharp(samples, { raw: { width: WIDTH, height: HEIGHT, channels: 4 } }).toColourspace('rgb16').png().toBuffer();
+    expect(await sharp(png16).metadata()).toMatchObject({ depth: 'ushort', hasAlpha: true });
+    const out = (await convertImage(png16, 'avif', {}, 'a16.png', 'png')).buffer;
+    expect(avifInfo(writeIn('alpha16.avif', out)).alpha).toMatch(/Present|premultiplied/i);
+    const full = new Uint16Array(WIDTH * HEIGHT * 4).fill(65_535);
+    const opaque16 = await sharp(full, { raw: { width: WIDTH, height: HEIGHT, channels: 4 } }).toColourspace('rgb16').png().toBuffer();
+    expect(avifInfo(writeIn('opaque16.avif', (await convertImage(opaque16, 'avif', {}, 'o16.png', 'png')).buffer)).alpha).toMatch(/Absent/);
+  });
+
   it('picks chroma by content and quality: 4:2:0 for a photo below 80, 4:4:4 for graphics and at 80', async () => {
     const photo = await photoPng();
     const graphic = await svgPng(uiBody);

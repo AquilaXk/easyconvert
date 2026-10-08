@@ -53,6 +53,28 @@ export async function classifyContent(pipeline: Sharp): Promise<ContentClass> {
 export async function withoutOpaqueAlpha(pipeline: Sharp): Promise<Sharp> {
   const meta = await pipeline.metadata();
   if (!meta.hasAlpha) return pipeline;
-  const { isOpaque } = await pipeline.clone().stats();
-  return isOpaque ? pipeline.removeAlpha() : pipeline;
+  return (await alphaIsOpaque(pipeline, meta.depth === SIXTEEN_BIT_DEPTH)) ? pipeline.removeAlpha() : pipeline;
+}
+
+const SIXTEEN_BIT_DEPTH = 'ushort';
+const OPAQUE_8_BIT = 255;
+const OPAQUE_16_BIT = 65_535;
+
+/**
+ * True when every alpha sample is the maximum. The alpha plane is read on its own at the picture's own depth
+ * (reducing 16 bits to 8 could turn 65534 into 255) and scanned for any other value; this costs one decode of the
+ * picture, where the library's full statistics pass costs ten times that.
+ */
+async function alphaIsOpaque(pipeline: Sharp, deep: boolean): Promise<boolean> {
+  // A single extracted 16-bit band is reinterpreted as 8-bit unless it is declared grey16 first.
+  const plane = pipeline.clone().extractChannel('alpha');
+  const { data } = await (deep ? plane.toColourspace('grey16') : plane)
+    .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  if (!deep) {
+    for (let i = 0; i < data.length; i += 1) if (data[i] !== OPAQUE_8_BIT) return false;
+    return true;
+  }
+  for (let i = 0; i + 1 < data.length; i += 2) if (data.readUInt16LE(i) !== OPAQUE_16_BIT) return false;
+  return true;
 }
