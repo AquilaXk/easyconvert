@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { SvgSanitizationError } from '../src/lib/types';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
- * Linear-time claims compare the sanitizer on n bytes with 4n bytes of the same adversarial shape, interleaved
+ * Linear-time claims compare the sanitizer on n bytes with 16n bytes of the same adversarial shape, interleaved
  * and best-of-N (tests/helpers/timing.ts), so a loaded runner slows both sizes and the ratio holds. A quadratic
- * sanitizer takes 16x; the bound is 8x.
+ * sanitizer takes 256x; the bound is 32x, wide enough for the allocator and GC growth that pushed a 4x step past 8x.
  */
-const BASE_BYTES = 512 * 1024;
+const GROWTH_FACTOR = 16;
+const BASE_BYTES = 128 * 1024;
 /** Element counts for the tests that scale the number of tags rather than the number of bytes. */
-const BASE_COUNT = 10_000;
+const BASE_COUNT = 2_500;
 
 /** A test that compares two input sizes needs more than the 5 s default on a loaded runner. */
 const linearIt = (name: string, body: () => Promise<void>) => it(name, body, SCALING_TEST_TIMEOUT_MS);
@@ -23,8 +24,8 @@ async function expectLinearSanitization(
   baseSize: number = BASE_BYTES
 ): Promise<void> {
   const small = build(baseSize);
-  const large = build(baseSize * SCALING_FACTOR);
-  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large });
+  const large = build(baseSize * GROWTH_FACTOR);
+  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large, factor: GROWTH_FACTOR });
   check?.(sanitizeSvgString(large));
 }
 
