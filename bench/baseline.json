@@ -89,7 +89,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.426097039570825
+      "ratio": 0.9464084710326259
     },
     "audio/music.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -239,7 +239,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3811723872378457
+      "ratio": 0.9743079715656751
     },
     "audio/speech.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -337,8 +337,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.3745722992726182,
-      "delta": -0.006125903138999522,
+      "ours": 0.37478372816664585,
+      "delta": -0.005914474244971879,
       "ratio": null
     },
     "compression/mixed.tar->zst/throughput": {
@@ -349,7 +349,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5183036244179227
+      "ratio": 0.8538438667863553
     },
     "compression/mixed.xz->tar/throughput": {
       "direction": "higher",
@@ -369,7 +369,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5305742592140898
+      "ratio": 1.4423391726630617
     },
     "document/report.docx->pdf/cer": {
       "direction": "lower",
