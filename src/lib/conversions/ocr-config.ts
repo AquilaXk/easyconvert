@@ -102,3 +102,16 @@ export function ocrFallbackPageSegMode(tesseractLang: string): string | null {
 export function fallbackReadsMore(firstWordCount: number, retryWordCount: number): boolean {
   return retryWordCount - firstWordCount >= OCR_FALLBACK_MIN_WORD_GAIN;
 }
+
+/**
+ * A page is read again with another preparation when its character-weighted confidence is below this (the
+ * golden pages score 0.91 to 0.96 when read well; a page the recognizer cannot segment scores 0.82 and less).
+ */
+export const OCR_ALTERNATIVE_TRIGGER_QUALITY = 0.9;
+/**
+ * A second reading replaces the first when it recognizes at least this many times as much confident text. The
+ * first reading is only questioned because it looked poor, so a second one that does as well is as good: the
+ * confident characters of two readings of one page differ by a character or two when the readings are alike, and
+ * any larger loss (binarizing blurred text, enlarging noise) shows as a drop well beyond that.
+ */
+export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1;

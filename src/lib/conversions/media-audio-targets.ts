@@ -28,8 +28,17 @@ export interface AudioTargetSpec {
   readonly allowedSampleRates?: readonly number[];
   /** Highest sample rate (Hz) the encoder accepts; an explicit request above it is rejected. */
   readonly maxSampleRate?: number;
-  /** Rate (Hz) used when the caller sets none, so the input rate never reaches an encoder that rejects it. */
+  /**
+   * Rate (Hz) used when the caller sets none and the input rate cannot be read (an argument-only caller),
+   * so the input rate never reaches an encoder that rejects it.
+   */
   readonly defaultSampleRate?: number;
+  /**
+   * An input rate outside `allowedSampleRates` is resampled to the lowest allowed rate that is not below it
+   * (the highest allowed rate when it is above all of them), so the coded band still covers the signal's.
+   * Without it the nearest allowed rate at or below the input is used, which drops the top of the band.
+   */
+  readonly resampleUpwards?: boolean;
   /** Most channels the encoder accepts; checked against the request or, failing that, the input. */
   readonly maxChannels?: number;
 }
@@ -83,6 +92,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
     userCodecs: ['opus'],
     allowedSampleRates: OPUS_SAMPLE_RATES_HZ,
     defaultSampleRate: OPUS_DEFAULT_SAMPLE_RATE_HZ,
+    resampleUpwards: true,
   },
   weba: {
     encoder: 'libopus',
@@ -91,6 +101,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
     userCodecs: ['opus', 'vorbis'],
     allowedSampleRates: OPUS_SAMPLE_RATES_HZ,
     defaultSampleRate: OPUS_DEFAULT_SAMPLE_RATE_HZ,
+    resampleUpwards: true,
   },
   flac: { encoder: 'flac', muxer: 'flac', userCodecs: ['flac'] },
   wav: { encoder: 'pcm_s16le', muxer: 'wav', userCodecs: ['pcm_s16le'] },
@@ -173,12 +184,21 @@ export function assertEncoderAvailable(target: string, encoder: string, supporte
 /**
  * Sample rate to resample an input to when the caller set none and the input rate lies outside the
  * encoder's supported set: the nearest supported rate at or below the input, else the lowest one
- * above it. Undefined when the input rate is supported or the spec has no rate limits.
+ * above it (a spec with `resampleUpwards` takes the lowest rate not below the input, else the highest).
+ * Undefined when the input rate is supported or the spec has no rate limits.
  */
 export function resampleRateFor(spec: AudioTargetSpec, inputRate: number): number | undefined {
+  // A probe that found no rate (0) says nothing about the signal: use the spec's own default, if it has one.
+  if (!(inputRate > 0)) {
+    return spec.defaultSampleRate;
+  }
   if (spec.allowedSampleRates) {
     if (spec.allowedSampleRates.includes(inputRate)) {
       return undefined;
+    }
+    if (spec.resampleUpwards) {
+      const above = spec.allowedSampleRates.filter((rate) => rate > inputRate);
+      return above.length > 0 ? Math.min(...above) : Math.max(...spec.allowedSampleRates);
     }
     const below = spec.allowedSampleRates.filter((rate) => rate < inputRate);
     return below.length > 0 ? Math.max(...below) : Math.min(...spec.allowedSampleRates);

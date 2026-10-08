@@ -3,6 +3,7 @@ import { ConversionOptions, ConversionQueueItem } from '../types';
 import { injectInvisibleTextLayer, parseTesseractBlocks, OcrResult } from '../conversions/ocr-pdf-combiner';
 import { calibrateOcrResult, characterWeightedConfidence } from '../conversions/ocr-calibration';
 import { resolveImageDpi } from '../conversions/ocr-dpi';
+import { resolveOcrLanguages } from '../conversions/ocr-languages';
 
 export interface EdgeOcrResult {
   blob: Blob;
@@ -23,17 +24,6 @@ export class EdgeOcrError extends Error {
   }
 }
 
-const OCR_LANGUAGE_CODES: Readonly<Record<string, string>> = {
-  auto: 'eng',
-  en: 'eng',
-  ko: 'kor',
-  de: 'deu',
-  fr: 'fra',
-  es: 'spa',
-  ja: 'jpn',
-  zh: 'chi_sim',
-};
-const DEFAULT_OCR_LANGUAGE = 'eng';
 /** PDF user space unit: 1/72 inch. */
 const POINTS_PER_INCH = 72;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
@@ -52,11 +42,16 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * The traineddata names of the request, from the table the server uses. A language the table does not know is
+ * refused here, as the server would refuse it, so the page is escalated instead of loading data that does not exist.
+ */
 function resolveTesseractLanguage(language: string | undefined): string {
-  if (!language) {
-    return DEFAULT_OCR_LANGUAGE;
+  try {
+    return resolveOcrLanguages(language).joined;
+  } catch (err: unknown) {
+    throw new EdgeOcrError(`Edge OCR cannot use language '${language}': ${describeError(err)}`, { cause: err });
   }
-  return OCR_LANGUAGE_CODES[language.toLowerCase()] ?? language;
 }
 
 function hasSignature(bytes: Uint8Array, signature: readonly number[]): boolean {

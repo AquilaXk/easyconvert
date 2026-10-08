@@ -132,6 +132,29 @@ export const conversionPaths = {
       },
     },
   },
+  '/api/v1/ocr/languages': {
+    get: {
+      summary: 'List OCR Languages',
+      description:
+        'Lists every language the OCR engine has published data for, with its short code, script, text direction and whether this server has the data installed (read from the configured language data directories once at start). Request a language with `ocrLanguage` by its `code` or `traineddata`; join up to `maxLanguagesPerRequest` with `+`. Requires "convert:read" scope. The answer may be cached for a few minutes.',
+      operationId: 'listOcrLanguagesV1',
+      security: requireScope('convert:read'),
+      responses: {
+        '200': {
+          description: 'The OCR languages.',
+          headers: {
+            'Cache-Control': {
+              description: 'Private cache lifetime; the installed set changes only when the server restarts.',
+              schema: { type: 'string', example: 'private, max-age=300' },
+            },
+          },
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/OcrLanguagesResponse' } } },
+        },
+        '401': createProblemResponse('Missing, expired, or invalid API key.'),
+        '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:read" scope.'),
+      },
+    },
+  },
   '/api/v1/jobs': {
     post: {
       summary: 'Submit Asynchronous Conversion Job',

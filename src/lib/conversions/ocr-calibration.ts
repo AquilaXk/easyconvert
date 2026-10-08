@@ -174,6 +174,21 @@ function wordCharacters(word: OcrWord): number {
 }
 
 /**
+ * How much of a page was read, and how well: the sum over its words of confidence times length in
+ * characters. A page read in full at a given confidence scores higher than the same text read in part,
+ * which the mean confidence cannot show, and marks read from noise add little because their confidence is low.
+ */
+export function confidenceWeightedCharacters(lineBlocks: readonly OcrLineBlock[]): number {
+  let total = 0;
+  for (const block of lineBlocks) {
+    for (const word of block.words) {
+      if (word.confidence !== undefined) total += word.confidence * wordCharacters(word);
+    }
+  }
+  return total;
+}
+
+/**
  * Page confidence: the mean of the words' confidences weighted by their length in characters, so
  * a long misread word weighs more than a stray mark. Null when no word carries a confidence.
  */

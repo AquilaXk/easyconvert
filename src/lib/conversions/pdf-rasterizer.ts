@@ -88,7 +88,7 @@ function entryDimension(entry: DictionaryValue | undefined, resolve: () => Map<n
  * marker count is capped. Inline images, which have no dictionary to scan, are caught by pdfjs's own limit (see
  * `extractRasterImagesFromPdf`).
  */
-function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
+export function assertPdfImagesWithinLimit(pdfBuffer: Buffer): void {
   const text = pdfBuffer.toString('latin1');
   let integers: Map<number, number> | undefined;
   const resolve = (): Map<number, number> => {
