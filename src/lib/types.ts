@@ -88,6 +88,8 @@ export interface ConversionOptions {
   width?: number;
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
+  /** Resampling kernel of a resize; downscales of 2x or more also run in linear light. Defaults to lanczos3. */
+  kernel?: 'lanczos3' | 'lanczos2' | 'mitchell' | 'cubic' | 'nearest' | 'mks2021';
   stripMetadata?: boolean;
   /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
   background?: string;
@@ -112,6 +114,13 @@ export interface ConversionOptions {
   targetColorSpace?: 'sRGB' | 'display-p3' | 'rec2020' | 'linear';
   outputDepth?: 8 | 16 | 32;
   gainMap?: boolean;
+  /** TIFF target: `deflate` (default, lossless), `lzw`, `none` or `jpeg` (lossy, only when asked for). */
+  tiffCompression?: 'deflate' | 'lzw' | 'none' | 'jpeg';
+  /**
+   * HDR to SDR rendering of EXR and PQ/HLG tagged pictures and of HDR video: `bt2390` (default, ITU-R BT.2390 EETF),
+   * `clip` (hard clip at SDR white) or `none` (keep HDR, for targets that can carry it).
+   */
+  toneMap?: 'none' | 'clip' | 'bt2390';
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;

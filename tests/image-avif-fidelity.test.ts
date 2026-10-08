@@ -6,8 +6,8 @@ import { expectNoSlowerThanReference } from './helpers/timing';
 /**
  * AVIF output fidelity. sharp 0.35 tunes lossy AVIF with perceptual (SSIMULACRA2-based) metrics by
  * default, which trades roughly 5 dB of PSNR for smaller files at the same `quality` value. The engine
- * pins the PSNR tuning that earlier releases used, so a given `quality` keeps producing the same
- * pixel fidelity. The oracle is the source raster itself: the AVIF is decoded and compared with the
+ * pins the SSIM tuning, which keeps the PSNR of the earlier PSNR tuning at equal size, so a given `quality`
+ * keeps producing the same pixel fidelity. The oracle is the source raster itself: the AVIF is decoded and compared with the
  * pixels that went in, so no value comes from the engine under test.
  */
 
@@ -16,7 +16,9 @@ const HEIGHT = 48;
 const RGB_CHANNELS = 3;
 const BYTE_MAX = 255;
 const TEXTURE_STRIDE = 7;
-const DEFAULT_QUALITY_MIN_PSNR_DB = 42;
+const REFERENCE_QUALITY = 85;
+const REFERENCE_QUALITY_MIN_PSNR_DB = 42;
+const AVIF_DEFAULT_QUALITY = 60;
 const HIGH_QUALITY = 95;
 const HIGH_QUALITY_MIN_PSNR_DB = 47;
 const FTYP_BRAND_OFFSET = 4;
@@ -61,12 +63,19 @@ describe('AVIF encoder fidelity', () => {
   const rgb = textureRgb();
   const raw = { raw: { width: WIDTH, height: HEIGHT, channels: RGB_CHANNELS } } as const;
 
-  it('keeps PSNR at the default quality when converting PNG to AVIF', async () => {
+  it('keeps PSNR at quality 85, the setting every codec used to default to', async () => {
     const png = await sharp(rgb, raw).png().toBuffer();
-    const result = await convertFile(png, 'png', 'avif', {}, 'texture.png');
+    const result = await convertFile(png, 'png', 'avif', { quality: REFERENCE_QUALITY }, 'texture.png');
     expect(result.mimeType).toBe('image/avif');
     expect(result.buffer.toString('latin1', FTYP_BRAND_OFFSET, FTYP_BRAND_OFFSET + FTYP_BRAND.length)).toBe(FTYP_BRAND);
-    expect(psnrDb(rgb, await decodeRgb(result.buffer))).toBeGreaterThan(DEFAULT_QUALITY_MIN_PSNR_DB);
+    expect(psnrDb(rgb, await decodeRgb(result.buffer))).toBeGreaterThan(REFERENCE_QUALITY_MIN_PSNR_DB);
+  });
+
+  it('encodes a request with no quality exactly as quality 60', async () => {
+    const png = await sharp(rgb, raw).png().toBuffer();
+    const implicit = await convertFile(png, 'png', 'avif', {}, 'texture.png');
+    const explicit = await convertFile(png, 'png', 'avif', { quality: AVIF_DEFAULT_QUALITY }, 'texture.png');
+    expect(Buffer.compare(implicit.buffer, explicit.buffer)).toBe(0);
   });
 
   it('keeps PSNR at a high quality setting when converting PNG to AVIF', async () => {

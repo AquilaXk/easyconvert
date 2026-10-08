@@ -407,8 +407,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0.579049749380256,
-      "delta": 0.579049749380256,
+      "ours": -19.466053229872482,
+      "delta": -19.466053229872482,
       "ratio": null
     },
     "image/lineart.png->avif/bd_rate_ssim": {
@@ -417,8 +417,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.186863970715244,
-      "delta": -11.186863970715244,
+      "ours": -38.23208474151576,
+      "delta": -38.23208474151576,
       "ratio": null
     },
     "image/lineart.png->avif/bytes": {
@@ -427,8 +427,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 32741,
-      "delta": -1013,
+      "ours": 30404,
+      "delta": -3350,
       "ratio": null
     },
     "image/lineart.png->avif/psnr": {
@@ -437,8 +437,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.858084,
-      "delta": -0.9612260000000035,
+      "ours": 50.629252,
+      "delta": 1.8099419999999995,
       "ratio": null
     },
     "image/lineart.png->avif/ssim": {
@@ -447,8 +447,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998023,
-      "delta": 0.00005699999999997374,
+      "ours": 0.998749,
+      "delta": 0.0007829999999999782,
       "ratio": null
     },
     "image/lineart.png->avif/throughput": {
@@ -459,7 +459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.30498570252515583
+      "ratio": 0.07311412894628286
     },
     "image/lineart.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -467,8 +467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 12.349646413006887,
-      "delta": 12.349646413006887,
+      "ours": 10.284841042892868,
+      "delta": 10.284841042892868,
       "ratio": null
     },
     "image/lineart.png->jpg/bd_rate_ssim": {
@@ -477,8 +477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -42.59577809304,
-      "delta": -42.59577809304,
+      "ours": -44.065354309095895,
+      "delta": -44.065354309095895,
       "ratio": null
     },
     "image/lineart.png->jpg/bytes": {
@@ -487,8 +487,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 41997,
-      "delta": -17319,
+      "ours": 41037,
+      "delta": -18279,
       "ratio": null
     },
     "image/lineart.png->jpg/psnr": {
@@ -497,8 +497,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 32.421832,
-      "delta": -5.806708999999998,
+      "ours": 32.423305,
+      "delta": -5.805236000000001,
       "ratio": null
     },
     "image/lineart.png->jpg/ssim": {
@@ -507,8 +507,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.993344,
-      "delta": 0.003630000000000022,
+      "ours": 0.993345,
+      "delta": 0.003631000000000051,
       "ratio": null
     },
     "image/lineart.png->jpg/throughput": {
@@ -519,7 +519,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.36931528242999007
+      "ratio": 0.286955018003316
     },
     "image/lineart.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -527,8 +527,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0.5601972652478748,
-      "delta": 0.5601972652478748,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->webp/bd_rate_ssim": {
@@ -537,8 +537,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0.5764686627721449,
-      "delta": 0.5764686627721449,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->webp/bytes": {
@@ -547,8 +547,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 37630,
-      "delta": 212,
+      "ours": 37418,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->webp/psnr": {
@@ -579,7 +579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7983222008904934
+      "ratio": 0.36774343440063983
     },
     "image/photo-a.jpg->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -587,8 +587,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 3.656087862753199,
-      "delta": 3.656087862753199,
+      "ours": -14.019243023344984,
+      "delta": -14.019243023344984,
       "ratio": null
     },
     "image/photo-a.jpg->avif/bd_rate_ssim": {
@@ -597,8 +597,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 3.807960777375774,
-      "delta": 3.807960777375774,
+      "ours": -15.211250347134264,
+      "delta": -15.211250347134264,
       "ratio": null
     },
     "image/photo-a.jpg->avif/bytes": {
@@ -607,8 +607,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 27297,
-      "delta": 843,
+      "ours": 16024,
+      "delta": -10430,
       "ratio": null
     },
     "image/photo-a.jpg->avif/psnr": {
@@ -617,8 +617,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.656128,
-      "delta": 0.003802000000000305,
+      "ours": 43.845793,
+      "delta": -0.8065330000000017,
       "ratio": null
     },
     "image/photo-a.jpg->avif/ssim": {
@@ -627,8 +627,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.97048,
-      "delta": 0.000021000000000048757,
+      "ours": 0.965013,
+      "delta": -0.005445999999999951,
       "ratio": null
     },
     "image/photo-a.jpg->avif/throughput": {
@@ -639,7 +639,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6392155227677785
+      "ratio": 0.8485077000040252
     },
     "image/photo-a.jpg->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -647,8 +647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -18.14806824551054,
-      "delta": -18.14806824551054,
+      "ours": -20.937501242701806,
+      "delta": -20.937501242701806,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bd_rate_ssim": {
@@ -657,8 +657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.387279826168875,
-      "delta": -14.387279826168875,
+      "ours": -17.186346668835604,
+      "delta": -17.186346668835604,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bytes": {
@@ -667,8 +667,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 21584,
-      "delta": -6871,
+      "ours": 20896,
+      "delta": -7559,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/psnr": {
@@ -699,7 +699,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6696246160880129
+      "ratio": 0.6346241928805525
     },
     "image/photo-a.jpg->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -707,8 +707,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 3.628985518326844,
-      "delta": 3.628985518326844,
+      "ours": -1.1182028644717845,
+      "delta": -1.1182028644717845,
       "ratio": null
     },
     "image/photo-a.jpg->webp/bd_rate_ssim": {
@@ -717,8 +717,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 3.9785510451210815,
-      "delta": 3.9785510451210815,
+      "ours": -0.6928088516903852,
+      "delta": -0.6928088516903852,
       "ratio": null
     },
     "image/photo-a.jpg->webp/bytes": {
@@ -727,8 +727,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 14406,
-      "delta": 160,
+      "ours": 13706,
+      "delta": -540,
       "ratio": null
     },
     "image/photo-a.jpg->webp/psnr": {
@@ -759,7 +759,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0033580311993322
+      "ratio": 0.9644748349304901
     },
     "image/photo-b.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -767,8 +767,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 4.939324135833112,
-      "delta": 4.939324135833112,
+      "ours": -13.518299348308304,
+      "delta": -13.518299348308304,
       "ratio": null
     },
     "image/photo-b.png->avif/bd_rate_ssim": {
@@ -777,8 +777,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 5.823044960396073,
-      "delta": 5.823044960396073,
+      "ours": -13.379186590915692,
+      "delta": -13.379186590915692,
       "ratio": null
     },
     "image/photo-b.png->avif/bytes": {
@@ -787,8 +787,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 22164,
-      "delta": 921,
+      "ours": 12776,
+      "delta": -8467,
       "ratio": null
     },
     "image/photo-b.png->avif/psnr": {
@@ -797,8 +797,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.613193,
-      "delta": 0.03278099999999995,
+      "ours": 43.715488,
+      "delta": -0.864924000000002,
       "ratio": null
     },
     "image/photo-b.png->avif/ssim": {
@@ -807,8 +807,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.972237,
-      "delta": 0.00008700000000005925,
+      "ours": 0.966487,
+      "delta": -0.005662999999999974,
       "ratio": null
     },
     "image/photo-b.png->avif/throughput": {
@@ -819,7 +819,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.43662706532482026
+      "ratio": 0.6403233944589252
     },
     "image/photo-b.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -827,8 +827,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.907818288470507,
-      "delta": -12.907818288470507,
+      "ours": -16.63783533880594,
+      "delta": -16.63783533880594,
       "ratio": null
     },
     "image/photo-b.png->jpg/bd_rate_ssim": {
@@ -837,8 +837,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.298579292558431,
-      "delta": -11.298579292558431,
+      "ours": -14.965236817645444,
+      "delta": -14.965236817645444,
       "ratio": null
     },
     "image/photo-b.png->jpg/bytes": {
@@ -847,8 +847,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 17167,
-      "delta": -4053,
+      "ours": 16479,
+      "delta": -4741,
       "ratio": null
     },
     "image/photo-b.png->jpg/psnr": {
@@ -879,7 +879,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5817487269256779
+      "ratio": 0.4807579512530099
     },
     "image/photo-b.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -887,8 +887,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 6.016876662239623,
-      "delta": 6.016876662239623,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/photo-b.png->webp/bd_rate_ssim": {
@@ -897,8 +897,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 5.946191282785618,
-      "delta": 5.946191282785618,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/photo-b.png->webp/bytes": {
@@ -907,8 +907,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 11452,
-      "delta": 700,
+      "ours": 10752,
+      "delta": 0,
       "ratio": null
     },
     "image/photo-b.png->webp/psnr": {
@@ -939,7 +939,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9002325849860654
+      "ratio": 0.8293688230845212
     },
     "image/screenshot.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -947,8 +947,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 53.05481062423056,
-      "delta": 53.05481062423056,
+      "ours": -1.1329974719326175,
+      "delta": -1.1329974719326175,
       "ratio": null
     },
     "image/screenshot.png->avif/bd_rate_ssim": {
@@ -957,8 +957,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 28.157151401751833,
-      "delta": 28.157151401751833,
+      "ours": 6.041336587155577,
+      "delta": 6.041336587155577,
       "ratio": null
     },
     "image/screenshot.png->avif/bytes": {
@@ -967,8 +967,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 12163,
-      "delta": 3683,
+      "ours": 8993,
+      "delta": 513,
       "ratio": null
     },
     "image/screenshot.png->avif/psnr": {
@@ -977,8 +977,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 50.11082,
-      "delta": -3.5172930000000022,
+      "ours": 53.900206,
+      "delta": 0.27209299999999814,
       "ratio": null
     },
     "image/screenshot.png->avif/ssim": {
@@ -987,8 +987,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.997559,
-      "delta": -0.0011689999999999756,
+      "ours": 0.998534,
+      "delta": -0.00019399999999991646,
       "ratio": null
     },
     "image/screenshot.png->avif/throughput": {
@@ -999,7 +999,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 2.116439337451625
+      "ratio": 0.43680860329618926
     },
     "image/screenshot.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1007,8 +1007,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -33.186571907830334,
-      "delta": -33.186571907830334,
+      "ours": -36.71903666907158,
+      "delta": -36.71903666907158,
       "ratio": null
     },
     "image/screenshot.png->jpg/bd_rate_ssim": {
@@ -1017,8 +1017,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -21.151243427567003,
-      "delta": -21.151243427567003,
+      "ours": -11.638528711783325,
+      "delta": -11.638528711783325,
       "ratio": null
     },
     "image/screenshot.png->jpg/bytes": {
@@ -1027,8 +1027,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 21184,
-      "delta": -6184,
+      "ours": 26016,
+      "delta": -1352,
       "ratio": null
     },
     "image/screenshot.png->jpg/psnr": {
@@ -1037,8 +1037,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 39.355899,
-      "delta": -1.1075159999999968,
+      "ours": 40.856459,
+      "delta": 0.3930440000000033,
       "ratio": null
     },
     "image/screenshot.png->jpg/ssim": {
@@ -1047,8 +1047,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.992116,
-      "delta": 0.000013000000000040757,
+      "ours": 0.993488,
+      "delta": 0.0013850000000000806,
       "ratio": null
     },
     "image/screenshot.png->jpg/throughput": {
@@ -1059,7 +1059,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.4878174717568454
+      "ratio": 0.25934086930179545
     },
     "image/screenshot.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1067,8 +1067,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 1.900796944897798,
-      "delta": 1.900796944897798,
+      "ours": 0.44640436704910247,
+      "delta": 0.44640436704910247,
       "ratio": null
     },
     "image/screenshot.png->webp/bd_rate_ssim": {
@@ -1077,8 +1077,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 1.8912457493340806,
-      "delta": 1.8912457493340806,
+      "ours": -0.6245669643254237,
+      "delta": -0.6245669643254237,
       "ratio": null
     },
     "image/screenshot.png->webp/bytes": {
@@ -1087,8 +1087,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 11438,
-      "delta": 212,
+      "ours": 11424,
+      "delta": 198,
       "ratio": null
     },
     "image/screenshot.png->webp/psnr": {
@@ -1097,8 +1097,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 45.530453,
-      "delta": 0,
+      "ours": 45.773729,
+      "delta": 0.2432760000000016,
       "ratio": null
     },
     "image/screenshot.png->webp/ssim": {
@@ -1107,8 +1107,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.995088,
-      "delta": 0,
+      "ours": 0.995251,
+      "delta": 0.00016300000000002424,
       "ratio": null
     },
     "image/screenshot.png->webp/throughput": {
@@ -1119,7 +1119,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0126057791721907
+      "ratio": 0.27575802528475085
     },
     "ocr/scan.png->pdf/cer": {
       "direction": "lower",

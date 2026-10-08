@@ -81,7 +81,8 @@ export const ConversionOptionsSchema = {
       type: 'integer',
       minimum: 1,
       maximum: 100,
-      description: 'Image/lossy output quality factor (1-100).',
+      description:
+        'Image/lossy output quality factor (1-100). When omitted each codec uses its own default: JPEG 85, WebP 80, AVIF 60.',
     },
     width: {
       type: 'integer',
@@ -104,6 +105,12 @@ export const ConversionOptionsSchema = {
       type: 'string',
       enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
       description: 'Image resize fit strategy.',
+    },
+    kernel: {
+      type: 'string',
+      enum: ['lanczos3', 'lanczos2', 'mitchell', 'cubic', 'nearest', 'mks2021'],
+      description:
+        'Resampling kernel of a resize. Defaults to lanczos3. A downscale to half the size or less resamples in linear light with premultiplied alpha, whatever the kernel.',
     },
     stripMetadata: {
       type: 'boolean',
@@ -212,6 +219,19 @@ export const ConversionOptionsSchema = {
     gainMap: {
       type: 'boolean',
       description: 'Embed ISO 21496-1 HDR gain map metadata.',
+    },
+
+    tiffCompression: {
+      type: 'string',
+      enum: ['deflate', 'lzw', 'none', 'jpeg'],
+      description:
+        'TIFF output compression. Defaults to deflate with a horizontal predictor (lossless); jpeg is lossy and used only when requested, and quality does not select it.',
+    },
+    toneMap: {
+      type: 'string',
+      enum: ['none', 'clip', 'bt2390'],
+      description:
+        'HDR to SDR rendering of OpenEXR, PQ or HLG tagged pictures and HDR video. bt2390 (default) compresses highlights with the ITU-R BT.2390 EETF toward a 100 cd/m2 display; clip cuts everything above SDR white; none keeps HDR and is accepted only for targets that hold it (AVIF, PNG, EXR, Ultra HDR).',
     },
 
     // CAD & NURBS options
