@@ -14,6 +14,8 @@ import { buildFrame, buildRleBombFrame, rawBlock, referenceXxh64 } from './helpe
 // Deterministic corpora (generated here so the suite never depends on repo files)
 // ---------------------------------------------------------------------------
 
+/** Level 19 runs the optimal parser, which takes seconds per corpus on a loaded runner. */
+const LEVEL_19_TEST_TIMEOUT_MS = 60_000;
 const MIB = 1024 * 1024;
 const BLOCK_MAX = 128 * 1024;
 const LEVELS_UNDER_ORACLE = [1, 3, 9, 19];
@@ -413,7 +415,7 @@ describe('compressZstd against the zstd CLI', () => {
       expect(ratios.get(`json:3:${who}`)).toBeLessThanOrEqual(LEVEL3_RATIO_TARGET);
       expect(ratios.get(`json:19:${who}`)).toBeLessThanOrEqual(LEVEL19_RATIO_TARGET);
     }
-  });
+  }, LEVEL_19_TEST_TIMEOUT_MS);
 });
 
 describe('decompressZstd', () => {
