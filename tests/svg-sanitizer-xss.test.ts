@@ -6,9 +6,11 @@ import { expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing'
 /**
  * Linear-time claims compare the sanitizer on n bytes with 16n bytes of the same adversarial shape, interleaved
  * and best-of-N (tests/helpers/timing.ts), so a loaded runner slows both sizes and the ratio holds. A quadratic
- * sanitizer takes 256x; the bound is 32x, wide enough for the allocator and GC growth that pushed a 4x step past 8x.
+ * sanitizer takes 256x. Linear work measured 19x locally and up to 50x on a loaded shard, where the multi-megabyte
+ * output strings add collector time the 128 KiB run does not pay, so the bound is 64x: four times the growth factor.
  */
 const GROWTH_FACTOR = 16;
+const MAX_GROWTH_RATIO = GROWTH_FACTOR * 4;
 const BASE_BYTES = 128 * 1024;
 /** Element counts for the tests that scale the number of tags rather than the number of bytes. */
 const BASE_COUNT = 2_500;
@@ -25,7 +27,7 @@ async function expectLinearSanitization(
 ): Promise<void> {
   const small = build(baseSize);
   const large = build(baseSize * GROWTH_FACTOR);
-  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large, factor: GROWTH_FACTOR });
+  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large, factor: GROWTH_FACTOR, maxRatio: MAX_GROWTH_RATIO });
   check?.(sanitizeSvgString(large));
 }
 
