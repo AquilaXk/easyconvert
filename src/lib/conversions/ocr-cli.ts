@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { OcrEngineUnavailableError } from '../types';
+import { OcrEngineUnavailableError, SandboxUnavailableError } from '../types';
 import {
   executeSandboxedBinary,
   SandboxedBufferLimitError,
@@ -394,7 +394,7 @@ async function readJobOutput(file: string, maxBytes: number, what: string): Prom
 
 /** The error a caller sees for a failed run; the CLI's own diagnostics go to the server log only. */
 function describeCliFailure(err: unknown, timeoutMs: number, memoryLimitMb: number): Error {
-  if (err instanceof OcrEngineUnavailableError) return err;
+  if (err instanceof OcrEngineUnavailableError || err instanceof SandboxUnavailableError) return err;
   if (isTimeout(err)) return new OcrEngineUnavailableError(`Tesseract CLI did not finish within ${timeoutMs} ms.`);
   if (err instanceof SandboxedBufferLimitError) {
     return new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.');

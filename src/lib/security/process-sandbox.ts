@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream';
+import { SandboxUnavailableError } from '../types';
 
 export interface SandboxEnvironment {
   isContainer: boolean;
@@ -527,21 +528,25 @@ export function resolveSandboxedCommand(
         wrapped: true,
       };
     } else if (strictIsolation) {
-      throw new SandboxedProcessError(
-        'Strict network isolation failed: Linux unshare capability is unavailable',
-        126,
-        'EPERM: unshare namespace isolation unavailable'
-      );
+      // Typed for the API (503, retryable) and thrown before any spawn: no caller may run the tool unwrapped.
+      throw new SandboxUnavailableError('Strict network isolation failed: Linux unshare capability is unavailable');
     }
   } else if (strictIsolation && networkIsolated && process.platform !== 'linux') {
-    throw new SandboxedProcessError(
-      `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`,
-      126,
-      'ENOSYS: unshare unsupported on platform'
+    throw new SandboxUnavailableError(
+      `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`
     );
   }
 
   return { binary: finalBinary, args: finalArgs, wrapped: isWrapped };
+}
+
+/**
+ * Rethrows a SandboxUnavailableError and returns for any other error. Call it first in a catch block that would
+ * otherwise turn a failed native run into a fallback, an empty result or a different error type: a host that cannot
+ * confine its children must refuse the request, whatever engine a fallback would use instead.
+ */
+export function rethrowSandboxUnavailable(err: unknown): void {
+  if (err instanceof SandboxUnavailableError) throw err;
 }
 
 /**

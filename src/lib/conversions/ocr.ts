@@ -36,6 +36,7 @@ import {
   ocrSegmentationFor,
 } from './ocr-config';
 import { recognizeWithCli, type OcrEngineMarkupFormat } from './ocr-cli';
+import { rethrowSandboxUnavailable } from '../security/process-sandbox';
 import { describeEngineError, recoverableWasmFailure } from './ocr-engine-failure';
 import { locateLanguageData, locateLanguagesData } from './ocr-language-data';
 import { OCR_AUTO_LANGUAGE, resolveOcrLanguages } from './ocr-languages';
@@ -242,6 +243,7 @@ async function detectPageOrientation(
     const reading = await readOrientation(imageBuffer, { tessdataDir: data.dir, gzip: data.gzip, cliPath: findTesseractCli() });
     return decideOrientation(reading);
   } catch (err) {
+    rethrowSandboxUnavailable(err);
     if (demanded) throw err;
     return unavailable;
   }
@@ -292,6 +294,7 @@ export async function recognizePage(
       switchTo === null ? requestedData : (scriptData as LanguageData)
     );
   } catch (err) {
+    rethrowSandboxUnavailable(err);
     if (detectOrientation === true) throw err;
     return finish(first, { ...detection.orientation, status: 'unavailable', rotationApplied: 0 });
   }

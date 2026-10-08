@@ -6,6 +6,7 @@ import { createWorkerSandboxDir } from './sandbox';
 import { readPersistedOutput } from './persisted-output';
 import {
   executeSandboxedBinary,
+  rethrowSandboxUnavailable,
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
   SandboxedTimeoutError,
@@ -399,6 +400,7 @@ export class LibreOfficePoolManager {
           networkIsolated: true,
         });
       } catch (err) {
+        rethrowSandboxUnavailable(err);
         if (err instanceof SandboxedTimeoutError) {
           throw new EngineUnavailableError(
             LIBREOFFICE_POOL_ENGINE_NAME,

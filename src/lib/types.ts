@@ -770,6 +770,23 @@ export class UnknownArtifactFormatError extends ConversionFailedError {
   }
 }
 
+/** `engineName` of a SandboxUnavailableError: the per-child confinement, not one native tool. */
+export const SANDBOX_ENGINE_NAME = 'sandbox';
+
+/**
+ * STRICT_SANDBOX is on and this host cannot create the namespace sandbox a native child must run in (an
+ * unprivileged `unshare` that a seccomp profile or a kernel setting denies). The conversion is refused before
+ * any process starts: it never runs unsandboxed and never falls back to another engine. It is an
+ * `EngineUnavailableError`, so routes answer 503 and a queue worker retries the job, which another worker
+ * with a working sandbox can serve. The message is fixed text: no tool, path or argument.
+ */
+export class SandboxUnavailableError extends EngineUnavailableError {
+  constructor(reason: string) {
+    super(SANDBOX_ENGINE_NAME, reason);
+    this.name = 'SandboxUnavailableError';
+  }
+}
+
 /**
  * Redis is configured for the job queue but did not answer, so a job cannot be stored or read. Routes
  * answer it with 503 and `Retry-After`; the in-memory queue is never a stand-in once Redis is configured.
