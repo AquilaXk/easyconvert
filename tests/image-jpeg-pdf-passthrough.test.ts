@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError } from '../src/lib/types';
-import { getOracleToolPath } from './helpers/differential-oracle';
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { decodeRgba, runConvert, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 import { meanDeltaE2000 } from './helpers/ciede2000';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -32,7 +32,7 @@ const CMYK_MAX_DELTA_E = 10;
 const CMYK_CONTROL_MIN_DELTA_E = 30;
 
 let work: string;
-const tool = (name: 'pdfimages' | 'pdfinfo' | 'pdftoppm' | 'qpdf'): string => getOracleToolPath(name as never) as string;
+const tool = (name: 'pdfimages' | 'pdfinfo' | 'pdftoppm' | 'qpdf'): string => requireOracleTool(name as never);
 
 function write(name: string, bytes: Buffer): string {
   const file = path.join(work, name);
@@ -82,7 +82,7 @@ function markerOffset(jpeg: Buffer, code: number): number {
 /** Sets the EXIF Orientation of a JPEG with exiftool, an independent writer of the tag. */
 function withOrientation(jpeg: Buffer, orientation: number): Buffer {
   const file = write(`orient-source-${orientation}.jpg`, jpeg);
-  execFileSync(getOracleToolPath('exiftool') as string, ['-overwrite_original', '-q', `-Orientation#=${orientation}`, file]);
+  execFileSync(requireOracleTool('exiftool'), ['-overwrite_original', '-q', `-Orientation#=${orientation}`, file]);
   return readFileSync(file);
 }
 

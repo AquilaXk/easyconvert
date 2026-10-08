@@ -8,7 +8,7 @@ import { mapToPalette, quantizeImage } from '../src/lib/conversions/color-quanti
 import { encodeGif } from '../src/lib/conversions/gif-writer';
 import { KdTree3 } from '../src/lib/conversions/kd-tree';
 import { ConversionFailedError } from '../src/lib/types';
-import { getOracleToolPath } from './helpers/differential-oracle';
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { bandMean, powerSpectrum, radialPower } from './helpers/image-spectrum';
 import { runConvert, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
@@ -280,7 +280,7 @@ describe('GIF writer', () => {
     const gif = encodeGif({ width, height, palette, paletteSize: colours, indices, transparentIndex: transparent });
     const file = path.join(workDir, 'ffmpeg.gif');
     writeFileSync(file, gif);
-    const decoded = execFileSync(getOracleToolPath('ffmpeg') as string, ['-hide_banner', '-nostdin', '-v', 'error', '-i', file, '-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 28 });
+    const decoded = execFileSync(requireOracleTool('ffmpeg'), ['-hide_banner', '-nostdin', '-v', 'error', '-i', file, '-frames:v', '1', '-pix_fmt', 'rgba', '-f', 'rawvideo', '-'], { maxBuffer: 1 << 28 });
     const expected = expectedRgba(palette, indices, transparent);
     expect(decoded).toHaveLength(expected.length);
     // ffmpeg leaves the colour of a transparent pixel unspecified: alpha must agree everywhere, colour where opaque.

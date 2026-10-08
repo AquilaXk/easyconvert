@@ -12,6 +12,7 @@ import { decodeExrWithFfmpeg } from './helpers/ffmpeg-exr';
 import { DISPLAY_P3_COLORANTS, SRGB_PARA, buildMatrixProfile } from './helpers/icc-writer';
 import { decodeRgba, runConvert } from './helpers/imagemagick';
 import { writeRgbOpenExr } from './helpers/openexr-writer';
+import { requireOracleTool } from './helpers/differential-oracle';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { HAS_ZSCALE, nitsOfPq, pqOfNits, psnrDb, renderSdrWithZimg } from './helpers/zimg-oracle';
 
@@ -157,13 +158,13 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     const result = await convertImage(exr, 'avif', { toneMap: 'none', quality: 100 }, 'ramp.exr', 'exr');
     const target = file('hdr.avif', result.buffer);
     expect(probe(target)).toMatchObject({ color_primaries: 'bt2020', color_transfer: 'smpte2084' });
-    const info = execFileSync('avifdec', ['--info', target], { encoding: 'utf8' });
+    const info = execFileSync(requireOracleTool('avifdec'), ['--info', target], { encoding: 'utf8' });
     expect(info).toMatch(/Color Primaries\s*:\s*9\b/);
     expect(info).toMatch(/Transfer Char\.\s*:\s*16\b/);
     expect(info).toMatch(/Bit Depth\s*:\s*10/);
     expect(result.metadata).toBeUndefined();
     // grey row, 1000 nits at the right edge: PQ(1000) in 10-bit codes
-    const decodedPng = file('hdr.png', execFileSync('avifdec', ['-d', '16', target, path.join(work, 'hdr-out.png')]) && readFileSync(path.join(work, 'hdr-out.png')));
+    const decodedPng = file('hdr.png', execFileSync(requireOracleTool('avifdec'), ['-d', '16', target, path.join(work, 'hdr-out.png')]) && readFileSync(path.join(work, 'hdr-out.png')));
     const codes = samples16(readFileSync(decodedPng));
     const edge = (RAMP_WIDTH - 1) * 3;
     expect(codes[edge] / 65535).toBeCloseTo(pqOfNits(1000), 2);
@@ -174,7 +175,7 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
   it('toneMap "none" writes a 16-bit PNG with a cICP chunk for BT.2020 PQ', async () => {
     const result = await convertImage(exr, 'png', { toneMap: 'none' }, 'ramp.exr', 'exr');
     const target = file('hdr-pq.png', result.buffer);
-    const tags = execFileSync('exiftool', ['-s3', '-PNG-cICP:ColorPrimaries', '-PNG-cICP:TransferCharacteristics', target], { encoding: 'utf8' });
+    const tags = execFileSync(requireOracleTool('exiftool'), ['-s3', '-PNG-cICP:ColorPrimaries', '-PNG-cICP:TransferCharacteristics', target], { encoding: 'utf8' });
     expect(tags).toMatch(/BT\.2020/);
     expect(tags).toMatch(/SMPTE ST 2084/);
     const codes = samples16(result.buffer);
@@ -234,9 +235,9 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
   it('an AVIF written by the reference encoder with nclx 9/16 is tone mapped the same way', async () => {
     const source = file('pq.png', png16(STILL_W, STILL_H, hdrSignals(pqOfNits(1000))));
     const avif = path.join(work, 'pq.avif');
-    execFileSync('avifenc', ['-l', '-d', '10', '--cicp', '9/16/0', '--range', 'f', source, avif], { stdio: 'pipe' });
+    execFileSync(requireOracleTool('avifenc'), ['-l', '-d', '10', '--cicp', '9/16/0', '--range', 'f', source, avif], { stdio: 'pipe' });
     const decodedPng = path.join(work, 'pq-decoded.png');
-    execFileSync('avifdec', ['-d', '16', avif, decodedPng], { stdio: 'pipe' });
+    execFileSync(requireOracleTool('avifdec'), ['-d', '16', avif, decodedPng], { stdio: 'pipe' });
     const floats = Float32Array.from(samples16(readFileSync(decodedPng)), (v) => v / 65535);
     const sourcePeak = floats.reduce((m, v) => Math.max(m, nitsOfPq(v)), 0);
     const reference = renderSdrWithZimg(floats, STILL_W, STILL_H, 'pq', 'bt2020', sourcePeak);

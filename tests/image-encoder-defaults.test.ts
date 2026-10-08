@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent } from '../src/lib/conversions/image-content';
 import { avifEffortFor, avifChromaFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
-import { getOracleToolPath } from './helpers/differential-oracle';
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -60,7 +60,7 @@ const uiBody =
   '<rect x="100" y="40" width="80" height="20" rx="4" fill="#e74c3c"/><rect x="10" y="76" width="170" height="40" fill="#fff" stroke="#bdc3c7"/>';
 
 function avifInfo(file: string): { depth: number; format: string; alpha: string } {
-  const out = execFileSync(getOracleToolPath('avifdec') as string, ['--info', file], { encoding: 'utf-8' });
+  const out = execFileSync(requireOracleTool('avifdec'), ['--info', file], { encoding: 'utf-8' });
   const pick = (key: string): string => (new RegExp(`${key}\\s*:\\s*([^\\n]+)`).exec(out)?.[1] ?? '').trim();
   return { depth: Number(pick('Bit Depth')), format: pick('Format'), alpha: pick('Alpha') };
 }
@@ -72,7 +72,7 @@ function writeIn(name: string, bytes: Buffer): string {
 }
 
 function exiftool(file: string): string {
-  return execFileSync(getOracleToolPath('exiftool') as string, ['-a', '-G1', '-s', file], { encoding: 'utf-8' });
+  return execFileSync(requireOracleTool('exiftool'), ['-a', '-G1', '-s', file], { encoding: 'utf-8' });
 }
 
 beforeAll(() => {
@@ -191,7 +191,7 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     const file = writeIn('ramp.avif', avif);
     expect(avifInfo(file).depth).toBe(10);
     const decoded = path.join(workDir, 'ramp-decoded.png');
-    execFileSync(getOracleToolPath('avifdec') as string, ['--depth', '16', file, decoded]);
+    execFileSync(requireOracleTool('avifdec'), ['--depth', '16', file, decoded]);
     const levels = Number(runIdentify(['-format', '%k', decoded]).trim().split('\n')[0]);
     expect(levels).toBeGreaterThan(256);
   }, 60_000);
@@ -240,7 +240,7 @@ describe.skipIf(skipWithoutTools('cwebp', 'dwebp', 'ffmpeg'))('WebP default qual
     const ours = (await convertImage(png, 'webp', {}, 'p.png', 'png')).buffer;
     const source = writeIn('webp-source.png', png);
     const reference = path.join(workDir, 'ref.webp');
-    execFileSync(getOracleToolPath('cwebp') as string, ['-quiet', '-q', '80', '-m', '4', source, '-o', reference]);
+    execFileSync(requireOracleTool('cwebp'), ['-quiet', '-q', '80', '-m', '4', source, '-o', reference]);
     const referenceBytes = readFileSync(reference).length;
     expect(Math.abs(ours.length - referenceBytes) / referenceBytes).toBeLessThan(SIZE_MATCH_TOLERANCE);
   });
@@ -252,13 +252,13 @@ describe.skipIf(skipWithoutTools('cwebp', 'dwebp', 'ffmpeg'))('WebP default qual
  * when installed.
  */
 describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size quality against the previous settings', () => {
-  const ffmpeg = (): string => getOracleToolPath('ffmpeg') as string;
+  const ffmpeg = (): string => requireOracleTool('ffmpeg');
 
   function decodeToPng(encoded: Buffer, extension: string, name: string): string {
     const input = writeIn(`${name}.${extension}`, encoded);
     const output = path.join(workDir, `${name}-decoded.png`);
-    if (extension === 'avif') execFileSync(getOracleToolPath('avifdec') as string, [input, output]);
-    else if (extension === 'webp') execFileSync(getOracleToolPath('dwebp') as string, ['-nodither', '-quiet', input, '-o', output]);
+    if (extension === 'avif') execFileSync(requireOracleTool('avifdec'), [input, output]);
+    else if (extension === 'webp') execFileSync(requireOracleTool('dwebp'), ['-nodither', '-quiet', input, '-o', output]);
     else execFileSync(ffmpeg(), ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', input, '-frames:v', '1', output]);
     return output;
   }
