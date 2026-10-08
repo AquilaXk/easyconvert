@@ -1,9 +1,13 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
+import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 
 import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
 import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
+
+/** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
+const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
 
 export const PdfWatermarkOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdf-watermark-options.json',
@@ -278,8 +282,11 @@ export const ConversionOptionsSchema = {
     },
     ocrLanguage: {
       type: 'string',
-      enum: ['auto', 'en', 'ko'],
-      description: 'Target OCR language model.',
+      minLength: 1,
+      maxLength: 128,
+      pattern: OCR_LANGUAGE_PATTERN,
+      description:
+        `OCR language: \`auto\` (English), or a language by traineddata name, ISO 639-1 code or BCP 47 tag (\`kor\`, \`ko\`, \`zh-Hans\`, \`sr-Latn\`). Join up to ${OCR_MAX_LANGUAGES_PER_REQUEST} with \`+\` (\`eng+kor\`). An unknown code or too many languages is a 400; a known language whose data is not installed is a 503. GET /api/v1/ocr/languages lists the languages and which are installed.`,
     },
     ocrMode: {
       type: 'string',
@@ -1390,6 +1397,37 @@ export const UsageQueryResponseSchema = {
     },
     totalUnits: { type: 'integer', minimum: 0, description: 'Sum of units across returned items.' },
     count: { type: 'integer', minimum: 0, description: 'Number of returned ledger items.' },
+  },
+} as const;
+
+export const OcrLanguageEntrySchema = {
+  $id: 'https://easyconvert.local/schemas/ocr-language-entry.json',
+  type: 'object',
+  required: ['code', 'traineddata', 'name', 'script', 'direction', 'installed'],
+  additionalProperties: false,
+  properties: {
+    code: { type: 'string', description: 'Short code to request the language by: its ISO 639-1 code, or the traineddata name when it has none.' },
+    traineddata: { type: 'string', description: 'Name of the language data file without extension (`eng`, `chi_sim_vert`).' },
+    name: { type: 'string', description: 'English name of the language.' },
+    script: { type: 'string', description: 'ISO 15924 script code of the writing system (`Latn`, `Hang`, `Arab`).' },
+    direction: { type: 'string', enum: ['ltr', 'rtl', 'ttb'], description: 'Direction text runs in; `ttb` is data trained on vertical lines.' },
+    installed: { type: 'boolean', description: 'Whether this server has the language data. Read from the configured data directories once at start.' },
+  },
+} as const;
+
+export const OcrLanguagesResponseSchema = {
+  $id: 'https://easyconvert.local/schemas/ocr-languages-response.json',
+  type: 'object',
+  required: ['success', 'languages', 'maxLanguagesPerRequest'],
+  additionalProperties: false,
+  properties: {
+    success: { type: 'boolean', const: true },
+    languages: { type: 'array', items: { $ref: 'https://easyconvert.local/schemas/ocr-language-entry.json' } },
+    maxLanguagesPerRequest: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Most languages one request may join with `+`.',
+    },
   },
 } as const;
 

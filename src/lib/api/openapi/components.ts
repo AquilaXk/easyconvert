@@ -10,6 +10,8 @@ import {
   WebhookSecretRotateResponseSchema,
   UsageLedgerEntrySchema,
   UsageQueryResponseSchema,
+  OcrLanguageEntrySchema,
+  OcrLanguagesResponseSchema,
   ArchiveInspectResponseSchema,
   PdfWatermarkOptionsSchema,
   PdfProtectOptionsSchema,
@@ -183,6 +185,21 @@ export const components = {
           items: {
             $ref: '#/components/schemas/UsageLedgerEntry',
           },
+        },
+      },
+    },
+    OcrLanguageEntry: {
+      ...OcrLanguageEntrySchema,
+      $id: undefined,
+    },
+    OcrLanguagesResponse: {
+      ...OcrLanguagesResponseSchema,
+      $id: undefined,
+      properties: {
+        ...OcrLanguagesResponseSchema.properties,
+        languages: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/OcrLanguageEntry' },
         },
       },
     },
