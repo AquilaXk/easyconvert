@@ -2,30 +2,34 @@
   "language": "kor",
   "enginePath": "cli",
   "x": [
-    0.021079,
-    0.31547,
-    0.524989,
-    0.690945,
-    0.781235,
-    0.840842,
-    0.876207,
-    0.901294,
-    0.912615,
-    0.922503,
-    0.942482
+    0.013707,
+    0.232313,
+    0.402321,
+    0.547447,
+    0.688155,
+    0.785716,
+    0.841513,
+    0.875019,
+    0.901143,
+    0.912381,
+    0.922506,
+    0.941608,
+    0.970154
   ],
   "y": [
-    0.014706,
-    0.074074,
-    0.272727,
+    0.051724,
+    0.057143,
+    0.225806,
+    0.318182,
     0.612903,
-    0.689655,
-    0.794872,
-    0.833333,
-    0.893939,
-    0.908046,
-    0.94186,
-    0.968511
+    0.727273,
+    0.820513,
+    0.847826,
+    0.910448,
+    0.923077,
+    0.940789,
+    0.972318,
+    1
   ],
   "provenance": {
     "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
@@ -48,8 +52,8 @@
         "faded",
         "dpi100noise"
       ],
-      "words": 1900,
-      "correctWords": 1621
+      "words": 1892,
+      "correctWords": 1645
     },
     "generator": "tests/helpers/fit-ocr-calibration.mts"
   }
