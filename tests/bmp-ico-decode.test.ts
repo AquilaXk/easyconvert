@@ -258,6 +258,7 @@ describe('BMP validation rejects bad files with a typed error before allocating'
     });
     if (largeResult.ok) throw new Error('the 10000 x 10000 claim was decoded instead of refused');
     expect(largeResult.error).toBeInstanceOf(BmpDecodeError);
+    expect((largeResult.error as Error).message).toMatch(/cannot describe/);
   });
 
   it('answers the pixel limit (413) for a canvas over the input limit, not a 400', () => {
