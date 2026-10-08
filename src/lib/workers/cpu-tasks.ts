@@ -1,4 +1,6 @@
 import { encodeBzip2Block, type BitStream } from '../conversions/bzip2';
+import { compressLzma, compressLzma2, type LzmaCompressOptions } from '../conversions/lzma-encoder';
+import { compressZstd, type ZstdCompressOptions } from '../conversions/zstd';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
@@ -22,7 +24,8 @@ export type CpuTaskHandler = (payload: unknown) => HandlerResult | Promise<Handl
 /** Uint8Array result whose buffer the thread can hand over without copying (and without detaching shared pool memory). */
 export function transferableBytes(bytes: Uint8Array): HandlerResult {
   const exclusive = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
-  const owned = exclusive ? bytes : bytes.slice();
+  // Uint8Array.prototype.slice copies; Buffer#slice would only view the same (pooled) memory.
+  const owned = exclusive ? bytes : Uint8Array.prototype.slice.call(bytes);
   return { result: owned, transfer: [owned.buffer as ArrayBuffer] };
 }
 
@@ -51,10 +54,44 @@ export interface Woff2Payload {
   tables: Woff2InputTable[];
 }
 
+export interface CompressPayload<O> {
+  /** The whole input, in memory shared with the calling thread. */
+  data: Uint8Array;
+  options: O;
+}
+
+/** What an LZMA task hands back; the caller wraps the byte arrays as Buffers. */
+export interface LzmaTaskResult {
+  buffer: Uint8Array;
+  props: Uint8Array;
+  uncompressedSize: number;
+}
+
+function lzmaTaskResult(encoded: { buffer: Buffer; props: Buffer; uncompressedSize: number }): HandlerResult {
+  const stream = transferableBytes(encoded.buffer);
+  const result: LzmaTaskResult = { buffer: stream.result as Uint8Array, props: encoded.props, uncompressedSize: encoded.uncompressedSize };
+  return { result, transfer: stream.transfer };
+}
+
 export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
   demosaicTiles: (raw): HandlerResult => {
     runDemosaicTiles(raw as DemosaicTilesPayload);
     return { result: null, silent: true };
+  },
+
+  lzma: (raw): HandlerResult => {
+    const payload = raw as CompressPayload<LzmaCompressOptions>;
+    return lzmaTaskResult(compressLzma(payload.data, payload.options));
+  },
+
+  lzma2: (raw): HandlerResult => {
+    const payload = raw as CompressPayload<LzmaCompressOptions>;
+    return lzmaTaskResult(compressLzma2(payload.data, payload.options));
+  },
+
+  zstd: (raw): HandlerResult => {
+    const payload = raw as CompressPayload<ZstdCompressOptions>;
+    return transferableBytes(compressZstd(Buffer.from(payload.data.buffer, payload.data.byteOffset, payload.data.byteLength), payload.options));
   },
 
   woff2: (raw): HandlerResult => {

@@ -18,7 +18,7 @@ import { openUrlNodeSecrets } from './sealed-nodes';
 import {
   createTarArchive,
   extractTarArchive,
-  create7zArchive,
+  create7zArchiveAsync,
   extract7zArchive,
   createZipArchive,
   extractZipArchive,
@@ -485,7 +485,7 @@ export async function processGraphNodeJob(
           const tarRes = createTarArchive(filesToArchive, node.options || {}, `bundle.tar`);
           archiveBuf = targetFmt === 'tar.gz' ? zlib.gzipSync(tarRes.buffer) : tarRes.buffer;
         } else if (targetFmt === '7z') {
-          const sevenZipRes = create7zArchive(filesToArchive, node.options || {}, `bundle.7z`);
+          const sevenZipRes = await create7zArchiveAsync(filesToArchive, node.options || {}, `bundle.7z`);
           archiveBuf = sevenZipRes.buffer;
         } else {
           throw new ConversionFailedError(

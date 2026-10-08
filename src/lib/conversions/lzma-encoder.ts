@@ -13,6 +13,7 @@ import { PayloadLimitError, UnsupportedOptionError } from '../types';
 import { LZMA_PROPERTIES_BYTE, LzmaEncoderCore, posSlotOf, type LzmaParserOptions } from './lzma-encoder-core';
 import { lzma2DictionaryByte } from './lzma-decoder';
 import { matchFinderMemoryBytes } from './lzma-matchfinder';
+import { getCpuPool, shareBytes } from '../workers/cpu-pool';
 
 export interface LzmaCompressOptions {
   level?: number;
@@ -341,4 +342,57 @@ export function compressLzma2(
   }
   parts.push(Buffer.from([LZMA2_CONTROL_END]));
   return { buffer: Buffer.concat(parts), props, uncompressedSize: input.length };
+}
+
+// ---------------------------------------------------------------------------
+// Encoding on a pool thread
+// ---------------------------------------------------------------------------
+
+/**
+ * Smallest input worth a pool thread. The priced parse runs at under 1 MB/s, so a slice of this size already takes tens of
+ * milliseconds; below it the thread start-up costs more than the stretch the event loop is blocked for.
+ */
+export const LZMA_POOL_MIN_BYTES = 32 * 1024;
+
+interface PoolLzmaResult {
+  buffer: Uint8Array;
+  props: Uint8Array;
+  uncompressedSize: number;
+}
+
+async function encodeOnPool(
+  kind: 'lzma' | 'lzma2',
+  input: Buffer | Uint8Array,
+  options: LzmaCompressOptions,
+  signal: AbortSignal | undefined
+): Promise<LzmaCompressResult> {
+  // Reject a bad level or dictionary size here, before the input is copied for a thread.
+  resolveEncoder(input.length, options);
+  const data = await shareBytes(input);
+  const reply = await getCpuPool().submit<PoolLzmaResult>(kind, { data, options }, { signal });
+  return {
+    buffer: Buffer.from(reply.buffer.buffer, reply.buffer.byteOffset, reply.buffer.byteLength),
+    props: Buffer.from(reply.props),
+    uncompressedSize: reply.uncompressedSize,
+  };
+}
+
+/** `compressLzma` on a pool thread (inline for a small input): the same bytes, without blocking the event loop. */
+export async function compressLzmaAsync(
+  input: Buffer | Uint8Array,
+  options: LzmaCompressOptions & { signal?: AbortSignal } = {}
+): Promise<LzmaCompressResult> {
+  const { signal, ...encoderOptions } = options;
+  if (input.length < LZMA_POOL_MIN_BYTES) return compressLzma(input, encoderOptions);
+  return encodeOnPool('lzma', input, encoderOptions, signal);
+}
+
+/** `compressLzma2` on a pool thread (inline for a small input): the same bytes, without blocking the event loop. */
+export async function compressLzma2Async(
+  input: Buffer | Uint8Array,
+  options: LzmaCompressOptions & { signal?: AbortSignal } = {}
+): Promise<LzmaCompressResult> {
+  const { signal, ...encoderOptions } = options;
+  if (input.length < LZMA_POOL_MIN_BYTES) return compressLzma2(input, encoderOptions);
+  return encodeOnPool('lzma2', input, encoderOptions, signal);
 }

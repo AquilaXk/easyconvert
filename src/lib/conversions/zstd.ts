@@ -8,6 +8,7 @@ import {
   type ZstdParsedDictionary,
 } from './zstd-decoder';
 import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
+import { getCpuPool, shareBytes } from '../workers/cpu-pool';
 import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
 import {
   ZSTD_BLOCK_SIZE_MAX,
@@ -762,17 +763,22 @@ export function encodeZstdFrameHeader(
   return header;
 }
 
-/**
- * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
- * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
- */
-export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+function resolveZstdLevel(options: ZstdCompressOptions): number {
   const level = options.level ?? ZSTD_LEVEL_DEFAULT;
   if (!Number.isInteger(level) || level < ZSTD_LEVEL_MIN || level > ZSTD_LEVEL_MAX) {
     throw new ConversionFailedError(
       `Unsupported zstd compression level ${String(level)}: expected an integer from ${ZSTD_LEVEL_MIN} to ${ZSTD_LEVEL_MAX}.`
     );
   }
+  return level;
+}
+
+/**
+ * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
+ * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
+ */
+export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+  const level = resolveZstdLevel(options);
   const checksum = options.checksum ?? true;
   const inputLen = inputBuffer.length;
   if (inputLen > ZSTD_ENCODER_INPUT_MAX) {
@@ -804,4 +810,25 @@ export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions =
   const spare = encoded.data.length - end;
   if (spare * OUTPUT_SPARE_DENOMINATOR > end) return Buffer.from(encoded.data.subarray(0, end));
   return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
+}
+
+/** Levels from here on use the lazy and optimal parsers, slow enough to hold the event loop for tens of milliseconds per slice. */
+export const ZSTD_POOL_MIN_LEVEL = 10;
+/** Smallest input worth a pool thread at those levels (the optimal parser runs at about 1 MB/s). */
+export const ZSTD_POOL_MIN_BYTES = 32 * 1024;
+
+/**
+ * `compressZstd` for callers that must keep the event loop free: levels of ZSTD_POOL_MIN_LEVEL and above run on a pool
+ * thread (the frame is the same bytes), faster levels and small inputs run inline.
+ */
+export async function compressZstdAsync(
+  inputBuffer: Buffer,
+  options: ZstdCompressOptions & { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const { signal, ...encoderOptions } = options;
+  const level = resolveZstdLevel(encoderOptions);
+  if (level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return compressZstd(inputBuffer, encoderOptions);
+  const data = await shareBytes(inputBuffer);
+  const reply = await getCpuPool().submit<Uint8Array>('zstd', { data, options: encoderOptions }, { signal });
+  return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
 }

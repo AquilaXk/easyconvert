@@ -332,6 +332,12 @@ export async function copyYielding<T extends Uint8Array | Uint16Array>(source: T
   return copy;
 }
 
+/** The bytes in memory every pool thread can read without a copy; an input that is already shared is returned as is. */
+export async function shareBytes(source: Uint8Array): Promise<Uint8Array> {
+  if (source.buffer instanceof SharedArrayBuffer) return source;
+  return copyYielding<Uint8Array>(source, new Uint8Array(new SharedArrayBuffer(source.length)));
+}
+
 let sharedPool: CpuPool | null = null;
 
 /** The process-wide pool the encoders submit to; started on first use. */

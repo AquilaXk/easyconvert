@@ -12,7 +12,9 @@ import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 import { buildGlyfFont, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
-import { SeededRandom } from './helpers/archive-corpus';
+import { SeededRandom, sourceText, zipfText } from './helpers/archive-corpus';
+import { compressZstd, compressZstdAsync } from '../src/lib/conversions/zstd';
+import { create7zArchiveAsync, extract7zArchive, packXz, packXzAsync, unpackXz } from '../src/lib/conversions/archive';
 
 /**
  * No single conversion may hold the event loop longer than EVENT_LOOP_BLOCK_BUDGET_MS: health checks, progress updates and
@@ -117,5 +119,51 @@ describe('event loop stays free during CPU-bound encodes', () => {
     expect(restored.equals(data)).toBe(true);
     // Joining independently encoded blocks gives the single-threaded stream byte for byte.
     expect(value.equals(compressBzip2(data))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+  it('a 3 MB pure xz encode keeps the loop delay under the budget and unpacks to the input', async () => {
+    const data = zipfText(3 * BYTES_PER_MB, 41);
+    const { value, maxMs } = await withLoopMonitor(() => packXzAsync(data, { compressionLevel: 6 }));
+    expect(maxMs).toBeLessThan(BUDGET_MS);
+    expect(unpackXz(value).equals(data)).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  it('the synchronous xz encoder blocks the loop (control)', async () => {
+    const data = zipfText(BYTES_PER_MB, 42);
+    const { maxMs } = await withLoopMonitor(async () => packXz(data, { compressionLevel: 6 }));
+    expect(maxMs).toBeGreaterThan(BUDGET_MS);
+  }, TEST_TIMEOUT_MS);
+
+  it('a level-19 zstd encode of 1 MB keeps the loop delay under the budget and equals the synchronous frame', async () => {
+    const data = sourceText(BYTES_PER_MB, 43);
+    const { value, maxMs } = await withLoopMonitor(() => compressZstdAsync(data, { level: 19 }));
+    expect(maxMs).toBeLessThan(BUDGET_MS);
+    expect(value.equals(compressZstd(data, { level: 19 }))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  it('a pure 7z archive of three 1 MB files keeps the loop delay under the budget and extracts to the inputs', async () => {
+    const saved = process.env.P7ZIP_PATH;
+    process.env.P7ZIP_PATH = '/nonexistent/easyconvert-no-7z';
+    try {
+      const files = [1, 2, 3].map((n) => ({ filename: `part${n}.txt`, buffer: zipfText(BYTES_PER_MB, 50 + n) }));
+      const { value, maxMs } = await withLoopMonitor(() => create7zArchiveAsync(files, { compressionLevel: 6 }, 'budget.7z'));
+      expect(maxMs).toBeLessThan(BUDGET_MS);
+      const restored = extract7zArchive(value.buffer);
+      expect(restored.map((f) => f.filename)).toEqual(files.map((f) => f.filename));
+      for (const [i, f] of files.entries()) expect(restored[i].buffer.equals(f.buffer)).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.P7ZIP_PATH;
+      else process.env.P7ZIP_PATH = saved;
+    }
+  }, TEST_TIMEOUT_MS);
+
+  oracleTest('a native 7z archive keeps the loop delay under the budget while 7-Zip compresses', ['7z'], async () => {
+    const files = [
+      { filename: 'native1.txt', buffer: zipfText(3 * BYTES_PER_MB, 61) },
+      { filename: 'native2.txt', buffer: sourceText(2 * BYTES_PER_MB, 62) },
+    ];
+    const { value, maxMs } = await withLoopMonitor(() => create7zArchiveAsync(files, { compressionLevel: 9 }, 'native.7z'));
+    expect(maxMs).toBeLessThan(BUDGET_MS);
+    const restored = extract7zArchive(value.buffer);
+    for (const f of files) expect(restored.find((r) => r.filename === f.filename)!.buffer.equals(f.buffer)).toBe(true);
   }, TEST_TIMEOUT_MS);
 });
