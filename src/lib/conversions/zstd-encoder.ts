@@ -1,5 +1,4 @@
 import {
-  BitWriter,
   buildFseEncodeTable,
   estimateFseBits,
   fseInitState,
@@ -64,6 +63,11 @@ export interface ZstdLevelParams {
   skipStrength: number;
   /** Insert every position of an accepted match into the hash chains. */
   insertMatchInterior: boolean;
+  /**
+   * With interior insertion on, a match longer than twice this many bytes inserts only its first and last this many
+   * positions into the chains; the middle of a long match mostly repeats positions the finder already knows.
+   */
+  interiorInsertCap?: number;
 }
 
 const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
@@ -72,7 +76,7 @@ const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
   // level 2
   { windowLog: 19, hashLog: 15, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 24, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false },
   // level 3
-  { windowLog: 20, hashLog: 16, chainLog: 16, searchDepth: 4, minMatch: 4, niceLength: 32, lazyDepth: 0, skipStrength: 7, insertMatchInterior: true },
+  { windowLog: 20, hashLog: 16, chainLog: 16, searchDepth: 4, minMatch: 4, niceLength: 32, lazyDepth: 0, skipStrength: 7, insertMatchInterior: true, interiorInsertCap: 16 },
   // level 4
   { windowLog: 20, hashLog: 17, chainLog: 17, searchDepth: 6, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true },
   // level 5
@@ -154,6 +158,18 @@ const BITS_PER_BYTE = 8;
 const SMALL_CODE_LOOKUP_SIZE = 64;
 const MATCH_CODE_LOOKUP_SIZE = 128;
 const LL_LARGE_CODE_BIAS = 19;
+/** Most bytes one sequence can add to the bitstream: 16 + 16 + 31 extra bits and three FSE states of up to 9 bits. */
+const SEQUENCE_MAX_BYTES = 16;
+/** Offsets up to 2^24 fit one accumulator write next to the pending bits; larger ones are written in two parts. */
+const OFFSET_WINDOW_BITS_MAX = 24;
+const OFFSET_LOW_BITS = 16;
+const OFFSET_LOW_MASK = (1 << OFFSET_LOW_BITS) - 1;
+const OFFSET_LOW_RADIX = 1 << OFFSET_LOW_BITS;
+/** Typed copies of the code tables: module-local, so no accessor call per use under CommonJS interop. */
+const LL_BASELINE_TABLE = Uint32Array.from(LL_BASELINE);
+const LL_BITS_TABLE = Uint8Array.from(LL_BITS);
+const ML_BASELINE_TABLE = Uint32Array.from(ML_BASELINE);
+const ML_BITS_TABLE = Uint8Array.from(ML_BITS);
 const ML_LARGE_CODE_BIAS = 36;
 
 /** Worst-case compressed size of `inputLength` bytes (raw blocks plus framing). */
@@ -212,6 +228,7 @@ class MatchFinder {
   public rep3: number = ZSTD_REP_OFFSET_INITIAL[2];
 
   private readonly data: Uint8Array;
+  private readonly view: DataView;
   private readonly dataLength: number;
   private readonly params: ZstdLevelParams;
   private readonly windowSize: number;
@@ -231,6 +248,7 @@ class MatchFinder {
 
   constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
     this.data = data;
+    this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     this.dataLength = data.length;
     this.params = params;
     this.windowSize = windowSize;
@@ -251,9 +269,9 @@ class MatchFinder {
     this.insertEnd = data.length - HASH_READ_BYTES;
   }
 
-  private hash(p: number): number {
+  /** Hash of the minMatch bytes at p, given the little-endian word of the first four. */
+  private hashOfWord(word: number, p: number): number {
     const d = this.data;
-    const word = d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] << 24);
     let h = Math.imul(word, HASH_MULTIPLIER_A);
     const minMatch = this.params.minMatch;
     if (minMatch >= 5) {
@@ -264,25 +282,41 @@ class MatchFinder {
     return h >>> this.hashShift;
   }
 
-  private insert(p: number): void {
-    const h = this.hash(p);
-    if (this.chain !== null) this.chain[p & this.chainMask] = this.head[h];
-    this.head[h] = p;
+  private hash(p: number): number {
+    const d = this.data;
+    return this.hashOfWord(d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] << 24), p);
   }
 
+  /**
+   * Inserts every position in [nextInsert, p) into the hash chains (clamped to the last hashable position). The word of
+   * four bytes is rolled from one position to the next, so each insertion loads one new byte instead of four.
+   */
   private catchUpTo(p: number): void {
     let next = this.nextInsert;
     const stop = p < this.insertEnd + 1 ? p : this.insertEnd + 1;
+    if (next >= stop) return;
+    const d = this.data;
+    const head = this.head;
+    const chain = this.chain;
+    const chainMask = this.chainMask;
+    let word = d[next] | (d[next + 1] << 8) | (d[next + 2] << 16) | (d[next + 3] << 24);
     while (next < stop) {
-      this.insert(next);
+      const h = this.hashOfWord(word, next);
+      if (chain !== null) chain[next & chainMask] = head[h];
+      head[h] = next;
       next++;
+      word = (word >>> 8) | (d[next + 3] << 24);
     }
-    if (next > this.nextInsert) this.nextInsert = next;
+    this.nextInsert = next;
   }
 
+  /** Length of the common prefix of the data at a and b, up to max; compares four bytes per step while it can. */
   private matchLength(a: number, b: number, max: number): number {
     const d = this.data;
+    const view = this.view;
     let n = 0;
+    const wordEnd = max - 3;
+    while (n < wordEnd && view.getUint32(a + n, true) === view.getUint32(b + n, true)) n += 4;
     while (n < max && d[a + n] === d[b + n]) n++;
     return n;
   }
@@ -410,6 +444,7 @@ class MatchFinder {
     const params = this.params;
     const lazyDepth = params.lazyDepth;
     const skipStrength = params.skipStrength;
+    const interiorCap = params.interiorInsertCap ?? Infinity;
     const lastProbe = Math.min(blockEnd - REP_MIN_MATCH, this.insertEnd);
     let p = blockStart;
     let anchor = blockStart;
@@ -422,7 +457,13 @@ class MatchFinder {
       this.depthLimit = Math.max(1, params.searchDepth >> depthShift);
       this.findBest(p, blockEnd);
       if (this.bestLen === 0) {
-        p += skipStrength > 0 ? 1 + ((p - anchor) >> skipStrength) : 1;
+        const step = skipStrength > 0 ? 1 + ((p - anchor) >> skipStrength) : 1;
+        if (step > 1) {
+          // Positions inside a stride over incompressible bytes are not worth inserting: only the probed one is.
+          this.catchUpTo(p + 1);
+          if (p + step > this.nextInsert) this.nextInsert = p + step;
+        }
+        p += step;
         continue;
       }
       let len = this.bestLen;
@@ -459,6 +500,10 @@ class MatchFinder {
       if (!params.insertMatchInterior) {
         this.catchUpTo(p + 1);
         const skipTo = matchEnd - 2;
+        if (skipTo > this.nextInsert) this.nextInsert = skipTo;
+      } else if (len > interiorCap * 2) {
+        this.catchUpTo(p + 1 + interiorCap);
+        const skipTo = matchEnd - interiorCap;
         if (skipTo > this.nextInsert) this.nextInsert = skipTo;
       }
       p = matchEnd;
@@ -870,51 +915,156 @@ export class ZstdBlockEncoder {
     const llTable = llChoice.mode === MODE_RLE ? null : llChoice.table;
     const ofTable = ofChoice.mode === MODE_RLE ? null : ofChoice.table;
     const mlTable = mlChoice.mode === MODE_RLE ? null : mlChoice.table;
-    const writer = new BitWriter(out, pos, cap);
+    return this.writeSequenceBitstream(out, pos, cap, n, llTable, ofTable, mlTable);
+  }
+
+  /**
+   * Writes the interleaved FSE bitstream of the sequences in reverse order (RFC 8878 section 3.1.1.4), then the final
+   * states and the end mark. The accumulator lives in locals and whole sequences are checked against the capacity
+   * once, so no per-bit bookkeeping runs in the loop. Returns the end position, or -1 when the stream cannot fit below
+   * `cap` (the caller then emits a raw block).
+   */
+  private writeSequenceBitstream(
+    out: Uint8Array,
+    startPos: number,
+    cap: number,
+    n: number,
+    llTable: FseEncodeTable | null,
+    ofTable: FseEncodeTable | null,
+    mlTable: FseEncodeTable | null
+  ): number {
+    const { llCodes, mlCodes, ofCodes } = this;
+    const store = this.store;
+    const litLenOf = store.litLen;
+    const matchLenOf = store.matchLen;
+    const offBaseOf = store.offBase;
+    let bytePos = startPos;
+    let acc = 0;
+    let pending = 0;
 
     let llState = llTable === null ? 0 : fseInitState(llTable, llCodes[n - 1]);
     let ofState = ofTable === null ? 0 : fseInitState(ofTable, ofCodes[n - 1]);
     let mlState = mlTable === null ? 0 : fseInitState(mlTable, mlCodes[n - 1]);
+    const llDeltaNb = llTable === null ? null : llTable.deltaNbBits;
+    const llDeltaFind = llTable === null ? null : llTable.deltaFindState;
+    const llStates = llTable === null ? null : llTable.stateTable;
+    const mlDeltaNb = mlTable === null ? null : mlTable.deltaNbBits;
+    const mlDeltaFind = mlTable === null ? null : mlTable.deltaFindState;
+    const mlStates = mlTable === null ? null : mlTable.stateTable;
+    const ofDeltaNb = ofTable === null ? null : ofTable.deltaNbBits;
+    const ofDeltaFind = ofTable === null ? null : ofTable.deltaFindState;
+    const ofStates = ofTable === null ? null : ofTable.stateTable;
 
-    this.writeExtras(writer, n - 1);
-    for (let i = n - 2; i >= 0; i--) {
-      if (ofTable !== null) {
-        const symbol = ofCodes[i];
-        const nb = (ofState + ofTable.deltaNbBits[symbol]) >> 16;
-        writer.write(ofState & ((1 << nb) - 1), nb);
-        ofState = ofTable.stateTable[(ofState >> nb) + ofTable.deltaFindState[symbol]];
+    for (let i = n - 1; i >= 0; i--) {
+      // One sequence writes at most 16 + 16 + 32 extra bits and three states of at most 9 bits.
+      if (bytePos + SEQUENCE_MAX_BYTES > cap) return -1;
+      if (i < n - 1) {
+        if (ofDeltaNb !== null && ofDeltaFind !== null && ofStates !== null) {
+          const symbol = ofCodes[i];
+          const nb = (ofState + ofDeltaNb[symbol]) >> 16;
+          acc |= (ofState & ((1 << nb) - 1)) << pending;
+          pending += nb;
+          ofState = ofStates[(ofState >> nb) + ofDeltaFind[symbol]];
+        }
+        if (mlDeltaNb !== null && mlDeltaFind !== null && mlStates !== null) {
+          const symbol = mlCodes[i];
+          const nb = (mlState + mlDeltaNb[symbol]) >> 16;
+          acc |= (mlState & ((1 << nb) - 1)) << pending;
+          pending += nb;
+          mlState = mlStates[(mlState >> nb) + mlDeltaFind[symbol]];
+        }
+        while (pending >= BITS_PER_BYTE) {
+          out[bytePos++] = acc & 0xff;
+          acc >>>= BITS_PER_BYTE;
+          pending -= BITS_PER_BYTE;
+        }
+        if (llDeltaNb !== null && llDeltaFind !== null && llStates !== null) {
+          const symbol = llCodes[i];
+          const nb = (llState + llDeltaNb[symbol]) >> 16;
+          acc |= (llState & ((1 << nb) - 1)) << pending;
+          pending += nb;
+          llState = llStates[(llState >> nb) + llDeltaFind[symbol]];
+        }
       }
-      if (mlTable !== null) {
-        const symbol = mlCodes[i];
-        const nb = (mlState + mlTable.deltaNbBits[symbol]) >> 16;
-        writer.write(mlState & ((1 << nb) - 1), nb);
-        mlState = mlTable.stateTable[(mlState >> nb) + mlTable.deltaFindState[symbol]];
+      // Extra bits of sequence i in reverse of the decoder's read order: literal length, match length, offset.
+      const llCode = llCodes[i];
+      const llBits = LL_BITS_TABLE[llCode];
+      if (llBits > 0) {
+        acc |= (litLenOf[i] - LL_BASELINE_TABLE[llCode]) << pending;
+        pending += llBits;
       }
-      if (llTable !== null) {
-        const symbol = llCodes[i];
-        const nb = (llState + llTable.deltaNbBits[symbol]) >> 16;
-        writer.write(llState & ((1 << nb) - 1), nb);
-        llState = llTable.stateTable[(llState >> nb) + llTable.deltaFindState[symbol]];
+      while (pending >= BITS_PER_BYTE) {
+        out[bytePos++] = acc & 0xff;
+        acc >>>= BITS_PER_BYTE;
+        pending -= BITS_PER_BYTE;
       }
-      this.writeExtras(writer, i);
+      const mlCode = mlCodes[i];
+      const mlBits = ML_BITS_TABLE[mlCode];
+      if (mlBits > 0) {
+        acc |= (matchLenOf[i] - ML_BASELINE_TABLE[mlCode]) << pending;
+        pending += mlBits;
+      }
+      while (pending >= BITS_PER_BYTE) {
+        out[bytePos++] = acc & 0xff;
+        acc >>>= BITS_PER_BYTE;
+        pending -= BITS_PER_BYTE;
+      }
+      const ofCode = ofCodes[i];
+      if (ofCode > 0) {
+        if (ofCode <= OFFSET_WINDOW_BITS_MAX) {
+          acc |= (offBaseOf[i] - (1 << ofCode)) << pending;
+          pending += ofCode;
+        } else {
+          const extra = offBaseOf[i] - 2 ** ofCode;
+          acc |= (extra & OFFSET_LOW_MASK) << pending;
+          pending += OFFSET_LOW_BITS;
+          while (pending >= BITS_PER_BYTE) {
+            out[bytePos++] = acc & 0xff;
+            acc >>>= BITS_PER_BYTE;
+            pending -= BITS_PER_BYTE;
+          }
+          acc |= Math.floor(extra / OFFSET_LOW_RADIX) << pending;
+          pending += ofCode - OFFSET_LOW_BITS;
+        }
+      }
+      while (pending >= BITS_PER_BYTE) {
+        out[bytePos++] = acc & 0xff;
+        acc >>>= BITS_PER_BYTE;
+        pending -= BITS_PER_BYTE;
+      }
     }
-    if (mlTable !== null) writer.write(mlState - (1 << mlTable.accuracyLog), mlTable.accuracyLog);
-    if (ofTable !== null) writer.write(ofState - (1 << ofTable.accuracyLog), ofTable.accuracyLog);
-    if (llTable !== null) writer.write(llState - (1 << llTable.accuracyLog), llTable.accuracyLog);
-    const end = writer.closeWithStopBit();
-    return writer.overflow ? -1 : end;
-  }
 
-  /** Extra bits of sequence i, in reverse of the decoder's read order (literal length, match length, offset). */
-  private writeExtras(writer: BitWriter, i: number): void {
-    const store = this.store;
-    const llCode = this.llCodes[i];
-    const mlCode = this.mlCodes[i];
-    const ofCode = this.ofCodes[i];
-    const llBits = LL_BITS[llCode];
-    if (llBits > 0) writer.write(store.litLen[i] - LL_BASELINE[llCode], llBits);
-    const mlBits = ML_BITS[mlCode];
-    if (mlBits > 0) writer.write(store.matchLen[i] - ML_BASELINE[mlCode], mlBits);
-    if (ofCode > 0) writer.writeWide(store.offBase[i] - 2 ** ofCode, ofCode);
+    // Final states: match length, offset, literal length, then the stop bit.
+    if (bytePos + SEQUENCE_MAX_BYTES > cap) return -1;
+    if (mlTable !== null) {
+      acc |= (mlState - (1 << mlTable.accuracyLog)) << pending;
+      pending += mlTable.accuracyLog;
+    }
+    if (ofTable !== null) {
+      while (pending >= BITS_PER_BYTE) {
+        out[bytePos++] = acc & 0xff;
+        acc >>>= BITS_PER_BYTE;
+        pending -= BITS_PER_BYTE;
+      }
+      acc |= (ofState - (1 << ofTable.accuracyLog)) << pending;
+      pending += ofTable.accuracyLog;
+    }
+    if (llTable !== null) {
+      while (pending >= BITS_PER_BYTE) {
+        out[bytePos++] = acc & 0xff;
+        acc >>>= BITS_PER_BYTE;
+        pending -= BITS_PER_BYTE;
+      }
+      acc |= (llState - (1 << llTable.accuracyLog)) << pending;
+      pending += llTable.accuracyLog;
+    }
+    while (pending >= BITS_PER_BYTE) {
+      out[bytePos++] = acc & 0xff;
+      acc >>>= BITS_PER_BYTE;
+      pending -= BITS_PER_BYTE;
+    }
+    acc |= 1 << pending;
+    out[bytePos++] = acc & 0xff;
+    return bytePos > cap ? -1 : bytePos;
   }
 }
