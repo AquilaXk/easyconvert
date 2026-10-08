@@ -2,7 +2,7 @@
  * A minimal WebAssembly binary assembler (WebAssembly core specification 2.0, binary format; fixed-width SIMD proposal
  * as merged into it). It emits the bytes of a module from instructions written in TypeScript, so a kernel is built from
  * source in this repository at run time and no prebuilt binary is shipped. The assembler knows only what the kernels
- * use: i32/f64/v128 values, one imported memory, exported functions and structured control flow.
+ * use: i32/i64/f64/v128 values, one imported memory, exported functions and structured control flow.
  */
 
 export const VALUE_TYPE = {
@@ -62,6 +62,25 @@ export function pushS32(bytes: number[], value: number): void {
   }
 }
 
+const INT64_MIN = -(2n ** 63n);
+const INT64_MAX = 2n ** 63n - 1n;
+const LEB_PAYLOAD_MASK_BIG = 0x7fn;
+const LEB_PAYLOAD_BITS_BIG = 7n;
+const LEB_SIGN_BIT_BIG = 0x40n;
+
+/** Appends the signed LEB128 form of `value` (an int64). */
+export function pushS64(bytes: number[], value: bigint): void {
+  if (value < INT64_MIN || value > INT64_MAX) throw new RangeError(`i64 out of range: ${value}`);
+  let rest = value;
+  for (;;) {
+    const byte = rest & LEB_PAYLOAD_MASK_BIG;
+    rest >>= LEB_PAYLOAD_BITS_BIG;
+    const done = (rest === 0n && (byte & LEB_SIGN_BIT_BIG) === 0n) || (rest === -1n && (byte & LEB_SIGN_BIT_BIG) !== 0n);
+    bytes.push(Number(done ? byte : byte | BigInt(LEB_CONTINUE)));
+    if (done) return;
+  }
+}
+
 function pushName(bytes: number[], name: string): void {
   const encoded = Buffer.from(name, 'utf8');
   if (encoded.length > MAX_NAME_BYTES) throw new RangeError('name too long');
@@ -100,16 +119,33 @@ const OPCODE = {
   i32_const: 0x41,
   f64_const: 0x44,
   i32_eqz: 0x45,
+  i64_load: 0x29,
+  i64_load8_u: 0x31,
+  i64_load32_u: 0x35,
+  i64_const: 0x42,
+  i64_store: 0x37,
   i32_eq: 0x46,
   i32_lt_s: 0x48,
   i32_gt_s: 0x4a,
   i32_le_s: 0x4c,
+  i32_lt_u: 0x49,
+  i32_gt_u: 0x4b,
+  i32_le_u: 0x4d,
   i32_ge_s: 0x4e,
+  i32_ge_u: 0x4f,
   i32_add: 0x6a,
   i32_sub: 0x6b,
   i32_mul: 0x6c,
   i32_shl: 0x74,
   i32_shr_s: 0x75,
+  i32_and: 0x71,
+  i64_add: 0x7c,
+  i64_mul: 0x7e,
+  i64_xor: 0x85,
+  i64_shr_u: 0x88,
+  i64_rotl: 0x89,
+  i32_wrap_i64: 0xa7,
+  i64_extend_i32_u: 0xad,
   f64_add: 0xa0,
   f64_mul: 0xa2,
 } as const;
@@ -249,6 +285,62 @@ export class FunctionBody {
   i32Eq(): this {
     return this.op(OPCODE.i32_eq);
   }
+  i32And(): this {
+    return this.op(OPCODE.i32_and);
+  }
+  i32LtU(): this {
+    return this.op(OPCODE.i32_lt_u);
+  }
+  i32GtU(): this {
+    return this.op(OPCODE.i32_gt_u);
+  }
+  i32LeU(): this {
+    return this.op(OPCODE.i32_le_u);
+  }
+  i32GeU(): this {
+    return this.op(OPCODE.i32_ge_u);
+  }
+  i32WrapI64(): this {
+    return this.op(OPCODE.i32_wrap_i64);
+  }
+
+  // i64.
+  i64Const(value: bigint): this {
+    this.op(OPCODE.i64_const);
+    pushS64(this.code, value);
+    return this;
+  }
+  i64Add(): this {
+    return this.op(OPCODE.i64_add);
+  }
+  i64Mul(): this {
+    return this.op(OPCODE.i64_mul);
+  }
+  i64Xor(): this {
+    return this.op(OPCODE.i64_xor);
+  }
+  i64ShrU(): this {
+    return this.op(OPCODE.i64_shr_u);
+  }
+  i64Rotl(): this {
+    return this.op(OPCODE.i64_rotl);
+  }
+  i64ExtendI32U(): this {
+    return this.op(OPCODE.i64_extend_i32_u);
+  }
+  i64Load(offset = 0): this {
+    return this.memarg(() => this.op(OPCODE.i64_load), 0, offset);
+  }
+  i64Load32U(offset = 0): this {
+    return this.memarg(() => this.op(OPCODE.i64_load32_u), 0, offset);
+  }
+  i64Load8U(offset = 0): this {
+    return this.memarg(() => this.op(OPCODE.i64_load8_u), 0, offset);
+  }
+  i64Store(offset = 0): this {
+    return this.memarg(() => this.op(OPCODE.i64_store), 0, offset);
+  }
+
   i32Load(offset = 0): this {
     return this.memarg(() => this.op(OPCODE.i32_load), 0, offset);
   }

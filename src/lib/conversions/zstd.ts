@@ -8,6 +8,7 @@ import {
   type ZstdParsedDictionary,
 } from './zstd-decoder';
 import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
+import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
 import {
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_DECODER_WINDOW_SIZE_MAX,
@@ -106,6 +107,7 @@ export interface ZstdBlockHeader {
 // XXH64 Content Checksum Engine (RFC 8878)
 // ==========================================
 const PRIME64_1 = 11400714785074694791n;
+const LOW_32_BITS = 0xffffffffn;
 const PRIME64_2 = 14029467366897019727n;
 const PRIME64_3 = 1609587929392839161n;
 const PRIME64_4 = 9650029242287828579n;
@@ -349,15 +351,18 @@ export class FastStreamingXxHash64 {
 }
 
 export function xxh64(buf: Uint8Array): bigint {
+  if (buf.length >= XXH64_WASM_MIN_BYTES) {
+    const hashed = xxh64Wasm(buf);
+    if (hashed !== null) return hashed;
+  }
   const hasher = new FastStreamingXxHash64();
   hasher.update(buf);
   return hasher.digest64();
 }
 
+/** The low 32 bits of XXH64 (seed 0) of `data`: the content checksum of a Zstandard frame. */
 export function computeZstdChecksum(data: Uint8Array): number {
-  const hasher = new FastStreamingXxHash64();
-  hasher.update(data);
-  return hasher.digest();
+  return Number(xxh64(data) & LOW_32_BITS);
 }
 
 // ==========================================
