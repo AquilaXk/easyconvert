@@ -84,14 +84,29 @@ export async function readPdfPageFrames(pdf: Buffer | Uint8Array): Promise<PdfPa
   } catch (err) {
     throw new PdfPageFrameError(`Invalid PDF: the page boxes could not be read (${err instanceof Error ? err.message : String(err)}).`);
   }
-  return doc.getPages().map((page, index) => {
-    const crop = page.getCropBox();
+  let pages: ReturnType<PDFDocument['getPages']>;
+  try {
+    pages = doc.getPages();
+  } catch (err) {
+    // A page tree the parser cannot walk (a cyclic or broken /Kids chain) leaves no page boxes to read.
+    throw new PdfPageFrameError(`Invalid PDF: the page tree could not be read (${err instanceof Error ? err.message : String(err)}).`);
+  }
+  return pages.map((page, index) => {
+    let crop: ReturnType<typeof page.getCropBox>;
+    let angle: number;
+    try {
+      crop = page.getCropBox();
+      angle = page.getRotation().angle;
+    } catch (err) {
+      // A page without a readable MediaBox in its own dictionary or in any ancestor has no box to render.
+      throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has no readable page box (${err instanceof Error ? err.message : String(err)}).`);
+    }
     if (!(crop.width > 0) || !(crop.height > 0) || !Number.isFinite(crop.x) || !Number.isFinite(crop.y)) {
       throw new PdfPageFrameError(`Invalid PDF: page ${index + 1} has an empty or unreadable CropBox.`);
     }
     return {
       cropBox: { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
-      rotation: normalizePdfRotation(page.getRotation().angle),
+      rotation: normalizePdfRotation(angle),
     };
   });
 }

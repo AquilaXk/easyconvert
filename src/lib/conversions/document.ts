@@ -1,3 +1,4 @@
+import { PdfPageFrameError } from './pdf-page-geometry';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
@@ -241,8 +242,10 @@ export async function convertDocument(
         rethrowInputPixelLimit(err);
         // OCR that nobody asked for (a scanned page converted to text) is best effort when no engine can render the
         // pages; the text stays as extracted. A requested OCR, or a target that is OCR output, never is.
+        // A page tree that cannot be walked leaves nothing to render either, so it is treated the same way.
         const optional = !options.ocrEnabled && tgt !== 'hocr' && tgt !== 'alto';
-        if (!(optional && err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError))) {
+        const cannotRender = (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) || err instanceof PdfPageFrameError;
+        if (!(optional && cannotRender)) {
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err instanceof Error ? err.message : String(err);
           throw new ConversionFailedError(`PDF OCR failed: ${rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg}`);
