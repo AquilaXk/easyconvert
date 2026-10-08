@@ -33,7 +33,7 @@ export interface PaletteDifference {
   deltaEOk: number;
 }
 
-export function comparePictures(reference: Uint8Array, candidate: Uint8Array): PaletteDifference {
+export function comparePictures(reference: Uint8Array | Uint8ClampedArray, candidate: Uint8Array | Uint8ClampedArray): PaletteDifference {
   if (reference.length !== candidate.length) throw new Error('pictures differ in size');
   const pixels = reference.length / 4;
   let squared = 0;

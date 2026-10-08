@@ -72,7 +72,7 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('BMP variants decode bit-exactly against Im
     ['RGB565', ['-type', 'TrueColor', '-define', 'bmp:subtype=RGB565', 'BMP:-']],
     ['32-bit bit-fields with alpha (V5 header)', ['-type', 'TrueColorAlpha', 'BMP:-']],
   ] as const)('%s', (_name, spec) => {
-    const bmp = magickWrite([...spec], spec.includes('TrueColorAlpha') ? 4 : 3);
+    const bmp = magickWrite([...spec], (spec as readonly string[]).includes('TrueColorAlpha') ? 4 : 3);
     expectSameAsMagick(bmp);
   });
 

@@ -76,7 +76,7 @@ function readRleChannels(buffer: Buffer, countTableAt: number, channels: number)
   return { planes, end: cursor };
 }
 
-async function pngOf(channels: number): Promise<Buffer> {
+async function pngOf(channels: 1 | 2 | 3 | 4): Promise<Buffer> {
   return sharp(sourcePixels(channels), { raw: { width: WIDTH, height: HEIGHT, channels } }).png().toBuffer();
 }
 
