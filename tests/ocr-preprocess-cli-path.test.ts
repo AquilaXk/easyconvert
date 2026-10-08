@@ -9,8 +9,9 @@ import { characterErrorRatePercent } from './helpers/ocr-cer';
 
 /**
  * The page preparation runs before recognition, so the native CLI fallback reads the same prepared
- * image as the WebAssembly engine. The pool is made to fail so that `performOcr` takes the CLI
- * path; the expected text is the text drawn into the fixture by generate_golden.py.
+ * image as the WebAssembly engine. The pool is made to fail with a WebAssembly trap, a documented
+ * recoverable class, so that `performOcr` takes the CLI path; the expected text is the text drawn into
+ * the fixture by generate_golden.py.
  */
 const poolRun = vi.hoisted(() => vi.fn());
 
@@ -52,7 +53,7 @@ describe('page preparation on the native CLI path', () => {
       async () => {
         requireEnglishData();
         poolRun.mockReset();
-        poolRun.mockRejectedValue(new Error('WebAssembly engine unavailable in this test'));
+        poolRun.mockRejectedValue(new WebAssembly.RuntimeError('unreachable'));
         const source = fs.readFileSync(path.join(FIXTURE_DIR, `${page}__${variant}.png`));
         const result = await performOcr(source, 'eng');
         expect(poolRun).toHaveBeenCalledTimes(engineAttempts);
