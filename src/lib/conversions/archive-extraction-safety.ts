@@ -957,6 +957,55 @@ export function hasTarMagic(filePath: string): boolean {
   }
 }
 
+const TAR_CHECKSUM_OFFSET = 148;
+const TAR_CHECKSUM_BYTES = 8;
+const TAR_OCTAL_RADIX = 8;
+const SPACE = 0x20;
+const NUL = 0;
+const ASCII_ZERO = 0x30;
+const ASCII_SEVEN = 0x37;
+const SIGN_BIT = 0x80;
+const BYTE_RANGE = 0x100;
+
+/**
+ * Whether the first 512-byte block of `filePath` is a tar header: the checksum field holds an octal number equal to
+ * the sum of the block's bytes with that field read as spaces (the POSIX rule, summed as unsigned or as signed bytes).
+ * This is the test 7-Zip applies before it opens a file as a tar, so a file that fails it cannot be listed as one, and
+ * a v7 tar without the `ustar` magic passes it. An empty file, a short file or a missing file is not a tar header.
+ */
+export function hasTarHeaderChecksum(filePath: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(TAR_HEADER_BYTES);
+    if (fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0) !== TAR_HEADER_BYTES) return false;
+    let stored = 0;
+    let digits = 0;
+    let at = TAR_CHECKSUM_OFFSET;
+    const fieldEnd = TAR_CHECKSUM_OFFSET + TAR_CHECKSUM_BYTES;
+    while (at < fieldEnd && (header[at] === SPACE || header[at] === NUL)) at++;
+    while (at < fieldEnd && header[at] >= ASCII_ZERO && header[at] <= ASCII_SEVEN) {
+      stored = stored * TAR_OCTAL_RADIX + (header[at] - ASCII_ZERO);
+      digits++;
+      at++;
+    }
+    if (digits === 0) return false;
+    let unsigned = 0;
+    let signed = 0;
+    for (let i = 0; i < TAR_HEADER_BYTES; i++) {
+      const inField = i >= TAR_CHECKSUM_OFFSET && i < fieldEnd;
+      const byte = inField ? SPACE : header[i];
+      unsigned += byte;
+      signed += byte >= SIGN_BIT ? byte - BYTE_RANGE : byte;
+    }
+    return stored === unsigned || stored === signed;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 /**
  * A compression wrapper that unpacks to one file may hold a tar the caller repackages unopened. List it so
  * links and traversal names inside it are seen. A payload that is not a tar is left alone; a tar that
@@ -966,6 +1015,8 @@ async function vetNestedTar(request: ContainedExtractionRequest, tree: Contained
   if (tree.files.length !== 1) return;
   const candidate = tree.files[0];
   const isTar = hasTarMagic(candidate.absPath);
+  // 7-Zip opens a file as a tar only when its first block is a tar header; any other payload has nothing to vet.
+  if (!isTar && !hasTarHeaderChecksum(candidate.absPath)) return;
   try {
     const inner = await listArchive(request, { archivePath: candidate.absPath, typeFlag: '-ttar' }, []);
     // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
