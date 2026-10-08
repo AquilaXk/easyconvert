@@ -18,6 +18,9 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
 import { DataLimitExceededError, DataParseError } from '../src/lib/types';
 import JSZip from 'jszip';
+import { oracleTest } from './helpers/oracle-test';
+import { parseCsvWithPython, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
+import { xpathAttributes } from './helpers/xml-oracle';
 
 const OVER_FILE_CAP_ENTRIES = 50_001;
 const FIXTURE_BUILD_TIMEOUT_MS = 60_000;
@@ -203,20 +206,20 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       expect(sheetXml).toMatch(/<c r="AA2" t="inlineStr"><is><t>Val27<\/t><\/is><\/c>/);
     });
 
-    it('parses CSV with quoted commas cleanly using Papa.parse without splitting fields', async () => {
+    oracleTest('keeps quoted commas inside their cells when a CSV becomes an XLSX workbook', ['soffice', 'python3', 'xmllint'], async () => {
       const csv = 'Name,Bio,Role\n"Smith, John","Software Engineer, Lead",Architect';
       const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {}, 'quoted_sheet');
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 
-      expect(sheetXml).toContain('Smith, John');
-      expect(sheetXml).toContain('Software Engineer, Lead');
-      expect(sheetXml).toContain('Architect');
-      // Ensure Row 2 only has 3 cells (A2, B2, C2), not split into 5 cells
-      expect(sheetXml).toContain('r="A2"');
-      expect(sheetXml).toContain('r="B2"');
-      expect(sheetXml).toContain('r="C2"');
-      expect(sheetXml).not.toContain('r="D2"');
+      // Cell references straight from the sheet XML (XPath): row 2 has exactly A2, B2 and C2, not five cells.
+      expect(xpathAttributes(sheetXml, "//*[local-name()='row'][2]/*[local-name()='c']/@r")).toEqual(['A2', 'B2', 'C2']);
+      // LibreOffice, an independent reader, finds the rows Python's csv module finds in the source text.
+      expect(sheetRowsViaLibreOffice(xlsxBuffer, 'xlsx')).toEqual([
+        ['Name', 'Bio', 'Role'],
+        ['Smith, John', 'Software Engineer, Lead', 'Architect'],
+      ]);
+      expect(parseCsvWithPython(csv)).toEqual(sheetRowsViaLibreOffice(xlsxBuffer, 'xlsx'));
     });
   });
 

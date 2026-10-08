@@ -8,17 +8,18 @@ import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
-import { isOracleToolAvailable, requireOracleTool } from './helpers/differential-oracle';
+import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { withMissingBinary } from './helpers/native-tools';
 import { withPs2pdfShim, withRejectingPs2pdf } from './helpers/ps2pdf-shim';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * EPS and PS are drawn by a PostScript interpreter: the worker runs ps2pdf and then Poppler, and without
  * the interpreter the answer is a typed 503 error. Nothing in-process guesses at the page.
  */
 
-const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
+const SKIP_WITHOUT_PS2PDF = skipWithoutTools('ps2pdf');
 const NATIVE_TIMEOUT_MS = 120_000;
 
 /** An EPS written by hand: a filled and a stroked curve, a polygon and one line of text, in a 200 x 120 box. */
@@ -118,7 +119,7 @@ describe('PostScript route through the interpreter and Poppler', () => {
 describe('PostScript against the real interpreter', () => {
   // Ghostscript is licensed under the AGPL and is not part of the CI image until the licence review accepts
   // it, so this check runs wherever it is installed and is skipped, by name, where it is not.
-  it.skipIf(!HAS_PS2PDF)('eps -> svg keeps the curves, fill and text: path count and box match pdftocairo of the ps2pdf output', async () => {
+  it.skipIf(SKIP_WITHOUT_PS2PDF)('eps -> svg keeps the curves, fill and text: path count and box match pdftocairo of the ps2pdf output', async () => {
     const result = await dispatchConversion(Buffer.from(EPS, 'latin1'), 'eps', 'svg', {}, 'figure.eps');
     const svg = result.buffer.toString('utf-8');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-real-'));

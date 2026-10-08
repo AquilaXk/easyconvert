@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { oracleTest } from './helpers/oracle-test';
+import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import {
   parseToUnicodeCMap,
   extractPdfFontCMaps,
@@ -305,18 +307,25 @@ endcmap
       expect(hwpEquationToLaTeX(rootScript)).toBe('\\sqrt[3]{x^2}');
     });
 
-    it('transpiles HWP big operators and Greek symbols', () => {
+    oracleTest('transpiles HWP big operators and Greek symbols', ['xmllint'], () => {
       const sumScript = 'sum_{i=1}^{n} {alpha + beta}';
       const mathml = hwpEquationToMathML(sumScript);
       const latex = hwpEquationToLaTeX(sumScript);
 
-      expect(mathml).toContain('<munderover>');
-      expect(mathml).toContain('∑');
-      expect(mathml).toContain('α');
-      expect(mathml).toContain('β');
-      expect(latex).toContain('\\sum');
-      expect(latex).toContain('\\alpha');
-      expect(latex).toContain('\\beta');
+      // LaTeX: the summation with its limits, then the Greek letters as control sequences.
+      expect(latex).toBe('\\sum_{i=1}^{n} {\\alpha + \\beta}');
+
+      // MathML, read with XPath: well-formed, and the structure of a sum with limits (MathML 3, 3.4.5 munderover:
+      // base, underscript, overscript) followed by the braced group alpha + beta (one row of three, no stray
+      // spacing operators between them).
+      expect(xmlWellFormed(mathml).ok).toBe(true);
+      expect(xpathString(mathml, 'name(/math/*[1])')).toBe('munderover');
+      expect(xpathString(mathml, 'string(/math/munderover/*[1])')).toBe('∑');
+      expect(xpathString(mathml, 'string(/math/munderover/*[2])')).toBe('i=1');
+      expect(xpathString(mathml, 'string(/math/munderover/*[3])')).toBe('n');
+      expect(xpathString(mathml, 'count(/math/*)')).toBe('2');
+      expect(xpathString(mathml, 'name(/math/*[2])')).toBe('mrow');
+      expect([1, 2, 3].map((position) => xpathString(mathml, `string(/math/mrow/*[${position}])`))).toEqual(['α', '+', 'β']);
     });
 
     it('serializes and parses HWP 5.0 CFBF document with embedded EQEDIT records', () => {

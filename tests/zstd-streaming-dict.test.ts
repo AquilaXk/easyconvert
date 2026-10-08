@@ -10,6 +10,7 @@ import {
   decompressWithZstdDict,
 } from '../src/lib/conversions/zstd-dict';
 import { ConversionFailedError } from '../src/lib/types';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', () => {
   // Helper: Generates realistic repetitive JSON/CSV payload
@@ -180,10 +181,8 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
   describe('3. Bandwidth Reduction (>= 70%) and Throughput Benchmark', () => {
     const CHUNK_SIZE = 64 * 1024;
     const MIN_BANDWIDTH_REDUCTION = 0.70;
-    /** Wall-clock floor; only meaningful on a dedicated runner, so it is opt-in via PERF_BENCH=1. */
-    const MIN_THROUGHPUT_MB_PER_SEC = 30;
-    const BENCHMARK_RUNS = 3;
-    const BYTES_PER_MB = 1024 * 1024;
+    /** Records of the smaller payload in the scaling comparison (about 0.3 MB of JSON); the larger one has SCALING_FACTOR times as many. */
+    const SCALING_BASE_RECORDS = 1000;
 
     function compressInChunks(payload: Buffer): Buffer {
       const compressor = new ZstdDictionaryStreamCompressor({ dictionary: DATA_DICTIONARY_JSON_CSV });
@@ -208,23 +207,12 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
       expect(restored.equals(payload)).toBe(true);
     });
 
-    it.runIf(process.env.PERF_BENCH === '1')('sustains the streaming throughput floor (PERF_BENCH=1)', () => {
-      const payload = generateSyntheticDataPayload(5000);
-
-      // JIT compiler warmup to allow V8 TurboFan native optimization
-      compressInChunks(payload);
-
-      let maxThroughput = 0;
-      for (let run = 0; run < BENCHMARK_RUNS; run++) {
-        const startTime = performance.now();
-        compressInChunks(payload);
-        const durationSec = (performance.now() - startTime) / 1000;
-        const throughput = payload.length / BYTES_PER_MB / (durationSec || 0.001);
-        maxThroughput = Math.max(maxThroughput, throughput);
-      }
-
-      expect(maxThroughput).toBeGreaterThanOrEqual(MIN_THROUGHPUT_MB_PER_SEC);
-    });
+    it('compresses in time linear in the payload size, restoring each payload', async () => {
+      const small = generateSyntheticDataPayload(SCALING_BASE_RECORDS);
+      const large = generateSyntheticDataPayload(SCALING_BASE_RECORDS * SCALING_FACTOR);
+      const { largeResult: compressed } = await expectLinearOnInputs('ZstdDictionaryStreamCompressor', (payload: Buffer) => compressInChunks(payload), { small, large });
+      expect(decompressWithZstdDict(compressed, DATA_DICTIONARY_JSON_CSV).equals(large)).toBe(true);
+    }, SCALING_TEST_TIMEOUT_MS);
   });
 
   describe('4. Fail-Closed Error Handling & Corrupt Stream Protection', () => {

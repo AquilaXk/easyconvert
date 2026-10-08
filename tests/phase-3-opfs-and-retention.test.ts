@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { oracleTest } from './helpers/oracle-test';
+import { parseCsvWithPython } from './helpers/sheet-rows';
 import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import {
   OPFS_CHUNK_SIZE,
@@ -54,21 +56,25 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
       expect(transformed[1]).toBe(255);
     });
 
-    it('transforms CSV to TSV while strictly preserving commas within quoted cells', async () => {
+    oracleTest('transforms CSV to TSV while strictly preserving commas within quoted cells', ['python3'], async () => {
       const transformer = resolveChunkTransformer('csv', 'tsv');
       const csvData = 'id,name,notes\n1,"Doe, John",Engineer\n2,"Smith, Alice",Scientist';
       const input = new TextEncoder().encode(csvData);
       const transformed = await collectOutput(transformer(input, 0, input.length));
       const tsvText = new TextDecoder().decode(transformed);
 
-      expect(tsvText).toContain('id\tname\tnotes');
-      // TSV has no field quoting: the comma stays inside the field and is not turned into a tab
-      // (the same row a minimal-quoting writer emits with a tab delimiter).
-      expect(tsvText).toContain('1\tDoe, John\tEngineer');
-      expect(tsvText).toContain('2\tSmith, Alice\tScientist');
+      // TSV has no field quoting: the comma stays inside the field and is not turned into a tab. The expected
+      // rows are the CSV's own fields as Python's csv module reads them, joined by tabs.
+      const expectedRows = parseCsvWithPython(csvData);
+      expect(expectedRows).toEqual([
+        ['id', 'name', 'notes'],
+        ['1', 'Doe, John', 'Engineer'],
+        ['2', 'Smith, Alice', 'Scientist'],
+      ]);
+      expect(parseCsvWithPython(tsvText, '\t')).toEqual(expectedRows);
     });
 
-    it('preserves CSV quoted string state across multiple sequential streaming chunk boundaries', async () => {
+    oracleTest('preserves CSV quoted string state across multiple sequential streaming chunk boundaries', ['python3'], async () => {
       const transformer = resolveChunkTransformer('csv', 'tsv');
       // Chunk 1 ends inside a quoted field: '"Doe, '
       const chunk1Str = 'id,name,role\n101,"Doe, ';
@@ -80,10 +86,17 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Zero-Retention Disposal & Distr
         transformer(new TextEncoder().encode(chunk2Str), chunk1Str.length, chunk1Str.length + chunk2Str.length)
       );
 
+      // The comma inside "Doe, Jane" must not become a tab: split on tabs, the rows are the CSV's fields as
+      // Python's csv module reads the whole text, and the chunked output equals the one-shot output.
       const combinedText = new TextDecoder().decode(res1) + new TextDecoder().decode(res2);
-      expect(combinedText).toContain('id\tname\trole');
-      // The comma inside "Doe, Jane" MUST NOT be converted to tab
-      expect(combinedText).toContain('101\tDoe, Jane\tManager');
+      expect(parseCsvWithPython(combinedText, '\t')).toEqual(parseCsvWithPython(chunk1Str + chunk2Str));
+      expect(parseCsvWithPython(combinedText, '\t')).toEqual([
+        ['id', 'name', 'role'],
+        ['101', 'Doe, Jane', 'Manager'],
+      ]);
+      const whole = new TextEncoder().encode(chunk1Str + chunk2Str);
+      const oneShot = new TextDecoder().decode(await collectOutput(resolveChunkTransformer('csv', 'tsv')(whole, 0, whole.length)));
+      expect(combinedText).toBe(oneShot);
     });
 
     it('handles odd-length byte chunks without sample misalignment or data corruption in PCM streaming', async () => {

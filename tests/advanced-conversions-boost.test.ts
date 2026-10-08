@@ -1,4 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readDxf } from './helpers/dxf-reader';
 import sharp from 'sharp';
 import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
@@ -17,8 +22,12 @@ import {
   performOcr,
   generateSearchablePdf,
   generateFb2FromText,
-  extractTextFromPdf,
 } from '../src/lib/conversions';
+import { zipEntryText } from './helpers/zip-entry';
+import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
+import { oracleTest } from './helpers/oracle-test';
+import { requireOracleTool } from './helpers/differential-oracle';
+import { characterErrorRatePercent } from './helpers/ocr-cer';
 
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
@@ -145,7 +154,7 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       expect(bspline.knots).toEqual([0, 0, 0, 0, 1, 1, 1, 1]);
     });
 
-    it('parses SVG path commands with Cubic and Quadratic Bezier curves into DXF LWPOLYLINE', () => {
+    it('parses SVG path commands with Cubic and Quadratic Bezier curves into one flattened DXF polyline', () => {
       const svg = `<svg width="200" height="200">
         <path d="M 10 10 C 20 20, 40 20, 50 10 S 80 0, 90 10 Q 120 50, 150 10 Z" fill="none" stroke="black"/>
       </svg>`;
@@ -154,89 +163,79 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       expect(subpaths.length).toBeGreaterThan(0);
       expect(subpaths[0].length).toBeGreaterThan(5);
 
-      const dxf = svgToDxf(svg);
-      expect(dxf).toContain('LWPOLYLINE');
-      expect(dxf).toContain('ENTITIES');
-      expect(dxf).toContain('EOF');
+      // The closed path (M, C, S, Q, Z) is one closed polyline that starts at the path's first point and follows
+      // the curves: vertices lie within the path's bounding box, y flipped for DXF (page height 200).
+      const { entities } = readDxf(svgToDxf(svg));
+      expect(entities).toHaveLength(1);
+      expect(entities[0].type).toBe('POLYLINE');
+      expect(entities[0].closed).toBe(true);
+      expect(entities[0].points.length).toBeGreaterThan(20);
+      expect([entities[0].points[0].x, entities[0].points[0].y]).toEqual([10, 190]);
+      for (const point of entities[0].points) {
+        expect(point.x).toBeGreaterThanOrEqual(10);
+        expect(point.x).toBeLessThanOrEqual(150);
+        expect(200 - point.y).toBeGreaterThanOrEqual(0);
+        expect(200 - point.y).toBeLessThanOrEqual(50);
+      }
     });
   });
 
   describe('Domain: PDF & OCR Real Searchable PDF Overlay', () => {
-    it('generates an authentic Searchable PDF with invisible text layer and verifies OCR text extraction', async () => {
-      // 1. Create a scanned document image with text
-      const scannedImage = await sharp({
-        create: {
-          width: 400,
-          height: 120,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 },
-        },
-      })
-        .composite([
-          {
-            input: Buffer.from(
-              `<svg width="400" height="120">
-                <text x="30" y="40" font-family="monospace" font-size="20" fill="black">SEARCHABLE PDF</text>
-                <text x="30" y="85" font-family="monospace" font-size="18" fill="black">ZERO RETENTION</text>
-              </svg>`
-            ),
-            top: 0,
-            left: 0,
-          },
-        ])
+    /** A page of black text on white, large enough for the recognizer to read without error. */
+    async function renderPage(width: number, height: number, lines: { text: string; y: number; size: number }[]): Promise<Buffer> {
+      const markup = lines
+        .map((line) => `<text x="40" y="${line.y}" font-family="DejaVu Sans Mono, monospace" font-size="${line.size}" fill="black">${line.text}</text>`)
+        .join('');
+      return sharp({ create: { width, height, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+        .composite([{ input: Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${markup}</svg>`), top: 0, left: 0 }])
         .png()
         .toBuffer();
+    }
 
-      // 2. Run OCR to extract text and layout coordinates
+    /** The text of `pdf` as the Poppler text extractor reads it, an oracle independent of the PDF writer and of the OCR engine. */
+    function popplerText(pdf: Buffer): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'searchable-pdf-'));
+      try {
+        const file = path.join(dir, 'page.pdf');
+        fs.writeFileSync(file, pdf);
+        return execFileSync(requireOracleTool('pdftotext'), ['-enc', 'UTF-8', file, '-'], { encoding: 'utf-8' });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    /** Character error rate allowed for clean, large, machine-rendered text. */
+    const MAX_CLEAN_TEXT_CER_PERCENT = 5;
+
+    oracleTest('generates a searchable PDF whose invisible text layer holds the page text, as pdftotext reads it', ['tesseract', 'pdftotext'], async () => {
+      const expected = 'SEARCHABLE PDF ZERO RETENTION';
+      const scannedImage = await renderPage(1100, 320, [
+        { text: 'SEARCHABLE PDF', y: 110, size: 64 },
+        { text: 'ZERO RETENTION', y: 240, size: 64 },
+      ]);
+
       const ocrResult = await performOcr(scannedImage);
-      expect(ocrResult.lines.length).toBeGreaterThan(0);
-      expect(ocrResult.lineBlocks).toBeDefined();
+      expect(characterErrorRatePercent(expected, ocrResult.text)).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
+      expect(ocrResult.lineBlocks?.map((block) => block.text.trim())).toEqual(['SEARCHABLE PDF', 'ZERO RETENTION']);
 
-      // 3. Generate Searchable PDF ("Sandwich PDF") with invisible text overlay layer
       const searchablePdf = await generateSearchablePdf(scannedImage, ocrResult, {}, 'Test Document');
       expect(searchablePdf.toString('ascii', 0, 4)).toBe('%PDF');
-
-      // 4. Verify text extraction from generated searchable PDF
-      const extracted = extractTextFromPdf(searchablePdf);
-      expect(extracted).not.toBe('No extractable text found in PDF document.');
-      expect(extracted.length).toBeGreaterThan(0);
+      expect(characterErrorRatePercent(expected, popplerText(searchablePdf))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
     });
 
-    it('converts image directly to searchable PDF when ocrEnabled option is true', async () => {
-      const img = await sharp({
-        create: {
-          width: 300,
-          height: 80,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 },
-        },
-      })
-        .composite([
-          {
-            input: Buffer.from(
-              `<svg width="300" height="80">
-                <text x="20" y="50" font-family="monospace" font-size="22" fill="black">OCR SEARCH</text>
-              </svg>`
-            ),
-            top: 0,
-            left: 0,
-          },
-        ])
-        .png()
-        .toBuffer();
+    oracleTest('converts an image directly to a searchable PDF when ocrEnabled is true', ['tesseract', 'pdftotext'], async () => {
+      const img = await renderPage(900, 200, [{ text: 'OCR SEARCH', y: 130, size: 72 }]);
 
       const result = await convertFile(img, 'png', 'pdf', { ocrEnabled: true }, 'scan.png');
       expect(result.mimeType).toBe('application/pdf');
-      expect(result.ocrExtractedText).toBeDefined();
+      expect(characterErrorRatePercent('OCR SEARCH', result.ocrExtractedText ?? '')).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
       expect(result.ocrConfidence).toBeGreaterThan(0.7);
-
-      const extracted = extractTextFromPdf(result.buffer);
-      expect(extracted).not.toBe('No extractable text found in PDF document.');
+      expect(characterErrorRatePercent('OCR SEARCH', popplerText(result.buffer))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
     });
   });
 
   describe('Domain: Document & Ebook Semantic Enhancements', () => {
-    it('converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup', async () => {
+    oracleTest('converts text with markdown table to genuine FictionBook 2.0 (FB2) XML with semantic markup', ['xmllint'], async () => {
       const text = `# Chapter 1: The Encounter
 The crew arrived at the destination.
 
@@ -250,12 +249,22 @@ The voyage was recorded.`;
       const fb2Buf = generateFb2FromText(text, 'Space Voyage');
       const xml = fb2Buf.toString('utf-8');
 
-      expect(xml).toContain('<FictionBook');
-      expect(xml).toContain('<book-title>Space Voyage</book-title>');
-      expect(xml).toContain('<table>');
-      expect(xml).toContain('<th>Star</th>');
-      expect(xml).toContain('<td>Alpha Centauri</td>');
-      expect(xml).toContain('<section>');
+      // xmllint (libxml2) reads the document; the expectations are the FictionBook 2.0 structure written by hand.
+      expect(xmlWellFormed(xml).ok).toBe(true);
+      const q = (expr: string) => xpathString(xml, expr);
+      expect(q('namespace-uri(/*[local-name()="FictionBook"])')).toBe('http://www.gribuser.ru/xml/fictionbook/2.0');
+      expect(q('string(//*[local-name()="title-info"]/*[local-name()="book-title"])')).toBe('Space Voyage');
+      expect(q('count(//*[local-name()="body"]/*[local-name()="section"])')).toBe('1');
+      // The Markdown table becomes one <table> with a header row and two data rows.
+      expect(q('count(//*[local-name()="table"])')).toBe('1');
+      expect(q('count(//*[local-name()="table"]/*[local-name()="tr"])')).toBe('3');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][1]/*[local-name()="th"][1])')).toBe('Star');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][1]/*[local-name()="th"][3])')).toBe('Type');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][3]/*[local-name()="td"][1])')).toBe('Alpha Centauri');
+      expect(q('string(//*[local-name()="table"]/*[local-name()="tr"][3]/*[local-name()="td"][2])')).toBe('4.37 ly');
+      // Paragraphs on either side of the table survive in order.
+      expect(q('string(//*[local-name()="section"]/*[local-name()="p"][1])')).toBe('The crew arrived at the destination.');
+      expect(q('string(//*[local-name()="section"]/*[local-name()="p"][last()])')).toBe('The voyage was recorded.');
     });
 
     it('converts FB2 to HTML and Markdown preserving semantic tables and authors', async () => {
@@ -304,12 +313,17 @@ The voyage was recorded.`;
       expect(epubRes.mimeType).toBe('application/epub+zip');
 
       const zip = await JSZip.loadAsync(epubRes.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('OEBPS/nav.xhtml')).toBeDefined();
-      expect(zip.file('OEBPS/toc.ncx')).toBeDefined();
-      expect(zip.file('OEBPS/styles.css')).toBeDefined();
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/epub+zip');
+      // EPUB 3 navigation document: a <nav epub:type="toc"> listing the chapter; EPUB 2 NCX: a navMap entry for it.
+      const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
+      expect(nav).toContain('<nav epub:type="toc"');
+      expect(nav).toContain('<a href="chapter1.xhtml">guide</a>');
+      const ncx = await zipEntryText(zip, 'OEBPS/toc.ncx');
+      expect(ncx).toContain('<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">');
+      expect(ncx).toContain('<navLabel><text>guide</text></navLabel>');
+      expect(await zipEntryText(zip, 'OEBPS/styles.css')).toContain('table.semantic-table');
 
-      const chapterXml = await zip.file('OEBPS/chapter1.xhtml')!.async('text');
+      const chapterXml = await zipEntryText(zip, 'OEBPS/chapter1.xhtml');
       expect(chapterXml).toContain('<header>');
       expect(chapterXml).toContain('<article>');
       expect(chapterXml).toContain('table');

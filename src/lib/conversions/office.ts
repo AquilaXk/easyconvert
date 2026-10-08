@@ -4,7 +4,8 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
@@ -546,6 +547,9 @@ const UTF16BE_BOM = [0xfe, 0xff];
 const XML_DECLARATION_SCAN_BYTES = 200;
 const XML_ENCODING_PATTERN = /<\?xml[^>]*\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']/;
 
+/** PK\x03\x04: the local file header every ZIP-based package starts with. */
+const ZIP_LOCAL_HEADER_SIGNATURE = [0x50, 0x4b, 0x03, 0x04];
+
 function startsWithBytes(buffer: Buffer, prefix: readonly number[]): boolean {
   return prefix.every((byte, index) => buffer[index] === byte);
 }
@@ -715,6 +719,7 @@ async function readOdtText(input: Buffer): Promise<string> {
     }
   }
   const xml = decodeXmlBytes(await content.async('nodebuffer'), 'ODT content.xml');
+  assertWellFormedXml('content.xml', xml, 'ODT');
   const paragraphs: string[] = [];
   let totalChars = 0;
   for (const element of safeExtractXmlElements(xml, ['text:p', 'text:h'], { maxElements: ODT_MAX_TEXT_CHARS })) {
@@ -737,13 +742,14 @@ async function convertDocxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'DOCX');
   const docXmlFile = zip.file('word/document.xml');
   if (!docXmlFile) {
-    throw new Error('Invalid DOCX format: word/document.xml not found.');
+    throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
   }
 
   const xmlText = await docXmlFile.async('text');
+  assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
 
   // Load chart relationships and parts if present
   const chartMap = new Map<string, string>();
@@ -5155,8 +5161,56 @@ export class SpreadsheetDagEngine {
 /**
  * XLSX Source Parser & Converter
  */
+/** Built-in number formats (ECMA-376 Part 1, 18.8.30) that show numbers, with the fraction digits each one shows. */
+const BUILTIN_FRACTION_DIGITS: ReadonlyMap<number, number> = new Map([
+  [1, 0], // 0
+  [2, 2], // 0.00
+  [3, 0], // #,##0
+  [4, 2], // #,##0.00
+  [9, 0], // 0%
+  [10, 2], // 0.00%
+  [37, 0], // #,##0 ;(#,##0)
+  [38, 0], // #,##0 ;[Red](#,##0)
+  [39, 2], // #,##0.00;(#,##0.00)
+  [40, 2], // #,##0.00;[Red](#,##0.00)
+  [44, 2], // accounting, two decimals
+]);
+const BUILTIN_PERCENT_IDS: ReadonlySet<number> = new Set([9, 10]);
+const BUILTIN_GROUPED_IDS: ReadonlySet<number> = new Set([3, 4, 37, 38, 39, 40, 44]);
+const BUILTIN_CURRENCY_IDS: ReadonlySet<number> = new Set([44]);
+const CURRENCY_SYMBOLS = ['$', '\u20a9', '\u20ac', '\u00a3'];
+const DEFAULT_CURRENCY_SYMBOL = '$';
+/** A format code made only of digit placeholders and one decimal point shows a plain fixed-point number. */
+const PLAIN_NUMBER_FORMAT = /^[0#?]+(\.[0#?]+)?$/;
+/** A comma between two digit placeholders groups thousands; a trailing comma scales by a thousand instead. */
+const THOUSANDS_SEPARATOR = /[0#?],[0#?]/;
+
 /**
- * Formats a raw spreadsheet cell value according to Excel NumberFormat specification
+ * The first section of a format code with `[$-409]` (a locale) dropped and `[$EUR-407]` reduced to its currency symbol,
+ * other bracketed parts (colours, conditions) removed. Quoted text is kept: `"$"#,##0` names its currency in quotes.
+ */
+function numberFormatFirstSection(formatCode: string): string {
+  return formatCode
+    .replace(/\[\$([^\]-]*)[^\]]*\]/g, '$1')
+    .replace(/\[[^\]]*\]/g, '')
+    .split(';')[0];
+}
+
+/** What is left of a format section once quoted text, escaped characters, padding and alignment directives are removed: placeholders and separators. */
+function numberFormatSkeleton(firstSection: string): string {
+  return firstSection.replace(/"[^"]*"/g, '').replace(/\\./g, '').replace(/[_*]./g, '');
+}
+
+/** Fewest and most fraction digits a format code shows: `0` placeholders after the decimal point are required, `#` and `?` optional. */
+function numberFormatFractionDigits(skeleton: string): { min: number; max: number } {
+  const fraction = /\.([0#?]*)/.exec(skeleton)?.[1] ?? '';
+  return { min: (fraction.match(/0/g) ?? []).length, max: fraction.length };
+}
+
+/**
+ * Formats a raw spreadsheet cell value according to its Excel number format: percent, grouped thousands, currency and
+ * fixed-point formats show the fraction digits the format code asks for; dates become ISO dates. Anything else is
+ * shown as stored.
  */
 export function formatSpreadsheetCellValue(
   rawVal: string,
@@ -5166,38 +5220,37 @@ export function formatSpreadsheetCellValue(
   if (!rawVal || isNaN(Number(rawVal))) return rawVal;
   const num = Number(rawVal);
 
-  // Currency formats (numFmtId 44 or custom formats with currency symbols)
-  if (
-    numFmtId === 44 ||
-    (customFormat &&
-      (customFormat.includes('$') ||
-        customFormat.includes('₩') ||
-        customFormat.includes('€') ||
-        customFormat.includes('£')))
-  ) {
-    return num.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  const firstSection = customFormat === undefined ? undefined : numberFormatFirstSection(customFormat);
+  const skeleton = firstSection === undefined ? undefined : numberFormatSkeleton(firstSection);
+  const builtinDigits = numFmtId === undefined ? undefined : BUILTIN_FRACTION_DIGITS.get(numFmtId);
+  const digits =
+    skeleton === undefined
+      ? { min: builtinDigits ?? 0, max: builtinDigits ?? 0 }
+      : numberFormatFractionDigits(skeleton);
+  const grouped =
+    (skeleton !== undefined && THOUSANDS_SEPARATOR.test(skeleton)) || (numFmtId !== undefined && BUILTIN_GROUPED_IDS.has(numFmtId));
+  const show = (value: number, extra: Intl.NumberFormatOptions = {}): string =>
+    new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: digits.min,
+      maximumFractionDigits: digits.max,
+      useGrouping: grouped,
+      ...extra,
+    }).format(value);
+
+  // Currency formats (numFmtId 44, or custom formats naming a currency symbol)
+  const symbol = firstSection === undefined ? undefined : CURRENCY_SYMBOLS.find((candidate) => firstSection.includes(candidate));
+  if (symbol !== undefined || (numFmtId !== undefined && BUILTIN_CURRENCY_IDS.has(numFmtId))) {
+    return `${num < 0 ? '-' : ''}${symbol ?? DEFAULT_CURRENCY_SYMBOL}${show(Math.abs(num))}`;
   }
 
-  // Percentage formats (numFmtId 9, 10 or contains '%')
-  if (numFmtId === 9 || numFmtId === 10 || (customFormat && customFormat.includes('%'))) {
-    const decimals = numFmtId === 10 || (customFormat && customFormat.includes('.0')) ? 2 : 0;
-    return (num * 100).toFixed(decimals) + '%';
+  // Percentage formats (numFmtId 9, 10 or a code containing '%'): Intl scales on the decimal digits, not on the binary double
+  if ((numFmtId !== undefined && BUILTIN_PERCENT_IDS.has(numFmtId)) || (skeleton !== undefined && skeleton.includes('%'))) {
+    return show(num, { style: 'percent' });
   }
 
-  // Number with thousand separator (numFmtId 3, 4, 37, 38 or contains '#,##0')
-  if (
-    numFmtId === 3 ||
-    numFmtId === 4 ||
-    numFmtId === 37 ||
-    numFmtId === 38 ||
-    (customFormat && customFormat.includes('#,##0'))
-  ) {
-    const decimals =
-      numFmtId === 4 || numFmtId === 38 || (customFormat && customFormat.includes('.00')) ? 2 : 0;
-    return num.toLocaleString('en-US', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
+  // Grouped thousands (numFmtId 3, 4, 37 to 40 or a code with a thousands separator) and plain fixed-point formats
+  if (grouped || (skeleton !== undefined ? PLAIN_NUMBER_FORMAT.test(skeleton) : builtinDigits !== undefined)) {
+    return show(num);
   }
 
   // Excel serial date formatting (numFmtId 14..22 or contains date tokens)
@@ -5587,7 +5640,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   if (sheetEntries.length === 0) {
-    throw new Error('Invalid XLSX workbook: no worksheets found in archive.');
+    throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
   }
 
   // 4. Parse all discovered worksheets
@@ -5600,6 +5653,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     if (!sFile) continue;
 
     const sheetXml = await sFile.async('text');
+    assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];
     const cellMap: Record<string, any> = {};
@@ -5799,7 +5853,7 @@ async function convertXlsxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'XLSX');
   const rawSheets = await parseAllXlsxWorksheets(zip);
 
   // 1. Slicing by print area if range: 'printArea'
@@ -6682,7 +6736,7 @@ async function convertPptxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'PPTX');
 
   // 1. Parse presentation slide size from ppt/presentation.xml (in EMUs, 12700 EMUs = 1 pt)
   let slideWidth = 960; // 16:9 standard width in points (12,192,000 EMUs)
@@ -6715,6 +6769,7 @@ async function convertPptxSource(
 
   for (let i = 0; i < slideFiles.length; i++) {
     const xml = await zip.files[slideFiles[i]].async('text');
+    assertWellFormedXml(slideFiles[i], xml, 'PPTX');
 
     // Extract slide background color
     let backgroundColor: string | undefined;
@@ -6838,6 +6893,7 @@ async function convertOdpSource(
   const contentXmlFile = zip.file('content.xml');
   if (!contentXmlFile) throw new ConversionFailedError('The ODP file has no content.xml.');
   const xml = await contentXmlFile.async('text');
+  assertWellFormedXml('content.xml', xml, 'ODP');
   let pageNum = 1;
   for (const pageEl of safeExtractXmlElements(xml, 'draw:page')) {
     const texts: string[] = [];
@@ -8324,6 +8380,30 @@ export function getExcelColumnIndex(colLetters: string): number {
   return Math.max(0, idx - 1);
 }
 
+const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
+
+/**
+ * The table a JSON document holds: an array of objects becomes a header row (the keys of the first record) and one
+ * row per record; an array of plain values becomes a single "Value" column. Anything else is not a table and is
+ * refused, as is text that is not JSON: a sheet holding the document's own text would be a substitute result.
+ */
+function parseJsonTableRows(text: string): string[][] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new DataParseError(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  const first: unknown = parsed[0];
+  if (typeof first === 'object' && first !== null && !Array.isArray(first)) {
+    const headers = Object.keys(first);
+    return [headers, ...parsed.map((item) => headers.map((header) => String((item as Record<string, unknown>)[header] ?? '')))];
+  }
+  if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  return [['Value'], ...parsed.map((item) => [String(item)])];
+}
+
 /**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
@@ -8338,18 +8418,7 @@ export async function generateXlsxFromData(
 
   let rows: string[][] = [];
   if (sourceType === 'json') {
-    try {
-      const parsed = JSON.parse(rawText);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        rows.push(headers);
-        parsed.forEach((item) => rows.push(headers.map((h) => String(item[h] ?? ''))));
-      } else {
-        rows = [['Value'], ...parsed.map((p: any) => [String(p)])];
-      }
-    } catch {
-      rows = [['Data'], [rawText]];
-    }
+    rows = parseJsonTableRows(rawText);
   } else {
     // Delimited (CSV or TSV) using Papa.parse for RFC 4180 compliance
     const delim = sourceType === 'tsv' ? '\t' : options.delimiter || ',';
@@ -8758,13 +8827,14 @@ export async function convertOdsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'ODS');
   const contentXml = zip.file('content.xml');
   if (!contentXml) {
-    throw new Error('Invalid ODS workbook: content.xml not found.');
+    throw new ConversionFailedError('Invalid ODS workbook: content.xml not found.');
   }
 
   const xml = await contentXml.async('text');
+  assertWellFormedXml('content.xml', xml, 'ODS');
   const rows: string[][] = [];
   const rowElements = safeExtractXmlElements(xml, 'table:table-row');
   for (const rEl of rowElements) {
@@ -9118,6 +9188,26 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
   return rows;
 }
 
+/** The cell rows of the BIFF8 workbook stream inside a CFBF container (an Excel 97-2003 or Kingsoft workbook). */
+function readCfbfWorkbookRows(inputBuffer: Buffer): string[][] {
+  const cfbf = parseCfbf(inputBuffer);
+  let workbookStream: Buffer | undefined;
+  for (const [name, buf] of cfbf.streams.entries()) {
+    if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
+      workbookStream = buf;
+      break;
+    }
+  }
+  if (!workbookStream) {
+    throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
+  }
+  const parsed = parseBiff8Workbook(workbookStream);
+  if (parsed.length === 0) {
+    throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
+  }
+  return parsed;
+}
+
 /**
  * Excel XLS Parser & Converter
  */
@@ -9131,22 +9221,7 @@ export async function convertXlsSource(
 
   // 1. CFBF Compound File Binary Format containing Workbook stream
   if (isCfbfContainer(inputBuffer)) {
-    const cfbf = parseCfbf(inputBuffer);
-    let workbookStream: Buffer | undefined;
-    for (const [name, buf] of cfbf.streams.entries()) {
-      if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
-        workbookStream = buf;
-        break;
-      }
-    }
-    if (!workbookStream) {
-      throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
-    }
-    const parsed = parseBiff8Workbook(workbookStream);
-    if (parsed.length === 0) {
-      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
-    }
-    rows.push(...parsed);
+    rows.push(...readCfbfWorkbookRows(inputBuffer));
   }
   // 2. Raw BIFF stream (without CFBF container)
   else if (
@@ -9507,37 +9582,28 @@ async function extractRowsForOffice(
   options: ConversionOptions
 ): Promise<string[][]> {
   if (src === 'xlsx') {
-    try {
-      const zip = await JSZip.loadAsync(inputBuffer);
-      const allSheets = await parseAllXlsxWorksheets(zip);
-      if (allSheets.length > 0) {
-        if (allSheets.length === 1) return allSheets[0].rows;
-        const merged: string[][] = [];
-        allSheets.forEach((s, idx) => {
-          if (idx > 0 && s.rows.length > 0) {
-            merged.push([`### Sheet: ${s.name}`]);
-          }
-          merged.push(...s.rows);
-        });
-        return merged;
+    // A workbook that cannot be read is refused: re-reading its ZIP bytes as CSV text would answer with junk rows.
+    const zip = await openPackage(inputBuffer, 'XLSX');
+    const allSheets = await parseAllXlsxWorksheets(zip);
+    if (allSheets.length === 1) return allSheets[0].rows;
+    const merged: string[][] = [];
+    allSheets.forEach((sheet, idx) => {
+      if (idx > 0 && sheet.rows.length > 0) {
+        merged.push([`### Sheet: ${sheet.name}`]);
       }
-    } catch {
-      // fallback
-    }
+      merged.push(...sheet.rows);
+    });
+    return merged;
+  }
+
+  if (src === 'et') {
+    // A Kingsoft workbook is an OOXML package or a BIFF8 compound file; neither is CSV text.
+    if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
+    if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookRows(inputBuffer);
   }
 
   const text = inputBuffer.toString('utf-8');
-  if (src === 'json') {
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        return [headers, ...parsed.map((item) => headers.map((h) => String(item[h] ?? '')))];
-      }
-    } catch {
-      // fallback
-    }
-  }
+  if (src === 'json') return parseJsonTableRows(text);
 
   const delim = src === 'tsv' ? '\t' : options.delimiter || ',';
   const parsedCsv = Papa.parse<string[]>(text, {
@@ -9563,7 +9629,7 @@ export async function extractAllSheetsForOffice(
   options: ConversionOptions = {}
 ): Promise<OfficeWorksheet[]> {
   if (src === 'xlsx') {
-    const zip = await JSZip.loadAsync(inputBuffer);
+    const zip = await openPackage(inputBuffer, 'XLSX');
     return parseAllXlsxWorksheets(zip);
   }
   const rows = await extractRowsForOffice(inputBuffer, src, options);
@@ -9591,7 +9657,7 @@ async function convertEtSource(
   }
 
   if (tgt === 'xlsx') {
-    const buffer = await generateXlsxFromData(inputBuffer, 'et', options, baseName);
+    const buffer = await generateXlsxFromData(Buffer.from(Papa.unparse(rows), 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
   }
 

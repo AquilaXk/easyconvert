@@ -187,7 +187,7 @@ describe('TUS 1.0 Protocol Rigorous Specification Compliance', () => {
     expect(patch3Res.headers.get('Upload-Offset')).toBe(String(totalLength));
 
     const storageKey = patch3Res.headers.get('EasyConvert-Storage-Key');
-    expect(storageKey).toBeDefined();
+    expect(storageKey).not.toBeNull();
     expect(storageKey).toContain(userA.id);
     expect(storageKey).toContain('dataset-sample.bin');
     expect(patch3Res.headers.get('X-Storage-Key')).toBe(storageKey);

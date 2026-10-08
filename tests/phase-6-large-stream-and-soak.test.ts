@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import crypto from 'node:crypto';
 import {
   createDeterministicSyntheticStream,
   streamProcessLargePayload,
@@ -17,6 +18,30 @@ import { oracleTest } from './helpers/oracle-test';
 import { synthesizeEnterprisePdf } from './helpers/golden-corpus-suite';
 import { createTarArchive } from '../src/lib/conversions/archive';
 import { compressZstd } from '../src/lib/conversions/zstd';
+
+/** The 2 GB pipeline (generation, chunking, SHA-256) must reach this fraction of plain SHA-256 speed (measured about 0.8). */
+const PIPELINE_MIN_FRACTION_OF_HASH_RATE = 0.25;
+const HASH_REFERENCE_BYTES = 64 * 1024 * 1024;
+const HASH_REFERENCE_RUNS = 3;
+const BYTES_PER_MIB = 1024 * 1024;
+const MS_PER_SECOND = 1000;
+
+/** MiB/s of SHA-256 over one buffer, best of a few runs. */
+function hashMbPerSecond(): number {
+  const data = crypto.randomBytes(HASH_REFERENCE_BYTES);
+  let bestMs = Number.POSITIVE_INFINITY;
+  for (let run = 0; run < HASH_REFERENCE_RUNS; run++) {
+    const started = performance.now();
+    crypto.createHash('sha256').update(data).digest();
+    bestMs = Math.min(bestMs, performance.now() - started);
+  }
+  return HASH_REFERENCE_BYTES / BYTES_PER_MIB / (bestMs / MS_PER_SECOND);
+}
+
+/** Hang guard for an aborted soak session: the session asked for 60 s and an abort ends it after about a second. */
+const ABORT_HANG_GUARD_MS = 30_000;
+/** 2 GB streams in about 7 s here; the timeout only stops a hang on a loaded runner. */
+const STREAM_2GB_TEST_TIMEOUT_MS = 120_000;
 
 describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Testnet (#121)', () => {
   // =========================================================================
@@ -46,11 +71,13 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
       expect(result.totalBytesProcessed).toBe(twoGigabytes);
       expect(result.totalChunks).toBe(twoGigabytes / chunkSize);
       expect(result.sha256Digest).toBe('7cf06d0fa05f135c29dc6a9684870b016f495f97cfa1344600b1110aa52ba245');
-      expect(result.throughputMbPerSec).toBeGreaterThan(50); // High throughput in Node.js streams
+      // Throughput is judged against this machine: the pipeline hashes every byte, so it must keep up with a
+      // fraction of what plain SHA-256 over a buffer reaches here, measured just before (best of 3).
+      expect(result.throughputMbPerSec).toBeGreaterThan(hashMbPerSecond() * PIPELINE_MIN_FRACTION_OF_HASH_RATE);
 
       // Heap usage MUST remain strictly bounded (O(1)), never buffering 2GB in memory
       expect(postGcHeapDeltaMb).toBeLessThan(25);
-    }, 30000); // 30s budget for 2GB processing
+    }, STREAM_2GB_TEST_TIMEOUT_MS);
 
     it('honors stream backpressure when downstream consumer pauses consumption', async () => {
       const stream = createDeterministicSyntheticStream(10 * 1024 * 1024, 64 * 1024);
@@ -130,7 +157,8 @@ describe('Phase 6: 2GB Large Payload Streaming & Native Differential Oracle Test
       const report = await soakPromise;
       expect(controller.active).toBe(false);
       expect(report.totalIterations).toBeLessThan(50000);
-      expect(report.totalDurationMs).toBeLessThan(15000);
+      // Hang guard: the session asked for 60 s; an abort that works ends it after about a second.
+      expect(report.totalDurationMs).toBeLessThan(ABORT_HANG_GUARD_MS);
     });
   });
 

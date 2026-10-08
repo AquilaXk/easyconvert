@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   decodeRawBayerSensor,
   demosaicAmazeBayerCfa,
@@ -7,6 +11,42 @@ import {
   BayerSensorData,
 } from '../src/lib/conversions/image';
 import { create7zArchive, extract7zArchive } from '../src/lib/conversions/archive';
+import { requireOracleTool } from './helpers/differential-oracle';
+import { oracleTest } from './helpers/oracle-test';
+import { readTiff16 } from './raw-demosaic/tiff16';
+
+const FRAME_SIZE = 64;
+const CENTRE = FRAME_SIZE / 2;
+const RGB_CHANNELS = 3;
+const FULL_SCALE = 65535;
+/** Pixels left out of the PSNR at each edge, where interpolators differ in how they treat the border. */
+const BORDER_PIXELS = 6;
+/** The linear output must be at least this close to the reference decoder's (dB). */
+const MIN_PSNR_DB = 40;
+const DCRAW_TIMEOUT_MS = 60_000;
+/**
+ * DNG ColorMatrix1 (XYZ D50 to camera) of a camera whose native space is linear sRGB: the IEC 61966-2-1 XYZ(D65) to
+ * sRGB matrix times the Bradford D50 to D65 adaptation. A decoder that applies the profile then returns the sensor
+ * values unchanged, which is also what dcraw_emu -o 0 writes.
+ */
+const SRGB_CAMERA_COLOR_MATRIX = [
+  3.2404542 * 0.9555766 + -1.5371385 * -0.0282895 + -0.4985314 * 0.0122982,
+  3.2404542 * -0.0230393 + -1.5371385 * 1.0099416 + -0.4985314 * -0.020483,
+  3.2404542 * 0.0631636 + -1.5371385 * 0.0210077 + -0.4985314 * 1.3299098,
+  -0.969266 * 0.9555766 + 1.8760108 * -0.0282895 + 0.041556 * 0.0122982,
+  -0.969266 * -0.0230393 + 1.8760108 * 1.0099416 + 0.041556 * -0.020483,
+  -0.969266 * 0.0631636 + 1.8760108 * 0.0210077 + 0.041556 * 1.3299098,
+  0.0556434 * 0.9555766 + -0.2040259 * -0.0282895 + 1.0572252 * 0.0122982,
+  0.0556434 * -0.0230393 + -0.2040259 * 1.0099416 + 1.0572252 * -0.020483,
+  0.0556434 * 0.0631636 + -0.2040259 * 0.0210077 + 1.0572252 * 1.3299098,
+];
+
+/** TIFF PhotometricInterpretation value of a colour filter array image (DNG specification, Chapter 2). */
+const PHOTOMETRIC_CFA = 32803;
+/** Little-endian inline value of two SHORTs, both 2: the CFA repeats every 2 x 2 pixels. */
+const CFA_REPEAT_2X2 = 0x00020002;
+/** Little-endian inline value of the four DNGVersion bytes 1, 4, 0, 0. */
+const DNG_VERSION_1_4 = 0x00000401;
 
 function sha256(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
@@ -49,6 +89,12 @@ export function buildSyntheticDngBuffer(options: {
   tagList.push({ tag: 257, type: 4, count: 1, inlineVal: height }); // ImageLength
   tagList.push({ tag: 258, type: 3, count: 1, inlineVal: bpp }); // BitsPerSample
   tagList.push({ tag: 259, type: 3, count: 1, inlineVal: 1 }); // Compression = 1 (Uncompressed)
+  tagList.push({ tag: 262, type: 3, count: 1, inlineVal: PHOTOMETRIC_CFA }); // PhotometricInterpretation = CFA
+  tagList.push({ tag: 277, type: 3, count: 1, inlineVal: 1 }); // SamplesPerPixel
+  // CFARepeatPatternDim (Tag 33421): a 2 x 2 repeat, two SHORTs held inline
+  tagList.push({ tag: 33421, type: 3, count: 2, inlineVal: CFA_REPEAT_2X2 });
+  // DNGVersion (Tag 50706): 1.4.0.0, four BYTEs held inline
+  tagList.push({ tag: 50706, type: 1, count: 4, inlineVal: DNG_VERSION_1_4 });
 
   // CFAPattern (Tag 33422): [0, 1, 1, 2] = RGGB
   const cfaBuf = Buffer.from([0, 1, 1, 2]);
@@ -71,6 +117,8 @@ export function buildSyntheticDngBuffer(options: {
         bBuf.writeUInt32LE(options.blackLevel[i], i * 4);
       }
       tagList.push({ tag: 50714, type: 4, count: options.blackLevel.length, data: bBuf });
+      // BlackLevelRepeatDim (Tag 50713): the four levels repeat over a 2 x 2 block
+      tagList.push({ tag: 50713, type: 3, count: 2, inlineVal: CFA_REPEAT_2X2 });
     } else {
       tagList.push({ tag: 50714, type: 4, count: 1, inlineVal: options.blackLevel });
     }
@@ -179,131 +227,153 @@ export function buildSyntheticDngBuffer(options: {
 
 describe('Phase 3: DNG RAW Metadata Normalization & Solid 7z Compression', () => {
   describe('DNG RAW Metadata & Demosaicing Normalization', () => {
-    it('parses DNG BlackLevel and WhiteLevel tags and applies zero-offset normalization', () => {
-      const width = 8;
-      const height = 8;
+    /** Writes `dng` to a temporary directory, runs dcraw_emu on it with `args` and reads back its 16-bit linear TIFF. */
+    function dcrawEmu(dng: Buffer, args: string[]): { data: Uint16Array; width: number; height: number } {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'dng-oracle-'));
+      try {
+        const file = path.join(dir, 'frame.dng');
+        writeFileSync(file, dng);
+        execFileSync(requireOracleTool('dcraw_emu'), [...args, file], { stdio: 'pipe', timeout: DCRAW_TIMEOUT_MS });
+        return readTiff16(`${file}.tiff`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    /** PSNR in dB of our 16-bit RGB against the reference over the frame without its border; peak is the brightest reference sample. */
+    function interiorPsnr(ours: Uint16Array, reference: Uint16Array, width: number, height: number): number {
+      let sum = 0;
+      let count = 0;
+      let peak = 0;
+      for (let y = BORDER_PIXELS; y < height - BORDER_PIXELS; y++) {
+        for (let x = BORDER_PIXELS; x < width - BORDER_PIXELS; x++) {
+          for (let c = 0; c < RGB_CHANNELS; c++) {
+            const at = (y * width + x) * RGB_CHANNELS + c;
+            sum += (ours[at] - reference[at]) * (ours[at] - reference[at]);
+            peak = Math.max(peak, reference[at]);
+            count += 1;
+          }
+        }
+      }
+      return sum === 0 ? Infinity : 10 * Math.log10((peak * peak) / (sum / count));
+    }
+
+    /** Smooth per-channel gradients: the demosaic error of any sound interpolator stays far below the PSNR floor. */
+    function gradientFrame(channelGain: [number, number, number], base: (x: number, y: number) => number, blackOf: (x: number, y: number) => number): Uint16Array {
+      const pixels = new Uint16Array(FRAME_SIZE * FRAME_SIZE);
+      for (let y = 0; y < FRAME_SIZE; y++) {
+        for (let x = 0; x < FRAME_SIZE; x++) {
+          // RGGB: (even row, even column) is red, (odd row, odd column) is blue, the other two sites are green.
+          let gain = channelGain[1];
+          if ((y & 1) === 0 && (x & 1) === 0) gain = channelGain[0];
+          if ((y & 1) === 1 && (x & 1) === 1) gain = channelGain[2];
+          pixels[y * FRAME_SIZE + x] = blackOf(x, y) + Math.round(base(x, y) * gain);
+        }
+      }
+      return pixels;
+    }
+
+    const decodeLinear = (dng: Buffer) => decodeRawBayerSensor(dng, 'dng', { targetColorSpace: 'linear', highlightReconstruction: false })!;
+
+    oracleTest('applies BlackLevel and WhiteLevel like LibRaw: linear output within 40 dB of dcraw_emu -4 -T', ['dcraw_emu'], () => {
       const blackLevel = 512;
       const whiteLevel = 4095;
-
-      // Create synthetic sensor pixels with blackLevel offset
-      const pixelValues = new Uint16Array(width * height);
-      for (let i = 0; i < width * height; i++) {
-        // Sensor signal = blackLevel + targetSignal
-        // Let targetSignal be 1000 (roughly 28% of range)
-        pixelValues[i] = blackLevel + 1000;
-      }
-
-      const dngBuf = buildSyntheticDngBuffer({
-        width,
-        height,
-        bitsPerSample: 12,
+      const signal = (x: number, y: number) => 400 + 20 * x + 10 * y;
+      const dng = buildSyntheticDngBuffer({
+        width: FRAME_SIZE,
+        height: FRAME_SIZE,
+        bitsPerSample: 16,
         blackLevel,
         whiteLevel,
-        pixelValues,
+        colorMatrix1: SRGB_CAMERA_COLOR_MATRIX,
+        pixelValues: gradientFrame([1, 1, 1], signal, () => blackLevel),
       });
 
-      const decoded = decodeRawBayerSensor(dngBuf);
-      expect(decoded).not.toBeNull();
-      expect(decoded!.width).toBe(width);
-      expect(decoded!.height).toBe(height);
-      expect(decoded!.rgb).toHaveLength(width * height * 3);
+      const decoded = decodeLinear(dng);
+      const reference = dcrawEmu(dng, ['-4', '-T', '-o', '0', '-r', '1', '1', '1', '1', '-H', '0', '-t', '0']);
+      expect({ width: decoded.width, height: decoded.height }).toEqual({ width: reference.width, height: reference.height });
+      expect(interiorPsnr(decoded.rgb16!, reference.data, reference.width, reference.height)).toBeGreaterThanOrEqual(MIN_PSNR_DB);
 
-      // Verify that after blackLevel subtraction, the normalized signal is scaled correctly
-      // (1000 / (4095 - 512)) * 255 = (1000 / 3583) * 255 = ~71.17
-      // In perceptual sRGB gamma (0.28 ^ (1/2.2) approx), value should be between 50 and 170
-      const centerIdx = (4 * width + 4) * 3;
-      const r = decoded!.rgb[centerIdx];
-      const g = decoded!.rgb[centerIdx + 1];
-      const b = decoded!.rgb[centerIdx + 2];
-
-      expect(r).toBeGreaterThan(40);
-      expect(r).toBeLessThan(180);
-      expect(g).toBeGreaterThan(40);
-      expect(g).toBeLessThan(180);
-      expect(b).toBeGreaterThan(40);
-      expect(b).toBeLessThan(180);
+      // Hand-computed from the DNG linearization formula (raw - black) / (white - black): a pixel with 1000 above black is 1000 / 3583 of full scale.
+      const centre = (CENTRE * FRAME_SIZE + CENTRE) * RGB_CHANNELS;
+      const expected = (signal(CENTRE, CENTRE) / (whiteLevel - blackLevel)) * FULL_SCALE;
+      expect(Math.abs(decoded.rgb16![centre + 1] - expected)).toBeLessThan(expected * 0.02);
     });
 
-    it('corrects green tint via AsShotNeutral white balance coefficients', () => {
-      const width = 8;
-      const height = 8;
-      const blackLevel = 0;
+    oracleTest('scales channels by AsShotNeutral like LibRaw camera white balance: within 40 dB of dcraw_emu -4 -T -w', ['dcraw_emu'], () => {
       const whiteLevel = 4095;
-
-      // Suppose raw sensor has strong green tint (typical for Silicon CFA sensitivity: Green has twice the photons)
-      // Sensor values: Red=1000, Green=2000, Blue=1200
-      const pixelValues = new Uint16Array(width * height);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = y * width + x;
-          const rx = x & 1;
-          const ry = y & 1;
-          // RGGB: (0,0)=R, (1,0)=G, (0,1)=G, (1,1)=B
-          if (ry === 0 && rx === 0) pixelValues[idx] = 1000; // R
-          else if (ry === 1 && rx === 1) pixelValues[idx] = 1200; // B
-          else pixelValues[idx] = 2000; // G
-        }
-      }
-
-      // Neutral balance: AsShotNeutral specifies coordinate of neutral object in sensor space:
-      // [1000/2000, 1.0, 1200/2000] = [0.5, 1.0, 0.6]
-      const dngBuf = buildSyntheticDngBuffer({
-        width,
-        height,
-        bitsPerSample: 12,
-        blackLevel,
+      // A green-tinted sensor: neutral grey records R : G : B = 0.5 : 1 : 0.6, so the multipliers are 2 : 1 : 1.667.
+      const asShotNeutral: [number, number, number] = [0.5, 1.0, 0.6];
+      const dng = buildSyntheticDngBuffer({
+        width: FRAME_SIZE,
+        height: FRAME_SIZE,
+        bitsPerSample: 16,
+        blackLevel: 0,
         whiteLevel,
-        asShotNeutral: [0.5, 1.0, 0.6],
-        pixelValues,
+        asShotNeutral,
+        colorMatrix1: SRGB_CAMERA_COLOR_MATRIX,
+        pixelValues: gradientFrame(asShotNeutral, (x, y) => 800 + 15 * x + 8 * y, () => 0),
       });
 
-      const decoded = decodeRawBayerSensor(dngBuf);
-      expect(decoded).not.toBeNull();
+      const decoded = decodeLinear(dng);
+      const reference = dcrawEmu(dng, ['-4', '-T', '-w', '-o', '0', '-H', '0', '-t', '0']);
+      expect(interiorPsnr(decoded.rgb16!, reference.data, reference.width, reference.height)).toBeGreaterThanOrEqual(MIN_PSNR_DB);
 
-      // Check center pixel RGB values
-      const centerIdx = (4 * width + 4) * 3;
-      const r = decoded!.rgb[centerIdx];
-      const g = decoded!.rgb[centerIdx + 1];
-      const b = decoded!.rgb[centerIdx + 2];
-
-      // After white balance scaling (r * 1/0.5, g * 1/1.0, b * 1/0.6), R, G, B should be well-balanced (neutral gray)
-      // All three channels should be within 25 units of each other, not showing extreme green dominance
-      expect(Math.abs(r - g)).toBeLessThan(35);
-      expect(Math.abs(b - g)).toBeLessThan(35);
+      // The sensor saw neutral grey, so after white balance the three channels agree: R, G and B of the centre pixel are within 2 % of each other.
+      const centre = (CENTRE * FRAME_SIZE + CENTRE) * RGB_CHANNELS;
+      const [r, g, b] = [decoded.rgb16![centre], decoded.rgb16![centre + 1], decoded.rgb16![centre + 2]];
+      expect(Math.abs(r - g)).toBeLessThan(g * 0.02);
+      expect(Math.abs(b - g)).toBeLessThan(g * 0.02);
     });
 
-    it('supports 4-channel repeat pattern black level array', () => {
-      const width = 8;
-      const height = 8;
+    oracleTest('subtracts a 4-channel repeating BlackLevel like LibRaw: within 40 dB of dcraw_emu -4 -T, and black is zero', ['dcraw_emu'], () => {
       const blackLevels = [100, 150, 150, 200]; // [R, G1, G2, B]
       const whiteLevel = 4000;
-
-      const pixelValues = new Uint16Array(width * height);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = y * width + x;
-          const blkIdx = ((y & 1) << 1) | (x & 1);
-          // Set raw value exactly equal to channel black level: effective signal should be 0
-          pixelValues[idx] = blackLevels[blkIdx];
-        }
-      }
-
-      const dngBuf = buildSyntheticDngBuffer({
-        width,
-        height,
-        bitsPerSample: 12,
+      const blackOf = (x: number, y: number) => blackLevels[((y & 1) << 1) | (x & 1)];
+      const dng = buildSyntheticDngBuffer({
+        width: FRAME_SIZE,
+        height: FRAME_SIZE,
+        bitsPerSample: 16,
         blackLevel: blackLevels,
         whiteLevel,
-        pixelValues,
+        colorMatrix1: SRGB_CAMERA_COLOR_MATRIX,
+        pixelValues: gradientFrame([1, 1, 1], (x, y) => 300 + 18 * x + 9 * y, blackOf),
       });
 
-      const decoded = decodeRawBayerSensor(dngBuf);
-      expect(decoded).not.toBeNull();
-
-      // All output RGB values should be near zero (clamped black level)
-      for (let i = 0; i < decoded!.rgb.length; i++) {
-        expect(decoded!.rgb[i]).toBeLessThanOrEqual(5);
+      const decoded = decodeLinear(dng);
+      const reference = dcrawEmu(dng, ['-4', '-T', '-o', '0', '-r', '1', '1', '1', '1', '-H', '0', '-t', '0']);
+      // LibRaw divides every channel by the range above the red black level (WhiteLevel - 100); this decoder divides
+      // each channel by the range above its own black level. The subtraction is what is under test, so the reference
+      // is brought onto the per-channel range before the comparison.
+      const channelBlack = [blackLevels[0], blackLevels[1], blackLevels[3]];
+      const rescaled = new Uint16Array(reference.data.length);
+      for (let i = 0; i < rescaled.length; i++) {
+        const c = i % RGB_CHANNELS;
+        rescaled[i] = Math.round((reference.data[i] * (whiteLevel - channelBlack[0])) / (whiteLevel - channelBlack[c]));
       }
+      expect(interiorPsnr(decoded.rgb16!, rescaled, reference.width, reference.height)).toBeGreaterThanOrEqual(MIN_PSNR_DB);
+
+      // Hand-computed: the ramp is linear, so every channel of the centre pixel is the ramp value over its own range.
+      const centre = (CENTRE * FRAME_SIZE + CENTRE) * RGB_CHANNELS;
+      const ramp = 300 + 18 * CENTRE + 9 * CENTRE;
+      for (let c = 0; c < RGB_CHANNELS; c++) {
+        const expected = (ramp / (whiteLevel - channelBlack[c])) * FULL_SCALE;
+        expect(Math.abs(decoded.rgb16![centre + c] - expected), `channel ${c}`).toBeLessThan(expected * 0.01);
+      }
+
+      // A frame whose every pixel equals its own channel's black level carries no signal: every output sample is zero.
+      const dark = buildSyntheticDngBuffer({
+        width: FRAME_SIZE,
+        height: FRAME_SIZE,
+        bitsPerSample: 16,
+        blackLevel: blackLevels,
+        whiteLevel,
+        colorMatrix1: SRGB_CAMERA_COLOR_MATRIX,
+        pixelValues: gradientFrame([0, 0, 0], () => 0, blackOf),
+      });
+      const darkDecoded = decodeLinear(dark);
+      expect(Math.max(...darkDecoded.rgb16!)).toBe(0);
+      expect(Math.max(...dcrawEmu(dark, ['-4', '-T', '-o', '0', '-r', '1', '1', '1', '1', '-H', '0', '-t', '0']).data)).toBe(0);
     });
   });
 

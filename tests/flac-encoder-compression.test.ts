@@ -1,6 +1,7 @@
-import { describe, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { encodeFlacStream } from '../src/lib/conversions/media-encoder';
 import { oracleTest } from './helpers/oracle-test';
+import { expectNoSlowerThanReference } from './helpers/timing';
 import {
   ffmpegDecodeRaw,
   flacCliDecodeRaw,
@@ -23,12 +24,23 @@ import crypto from 'node:crypto';
 const RATE = 44100;
 const MAX_SIZE_RATIO_VS_LEVEL_5 = 1.03;
 const MAX_SIZE_RATIO_VS_LEVEL_8 = 1.08;
-// Regression floor, not a benchmark: about 17 MB/s on a quiet machine and 2.8 MB/s for the
-// replaced encoder, so shared CI runners keep headroom while a fall back to the old path fails.
-const MIN_THROUGHPUT_MB_PER_SECOND = 6;
+// Regression ceiling, not a benchmark. The reference unit is ten plain passes over the samples (a sum of squares):
+// a pass takes about a millisecond for speech, too short to time alone. The encoder costs 3.5 to 4.6 units on a
+// quiet machine and the encoder it replaced (2.8 MB/s against about 17 MB/s) 21 to 27, so the bound of 15 keeps
+// headroom for shared CI runners while a fall back to the old path fails.
+const MAX_ENCODE_COST_PER_REFERENCE_UNIT = 15;
+const REFERENCE_PASSES = 10;
 const THROUGHPUT_RUNS = 5;
-const BYTES_PER_MB = 1e6;
-const NS_PER_SECOND = 1e9;
+const FLAC_MAGIC = 'fLaC';
+
+/** The reference unit of work the encoder's cost is expressed in: REFERENCE_PASSES plain passes over the samples. */
+function referenceUnit(pcm: Int16Array): number {
+  let sum = 0;
+  for (let pass = 0; pass < REFERENCE_PASSES; pass++) {
+    for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i];
+  }
+  return sum;
+}
 const TEST_TIMEOUT_MS = 120_000;
 
 interface Signal {
@@ -67,20 +79,19 @@ describe('FLAC compression and speed against the reference encoder', () => {
       TEST_TIMEOUT_MS
     );
 
-    oracleTest(
-      `${signal.name}: encodes at least ${MIN_THROUGHPUT_MB_PER_SECOND} MB/s of PCM`,
-      ['ffmpeg'],
-      () => {
+    it(
+      `${signal.name}: encodes within ${MAX_ENCODE_COST_PER_REFERENCE_UNIT}x the cost of ten scalar passes over the PCM`,
+      async () => {
+        // Speed is judged against this machine, not a fixed MB/s: the encoder is timed against plain passes over
+        // the same samples, interleaved and best of N (tests/helpers/timing.ts); see the constants above.
         const pcm = signal.make();
-        encodeFlacStream(pcm, RATE, signal.channels); // warm-up for the JIT
-        let fastest = Number.POSITIVE_INFINITY;
-        for (let run = 0; run < THROUGHPUT_RUNS; run++) {
-          const start = process.hrtime.bigint();
-          encodeFlacStream(pcm, RATE, signal.channels);
-          fastest = Math.min(fastest, Number(process.hrtime.bigint() - start) / NS_PER_SECOND);
-        }
-        const megabytesPerSecond = pcm.byteLength / BYTES_PER_MB / fastest;
-        expect(megabytesPerSecond).toBeGreaterThanOrEqual(MIN_THROUGHPUT_MB_PER_SECOND);
+        const { largeResult: stream } = await expectNoSlowerThanReference(
+          `${signal.name} FLAC encode`,
+          () => referenceUnit(pcm),
+          () => encodeFlacStream(pcm, RATE, signal.channels),
+          { maxRatio: MAX_ENCODE_COST_PER_REFERENCE_UNIT, passes: THROUGHPUT_RUNS }
+        );
+        expect(stream.subarray(0, FLAC_MAGIC.length).toString('latin1')).toBe(FLAC_MAGIC);
       },
       TEST_TIMEOUT_MS
     );

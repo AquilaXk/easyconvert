@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { NextRequest } from 'next/server';
 import {
   normalizeIp,
@@ -21,6 +23,29 @@ import { GET as jobByIdHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { POST as convertHandler } from '../src/app/api/v1/convert/route';
 import { GET as openApiHandler } from '../src/app/api/openapi.json/route';
 import { killProcessGroup, executeSandboxedBinary } from '../src/lib/security/process-sandbox';
+
+/** How long a test waits for a killed process tree to disappear from the process table. */
+const PROCESS_EXIT_WAIT_MS = 10_000;
+const PROCESS_POLL_INTERVAL_MS = 20;
+
+/** A process is running when /proc knows it and it is not a zombie awaiting its parent's wait(). */
+function isRunning(pid: number): boolean {
+  let stat: string;
+  try {
+    stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+  } catch {
+    return false;
+  }
+  // "pid (comm) S ...": the state letter follows the last closing parenthesis.
+  return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
+}
+
+async function waitUntil(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, PROCESS_POLL_INTERVAL_MS));
+  }
+}
 
 describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', () => {
   let testUser: any;
@@ -309,9 +334,33 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
   });
 
   describe('5. Process Group Detachment & Zombie Prevention (process-sandbox.ts)', () => {
-    it('killProcessGroup gracefully handles undefined or non-existent PID without throwing', () => {
-      expect(() => killProcessGroup(undefined)).not.toThrow();
-      expect(() => killProcessGroup(-999999)).not.toThrow();
+    // skip-ok: platform capability: process groups and /proc are Linux features, and CI runs Linux.
+    it.skipIf(process.platform !== 'linux')('killProcessGroup ends the whole group of a detached process, grandchild included', async () => {
+      // sh leads a new process group (detached) and starts a grandchild in it; it prints the grandchild's PID.
+      const leader = spawn('/bin/sh', ['-c', 'sleep 60 & echo $!; wait'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      const grandchildPid = await new Promise<number>((resolve, reject) => {
+        leader.once('error', reject);
+        leader.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+      });
+      expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
+      expect(isRunning(grandchildPid)).toBe(true);
+
+      const leaderEnd = new Promise<NodeJS.Signals | null>((resolve) => leader.once('exit', (_code, signal) => resolve(signal)));
+      killProcessGroup(leader.pid);
+
+      expect(await leaderEnd).toBe('SIGKILL');
+      await waitUntil(() => !isRunning(grandchildPid));
+      expect(isRunning(grandchildPid)).toBe(false);
+    });
+
+    it('killProcessGroup ignores an undefined, non-positive or unused PID', () => {
+      // A PID far above pid_max is never in use, so the signal has no target and nothing is killed.
+      const unusedPid = 2 ** 30;
+      expect(process.kill(process.pid, 0)).toBe(true);
+      for (const pid of [undefined, 0, -1, -999999, unusedPid]) {
+        expect(killProcessGroup(pid as number | undefined), String(pid)).toBeUndefined();
+      }
+      expect(process.kill(process.pid, 0)).toBe(true);
     });
 
     it('executeSandboxedBinary executes safely and enforces resource bounds', async () => {

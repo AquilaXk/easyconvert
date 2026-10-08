@@ -72,6 +72,7 @@ describe('demosaic quality against LibRaw interpolators', () => {
     expect(path.basename(DCRAW_EMU!)).toBe('dcraw_emu');
   });
 
+  // skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
   it.skipIf(!CHECKS_ENABLED)(
     'AHD and AMaZE are no worse than before against LibRaw AHD (-q 3) and DCB (-q 4)',
     () => {

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -32,6 +32,11 @@ import {
   list7zEntryPaths,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Regression suite for the adversarial review of PR #499: wrapper-format listings, directory sizes,
@@ -43,8 +48,8 @@ const SLOW_TEST_TIMEOUT_MS = 120_000;
 const MIB = 1024 * 1024;
 /** Depth that used to cost 19 s in the walk and leak the sandbox when removal overflowed the stack. */
 const HOSTILE_DEPTH = 1000;
-const DEPTH_TIME_BUDGET_MS = 10_000;
-const RENAME_TIME_BUDGET_MS = 2_000;
+/** Hang guard only: the depth walk used to cost 19 s; it now takes milliseconds. */
+const DEPTH_HANG_GUARD_MS = 10_000;
 const DUPLICATE_COUNT = 50_000;
 
 function file(entryPath: string, sizeBytes: number | null = 1): ListedArchiveEntry {
@@ -267,7 +272,7 @@ describe('PR #499 review blockers', () => {
       const workerError = await rejection(worker(tar, 'tar'));
       const libError = await rejection(lib(tar, 'tar'));
 
-      expect(performance.now() - started).toBeLessThan(DEPTH_TIME_BUDGET_MS);
+      expect(performance.now() - started).toBeLessThan(DEPTH_HANG_GUARD_MS);
       expect(workerError).toMatchObject({ name: 'UnsafeArchiveError', reason: 'path-depth' });
       expect(libError).toMatchObject({ name: 'UnsafeArchiveError', reason: 'path-depth' });
       expect(ws.snapshot()).toEqual(before);
@@ -288,7 +293,7 @@ describe('PR #499 review blockers', () => {
         const started = performance.now();
 
         expect(reasonOf(() => assertExtractionContained(root, 1_000, ARCHIVE_SECURITY_LIMITS))).toBe('path-depth');
-        expect(performance.now() - started).toBeLessThan(DEPTH_TIME_BUDGET_MS);
+        expect(performance.now() - started).toBeLessThan(DEPTH_HANG_GUARD_MS);
       } finally {
         removeDirectoryTree(root);
       }
@@ -309,17 +314,18 @@ describe('PR #499 review blockers', () => {
   });
 
   describe('5. renaming duplicates is linear', () => {
-    it('renames 50,000 identical names in under two seconds with the same numbering as before', () => {
-      const files = Array.from({ length: DUPLICATE_COUNT }, () => ({ filename: 'a.txt', buffer: Buffer.alloc(0) }));
-      const started = performance.now();
+    it('renames 50,000 identical names in linear time with the same numbering as before', async () => {
+      const duplicates = (count: number) => Array.from({ length: count }, () => ({ filename: 'a.txt', buffer: Buffer.alloc(0) }));
+      const { largeResult: renamed } = await expectLinearOnInputs(
+        'resolveArchiveEntryCollisions',
+        (files: Array<{ filename: string; buffer: Buffer }>) => resolveArchiveEntryCollisions(files, 'rename'),
+        { small: duplicates(DUPLICATE_COUNT / SCALING_FACTOR), large: duplicates(DUPLICATE_COUNT) }
+      );
 
-      const renamed = resolveArchiveEntryCollisions(files, 'rename');
-
-      expect(performance.now() - started).toBeLessThan(RENAME_TIME_BUDGET_MS);
       expect(renamed.map((f) => f.filename).slice(0, 4)).toEqual(['a.txt', 'a-1.txt', 'a-2.txt', 'a-3.txt']);
       expect(renamed[DUPLICATE_COUNT - 1].filename).toBe(`a-${DUPLICATE_COUNT - 1}.txt`);
       expect(new Set(renamed.map((f) => f.filename)).size).toBe(DUPLICATE_COUNT);
-    });
+    }, SCALING_TEST_TIMEOUT_MS);
 
     it('still steps over names the archive really contains', () => {
       const names = ['a.txt', 'a-1.txt', 'a.txt', 'a.txt', 'dir/a.txt', 'dir/a.txt'];

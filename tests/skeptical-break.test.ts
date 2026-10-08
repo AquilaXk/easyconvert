@@ -5,6 +5,8 @@ import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedTargetError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+import { parseCsvWithPython, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
 
 describe('Skeptical Review: Breaking Prior Implementation', () => {
   it('1. stl -> dxf must generate standard DXF 3DFACE entities without throwing Unsupported target', async () => {
@@ -48,10 +50,17 @@ endsolid TestModel`;
     buf.writeFloatLE(9.5, 128);
 
     const res = await convertFile(buf, 'stl', 'obj', {}, 'binmodel.stl');
-    const objText = res.buffer.toString('utf-8');
-    expect(objText).toContain('v 1.5 2.5 3.5');
-    expect(objText).toContain('v 4.5 5.5 6.5');
-    expect(objText).toContain('v 7.5 8.5 9.5');
+    // Read the OBJ line by line (Wavefront OBJ: `v x y z` vertices, `f a b c` faces with 1-based indices).
+    const lines = res.buffer.toString('utf-8').split('\n');
+    const vertices = lines.filter((line) => line.startsWith('v ')).map((line) => line.slice(2).split(' ').map(Number));
+    const faces = lines.filter((line) => line.startsWith('f ')).map((line) => line.slice(2).split(' ').map(Number));
+    expect(lines.find((line) => line.startsWith('o '))).toBe('o binmodel');
+    expect(vertices).toEqual([
+      [1.5, 2.5, 3.5],
+      [4.5, 5.5, 6.5],
+      [7.5, 8.5, 9.5],
+    ]);
+    expect(faces).toEqual([[1, 2, 3]]);
   });
 
   it('3. ndjson / jsonl / tab in data category must be converted properly', async () => {
@@ -119,13 +128,18 @@ endsolid TestModel`;
     expect(htmlRes.buffer.toString('utf-8')).toContain('Widget');
   });
 
-  it('8. csv with quoted commas converted to ods must preserve cells without mangling columns', async () => {
+  oracleTest('8. csv with quoted commas converted to ods must preserve cells without mangling columns', ['soffice', 'python3'], async () => {
     const csv = 'Name,Department,Salary\n"Doe, Jane",Sales,"$100,000"';
     const res = await convertFile(Buffer.from(csv, 'utf-8'), 'csv', 'ods', {}, 'payroll.csv');
-    const zip = await JSZip.loadAsync(res.buffer);
-    const content = await zip.file('content.xml')!.async('text');
-    expect(content).toContain('Doe, Jane');
-    expect(content).toContain('$100,000');
+    // The package starts with its stored mimetype entry, as the OpenDocument packaging rules require.
+    expect(Object.keys((await JSZip.loadAsync(res.buffer)).files)[0]).toBe('mimetype');
+    // LibreOffice opens the spreadsheet and finds the same three columns in each row: the quoted commas stay in
+    // their cells and do not add columns.
+    expect(sheetRowsViaLibreOffice(res.buffer, 'ods')).toEqual(parseCsvWithPython(csv));
+    expect(parseCsvWithPython(csv)).toEqual([
+      ['Name', 'Department', 'Salary'],
+      ['Doe, Jane', 'Sales', '$100,000'],
+    ]);
   });
 
   it('9. POST /api/convert with 0-byte file must fail closed with 400 Bad Request', async () => {

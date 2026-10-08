@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import {
@@ -32,6 +33,7 @@ import {
   CompressionCodec,
   PARQUET_MAGIC,
   ParquetValueError,
+  ParquetFormatError,
 } from '../src/lib/conversions/parquet';
 import {
   parseFvarTable,
@@ -52,6 +54,11 @@ import { convertArchive } from '../src/lib/conversions/archive';
 import { convertData } from '../src/lib/conversions/data';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { buildRleBombFrame } from './helpers/zstd-frames';
+import { ConversionFailedError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+
+/** What every zstd command-line build prints for --version. */
+const ZSTD_VERSION_BANNER = /Zstandard CLI/;
 
 describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Variable Fonts', () => {
   // =========================================================================
@@ -151,7 +158,16 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
     });
 
     it('rejects invalid or missing binary path fail-closed', async () => {
-      await expect(executeSandboxedBinary('', [])).rejects.toThrow();
+      const emptyPath = await executeSandboxedBinary('', []).catch((err: unknown) => err);
+      expect(emptyPath).toBeInstanceOf(SandboxedProcessError);
+      expect((emptyPath as SandboxedProcessError).message).toBe('Sandboxed execution error: invalid binary path provided.');
+      expect((emptyPath as SandboxedProcessError).exitCode).toBeNull();
+
+      const missingBinary = await executeSandboxedBinary('/nonexistent/easyconvert-test-binary', []).catch((err: unknown) => err);
+      expect(missingBinary).toBeInstanceOf(SandboxedProcessError);
+      expect(String((missingBinary as SandboxedProcessError).message + (missingBinary as SandboxedProcessError).stderr)).toMatch(
+        /No such file or directory|ENOENT/
+      );
     });
 
     it('enforces memory execution limits and terminates process exceeding memory limit', async () => {
@@ -174,9 +190,21 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
     });
 
     it('resets sandbox environment cache cleanly', () => {
+      const cached = detectSandboxEnvironment();
+      // A second call serves the cached object; after the reset the environment is detected again.
+      expect(detectSandboxEnvironment()).toBe(cached);
       resetSandboxEnvironmentCache();
-      const env = detectSandboxEnvironment();
-      expect(env).toBeDefined();
+      const redetected = detectSandboxEnvironment();
+      expect(redetected).not.toBe(cached);
+      expect(redetected).toEqual(cached);
+      expect(redetected.platform).toBe(process.platform);
+      // gVisor wins over a plain container, which wins over the bare host.
+      const expectedType = [
+        { applies: redetected.isGVisor, type: 'gvisor' },
+        { applies: redetected.isContainer, type: 'container' },
+        { applies: true, type: 'host' },
+      ].find((candidate) => candidate.applies)?.type;
+      expect(redetected.sandboxType).toBe(expectedType);
     });
   });
 
@@ -187,11 +215,13 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
     it('calculates XXH64 and 32-bit checksum adhering to RFC 8878', () => {
       const sample = Buffer.from('EasyConvert High-Performance Zstandard Stream');
       const hash64 = xxh64(sample);
-      expect(typeof hash64).toBe('bigint');
 
       const checksum = computeZstdChecksum(sample);
-      expect(typeof checksum).toBe('number');
       expect(checksum).toBe(Number(hash64 & 0xffffffffn));
+
+      // Published xxHash64 test vectors (seed 0): the empty input and "abc".
+      expect(xxh64(Buffer.alloc(0))).toBe(0xef46db3751d8e999n);
+      expect(xxh64(Buffer.from('abc'))).toBe(0x44bc2cf5ad770999n);
     });
 
     it('encodes and decodes raw uncompressed Zstandard frames', () => {
@@ -325,15 +355,18 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
 
     it('rejects corrupted zst archives fail-closed in convertArchive', async () => {
       const corruptZst = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x01, 0x02]);
-      await expect(
-        convertArchive(corruptZst, 'zst', 'zip', {}, 'corrupted.zst')
-      ).rejects.toThrow();
+      const failure = await convertArchive(corruptZst, 'zst', 'zip', {}, 'corrupted.zst').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('Malformed Zstandard frame: truncated block header.');
     });
 
-    it('detects system zstd binary availability', () => {
+    oracleTest('detects an executable zstd binary when one is installed', ['zstd'], () => {
+      // A host may carry more than one zstd (a distribution build and a pinned one), so the lookup
+      // is checked by what it finds, not by which copy: the file must run and identify as zstd.
       const binPath = getZstdBinaryPath();
-      // On systems with zstd installed, it resolves to a valid path string; otherwise null
-      expect(binPath === null || typeof binPath === 'string').toBe(true);
+      expect(binPath).not.toBeNull();
+      const version = execFileSync(binPath as string, ['--version'], { encoding: 'utf-8' });
+      expect(version).toMatch(ZSTD_VERSION_BANNER);
     });
   });
 
@@ -441,7 +474,10 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       const records = [{ a: 'first' }, { a: 'second' }, { a: 'third' }];
       const valid = encodeParquet(records);
       const truncated = valid.subarray(0, valid.length - 20);
-      expect(() => decodeParquet(truncated)).toThrow();
+      // The footer is gone, so the closing magic is read from the middle of the last data page.
+      expect(() => decodeParquet(truncated)).toThrow(ParquetFormatError);
+      expect(() => decodeParquet(truncated)).toThrow(/Invalid Parquet file: magic header='PAR1', magic footer='/);
+      expect(decodeParquet(valid)).toEqual(records);
     });
 
     it('decompresses Snappy blocks and decodes Snappy-compressed Parquet columnar data', () => {

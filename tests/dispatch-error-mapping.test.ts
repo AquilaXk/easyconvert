@@ -5,7 +5,8 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
-import { HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -98,7 +99,7 @@ describe('POST /api/v1/convert error responses', () => {
     expect(JSON.stringify(problem)).not.toContain('/tmp/');
   });
 
-  it.skipIf(!HAS_SOFFICE)(
+  it.skipIf(skipWithoutTools('soffice'))(
     'does not echo internal error messages or sandbox paths in a 500 response (needs soffice)',
     async () => {
       const logged = vi.spyOn(console, 'error').mockImplementation(() => {});

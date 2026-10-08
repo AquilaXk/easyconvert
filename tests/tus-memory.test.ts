@@ -128,12 +128,12 @@ describe('TUS Zero-Heap Memory Profiling (512 MiB Streaming Upload)', () => {
 
     // 6. Verify physical disk spool size equals exact 512 MiB
     const session = await tusEngine.getSession(createdSessionId);
-    expect(session).toBeDefined();
+    expect(session).not.toBeNull();
     expect(session?.uploadOffset).toBe(TOTAL_512_MIB);
     expect(session?.completed).toBe(true);
 
     const storageKey = patchRes.headers.get('EasyConvert-Storage-Key');
-    expect(storageKey).toBeDefined();
+    expect(storageKey).toMatch(/^conversions\/[^/]+\/tus_\d+_[0-9a-f]+_/);
 
     // 7. Clean up disk immediately to avoid filling test disk volume
     const terminated = await tusEngine.terminateSession(createdSessionId);

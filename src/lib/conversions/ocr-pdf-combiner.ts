@@ -1062,32 +1062,6 @@ export function createToUnicodeCMap(
   return buildToUnicodeCMapFromCids([...mappings]);
 }
 
-/**
- * Creates an ISO 32000-1 compliant 1-byte WinAnsi ToUnicode CMap stream for StandardFonts.
- */
-export function createWinAnsiToUnicodeCMap(): string {
-  return `/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CIDSystemInfo <<
-  /Registry (Adobe)
-  /Ordering (UCS)
-  /Supplement 0
->> def
-/CMapName /WinAnsi-ToUnicode def
-/CMapType 2 def
-1 begincodespacerange
-<00> <FF>
-endcodespacerange
-1 beginbfrange
-<00> <FF> <0000>
-endbfrange
-endcmap
-CMapName currentdict /CMap defineresource pop
-end
-end`;
-}
-
 export interface UnicodeFontInfo {
   fontName: string;
   fontRef: any;

@@ -19,7 +19,6 @@ import {
   repairZipArchive,
   resolveArchiveEntryCollisions,
   matchArchiveGlob,
-  buildSyntheticStoredRarBuffer,
   validateMultiVolumeSequence,
   stitchMultiVolumeArchive,
   splitArchive,
@@ -38,6 +37,12 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { oracleTest } from './helpers/oracle-test';
 import type { User } from '../src/lib/auth/types';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
 
 describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-Volume Handling', () => {
   const sha256 = (b: Buffer | Uint8Array): string =>
@@ -251,7 +256,7 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
         { filename: 'rar1.txt', buffer: Buffer.from('RAR file entry 1') },
         { filename: 'rar2.txt', buffer: Buffer.from('RAR file entry 2') },
       ];
-      const rarBuffer = buildSyntheticStoredRarBuffer(files);
+      const rarBuffer = storedRar(files);
       const info = await inspectArchive(rarBuffer, { filename: 'sample.rar' });
 
       expect(info.format).toBe('rar');
@@ -461,7 +466,7 @@ describe('WP-45: Archive Creation, Selective Extraction, Inspection, and Multi-V
 
     it('preserves full extraction support for RAR archives', () => {
       const files = [{ filename: 'extracted.txt', buffer: Buffer.from('Stored rar content') }];
-      const rarBuffer = buildSyntheticStoredRarBuffer(files);
+      const rarBuffer = storedRar(files);
       const extracted = extractRarArchive(rarBuffer);
       expect(extracted).toHaveLength(1);
       expect(extracted[0].filename).toBe('extracted.txt');

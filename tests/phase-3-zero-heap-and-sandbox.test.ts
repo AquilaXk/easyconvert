@@ -20,6 +20,8 @@ import {
 import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import { resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
 import { craftWav } from './helpers/wav-craft';
+import { oracleTest } from './helpers/oracle-test';
+import { readUnshareOptionMeanings } from './helpers/unshare-help';
 
 describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
   // ==========================================================================
@@ -157,12 +159,21 @@ describe('Phase 3 Zero-Heap Storage, Sandbox & OPFS Streaming Testnet', () => {
         pidNamespace: true,
       });
 
-      expect(fullArgs).toContain('-r');
-      expect(fullArgs).toContain('-n');
-      expect(fullArgs).toContain('-m');
-      expect(fullArgs).toContain('-i');
-      expect(fullArgs).toContain('-p');
-      expect(fullArgs).toContain('--fork');
+      // Arguments the capability already carries are kept as they are and never repeated.
+      expect(fullArgs).toEqual(['-r', '-n', '-m', '-i', '-p', '--fork']);
+      expect(buildUnshareIsolationArgs(mockCap, { netNamespace: true, userNamespace: true })).toEqual(['-r', '-n']);
+    });
+
+    oracleTest('keeps every unshare option it builds inside what util-linux unshare documents', ['unshare'], () => {
+      const meanings = readUnshareOptionMeanings();
+      const built = buildUnshareIsolationArgs(
+        { available: true, path: '/usr/bin/unshare', args: [] },
+        { userNamespace: true, netNamespace: true, mountNamespace: true, ipcNamespace: true, pidNamespace: true }
+      );
+      expect(built).toEqual(['-r', '-n', '-m', '-i', '-p', '--fork']);
+      for (const option of built) {
+        expect(meanings.has(option), `unshare --help does not list ${option}`).toBe(true);
+      }
     });
 
     it('generates defensive Seccomp BPF syscall filter profiles', () => {

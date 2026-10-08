@@ -275,6 +275,7 @@ describe('media fail-open regressions', () => {
   }, 240_000);
 
   const hasDri = DRI_RENDER_NODES.some((node) => fs.existsSync(node));
+  // skip-ok: hardware capability: the VAAPI path exists only on a host with a DRM render node.
   it.skipIf(!hasDri)('never routes HDR input through the 8-bit VAAPI upload path', () => {
     const ffmpeg = getOracleToolPath('ffmpeg');
     if (!ffmpeg) {

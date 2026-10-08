@@ -15,6 +15,10 @@ import { mulberry32 } from './helpers/audio-signals';
 import { craftEntry, END_OF_ARCHIVE, craftHeader } from './helpers/tar-craft';
 import { walkTar } from './helpers/tar-walker';
 
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
 const MIB = 1024 * 1024;
 
 /** Deterministic text-like bytes that deflate well, so the compressed size differs visibly from the input. */

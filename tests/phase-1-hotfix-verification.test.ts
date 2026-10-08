@@ -3,6 +3,7 @@ import zlib from 'node:zlib';
 import { PDFDocument, StandardFonts, PDFHexString } from 'pdf-lib';
 import { tryProcessClientEdge, executeItemConversion } from '../src/lib/client-converter';
 import { ConversionQueueItem } from '../src/lib/types';
+import { auditSvgMarkup } from './helpers/svg-dom-audit';
 import {
   resolveConversionTier,
   SUPPORTED_OPFS_STREAMING_CONVERSIONS,
@@ -438,40 +439,62 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         </svg>
       `;
 
-      const sanitized = sanitizeSvgString(maliciousSvg);
+      // The audit is not vacuous: the untouched input has every kind of active content.
+      expect(auditSvgMarkup(maliciousSvg).activeContent).toEqual([
+        'event handler onload',
+        'element <script>',
+        'element <foreignobject>',
+        'element <script>',
+        'href="javascript:alert(\'XSS4\')"',
+        'event handler onclick',
+      ]);
 
-      expect(sanitized).not.toContain('<script');
-      expect(sanitized).not.toContain('foreignObject');
-      expect(sanitized).not.toContain('onload');
-      expect(sanitized).not.toContain('onclick');
-      expect(sanitized).not.toContain('javascript:');
-      expect(sanitized).toContain('<svg');
-      expect(sanitized).toContain('<circle');
-      expect(sanitized).toContain('yellow');
+      // What survives, read by a browser's parser: no active content, and exactly the svg root, the link
+      // neutralised to "#" and the circle with its drawing attributes.
+      const audit = auditSvgMarkup(sanitizeSvgString(maliciousSvg));
+      expect(audit.activeContent).toEqual([]);
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'a', attributes: { href: '#' } },
+        { name: 'circle', attributes: { cx: '50', cy: '50', r: '40', stroke: 'green', 'stroke-width': '4', fill: 'yellow' } },
+      ]);
+      expect(audit.text.replace(/\s+/g, ' ').trim()).toBe('Click me');
     });
 
     it('strips unclosed <script> tags and prevents nested recursive tag bypasses', () => {
       const unclosed = '<svg><script src="https://evil.com/xss.js"><circle r="10"/></svg>';
-      const cleanUnclosed = sanitizeSvgString(unclosed);
-      expect(cleanUnclosed).not.toContain('<script');
-      expect(cleanUnclosed).toContain('<circle');
+      const unclosedAudit = auditSvgMarkup(sanitizeSvgString(unclosed));
+      expect(unclosedAudit.activeContent).toEqual([]);
+      expect(unclosedAudit.elements).toEqual([
+        { name: 'svg', attributes: {} },
+        { name: 'circle', attributes: { r: '10' } },
+      ]);
 
+      // Removing the inner <script> must not glue the halves of "<scr" + "ipt>" into a new script tag: the
+      // browser's parser finds no script element and no script text in what is left.
       const recursive = '<svg><scr<script>ipt>alert(1)</script><circle r="10"/></svg>';
-      const cleanRecursive = sanitizeSvgString(recursive);
-      expect(cleanRecursive).not.toContain('<script');
-      expect(cleanRecursive).not.toContain('alert');
-      expect(cleanRecursive).toContain('<circle');
+      const recursiveAudit = auditSvgMarkup(sanitizeSvgString(recursive));
+      expect(recursiveAudit.activeContent).toEqual([]);
+      expect(recursiveAudit.elements.map((element) => element.name)).not.toContain('script');
+      expect(recursiveAudit.text).toBe('');
     });
 
     it('sanitizes data:image/svg+xml and animation injection vectors', () => {
       const dataSvg = '<svg><a href="data:image/svg+xml;base64,PHN2Zz4=">test</a></svg>';
-      const cleanDataSvg = sanitizeSvgString(dataSvg);
-      expect(cleanDataSvg).toContain('href="#"');
-      expect(cleanDataSvg).not.toContain('data:image/svg+xml');
+      const dataAudit = auditSvgMarkup(sanitizeSvgString(dataSvg));
+      expect(dataAudit.activeContent).toEqual([]);
+      expect(dataAudit.elements).toEqual([
+        { name: 'svg', attributes: {} },
+        { name: 'a', attributes: { href: '#' } },
+      ]);
+      expect(dataAudit.text).toBe('test');
 
+      // The animation that would rewrite an href at run time is dropped with its payload.
       const animSvg = '<svg><animate attributeName="href" values="javascript:alert(1)"/></svg>';
-      const cleanAnimSvg = sanitizeSvgString(animSvg);
-      expect(cleanAnimSvg).not.toContain('javascript:');
+      expect(auditSvgMarkup(animSvg).activeContent).toEqual(['element <animate>', 'values="javascript:alert(1)"']);
+      const animAudit = auditSvgMarkup(sanitizeSvgString(animSvg));
+      expect(animAudit.activeContent).toEqual([]);
+      expect(animAudit.elements).toEqual([{ name: 'svg', attributes: {} }]);
     });
 
     it('strips DOCTYPE declarations with internal entity subsets and detects valid SVG', () => {
@@ -500,13 +523,21 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
           <rect width="100" height="100" style="background-image: url(http://attacker.com/leak);" />
         </svg>
       `;
-      const clean = sanitizeSvgString(ssrfSvg);
-      expect(clean).not.toContain('http://169.254.169.254');
-      expect(clean).not.toContain('https://attacker.com');
-      expect(clean).not.toContain('//internal.corp.net');
-      expect(clean).not.toContain('@import');
-      expect(clean).toContain('href="#"');
-      expect(clean).toContain('href="#local-symbol"');
+      // The audit sees the fetches in the input: the stylesheet, two <use> targets and the inline style.
+      expect(auditSvgMarkup(ssrfSvg).activeContent).toHaveLength(4);
+
+      const audit = auditSvgMarkup(sanitizeSvgString(ssrfSvg));
+      expect(audit.activeContent).toEqual([]);
+      // External references become "#"; the in-document reference is kept; the style loses only its URLs.
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'style', attributes: {} },
+        { name: 'use', attributes: { href: '#' } },
+        { name: 'use', attributes: { href: '#' } },
+        { name: 'use', attributes: { href: '#local-symbol' } },
+        { name: 'rect', attributes: { width: '100', height: '100', style: 'background-image: none;' } },
+      ]);
+      expect(audit.text.replace(/\s+/g, ' ').trim()).toBe('.badge { background: none; }');
     });
 
     it('keeps script-like XML data verbatim: data XML is not an SVG to sanitize (#455)', async () => {
@@ -569,11 +600,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       `, 'utf-8');
 
       const sanitizedBuffer = sanitizeSvgBuffer(maliciousSvg);
-      const sanitizedText = sanitizedBuffer.toString('utf-8');
+      const audit = auditSvgMarkup(sanitizedBuffer.toString('utf-8'));
 
-      expect(sanitizedText).not.toContain('<script');
-      expect(sanitizedText).toContain('<circle');
-      expect(sanitizedText).toContain('fill="blue"');
+      expect(audit.activeContent).toEqual([]);
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'circle', attributes: { cx: '50', cy: '50', r: '40', fill: 'blue' } },
+      ]);
+      expect(audit.text.trim()).toBe('');
     });
   });
 

@@ -699,6 +699,15 @@ export class CadTopologyError extends ConversionFailedError {
   }
 }
 
+/** CAD input whose geometry data is malformed (a knot vector that decreases, the wrong number of knots). Maps to HTTP 400. */
+export class CadGeometryError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CadGeometryError';
+  }
+}
+
 export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;

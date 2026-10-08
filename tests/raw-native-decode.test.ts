@@ -64,6 +64,7 @@ describe('native RAW decode tooling', () => {
   });
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW sensor decode through the dispatcher', () => {
   const pairs = NATIVE_FORMATS.flatMap((format) => NATIVE_TARGETS.map((target) => [format, target] as [string, string]));
 
@@ -125,6 +126,7 @@ async function worstRegionDifference(format: string, decoded: Buffer): Promise<n
   }
 }
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-size decode region by region', () => {
   it.each(REGION_FORMATS)(
     '%s: every region of the full decode matches the downscaled -h reference',
@@ -152,6 +154,7 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-
   }, DECODE_TIMEOUT_MS);
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () => {
   it('fails a truncated DNG with a typed 400 error and cleans its temporary files', async () => {
     const truncated = readFileSync(samplePath('dng')).subarray(0, TRUNCATED_SAMPLE_BYTES);
@@ -171,6 +174,7 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () =
   });
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!SAMPLES_PRESENT)('RAW conversion without the native engine', () => {
   it('raises EngineUnavailableError for a sample only sensor decode can convert', async () => {
     const error = await withMissingBinary('DCRAW_EMU_PATH', () =>

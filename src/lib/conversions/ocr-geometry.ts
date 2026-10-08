@@ -205,3 +205,52 @@ export function mapOcrResultToSource(result: OcrResult, g: OcrGeometry): OcrResu
     imageHeight: g.sourceHeight,
   };
 }
+
+function shiftBoxDown(box: OcrBBox, offsetY: number): OcrBBox {
+  return { ...box, y: box.y + offsetY };
+}
+
+function shiftLineBlockDown(block: OcrLineBlock, offsetY: number, cache: GroupCache): OcrLineBlock {
+  const shiftGroup = (group: OcrLayoutGroup | undefined): OcrLayoutGroup | undefined => {
+    if (!group) return group;
+    let shifted = cache.get(group);
+    if (!shifted) {
+      shifted = group.bbox ? { ...group, bbox: shiftBoxDown(group.bbox, offsetY) } : { ...group };
+      cache.set(group, shifted);
+    }
+    return shifted;
+  };
+  const { baseline } = block;
+  return {
+    ...block,
+    bbox: shiftBoxDown(block.bbox, offsetY),
+    words: block.words.map((word) => ({ ...word, bbox: shiftBoxDown(word.bbox, offsetY) })),
+    block: shiftGroup(block.block),
+    paragraph: shiftGroup(block.paragraph),
+    baseline: baseline ? { ...baseline, y0: baseline.y0 + offsetY, y1: baseline.y1 + offsetY } : baseline,
+  };
+}
+
+/**
+ * Appends the recognition of another raster image of the same page below the ones already merged.
+ * Every image is recognised in its own pixels, so its boxes start at 0; they are moved down by the
+ * height merged so far, which keeps the merged boxes in one coordinate space (the stack of images,
+ * `imageHeight` tall) and keeps layout analysis and exporters from interleaving the images' lines.
+ */
+export function appendOcrResultBelow(existing: OcrResult, next: OcrResult, nextWidth: number, nextHeight: number): OcrResult {
+  const offsetY = existing.imageHeight || 0;
+  const groups: GroupCache = new Map();
+  const confidence =
+    existing.confidence !== null && next.confidence !== null
+      ? (existing.confidence + next.confidence) / 2
+      : (existing.confidence ?? next.confidence);
+  return {
+    text: `${existing.text}\n\n${next.text}`.trim(),
+    confidence,
+    wordCount: existing.wordCount + next.wordCount,
+    lines: [...existing.lines, ...next.lines],
+    lineBlocks: [...(existing.lineBlocks || []), ...(next.lineBlocks || []).map((block) => shiftLineBlockDown(block, offsetY, groups))],
+    imageWidth: Math.max(existing.imageWidth || 0, nextWidth),
+    imageHeight: offsetY + nextHeight,
+  };
+}

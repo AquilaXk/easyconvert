@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   rgbToOklab,
   oklabToRgb,
@@ -29,6 +29,13 @@ import {
 } from '../src/lib/conversions/office';
 import JSZip from 'jszip';
 import sharp from 'sharp';
+import { oracleTest } from './helpers/oracle-test';
+import { sheetRowsViaLibreOffice } from './helpers/sheet-rows';
+import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
@@ -639,7 +646,7 @@ startxref
       expect(contentXml).toContain('R&amp;D');
     });
 
-    it('creates multi-sheet ODS using generateOdsFromData', async () => {
+    oracleTest('creates multi-sheet ODS using generateOdsFromData', ['xmllint', 'soffice', 'python3'], async () => {
       const odsBuffer = await generateOdsFromData(
         [
           { name: 'Summary', rows: [['Total', '100']] },
@@ -648,10 +655,25 @@ startxref
         'report'
       );
       const odsZip = await JSZip.loadAsync(odsBuffer);
-      const contentXml = await odsZip.file('content.xml')?.async('text');
+      const contentXml = (await odsZip.file('content.xml')?.async('text')) as string;
 
-      expect(contentXml).toContain('<table:table table:name="Summary">');
-      expect(contentXml).toContain('<table:table table:name="Details">');
+      // The package: the stored mimetype entry comes first (OpenDocument packaging), and content.xml is XML.
+      expect(Object.keys(odsZip.files)[0]).toBe('mimetype');
+      expect(await odsZip.file('mimetype')?.async('text')).toBe('application/vnd.oasis.opendocument.spreadsheet');
+      expect(xmlWellFormed(contentXml).ok).toBe(true);
+
+      // Sheet names and the cells of each sheet, read with XPath.
+      const SHEET = "//*[local-name()='table']";
+      expect(xpathAttributes(contentXml, `${SHEET}/@*[local-name()='name']`)).toEqual(['Summary', 'Details']);
+      const cellText = (sheet: number, row: number, cell: number) =>
+        xpathString(contentXml, `string((${SHEET}[${sheet}]//*[local-name()='table-row'])[${row}]/*[local-name()='table-cell'][${cell}])`);
+      expect([cellText(1, 1, 1), cellText(1, 1, 2)]).toEqual(['Total', '100']);
+      expect([cellText(2, 1, 1), cellText(2, 1, 2), cellText(2, 2, 1), cellText(2, 2, 2)]).toEqual(['Item', '50', 'Item2', '50']);
+      expect(xpathCount(contentXml, `${SHEET}[1]//*[local-name()='table-row']`)).toBe(1);
+      expect(xpathCount(contentXml, `${SHEET}[2]//*[local-name()='table-row']`)).toBe(2);
+
+      // LibreOffice opens the file and reads the first sheet's row.
+      expect(sheetRowsViaLibreOffice(odsBuffer, 'ods')).toEqual([['Total', '100']]);
     });
   });
 

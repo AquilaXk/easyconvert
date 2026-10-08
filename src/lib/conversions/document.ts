@@ -42,6 +42,7 @@ import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer'
 import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
+import { appendOcrResultBelow } from './ocr-geometry';
 import { characterWeightedConfidence } from './ocr-calibration';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
@@ -254,26 +255,7 @@ export async function convertDocument(
             if (!existing) {
               pageOcrResults.set(img.pageNumber, ocr);
             } else {
-              const mergedText = `${existing.text}\n\n${ocr.text}`;
-              const mergedLines = [...existing.lines, ...ocr.lines];
-              const mergedBlocks = [
-                ...(existing.lineBlocks || []),
-                ...(ocr.lineBlocks || []),
-              ];
-              const mergedConfidence =
-                existing.confidence !== null && ocr.confidence !== null
-                  ? (existing.confidence + ocr.confidence) / 2
-                  : (existing.confidence ?? ocr.confidence);
-              const mergedWordCount = existing.wordCount + ocr.wordCount;
-              pageOcrResults.set(img.pageNumber, {
-                text: mergedText,
-                confidence: mergedConfidence,
-                wordCount: mergedWordCount,
-                lines: mergedLines,
-                lineBlocks: mergedBlocks,
-                imageWidth: Math.max(existing.imageWidth || 0, img.width),
-                imageHeight: (existing.imageHeight || 0) + img.height,
-              });
+              pageOcrResults.set(img.pageNumber, appendOcrResultBelow(existing, ocr, img.width, img.height));
             }
             lastOcrResult = ocr;
             if (ocr.confidence !== null) {

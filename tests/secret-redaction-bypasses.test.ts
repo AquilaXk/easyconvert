@@ -9,6 +9,10 @@ import {
   redactUrl,
   scrubError,
 } from '../src/lib/security/redact';
+import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+
+/** Characters in the smaller of the two sizes each shape is built at. */
+const SHAPE_LENGTH = 300_000;
 
 /**
  * One regression test per bypass found by review. Goldens are written by hand from the masking
@@ -237,23 +241,24 @@ describe('redactForOutput never throws', () => {
 });
 
 describe('linear-time scanning of the new rules', () => {
-  it('handles long runs of backslashes, quotes and unterminated values', () => {
-    const LENGTH = 300_000;
-    const LINEAR_TIME_BUDGET_MS = 5_000;
-    const inputs = [
-      '\\'.repeat(LENGTH),
-      'password=\\"'.repeat(LENGTH / 10),
-      'password="' + '\\"'.repeat(LENGTH / 2),
-      'Authorization: '.repeat(LENGTH / 15),
-      `https://${'a@'.repeat(LENGTH / 2)}`,
-      'headers: {'.repeat(LENGTH / 10),
-      `headers: ${'{'.repeat(LENGTH)}`,
-      `x${'-a'.repeat(LENGTH / 2)}: 1`,
+  it('handles long runs of backslashes, quotes and unterminated values', async () => {
+    // 4x the input may cost at most 8x the time, interleaved and best of N (tests/helpers/timing.ts).
+    const shapes: Array<[string, (length: number) => string]> = [
+      ['backslashes', (length) => '\\'.repeat(length)],
+      ['escaped quotes after a key', (length) => 'password=\\"'.repeat(length / 10)],
+      ['unterminated quoted value', (length) => 'password="' + '\\"'.repeat(length / 2)],
+      ['authorization headers', (length) => 'Authorization: '.repeat(length / 15)],
+      ['userinfo separators', (length) => `https://${'a@'.repeat(length / 2)}`],
+      ['unclosed header groups', (length) => 'headers: {'.repeat(length / 10)],
+      ['opening braces', (length) => `headers: ${'{'.repeat(length)}`],
+      ['hyphenated key', (length) => `x${'-a'.repeat(length / 2)}: 1`],
     ];
-    const started = Date.now();
-    for (const input of inputs) {
-      expect(typeof redactText(input)).toBe('string');
+    for (const [label, build] of shapes) {
+      const { largeResult } = await expectLinearOnInputs(label, (text: string) => redactText(text), {
+        small: build(SHAPE_LENGTH),
+        large: build(SHAPE_LENGTH * SCALING_FACTOR),
+      });
+      expect(typeof largeResult).toBe('string');
     }
-    expect(Date.now() - started).toBeLessThan(LINEAR_TIME_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 });

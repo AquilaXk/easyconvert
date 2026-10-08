@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import sharp from 'sharp';
+import { readSvgShapes } from './helpers/svg-dom-audit';
 import JSZip from 'jszip';
 import {
   convertFile,
@@ -456,7 +458,7 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       expect(shapes[0].customPath).toBe('M 0 0 L 20 0 C 30 10, 40 20, 50 20 L 80 50 Q 90 60, 100 80 Z');
     });
 
-    it('renders DrawingML shapes into SVG element strings', () => {
+    it('renders DrawingML shapes into SVG element strings', async () => {
       const shapes = [
         {
           geomType: 'preset' as const,
@@ -483,12 +485,34 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       ];
 
       const { svg } = renderDrawingMlToSvg(shapes, 300, 200);
-      expect(svg).toContain('<svg');
-      expect(svg).toContain('<rect');
-      expect(svg).toContain('fill="#AABBCC"');
-      expect(svg).toContain('<polygon'); // diamond renders as polygon
-      expect(svg).toContain('fill="#FFCC00"');
-      expect(svg).toContain('</svg>');
+
+      // The elements, read by a browser's parser. The rectangle keeps its frame and line; the diamond is the
+      // polygon through the midpoints of its 60 x 60 frame at (150, 50) (ECMA-376 presetShapeDefinitions
+      // "diamond": top, right, bottom, left).
+      const parsed = readSvgShapes(svg, new Set(['svg', 'rect', 'polygon']));
+      expect(parsed.map((shape) => shape.name)).toEqual(['svg', 'rect', 'polygon']);
+      expect(parsed[1].attributes).toEqual({ x: '10', y: '20', width: '100', height: '50', fill: '#AABBCC', stroke: '#333333', 'stroke-width': '2' });
+      expect(parsed[2].attributes.points).toBe('180,50 210,80 180,110 150,80');
+      expect(parsed[2].attributes.fill).toBe('#FFCC00');
+
+      // The picture: rasterise with librsvg (sharp) and look at pixels. The SVG maps its viewBox into the 300 x 200
+      // canvas with the default xMidYMid meet rule: one uniform scale, content centred on the free axis.
+      const [viewX, viewY, viewWidth, viewHeight] = parsed[0].attributes.viewBox.split(' ').map(Number);
+      const scale = Math.min(300 / viewWidth, 200 / viewHeight);
+      const offsetX = (300 - viewWidth * scale) / 2;
+      const offsetY = (200 - viewHeight * scale) / 2;
+      const { data, info } = await sharp(Buffer.from(svg)).raw().toBuffer({ resolveWithObject: true });
+      expect([info.width, info.height, info.channels]).toEqual([300, 200, 4]);
+      const pixelAt = (shapeX: number, shapeY: number) => {
+        const column = Math.round((shapeX - viewX) * scale + offsetX);
+        const row = Math.round((shapeY - viewY) * scale + offsetY);
+        const start = (row * info.width + column) * info.channels;
+        return [...data.subarray(start, start + info.channels)];
+      };
+      expect(pixelAt(60, 45)).toEqual([0xaa, 0xbb, 0xcc, 255]); // inside the rectangle
+      expect(pixelAt(180, 80)).toEqual([0xff, 0xcc, 0x00, 255]); // centre of the diamond
+      expect(pixelAt(152, 52)[3]).toBe(0); // corner of the diamond's frame: outside the diamond, nothing drawn
+      expect(pixelAt(130, 45)[3]).toBe(0); // between the two shapes
     });
   });
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,6 +26,11 @@ import {
   createHostileWorkspace,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
+import { skipUnless } from './helpers/strict-skip';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Unit coverage for the shared extraction-safety primitives. The thresholds below are written out
@@ -35,8 +40,8 @@ import {
 
 const LIMITS = { MAX_FILES: 50_000, MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, MAX_RATIO: 100 };
 const MIB = 1024 * 1024;
-/** Generous wall-clock bound for walking 50,000 entries; a quadratic walk would exceed it by far. */
-const WALK_TIME_BUDGET_MS = 30_000;
+/** Hang guard only: walking 50,000 entries takes seconds; a quadratic walk takes minutes. */
+const WALK_HANG_GUARD_MS = 30_000;
 
 function file(entryPath: string, sizeBytes: number | null = 1): ListedArchiveEntry {
   return { path: entryPath, isDirectory: false, sizeBytes, linkKind: null, isSpecial: false };
@@ -473,7 +478,7 @@ describe('assertExtractionContained', () => {
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('link-entry');
   });
 
-  it.skipIf(!fs.existsSync('/usr/bin/mkfifo'))('rejects a FIFO', () => {
+  it.skipIf(skipUnless('mkfifo', fs.existsSync('/usr/bin/mkfifo')))('rejects a FIFO', () => {
     execFileSync('/usr/bin/mkfifo', [path.join(root, 'pipe')]);
 
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('special-entry');
@@ -517,7 +522,7 @@ describe('assertExtractionContained', () => {
 
     const tree = assertExtractionContained(root, 50_000, LIMITS);
 
-    expect(performance.now() - started).toBeLessThan(WALK_TIME_BUDGET_MS);
+    expect(performance.now() - started).toBeLessThan(WALK_HANG_GUARD_MS);
     expect(tree.entryCount).toBe(50_000);
     expect(tree.files).toHaveLength(49_900);
   }, 60_000);

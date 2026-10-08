@@ -16,10 +16,11 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
-import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
-const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
+import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
@@ -59,6 +60,9 @@ const ROUTING_ERROR_PATTERNS: readonly RegExp[] = [
   /^Unsupported binary or compressed format '\.[^']+' for text extraction/,
   /^Unsupported CAD format: DWG binary encoder unavailable/,
 ];
+
+/** The typed error the in-process archive engine raises for a format that only the native 7-Zip engine reads. */
+const SEVEN_ZIP_ENGINE_MESSAGE = /^Engine '7-Zip' is unavailable: reading \.[\w.]+ archives needs the native 7-Zip engine$/;
 
 function isRoutingError(err: unknown): boolean {
   if (err instanceof UnsupportedTargetError) return true;
@@ -157,6 +161,8 @@ const FIXTURES = new Map<string, Buffer[]>();
 collectFixtures(FIXTURE_ROOT, FIXTURES);
 const PNG_SEED = FIXTURES.get('png')![0];
 const TAR_SEED = FIXTURES.get('tar')![0];
+/** A three-block tar small enough for the compress writer's 9-bit codes (tests/helpers/unix-compress.ts). */
+const SMALL_TAR_SEED = readFileSync(path.join(FIXTURE_ROOT, 'sample.tar'));
 const ZIP_SEED = FIXTURES.get('zip')![0];
 const STEP_SEED = FIXTURES.get('step')![0];
 const DXF_SEED = FIXTURES.get('dxf')![0];
@@ -324,6 +330,14 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // A template is a presentation package whose main part has the template content type.
   potx: buildProbePotx,
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
+  'tar.bz': () => requireDerived('tar.bz2'),
+  // Java packages are ZIP files; a tar compressed with compress is an LZW stream (the builder is checked against gzip in
+  // archive-seven-zip-only-sources.test.ts).
+  jar: () => ZIP_SEED,
+  war: () => ZIP_SEED,
+  ear: () => ZIP_SEED,
+  'tar.z': () => compressLzw(SMALL_TAR_SEED),
+  tz: () => compressLzw(SMALL_TAR_SEED),
   bz: () => requireDerived('tar.bz2'),
   bz2: () => requireDerived('tar.bz2'),
   tbz: () => requireDerived('tar.bz2'),
@@ -485,6 +499,18 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
       const message = err instanceof Error ? err.message : String(err);
       if (isRoutingError(err)) return { outcome: 'unrouted', detail: message };
       lastError = message;
+      // An archive that only the native 7-Zip engine reads is left to it by the in-process engine; the dispatcher
+      // hands it over, and the real archives of tests/fixtures/archive-sources are what resolve the pair.
+      if (err instanceof EngineUnavailableError && SEVEN_ZIP_ENGINE_MESSAGE.test(message)) {
+        try {
+          await withTimeout(dispatchConversion(input, source, target, options, `probe.${source}`), PROBE_TIMEOUT_MS);
+          return { outcome: 'routed', detail: '' };
+        } catch (dispatched) {
+          const dispatchedMessage = dispatched instanceof Error ? dispatched.message : String(dispatched);
+          if (isRoutingError(dispatched)) return { outcome: 'unrouted', detail: dispatchedMessage };
+          lastError = dispatchedMessage;
+        }
+      }
     }
   }
   return { outcome: 'inconclusive', detail: lastError };
@@ -558,6 +584,10 @@ function isTranscoderPair(category: string, target: string): boolean {
   return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
 }
 
+// Besides the font pairs, the list holds every pair of the eight archive sources that no engine reads (ace, alz, arc, lz,
+// lzo, rz, tar.lzo, tzo): the registry advertises them, the converter refuses them with a typed error instead of
+// wrapping the file, and no tool of the CI image can write a sample to prove a route. A reader for one of them removes
+// its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );
@@ -595,6 +625,8 @@ const HAS_OCR_DATA = TESSDATA_DIRS.some(
 /** Whether a pair is decidable depends on the native tools, so the ratchet needs the CI toolchain. */
 const HAS_CI_TOOLCHAIN =
   HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract', 'dcraw_emu'].every(onPath);
+/** CI has the whole toolchain: under ORACLE_STRICT_MODE=1 a missing tool fails the run instead of skipping the ratchet. */
+const SKIP_WITHOUT_CI_TOOLCHAIN = skipUnless('the CI toolchain (ffmpeg, 7z, soffice, pdftoppm, tesseract, dcraw_emu, eng.traineddata)', HAS_CI_TOOLCHAIN);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
 const SHORT_CLIP_SECONDS = 0.5;
@@ -698,6 +730,7 @@ function buildShortMediaSample(dir: string, source: string): Buffer | null {
   }
 }
 
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
 describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
@@ -729,6 +762,7 @@ describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   });
 });
 
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
 describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
@@ -849,6 +883,7 @@ describe('every advertised registry pair has an engine path', () => {
     RAW_SOURCE_TIMEOUT_MS
   );
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('converts every toml pair, as source or target, through a real engine run', async () => {
     const tomlPairs = allPairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
     expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
@@ -878,6 +913,7 @@ describe('every advertised registry pair has an engine path', () => {
 
   // The media transcoder hands every non-archive target to FFmpeg without a routing table, so
   // these pairs carry no routing signal and cost one FFmpeg spawn each. Opt in explicitly.
+  // skip-ok: opt-in selection: the transcoder pairs run only with RUN_MEDIA_TRANSCODER_PAIRS; the strict-mode test that follows covers the audio pairs.
   it.skipIf(!HAS_FFMPEG || !RUN_MEDIA_TRANSCODER_PAIRS)(
     'audio and video sources routed through the media transcoder (REGISTRY_CONFORMANCE_MEDIA=1, needs ffmpeg)',
     async () => {
@@ -953,11 +989,12 @@ describe('every advertised registry pair has an engine path', () => {
 describe('inconclusive pairs ratchet', () => {
   // Pairs whose every probe input is rejected before the engine's routing step. They are not
   // proven routable, so each one is listed explicitly; the list may only shrink.
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('lists the allowlist sorted and without duplicates', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
-  it.skipIf(!HAS_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
+  it.skipIf(SKIP_WITHOUT_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
     const inconclusive = await findInconclusivePairs(pairsFor((c, t) => !isTranscoderPair(c, t)));
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
@@ -1166,6 +1203,7 @@ describe('real camera RAW samples', () => {
     expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
     if (RAW_SAMPLES_MISSING.length > 0) {
       throw new OracleToolMissingError(
@@ -1177,12 +1215,14 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
     expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
     expect(RAW_SAMPLES_MISSING).toEqual([]);
     expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
   });
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('has a validator for every target the RAW sources advertise', () => {
     expect(allRawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
@@ -1249,8 +1289,6 @@ describe('native-engine pairs route through the dispatcher', () => {
   const NO_AUTHORABLE_INPUT = new Set(['key']);
   /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
   const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
-  const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
-  const HAS_PDFTOPS = isOracleToolAvailable('pdftops');
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1421,6 +1459,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART)('lists only pairs the registry advertises', () => {
     expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
@@ -1433,7 +1472,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     await expect(run).rejects.toMatchObject({ engineName });
   });
 
-  it.skipIf(!HAS_SOFFICE).each(officeToOffice)(
+  it.skipIf(skipWithoutTools('soffice')).each(officeToOffice)(
     '%s -> %s converts with LibreOffice (needs soffice)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
@@ -1443,7 +1482,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToImage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToImage)(
     '%s -> %s renders with LibreOffice and Poppler (needs soffice, pdftoppm)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1453,7 +1492,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToEncodedPage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToEncodedPage)(
     '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1463,7 +1502,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPS).each(officeToPostscriptPage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftops')).each(officeToPostscriptPage)(
     '%s -> %s writes the rendered pages with LibreOffice and pdftops (needs soffice, pdftops)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
@@ -1473,7 +1512,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_PS2PDF || !HAS_PDFTOPPM || !HAS_PDFTOPS || !HAS_PDFTOCAIRO).each(postscriptPairs)(
+  it.skipIf(skipWithoutTools('ps2pdf', 'pdftoppm', 'pdftops', 'pdftocairo')).each(postscriptPairs)(
     '%s -> %s draws the PostScript page with the interpreter and the page tools (needs ps2pdf; Ghostscript is not in the CI image)',
     async (source, target) => {
       if (target === 'pdf') {
@@ -1516,7 +1555,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
-  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO || !HAS_PDFINFO).each(pdfToImage)(
+  it.skipIf(skipWithoutTools('pdftoppm', 'pdftocairo', 'pdfinfo')).each(pdfToImage)(
     '%s -> %s renders the page with Poppler (needs pdftoppm, pdftocairo, pdfinfo)',
     async (source, target) => {
       const pdf = realInput(source);
@@ -1546,7 +1585,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_PDFTOCAIRO).each(pdfToSvg)(
+  it.skipIf(skipWithoutTools('pdftocairo')).each(pdfToSvg)(
     '%s -> %s renders with Poppler (needs pdftocairo)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);

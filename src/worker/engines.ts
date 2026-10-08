@@ -734,6 +734,8 @@ const ARCHIVE_EXTRACT_FORMATS = new Set([
   'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
   'iso', 'deb', 'rpm', 'cab', 'wim', 'arj', 'cpio', 'lzh', 'zstd', 'zst',
+  // Sources the in-process archive engine leaves to this engine (NATIVE_SEVEN_ZIP_SOURCES in archive.ts).
+  'dmg', 'img', 'lha', 'lzma', 'z', 'tar.z', 'tz',
 ]);
 
 const ARCHIVE_TARGET_FORMATS = new Set([
@@ -898,11 +900,15 @@ interface ExtractArchiveParams {
   options?: WorkerEngineOptions;
 }
 
+/** 7-Zip opens a Z stream by its `.z` name; it does not know `.tz`, the registry name of a tar compressed with compress. */
+const SEVEN_ZIP_INPUT_EXTENSION: ReadonlyMap<string, string> = new Map([['tz', 'z']]);
+
 /** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
 const COMPRESSED_STREAM_FORMATS = new Set([
   'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2',
   'xz', 'txz', 'tar.xz',
+  'lzma', 'z', 'tar.z', 'tz',
 ]);
 
 interface SourceExtraction {
@@ -998,7 +1004,7 @@ export async function convertWithNative7z(
   // Failures are typed errors that propagate: a bad archive must never become a null that lets a
   // caller drop to another engine.
   return withSandboxDir('easyconvert-7z-', async (tempDir) => {
-    const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+    const inputExt = SEVEN_ZIP_INPUT_EXTENSION.get(src) ?? (src.includes('.') ? src.split('.').pop()! : src);
     const { inputPath } = resolveInputContext(input, inputExt, tempDir);
 
     const timeout = Math.min(options.timeoutMs || 60000, 180000);

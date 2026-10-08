@@ -2,7 +2,7 @@
   "version": "1.0.0",
   "generatedAt": "2026-09-28T04:25:57.887Z",
   "totalFiles": 15,
-  "totalSizeBytes": 67042,
+  "totalSizeBytes": 64798,
   "files": [
     {
       "name": "multi-sheet-enterprise.xlsx",
@@ -60,9 +60,9 @@
       "format": "hwp",
       "relativePath": "tests/fixtures/golden/document/enterprise-compound-document.hwp",
       "sizeBytes": 3584,
-      "sha256": "8448db27603ca63684b3b86a2769c4e17b599b96ca26d4b730801de11a8c27ab",
+      "sha256": "5b5865ab60f799d5aaffec3c427c98154c36ab8609d6816d5eff42f89ffdbddc",
       "verified": true,
-      "description": "Hancom HWP 5.0 CFBF compound binary file with DocInfo, FileHeader, and paragraph text streams"
+      "description": "HWP 5.0 document written record by record: FileHeader, DocInfo, three paragraphs, three EqEdit equations and a 3 x 3 table"
     },
     {
       "name": "brep-solid.step",
@@ -82,7 +82,7 @@
       "sizeBytes": 794,
       "sha256": "fb7c4d218465f09676305081f109b0a646b3163e66d7bf7dffe85b13c521c11a",
       "verified": true,
-      "description": "AutoCAD DXF release R12/2000 drawing with LINE, CIRCLE, ARC, and 3DFACE layer entities"
+      "description": "AutoCAD DXF (AC1015) drawing with two LINE, one CIRCLE, one 3DFACE and one TEXT entity on two layers"
     },
     {
       "name": "sensor-raw-frame.raw",
@@ -109,8 +109,8 @@
       "category": "data",
       "format": "parquet",
       "relativePath": "tests/fixtures/golden/data/columnar-snappy-records.parquet",
-      "sizeBytes": 7197,
-      "sha256": "3e674dd6dd7e506ea7bb9f4e8e2aac6fa43741374e897388841bc306628e9eb6",
+      "sizeBytes": 4902,
+      "sha256": "ef00c1350b9b331dfdae778a172cb831ee420e05fd473e0d69c8e251a5999118",
       "verified": true,
       "description": "Apache Parquet columnar dataset containing 60 records across 10 typed columns with Snappy block compression"
     },

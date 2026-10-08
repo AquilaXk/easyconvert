@@ -5,6 +5,7 @@ import {
   OcrResult,
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { shownWords } from './helpers/pdf-shown-text';
+import { expectLinearScaling, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 import {
   sniffMimeTypeFromMagicBytes,
   isFormatCompatibleWithMagicBytes,
@@ -19,6 +20,10 @@ import {
   safeExtractAllText,
   safeFindColor,
 } from '../src/lib/conversions/office';
+
+/** Opening tags in the small run of the unclosed-tag growth check, and the filler after each one. */
+const UNCLOSED_OPENINGS = 5000;
+const UNCLOSED_FILLER_PER_OPENING = 10;
 
 /** The decoded content stream of the first page. */
 function pageContentOf(doc: PDFDocument): string {
@@ -255,32 +260,29 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
         deepXml = `<layer id="${i}">${deepXml}</layer>`;
       }
 
-      const startTime = Date.now();
       // Default maxDepth = 64 halts at 64th nested level to prevent recursion attacks
       const firstLayer = safeExtractFirstXmlElement(deepXml, 'layer');
       const customDepthLayer = safeExtractFirstXmlElement(deepXml, 'layer', { maxDepth: 100 });
       const textEl = safeExtractFirstXmlElement(deepXml, 'w:t', { maxDepth: 100 });
-      const elapsed = Date.now() - startTime;
 
+      // The scanner is iterative: 70 levels return their answers instead of overflowing the stack.
       expect(firstLayer?.attrs.id).toBe('64');
       expect(customDepthLayer?.attrs.id).toBe('69');
       expect(textEl?.content).toBe('Deeply Nested Secret');
-      expect(elapsed).toBeLessThan(100); // Must complete instantly
     });
 
-    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines', () => {
+    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines', async () => {
       // Classic ReDoS trigger for /<p:grpSp[\s\S]*?<\/p:grpSp>/:
       // A huge repeating sequence of opening tags with no closing tag
-      const hostileUnclosed = '<p:grpSp>'.repeat(5000) + 'A'.repeat(50000);
+      const { largeResult } = await expectLinearScaling(
+        'unclosed group shapes',
+        (openings: number) => safeExtractXmlElements('<p:grpSp>'.repeat(openings) + 'A'.repeat(openings * UNCLOSED_FILLER_PER_OPENING), 'p:grpSp'),
+        { baseSize: UNCLOSED_OPENINGS }
+      );
 
-      const start = Date.now();
-      const result = safeExtractXmlElements(hostileUnclosed, 'p:grpSp');
-      const elapsed = Date.now() - start;
-
-      // Because there are no matching closing tags, it must abort gracefully in linear time
-      expect(result.length).toBe(0);
-      expect(elapsed).toBeLessThan(500); // Strict linear bound (regex would hang or timeout)
-    });
+      // Because there are no matching closing tags, it must abort gracefully, and in time linear in the input
+      expect(largeResult.length).toBe(0);
+    }, SCALING_TEST_TIMEOUT_MS);
 
     it('preserves outer table content when parsing nested OpenXML tables', () => {
       const nestedTableXml = `

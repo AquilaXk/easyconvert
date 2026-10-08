@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +20,10 @@ import {
   type HostileWorkspace,
 } from './helpers/hostile-archives';
 
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
 /**
  * Regression suite for the worker 7z route (GitHub issue #458). Every hostile archive is crafted by
  * an independent tool (7z, Python zipfile/tarfile, ln -s) and every test asserts both a typed error
@@ -38,7 +42,7 @@ const RATIO_BOMB_MIB = 3;
 const OVER_CAP_ENTRY_COUNT = 50_001;
 const AT_CAP_ENTRY_COUNT = 50_000;
 /** Generous bound for converting a 50,000-entry archive end to end (about 13 s measured). */
-const ENTRY_CAP_TIME_BUDGET_MS = 90_000;
+const ENTRY_CAP_HANG_GUARD_MS = 90_000;
 
 interface Outcome {
   ok: boolean;
@@ -326,7 +330,7 @@ describe('worker 7z route extraction containment (#458)', () => {
 
       const result = await convert(zip, 'zip', 'tar', outputPath);
 
-      expect(performance.now() - started).toBeLessThan(ENTRY_CAP_TIME_BUDGET_MS);
+      expect(performance.now() - started).toBeLessThan(ENTRY_CAP_HANG_GUARD_MS);
 
       expect(result?.engineUsed).toBe('native-7z');
       const expectedNames = Array.from({ length: AT_CAP_ENTRY_COUNT }, (_, i) => `f${String(i).padStart(5, '0')}.txt`);

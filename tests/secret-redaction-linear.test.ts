@@ -9,6 +9,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { redactText } from '../src/lib/security/redact';
+import { expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * Redaction runs on every log row, response and webhook, on text an attacker partly controls, so
@@ -17,15 +18,6 @@ import { redactText } from '../src/lib/security/redact';
  */
 const MIB = 1024 * 1024;
 const SMALL = MIB / 4;
-const SHAPE_BUDGET_MS = 1_500;
-const MAX_GROWTH_FOR_4X_INPUT = 8;
-const MIN_MEASURABLE_MS = 5;
-
-function elapsedMs(fn: () => void): number {
-  const started = process.hrtime.bigint();
-  fn();
-  return Number(process.hrtime.bigint() - started) / 1e6;
-}
 
 function repeatTo(unit: string, size: number): string {
   return unit.repeat(Math.ceil(size / unit.length));
@@ -45,29 +37,31 @@ const SHAPES: Record<string, string> = {
 };
 
 describe('redaction scales linearly', () => {
+  // 4x the input may cost at most 8x the time, interleaved and best of N (tests/helpers/timing.ts); a scanner
+  // that re-reads the rest of the text once per occurrence costs 16x. No wall-clock budget is involved.
   for (const [name, unit] of Object.entries(SHAPES)) {
-    it(`${name}: 1 MiB is scanned within the budget and 4x the input costs under ${MAX_GROWTH_FOR_4X_INPUT}x`, () => {
-      const small = repeatTo(unit, SMALL);
-      const large = repeatTo(unit, MIB);
-      redactText(repeatTo(unit, SMALL / 8)); // warm up
-      const smallMs = Math.max(elapsedMs(() => redactText(small)), MIN_MEASURABLE_MS);
-      const largeMs = elapsedMs(() => redactText(large));
-      expect(largeMs).toBeLessThan(SHAPE_BUDGET_MS);
-      expect(largeMs / smallMs).toBeLessThan(MAX_GROWTH_FOR_4X_INPUT);
-    });
+    it(`${name}: 4x the input costs under 8x`, async () => {
+      await expectLinearOnInputs(name, (text: string) => redactText(text), {
+        small: repeatTo(unit, SMALL),
+        large: repeatTo(unit, MIB),
+      });
+    }, SCALING_TEST_TIMEOUT_MS);
   }
 
-  it('one line of 1 MiB of repeated pairs', () => {
-    const line = repeatTo('password=a token:b ', MIB);
-    expect(elapsedMs(() => redactText(line))).toBeLessThan(SHAPE_BUDGET_MS);
-  });
+  it('one line of repeated pairs', async () => {
+    const { largeResult } = await expectLinearOnInputs('repeated pairs', (text: string) => redactText(text), {
+      small: repeatTo('password=a token:b ', SMALL),
+      large: repeatTo('password=a token:b ', MIB),
+    });
+    // An unquoted value runs to the end of the line, and the whole input is one line.
+    expect(largeResult).toBe('password=***');
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('a large free-text option does not stall the API', () => {
   const NOTE_BYTES = 220 * 1024;
-  const REQUEST_BUDGET_MS = 3_000;
 
-  it('answers POST and GET quickly for a convert option full of unclosed groups', async () => {
+  it('answers POST and GET for a convert option full of unclosed groups as fast as for a plain option of the same size', async () => {
     vi.spyOn(dns.promises, 'lookup').mockImplementation((async () => [{ address: '93.184.215.14', family: 4 }]) as never);
     const email = `linear_${Date.now()}_${Math.random().toString(36).slice(2)}@linear.test`;
     const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'linear', tier: 'pro' }));
@@ -75,37 +69,46 @@ describe('a large free-text option does not stall the API', () => {
     const headers = { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' };
     const storageKey = `uploads/${user.id}/linear.csv`;
     s3Storage.saveObject(storageKey, Buffer.from('a,b\n1,2\n'), 'text/csv', 'linear.csv');
-    const note = repeatTo('password={\n', NOTE_BYTES);
 
-    const started = Date.now();
-    const post = await createJob(
-      new NextRequest('https://easyconvert.app/api/v1/jobs', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          storageKey,
-          filename: 'linear.csv',
-          graph: {
-            nodes: {
-              up: { op: 'import.upload', storageKey },
-              conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { note } },
-              out: { op: 'export.internal', input: 'conv' },
+    /** One POST and GET round trip with the given option text; the job is cancelled afterwards. */
+    const roundTrip = async (note: string): Promise<{ post: number; get: number }> => {
+      const post = await createJob(
+        new NextRequest('https://easyconvert.app/api/v1/jobs', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            storageKey,
+            filename: 'linear.csv',
+            graph: {
+              nodes: {
+                up: { op: 'import.upload', storageKey },
+                conv: { op: 'convert', input: 'up', targetFormat: 'json', options: { note } },
+                out: { op: 'export.internal', input: 'conv' },
+              },
             },
-          },
-        }),
-      })
-    );
-    const created = await post.json();
-    const got = await getJob(new NextRequest(`https://easyconvert.app/api/v1/jobs/${created.jobId}`, { headers }), {
-      params: { id: created.jobId },
-    });
-    await got.text();
-    const total = Date.now() - started;
-    await graphScheduler.cancelGraph(created.jobId, 'test cleanup');
-    vi.restoreAllMocks();
+          }),
+        })
+      );
+      const created = await post.json();
+      const got = await getJob(new NextRequest(`https://easyconvert.app/api/v1/jobs/${created.jobId}`, { headers }), {
+        params: { id: created.jobId },
+      });
+      await got.text();
+      await graphScheduler.cancelGraph(created.jobId, 'test cleanup');
+      return { post: post.status, get: got.status };
+    };
 
-    expect(post.status).toBe(202);
-    expect(got.status).toBe(200);
-    expect(total).toBeLessThan(REQUEST_BUDGET_MS);
-  });
+    // The same request with a plain note of the same length is the in-process reference (tests/helpers/timing.ts):
+    // the adversarial note may not make the request slower than a small multiple of it.
+    try {
+      const { largeResult } = await expectNoSlowerThanReference(
+        'POST and GET with unclosed groups',
+        () => roundTrip('a'.repeat(NOTE_BYTES)),
+        () => roundTrip(repeatTo('password={\n', NOTE_BYTES))
+      );
+      expect(largeResult).toEqual({ post: 202, get: 200 });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  }, SCALING_TEST_TIMEOUT_MS);
 });

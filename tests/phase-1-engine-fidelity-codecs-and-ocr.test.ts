@@ -16,14 +16,22 @@ import {
   createLosslessSandwichPdfFromImage,
   createLosslessSandwichPdfFromPdf,
   createToUnicodeCMap,
-  createWinAnsiToUnicodeCMap,
   ensureUnicodeFont,
   registerFontOnPage,
   safeEncodeText,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/pdf-winansi-tounicode';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
+import { lookupCode, readToUnicodeCMap } from './helpers/cmap-reader';
+
+/** The text pdftotext reads from a one-page PDF, with line and form-feed breaks collapsed to single spaces. */
+function pdftotextLine(pdf: Buffer): string | null {
+  const text = extractTextWithExternalPdftotext(pdf);
+  return text === null ? null : text.replace(/\s+/g, ' ').trim();
+}
 import { ConversionFailedError, OcrEngineUnavailableError } from '../src/lib/types';
 import { escapeRtf } from '../src/lib/conversions/office';
 
@@ -158,25 +166,27 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
   // ==========================================================================
   describe('2. OCR & Sandwich PDF Unicode ToUnicode CMap & Fail-Closed', () => {
     it('generates valid ISO 32000-1 ToUnicode CMap streams for 16-bit and 1-byte code spaces', () => {
-      const cmap16 = createToUnicodeCMap();
-      expect(cmap16).toContain('/CIDInit /ProcSet findresource begin');
-      expect(cmap16).toContain('/CMapName /Custom-ToUnicode def');
-      expect(cmap16).toContain('<0000> <FFFF>');
+      // Each stream is read back with an independent reader (tests/helpers/cmap-reader.ts) rather than searched as text.
+      const cmap16 = readToUnicodeCMap(createToUnicodeCMap());
+      expect(cmap16.name).toBe('Custom-ToUnicode');
+      expect(cmap16.codespaces).toEqual([{ low: 0, high: 0xffff, bytes: 2 }]);
       // §9.10.3: a full-range bfrange would vary the first byte of the code, so none is emitted.
-      expect(cmap16).not.toContain('bfrange');
+      expect(cmap16.bfranges).toEqual([]);
+      expect(cmap16.bfchars.size).toBe(0);
 
-      const cmapWinAnsi = createWinAnsiToUnicodeCMap();
-      expect(cmapWinAnsi).toContain('/CMapName /WinAnsi-ToUnicode def');
-      expect(cmapWinAnsi).toContain('<00> <FF>');
+      const cmapWinAnsi = readToUnicodeCMap(createWinAnsiToUnicodeCMap());
+      expect(cmapWinAnsi.name).toBe('WinAnsi-ToUnicode');
+      expect(cmapWinAnsi.codespaces).toEqual([{ low: 0, high: 0xff, bytes: 1 }]);
+      expect([0x41, 0x80, 0xe9].map((code) => lookupCode(cmapWinAnsi, code))).toEqual(['A', '\u20ac', '\u00e9']);
 
       // Astral code points (> 0xFFFF, e.g. U+20BB7) keep one 2-byte CID and a UTF-16BE surrogate-pair destination
-      const cmapAstral = createToUnicodeCMap([[1, 0x20bb7]]);
-      expect(cmapAstral).toContain('1 beginbfchar\n<0001> <D842DFB7>\nendbfchar');
-      expect(cmapAstral).not.toContain('<D842> <');
-      expect(cmapAstral).not.toContain('<DFB7> <');
+      const cmapAstral = readToUnicodeCMap(createToUnicodeCMap([[1, 0x20bb7]]));
+      expect([...cmapAstral.bfchars.keys()]).toEqual([1]);
+      expect(cmapAstral.bfchars.get(1)!.codePointAt(0)).toBe(0x20bb7);
+      expect([cmapAstral.bfchars.get(1)!.charCodeAt(0), cmapAstral.bfchars.get(1)!.charCodeAt(1)]).toEqual([0xd842, 0xdfb7]);
     });
 
-    it('injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers', async () => {
+    oracleTest('injects Type 0 CIDFont with /ToUnicode CMap ensuring 100% CJK text extraction in PDF viewers', ['pdftotext'], async () => {
       const testImage = await sharp({
         create: { width: 300, height: 100, channels: 3, background: '#ffffff' },
       }).png().toBuffer();
@@ -202,24 +212,11 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       };
 
       const pdfBuffer = await createLosslessSandwichPdfFromImage(testImage, ocrResult, {}, 'CJK Invoice');
-      expect(pdfBuffer.length).toBeGreaterThan(0);
+      expect(pdfBuffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
 
-      // Verify using standard pdfjs-dist text extraction
-      const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer) });
-      const pdfDoc = await loadingTask.promise;
-      const page = await pdfDoc.getPage(1);
-      const textContent = await page.getTextContent();
-      const extractedStr = textContent.items
-        .map((item: any) => ('str' in item ? item.str : ''))
-        .filter(Boolean)
-        .join(' ');
-
-      // Must faithfully extract Korean and Latin without garbled characters
-      expect(extractedStr).toContain('대한민국');
-      expect(extractedStr).toContain('광화문');
-      expect(extractedStr).toContain('영수증');
-      expect(extractedStr).toContain('50,000원');
-      expect(extractedStr).toContain('Receipt');
+      // poppler's pdftotext reads the invisible text layer through the embedded font's /ToUnicode CMap; the text must come
+      // back whole, in order, with no garbled or dropped characters.
+      expect(pdftotextLine(pdfBuffer)).toBe('대한민국 광화문 영수증 50,000원 Receipt');
     });
 
     it('strictly enforces Fail-Closed principles in performOcr without silent dummy text fallback', async () => {
@@ -234,7 +231,7 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       });
     });
 
-    it('injects invisible text layer into existing PDFs containing indirect PDFRef resources without throwing', async () => {
+    oracleTest('injects invisible text layer into existing PDFs containing indirect PDFRef resources without throwing', ['pdftotext'], async () => {
       // Create a base PDF where Resources and Font are indirect object references (PDFRef)
       const baseDoc = await PDFDocument.create();
       const fontDict = baseDoc.context.obj({});
@@ -269,23 +266,11 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       });
 
       const sandwichPdf = await createLosslessSandwichPdfFromPdf(Buffer.from(basePdfBytes), pageOcrResults);
-      expect(sandwichPdf.length).toBeGreaterThan(0);
-
-      // Verify text extraction
-      const loadingTask = pdfjs.getDocument({ data: new Uint8Array(sandwichPdf) });
-      const pdfDoc = await loadingTask.promise;
-      const p1 = await pdfDoc.getPage(1);
-      const textContent = await p1.getTextContent();
-      const extractedStr = textContent.items.map((i: any) => i.str).join(' ');
-
-      expect(extractedStr).toContain('세금계산서');
-      expect(extractedStr).toContain('Tax');
-      expect(extractedStr).toContain('Invoice');
-      expect(extractedStr).toContain('100,000');
-      expect(extractedStr).toContain('KRW');
+      // The base page keeps its size and gains the text layer; pdftotext reads the recognised words back in order.
+      expect(pdftotextLine(sandwichPdf)).toBe('세금계산서 Tax Invoice 100,000 KRW');
     });
 
-    it('preserves 100% of characters in mixed CJK/Latin strings without tail clipping', async () => {
+    oracleTest('preserves 100% of characters in mixed CJK/Latin strings without tail clipping', ['pdftotext'], async () => {
       const testImage = await sharp({
         create: { width: 400, height: 100, channels: 3, background: '#ffffff' },
       }).png().toBuffer();
@@ -305,14 +290,9 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
       };
 
       const pdfBuffer = await createLosslessSandwichPdfFromImage(testImage, ocrResult, {}, 'Won Invoice');
-      const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer) });
-      const pdfDoc = await loadingTask.promise;
-      const page = await pdfDoc.getPage(1);
-      const textContent = await page.getTextContent();
-      const extracted = textContent.items.map((i: any) => i.str).join(' ');
 
-      expect(extracted).toContain('Total');
-      expect(extracted).toContain('₩50000');
+      // The won sign and every digit survive: nothing is clipped from the end of the string.
+      expect(pdftotextLine(pdfBuffer)).toBe('Total ₩50000');
     });
   });
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -44,6 +44,10 @@ import { oracleTest } from './helpers/oracle-test';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { buildEncryptedRar5 } from './helpers/rar5-encrypted';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Archive passwords reach 7-Zip on stdin, never in argv (issue #490). Every test here runs the real

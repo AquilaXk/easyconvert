@@ -6,6 +6,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { skipUnless } from './helpers/strict-skip';
 
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 const PYTHON = getOracleToolPath('python3');
@@ -106,7 +107,7 @@ describe.runIf(STRICT_MODE)('ODG oracle tooling', () => {
   });
 });
 
-describe.skipIf(!PYTHON)('image -> odd embeds the picture in an OpenDocument drawing', () => {
+describe.skipIf(skipUnless('python3', PYTHON !== null))('image -> odd embeds the picture in an OpenDocument drawing', () => {
   it('writes mimetype first and stored, lists every part in the manifest, and embeds a picture of the source size', async () => {
     const source = await gradientPng(SOURCE_WIDTH, SOURCE_HEIGHT);
     const result = await convertFile(source, 'png', 'odd', {}, 'gradient.png');

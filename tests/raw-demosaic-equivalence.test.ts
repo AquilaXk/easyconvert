@@ -81,6 +81,7 @@ describe('AHD / AMaZE output equals the pre-rewrite golden', () => {
   const realRows = REAL_CROP_CASES.flatMap((c) =>
     c.methods.flatMap((method) => [DEFAULT_TILE, SEAM_TILE].map((tile) => [c.id, method, tile] as [string, DemosaicName, number | undefined]))
   );
+  // skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
   describe.skipIf(!SAMPLE_PRESENT)('real imx477 crops', () => {
     it.each(realRows)('%s %s tile=%s', (id, method, tile) => {
       const crop = REAL_CROP_CASES.find((candidate) => candidate.id === id)!;

@@ -39,6 +39,9 @@ export type ExternalOracleTool =
   | '7z'
   | 'tar'
   | 'zstd'
+  | 'bzip2'
+  | 'xz'
+  | 'unshare'
   | 'magick'
   | 'identify'
   | 'unrar'
@@ -80,17 +83,14 @@ export function getOracleToolPath(tool: ExternalOracleTool): string | null {
     return toolCache.get(tool)!;
   }
 
+  // ORACLE_TOOL_DIRS narrows the search to the listed directories (empty: nothing is found). A child process
+  // started with it sees a toolchain without the tools, which is how the strict-mode behaviour is exercised.
+  const restrictedDirs = process.env.ORACLE_TOOL_DIRS;
   const pathEnvDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const candidateDirs = Array.from(
-    new Set([
-      ...pathEnvDirs,
-      '/usr/bin',
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      '/opt/local/bin',
-      '/bin',
-    ])
-  );
+  const candidateDirs =
+    restrictedDirs === undefined
+      ? Array.from(new Set([...pathEnvDirs, '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/opt/local/bin', '/bin']))
+      : restrictedDirs.split(path.delimiter).filter(Boolean);
 
   for (const dir of candidateDirs) {
     const fullPath = path.join(dir, tool);
@@ -101,7 +101,7 @@ export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   }
 
   try {
-    const whichBinary = candidateDirs.find((d) => fs.existsSync(path.join(d, 'which')));
+    const whichBinary = restrictedDirs === undefined ? candidateDirs.find((d) => fs.existsSync(path.join(d, 'which'))) : undefined;
     if (whichBinary) {
       const res = execFileSync(path.join(whichBinary, 'which'), [tool], {
         encoding: 'utf-8',
@@ -2649,7 +2649,14 @@ export function checkWebpIntegrity(buffer: Buffer): void {
   }
 }
 
-export function checkFlacIntegrity(buffer: Buffer): void {
+export interface FlacStreamInfo {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+}
+
+/** Validates the STREAMINFO block of a FLAC stream and returns its audio parameters (RFC 9639 section 8.2). */
+export function checkFlacIntegrity(buffer: Buffer): FlacStreamInfo {
   if (buffer.length < 42) {
     throw new Error('Integrity Violation: FLAC buffer too small (< 42 bytes)');
   }
@@ -2669,6 +2676,8 @@ export function checkFlacIntegrity(buffer: Buffer): void {
   const b20 = buffer[20];
   const sampleRate = (b18 << 12) | (b19 << 4) | (b20 >> 4);
   const channels = ((b20 >> 1) & 0x07) + 1;
+  // Bits per sample minus one: the last bit of byte 20 and the high nibble of byte 21.
+  const bitsPerSample = (((b20 & 0x01) << 4) | (buffer[21] >> 4)) + 1;
   if (sampleRate === 0 || channels === 0) {
     throw new Error(`Integrity Violation: Invalid FLAC parameters (sampleRate=${sampleRate}, channels=${channels})`);
   }
@@ -2678,6 +2687,7 @@ export function checkFlacIntegrity(buffer: Buffer): void {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode FLAC bitstream');
     }
   }
+  return { sampleRate, channels, bitsPerSample };
 }
 
 export function checkMp3Integrity(buffer: Buffer): void {

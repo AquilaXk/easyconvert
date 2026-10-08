@@ -9,6 +9,7 @@ import {
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { parsePageRanges } from '../page-range';
+import { attachWinAnsiToUnicode } from '../pdf-winansi-tounicode';
 import {
   PdfWatermarkOptions,
   PdfWatermarkPosition,
@@ -377,6 +378,9 @@ export async function applyPdfWatermark(
     }
   }
 
+  // pdf-lib writes the font dictionary again at save because drawing text marks the font as modified, so the CMap is
+  // attached last, to the dictionary that is written.
+  if (asset.font) await attachWinAnsiToUnicode(doc, asset.font);
   const modifiedBytes = await doc.save();
   return Buffer.from(modifiedBytes);
 }

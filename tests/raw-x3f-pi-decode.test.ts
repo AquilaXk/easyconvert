@@ -28,8 +28,8 @@ const SAMPLES_PRESENT = SAMPLES.every((name) => existsSync(samplePath(name)));
 const ENABLED = STRICT_MODE || SAMPLES_PRESENT;
 
 const DECODE_TIMEOUT_MS = 180_000;
-/** A hostile file must be rejected quickly: decoding the largest real sample takes about ten seconds. */
-const HOSTILE_TIME_LIMIT_MS = 15_000;
+/** Hang guard: a hostile header is rejected in milliseconds; decoding the largest real sample takes about ten seconds. */
+const HOSTILE_HANG_GUARD_MS = 15_000;
 const TARGETS = ['png', 'jpg'];
 
 interface Tolerance {
@@ -220,7 +220,7 @@ describe.skipIf(!ENABLED)('region comparison negative controls', () => {
 async function expectRejected(file: Buffer, format: string, message: RegExp, unrecognized = false): Promise<void> {
   const started = performance.now();
   const error = await dispatchConversion(file, format, 'png', {}, `hostile.${format}`).catch((e: unknown) => e);
-  expect(performance.now() - started).toBeLessThan(HOSTILE_TIME_LIMIT_MS);
+  expect(performance.now() - started).toBeLessThan(HOSTILE_HANG_GUARD_MS);
   expect(error).toBeInstanceOf(RawDecodeError);
   expect((error as RawDecodeError).message).toMatch(message);
   // A layout the decoder does not know is reported as unrecognized; a damaged one is not.

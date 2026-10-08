@@ -7,6 +7,8 @@ import { convertFile } from '../src/lib/conversions';
 import { encodeWoff2, decodeWoff2, createCanonicalFont } from '../src/lib/conversions/font';
 import { extractStepBRepMesh, parseStepEntities, extractStepPoint } from '../src/lib/conversions/cad-nurbs';
 import { extractEmbeddedImageFromPdf } from '../src/lib/conversions/pdf-utils';
+import { ConversionFailedError, CorruptStreamError, FileExtensionSpoofError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
 
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 
@@ -299,30 +301,32 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
       const docxBuf = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.docx'));
       const result = await convertFile(docxBuf, 'docx', 'txt', {}, 'sample.docx');
 
-      const text = result.buffer.toString('utf-8');
-      // Must contain heading, paragraph, and table values extracted deterministically
-      expect(text).toContain('EasyConvert Golden DOCX Standard');
-      expect(text).toContain('deterministic regression fixture text');
-      expect(text).toContain('Header A');
-      expect(text).toContain('Header B');
-      expect(text).toContain('Value 1');
-      expect(text).toContain('Value 2');
+      // The fixture's word/document.xml holds a heading, a paragraph and a 2x2 table (see ensureGoldenFixtures):
+      // the text is those runs in document order, blocks separated by a blank line, cells by a tab.
+      expect(result.buffer.toString('utf-8')).toBe(
+        [
+          'EasyConvert Golden DOCX Standard',
+          '',
+          'This is deterministic regression fixture text for enterprise document conversion verification.',
+          '',
+          'Header A\tHeader B',
+          'Value 1\tValue 2',
+        ].join('\n')
+      );
     });
 
     it('converts golden XLSX to CSV and verifies Bijective Base-26 column coordinates (AA1)', async () => {
       const xlsxBuf = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.xlsx'));
       const result = await convertFile(xlsxBuf, 'xlsx', 'csv', {}, 'sample.xlsx');
 
-      const csvText = result.buffer.toString('utf-8');
-      // Col AA must NOT have collapsed into Col A
-      expect(csvText).toContain('Col A');
-      expect(csvText).toContain('Col Z');
-      expect(csvText).toContain('Col AA (Bijective 27)');
-      expect(csvText).toContain('Col AB (Bijective 28)');
-      expect(csvText).toContain('100');
-      expect(csvText).toContain('200');
-      expect(csvText).toContain('300');
-      expect(csvText).toContain('400');
+      // Worksheet columns are bijective base 26: A=1 .. Z=26, AA=27, AB=28. The sheet fills A, Z, AA and AB only,
+      // so the CSV has 28 fields per row, empty between A and Z, and AA must not collapse into A.
+      const BLANK_COLUMNS_BETWEEN_A_AND_Z = 24;
+      const row = (first: string, z: string, aa: string, ab: string) =>
+        [first, ...Array(BLANK_COLUMNS_BETWEEN_A_AND_Z).fill(''), z, aa, ab].join(',');
+      expect(result.buffer.toString('utf-8')).toBe(
+        [row('Col A', 'Col Z', 'Col AA (Bijective 27)', 'Col AB (Bijective 28)'), row('100', '200', '300', '400')].join('\n')
+      );
     });
 
     it('converts golden STEP model to OBJ with verified geometric vertices and face definitions', async () => {
@@ -362,7 +366,7 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
   });
 
   describe('3. Malformed Header Fuzzing & Fail-Closed Robustness', () => {
-    it('fails closed when given a truncated/corrupted MP4 container', async () => {
+    oracleTest('fails closed when given a truncated/corrupted MP4 container', ['ffmpeg', 'ffprobe'], async () => {
       // Create corrupt MP4: valid ftyp header followed by random corrupted garbage
       const corruptMp4 = Buffer.from([
         0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, // 'ftyp'
@@ -370,10 +374,10 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
         0xff, 0xff, 0xff, 0xff, 0xde, 0xad, 0xbe, 0xef,
       ]);
 
-      // Converting corrupt MP4 to MP3 should reject or fail closed (no fake beep synthesis)
-      await expect(
-        convertFile(corruptMp4, 'mp4', 'mp3', {}, 'corrupted.mp4')
-      ).rejects.toThrow();
+      // The probe cannot read the box tree, so the conversion is refused (no synthesized audio).
+      const failure = await convertFile(corruptMp4, 'mp4', 'mp3', {}, 'corrupted.mp4').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/^Native FFmpeg transcoding failed for mp4 -> mp3: ffprobe could not inspect the input media/);
     });
 
     it('fails closed when given an invalid/corrupted WOFF2 font header', () => {
@@ -402,16 +406,24 @@ ENDSEC;`;
 
     it('fails closed when given an invalid zip/docx file buffer', async () => {
       const corruptZip = Buffer.from('This is completely invalid non-zip binary payload');
-      await expect(
-        convertFile(corruptZip, 'docx', 'txt', {}, 'corrupt.docx')
-      ).rejects.toThrow();
+      // The engine refuses a package that is not a ZIP with a typed error ...
+      const failure = await convertFile(corruptZip, 'docx', 'txt', {}, 'corrupt.docx').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('The DOCX file is not a valid ZIP package.');
+      // ... and the magic-byte gate that the API runs first names the mismatch.
+      await expect(convertFile(corruptZip, 'docx', 'txt', { validateMagicBytes: true }, 'corrupt.docx')).rejects.toThrow(
+        FileExtensionSpoofError
+      );
     });
 
     it('fails closed on malformed PDF buffer missing standard header', async () => {
       const corruptPdf = Buffer.from('CORRUPT_HEADER_NOT_PDF_DATA_STREAM_XYZ');
-      await expect(
-        convertFile(corruptPdf, 'pdf', 'txt', {}, 'corrupt.pdf')
-      ).rejects.toThrow();
+      const failure = await convertFile(corruptPdf, 'pdf', 'txt', {}, 'corrupt.pdf').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(CorruptStreamError);
+      expect((failure as Error).message).toBe('Invalid PDF document: missing %PDF- header');
+      await expect(convertFile(corruptPdf, 'pdf', 'txt', { validateMagicBytes: true }, 'corrupt.pdf')).rejects.toThrow(
+        FileExtensionSpoofError
+      );
     });
 
     it('fails closed and prevents infinite recursion when given STEP entities with mutual circular reference', () => {

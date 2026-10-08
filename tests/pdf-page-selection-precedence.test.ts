@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { HAS_PDFTOPPM } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { captureError } from './helpers/capture-error';
 
 /**
@@ -13,8 +13,7 @@ import { captureError } from './helpers/capture-error';
  */
 
 const PAGE_COUNT = 3;
-const STRICT = process.env.ORACLE_STRICT_MODE === '1';
-const SKIP = !HAS_PDFTOPPM && !STRICT;
+const SKIP = skipWithoutTools('pdftoppm');
 
 async function threePagePdf(): Promise<Buffer> {
   const doc = await PDFDocument.create();

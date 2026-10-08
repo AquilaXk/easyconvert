@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { load as loadYaml } from 'js-yaml';
 import {
   checkIsoBmffIntegrity,
   checkEbmlIntegrity,
@@ -15,6 +18,7 @@ import {
   verifyPdfWithPoppler,
   assertFormatIntegrity,
   OracleToolMissingError,
+  requireOracleTool,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { h264AacMp4, runFfmpeg, sineInput } from './helpers/ffmpeg-media-fixtures';
@@ -149,7 +153,7 @@ function createAuthenticOggOpusBuffer(): Buffer {
 
 function createAuthenticFlacBuffer(): Buffer {
   const magic = Buffer.from('fLaC', 'ascii');
-  const blockHeader = Buffer.from([0x00, 0x00, 0x00, 0x22]); // type 0 (STREAMINFO), length 34
+  const blockHeader = Buffer.from([0x80, 0x00, 0x00, 0x22]); // last-block flag, type 0 (STREAMINFO), length 34
   const streamInfo = Buffer.alloc(34);
   streamInfo.writeUInt16BE(4096, 0); // min block size
   streamInfo.writeUInt16BE(4096, 2); // max block size
@@ -158,7 +162,7 @@ function createAuthenticFlacBuffer(): Buffer {
   streamInfo[10] = 0x0a;
   streamInfo[11] = 0xc4;
   streamInfo[12] = (4 << 4) | (1 << 1) | 0; // sr low 4 bits + chan (1) + bps high 1 bit
-  streamInfo[13] = (15 << 3); // bps low 4 bits + total samples high 3 bits
+  streamInfo[13] = (15 << 4); // bps low 4 bits + total samples high 4 bits
   return Buffer.concat([magic, blockHeader, streamInfo]);
 }
 
@@ -184,6 +188,10 @@ function createAuthenticMp3Buffer(): Buffer {
 // ============================================================================
 // Test Suite
 // ============================================================================
+
+/** A child vitest run starts a worker pool and transforms the helper modules: allow it far more than a unit test. */
+const PROBE_RUN_TIMEOUT_MS = 120_000;
+const PROBE_TEST_TIMEOUT_MS = 150_000;
 
 describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet', () => {
 
@@ -264,10 +272,26 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => assertFormatIntegrity(hollowFlac, 'flac')).toThrow(/Integrity Violation/);
     });
 
-    it('validates authentic FLAC buffer with 34-byte STREAMINFO', () => {
+    oracleTest('validates authentic FLAC buffer with 34-byte STREAMINFO', ['metaflac'], () => {
       const validFlac = createAuthenticFlacBuffer();
-      expect(() => checkFlacIntegrity(validFlac)).not.toThrow();
+      const parsed = checkFlacIntegrity(validFlac);
+      expect(parsed).toEqual({ sampleRate: 44100, channels: 2, bitsPerSample: 16 });
       expect(() => assertFormatIntegrity(validFlac, 'flac')).not.toThrow();
+
+      // metaflac, the reference FLAC tool, reads the same three parameters from the same bytes.
+      const flacPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'flac-streaminfo-')), 'streaminfo.flac');
+      try {
+        fs.writeFileSync(flacPath, validFlac);
+        const metaflac = requireOracleTool('metaflac');
+        const show = (option: string) => Number(execFileSync(metaflac, [option, flacPath], { encoding: 'utf-8' }).trim());
+        expect([show('--show-sample-rate'), show('--show-channels'), show('--show-bps')]).toEqual([
+          parsed.sampleRate,
+          parsed.channels,
+          parsed.bitsPerSample,
+        ]);
+      } finally {
+        fs.rmSync(path.dirname(flacPath), { recursive: true, force: true });
+      }
     });
 
     it('detects and rejects hollow ADTS AAC buffer with invalid layer bits', () => {
@@ -294,49 +318,65 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(() => checkMp3Integrity(corruptMp3)).toThrow(/Missing valid MPEG audio frame sync/);
     });
 
-    it('enforces strict skip mode (OracleToolMissingError) across all oracle tools when ORACLE_STRICT_MODE is enabled', () => {
-      const origEnv = process.env.ORACLE_STRICT_MODE;
-      try {
-        process.env.ORACLE_STRICT_MODE = '1';
-        // Test ffprobe
-        const fakeBuf = Buffer.alloc(100);
-        try {
-          const res = verifyVideoBitstreamWithFfprobe(fakeBuf, 'mp4');
-          // An all-zero buffer is no video: the verdict is a decode, so it is invalid and says why.
-          expect(res.valid).toBe(false);
-          expect(res.error).toMatch(/\S/);
-        } catch (err: any) {
-          expect(err).toBeInstanceOf(OracleToolMissingError);
-          expect(err.isOracleSkip).toBe(true);
-        }
+    describe('a toolchain without tools (child vitest run with an empty tool search path)', () => {
+      interface ProbeTest {
+        title: string;
+        status: string;
+        failureMessages?: string[];
+      }
 
-        // Test 7z
-        const fake7z = Buffer.concat([Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]), Buffer.alloc(30)]);
+      /** Runs the missing-tool probe in a fresh vitest process and returns its tests with their outcomes. */
+      function runProbe(strictMode: '0' | '1'): ProbeTest[] {
+        const repoRoot = path.resolve(__dirname, '..');
+        const emptyToolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'no-oracle-tools-'));
         try {
-          const res7z = verifyArchiveWith7z(fake7z);
-          expect(typeof res7z).toBe('boolean');
-        } catch (err: any) {
-          expect(err).toBeInstanceOf(OracleToolMissingError);
-          expect(err.isOracleSkip).toBe(true);
-          expect(err.tool).toBe('7z');
-        }
-
-        // Test pdfinfo
-        try {
-          const resPdf = verifyPdfWithPoppler(Buffer.from('%PDF-1.4\n...'));
-          expect(typeof resPdf).toBe('boolean');
-        } catch (err: any) {
-          expect(err).toBeInstanceOf(OracleToolMissingError);
-          expect(err.isOracleSkip).toBe(true);
-          expect(err.tool).toBe('pdfinfo');
-        }
-      } finally {
-        if (origEnv === undefined) {
-          delete process.env.ORACLE_STRICT_MODE;
-        } else {
-          process.env.ORACLE_STRICT_MODE = origEnv;
+          const run = spawnSync(
+            process.execPath,
+            [
+              path.join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs'),
+              'run',
+              '--config',
+              path.join(__dirname, 'fixtures', 'oracle-strict', 'vitest.probe.config.ts'),
+              '--reporter=json',
+            ],
+            {
+              cwd: repoRoot,
+              encoding: 'utf-8',
+              env: { ...process.env, ORACLE_STRICT_MODE: strictMode, ORACLE_TOOL_DIRS: emptyToolDir },
+              timeout: PROBE_RUN_TIMEOUT_MS,
+            }
+          );
+          const report = JSON.parse(run.stdout.slice(run.stdout.indexOf('{'))) as { testResults: Array<{ assertionResults: ProbeTest[] }> };
+          return report.testResults.flatMap((file) => file.assertionResults);
+        } finally {
+          fs.rmSync(emptyToolDir, { recursive: true, force: true });
         }
       }
+
+      const statusesByTitle = (tests: ProbeTest[]) => Object.fromEntries(tests.map((test) => [test.title, test.status]));
+
+      it('fails every oracle test whose tool is missing when ORACLE_STRICT_MODE=1, without running its body', () => {
+        const tests = runProbe('1');
+        expect(statusesByTitle(tests)).toEqual({
+          'needs pdfinfo (body must never run)': 'failed',
+          'needs ffmpeg and ffprobe (body must never run)': 'failed',
+          'verifyPdfWithPoppler throws OracleToolMissingError naming pdfinfo': 'passed',
+          'verifyArchiveWith7z throws OracleToolMissingError naming 7z': 'passed',
+          'verifyVideoBitstreamWithFfprobe throws OracleToolMissingError instead of answering': 'passed',
+        });
+        const failureText = (title: string) => tests.find((test) => test.title === title)?.failureMessages?.join('\n') ?? '';
+        expect(failureText('needs pdfinfo (body must never run)')).toContain('Oracle CLI tool(s) missing: pdfinfo');
+        expect(failureText('needs ffmpeg and ffprobe (body must never run)')).toContain('Oracle CLI tool(s) missing: ffmpeg, ffprobe');
+        expect(failureText('needs pdfinfo (body must never run)')).not.toContain('body ran');
+      }, PROBE_TEST_TIMEOUT_MS);
+
+      it('skips them, explicitly and still without running the body, when ORACLE_STRICT_MODE is off', () => {
+        const statuses = statusesByTitle(runProbe('0'));
+        expect(statuses['needs pdfinfo (body must never run)']).toBe('skipped');
+        expect(statuses['needs ffmpeg and ffprobe (body must never run)']).toBe('skipped');
+        // The helpers themselves refuse to answer without the tool in either mode.
+        expect(statuses['verifyArchiveWith7z throws OracleToolMissingError naming 7z']).toBe('passed');
+      }, PROBE_TEST_TIMEOUT_MS);
     });
 
     it('successfully validates authentic AVCC MP4 even when slice payload contains [0x00, 0x00, 0x01]', () => {
@@ -680,11 +720,16 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(allBlockedSyscalls).toContain('mount');
     });
 
-    it('verifies docker-compose.yml defines SYS_ADMIN capability and no-new-privileges for worker isolation', () => {
-      const composePath = path.resolve(__dirname, '../docker-compose.yml');
-      const yaml = fs.readFileSync(composePath, 'utf-8');
-      expect(yaml).toContain('SYS_ADMIN');
-      expect(yaml).toContain('no-new-privileges:true');
+    it('verifies the compose worker drops every capability, never adds SYS_ADMIN and sets no-new-privileges', () => {
+      const compose = loadYaml(fs.readFileSync(path.resolve(__dirname, '../docker-compose.yml'), 'utf-8')) as {
+        services: Record<string, { cap_drop?: string[]; cap_add?: string[]; security_opt?: string[] }>;
+      };
+      const worker = compose.services.worker;
+      // Read from the parsed service, not from the file text: the file mentions SYS_ADMIN in a comment that
+      // explains why it was removed.
+      expect(worker.cap_drop).toEqual(['ALL']);
+      expect(worker.cap_add ?? []).not.toContain('SYS_ADMIN');
+      expect(worker.security_opt).toEqual(['no-new-privileges:true']);
     });
 
     it('enforces Zip Slip directory traversal sanitization across Unix and Windows paths', () => {
@@ -717,11 +762,11 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
   <script>alert(1)</script>
 </svg>`;
 
-      const sanitized = sanitizeSvgString(billionLaughsSvg);
-      expect(sanitized).not.toContain('<!DOCTYPE');
-      expect(sanitized).not.toContain('<!ENTITY');
-      expect(sanitized).not.toContain('<script');
-      expect(sanitized).not.toContain('alert(1)');
+      // The DOCTYPE with its entity ladder and the script element are removed and nothing is expanded: the
+      // reference `&lol3;` stays one reference of 6 characters instead of the 1000 "lol" it would expand to.
+      expect(sanitizeSvgString(billionLaughsSvg)).toBe(
+        '<?xml version="1.0"?>\n\n<svg xmlns="http://www.w3.org/2000/svg">\n  <text>&lol3;</text>\n  \n</svg>'
+      );
     });
 
     it('fails closed safely on corrupted or truncated TrueType font headers without crash', () => {

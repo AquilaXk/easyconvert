@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
+import { readSvgShapes } from './helpers/svg-dom-audit';
 import {
   identityMatrix,
   translationMatrix,
@@ -413,7 +414,7 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
                   </p:spPr>
                   <p:txBody>
                     <a:bodyPr/>
-                    <a:p><a:r><a:t>Group Box 1</a:t></a:r></p>
+                    <a:p><a:r><a:t>Group Box 1</a:t></a:r></a:p>
                   </p:txBody>
                 </p:sp>
               </p:grpSp>
@@ -449,10 +450,10 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
                        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
           <dgm:ptLst>
             <dgm:pt type="node">
-              <dgm:t><a:bodyPr/><a:p><a:r><a:t>Initiate</a:t></a:r></p></dgm:t>
+              <dgm:t><a:bodyPr/><a:p><a:r><a:t>Initiate</a:t></a:r></a:p></dgm:t>
             </dgm:pt>
             <dgm:pt type="node">
-              <dgm:t><a:bodyPr/><a:p><a:r><a:t>Process</a:t></a:r></p></dgm:t>
+              <dgm:t><a:bodyPr/><a:p><a:r><a:t>Process</a:t></a:r></a:p></dgm:t>
             </dgm:pt>
           </dgm:ptLst>
         </dgm:dataModel>`;
@@ -556,10 +557,10 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
         <dgm:dataModel xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram"
                        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
           <dgm:ptLst>
-            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Strengths</a:t></a:r></p></dgm:t></dgm:pt>
-            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Weaknesses</a:t></a:r></p></dgm:t></dgm:pt>
-            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Opportunities</a:t></a:r></p></dgm:t></dgm:pt>
-            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Threats</a:t></a:r></p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Strengths</a:t></a:r></a:p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Weaknesses</a:t></a:r></a:p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Opportunities</a:t></a:r></a:p></dgm:t></dgm:pt>
+            <dgm:pt type="node"><dgm:t><a:bodyPr/><a:p><a:r><a:t>Threats</a:t></a:r></a:p></dgm:t></dgm:pt>
           </dgm:ptLst>
         </dgm:dataModel>`;
 
@@ -569,10 +570,45 @@ describe('DrawingML 2D Scene Graph & Affine Transform Matrix (ISO/IEC 29500-1 §
       const htmlResult = await convertOffice(pptxBuffer, 'pptx', 'html', {}, 'swot-analysis');
       const htmlStr = htmlResult.buffer.toString('utf-8');
 
-      expect(htmlStr).toContain('Strengths');
-      expect(htmlStr).toContain('Weaknesses');
-      expect(htmlStr).toContain('Opportunities');
-      expect(htmlStr).toContain('Threats');
+      // The graphic frame is a square of 5080000 EMU (400 pt) at 1270000 EMU (100 pt) from the slide's corner, on
+      // a slide of 9144000 x 6858000 EMU (720 x 540 pt): frame x, y in 100..500. The four nodes, in data order, sit
+      // in the cells of a 2 x 2 grid that fills the frame: the first row holds nodes 1 and 2, the second 3 and 4.
+      const FRAME_ORIGIN_PT = 100;
+      const FRAME_SIZE_PT = 400;
+      const shapes = readSvgShapes(htmlStr, new Set(['svg', 'rect', 'text']));
+      expect(shapes.find((shape) => shape.name === 'svg')?.attributes.viewBox).toBe('0 0 720 540');
+      const rects = shapes.filter((shape) => shape.name === 'rect').map((shape) => ({
+        x: Number(shape.attributes.x),
+        y: Number(shape.attributes.y),
+        width: Number(shape.attributes.width),
+        height: Number(shape.attributes.height),
+      }));
+      const labels = shapes.filter((shape) => shape.name === 'text');
+      expect(labels.map((label) => label.text)).toEqual(['Strengths', 'Weaknesses', 'Opportunities', 'Threats']);
+      expect(rects).toHaveLength(4);
+
+      // Square cells of one size, two columns and two rows, none outside the frame.
+      const cellSize = rects[0].width;
+      expect(rects.every((rect) => rect.width === cellSize && rect.height === cellSize)).toBe(true);
+      expect([...new Set(rects.map((rect) => rect.x))].sort((a, b) => a - b)).toHaveLength(2);
+      expect([...new Set(rects.map((rect) => rect.y))].sort((a, b) => a - b)).toHaveLength(2);
+      const [left, right] = [...new Set(rects.map((rect) => rect.x))].sort((a, b) => a - b);
+      const [top, bottom] = [...new Set(rects.map((rect) => rect.y))].sort((a, b) => a - b);
+      expect(rects.map((rect) => [rect.x, rect.y])).toEqual([[left, top], [right, top], [left, bottom], [right, bottom]]);
+      expect(left).toBe(FRAME_ORIGIN_PT);
+      expect(top).toBe(FRAME_ORIGIN_PT);
+      expect(right + cellSize).toBeLessThanOrEqual(FRAME_ORIGIN_PT + FRAME_SIZE_PT);
+      expect(bottom + cellSize).toBeLessThanOrEqual(FRAME_ORIGIN_PT + FRAME_SIZE_PT);
+      // The grid fills the frame up to the gap between cells: both rows and columns are separated by the same gap.
+      const gap = right - (left + cellSize);
+      expect(bottom - (top + cellSize)).toBe(gap);
+      expect(left + 2 * cellSize + gap).toBe(FRAME_ORIGIN_PT + FRAME_SIZE_PT);
+      // Each label is centred in its own cell.
+      labels.forEach((label, index) => {
+        expect(Number(label.attributes.x)).toBe(rects[index].x + cellSize / 2);
+        expect(Number(label.attributes.y)).toBeGreaterThan(rects[index].y);
+        expect(Number(label.attributes.y)).toBeLessThan(rects[index].y + cellSize);
+      });
     });
   });
 });

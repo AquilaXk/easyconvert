@@ -8,6 +8,8 @@ import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
 import { extractStepBRepMesh, parseStepEntities } from '../src/lib/conversions/cad-nurbs';
 import { decodeWoff2 } from '../src/lib/conversions/font';
+import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
+import { CorruptStreamError } from '../src/lib/types';
 import { applyFloydSteinbergDither } from '../src/lib/conversions/quantize';
 import { parseCfbf } from '../src/lib/conversions/hwp';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
@@ -464,9 +466,18 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         const hostileBuf = await hostileZip.generateAsync({ type: 'nodebuffer' });
 
         const extracted = await extractZipArchive(hostileBuf);
-        // Traversal files must either be filtered out or sanitized to safe relative paths without '..'
+        // Each traversal name is cut down to the path below the root, with both separator styles honoured,
+        // and the content stays attached to its sanitized name.
+        expect(extracted.map((file) => [file.filename, file.buffer.toString('utf-8')])).toEqual([
+          ['etc/shadow', 'root:x:0:0:root:/root:/bin/bash'],
+          ['windows/system32/calc.exe', 'MZ...'],
+          ['safe.txt', 'Safe content'],
+        ]);
+        // Independent check of the property that matters: joined to an extraction root, no entry leaves it.
+        const extractionRoot = path.resolve('/srv/extract-root');
         for (const file of extracted) {
-          expect(file.filename).not.toContain('..');
+          const target = path.resolve(extractionRoot, file.filename);
+          expect(path.relative(extractionRoot, target).startsWith('..'), file.filename).toBe(false);
         }
       });
     });
@@ -576,7 +587,8 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         // Wrong magic bytes (not 0xD0CF11E0A1B11AE1)
         corruptedOle2.write('MALFORMED_OLE2_FILE_HEADER', 0, 'ascii');
 
-        expect(() => parseCfbf(corruptedOle2)).toThrow();
+        expect(() => parseCfbf(corruptedOle2)).toThrow(CorruptStreamError);
+        expect(() => parseCfbf(corruptedOle2)).toThrow(/Invalid CFBF container: Missing OLE2 magic signature/);
       });
 
       it('fails closed when OLE2 sector allocation chain forms an infinite cycle', () => {
@@ -598,9 +610,9 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         // Cyclic FAT entry: sector 0 points to sector 0
         cyclicOle2.writeUInt32LE(0, 512);
 
-        // Must safely terminate without infinite loop
-        const cfbf = parseCfbf(cyclicOle2);
-        expect(cfbf).toBeDefined();
+        // The directory chain 0 -> 0 is walked once and refused instead of being read as a container without entries.
+        expect(() => parseCfbf(cyclicOle2)).toThrow(CorruptStreamError);
+        expect(() => parseCfbf(cyclicOle2)).toThrow(/the sector chain starting at sector 0 returns to sector 0/);
       });
     });
 
@@ -647,7 +659,8 @@ END-ISO-10303-21;`;
         malformedWoff2.writeUInt32BE(10000, 8); // Claim length 10000 bytes (file is only 64 bytes)
         malformedWoff2.writeUInt16LE(10, 12); // Table count 10
 
-        expect(() => decodeWoff2(malformedWoff2)).toThrow();
+        expect(() => decodeWoff2(malformedWoff2)).toThrow(Woff2FormatError);
+        expect(() => decodeWoff2(malformedWoff2)).toThrow(/Invalid WOFF2: the header declares 10000 bytes but the file has 64/);
       });
     });
   });

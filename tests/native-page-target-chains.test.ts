@@ -7,7 +7,7 @@ import JSZip from 'jszip';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { ConversionFailedError, EngineUnavailableError, InvalidPageRangeError } from '../src/lib/types';
-import { isOracleToolAvailable, requireOracleTool, extractTextWithExternalPdftotext } from './helpers/differential-oracle';
+import { requireOracleTool, extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { withMissingBinary } from './helpers/native-tools';
 import { buildPdf, singlePagePdf, textContent, type CraftObject } from './helpers/pdf-craft';
@@ -16,6 +16,7 @@ import { withPs2pdfShim } from './helpers/ps2pdf-shim';
 import { decodeRgba, runConvert, runIdentify, withTempImage } from './helpers/imagemagick';
 import { readDxf, type DxfPoint } from './helpers/dxf-reader';
 import { flatOdg, flatOdgWithRectangle, normalizeWhitespace, sofficeConvert } from './helpers/soffice-office';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * Pages become any target a native tool chain writes, not only the two the first Poppler route offered:
@@ -25,7 +26,7 @@ import { flatOdg, flatOdgWithRectangle, normalizeWhitespace, sofficeConvert } fr
  * pdftops, ImageMagick), from a hand-written DXF reader, or from geometry written into the fixture itself.
  */
 
-const HAS_PS2PDF = isOracleToolAvailable('ps2pdf');
+const SKIP_WITHOUT_PS2PDF = skipWithoutTools('ps2pdf');
 const NATIVE_TIMEOUT_MS = 240_000;
 const POPPLER_DPI = 150;
 const POINTS_PER_INCH = 72;
@@ -696,7 +697,7 @@ const REAL_TWO_PAGE_PS = Buffer.from(
 describe('PostScript against the real interpreter', () => {
   // Ghostscript is licensed under the AGPL and is not part of the CI image until the licence review accepts
   // it, so these checks run wherever it is installed and are skipped, by name, where it is not.
-  it.skipIf(!HAS_PS2PDF)('eps -> png is the size of the bounding box, not of a default paper page', async () => {
+  it.skipIf(SKIP_WITHOUT_PS2PDF)('eps -> png is the size of the bounding box, not of a default paper page', async () => {
     const result = await dispatchConversion(REAL_EPS, 'eps', 'png', {}, 'figure.eps');
     const decoded = identifyBytes(result.buffer, 'png');
     const expected = pagePixels({ width: 200, height: 100 });
@@ -704,12 +705,12 @@ describe('PostScript against the real interpreter', () => {
     expect(Math.abs(decoded.height - expected.height)).toBeLessThanOrEqual(1);
   }, NATIVE_TIMEOUT_MS);
 
-  it.skipIf(!HAS_PS2PDF)('eps -> dxf holds the geometry of the PostScript path', async () => {
+  it.skipIf(SKIP_WITHOUT_PS2PDF)('eps -> dxf holds the geometry of the PostScript path', async () => {
     const result = await dispatchConversion(REAL_EPS, 'eps', 'dxf', {}, 'figure.eps');
     expectDrawingGeometry(result.buffer.toString('utf-8'));
   }, NATIVE_TIMEOUT_MS);
 
-  it.skipIf(!HAS_PS2PDF)('eps -> eps is an EPS that rasterises like the source (ImageMagick through Ghostscript)', async () => {
+  it.skipIf(SKIP_WITHOUT_PS2PDF)('eps -> eps is an EPS that rasterises like the source (ImageMagick through Ghostscript)', async () => {
     const result = await dispatchConversion(REAL_EPS, 'eps', 'eps', {}, 'figure.eps');
     const text = result.buffer.toString('latin1');
     expect(text.split('\n')[0]).toBe('%!PS-Adobe-3.0 EPSF-3.0');
@@ -729,7 +730,7 @@ describe('PostScript against the real interpreter', () => {
     expect(total / reference.data.length).toBeLessThan(RENDERER_MEAN_DIFF_MAX);
   }, NATIVE_TIMEOUT_MS);
 
-  it.skipIf(!HAS_PS2PDF)('a two-page PostScript file keeps both pages, each at its own size, as bmp and as PostScript', async () => {
+  it.skipIf(SKIP_WITHOUT_PS2PDF)('a two-page PostScript file keeps both pages, each at its own size, as bmp and as PostScript', async () => {
     const bmp = await dispatchConversion(REAL_TWO_PAGE_PS, 'ps', 'bmp', {}, 'doc.ps');
     expect(await entriesOf(bmp.buffer)).toEqual(['doc-p001.bmp', 'doc-p002.bmp']);
     const zip = await JSZip.loadAsync(bmp.buffer);

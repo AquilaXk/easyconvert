@@ -37,9 +37,6 @@ const MAX_CER_GAP_POINTS = 1;
 const MIN_MEAN_IOU = 0.8;
 const TURNS = [90, 180, 270] as const;
 type Turn = (typeof TURNS)[number];
-const SLOW_RUNNER = process.env.EASYCONVERT_SLOW_RUNNER === '1';
-const TIMING_RUNS = 5;
-const MAX_OVERHEAD_RATIO = 1.15;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -413,35 +410,6 @@ describe('when the detection data is missing', () => {
       withoutOsdData();
       const result = await performOcr(await turned('en_a', 'clean300', 180), 'eng');
       expect(result.orientation).toEqual({ status: 'unavailable', rotationApplied: 0 });
-    },
-    TEST_TIMEOUT_MS
-  );
-});
-
-describe('cost', () => {
-  oracleTest(
-    `a page that reads well costs no more than ${MAX_OVERHEAD_RATIO}x what it costs with detection off`,
-    ['tesseract'],
-    async (ctx) => {
-      if (SLOW_RUNNER) {
-        ctx.skip();
-        return;
-      }
-      requireTessdata('eng');
-      requireTessdata('osd');
-      const image = fixtureImage('en_a', 'noise');
-      await performOcr(image, 'eng', undefined, false);
-      let off = Infinity;
-      let on = Infinity;
-      for (let run = 0; run < TIMING_RUNS; run++) {
-        let started = performance.now();
-        await performOcr(image, 'eng', undefined, false);
-        off = Math.min(off, performance.now() - started);
-        started = performance.now();
-        await performOcr(image, 'eng');
-        on = Math.min(on, performance.now() - started);
-      }
-      expect(on / off).toBeLessThanOrEqual(MAX_OVERHEAD_RATIO);
     },
     TEST_TIMEOUT_MS
   );

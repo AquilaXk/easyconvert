@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { convertFile, BitWriter, checkFfmpeg } from '../src/lib/conversions/index';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import {
@@ -11,6 +11,10 @@ import {
 import { oracleTest } from './helpers/oracle-test';
 import { assertDecodedMedia, LOSSY_AUDIO_MIN_SNR_DB } from './oracles/product/media-oracle';
 import { ffmpegDecodedAudioBytes } from './helpers/ffmpeg-media-fixtures';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIN_ROUNDTRIP_SNR_DB = 25;
 const SOURCE_RATE = 44100;
