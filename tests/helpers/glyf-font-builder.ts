@@ -244,11 +244,18 @@ export function buildGlyfFont(spec: GlyfFontSpec): Buffer {
   const glyf = Buffer.concat(records);
 
   const points = all.flatMap((g) => (g.contours ?? []).flat());
-  const xMin = points.length > 0 ? Math.min(...points.map((p) => p.x)) : 0;
-  const yMin = points.length > 0 ? Math.min(...points.map((p) => p.y)) : 0;
-  const xMax = points.length > 0 ? Math.max(...points.map((p) => p.x)) : 0;
-  const yMax = points.length > 0 ? Math.max(...points.map((p) => p.y)) : 0;
-  const maxAdvance = Math.max(...all.map((g) => g.advance));
+  // Reduced in a loop: spreading tens of thousands of points into Math.min / Math.max overflows the call stack.
+  let xMin = 0;
+  let yMin = 0;
+  let xMax = 0;
+  let yMax = 0;
+  points.forEach((point, index) => {
+    xMin = index === 0 ? point.x : Math.min(xMin, point.x);
+    yMin = index === 0 ? point.y : Math.min(yMin, point.y);
+    xMax = index === 0 ? point.x : Math.max(xMax, point.x);
+    yMax = index === 0 ? point.y : Math.max(yMax, point.y);
+  });
+  const maxAdvance = all.reduce((largest, g) => Math.max(largest, g.advance), 0);
 
   const head = Buffer.alloc(54);
   head.writeUInt32BE(0x00010000, 0);

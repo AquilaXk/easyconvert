@@ -11,7 +11,7 @@ import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bound
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
@@ -140,7 +140,7 @@ export async function convertFont(
       break;
 
     case 'woff2':
-      outputBuffer = encodeWoff2(parsedFont);
+      outputBuffer = await encodeWoff2Async(parsedFont);
       mimeType = 'font/woff2';
       break;
 
@@ -531,6 +531,12 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
 export function encodeWoff2(font: ParsedFont): Buffer {
   const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
   return encodeWoff2Container(font.sfntVersion || 0x00010000, tables);
+}
+
+/** `encodeWoff2` with the Brotli step off the event loop (see `encodeWoff2ContainerAsync`). */
+export async function encodeWoff2Async(font: ParsedFont): Promise<Buffer> {
+  const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
+  return encodeWoff2ContainerAsync(font.sfntVersion || 0x00010000, tables);
 }
 
 /** Builds the canonical font model from a font that decodeWoff2Fonts reconstructed. */

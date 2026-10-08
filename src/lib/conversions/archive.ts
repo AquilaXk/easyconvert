@@ -39,7 +39,7 @@ import {
   sanitizeLeafFilename,
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
-import { compressBzip2, decompressBzip2 } from './bzip2';
+import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
@@ -4309,7 +4309,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
     // 3. Target TAR.BZ2 or TBZ2 or TBZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const bz2Buffer = compressBzip2(tarResult.buffer);
+    const bz2Buffer = await compressBzip2Async(tarResult.buffer);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip-compressed-tar',
@@ -4319,7 +4319,7 @@ export async function convertArchive(
   } else if (tgt === 'bz2' || tgt === 'bz') {
     // 3.1 Target BZ2
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
-    const bz2Buffer = compressBzip2(rawToCompress);
+    const bz2Buffer = await compressBzip2Async(rawToCompress);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip2',

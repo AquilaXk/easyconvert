@@ -1,5 +1,6 @@
 import zlib from 'node:zlib';
 import { ConversionFailedError } from '../types';
+import { copyYielding, CPU_POOL_MIN_BYTES, runCpuTask } from '../workers/cpu-pool';
 import { crc32 } from './crc32';
 
 /**
@@ -194,4 +195,27 @@ export function encode16BitPng(
 ): Buffer {
   const scanlines = filterPng16Scanlines(width, height, rgb16);
   return assemblePng16(width, height, zlib.deflateSync(scanlines, { level }), iccProfile);
+}
+
+/**
+ * Encodes without holding the event loop: images large enough to matter are filtered and deflated on a pool thread
+ * (the samples are copied once and handed over, so the caller's array stays usable); small ones run inline.
+ */
+export async function encode16BitPngAsync(
+  width: number,
+  height: number,
+  rgb16: Uint16Array,
+  iccProfile?: Uint8Array,
+  options: { level?: number; signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  assertPng16Dimensions(width, height, rgb16.length);
+  const level = options.level ?? PNG16_DEFAULT_LEVEL;
+  if (rgb16.byteLength < CPU_POOL_MIN_BYTES) return encode16BitPng(width, height, rgb16, iccProfile, level);
+  const copy = await copyYielding(rgb16);
+  const bytes = await runCpuTask<Uint8Array>(
+    'png16',
+    { width, height, rgb16: copy, iccProfile, level },
+    { signal: options.signal, transfer: [copy.buffer as ArrayBuffer] }
+  );
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }

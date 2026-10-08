@@ -63,6 +63,7 @@ import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
+import { encode16BitPngAsync } from './png16';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -2915,7 +2916,7 @@ export async function convertImage(
               : options.targetColorSpace === 'rec2020'
               ? REC2020_ICC
               : undefined;
-          outputBuffer = encode16BitPng(
+          outputBuffer = await encode16BitPngAsync(
             rawDemosaiced.width,
             rawDemosaiced.height,
             rawDemosaiced.rgb16,

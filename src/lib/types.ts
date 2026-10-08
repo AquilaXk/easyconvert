@@ -760,6 +760,37 @@ export class UnknownArtifactFormatError extends ConversionFailedError {
 }
 
 /**
+ * The bounded queue of the CPU worker pool is full. The caller can retry once running tasks finish, so the routes
+ * answer 503 with `Retry-After`; it is an `EngineUnavailableError`, so a worker that hits it retries the job.
+ */
+export class CpuPoolOverloadedError extends EngineUnavailableError {
+  readonly status = 503;
+
+  constructor(queued: number, limit: number) {
+    super('cpu-pool', `${queued} tasks are already queued (limit ${limit})`);
+    this.name = 'CpuPoolOverloadedError';
+  }
+}
+
+/** A task on the CPU worker pool ran past its time limit and its thread was terminated. */
+export class CpuTaskTimeoutError extends ConversionFailedError {
+  readonly status = 422;
+
+  constructor(kind: string, limitMs: number) {
+    super(`The ${kind} task exceeded its ${limitMs} ms time limit`);
+    this.name = 'CpuTaskTimeoutError';
+  }
+}
+
+/** A task on the CPU worker pool was cancelled by its caller. */
+export class CpuTaskAbortedError extends ConversionFailedError {
+  constructor(kind: string) {
+    super(`The ${kind} task was cancelled`);
+    this.name = 'CpuTaskAbortedError';
+  }
+}
+
+/**
  * Redis is configured for the job queue but did not answer, so a job cannot be stored or read. Routes
  * answer it with 503 and `Retry-After`; the in-memory queue is never a stand-in once Redis is configured.
  * It is an `EngineUnavailableError`, so a worker that hits it retries the job instead of failing it.
