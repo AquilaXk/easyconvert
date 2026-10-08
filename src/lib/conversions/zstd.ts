@@ -132,6 +132,7 @@ export class FastStreamingXxHash64 {
   private v4_hi: number; private v4_lo: number;
   private totalLen = 0;
   private rem = Buffer.alloc(32);
+  private readonly remView = new DataView(this.rem.buffer, this.rem.byteOffset, this.rem.byteLength);
   private remLen = 0;
   private seeded = false;
 
@@ -149,6 +150,7 @@ export class FastStreamingXxHash64 {
     if (chunk.length === 0) return;
     this.totalLen += chunk.length;
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     let offset = 0;
 
     if (this.remLen > 0) {
@@ -157,14 +159,14 @@ export class FastStreamingXxHash64 {
       this.remLen += take;
       offset += take;
       if (this.remLen === 32) {
-        this.process32(this.rem, 0);
+        this.process32(this.remView, 0);
         this.remLen = 0;
       }
     }
 
     const limit = buf.length - 32;
     while (offset <= limit) {
-      this.process32(buf, offset);
+      this.process32(view, offset);
       offset += 32;
     }
 
@@ -174,11 +176,11 @@ export class FastStreamingXxHash64 {
     }
   }
 
-  private process32(buf: Buffer, offset: number): void {
+  private process32(view: DataView, offset: number): void {
     this.seeded = true;
     {
-      const n_lo = buf.readInt32LE(offset);
-      const n_hi = buf.readInt32LE(offset + 4);
+      const n_lo = view.getInt32(offset, true);
+      const n_hi = view.getInt32(offset + 4, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -202,8 +204,8 @@ export class FastStreamingXxHash64 {
       this.v1_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 8);
-      const n_hi = buf.readInt32LE(offset + 12);
+      const n_lo = view.getInt32(offset + 8, true);
+      const n_hi = view.getInt32(offset + 12, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -227,8 +229,8 @@ export class FastStreamingXxHash64 {
       this.v2_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 16);
-      const n_hi = buf.readInt32LE(offset + 20);
+      const n_lo = view.getInt32(offset + 16, true);
+      const n_hi = view.getInt32(offset + 20, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -252,8 +254,8 @@ export class FastStreamingXxHash64 {
       this.v3_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 24);
-      const n_hi = buf.readInt32LE(offset + 28);
+      const n_lo = view.getInt32(offset + 24, true);
+      const n_hi = view.getInt32(offset + 28, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
