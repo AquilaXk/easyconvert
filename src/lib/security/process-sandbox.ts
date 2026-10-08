@@ -559,6 +559,25 @@ export function killProcessGroup(pid: number | undefined, signal: NodeJS.Signals
   }
 }
 
+/** Exit statuses a shell gives a command it cannot execute or cannot find. */
+const SPAWN_NOT_EXECUTABLE_STATUS = 126;
+const SPAWN_NOT_FOUND_STATUS = 127;
+
+/**
+ * A process that could not be started fails the same way whether or not a confinement wrapper ran
+ * it: as a SandboxedProcessError carrying the shell's status, so callers see one typed error.
+ */
+function spawnFailureError(err: Error): Error {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT') {
+    return new SandboxedProcessError(`Sandboxed execution error: ${err.message}`, SPAWN_NOT_FOUND_STATUS, err.message);
+  }
+  if (code === 'EACCES' || code === 'ENOEXEC') {
+    return new SandboxedProcessError(`Sandboxed execution error: ${err.message}`, SPAWN_NOT_EXECUTABLE_STATUS, err.message);
+  }
+  return err;
+}
+
 /**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
@@ -781,7 +800,7 @@ export async function executeSandboxedBinary(
         try {
           proc.kill('SIGKILL');
         } catch {}
-        reject(err);
+        reject(spawnFailureError(err));
       });
     });
 
