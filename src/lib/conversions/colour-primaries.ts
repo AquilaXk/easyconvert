@@ -82,7 +82,8 @@ export function invert3(m: Matrix3): Matrix3 {
   ];
 }
 
-function xyzOfXy(p: Xy): readonly [number, number, number] {
+/** CIE XYZ of a chromaticity at Y = 1. */
+export function xyzOfXy(p: Xy): readonly [number, number, number] {
   return [p.x / p.y, 1, (1 - p.x - p.y) / p.y];
 }
 
