@@ -171,6 +171,11 @@ export interface ConversionOptions {
    * when the data is missing; `false` never looks.
    */
   ocrDetectOrientation?: boolean;
+  /**
+   * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata
+   * (`metadata.ocrEngineMarkup`). For verification and debugging; it needs the tesseract command line.
+   */
+  ocrEngineMarkup?: 'hocr' | 'alto';
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;
@@ -679,11 +684,17 @@ export class DataRepresentationError extends ConversionFailedError {
   }
 }
 
+/**
+ * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table
+ * or joins too many; 503 when the language is known but its data is not installed here, which another worker
+ * may have.
+ */
 export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
-  readonly status = 400;
-  constructor(message: string) {
+  readonly status: number;
+  constructor(message: string, status = 400) {
     super(message);
     this.name = 'OcrLanguageUnavailableError';
+    this.status = status;
   }
 }
 

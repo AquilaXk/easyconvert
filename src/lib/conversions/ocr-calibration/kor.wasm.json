@@ -2,26 +2,20 @@
   "language": "kor",
   "enginePath": "wasm",
   "x": [
-    0.000787,
-    0.228404,
-    0.420816,
-    0.597477,
-    0.756327,
-    0.829767,
-    0.866087,
-    0.895213,
-    0.935213
+    0.11541,
+    0.519143,
+    0.766316,
+    0.868993,
+    0.906442,
+    0.936871
   ],
   "y": [
-    0.011236,
-    0.06383,
-    0.244898,
-    0.522523,
-    0.561224,
-    0.72093,
-    0.886957,
-    0.893617,
-    0.935044
+    0.032787,
+    0.457143,
+    0.842105,
+    0.926174,
+    0.96319,
+    0.980539
   ],
   "provenance": {
     "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
@@ -44,8 +38,8 @@
         "faded",
         "dpi100noise"
       ],
-      "words": 1940,
-      "correctWords": 1515
+      "words": 1839,
+      "correctWords": 1703
     },
     "generator": "tests/helpers/fit-ocr-calibration.mts"
   }

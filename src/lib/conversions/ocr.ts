@@ -25,12 +25,22 @@ import {
   OcrLineBlock,
   OcrResult,
   OcrPageResult,
+  OcrEngineFallback,
 } from './ocr-pdf-combiner';
-import { extractRasterImagesFromPdf } from './pdf-rasterizer';
-import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
-import { recognizeWithCli } from './ocr-cli';
+import { openPdfPageRenderer } from './pdf-page-render';
+import {
+  fallbackReadsMore,
+  OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
+  OCR_ALTERNATIVE_TRIGGER_QUALITY,
+  ocrFallbackPageSegMode,
+  ocrSegmentationFor,
+} from './ocr-config';
+import { recognizeWithCli, type OcrEngineMarkupFormat } from './ocr-cli';
+import { describeEngineError, recoverableWasmFailure } from './ocr-engine-failure';
+import { locateLanguageData, locateLanguagesData } from './ocr-language-data';
+import { OCR_AUTO_LANGUAGE, resolveOcrLanguages } from './ocr-languages';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { appendOcrResultBelow, mapOcrResultToSource, orientedSize, type OcrQuarterTurn } from './ocr-geometry';
+import { mapOcrResultToSource, orientedSize, trimOverreachingWords, type OcrQuarterTurn } from './ocr-geometry';
 import {
   decideOrientation,
   languageForScript,
@@ -42,10 +52,16 @@ import {
 } from './ocr-osd';
 import { resolveImageDpi } from './ocr-dpi';
 import { hasPngSignature, planPngPassthrough } from './pdf-image-passthrough';
-import { calibrateOcrResult, characterWeightedConfidence, type OcrEnginePath } from './ocr-calibration';
+import {
+  calibrateOcrResult,
+  characterWeightedConfidence,
+  confidenceWeightedCharacters,
+  type OcrEnginePath,
+} from './ocr-calibration';
 import { mapWithConcurrency, ocrPageConcurrency } from './ocr-page-batch';
 import {
   OCR_PREPROCESS_STEPS,
+  OCR_UNEVEN_BACKGROUND_RATIO,
   preprocessOcrImage,
   type OcrPreprocessResult,
   type OcrPreprocessSteps,
@@ -109,10 +125,80 @@ export function recognizePdfPages(
   );
 }
 
+export interface RenderedPdfOcrOptions {
+  /** Resolution the pages are rendered at; OCR_DEFAULT_DPI when unset, at most OCR_MAX_DPI. */
+  dpi?: number;
+  language?: string;
+  detectOrientation?: boolean;
+  /** Also read each page's engine markup (see readEngineMarkup); it is kept on the page's result as `engineMarkup`. */
+  engineMarkup?: OcrEngineMarkupFormat;
+}
+
+/**
+ * Recognizes the pages of a PDF as they are displayed: each requested page is rendered (Poppler, at the requested
+ * resolution, with /Rotate, the CropBox, masks and clipping applied), recognized and released, so only the pages
+ * in flight are held. The result of a page is in the pixels of its render, and records how they relate to the PDF
+ * page (`pageRender`) so a text layer can be placed on it. Without Poppler the request fails with an
+ * OcrEngineUnavailableError (503); pages are never read from the image objects they contain instead.
+ */
+export async function recognizeRenderedPdfPages(
+  pdf: Buffer,
+  pages: ReadonlySet<number> | undefined,
+  options: RenderedPdfOcrOptions = {}
+): Promise<Map<number, OcrResult>> {
+  const renderer = await openPdfPageRenderer(pdf, pages, options.dpi);
+  try {
+    const indices = renderer.plan.pageNumbers.map((_, index) => index);
+    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), async (index) => {
+      const rendered = await renderer.render(index);
+      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation);
+      const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
+      return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
+    });
+    return new Map(recognized.map((entry) => [entry.pageNumber, entry.result]));
+  } finally {
+    await renderer.close();
+  }
+}
+
+/**
+ * The native engine's own hOCR or ALTO of a page, for checking the product exports against it. The page is read
+ * as submitted (EXIF orientation applied, nothing else prepared), so its boxes are in the pixels of `imageBuffer`.
+ * It needs the tesseract command line and the language data; without them the request is an
+ * OcrEngineUnavailableError (503), never a markup written by this project and passed off as the engine's.
+ */
+export async function readEngineMarkup(
+  imageBuffer: Buffer,
+  language: string | undefined,
+  format: OcrEngineMarkupFormat
+): Promise<{ format: OcrEngineMarkupFormat; content: string }> {
+  const requested = resolveOcrLanguages(language);
+  const data = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
+  await assertEncodedImageWithinLimit(imageBuffer);
+  const cli = findTesseractCli();
+  if (!cli) {
+    throw new OcrEngineUnavailableError('The engine markup (ocrEngineMarkup) needs the tesseract command line, which is not installed.');
+  }
+  const asSubmitted = await preprocessOcrImage(imageBuffer, { rescale: false, deskew: false, binarize: false });
+  const read = await recognizeWithCli({
+    cliPath: cli,
+    tessdataDir: data.dir,
+    tesseractLang: requested.joined,
+    image: asSubmitted.image,
+    imageHeight: orientedSize(asSubmitted.geometry)[1],
+    textRows: asSubmitted.textRows,
+    engineMarkup: format,
+  });
+  if (!read.engineMarkup) throw new OcrEngineUnavailableError('The tesseract command line wrote no markup.');
+  return read.engineMarkup;
+}
+
 /** A page as the engine read it, with word scores still raw, and the engine path that produced it. */
 export interface RecognizedPage {
   result: OcrResult;
   enginePath: OcrEnginePath;
+  /** How the page was prepared for the reading that was kept. */
+  preparation?: { binarized: boolean; unevenBackground: number };
 }
 
 export interface OcrRecognitionOptions {
@@ -126,25 +212,6 @@ export interface OcrRecognitionOptions {
    * with OcrEngineUnavailableError (503) when the data or engine is missing; `false` switches it off.
    */
   detectOrientation?: boolean;
-}
-
-const TESSDATA_DIRS = (): string[] => [
-  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
-  process.cwd(),
-  '/usr/share/tesseract-ocr/5/tessdata',
-  '/usr/share/tesseract-ocr/4.00/tessdata',
-  '/usr/share/tessdata',
-  '/opt/homebrew/share/tessdata',
-  '/usr/local/share/tessdata',
-];
-
-/** Locates local or system pre-downloaded traineddata for zero-network offline inference. */
-function locateLanguageData(tesseractLang: string): { dir: string; gzip: boolean } | undefined {
-  for (const dir of TESSDATA_DIRS()) {
-    if (fs.existsSync(path.join(dir, `${tesseractLang}.traineddata.gz`))) return { dir, gzip: true };
-    if (fs.existsSync(path.join(dir, `${tesseractLang}.traineddata`))) return { dir, gzip: false };
-  }
-  return undefined;
 }
 
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
@@ -190,46 +257,9 @@ export async function recognizePage(
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
   const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation } = options;
-  const langMap: Record<string, string> = {
-    auto: 'eng',
-    en: 'eng',
-    eng: 'eng',
-    ko: 'kor',
-    kor: 'kor',
-    de: 'deu',
-    deu: 'deu',
-    fr: 'fra',
-    fra: 'fra',
-    es: 'spa',
-    spa: 'spa',
-    ja: 'jpn',
-    jpn: 'jpn',
-    jpn_vert: 'jpn_vert',
-    ja_vert: 'jpn_vert',
-    zh: 'chi_sim',
-    chi_sim: 'chi_sim',
-    chi_sim_vert: 'chi_sim_vert',
-    zh_vert: 'chi_sim_vert',
-    zh_sim_vert: 'chi_sim_vert',
-    chi_tra: 'chi_tra',
-    zh_tra: 'chi_tra',
-    chi_tra_vert: 'chi_tra_vert',
-    zh_tra_vert: 'chi_tra_vert',
-  };
-  const normalizedLang = (language || 'auto').toLowerCase().replace(/-/g, '_');
-  const requestedLanguage = langMap[normalizedLang];
-  if (!requestedLanguage) {
-    throw new OcrLanguageUnavailableError(
-      `Unsupported or unrecognized OCR language: '${language}'. Supported languages: ${Object.keys(langMap).join(', ')}.`
-    );
-  }
-
-  const requestedData = locateLanguageData(requestedLanguage);
-  if (!requestedData) {
-    throw new OcrLanguageUnavailableError(
-      `OCR language '${language}' (${requestedLanguage}.traineddata) is not available locally.`
-    );
-  }
+  const requested = resolveOcrLanguages(language);
+  const requestedLanguage = requested.joined;
+  const requestedData = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
 
   await assertEncodedImageWithinLimit(imageBuffer);
   if (detectOrientation === true) assertOrientationDetectable();
@@ -250,7 +280,7 @@ export async function recognizePage(
   // engine's turn is kept only when reading again scores better, so a doubtful reading costs
   // time and never a page that was read correctly.
   const detection = await detectPageOrientation(imageBuffer, detectOrientation === true);
-  const scriptLanguage = normalizedLang === 'auto' ? languageForScript(detection.orientation) : null;
+  const scriptLanguage = requested.auto ? languageForScript(detection.orientation) : null;
   const scriptData = scriptLanguage === null ? undefined : locateLanguageData(scriptLanguage);
   const switchTo = scriptLanguage !== null && scriptData && scriptLanguage !== requestedLanguage ? scriptLanguage : null;
   if (detection.quarterTurn === 0 && switchTo === null) return finish(first, detection.orientation);
@@ -307,9 +337,48 @@ interface RecognitionAttempt {
   language: string;
 }
 
-/** Prepares the page (turned by `quarterTurn`) and reads it with the WebAssembly engine, then the native tool. */
+/**
+ * Reads the page prepared with rescaling and levelling only, and looks for a better preparation only when that
+ * reading calls for it: the page is unevenly lit (one threshold cannot separate its ink from its paper
+ * everywhere, and the recognizer reads confident words from the lit part and nothing from the rest) or the
+ * reading is poor. The alternatives are the page as submitted (enlarging blurred, noisy text can cost more than
+ * it gains) and the page binarized (a hard threshold can destroy small or blurred strokes). An alternative is
+ * kept only when it recognizes at least as much confident text as the reading so far, so a good page is never
+ * read twice and a page that an alternative would only damage keeps its first reading.
+ */
 async function recognizeAttempt(attempt: RecognitionAttempt): Promise<RecognizedPage> {
-  const { imageBuffer, steps, quarterTurn, tesseractLang, enginePath, language } = attempt;
+  const { steps } = attempt;
+  const plain = await readPreparedPage(attempt, { ...steps, binarize: false });
+  const needed =
+    plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO || readingQuality(plain.page.result) < OCR_ALTERNATIVE_TRIGGER_QUALITY;
+  if (!needed) return plain.page;
+  const alternatives: OcrPreprocessSteps[] = [];
+  if (plain.prepared.applied.rescale) alternatives.push({ ...steps, rescale: false, binarize: false });
+  if (steps.binarize && plain.prepared.binarizable) alternatives.push(steps);
+  let best = plain;
+  let bestEvidence = readingEvidence(plain.page.result);
+  for (const alternative of alternatives) {
+    const candidate = await readPreparedPage(attempt, alternative);
+    const evidence = readingEvidence(candidate.page.result);
+    if (evidence >= bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN) {
+      best = candidate;
+      bestEvidence = evidence;
+    }
+  }
+  return best.page;
+}
+
+/** How much of a page was read, and how well: confident characters recognized (see confidenceWeightedCharacters). */
+function readingEvidence(result: OcrResult): number {
+  return confidenceWeightedCharacters(result.lineBlocks ?? []);
+}
+
+/** Prepares the page (turned by `quarterTurn`) with `steps` and reads it with the WebAssembly engine, then the native tool. */
+async function readPreparedPage(
+  attempt: RecognitionAttempt,
+  steps: OcrPreprocessSteps
+): Promise<{ page: RecognizedPage; prepared: OcrPreprocessResult }> {
+  const { imageBuffer, quarterTurn, tesseractLang, enginePath, language } = attempt;
   const localLangPath = attempt.languageData.dir;
   const isGzip = attempt.languageData.gzip;
 
@@ -333,6 +402,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
   const inputTextRows = prepared.textRows;
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
+  let fallback: OcrEngineFallback | undefined;
   if (enginePath !== 'cli') {
     try {
       const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
@@ -374,7 +444,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
           tesseractLang
         );
         const words = fullText.split(/\s+/).filter(Boolean);
-        const result = mapOcrResultToSource(
+        const result = trimOverreachingWords(mapOcrResultToSource(
           {
             text: fullText,
             confidence: characterWeightedConfidence(lineBlocks),
@@ -387,37 +457,53 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
             wordMerge,
           },
           prepared.geometry
-        );
-        return { result, enginePath: 'wasm' };
+        ));
+        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath), prepared };
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
         throw err;
       }
-      // Fall back to system native CLI if Tesseract.js fails
+      // Only a failure of the WebAssembly runtime itself is answered by the native tool, and the answer is recorded.
+      const reason = recoverableWasmFailure(err);
+      if (reason === null) {
+        throw new OcrEngineUnavailableError(`The OCR WebAssembly engine failed: ${describeEngineError(err)}.`);
+      }
+      fallback = { from: 'wasm', to: 'cli', reason };
     }
   }
 
   // 3. Try System Native Tesseract CLI if available
   const tesseractCli = findTesseractCli();
   if (tesseractCli) {
-    const result = mapOcrResultToSource(
-      await recognizeWithCli({
-        cliPath: tesseractCli,
-        tessdataDir: localLangPath,
-        tesseractLang,
-        image: ocrInput,
-        imageHeight: inputHeight,
-        textRows: inputTextRows,
-      }),
-      prepared.geometry
+    const result = trimOverreachingWords(
+      mapOcrResultToSource(
+        await recognizeWithCli({
+          cliPath: tesseractCli,
+          tessdataDir: localLangPath,
+          tesseractLang,
+          image: ocrInput,
+          imageHeight: inputHeight,
+          textRows: inputTextRows,
+        }),
+        prepared.geometry
+      )
     );
-    return { result, enginePath: 'cli' };
+    const page = withPreparation({ result, enginePath: 'cli' }, prepared, localLangPath);
+    return { page: fallback ? { ...page, result: { ...page.result, engineFallback: fallback } } : page, prepared };
   }
 
   throw new OcrEngineUnavailableError(
     `OCR engine (Tesseract) is unavailable or failed to execute for language '${language}'.`
   );
+}
+
+function withPreparation(page: RecognizedPage, prepared: OcrPreprocessResult, languageDataDirectory: string): RecognizedPage {
+  return {
+    ...page,
+    result: { ...page.result, languageDataDirectory },
+    preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground },
+  };
 }
 
 /**
@@ -522,14 +608,13 @@ export function assembleCombinedOcrResult(
 ): OcrResult {
   if (pageAnalyses.length === 0) {
     const lines = fallbackText ? fallbackText.split('\n').filter(Boolean) : [];
+    // Nothing was analysed, so the page size and the confidence are unknown, not assumed.
     return {
       text: fallbackText,
-      confidence: fallbackConfidence ?? 0.9,
+      confidence: fallbackConfidence,
       wordCount: fallbackText ? fallbackText.split(/\s+/).filter(Boolean).length : 0,
       lines,
       lineBlocks: [],
-      imageWidth: 612,
-      imageHeight: 792,
     };
   }
 
@@ -549,6 +634,7 @@ export function assembleCombinedOcrResult(
         height: ocr.imageHeight || pa.height,
         text: ocr.text,
         confidence: ocr.confidence,
+        source: ocr.source ?? 'ocr',
         lineBlocks: ocr.lineBlocks || [],
         lines: ocr.lines,
         language: ocr.language,
@@ -562,19 +648,19 @@ export function assembleCombinedOcrResult(
       totalWordCount += ocr.wordCount;
     } else {
       const lines = pa.text ? pa.text.split('\n').filter(Boolean) : [];
+      // A page that kept its digital text was not recognized, so it has no recognition confidence.
       combinedPages.push({
         pageNumber: pa.pageNumber,
         width: pa.width,
         height: pa.height,
         text: pa.text,
-        confidence: 1.0,
+        confidence: null,
+        source: 'text-layer',
         lineBlocks: [],
         lines,
       });
       allTexts.push(pa.text);
       allLines.push(...lines);
-      totalConfidence += 1.0;
-      confCount++;
       totalWordCount += pa.wordCount;
     }
   }
@@ -585,8 +671,8 @@ export function assembleCombinedOcrResult(
     wordCount: totalWordCount,
     lines: allLines,
     lineBlocks: combinedPages.flatMap((p) => p.lineBlocks),
-    imageWidth: pageAnalyses[0]?.width || 612,
-    imageHeight: pageAnalyses[0]?.height || 792,
+    imageWidth: pageAnalyses[0]?.width,
+    imageHeight: pageAnalyses[0]?.height,
     pages: combinedPages,
     language: combinedPages.find((p) => p.language)?.language,
   };
@@ -614,27 +700,14 @@ export async function performSmartMultiPagePdfOcr(
   const pageAnalyses = await inspectPdfPagesTextDensity(pdfBuffer, densityThreshold);
   const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
 
-  const pageOcrResults = new Map<number, OcrResult>();
-  if (pagesNeedingOcr.length > 0) {
-    const rasterImages = await extractRasterImagesFromPdf(
-      pdfBuffer,
-      options.dpi || 300,
-      new Set(pagesNeedingOcr)
-    );
-
-    const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage, undefined, options.ocrDetectOrientation);
-    for (const [index, img] of rasterImages.entries()) {
-      const ocr = recognized[index];
-      if (ocr) {
-        const existing = pageOcrResults.get(img.pageNumber);
-        if (!existing) {
-          pageOcrResults.set(img.pageNumber, ocr);
-        } else {
-          pageOcrResults.set(img.pageNumber, appendOcrResultBelow(existing, ocr, img.width, img.height));
-        }
-      }
-    }
-  }
+  const pageOcrResults =
+    pagesNeedingOcr.length > 0
+      ? await recognizeRenderedPdfPages(pdfBuffer, new Set(pagesNeedingOcr), {
+          dpi: options.dpi,
+          language: options.ocrLanguage,
+          detectOrientation: options.ocrDetectOrientation,
+        })
+      : new Map<number, OcrResult>();
 
   const finalPdfBuffer =
     pageOcrResults.size > 0

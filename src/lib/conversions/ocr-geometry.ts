@@ -254,3 +254,98 @@ export function appendOcrResultBelow(existing: OcrResult, next: OcrResult, nextW
     imageHeight: offsetY + nextHeight,
   };
 }
+
+/** Space left between a trimmed word box and the word it was cut back to: this share of the line's word height. */
+const TRIMMED_WORD_GAP_HEIGHT_SHARE = 0.1;
+/** The gap is at least this many pixels; boxes are whole pixels, so less would leave the boxes touching. */
+const MIN_TRIMMED_WORD_GAP_PX = 1;
+
+interface Interval {
+  start: number;
+  end: number;
+}
+
+interface LineAxis {
+  vertical: boolean;
+  interval: (word: OcrWord) => Interval;
+}
+
+/** The axis a line runs along: x for a horizontal line, y when the words' centres spread further in y (as in `_vert` data). */
+function lineAxis(words: readonly OcrWord[]): LineAxis {
+  const spread = (centre: (word: OcrWord) => number): number => {
+    const values = words.map(centre);
+    return Math.max(...values) - Math.min(...values);
+  };
+  const vertical = spread((word) => word.bbox.y + word.bbox.height / 2) > spread((word) => word.bbox.x + word.bbox.width / 2);
+  return {
+    vertical,
+    interval: vertical
+      ? (word) => ({ start: word.bbox.y, end: word.bbox.y + word.bbox.height })
+      : (word) => ({ start: word.bbox.x, end: word.bbox.x + word.bbox.width }),
+  };
+}
+
+/** The word with its extent along the line set to [start, end). */
+function withInterval(word: OcrWord, axis: LineAxis, start: number, end: number): OcrWord {
+  const bbox = axis.vertical
+    ? { ...word.bbox, y: start, height: end - start }
+    : { ...word.bbox, x: start, width: end - start };
+  return { ...word, bbox };
+}
+
+/**
+ * The engine sometimes reports a word box that runs on over the words after it (a word read near the end of
+ * a line whose box takes in the rest of the line, or one that reaches into the next word). The words of a line
+ * do not overlap, so a box that reaches into a word listed after it is cut back to where that word starts, in the
+ * direction the line reads in. Text is never touched, only the extent of a box; a line whose boxes are
+ * consistent is returned as it is.
+ */
+function trimLine(words: OcrWord[]): OcrWord[] {
+  if (words.length < 2) return words;
+  const axis = lineAxis(words);
+  let direction = 0;
+  for (let i = 1; i < words.length; i++) {
+    const before = axis.interval(words[i - 1]);
+    const after = axis.interval(words[i]);
+    direction += Math.sign(after.start + after.end - before.start - before.end);
+  }
+  const forwards = direction >= 0;
+  const heights = words.map((word) => (axis.vertical ? word.bbox.width : word.bbox.height)).sort((a, b) => a - b);
+  const gap = Math.max(MIN_TRIMMED_WORD_GAP_PX, Math.round(heights[Math.floor(heights.length / 2)] * TRIMMED_WORD_GAP_HEIGHT_SHARE));
+  let changed = false;
+  const trimmed = words.map((word, index) => {
+    const own = axis.interval(word);
+    let cut: number | null = null;
+    for (const later of words.slice(index + 1)) {
+      const inside = axis.interval(later);
+      if (inside.end <= inside.start) continue;
+      // Cut back to the first word reached: its near edge in reading direction.
+      if (forwards && inside.start > own.start && inside.start < own.end) {
+        cut = cut === null ? inside.start : Math.min(cut, inside.start);
+      }
+      if (!forwards && inside.end < own.end && inside.end > own.start) {
+        cut = cut === null ? inside.end : Math.max(cut, inside.end);
+      }
+    }
+    if (cut === null) return word;
+    const start = forwards ? own.start : cut + gap;
+    const end = forwards ? cut - gap : own.end;
+    if (end - start < 1) return word;
+    changed = true;
+    return withInterval(word, axis, start, end);
+  });
+  return changed ? trimmed : words;
+}
+
+/** Returns the result with every word box that overruns the words after it cut back (see trimLine). */
+export function trimOverreachingWords(result: OcrResult): OcrResult {
+  if (!result.lineBlocks) return result;
+  let changed = false;
+  const lineBlocks = result.lineBlocks.map((block) => {
+    const words = trimLine(block.words);
+    if (words === block.words) return block;
+    changed = true;
+    return { ...block, words };
+  });
+  return changed ? { ...result, lineBlocks } : result;
+}

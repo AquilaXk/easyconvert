@@ -173,10 +173,13 @@ describe('the recognizers read the same pixels as PNG and as PNM', () => {
 
 describe('recognized text of the golden pages', () => {
   // sha256 prefixes of `performOcr(...).text`, recorded on origin/main (3f11e57) where the page was
-  // handed to the engines as a PNG. The text must not change when the page travels as a PNM.
+  // handed to the engines as a PNG. The text must not change when the page travels as a PNM. The en_a dpi72
+  // entry was re-recorded when binarization became a measured choice: that page reads well without it
+  // (confidence 0.95), so it is no longer binarized and reads as the bare engine reads it (one character
+  // differs from the binarized reading, 0.77% against 0.52% CER).
   const PNG_HANDOVER_TEXT_HASHES: Array<[string, string, string, string]> = [
     ['en_a', 'clean300', 'eng', '1dc50af9af33fbfd'],
-    ['en_a', 'dpi72', 'eng', '4f414be36e175786'],
+    ['en_a', 'dpi72', 'eng', '5ee4b18e7c83fd77'],
     ['en_a', 'skew3', 'eng', '1dc50af9af33fbfd'],
     ['en_b', 'clean300', 'eng', '952a7f2b0cd9ff09'],
     ['ko_a', 'clean300', 'kor', '00d65dac2ecaba38'],

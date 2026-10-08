@@ -181,10 +181,11 @@ function assertWithinLimits(words: number, characters: number): void {
 /**
  * The words of a result placed on a page, in reading order, in PDF user space. `scaleX` and `scaleY`
  * are points per pixel of the scan (72 / dpi, or the page's points over the rendered pixels), and
- * `pageHeight` is the page's height in points. Throws OcrGeometryUnavailableError when the result has
+ * `pageHeight` is the user-space y of the pixel grid's top edge (the page's height for a page whose box starts at the
+ * origin) and `originX` the user-space x of its left edge. Throws OcrGeometryUnavailableError when the result has
  * text but a line without word boxes, or no lines at all.
  */
-export function placeWords(result: OcrResult, scaleX: number, scaleY: number, pageHeight: number): PlacedWord[] {
+export function placeWords(result: OcrResult, scaleX: number, scaleY: number, pageHeight: number, originX = 0): PlacedWord[] {
   const lines = result.lineBlocks ?? [];
   if (lines.length === 0) {
     if (result.text.trim() === '') return [];
@@ -213,7 +214,7 @@ export function placeWords(result: OcrResult, scaleX: number, scaleY: number, pa
       placed.push({
         text,
         spaceAfter: index < words.length - 1,
-        x: frame.originX * scaleX,
+        x: originX + frame.originX * scaleX,
         y: pageHeight - frame.originY * scaleY,
         angle,
         fontSize,

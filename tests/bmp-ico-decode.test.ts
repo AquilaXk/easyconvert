@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
+import { expectSizeIndependentOnInputs, settle } from './helpers/timing';
 import { convertImage } from '../src/lib/conversions/image';
 import { BmpDecodeError, decodeBmp } from '../src/lib/conversions/bmp';
 import { IcnsDecodeError, IcoDecodeError, decodeIco, decodeIcns } from '../src/lib/conversions/ico';
@@ -21,9 +22,10 @@ const WIDTH = 13;
 const HEIGHT = 9;
 const BYTE_MAX = 255;
 const NOISE_MULTIPLIER = 2654435761;
-const REJECT_BUDGET_MS = 10;
-const REJECT_TRIES = 9;
 const MIB = 1024 * 1024;
+/** Sides of the two canvases an RLE stream of four bytes claims. */
+const RLE_MODEST_SIDE = 1000;
+const RLE_HUGE_SIDE = 10000;
 /** Two lcms builds may round a colour transform one level apart. */
 const PROFILE_CONVERSION_TOLERANCE = 2;
 
@@ -207,20 +209,6 @@ describe('BMP validation rejects bad files with a typed error before allocating'
   const goodPixels = new Uint8Array(stride24 * HEIGHT).fill(7);
   const good = craftBmp({ width: WIDTH, height: HEIGHT, bitCount: 24, pixels: goodPixels });
 
-  function bestRejectMs(bytes: Buffer): number {
-    let best = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < REJECT_TRIES; i += 1) {
-      const start = performance.now();
-      try {
-        decodeBmp(bytes);
-      } catch {
-        // timing the rejection only
-      }
-      best = Math.min(best, performance.now() - start);
-    }
-    return best;
-  }
-
   const palette256 = Array.from({ length: 256 }, (_, i) => [i, i, i] as const);
   const cases: Array<[string, () => Buffer, RegExp]> = [
     ['a file cut short in its pixel data', () => good.subarray(0, good.length - 5), /pixel data/],
@@ -243,7 +231,7 @@ describe('BMP validation rejects bad files with a typed error before allocating'
     ['a pixel that indexes past a 2-entry table', () => craftBmp({ width: 4, height: 1, bitCount: 8, palette: palette256.slice(0, 2), pixels: Uint8Array.from([0, 1, 2, 0]) }), /colour index/],
   ];
 
-  it.each(cases)('%s answers BmpDecodeError (400) quickly, allocating nothing like the declared canvas', (_name, make, message) => {
+  it.each(cases)('%s answers BmpDecodeError (400), allocating nothing like the declared canvas', (_name, make, message) => {
     const bytes = make();
     const before = process.memoryUsage().arrayBuffers;
     let error: unknown;
@@ -257,7 +245,20 @@ describe('BMP validation rejects bad files with a typed error before allocating'
     expect(error).toBeInstanceOf(ConversionFailedError);
     expect((error as Error).message).toMatch(message);
     expect(grown).toBeLessThan(bytes.length + MIB);
-    expect(bestRejectMs(bytes)).toBeLessThan(REJECT_BUDGET_MS);
+  });
+
+  it('refuses an RLE stream in the same time whatever canvas it declares', async () => {
+    // A reader that walked the declared canvas before checking the stream would take a hundred times as long for the
+    // 10000 x 10000 claim as for the 1000 x 1000 one (tests/helpers/timing.ts); the check reads only the stream.
+    const rleClaiming = (side: number) =>
+      craftBmp({ width: side, height: side, bitCount: 8, compression: 1, palette: palette256, pixels: Uint8Array.from([0, 1]) });
+    const { largeResult } = await expectSizeIndependentOnInputs('RLE canvas claim', (bytes: Buffer) => settle(() => decodeBmp(bytes)), {
+      modest: rleClaiming(RLE_MODEST_SIDE),
+      huge: rleClaiming(RLE_HUGE_SIDE),
+    });
+    if (largeResult.ok) throw new Error('the 10000 x 10000 claim was decoded instead of refused');
+    expect(largeResult.error).toBeInstanceOf(BmpDecodeError);
+    expect((largeResult.error as Error).message).toMatch(/cannot describe/);
   });
 
   it('answers the pixel limit (413) for a canvas over the input limit, not a 400', () => {

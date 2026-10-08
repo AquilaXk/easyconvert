@@ -15,6 +15,8 @@ import {
   UsageQueryRequestSchema,
   UsageLedgerEntrySchema,
   UsageQueryResponseSchema,
+  OcrLanguageEntrySchema,
+  OcrLanguagesResponseSchema,
 } from './schemas';
 
 export const ajv = new Ajv2020({
@@ -53,6 +55,8 @@ ajv.addSchema(WebhookSecretRotateResponseSchema);
 ajv.addSchema(UsageQueryRequestSchema);
 ajv.addSchema(UsageLedgerEntrySchema);
 ajv.addSchema(UsageQueryResponseSchema);
+ajv.addSchema(OcrLanguageEntrySchema);
+ajv.addSchema(OcrLanguagesResponseSchema);
 
 export type ValidateResult<T> =
   | { ok: true; data: T; problem?: never; response?: never }

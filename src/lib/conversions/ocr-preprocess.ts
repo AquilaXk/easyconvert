@@ -12,6 +12,13 @@ import { encodePbm, encodePgm, encodePpm, isBitonal } from './pnm';
  * the recognizer reads well (rescale), then binarized with Sauvola's adaptive threshold
  * (binarize). Each step can be switched off through OCR_PREPROCESS_STEPS; a step stays on only
  * where it lowers the mean character error rate on the golden pages (tests/fixtures/ocr).
+ *
+ * Binarization is the one step that can destroy a page: a hard threshold removes the grey levels that
+ * carry the shapes of small or blurred strokes and turns speckle into marks. The recognizer
+ * thresholds a page itself, so the step only pays where one global threshold cannot work, namely a
+ * page whose background is uneven or one the recognizer reads badly. `unevenBackground` measures the
+ * first; the caller reads the page unbinarized first and binarizes only when that signal or the
+ * reading calls for it, and keeps the binarized reading only if it is the better one (ocr.ts).
  */
 
 export interface OcrPreprocessSteps {
@@ -53,6 +60,21 @@ export const SAUVOLA_WINDOW_LINE_FACTOR = 1.5;
  * the grey levels from anti-aliasing carry the glyph shapes that a hard threshold removes.
  */
 export const OCR_BINARIZE_MIN_LINE_PX = 20;
+/** Side in analysis pixels of the cells the page background is sampled in. */
+export const OCR_BACKGROUND_CELL_PX = 64;
+/** A cell's background is this percentile of its gray levels: ink covers well under a tenth of the cells' pixels at the top. */
+export const OCR_BACKGROUND_PERCENTILE = 0.9;
+/** The page's background level spread is measured between these percentiles of its cells. */
+export const OCR_BACKGROUND_SPREAD_PERCENTILES = { low: 0.05, high: 0.95 } as const;
+/** Fewer cells than this cannot show a gradient, however small the page. */
+export const OCR_BACKGROUND_MIN_CELLS = 4;
+/** The darkest ink is read at this percentile of the page's gray levels. */
+export const OCR_INK_LEVEL_PERCENTILE = 0.01;
+/**
+ * A page whose background level varies by more than this share of the contrast between paper and ink
+ * is unevenly lit: one global threshold would put paper on one side of it and ink on the other.
+ */
+export const OCR_UNEVEN_BACKGROUND_RATIO = 0.25;
 const GRAY_CHANNELS = 1;
 const RGB_CHANNELS = 3;
 const GRAY_LEVELS = 256;
@@ -71,6 +93,13 @@ export interface OcrPreprocessResult {
   lineHeightPx: number | null;
   /** Skew measured on the page in degrees (see SkewEstimate), whether or not it was corrected; 0 when not measured. */
   skewDegrees: number;
+  /**
+   * How unevenly the page is lit, as the spread of its local background level over the contrast between paper and
+   * ink (0 for a flat background); 0 when the page was not measured.
+   */
+  unevenBackground: number;
+  /** Whether the page has text lines large enough for binarization to apply, whatever the steps asked for. */
+  binarizable: boolean;
   applied: { rescale: boolean; deskew: boolean; binarize: boolean };
 }
 
@@ -136,6 +165,51 @@ function paperLevel(page: GrayPage): number {
     if (histogram[level] > histogram[paper]) paper = level;
   }
   return paper;
+}
+
+function percentileOfHistogram(histogram: Uint32Array, total: number, fraction: number): number {
+  const target = Math.max(1, Math.ceil(total * fraction));
+  let seen = 0;
+  for (let level = 0; level < GRAY_LEVELS; level++) {
+    seen += histogram[level];
+    if (seen >= target) return level;
+  }
+  return GRAY_LEVELS - 1;
+}
+
+/**
+ * How unevenly a page is lit: the page is cut into cells, each cell's background is its brightest
+ * level (a high percentile, since ink is a minority of a cell), and the spread of those levels
+ * (5th to 95th percentile of the cells) is returned as a share of the contrast between the page's paper (the
+ * median cell) and its darkest ink. A uniformly lit page, however noisy, scores near 0; a ramp or a
+ * vignette scores high. Pages with too few cells or no contrast score 0.
+ */
+export function measureUnevenBackground(page: GrayPage): number {
+  const cellsAcross = Math.floor(page.width / OCR_BACKGROUND_CELL_PX);
+  const cellsDown = Math.floor(page.height / OCR_BACKGROUND_CELL_PX);
+  if (cellsAcross * cellsDown < OCR_BACKGROUND_MIN_CELLS) return 0;
+  const levels: number[] = [];
+  const pageHistogram = new Uint32Array(GRAY_LEVELS);
+  const cellHistogram = new Uint32Array(GRAY_LEVELS);
+  for (let cy = 0; cy < cellsDown; cy++) {
+    for (let cx = 0; cx < cellsAcross; cx++) {
+      cellHistogram.fill(0);
+      for (let y = cy * OCR_BACKGROUND_CELL_PX; y < (cy + 1) * OCR_BACKGROUND_CELL_PX; y++) {
+        const row = y * page.width + cx * OCR_BACKGROUND_CELL_PX;
+        for (let x = 0; x < OCR_BACKGROUND_CELL_PX; x++) cellHistogram[page.data[row + x]]++;
+      }
+      const cellPixels = OCR_BACKGROUND_CELL_PX * OCR_BACKGROUND_CELL_PX;
+      levels.push(percentileOfHistogram(cellHistogram, cellPixels, OCR_BACKGROUND_PERCENTILE));
+      for (let level = 0; level < GRAY_LEVELS; level++) pageHistogram[level] += cellHistogram[level];
+    }
+  }
+  levels.sort((a, b) => a - b);
+  const at = (fraction: number): number => levels[Math.min(levels.length - 1, Math.floor(levels.length * fraction))];
+  const paper = at(0.5);
+  const ink = percentileOfHistogram(pageHistogram, levels.length * OCR_BACKGROUND_CELL_PX * OCR_BACKGROUND_CELL_PX, OCR_INK_LEVEL_PERCENTILE);
+  const contrast = paper - ink;
+  if (contrast <= 0) return 0;
+  return (at(OCR_BACKGROUND_SPREAD_PERCENTILES.high) - at(OCR_BACKGROUND_SPREAD_PERCENTILES.low)) / contrast;
 }
 
 /** Sauvola window for text lines of the given height, or null where the lines are too small to binarize. */
@@ -278,7 +352,12 @@ async function prepare(
   const swapped = meta.orientation !== undefined && meta.orientation >= 5;
   const width = (swapped ? meta.height : meta.width) ?? 0;
   const height = (swapped ? meta.width : meta.height) ?? 0;
-  const unchanged = async (lineHeightPx: number | null, skewDegrees: number): Promise<OcrPreprocessResult> => {
+  const unchanged = async (
+    lineHeightPx: number | null,
+    skewDegrees: number,
+    unevenBackground = 0,
+    binarizable = false
+  ): Promise<OcrPreprocessResult> => {
     const page = await turnByQuarters(await decodeUprightPage(source), quarterTurn);
     return {
       image: encodeDecodedPage(page),
@@ -286,6 +365,8 @@ async function prepare(
       geometry: quarterTurnGeometry(width, height, page.width, page.height, quarterTurn),
       lineHeightPx,
       skewDegrees,
+      unevenBackground,
+      binarizable,
       applied: { rescale: false, deskew: false, binarize: false },
     };
   };
@@ -302,6 +383,7 @@ async function prepare(
   }
   const analysis = await analysisCopy(held.page);
   const analysisScale = analysis.width / held.page.width;
+  const unevenBackground = measureUnevenBackground(analysis);
   const rough = await sauvolaBinarize(analysis.data, analysis.width, analysis.height, {
     windowSize: OCR_ANALYSIS_WINDOW_PX,
   });
@@ -323,8 +405,11 @@ async function prepare(
   if (turned) held.page = await turn(held.page, skew.degrees, paper);
 
   const scaledLineHeight = lineHeightPx === null ? null : lineHeightPx * scale;
-  const binarizeWindow = steps.binarize ? sauvolaWindowFor(scaledLineHeight) : null;
-  if (scale === 1 && !turned && binarizeWindow === null) return unchanged(lineHeightPx, skew.degrees);
+  const binarizableWindow = sauvolaWindowFor(scaledLineHeight);
+  const binarizeWindow = steps.binarize ? binarizableWindow : null;
+  if (scale === 1 && !turned && binarizeWindow === null) {
+    return unchanged(lineHeightPx, skew.degrees, unevenBackground, binarizableWindow !== null);
+  }
 
   const pixels =
     binarizeWindow === null
@@ -352,6 +437,8 @@ async function prepare(
     },
     lineHeightPx,
     skewDegrees: skew.degrees,
+    unevenBackground,
+    binarizable: binarizableWindow !== null,
     applied: { rescale: scale > 1, deskew: turned, binarize: binarizeWindow !== null },
   };
 }

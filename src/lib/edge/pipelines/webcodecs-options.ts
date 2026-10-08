@@ -35,7 +35,7 @@ const NOT_ABOUT_MEDIA = [
   'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression', 'kernel',
   'uSamples', 'vSamples', 'allowOpenMesh', 'smoothingAngleDeg', 'outputUnit', 'page', 'pages', 'multiPageOutput',
   'pageCount', 'password', 'orientation', 'preserveTables', 'ocrEnabled', 'ocrLanguage', 'ocrMode',
-  'ocrDensityThreshold', 'ocrDetectOrientation', 'clientEdgeMode', 'margin', 'validateMagicBytes', 'delimiter', 'encoding', 'bom',
+  'ocrDensityThreshold', 'ocrDetectOrientation', 'ocrEngineMarkup', 'clientEdgeMode', 'margin', 'validateMagicBytes', 'delimiter', 'encoding', 'bom',
   'escapeFormulas', 'hasHeaders', 'sheetMode', 'sheetIndex', 'range', 'lineEnding', 'recalculate',
   'compressionLevel', 'archiveCoder', 'splitVolumeBytes', 'zstdDict', 'archiveParts', 'useNative7z', 'solid',
   'collisionPolicy', 'entries', 'skipLinks', 'repair', 'timeoutMs', 'signal', 'disableNativeEngine',
