@@ -68,3 +68,6 @@ tests/fixtures/golden-testnet-temp/
 
 # Camera-RAW samples fetched on demand (npm run fixtures:raw)
 tests/fixtures/raw/.cache/
+
+# Quality benchmark reports (npm run bench:quality)
+bench-results/

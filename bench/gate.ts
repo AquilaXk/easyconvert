@@ -58,8 +58,14 @@ export function worsening(direction: Direction, base: number, current: number): 
   return direction === 'higher' ? base - current : current - base;
 }
 
+const MESSAGE_PRECISION = 6;
+
+function show(value: number): string {
+  return Number(value.toPrecision(MESSAGE_PRECISION)).toString();
+}
+
 function describe(id: string, what: string, direction: Direction, base: number, current: number, allowed: number): string {
-  return `${id}: ${what} ${current} is worse than baseline ${base} (${direction} is better, tolerance ${allowed})`;
+  return `${id}: ${what} ${show(current)} is worse than baseline ${show(base)} (${direction} is better, tolerance ${show(allowed)})`;
 }
 
 function checkOne(
