@@ -21,6 +21,7 @@ import {
   EngineUnavailableError,
   CorruptStreamError,
   DecompressionLimitError,
+  PayloadLimitError,
 } from '../types';
 import {
   NativeRenameUnsupportedError,
@@ -40,6 +41,7 @@ import {
 } from './archive-extraction-safety';
 import { compressBzip2, decompressBzip2 } from './bzip2';
 import { crc32 } from './crc32';
+import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
 import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
@@ -370,23 +372,14 @@ export async function createZipArchive(
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
-  const zip = new JSZip();
-
-  for (const f of resolvedFiles) {
-    zip.file(f.filename, f.buffer);
+  if (resolvedFiles.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+    // The extractor refuses archives past this count, so the writer does not produce one.
+    throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
-
   const compressionLevel = options.compressionLevel
     ? Math.max(1, Math.min(9, options.compressionLevel))
     : 6;
-
-  const content = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: {
-      level: compressionLevel,
-    },
-  });
+  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
 
   return {
     buffer: content,
@@ -394,6 +387,37 @@ export async function createZipArchive(
     filename: archiveName,
     size: content.length,
   };
+}
+
+/**
+ * Entries for the ZIP writer: every file, preceded the first time a folder is met by an entry for that folder, so that
+ * extractors list the directory structure the way they did when the archive was assembled by JSZip.
+ */
+function* zipEntriesWithFolders(
+  files: readonly { filename: string; buffer: Buffer }[],
+  level: number
+): Generator<ZipEntryInput> {
+  const mtime = new Date();
+  const emittedFolders = new Set<string>();
+  for (const f of files) {
+    const parts = f.filename.split('/');
+    let folder = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      folder += `${parts[i]}/`;
+      if (parts[i] !== '' && !emittedFolders.has(folder)) {
+        emittedFolders.add(folder);
+        yield { name: folder, mtime };
+      }
+    }
+    if (f.filename.endsWith('/')) {
+      if (!emittedFolders.has(f.filename)) {
+        emittedFolders.add(f.filename);
+        yield { name: f.filename, mtime };
+      }
+    } else {
+      yield { name: f.filename, data: f.buffer, level, mtime };
+    }
+  }
 }
 
 /**
@@ -3409,11 +3433,7 @@ export async function repairZipArchive(
     throw new ConversionFailedError('ZIP archive repair failed: no recoverable file records found in buffer.');
   }
 
-  const zip = new JSZip();
-  for (const f of salvagedFiles) {
-    zip.file(f.filename, f.buffer);
-  }
-  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  return await createZipBuffer(zipEntriesWithFolders(salvagedFiles, ZIP_DEFAULT_LEVEL));
 }
 
 /** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
