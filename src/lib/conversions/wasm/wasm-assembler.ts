@@ -81,8 +81,11 @@ export function pushS64(bytes: number[], value: bigint): void {
   }
 }
 
+/** UTF-8 encoder shared by every name; available in browsers and Node alike, so the edge tier can assemble too. */
+const UTF8 = new TextEncoder();
+
 function pushName(bytes: number[], name: string): void {
-  const encoded = Buffer.from(name, 'utf8');
+  const encoded = UTF8.encode(name);
   if (encoded.length > MAX_NAME_BYTES) throw new RangeError('name too long');
   pushU32(bytes, encoded.length);
   for (const byte of encoded) bytes.push(byte);
