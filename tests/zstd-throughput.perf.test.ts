@@ -27,8 +27,19 @@ const MAX_TIME_RATIO = 1.25;
  */
 const MAX_COMPRESS_TIME_RATIO = 3.5;
 const COMPARE_PASSES = 7;
+/**
+ * One run of either side takes 5 ms to 30 ms on the mixed corpus, where scheduler noise alone moves the ratio by
+ * 10%. Each timed sample repeats the work this many times, so a sample lasts 100 ms or more.
+ */
+const RUNS_PER_SAMPLE = 20;
 const BENCH_CORPUS = path.resolve(__dirname, '..', 'bench', 'corpus');
 const COMPARE_LEVEL = 3;
+
+function repeated(run: () => unknown): () => void {
+  return () => {
+    for (let i = 0; i < RUNS_PER_SAMPLE; i++) run();
+  };
+}
 
 function mixedCorpus(): Buffer {
   return Buffer.concat([fs.readFileSync(path.join(BENCH_CORPUS, 'data', 'records.jsonl')), fs.readFileSync(path.join(BENCH_CORPUS, 'speech.wav'))]);
@@ -48,8 +59,8 @@ describe.skipIf(SKIP_TIMING)('Zstandard engine speed against the zstd command li
       expect(decompressZstd(stream).equals(original)).toBe(true);
       await expectNoSlowerThanReference(
         'zstd decompress',
-        () => execFileSync(zstd, ['-d', '-q', '-c', file], { maxBuffer: 1 << 26 }),
-        () => decompressZstd(stream),
+        repeated(() => execFileSync(zstd, ['-d', '-q', '-c', file], { maxBuffer: 1 << 26 })),
+        repeated(() => decompressZstd(stream)),
         { maxRatio: MAX_TIME_RATIO, passes: COMPARE_PASSES }
       );
     },
@@ -72,8 +83,8 @@ describe.skipIf(SKIP_TIMING)('Zstandard engine speed against the zstd command li
       expect(ours.length).toBeLessThanOrEqual(reference.length * 1.01);
       await expectNoSlowerThanReference(
         'zstd compress level 3',
-        () => execFileSync(zstd, [`-${COMPARE_LEVEL}`, '-q', '-c', file], { maxBuffer: 1 << 26 }),
-        () => compressZstd(original, { level: COMPARE_LEVEL }),
+        repeated(() => execFileSync(zstd, [`-${COMPARE_LEVEL}`, '-q', '-c', file], { maxBuffer: 1 << 26 })),
+        repeated(() => compressZstd(original, { level: COMPARE_LEVEL })),
         { maxRatio: MAX_COMPRESS_TIME_RATIO, passes: COMPARE_PASSES }
       );
     },
