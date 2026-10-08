@@ -77,7 +77,8 @@ export const ConversionOptionsSchema = {
       type: 'integer',
       minimum: 1,
       maximum: 100,
-      description: 'Image/lossy output quality factor (1-100).',
+      description:
+        'Image/lossy output quality factor (1-100). When omitted each codec uses its own default: JPEG 85, WebP 80, AVIF 60.',
     },
     width: {
       type: 'integer',
@@ -100,6 +101,12 @@ export const ConversionOptionsSchema = {
       type: 'string',
       enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
       description: 'Image resize fit strategy.',
+    },
+    kernel: {
+      type: 'string',
+      enum: ['lanczos3', 'lanczos2', 'mitchell', 'cubic', 'nearest', 'mks2021'],
+      description:
+        'Resampling kernel of a resize. Defaults to lanczos3. A downscale to half the size or less resamples in linear light with premultiplied alpha, whatever the kernel.',
     },
     stripMetadata: {
       type: 'boolean',

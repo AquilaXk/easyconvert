@@ -88,6 +88,8 @@ export interface ConversionOptions {
   width?: number;
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
+  /** Resampling kernel of a resize; downscales of 2x or more also run in linear light. Defaults to lanczos3. */
+  kernel?: 'lanczos3' | 'lanczos2' | 'mitchell' | 'cubic' | 'nearest' | 'mks2021';
   stripMetadata?: boolean;
   /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
   background?: string;

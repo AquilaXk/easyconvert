@@ -9,6 +9,22 @@ import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground }
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
+import { classifyContent, withoutOpaqueAlpha, type ContentClass } from './image-content';
+import {
+  AVIF_EFFORT,
+  AVIF_TUNE,
+  FALLBACK_QUALITY,
+  avifOptionsFor,
+  clampQuality,
+  jpegOptionsFor,
+  webpOptionsFor,
+} from './image-encoder-defaults';
+import {
+  LINEAR_PIPELINE_SPACE,
+  colourspaceAfterLinearResize,
+  needsLinearLight,
+  resolveKernel,
+} from './image-resample';
 import { decodeIco, decodeIcns } from './ico';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
@@ -2258,32 +2274,38 @@ function findJpegEnd(buffer: Buffer, start: number): number {
 /** Sample depth that sharp reports for 8-bit images. */
 const SHARP_EIGHT_BIT_DEPTH = 'uchar';
 
-/**
- * Quality metric the AVIF encoder optimises for. sharp 0.35 defaults to a perceptual (SSIMULACRA2-based)
- * metric that spends roughly 5 dB less PSNR than the encoder tuning of earlier releases at the same
- * `quality`; pinning PSNR keeps a given `quality` value producing the same pixel fidelity.
- */
-export const AVIF_TUNE = 'psnr';
+export { AVIF_EFFORT, AVIF_TUNE };
 
 /**
- * Encoder effort for AVIF. The bundled libaom 3.15 searches several times longer from the default effort 4
- * upward (a 39-megapixel RAW took about 3 minutes against about 50 seconds with sharp 0.33), while effort 3
- * encodes the same picture in a tenth of that time with the same PSNR (41.8 dB against 41.9 dB at quality 80).
+ * Targets whose output carries an explicit sRGB profile tag. Every other raster target is read as sRGB when it
+ * has no profile (the nclx primaries of an AVIF, the default of PNG, JPEG and WebP), so a 480-byte tag there only
+ * costs size: 7% of a small AVIF or WebP. An archival TIFF is read by tools that do not assume sRGB.
  */
-export const AVIF_EFFORT = 3;
+const SRGB_TAGGED_TARGETS: ReadonlySet<string> = new Set(['tiff', 'tif']);
+
+/** Density (pixels per inch) every viewer assumes for an image that does not state one; it is not worth a metadata block. */
+const DEFAULT_DENSITY_PPI = 72;
 
 /**
- * Keeps ICC profile and EXIF metadata on the output. Samples deeper than 8 bit that carry no profile are
- * the exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut working
- * profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those images
- * keep only their EXIF block and reach the encoder as plain device RGB, so the high byte of each sample
- * is what reaches an 8-bit output. The pipeline has already been auto-oriented, which removes the
- * Orientation tag from the kept EXIF block.
+ * Keeps EXIF, XMP and IPTC metadata on the output and converts the pixels to sRGB through the input's ICC
+ * profile. The sRGB profile is attached only for the targets in `SRGB_TAGGED_TARGETS`. An input with no metadata
+ * block and the default density keeps nothing: asking the encoder to keep metadata makes it write an EXIF block
+ * synthesised from the density (186 bytes, 3.5% of a small AVIF). Samples deeper than 8 bit that carry no
+ * profile are another exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut
+ * working profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those
+ * images keep only their EXIF block and reach the encoder as plain device RGB, so the high byte of each sample
+ * is what reaches an 8-bit output. The pipeline has already been auto-oriented, which removes the Orientation
+ * tag from the kept EXIF block.
  */
-async function preserveMetadata(pipeline: Sharp): Promise<Sharp> {
+async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp> {
   const meta = await pipeline.metadata();
+  const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
+  const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
-  return isDeepWithoutProfile ? pipeline.keepExif() : pipeline.withMetadata();
+  const tagsSrgb = SRGB_TAGGED_TARGETS.has(target);
+  if (isDeepWithoutProfile) return hasMetadataBlock || hasCustomDensity ? pipeline.keepExif() : pipeline;
+  if (!hasMetadataBlock && !hasCustomDensity && !meta.hasProfile && !tagsSrgb) return pipeline;
+  return pipeline.keepMetadata().withIccProfile('srgb', { attach: tagsSrgb });
 }
 
 /** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
@@ -2319,14 +2341,12 @@ function toImageFailure(err: unknown, target: string): unknown {
 }
 
 const RGB_CHANNEL_COUNT = 3;
-const DEFAULT_QUALITY = 85;
 /** First EXIF orientation that turns the picture a quarter turn (width and height swap). */
 const FIRST_QUARTER_TURN_ORIENTATION = 5;
 const MIN_PALETTE_COLOURS = 2;
 const MAX_PALETTE_COLOURS = 256;
 const FULL_DITHER = 1.0;
 const NO_DITHER = 0.0;
-const QUALITY_RANGE = { min: 1, max: 100 } as const;
 
 /** The validated width, height and fit the request asks for, or null when it does not resize. */
 function requestedResizeOf(options: ConversionOptions): PageResize | null {
@@ -2352,6 +2372,7 @@ function resizeOptionsOf(
     width: requested.width,
     height: requested.height,
     fit: requested.fit,
+    kernel: resolveKernel(options),
     background: letterboxColour(background, isOpaqueTarget),
   };
 }
@@ -2402,6 +2423,32 @@ function isIconContainer(buffer: Buffer, sourceFormat: string): boolean {
 
 /** Bytes of the icon directory header that identify the container: reserved 0, type 1 or 2, high byte 0. */
 const ICON_DIRECTORY_SIGNATURE_BYTES = 4;
+
+/** True when the colour has no hue (or is absent, which flattens onto white): a grey picture stays grey on it. */
+function isNeutralColour(colour: { r: number; g: number; b: number } | undefined): boolean {
+  return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
+}
+
+/** Targets whose encoder choices (chroma, effort, smart subsampling) follow the content of the picture. */
+const LOSSY_CONTENT_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
+
+/**
+ * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits (the 8-bit path
+ * would cap the result near 51 dB PSNR whatever the quality), and an alpha channel that is fully opaque is
+ * dropped instead of encoded as a second plane.
+ */
+async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOptions, content: ContentClass): Promise<Buffer> {
+  const source = await pipeline.metadata();
+  const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
+  const opaque = await withoutOpaqueAlpha(pipeline);
+  // The metadata describes the input; the encoder sees the upright, resized picture.
+  const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
+  const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
+  const target = resizedDimensions(upright.width, upright.height, options);
+  let prepared = opaque;
+  if (deep) prepared = opaque.toColourspace(source.space === 'b-w' || source.space === 'grey16' ? 'grey16' : 'rgb16');
+  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, deep)).toBuffer();
+}
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
 const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
@@ -2546,7 +2593,7 @@ export async function convertImage(
         fmt as 'gif' | 'webp',
         resizeOptionsOf(options, background, false),
         {
-          quality: options.quality ? Math.max(QUALITY_RANGE.min, Math.min(QUALITY_RANGE.max, options.quality)) : DEFAULT_QUALITY,
+          quality: clampQuality(options.quality, FALLBACK_QUALITY),
           colours: Math.min(MAX_PALETTE_COLOURS, Math.max(MIN_PALETTE_COLOURS, options.colors || MAX_PALETTE_COLOURS)),
           dither: options.dither !== false ? FULL_DITHER : NO_DITHER,
         }
@@ -2666,7 +2713,7 @@ export async function convertImage(
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
-      pipeline = await preserveMetadata(pipeline);
+      pipeline = await preserveMetadata(pipeline, fmt);
     }
   } catch (err: unknown) {
     if (err instanceof InputPixelLimitError) throw err;
@@ -2690,10 +2737,20 @@ export async function convertImage(
     pipeline = pipeline.pipelineColourspace('srgb');
   }
 
+  // The kernel is checked even when the request does not resize, so a typo is never silently ignored.
+  resolveKernel(options);
+
+  // A grey source stays a one-component picture in JPEG: three components that always agree only cost bytes.
+  const inputSpace = fmt === 'jpg' || fmt === 'jpeg' ? (await pipeline.metadata()).space : undefined;
+
+  // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline.
+  const content: ContentClass = LOSSY_CONTENT_TARGETS.has(fmt) && !frameSelection?.keepsAnimation ? await classifyContent(pipeline) : 'photo';
+
   // Resize options
   const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
   if (resizeOptions) {
     const canvas = frameSelection?.keepsAnimation ? frameSelection.canvas : undefined;
+    let linearLight: string | undefined;
     if (canvas) {
       const resized = resizedDimensions(canvas.width, canvas.height, resizeOptions);
       assertAnimationBudget(resized.width, resized.height, canvas.frames, 'The resized animation');
@@ -2705,9 +2762,13 @@ export async function convertImage(
       if (sourceWidth > 0 && sourceHeight > 0) {
         const resized = resizedDimensions(sourceWidth, sourceHeight, resizeOptions);
         assertOutputPixels(resized.width, resized.height);
+        if (needsLinearLight(sourceWidth, sourceHeight, resized.width, resized.height)) linearLight = source.space;
       }
     }
     pipeline = pipeline.resize(resizeOptions);
+    if (linearLight !== undefined) {
+      pipeline = pipeline.pipelineColourspace(LINEAR_PIPELINE_SPACE).toColourspace(colourspaceAfterLinearResize(linearLight));
+    }
   }
 
   // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
@@ -2716,7 +2777,7 @@ export async function convertImage(
   }
 
 
-  const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : DEFAULT_QUALITY;
+  const quality = clampQuality(options.quality, FALLBACK_QUALITY);
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -2734,7 +2795,8 @@ export async function convertImage(
             { quality }
           );
         } else {
-          outputBuffer = await pipeline.jpeg({ quality, mozjpeg: true }).toBuffer();
+          const keepsGrey = (inputSpace === 'b-w' || inputSpace === 'grey16') && isNeutralColour(background);
+          outputBuffer = await (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content)).toBuffer();
         }
         mimeType = 'image/jpeg';
         break;
@@ -2827,12 +2889,12 @@ export async function convertImage(
       }
 
       case 'webp':
-        outputBuffer = await pipeline.webp({ quality }).toBuffer();
+        outputBuffer = await (await withoutOpaqueAlpha(pipeline)).webp(webpOptionsFor(options.quality, content)).toBuffer();
         mimeType = 'image/webp';
         break;
 
       case 'avif':
-        outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
+        outputBuffer = await encodeAvifFromPipeline(pipeline, options, content);
         mimeType = 'image/avif';
         break;
 

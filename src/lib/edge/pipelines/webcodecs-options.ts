@@ -32,7 +32,7 @@ const HONOURED = [
 const NOT_ABOUT_MEDIA = [
   'quality', 'fit', 'stripMetadata', 'background', 'dpi', 'layout', 'colorDepth', 'colors', 'palette', 'dither',
   'quantizer', 'ditherMethod', 'useWebGpu', 'gpuAcceleration', 'falseColorSuppression', 'allowEmbeddedPreview',
-  'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression',
+  'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression', 'kernel',
   'uSamples', 'vSamples', 'allowOpenMesh', 'smoothingAngleDeg', 'outputUnit', 'page', 'pages', 'multiPageOutput',
   'pageCount', 'password', 'orientation', 'preserveTables', 'ocrEnabled', 'ocrLanguage', 'ocrMode',
   'ocrDensityThreshold', 'ocrDetectOrientation', 'clientEdgeMode', 'margin', 'validateMagicBytes', 'delimiter', 'encoding', 'bom',
