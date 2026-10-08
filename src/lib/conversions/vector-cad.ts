@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError, EngineUnavailableError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { buildTiffOptions } from './image-tiff-options';
 import { openInputImage, resizedDimensions } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 import { loadFontCoverageIndex } from './pdf-fonts';
@@ -472,7 +473,7 @@ async function convertSvgSource(
       break;
 
     case 'tiff':
-      outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+      outputBuffer = await pipeline.tiff(buildTiffOptions(options)).toBuffer();
       mimeType = 'image/tiff';
       break;
 

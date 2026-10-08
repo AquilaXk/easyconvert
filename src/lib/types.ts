@@ -112,6 +112,8 @@ export interface ConversionOptions {
   targetColorSpace?: 'sRGB' | 'display-p3' | 'rec2020' | 'linear';
   outputDepth?: 8 | 16 | 32;
   gainMap?: boolean;
+  /** TIFF target: `deflate` (default, lossless), `lzw`, `none` or `jpeg` (lossy, only when asked for). */
+  tiffCompression?: 'deflate' | 'lzw' | 'none' | 'jpeg';
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;

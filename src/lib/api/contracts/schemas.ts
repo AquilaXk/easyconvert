@@ -210,6 +210,13 @@ export const ConversionOptionsSchema = {
       description: 'Embed ISO 21496-1 HDR gain map metadata.',
     },
 
+    tiffCompression: {
+      type: 'string',
+      enum: ['deflate', 'lzw', 'none', 'jpeg'],
+      description:
+        'TIFF output compression. Defaults to deflate with a horizontal predictor (lossless); jpeg is lossy and used only when requested, and quality does not select it.',
+    },
+
     // CAD & NURBS options
     uSamples: {
       type: 'integer',

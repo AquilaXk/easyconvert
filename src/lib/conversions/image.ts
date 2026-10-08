@@ -6,6 +6,7 @@ import { selectFrames, type FrameSelection, type PageResize } from './image-fram
 import { encodeDecodedAnimation, joinPageTiffs, zipPageImages } from './image-frame-output';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
+import { buildTiffOptions } from './image-tiff-options';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
 import {
@@ -2994,7 +2995,7 @@ export async function convertImage(
             icc
           );
         } else {
-          outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+          outputBuffer = await pipeline.tiff(buildTiffOptions(options)).toBuffer();
         }
         mimeType = 'image/tiff';
         break;
