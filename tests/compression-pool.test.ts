@@ -22,8 +22,19 @@ const TEST_TIMEOUT_MS = 300_000;
 /** Path that is absolute and absent: get7zBinaryPath() then reports that no 7-Zip is installed. */
 const NO_SEVEN_ZIP = '/nonexistent/easyconvert-no-7z';
 
+
+const scratchDirs: string[] = [];
+
+/** A temporary directory that afterAll removes, so repeated runs do not fill the disk. */
+function scratchDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
 afterAll(async () => {
   await shutdownCpuPool();
+  for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function withoutSevenZip<T>(run: () => Promise<T>): Promise<T> {
@@ -107,7 +118,7 @@ describe('create7zArchiveAsync', () => {
   oracleTest('the pure archive built on pool threads passes `7z t`', ['7z'], async () => {
     await withoutSevenZip(async () => {
       const viaPool = await create7zArchiveAsync(files, { compressionLevel: 5, solid: true }, 'out.7z');
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pool7z-'));
+      const dir = scratchDir('pool7z-');
       const file = path.join(dir, 'pure.7z');
       fs.writeFileSync(file, viaPool.buffer);
       const out = execFileSync(getOracleToolPath('7z')!, ['t', '-y', file], { encoding: 'utf8' });
@@ -124,7 +135,7 @@ describe('create7zArchiveAsync', () => {
       { filename: 'big/two.ts', buffer: sourceText(NATIVE_7Z_BYTES / 2, 32) },
     ];
     const archive = await create7zArchiveAsync(large, { compressionLevel: 6 }, 'native.7z');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native7z-'));
+    const dir = scratchDir('native7z-');
     const file = path.join(dir, 'native.7z');
     fs.writeFileSync(file, archive.buffer);
     const sevenZip = getOracleToolPath('7z')!;
@@ -172,7 +183,7 @@ describe('encodeFlacStreamAsync', () => {
   oracleTest('the stream built on a pool thread passes `flac -t` and decodes to the samples with ffmpeg', ['flac', 'ffmpeg'], async () => {
     const samples = tone();
     const stream = await encodeFlacStreamAsync(samples, SAMPLE_RATE, CHANNELS);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'poolflac-'));
+    const dir = scratchDir('poolflac-');
     const file = path.join(dir, 'pool.flac');
     fs.writeFileSync(file, stream);
     execFileSync(getOracleToolPath('flac')!, ['-t', '-s', file]);

@@ -50,8 +50,19 @@ async function withLoopMonitor<T>(work: () => Promise<T>): Promise<{ value: T } 
 /** The histogram counts the sampling interval itself, so a loop that is never blocked still reads about one interval. */
 const BUDGET_MS = EVENT_LOOP_BLOCK_BUDGET_MS + SAMPLE_INTERVAL_MS;
 
+
+const scratchDirs: string[] = [];
+
+/** A temporary directory that afterAll removes, so repeated runs do not fill the disk. */
+function scratchDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
 afterAll(async () => {
   await shutdownCpuPool();
+  for (const dir of scratchDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 function randomGlyphs(count: number, seed: number): GlyfGlyphSpec[] {
@@ -103,7 +114,7 @@ describe('event loop stays free during CPU-bound encodes', () => {
   }, TEST_TIMEOUT_MS);
 
   oracleTest('a 16 MB bzip2 encode keeps the loop delay under the budget and decodes with `bzip2 -dc`', ['bzip2'], async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bzip2-budget-'));
+    const dir = scratchDir('bzip2-budget-');
     const rng = new SeededRandom(23);
     const sources: Buffer[] = [];
     for (let i = 0; i < 16; i++) {
