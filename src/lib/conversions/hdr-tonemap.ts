@@ -99,7 +99,7 @@ export interface Bt2390Parameters {
  * black-level lift term b(1 - E2)^4 vanishes (its minLum is 0). The returned function maps a PQ signal of the
  * source to a PQ signal whose peak is the target peak.
  */
-export function createBt2390Eetf(parameters: Bt2390Parameters): (signal: number) => number {
+export function createBt2390Parameters(parameters: Bt2390Parameters): { sourcePq: number; targetPq: number; maxLum: number; knee: number } {
   const { sourcePeakNits, targetPeakNits } = parameters;
   if (!(sourcePeakNits > 0) || !(targetPeakNits > 0)) {
     throw new RangeError('BT.2390 peaks must be positive');
@@ -107,7 +107,11 @@ export function createBt2390Eetf(parameters: Bt2390Parameters): (signal: number)
   const sourcePq = nitsToPqSignal(sourcePeakNits);
   const targetPq = nitsToPqSignal(targetPeakNits);
   const maxLum = targetPq / sourcePq;
-  const knee = 1.5 * maxLum - 0.5;
+  return { sourcePq, targetPq, maxLum, knee: 1.5 * maxLum - 0.5 };
+}
+
+export function createBt2390Eetf(parameters: Bt2390Parameters): (signal: number) => number {
+  const { sourcePq, maxLum, knee } = createBt2390Parameters(parameters);
   return (signal: number): number => {
     const e1 = Math.min(1, Math.max(0, signal / sourcePq));
     if (maxLum >= 1 || e1 < knee) return e1 * sourcePq;

@@ -111,6 +111,7 @@ export function renderSdrWithZimg(
   input: HdrInput,
   primaries: 'bt709' | 'bt2020',
   sourcePeak: number,
+  outputTransfer: 'iec61966-2-1' | 'bt709' = 'iec61966-2-1',
 ): Uint8Array {
   const expression = bt2390Expression(sourcePeak, SDR_NITS);
   const toPq: Record<HdrInput, string[]> = {
@@ -129,7 +130,7 @@ export function renderSdrWithZimg(
       `lutrgb=r='${expression}':g='${expression}':b='${expression}'`,
       'setparams=colorspace=gbr:range=pc',
       `zscale=t=linear:npl=${SDR_NITS}:p=bt709`,
-      'zscale=t=iec61966-2-1',
+      `zscale=t=${outputTransfer}`,
     ].join(','),
   );
   return Uint8Array.from(out, (v) => Math.round(Math.min(1, Math.max(0, v)) * BYTE_MAX));
@@ -142,4 +143,19 @@ export function psnrDb(a: ArrayLike<number>, b: ArrayLike<number>): number {
   for (let i = 0; i < a.length; i += 1) squared += (a[i] - b[i]) ** 2;
   const mse = squared / a.length;
   return mse === 0 ? Infinity : 10 * Math.log10((BYTE_MAX * BYTE_MAX) / mse);
+}
+
+/** First frame of a video file as interleaved RGB floats (gbrpf32le) after the given filter graph. */
+export function decodeFrameFloat(file: string, width: number, height: number, vf: string): Float32Array {
+  if (!FFMPEG_PATH) throw new Error('ffmpeg is not installed');
+  const out = execFileSync(FFMPEG_PATH, ['-v', 'error', '-i', file, '-frames:v', '1', '-vf', `${vf},format=gbrpf32le`, '-f', 'rawvideo', '-pix_fmt', 'gbrpf32le', '-'], { maxBuffer: 1 << 28 });
+  const pixels = width * height;
+  const planes = new Float32Array(out.buffer.slice(out.byteOffset, out.byteOffset + out.length));
+  const rgb = new Float32Array(pixels * PLANES);
+  for (let p = 0; p < pixels; p += 1) {
+    rgb[p * 3] = planes[2 * pixels + p];
+    rgb[p * 3 + 1] = planes[p];
+    rgb[p * 3 + 2] = planes[pixels + p];
+  }
+  return rgb;
 }

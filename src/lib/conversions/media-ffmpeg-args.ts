@@ -36,6 +36,8 @@ import {
   probeVideoGeometry,
   VideoGeometry,
 } from './media-ffprobe';
+import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
+import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
   LoudnessMeasurement,
@@ -1047,13 +1049,24 @@ export function buildFfmpegArguments(
     // Hardware encoders receive no -profile:v and may only accept 8-bit surfaces (VAAPI uploads
     // nv12, h264_qsv takes nv12), so a 10-bit profile always takes the software encoder path.
     const tenBit = TEN_BIT_PROFILES.has((videoOpts?.profile || '').toLowerCase());
+    const toneMapMode = options.toneMap ?? DEFAULT_TONE_MAP;
+    if (!(TONE_MAP_MODES as readonly string[]).includes(toneMapMode)) {
+      throw new InvalidMediaOptionError(`toneMap "${String(toneMapMode)}" is not supported; use one of ${TONE_MAP_MODES.join(', ')}.`);
+    }
+    let hdrToSdr: VideoToneMapPlan | undefined;
     if (!tenBit && codec !== 'prores' && fs.existsSync(inputPath)) {
-      // Squeezing PQ/HLG samples into 8-bit without tone mapping corrupts the picture.
-      const transfer = probeVideoColorTransfer(inputPath, resolveFfprobeBinary(ffmpegBin));
+      // PQ/HLG samples squeezed into 8 bits unchanged would corrupt the picture: they are tone mapped to SDR, or
+      // refused when the request asks to keep HDR.
+      const ffprobeBin = resolveFfprobeBinary(ffmpegBin);
+      const transfer = probeVideoColorTransfer(inputPath, ffprobeBin);
       if (HDR_TRANSFERS.has(transfer)) {
-        throw new InvalidMediaOptionError(
-          `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10; 8-bit output without tone mapping is not supported.`
-        );
+        if (toneMapMode === 'none') {
+          throw new InvalidMediaOptionError(
+            `HDR input (transfer "${transfer}") needs a 10-bit profile such as hevc main10 when toneMap is "none"; 8-bit output without tone mapping is not supported.`
+          );
+        }
+        assertZscaleAvailable(ffmpegBin);
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, ffprobeBin));
       }
     }
 
@@ -1150,6 +1163,11 @@ export function buildFfmpegArguments(
       videoFilters.push(`fps=${requestedFps}`);
     }
 
+    // Stage 5b: HDR to SDR (after the geometry filters so fewer pixels go through the 16-bit chain, before any burn-in)
+    if (hdrToSdr) {
+      videoFilters.push(hdrToSdr.filter);
+    }
+
     // Stage 6: subtitles burn (prior to even dimension normalization)
     if (burnRequested && !burnBitmapStream) {
       // An external file, or a text subtitle stream of the input itself (`si` counts subtitle streams).
@@ -1184,6 +1202,10 @@ export function buildFfmpegArguments(
     // Software pixel format (exclude VAAPI which uses hwupload, and ProRes which has custom 10-bit format)
     if (!isVaapi && codec !== 'prores') {
       outputArgs.push('-pix_fmt', tenBit ? TEN_BIT_PIX_FMT : EIGHT_BIT_PIX_FMT);
+    }
+    // The SDR rendition says so in its stream tags and the encoders' VUI, on every encoder path.
+    if (hdrToSdr) {
+      outputArgs.push(...SDR_COLOUR_ARGS);
     }
 
     // 7. Video Encoder Selection and Arguments
