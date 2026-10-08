@@ -11,6 +11,8 @@
  * - 100% losslessly round-trippable with decompressLzma, decompressLzma2, and 7-Zip CLI
  */
 
+import { PayloadLimitError } from '../types';
+
 export interface LzmaCompressOptions {
   level?: number;
   dictSize?: number;
@@ -22,27 +24,53 @@ export interface LzmaCompressResult {
   uncompressedSize: number;
 }
 
+/** Smallest range before the encoder shifts a byte out (LZMA specification, kTopValue). */
+const RC_TOP_VALUE = 0x01000000;
+const RC_BIT_MODEL_TOTAL_BITS = 11;
+const RC_MOVE_BITS = 5;
+const RC_BIT_MODEL_TOTAL = 1 << RC_BIT_MODEL_TOTAL_BITS;
+const RC_INITIAL_RANGE = 0xffffffff;
+const RC_FLUSH_BYTES = 5;
+/** The low register keeps its top byte unless a carry arrives: bytes at or above this value may still change. */
+const RC_PENDING_BYTE_FLOOR = 0xff000000;
+const RC_LOW_KEEP_MASK = 0x00ffffff;
+const BYTE_MASK = 0xff;
+const RC_INITIAL_CAPACITY = 1 << 16;
+/** An encoded stream longer than this cannot be addressed by the container formats that carry LZMA (32-bit sizes). */
+export const LZMA_MAX_ENCODED_BYTES = 0xffffffff;
+
+/**
+ * LZMA range encoder (LZMA specification, "Range Encoder"). The 33-bit `low` register is held as a uint32 `lowLo`
+ * plus a carry bit `lowCarry`, so no arithmetic leaves the double-precision integer range or touches BigInt; the
+ * output is a growable Uint8Array.
+ */
 export class LzmaRangeEncoder {
-  private low = 0n;
-  private range = 0xffffffff;
+  private lowLo = 0;
+  private lowCarry = 0;
+  private range = RC_INITIAL_RANGE;
   private cache = 0;
   private cacheSize = 1;
-  private out: number[] = [];
+  private buf = new Uint8Array(RC_INITIAL_CAPACITY);
+  private pos = 0;
 
   encodeBit(probs: Uint16Array, index: number, bit: number): void {
     const prob = probs[index];
-    const bound = (this.range >>> 11) * prob;
-
+    const bound = (this.range >>> RC_BIT_MODEL_TOTAL_BITS) * prob;
     if (bit === 0) {
-      this.range = bound >>> 0;
-      probs[index] = (prob + ((2048 - prob) >>> 5)) & 0xffff;
+      this.range = bound;
+      probs[index] = prob + ((RC_BIT_MODEL_TOTAL - prob) >>> RC_MOVE_BITS);
     } else {
-      this.low += BigInt(bound >>> 0);
-      this.range = (this.range - bound) >>> 0;
-      probs[index] = (prob - (prob >>> 5)) & 0xffff;
+      const sum = this.lowLo + bound;
+      if (sum > RC_INITIAL_RANGE) {
+        this.lowCarry = 1;
+        this.lowLo = sum - 0x100000000;
+      } else {
+        this.lowLo = sum;
+      }
+      this.range -= bound;
+      probs[index] = prob - (prob >>> RC_MOVE_BITS);
     }
-
-    while (this.range < 0x01000000) {
+    while (this.range < RC_TOP_VALUE) {
       this.range = (this.range << 8) >>> 0;
       this.shiftLow();
     }
@@ -52,9 +80,15 @@ export class LzmaRangeEncoder {
     for (let i = numBits - 1; i >= 0; i--) {
       this.range >>>= 1;
       if (((val >>> i) & 1) === 1) {
-        this.low += BigInt(this.range);
+        const sum = this.lowLo + this.range;
+        if (sum > RC_INITIAL_RANGE) {
+          this.lowCarry = 1;
+          this.lowLo = sum - 0x100000000;
+        } else {
+          this.lowLo = sum;
+        }
       }
-      if (this.range < 0x01000000) {
+      if (this.range < RC_TOP_VALUE) {
         this.range = (this.range << 8) >>> 0;
         this.shiftLow();
       }
@@ -79,29 +113,45 @@ export class LzmaRangeEncoder {
     }
   }
 
-  private shiftLow(): void {
-    const lowHi = Number((this.low >> 32n) & 0xffn);
-    const lowVal = Number((this.low >> 24n) & 0xffn);
+  /** Bytes already written plus those still pending in the cache: the exact size `flush` will return. */
+  get pendingSize(): number {
+    return this.pos + this.cacheSize + RC_FLUSH_BYTES - 1;
+  }
 
-    if (lowHi !== 0 || this.low < 0xff000000n) {
+  private writeByte(value: number): void {
+    if (this.pos === this.buf.length) this.grow();
+    this.buf[this.pos++] = value;
+  }
+
+  private grow(): void {
+    if (this.buf.length >= LZMA_MAX_ENCODED_BYTES) {
+      throw new PayloadLimitError(`LZMA output exceeds ${LZMA_MAX_ENCODED_BYTES} bytes`);
+    }
+    const next = new Uint8Array(Math.min(this.buf.length * 2, LZMA_MAX_ENCODED_BYTES));
+    next.set(this.buf);
+    this.buf = next;
+  }
+
+  private shiftLow(): void {
+    const carry = this.lowCarry;
+    if (this.lowLo < RC_PENDING_BYTE_FLOOR || carry !== 0) {
       let temp = this.cache;
       do {
-        this.out.push((temp + lowHi) & 0xff);
-        temp = 0xff;
-      } while (--this.cacheSize > 0);
-      this.cache = lowVal;
-      this.cacheSize = 1;
-    } else {
-      this.cacheSize++;
+        this.writeByte((temp + carry) & BYTE_MASK);
+        temp = BYTE_MASK;
+      } while (--this.cacheSize !== 0);
+      this.cache = this.lowLo >>> 24;
     }
-    this.low = (this.low & 0x00ffffffn) << 8n;
+    this.cacheSize++;
+    this.lowLo = ((this.lowLo & RC_LOW_KEEP_MASK) << 8) >>> 0;
+    this.lowCarry = 0;
   }
 
   flush(): Buffer {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < RC_FLUSH_BYTES; i++) {
       this.shiftLow();
     }
-    return Buffer.from(this.out);
+    return Buffer.from(this.buf.buffer, this.buf.byteOffset, this.pos);
   }
 }
 
