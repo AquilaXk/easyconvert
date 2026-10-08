@@ -18,7 +18,7 @@ import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
 import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
@@ -625,6 +625,8 @@ const HAS_OCR_DATA = TESSDATA_DIRS.some(
 /** Whether a pair is decidable depends on the native tools, so the ratchet needs the CI toolchain. */
 const HAS_CI_TOOLCHAIN =
   HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract', 'dcraw_emu'].every(onPath);
+/** CI has the whole toolchain: under ORACLE_STRICT_MODE=1 a missing tool fails the run instead of skipping the ratchet. */
+const SKIP_WITHOUT_CI_TOOLCHAIN = skipUnless('the CI toolchain (ffmpeg, 7z, soffice, pdftoppm, tesseract, dcraw_emu, eng.traineddata)', HAS_CI_TOOLCHAIN);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
 const SHORT_CLIP_SECONDS = 0.5;
@@ -992,7 +994,7 @@ describe('inconclusive pairs ratchet', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
-  it.skipIf(!HAS_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
+  it.skipIf(SKIP_WITHOUT_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
     const inconclusive = await findInconclusivePairs(pairsFor((c, t) => !isTranscoderPair(c, t)));
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
@@ -1201,6 +1203,7 @@ describe('real camera RAW samples', () => {
     expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
     if (RAW_SAMPLES_MISSING.length > 0) {
       throw new OracleToolMissingError(
@@ -1212,6 +1215,7 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
   it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
     expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
     expect(RAW_SAMPLES_MISSING).toEqual([]);

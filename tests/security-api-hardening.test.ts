@@ -334,6 +334,7 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
   });
 
   describe('5. Process Group Detachment & Zombie Prevention (process-sandbox.ts)', () => {
+    // skip-ok: platform capability: process groups and /proc are Linux features, and CI runs Linux.
     it.skipIf(process.platform !== 'linux')('killProcessGroup ends the whole group of a detached process, grandchild included', async () => {
       // sh leads a new process group (detached) and starts a grandchild in it; it prints the grandchild's PID.
       const leader = spawn('/bin/sh', ['-c', 'sleep 60 & echo $!; wait'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });

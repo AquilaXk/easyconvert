@@ -24,6 +24,7 @@ const MINUTE_MS = 60_000;
 const TEST_TIMEOUT_MS = 30_000;
 
 let workDir: string;
+// skip-ok: platform capability: the stand-in encoders are POSIX shell scripts, and CI runs Linux.
 const noPosixShell = process.platform === 'win32';
 
 /** Writes an executable stand-in ffmpeg script and returns its path. */

@@ -18,6 +18,7 @@ import { measureInterleaved } from './helpers/timing';
  * A slow or shared runner can opt out explicitly with RAW_DEMOSAIC_SKIP_TIMING=1; nothing skips silently.
  */
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+// skip-ok: explicit opt-out (RAW_DEMOSAIC_SKIP_TIMING=1) of the timing checks on a slow runner, never set in CI.
 const SKIP_TIMING = process.env.RAW_DEMOSAIC_SKIP_TIMING === '1';
 const SAMPLE_PRESENT = existsSync(IMX477_SAMPLE_PATH);
 const WINDOW: RealCropCase = { id: 'bench', sample: 'raw-imx477.raw', left: 1500, top: 1000, width: 1024, height: 1024, methods: ['ahd', 'amaze'] };

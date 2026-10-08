@@ -647,19 +647,37 @@ function checkHollowNullChecks(sf: ts.SourceFile, file: string): Violation[] {
 
 /**
  * G2c: a skip must fail where a skip would hide a gap. A test or suite skipped because a tool, service or sample is
- * missing passes silently on CI unless the condition fails under ORACLE_STRICT_MODE=1. A skip is accepted when its
- * condition goes through the strict-aware helpers (`skipUnless`, `skipWithoutTools`, `skipWithoutRawSamples`, a
- * `SKIP_WITHOUT_*` constant), tests the strict flag itself, tests the platform, or carries a `skip-ok: <reason>` comment on
- * the same line or within the three lines above (an environment capability, a mode selection or an opt-in). An
- * unconditional `it.skip` / `describe.skip` is always dead code and needs the same comment.
+ * missing passes silently on CI unless the condition fails under ORACLE_STRICT_MODE=1. The condition is read through the
+ * AST (the file's `const` bindings and the relative imports it names are followed, a few levels deep), and a skip is
+ * accepted only when one of these holds:
+ *   - the condition calls a strict-aware helper imported from tests/helpers/strict-skip.ts (`skipUnless`,
+ *     `skipWithoutTools`, `skipWithoutRawSamples`), which throws instead of answering "skip" when strict;
+ *   - the condition structurally requires strict mode to be off: a top-level `&&` conjunct of `!STRICT_MODE`,
+ *     `!isStrictMode()` or `process.env.ORACLE_STRICT_MODE !== '1'`. A strict flag anywhere else (`!HAS_TOOL || STRICT`)
+ *     skips under strict mode, and a mention of STRICT in a comment or a string proves nothing;
+ *   - a `skip-ok: <reason>` comment on the same line or within the three lines above explains a legitimate skip (an
+ *     environment capability such as the platform, a mode selection or an opt-in).
+ * `runIf` is the same rule with the polarity reversed: the condition must hold under strict mode. A context skip
+ * `ctx.skip(condition)` is checked like `skipIf`; a bare `ctx.skip()` must sit where strict mode cannot reach it: in an
+ * `if` whose condition fails under strict mode, or after an `if (<strict>) throw`. An unconditional `it.skip` /
+ * `describe.skip` is always dead code and needs the same comment.
  */
-const STRICT_AWARE_SKIP_CONDITION =
-  /skipUnless\(|skipWithoutTools\(|skipWithoutRawSamples\(|\bSKIP_WITHOUT_\w+|STRICT|[Ii]sStrict|ORACLE_STRICT_MODE|process\.platform/;
+const STRICT_SKIP_HELPERS_PATH = path.resolve(__dirname, '..', 'tests', 'helpers', 'strict-skip.ts');
+const STRICT_SKIP_MODULE_NAME = 'strict-skip';
+/** Name of an environment flag or function that reads ORACLE_STRICT_MODE. */
+const STRICT_FLAG_NAME = /^(?:[A-Z0-9_]*STRICT[A-Z0-9_]*|isStrict\w*)$/;
+const STRICT_ENV_NAME = 'ORACLE_STRICT_MODE';
+const STRICT_ENV_ON_VALUE = '1';
 const SKIP_OK_MARKER = /skip-ok:\s*\S/;
 const SKIP_MARKER_LOOKBACK_LINES = 3;
 const TEST_API_RECEIVERS = new Set(['it', 'test', 'describe', 'suite']);
 const TEST_CONTEXT_RECEIVERS = new Set(['ctx', 'context', 't']);
 const SKIP_GATE_EXEMPT_FILES = new Set(['tests/helpers/oracle-test.ts', 'tests/helpers/strict-skip.ts', 'tests/guard-anti-cheat-rules.test.ts']);
+/** How many `const` bindings and imports a skip condition is followed through (`SKIP` -> `skipWithoutTools(...)`). */
+const MAX_SKIP_RESOLUTION_DEPTH = 4;
+const RESOLVABLE_SUFFIXES = ['.ts', '.tsx', '/index.ts'];
+const G2C_ADVICE =
+  'Build the condition with skipUnless / skipWithoutTools (tests/helpers/strict-skip.ts), require strict mode to be off with a top-level `&& !STRICT` conjunct, or explain a legitimate skip with a "skip-ok: <reason>" comment.';
 
 function hasSkipOkMarker(content: string, line: number): boolean {
   const lines = content.split('\n');
@@ -667,39 +685,251 @@ function hasSkipOkMarker(content: string, line: number): boolean {
   return lines.slice(from, line).some((candidate) => SKIP_OK_MARKER.test(candidate));
 }
 
-const MAX_CONDITION_EXPANSION_DEPTH = 3;
-
-/** The condition text with the initializers of the file's `const` bindings it names, a few levels deep (`SKIP` -> `skipWithoutTools(...)`). */
-function expandedCondition(condition: ts.Node, sf: ts.SourceFile, depth = 0): string {
-  let text = condition.getText(sf);
-  if (depth >= MAX_CONDITION_EXPANSION_DEPTH) return text;
-  const initializers = new Map<string, ts.Expression>();
-  const collect = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) initializers.set(node.name.text, node.initializer);
-    ts.forEachChild(node, collect);
-  };
-  collect(sf);
+/**
+ * A `skip-ok:` comment may sit on the `const` a condition names instead of on every skip that uses it
+ * (`// skip-ok: no POSIX shell on Windows` above `const noPosixShell = ...`).
+ */
+function conditionIsExplainedAtDeclaration(condition: ts.Expression, sf: ts.SourceFile, content: string): boolean {
   const names = new Set<string>();
   const gather = (node: ts.Node): void => {
     if (ts.isIdentifier(node)) names.add(node.text);
     ts.forEachChild(node, gather);
   };
   gather(condition);
-  for (const name of names) {
-    const initializer = initializers.get(name);
-    if (initializer) text += ` ${expandedCondition(initializer, sf, depth + 1)}`;
-  }
-  return text;
+  let explained = false;
+  const find = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.has(node.name.text)) {
+      const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+      if (hasSkipOkMarker(content, line)) explained = true;
+    }
+    ts.forEachChild(node, find);
+  };
+  find(sf);
+  return explained;
 }
 
-function enclosingFunctionText(node: ts.Node, sf: ts.SourceFile): string {
-  let scope: ts.Node | undefined = node.parent;
-  while (scope && !ts.isFunctionLike(scope)) scope = scope.parent;
-  return (scope ?? sf).getText(sf);
+let strictSkipHelperNames: ReadonlySet<string> | undefined;
+
+/** The `skip*` functions tests/helpers/strict-skip.ts exports: read from the helper itself, so a new helper is picked up. */
+function getStrictSkipHelperNames(): ReadonlySet<string> {
+  if (strictSkipHelperNames) return strictSkipHelperNames;
+  const helperSource = ts.createSourceFile(
+    STRICT_SKIP_HELPERS_PATH,
+    fs.readFileSync(STRICT_SKIP_HELPERS_PATH, 'utf-8'),
+    ts.ScriptTarget.Latest,
+    true
+  );
+  const names = new Set<string>();
+  for (const statement of helperSource.statements) {
+    const exported = ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    if (exported && ts.isFunctionDeclaration(statement) && statement.name && statement.name.text.startsWith('skip')) names.add(statement.name.text);
+  }
+  if (names.size === 0) throw new Error(`${STRICT_SKIP_HELPERS_PATH} exports no skip* helper; the G2c gate has nothing to accept.`);
+  strictSkipHelperNames = names;
+  return names;
+}
+
+const skipSourceCache = new Map<string, ts.SourceFile | null>();
+
+function loadSkipSource(file: string): ts.SourceFile | null {
+  const cached = skipSourceCache.get(file);
+  if (cached !== undefined) return cached;
+  const isFile = fs.existsSync(file) && fs.statSync(file).isFile();
+  const loaded = isFile ? ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true) : null;
+  skipSourceCache.set(file, loaded);
+  return loaded;
+}
+
+function resolveRelativeModule(fromFile: string, specifier: string): string | null {
+  if (!specifier.startsWith('.')) return null;
+  const base = path.resolve(path.dirname(fromFile), specifier);
+  for (const suffix of RESOLVABLE_SUFFIXES) {
+    const candidate = `${base}${suffix}`;
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function isStrictSkipModule(specifier: string): boolean {
+  return path.basename(specifier).replace(/\.ts$/, '') === STRICT_SKIP_MODULE_NAME;
+}
+
+interface SkipInitializer {
+  expression: ts.Expression;
+  sf: ts.SourceFile;
+}
+
+/** What a name in a file stands for: the initializers of its `const` declarations, or the strict-skip export it is imported as. */
+interface SkipBinding {
+  initializers: SkipInitializer[];
+  /** Set when the name is an import from tests/helpers/strict-skip.ts, under the name that module exports it as. */
+  helperImport?: string;
+}
+
+function resolveSkipBinding(name: string, sf: ts.SourceFile, importDepth = 0): SkipBinding | null {
+  const initializers: SkipInitializer[] = [];
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer) {
+      initializers.push({ expression: node.initializer, sf });
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sf);
+  if (initializers.length > 0) return { initializers };
+  for (const statement of sf.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      if (element.name.text !== name) continue;
+      const exportedName = (element.propertyName ?? element.name).text;
+      const specifier = statement.moduleSpecifier.text;
+      if (isStrictSkipModule(specifier)) return { initializers: [], helperImport: exportedName };
+      const target = importDepth < MAX_SKIP_RESOLUTION_DEPTH ? resolveRelativeModule(sf.fileName, specifier) : null;
+      const targetSource = target ? loadSkipSource(target) : null;
+      return targetSource ? resolveSkipBinding(exportedName, targetSource, importDepth + 1) : null;
+    }
+  }
+  return null;
+}
+
+function unwrapSkipExpression(expression: ts.Expression): ts.Expression {
+  let node = expression;
+  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAwaitExpression(node) || ts.isAsExpression(node)) node = node.expression;
+  return node;
+}
+
+/** `process.env.ORACLE_STRICT_MODE` as written. */
+function isStrictEnvRead(expression: ts.Expression): boolean {
+  const node = unwrapSkipExpression(expression);
+  return ts.isPropertyAccessExpression(node) && node.name.text === STRICT_ENV_NAME && node.expression.getText().replace(/\s+/g, '') === 'process.env';
+}
+
+const STRICT_ENV_EQUAL_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken]);
+const STRICT_ENV_UNEQUAL_OPERATORS: ReadonlySet<ts.SyntaxKind> = new Set([ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken]);
+
+/** `process.env.ORACLE_STRICT_MODE === '1'` (`equal`) or `!== '1'` (not `equal`), in either operand order. */
+function isStrictEnvComparison(expression: ts.BinaryExpression, equal: boolean): boolean {
+  const operators = equal ? STRICT_ENV_EQUAL_OPERATORS : STRICT_ENV_UNEQUAL_OPERATORS;
+  if (!operators.has(expression.operatorToken.kind)) return false;
+  const left = unwrapSkipExpression(expression.left);
+  const right = unwrapSkipExpression(expression.right);
+  const isOn = (e: ts.Expression): boolean => ts.isStringLiteral(e) && e.text === STRICT_ENV_ON_VALUE;
+  return (isStrictEnvRead(left) && isOn(right)) || (isOn(left) && isStrictEnvRead(right));
+}
+
+/** Evaluates a skip condition's behaviour under ORACLE_STRICT_MODE=1 without running it. */
+class StrictSkipAnalysis {
+  private readonly helpers = getStrictSkipHelperNames();
+
+  /** True when `expression`, evaluated with ORACLE_STRICT_MODE=1, is never truthy: it is false, or it throws. */
+  neverTrue(expression: ts.Expression, sf: ts.SourceFile, depth = 0): boolean {
+    const node = unwrapSkipExpression(expression);
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) return this.neverFalse(node.operand, sf, depth);
+    if (ts.isBinaryExpression(node)) {
+      const operator = node.operatorToken.kind;
+      if (isStrictEnvComparison(node, false)) return true;
+      if (operator === ts.SyntaxKind.AmpersandAmpersandToken) return this.neverTrue(node.left, sf, depth) || this.neverTrue(node.right, sf, depth);
+      if (operator === ts.SyntaxKind.BarBarToken) return this.neverTrue(node.left, sf, depth) && this.neverTrue(node.right, sf, depth);
+      return false;
+    }
+    if (ts.isConditionalExpression(node)) return this.neverTrue(node.whenTrue, sf, depth) && this.neverTrue(node.whenFalse, sf, depth);
+    if (ts.isCallExpression(node)) return this.isHelperCall(node, sf) || this.calleeBodyHolds(node, sf, depth, (body, bodySf) => this.neverTrue(body, bodySf, depth + 1));
+    if (ts.isIdentifier(node)) return this.holdsForEveryInitializer(node, sf, depth, (init) => this.neverTrue(init.expression, init.sf, depth + 1));
+    return false;
+  }
+
+  /** True when `expression`, evaluated with ORACLE_STRICT_MODE=1, is never falsy: it is true, or it throws. */
+  neverFalse(expression: ts.Expression, sf: ts.SourceFile, depth = 0): boolean {
+    const node = unwrapSkipExpression(expression);
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) return this.neverTrue(node.operand, sf, depth);
+    if (ts.isBinaryExpression(node)) {
+      const operator = node.operatorToken.kind;
+      if (isStrictEnvComparison(node, true)) return true;
+      if (operator === ts.SyntaxKind.AmpersandAmpersandToken) return this.neverFalse(node.left, sf, depth) && this.neverFalse(node.right, sf, depth);
+      if (operator === ts.SyntaxKind.BarBarToken) return this.neverFalse(node.left, sf, depth) || this.neverFalse(node.right, sf, depth);
+      return false;
+    }
+    if (ts.isConditionalExpression(node)) return this.neverFalse(node.whenTrue, sf, depth) && this.neverFalse(node.whenFalse, sf, depth);
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression) && STRICT_FLAG_NAME.test(node.expression.text)) return true;
+      return this.calleeBodyHolds(node, sf, depth, (body, bodySf) => this.neverFalse(body, bodySf, depth + 1));
+    }
+    if (ts.isIdentifier(node)) {
+      if (STRICT_FLAG_NAME.test(node.text)) return this.isStrictFlag(node, sf, depth);
+      return this.holdsForEveryInitializer(node, sf, depth, (init) => this.neverFalse(init.expression, init.sf, depth + 1));
+    }
+    return false;
+  }
+
+  /** A STRICT-named identifier counts when what it is bound to reads ORACLE_STRICT_MODE; one that is not bound in a readable file counts by its name. */
+  private isStrictFlag(identifier: ts.Identifier, sf: ts.SourceFile, depth: number): boolean {
+    if (depth >= MAX_SKIP_RESOLUTION_DEPTH) return false;
+    const binding = resolveSkipBinding(identifier.text, sf);
+    if (binding === null || binding.helperImport !== undefined) return true;
+    return binding.initializers.every((init) => this.neverFalse(init.expression, init.sf, depth + 1));
+  }
+
+  private holdsForEveryInitializer(identifier: ts.Identifier, sf: ts.SourceFile, depth: number, holds: (init: SkipInitializer) => boolean): boolean {
+    if (depth >= MAX_SKIP_RESOLUTION_DEPTH) return false;
+    const binding = resolveSkipBinding(identifier.text, sf);
+    return binding !== null && binding.initializers.length > 0 && binding.initializers.every(holds);
+  }
+
+  /** A call to a function the file binds to an arrow function with an expression body (`const missing = (name) => !STRICT && ...`): `holds` judges that body. */
+  private calleeBodyHolds(call: ts.CallExpression, sf: ts.SourceFile, depth: number, holds: (body: ts.Expression, bodySf: ts.SourceFile) => boolean): boolean {
+    if (!ts.isIdentifier(call.expression) || depth >= MAX_SKIP_RESOLUTION_DEPTH) return false;
+    const binding = resolveSkipBinding(call.expression.text, sf);
+    if (binding === null || binding.initializers.length === 0) return false;
+    return binding.initializers.every((init) => ts.isArrowFunction(init.expression) && !ts.isBlock(init.expression.body) && holds(init.expression.body, init.sf));
+  }
+
+  /** A call to a skip* function that the file imports from tests/helpers/strict-skip.ts (named or through a namespace import). */
+  private isHelperCall(call: ts.CallExpression, sf: ts.SourceFile): boolean {
+    const callee = call.expression;
+    if (ts.isIdentifier(callee)) {
+      const binding = resolveSkipBinding(callee.text, sf);
+      return binding?.helperImport !== undefined && this.helpers.has(binding.helperImport);
+    }
+    if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.expression) || !this.helpers.has(callee.name.text)) return false;
+    const namespace = callee.expression.text;
+    return sf.statements.some((statement) => {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) || !isStrictSkipModule(statement.moduleSpecifier.text)) return false;
+      const bindings = statement.importClause?.namedBindings;
+      return bindings !== undefined && ts.isNamespaceImport(bindings) && bindings.name.text === namespace;
+    });
+  }
+
+  /** Whether a bare `ctx.skip()` cannot run under ORACLE_STRICT_MODE=1: an enclosing branch or an earlier throw rules it out. */
+  skipIsUnreachableUnderStrict(call: ts.CallExpression, sf: ts.SourceFile): boolean {
+    let child: ts.Node = call;
+    for (let parent: ts.Node | undefined = call.parent; parent && !ts.isFunctionLike(parent); child = parent, parent = parent.parent) {
+      if (ts.isIfStatement(parent)) {
+        if (child === parent.thenStatement && this.neverTrue(parent.expression, sf)) return true;
+        if (child === parent.elseStatement && this.neverFalse(parent.expression, sf)) return true;
+      } else if (ts.isBinaryExpression(parent) && child === parent.right) {
+        if (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && this.neverTrue(parent.left, sf)) return true;
+        if (parent.operatorToken.kind === ts.SyntaxKind.BarBarToken && this.neverFalse(parent.left, sf)) return true;
+      } else if (ts.isBlock(parent)) {
+        const index = parent.statements.indexOf(child as ts.Statement);
+        if (parent.statements.slice(0, index).some((earlier) => this.throwsWhenStrict(earlier, sf))) return true;
+      }
+    }
+    return false;
+  }
+
+  /** `if (<true under strict>) throw ...`, the throw directly in the branch or in its block. */
+  private throwsWhenStrict(statement: ts.Statement, sf: ts.SourceFile): boolean {
+    if (!ts.isIfStatement(statement) || !this.neverFalse(statement.expression, sf)) return false;
+    const branch = statement.thenStatement;
+    if (ts.isThrowStatement(branch)) return true;
+    return ts.isBlock(branch) && branch.statements.some((inner) => ts.isThrowStatement(inner));
+  }
 }
 
 function checkSkipsFailUnderStrictMode(targetDir?: string): Violation[] {
   const violations: Violation[] = [];
+  const analysis = new StrictSkipAnalysis();
   const testFiles = scanDirectory(targetDir ? path.join(targetDir, 'tests') : TESTS_DIR, SUPPORTED_EXTENSIONS);
   for (const file of testFiles) {
     const relative = path.relative(ROOT_DIR, file).split(path.sep).join('/');
@@ -716,15 +946,17 @@ function checkSkipsFailUnderStrictMode(targetDir?: string): Violation[] {
         const receiver = node.expression.expression.getText(sf);
         const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
         if ((method === 'skipIf' || method === 'runIf') && node.arguments.length > 0) {
-          const condition = node.arguments[0].getText(sf);
-          if (!STRICT_AWARE_SKIP_CONDITION.test(expandedCondition(node.arguments[0], sf)) && !hasSkipOkMarker(content, line)) {
-            report(node, `${method}(${condition}) skips silently under ORACLE_STRICT_MODE=1. Build the condition with skipUnless / skipWithoutTools (tests/helpers/strict-skip.ts), or explain a legitimate skip with a "skip-ok: <reason>" comment.`);
+          const condition = node.arguments[0];
+          const safe = method === 'skipIf' ? analysis.neverTrue(condition, sf) : analysis.neverFalse(condition, sf);
+          if (!safe && !hasSkipOkMarker(content, line) && !conditionIsExplainedAtDeclaration(condition, sf, content)) {
+            report(node, `${method}(${condition.getText(sf)}) skips silently under ORACLE_STRICT_MODE=1. ${G2C_ADVICE}`);
           }
         } else if (method === 'skip' && TEST_API_RECEIVERS.has(receiver) && !hasSkipOkMarker(content, line)) {
           report(node, `${receiver}.skip() is a permanently skipped test. Delete it, or explain it with a "skip-ok: <reason>" comment.`);
-        } else if (method === 'skip' && TEST_CONTEXT_RECEIVERS.has(receiver) && node.arguments.length === 0) {
-          if (!STRICT_AWARE_SKIP_CONDITION.test(enclosingFunctionText(node, sf)) && !hasSkipOkMarker(content, line)) {
-            report(node, `${receiver}.skip() skips silently under ORACLE_STRICT_MODE=1. Throw when strict, use oracleTest, or explain it with a "skip-ok: <reason>" comment.`);
+        } else if (method === 'skip' && TEST_CONTEXT_RECEIVERS.has(receiver)) {
+          const safe = node.arguments.length > 0 ? analysis.neverTrue(node.arguments[0], sf) : analysis.skipIsUnreachableUnderStrict(node, sf);
+          if (!safe && !hasSkipOkMarker(content, line)) {
+            report(node, `${node.getText(sf)} skips silently under ORACLE_STRICT_MODE=1. Throw when strict before skipping (or use oracleTest), or: ${G2C_ADVICE}`);
           }
         }
       }

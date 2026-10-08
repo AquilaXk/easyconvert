@@ -314,11 +314,13 @@ it('checks a Map lookup, which answers undefined for a missing key', () => {
   // 4c. G2c: skips that stay silent under ORACLE_STRICT_MODE=1
   // =========================================================================
   describe('Rule G2c: a skip must fail under ORACLE_STRICT_MODE=1', () => {
-    function guardOutputFor(source: string): { status: number; output: string } {
+    /** `helperFiles` are written to tests/helpers/ of the scanned tree, for conditions that import a constant. */
+    function guardOutputFor(source: string, helperFiles: Record<string, string> = {}): { status: number; output: string } {
       let result = { status: -1, output: '' };
       withTempDir((dir) => {
         const testsDir = path.join(dir, 'tests');
-        fs.mkdirSync(testsDir, { recursive: true });
+        fs.mkdirSync(path.join(testsDir, 'helpers'), { recursive: true });
+        for (const [name, text] of Object.entries(helperFiles)) fs.writeFileSync(path.join(testsDir, 'helpers', name), text);
         fs.writeFileSync(path.join(testsDir, 'skips.test.ts'), source);
         const res = runGuardSubprocess(dir, ['--strict']);
         result = { status: res.status, output: res.stderr + res.stdout };
@@ -346,11 +348,12 @@ it('skips from inside', (ctx) => {
     it('follows a constant to the strict-aware helper it is built from (negative case)', () => {
       const { status, output } = guardOutputFor(`
 import { it, describe } from 'vitest';
+import { skipUnless, skipWithoutTools, skipWithoutRawSamples } from './helpers/strict-skip';
 const SKIP = skipWithoutTools('bzip2');
-const HAS_X = skipUnless('x', false);
+const SKIP_WITHOUT_X = skipUnless('x', false);
 const NEEDS_SAMPLES = skipWithoutRawSamples('x3f');
 it.skipIf(SKIP)('uses a helper constant', () => {});
-it.skipIf(!HAS_X)('uses another helper constant', () => {});
+it.skipIf(SKIP_WITHOUT_X)('uses another helper constant', () => {});
 describe.skipIf(NEEDS_SAMPLES)('samples', () => {});
           `);
       expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
@@ -363,6 +366,7 @@ import { it, describe } from 'vitest';
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 const ENABLED = STRICT_MODE || Boolean(process.env.SAMPLES);
 it.skipIf(!ENABLED)('runs under strict mode', () => {});
+// skip-ok: platform capability: reads /proc, CI runs Linux.
 it.skipIf(process.platform !== 'linux')('reads /proc', () => {});
 // skip-ok: the Redis-mode CI step sets REDIS_URL and runs this file.
 describe.skipIf(!process.env.REDIS_URL)('redis', () => {});
@@ -377,6 +381,86 @@ it('throws when strict, skips otherwise', (ctx) => {
   }
 });
           `);
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
+    });
+
+    it('flags conditions that merely mention the strict flag, or a helper that is not the strict-aware one (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const HAS_TOOL = Boolean(process.env.TOOL);
+function skipUnless(what: string, available: boolean): boolean {
+  return !available;
+}
+it.skipIf(!HAS_TOOL || STRICT_MODE)('skips when the tool is missing, and also when strict', () => {});
+it.skipIf(STRICT_MODE && !HAS_TOOL)('skips only under strict mode', () => {});
+it.skipIf(!HAS_TOOL && process.platform === 'linux')('a platform test is not a strict-mode test', () => {});
+it.skipIf(skipUnless('tool', HAS_TOOL))('a local function of the same name does not throw', () => {});
+it.runIf(HAS_TOOL)('runs only when the tool is present', () => {});
+it.runIf(!STRICT_MODE)('runs only when not strict', () => {});
+it('skips with a condition argument', (ctx) => {
+  ctx.skip(!HAS_TOOL);
+});
+it('skips with a condition argument that skips under strict mode', (ctx) => {
+  ctx.skip(!HAS_TOOL || STRICT_MODE, 'tool missing');
+});
+it('names the flag in a comment only', (ctx) => {
+  // ORACLE_STRICT_MODE and STRICT_MODE are handled by the CI preflight, not here.
+  if (!HAS_TOOL) ctx.skip();
+});
+it('names the flag in a string only', (ctx) => {
+  const note = 'throws when ORACLE_STRICT_MODE=1';
+  if (!HAS_TOOL) ctx.skip();
+});
+it('throws only on a branch that strict mode may not take', (ctx) => {
+  if (process.env.TOOL_NAME) throw new Error('named tool is broken');
+  if (!HAS_TOOL) ctx.skip();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G2c-SKIP-SILENT-UNDER-STRICT/g)).toHaveLength(11);
+      expect(output).toContain('it.skipIf(!HAS_TOOL || STRICT_MODE)');
+      expect(output).toContain('ctx.skip(!HAS_TOOL)');
+      expect(output).toContain('ctx.skip(!HAS_TOOL || STRICT_MODE, \'tool missing\')');
+      expect(output).toContain('it.skipIf(skipUnless(\'tool\', HAS_TOOL))');
+    });
+
+    it('accepts a strict-aware helper call, or a conjunct that needs strict mode off, however the condition is spelled (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+import * as strict from './helpers/strict-skip';
+import { skipUnless as requireOrSkip, skipWithoutTools, isStrictMode } from './helpers/strict-skip';
+import { SKIP_WITHOUT_BINARY } from './helpers/skip-flags';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const HAS_TOOL = Boolean(process.env.TOOL);
+const missing = (name: string) => !STRICT_MODE && !HAS_TOOL;
+it.skipIf(!HAS_TOOL && !STRICT_MODE)('conjunct of a negated flag', () => {});
+it.skipIf(!HAS_TOOL && !isStrictMode())('conjunct of a negated call', () => {});
+it.skipIf((!HAS_TOOL && process.env.TOOL_DIR === undefined) && process.env.ORACLE_STRICT_MODE !== '1')('conjunct on the environment', () => {});
+it.skipIf(requireOrSkip('tool', HAS_TOOL))('a helper imported under another name', () => {});
+it.skipIf(strict.skipUnless('tool', HAS_TOOL) || skipWithoutTools('ffmpeg'))('namespace and named helpers', () => {});
+it.skipIf(SKIP_WITHOUT_BINARY)('a constant defined in another helper', () => {});
+it.skipIf(missing('sample'))('a local arrow function', () => {});
+it.runIf(STRICT_MODE)('runs under strict mode', () => {});
+it.runIf(!requireOrSkip('tool', HAS_TOOL))('a helper, negated for runIf', () => {});
+it('skips with a condition that needs strict mode off', (ctx) => {
+  ctx.skip(!HAS_TOOL && !STRICT_MODE);
+});
+it('throws before skipping when strict', (ctx) => {
+  if (!HAS_TOOL) {
+    if (isStrictMode()) throw new Error('tool required');
+    ctx.skip();
+  }
+});
+it('skips only in the branch strict mode does not take', (ctx) => {
+  if (!STRICT_MODE) {
+    ctx.skip();
+  }
+});
+          `, {
+        'skip-flags.ts': `export const SKIP_WITHOUT_BINARY = !Boolean(process.env.BINARY) && process.env.ORACLE_STRICT_MODE !== '1';\n`,
+      });
       expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
       expect(status).toBe(0);
     });
