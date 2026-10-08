@@ -208,7 +208,7 @@ export class KdTree3 {
     const gy = (y - this.gridLow[1]) * this.gridScale[1];
     const gz = (z - this.gridLow[2]) * this.gridScale[2];
     if (!(gx >= 0 && gx < cells && gy >= 0 && gy < cells && gz >= 0 && gz < cells)) return -1;
-    return ((gx | 0) * cells + (gy | 0)) * cells + (gz | 0);
+    return (Math.trunc(gx) * cells + Math.trunc(gy)) * cells + Math.trunc(gz);
   }
 
   /**

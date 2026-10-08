@@ -93,13 +93,13 @@ function readDirectory(buf: Buffer): IcoEntry[] {
 /** The smallest entry at least as large as the request in both sides, else the largest entry. */
 function chooseEntry(entries: IcoEntry[], request: IconSizeRequest | undefined): IcoEntry {
   const area = (e: IcoEntry): number => e.width * e.height;
-  const largest = entries.reduce((best, e) => (area(e) > area(best) || (area(e) === area(best) && e.bitCount > best.bitCount) ? e : best));
+  const largest = entries.reduce((best, e) => (area(e) > area(best) || (area(e) === area(best) && e.bitCount > best.bitCount) ? e : best), entries[0]);
   const wantedWidth = request?.width ?? 0;
   const wantedHeight = request?.height ?? 0;
   if (wantedWidth <= 0 && wantedHeight <= 0) return largest;
   const fitting = entries.filter((e) => e.width >= wantedWidth && e.height >= wantedHeight);
   if (fitting.length === 0) return largest;
-  return fitting.reduce((best, e) => (area(e) < area(best) || (area(e) === area(best) && e.bitCount > best.bitCount) ? e : best));
+  return fitting.reduce((best, e) => (area(e) < area(best) || (area(e) === area(best) && e.bitCount > best.bitCount) ? e : best), fitting[0]);
 }
 
 /**

@@ -69,7 +69,7 @@ export function float16ToFloat32(h: number): number {
     return (sign ? -1 : 1) * Math.pow(2, -14) * (mant / 1024);
   }
   if (exp === 31) {
-    if (mant) return NaN;
+    if (mant) return Number.NaN;
     return sign ? -Infinity : Infinity;
   }
   return (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + mant / 1024);

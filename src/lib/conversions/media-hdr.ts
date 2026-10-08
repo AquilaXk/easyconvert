@@ -30,7 +30,12 @@ const PROBE_KILL_SIGNAL = 'SIGKILL';
 const FILTER_LIST_TIMEOUT_MS = 10_000;
 const FILTER_LIST_MAX_BYTES = 1024 * 1024;
 const MAX_LIGHT_LEVEL_OUTPUT_BYTES = 4096;
-const ZSCALE_LISTING = /^\s*\S+\s+zscale\s/m;
+/** The filter-name column of an `ffmpeg -filters` row: the second whitespace-separated field. */
+const FILTER_NAME_FIELD = 1;
+
+function listsZscale(listing: string): boolean {
+  return listing.split('\n').some((line) => line.trim().split(/\s+/)[FILTER_NAME_FIELD] === 'zscale');
+}
 
 const filterCache = new Map<string, boolean>();
 
@@ -49,7 +54,7 @@ export function assertZscaleAvailable(ffmpegBin: string | null | undefined): voi
         killSignal: PROBE_KILL_SIGNAL,
         maxBuffer: FILTER_LIST_MAX_BYTES,
       });
-      available = ZSCALE_LISTING.test(listing);
+      available = listsZscale(listing);
     } catch {
       available = false;
     }
