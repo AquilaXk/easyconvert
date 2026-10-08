@@ -54,7 +54,13 @@ export type ExternalOracleTool =
   | 'dcraw_emu'
   | 'ps2pdf'
   | 'woff2_decompress'
-  | 'woff2_info';
+  | 'woff2_info'
+  | 'tiffinfo'
+  | 'exiftool'
+  | 'avifenc'
+  | 'avifdec'
+  | 'cwebp'
+  | 'dwebp';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

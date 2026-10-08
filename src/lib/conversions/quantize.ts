@@ -21,6 +21,8 @@
  * 4. 8-Bit Paletted BMP & Indexed Buffer Encoders (for GIF, PNG-8, BMP-8).
  */
 
+import { blueNoiseCentred } from './blue-noise-mask';
+
 export interface RgbColor {
   r: number;
   g: number;
@@ -860,23 +862,6 @@ export const quantizeWuOklab = quantizeXiaolinWu;
 // ============================================================================
 
 /**
- * 64x64 Isotropic Blue Noise Matrix based on Void-and-Cluster (Ulichney 1993)
- * Normalised to float range [-0.5, +0.5]
- */
-const BLUE_NOISE_64: Float32Array = (() => {
-  const size = 64;
-  const arr = new Float32Array(size * size);
-  const phi = 1.618033988749895;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const v = (x * phi + y * phi * phi) % 1.0;
-      arr[y * size + x] = v - 0.5;
-    }
-  }
-  return arr;
-})();
-
-/**
  * Applies isotropic Blue Noise dithering to map RGB pixels to closest palette colors
  * without streak or worm artifacts characteristic of error diffusion.
  */
@@ -907,6 +892,8 @@ export function applyBlueNoiseDither(
     return bestIdx;
   };
 
+  // The 64x64 void-and-cluster mask (Ulichney 1993) as thresholds in [-0.5, 0.5), built on first use.
+  const mask = blueNoiseCentred();
   const noiseScale = strength * 32.0;
 
   for (let y = 0; y < height; y++) {
@@ -914,7 +901,7 @@ export function applyBlueNoiseDither(
     for (let x = 0; x < width; x++) {
       const pIdx = y * width + x;
       const bIdx = pIdx * channels;
-      const noise = BLUE_NOISE_64[noiseRow + (x % 64)] * noiseScale;
+      const noise = mask[noiseRow + (x % 64)] * noiseScale;
 
       const r = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx] + noise)));
       const g = Math.max(0, Math.min(255, Math.round(rgbBuffer[bIdx + 1] + noise)));

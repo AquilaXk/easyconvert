@@ -10,6 +10,7 @@ import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextF
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
+import { buildTiffOptions } from './image-tiff-options';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { assertNoComplexScript } from './ctl';
@@ -9864,7 +9865,7 @@ async function rasterizePipeline(
       return { buffer, mimeType: 'image/avif' };
     }
     case 'tiff': {
-      const buffer = await pipeline.tiff().toBuffer();
+      const buffer = await pipeline.tiff(buildTiffOptions({})).toBuffer();
       return { buffer, mimeType: 'image/tiff' };
     }
     case 'gif': {

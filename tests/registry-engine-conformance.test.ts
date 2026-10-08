@@ -298,10 +298,35 @@ async function buildProbeCbc(): Promise<Buffer> {
   return collection.generateAsync({ type: 'nodebuffer' });
 }
 
+/** Bytes of an ICONDIR header and of one ICONDIRENTRY. */
+const ICON_DIR_BYTES = 6;
+const ICON_ENTRY_BYTES = 16;
+/** ICONDIR resource type of a cursor (1 is an icon). */
+const CURSOR_RESOURCE_TYPE = 2;
+
+/**
+ * A one-image cursor wrapping the PNG seed, laid out by hand from the ICO/CUR directory format: ICONDIR (reserved 0,
+ * type 2, count 1), one ICONDIRENTRY (width and height bytes, where 0 means 256, hotspot 0,0, payload size and
+ * offset) and the PNG payload, which the format allows in place of a DIB.
+ */
+async function cursorFromPngSeed(): Promise<Buffer> {
+  const { width, height } = await sharp(PNG_SEED).metadata();
+  const header = Buffer.alloc(ICON_DIR_BYTES + ICON_ENTRY_BYTES);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(CURSOR_RESOURCE_TYPE, 2);
+  header.writeUInt16LE(1, 4);
+  header[ICON_DIR_BYTES] = width! >= 256 ? 0 : width!;
+  header[ICON_DIR_BYTES + 1] = height! >= 256 ? 0 : height!;
+  header.writeUInt32LE(PNG_SEED.length, ICON_DIR_BYTES + 8);
+  header.writeUInt32LE(header.length, ICON_DIR_BYTES + 12);
+  return Buffer.concat([header, PNG_SEED]);
+}
+
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
+  cur: cursorFromPngSeed,
   yaml: () => YAML_MAPPING_TEXT,
   yml: () => YAML_MAPPING_TEXT,
   stl: () => STL_TEXT,
@@ -1024,6 +1049,8 @@ describe('real camera RAW samples', () => {
   const PSD_WIDTH_OFFSET = 18;
   const PSD_DEPTH_OFFSET = 22;
   const BYTE_DEPTH_8 = 8;
+  /** A flat PSD from an 8-bit source is 8 bits per channel; one from a high-bit source (RAW, 16-bit PNG) keeps 16. */
+  const PSD_CHANNEL_DEPTHS: readonly number[] = [BYTE_DEPTH_8, 16];
   const EXR_MAGIC = Buffer.from([0x76, 0x2f, 0x31, 0x01]);
   const EXR_FIRST_ATTRIBUTE_OFFSET = 8;
   const EXR_BOX2I_BYTES = 16;
@@ -1158,7 +1185,7 @@ describe('real camera RAW samples', () => {
       const dims = { width: buffer.readUInt32BE(PSD_WIDTH_OFFSET), height: buffer.readUInt32BE(PSD_HEIGHT_OFFSET) };
       expectPlausible(dims);
       expect(dims).toEqual(reference);
-      expect(buffer.readUInt16BE(PSD_DEPTH_OFFSET)).toBe(BYTE_DEPTH_8);
+      expect(PSD_CHANNEL_DEPTHS).toContain(buffer.readUInt16BE(PSD_DEPTH_OFFSET));
       return;
     }
     if (target === 'eps' || target === 'ps') {

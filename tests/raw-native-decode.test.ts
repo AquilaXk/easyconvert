@@ -77,8 +77,10 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW sensor decode through the dispatche
       const meta = await sharp(result.buffer).metadata();
       expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : 'png');
       expect({ width: meta.width, height: meta.height }).toEqual(expectedOutputSize(format));
+      // PNG keeps the sensor precision as 16 bits per sample; JPEG is 8-bit by definition.
+      expect(meta.depth).toBe(target === 'jpg' ? 'uchar' : 'ushort');
 
-      const { channels } = await sharp(result.buffer).stats();
+      const { channels } = await sharp(await toEightBit(result.buffer)).stats();
       expect(Math.max(...channels.map((channel) => channel.stdev))).toBeGreaterThan(0);
       const mean = channels.reduce((sum, channel) => sum + channel.mean, 0) / channels.length;
       expect(mean).toBeGreaterThan(MEAN_MIN);
@@ -92,6 +94,11 @@ const REGION_FORMATS = ['arw', 'nef', 'cr2'];
 const REGION_GRID = 6;
 const REGION_MEAN_TOLERANCE = 12;
 const HALF_SIZE_FLAG = '-h';
+
+/** The picture as 8-bit sRGB, so statistics of 16-bit and 8-bit outputs share one scale. */
+async function toEightBit(image: Buffer): Promise<Buffer> {
+  return sharp(image).toColourspace('srgb').png().toBuffer();
+}
 
 /** Per-region channel means of an image, on a grid, as 8-bit values. */
 async function regionMeans(image: Sharp, width: number, height: number): Promise<number[]> {
@@ -117,9 +124,9 @@ async function worstRegionDifference(format: string, decoded: Buffer): Promise<n
     const referencePath = path.join(dir, 'half.tiff');
     execFileSync(DCRAW_EMU!, [HALF_SIZE_FLAG, '-T', '-6', '-w', '-o', '1', '-Z', referencePath, samplePath(format)]);
     const { width, height } = await sharp(decoded).metadata();
-    const referencePng = await sharp(referencePath).resize(width, height, { kernel: 'lanczos3' }).removeAlpha().png().toBuffer();
+    const referencePng = await sharp(referencePath).resize(width, height, { kernel: 'lanczos3' }).removeAlpha().toColourspace('srgb').png().toBuffer();
     const referenceMeans = await regionMeans(sharp(referencePng), width!, height!);
-    const decodedMeans = await regionMeans(sharp(decoded).removeAlpha(), width!, height!);
+    const decodedMeans = await regionMeans(sharp(await toEightBit(decoded)).removeAlpha(), width!, height!);
     return Math.max(...decodedMeans.map((mean, index) => Math.abs(mean - referenceMeans[index])));
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -186,22 +186,22 @@ describe('media fail-open regressions', () => {
     expect(video.pix_fmt).toBe('yuv420p10le');
   }, 120_000);
 
-  oracleTest('rejects HDR input for an 8-bit target instead of writing untonemapped 8-bit video', ['ffmpeg', 'ffprobe'], async () => {
+  oracleTest('rejects HDR input for an 8-bit target when toneMap is none, instead of writing untonemapped 8-bit video', ['ffmpeg', 'ffprobe'], async () => {
     const inputPath = makeHdrInput('hdr-reject.mp4');
     const input = fs.readFileSync(inputPath);
     for (const video of [{ codec: 'h264' as const }, { codec: 'hevc' as const, profile: 'main' }]) {
       const build = () =>
-        buildFfmpegArguments(inputPath, path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', 'mp4', { disableHwaccel: true, video });
+        buildFfmpegArguments(inputPath, path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', 'mp4', { disableHwaccel: true, toneMap: 'none', video });
       expect(build).toThrow(InvalidMediaOptionError);
       expect(build).toThrow(HDR_ERROR);
 
       // The explicit native path surfaces the typed option error unchanged.
-      const attempt = convertMedia(input, 'mp4', 'mp4', { useFfmpeg: true, disableHwaccel: true, video }, 'hdr-reject');
+      const attempt = convertMedia(input, 'mp4', 'mp4', { useFfmpeg: true, disableHwaccel: true, toneMap: 'none', video }, 'hdr-reject');
       await expect(attempt).rejects.toBeInstanceOf(InvalidMediaOptionError);
       await expect(attempt).rejects.toThrow(HDR_ERROR);
 
       // The default native path keeps the option error type too, so the API answers 400.
-      const defaultAttempt = convertMedia(input, 'mp4', 'mp4', { disableHwaccel: true, video }, 'hdr-reject-default');
+      const defaultAttempt = convertMedia(input, 'mp4', 'mp4', { disableHwaccel: true, toneMap: 'none', video }, 'hdr-reject-default');
       await expect(defaultAttempt).rejects.toBeInstanceOf(InvalidMediaOptionError);
       await expect(defaultAttempt).rejects.toThrow(HDR_ERROR);
     }
@@ -226,7 +226,7 @@ describe('media fail-open regressions', () => {
     expect(video.color_transfer).toBe('smpte2084');
   }, 120_000);
 
-  oracleTest('rejects HDR input for an 8-bit target when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
+  oracleTest('rejects HDR input for an 8-bit target with toneMap none when a hardware encoder is advertised', ['ffmpeg', 'ffprobe'], () => {
     const input = makeHdrInput('hdr-hw-reject.mp4');
     const cases: Array<{ encoders: string[]; codec: 'h264' | 'hevc' }> = [
       { encoders: ['h264_nvenc', 'hevc_nvenc'], codec: 'h264' },
@@ -237,7 +237,7 @@ describe('media fail-open regressions', () => {
       resetHardwareAccelerationCache();
       const fakeFfmpeg = makeHardwareFfmpeg(`hw-reject-${i}`, encoders);
       const build = () =>
-        buildFfmpegArguments(input, path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', 'mp4', { video: { codec } }, fakeFfmpeg);
+        buildFfmpegArguments(input, path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', 'mp4', { toneMap: 'none', video: { codec } }, fakeFfmpeg);
       expect(build).toThrow(InvalidMediaOptionError);
       expect(build).toThrow(HDR_ERROR);
     }

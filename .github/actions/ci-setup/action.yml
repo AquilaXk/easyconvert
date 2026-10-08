@@ -38,7 +38,14 @@ runs:
           unrar \
           qpdf \
           ghostscript \
-          libraw-bin
+          libraw-bin \
+          libavif-bin \
+          libimage-exiftool-perl \
+          libtiff-tools \
+          pngcheck \
+          webp \
+          python3-pil \
+          python3-numpy
         # Pre-stage Tesseract traineddata assets for offline inference
         find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
 

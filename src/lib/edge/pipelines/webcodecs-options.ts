@@ -32,7 +32,7 @@ const HONOURED = [
 const NOT_ABOUT_MEDIA = [
   'quality', 'fit', 'stripMetadata', 'background', 'dpi', 'layout', 'colorDepth', 'colors', 'palette', 'dither',
   'quantizer', 'ditherMethod', 'useWebGpu', 'gpuAcceleration', 'falseColorSuppression', 'allowEmbeddedPreview',
-  'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap',
+  'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression', 'kernel',
   'uSamples', 'vSamples', 'allowOpenMesh', 'smoothingAngleDeg', 'outputUnit', 'page', 'pages', 'multiPageOutput',
   'pageCount', 'password', 'orientation', 'preserveTables', 'ocrEnabled', 'ocrLanguage', 'ocrMode',
   'ocrDensityThreshold', 'ocrDetectOrientation', 'clientEdgeMode', 'margin', 'validateMagicBytes', 'delimiter', 'encoding', 'bom',
@@ -46,7 +46,7 @@ const NOT_ABOUT_MEDIA = [
 /** Media options the edge worker has no way to apply. */
 const NOT_APPLIED = [
   'audio', 'audioVolume', 'video', 'trim', 'subtitles', 'thumbnail', 'packaging', 'videoResolution', 'videoFps',
-  'duration', 'aspectRatio', 'useFfmpeg', 'fastStart', 'disableHwaccel',
+  'duration', 'aspectRatio', 'useFfmpeg', 'fastStart', 'disableHwaccel', 'toneMap',
 ] as const satisfies readonly (keyof ConversionOptions)[];
 
 type Classified = (typeof HONOURED)[number] | (typeof NOT_ABOUT_MEDIA)[number] | (typeof NOT_APPLIED)[number];
