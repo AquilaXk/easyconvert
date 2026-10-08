@@ -758,7 +758,8 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
       const expected: Cmd[] = jamoRing(jamo).map((pt, i) => [i === 0 ? 'M' : 'L', pt.x, pt.y] as Cmd);
       expect(hausdorff(flattenCharstringContour(outline.contours[c]), flattenCommands(expected)), `component ${c}`).toBeLessThan(GEOMETRY_TOLERANCE);
     });
-  });
+    // The conversion takes about 2 s on an idle core, which a shard running at twice its CPU count stretches past the 5 s default.
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('still converts a font whose glyphs share a component many times within the budget', () => {
     const font = amplifierFont(2, 300); // 300 glyphs x 64 points, far below the budget

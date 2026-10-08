@@ -21,6 +21,17 @@ import { expect } from 'vitest';
 export const SCALING_TEST_TIMEOUT_MS = 60_000;
 /** Interleaved passes per comparison; the best pass of each side is kept. */
 export const SCALING_PASSES = 3;
+/**
+ * A ratio that lands just over its bound after SCALING_PASSES passes may be load rather than growth: a busy shard can
+ * slow every large sample of a short run. Such a comparison takes more passes, up to this many in all. Noise only ever
+ * adds time to a sample, so the best of more passes can only move toward the true ratio: work that really grows faster
+ * than the bound stays over it however many passes are taken.
+ */
+export const MAX_SCALING_PASSES = 12;
+/** Extra passes are taken only for a ratio up to this multiple of the bound; a clearly super-linear one is refused at once. */
+export const EXTRA_PASS_RATIO_MARGIN = 1.5;
+/** Extra passes stop once a comparison has used this much time, so that a slow case cannot run into the test timeout. */
+export const EXTRA_PASS_BUDGET_MS = 20_000;
 /** The input grows by this factor between the small and the large run. */
 export const SCALING_FACTOR = 4;
 /**
@@ -42,10 +53,12 @@ export const MAX_SAMPLE_REPETITIONS = 4096;
 const SAMPLE_OVERSHOOT = 1.25;
 /** A sample that reads as zero is treated as this long when sizing the next one. */
 const MIN_TIMER_MS = 0.001;
-/** Baseline floor for size-independence checks: a sub-millisecond rejection is compared against this instead. */
-export const SIZE_INDEPENDENT_FLOOR_MS = 5;
-/** Ceiling on how much longer a bounded-work rejection may take when the claimed size grows. */
-export const CONSTANT_RATIO_BOUND = 4;
+/**
+ * Ceiling on how much longer a bounded-work rejection may take when the claimed size grows. Both sides are timed over
+ * samples of at least MIN_SAMPLE_MS and the best of the passes is kept, so constant work reads as about 1x even on a
+ * loaded runner; work that grows linearly with a 4x larger input reads as about 4x and fails.
+ */
+export const CONSTANT_RATIO_BOUND = 2;
 
 export interface ScalingMeasurement<R = unknown> {
   /** Best time of one run of the smaller side, in milliseconds. */
@@ -113,8 +126,10 @@ async function timeAdaptiveSample<T>(
 export async function measureInterleaved<R = unknown>(
   small: () => unknown,
   large: () => R | Promise<R>,
-  passes: number = SCALING_PASSES
+  passes: number = SCALING_PASSES,
+  acceptRatio?: number
 ): Promise<ScalingMeasurement<R>> {
+  const started = performance.now();
   await small();
   let largeResult = (await large()) as R;
   let smallRepetitions = 1;
@@ -122,7 +137,8 @@ export async function measureInterleaved<R = unknown>(
   let smallMs = Number.POSITIVE_INFINITY;
   let largeMs = Number.POSITIVE_INFINITY;
   let smallSampleMs = Number.POSITIVE_INFINITY;
-  for (let pass = 0; pass < passes; pass++) {
+  for (let pass = 0; ; pass++) {
+    if (pass >= passes && !wantsExtraPass(pass, largeMs / smallMs, performance.now() - started, acceptRatio)) break;
     const smallSample = await timeAdaptiveSample(small, smallRepetitions);
     smallRepetitions = smallSample.repetitions;
     smallMs = Math.min(smallMs, smallSample.ms / smallSample.repetitions);
@@ -133,6 +149,12 @@ export async function measureInterleaved<R = unknown>(
     largeResult = largeSample.value;
   }
   return { smallMs, largeMs, ratio: largeMs / smallMs, smallSampleMs, largeResult };
+}
+
+/** Whether a comparison that has finished `pass` passes with this ratio should take another one (see MAX_SCALING_PASSES). */
+function wantsExtraPass(pass: number, ratio: number, elapsedMs: number, acceptRatio: number | undefined): boolean {
+  if (acceptRatio === undefined || pass >= MAX_SCALING_PASSES || elapsedMs >= EXTRA_PASS_BUDGET_MS) return false;
+  return ratio > acceptRatio && ratio <= acceptRatio * EXTRA_PASS_RATIO_MARGIN;
 }
 
 export interface ScalingOptions {
@@ -154,10 +176,12 @@ export async function expectLinearScaling<R = unknown>(
   options: ScalingOptions
 ): Promise<ScalingMeasurement<R>> {
   const factor = options.factor ?? SCALING_FACTOR;
+  const maxRatio = options.maxRatio ?? factor * LINEAR_RATIO_SLACK;
   const measurement = await measureInterleaved(
     () => run(options.baseSize),
     () => run(options.baseSize * factor),
-    options.passes
+    options.passes,
+    maxRatio
   );
   assertLinearRatio(label, measurement, factor, options.maxRatio);
   return measurement;
@@ -173,7 +197,8 @@ export async function expectLinearOnInputs<T, R = unknown>(
   inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number }
 ): Promise<ScalingMeasurement<R>> {
   const factor = inputs.factor ?? SCALING_FACTOR;
-  const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes);
+  const maxRatio = inputs.maxRatio ?? factor * LINEAR_RATIO_SLACK;
+  const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes, maxRatio);
   assertLinearRatio(label, measurement, factor, inputs.maxRatio);
   return measurement;
 }
@@ -208,11 +233,11 @@ export async function expectSizeIndependentOnInputs<T, R = unknown>(
   inputs: { modest: T; huge: T; passes?: number; maxRatio?: number }
 ): Promise<ScalingMeasurement<R>> {
   const maxRatio = inputs.maxRatio ?? CONSTANT_RATIO_BOUND;
-  const measurement = await measureInterleaved(() => run(inputs.modest), () => run(inputs.huge), inputs.passes);
-  // The floor keeps a sub-millisecond baseline from turning timer noise into a large ratio.
-  const baselineMs = Math.max(measurement.smallMs, SIZE_INDEPENDENT_FLOOR_MS);
+  const measurement = await measureInterleaved(() => run(inputs.modest), () => run(inputs.huge), inputs.passes, maxRatio);
+  // The raw per-call ratio: measureInterleaved repeats a fast side until its sample is long enough to time, so no
+  // floor on the baseline is needed (and one would hide growth of work that takes under a millisecond).
   expect(
-    measurement.largeMs / baselineMs,
+    measurement.ratio,
     `${label}: the larger input took ${measurement.largeMs.toFixed(2)} ms against ` +
       `${measurement.smallMs.toFixed(2)} ms for the modest one; the work must not grow with the input`
   ).toBeLessThanOrEqual(maxRatio);
@@ -248,10 +273,9 @@ export async function expectNoSlowerThanReference<R = unknown>(
   options: { maxRatio?: number; passes?: number } = {}
 ): Promise<ScalingMeasurement<R>> {
   const maxRatio = options.maxRatio ?? REFERENCE_RATIO_BOUND;
-  const measurement = await measureInterleaved(reference, candidate, options.passes);
-  const baselineMs = Math.max(measurement.smallMs, SIZE_INDEPENDENT_FLOOR_MS);
+  const measurement = await measureInterleaved(reference, candidate, options.passes, maxRatio);
   expect(
-    measurement.largeMs / baselineMs,
+    measurement.ratio,
     `${label}: the candidate took ${measurement.largeMs.toFixed(2)} ms against ${measurement.smallMs.toFixed(2)} ms for the reference`
   ).toBeLessThanOrEqual(maxRatio);
   return measurement;

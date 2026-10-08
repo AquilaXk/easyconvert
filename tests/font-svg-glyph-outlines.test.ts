@@ -543,31 +543,42 @@ describe('SVG font: output point counts are bounded while paths are converted', 
   const WIDE_CUBIC = 'C32000 0 -32000 0 0 0';
   const BIG_ARC = 'a12000 12000 0 1 1 1 0';
 
-  function glyphsWithPath(count: number, path: string, repeats: number): string {
+  /** `count` glyphs from number `first` on, each carrying the same path under the attribute `attribute`. */
+  function glyphsWithPath(count: number, path: string, repeats: number, first = 0, attribute = 'd'): string {
     const d = `M0 0${` ${path}`.repeat(repeats)}`;
-    return Array.from({ length: count }, (_, i) => `<glyph unicode="&#x${(0x4e00 + i).toString(16)};" horiz-adv-x="500" d="${d}"/>`).join('');
+    return Array.from(
+      { length: count },
+      (_, i) => `<glyph unicode="&#x${(0x4e00 + first + i).toString(16)};" horiz-adv-x="500" ${attribute}="${d}"/>`
+    ).join('');
   }
 
   /**
-   * "Without converting them all": a font with four times as many hostile glyphs must be refused after about
-   * the same work as the small one, because the conversion stops at the first glyph or shared budget that is
-   * exceeded (tests/helpers/timing.ts). Converting every glyph would make the larger font take about 4x.
+   * "Without converting them all": a font with four times as many hostile glyphs must be refused after about the same
+   * work as the small one, because the conversion stops at the first glyph or shared budget that is exceeded
+   * (tests/helpers/timing.ts). Converting every glyph would make the larger font take about 4x.
+   *
+   * The reader scans the whole document before it converts a glyph, so the two fonts have the same length: the glyphs
+   * the smaller font lacks follow its hostile ones as inert glyphs, with the same path text under an attribute
+   * that no one reads (`e` for `d`). Only the conversion of the hostile glyphs can then differ.
    */
-  async function expectEarlyRejection(label: string, modestSvg: string, hugeSvg: string): Promise<unknown> {
-    const { largeResult } = await expectSizeIndependentOnInputs(
-      label,
-      (svg: string) => failureOf(convertSvg('ttf', svg)),
-      { modest: modestSvg, huge: hugeSvg }
+  async function expectEarlyRejection(label: string, hostileGlyphs: number, path: string, repeats: number): Promise<unknown> {
+    const hugeGlyphs = hostileGlyphs * SCALING_FACTOR;
+    const modest = svgWith(
+      glyphsWithPath(hostileGlyphs, path, repeats) + glyphsWithPath(hugeGlyphs - hostileGlyphs, path, repeats, hostileGlyphs, 'e')
     );
+    const huge = svgWith(glyphsWithPath(hugeGlyphs, path, repeats));
+    expect(modest.length).toBe(huge.length);
+    // The smaller font must be refused too: one that is converted whole would be slower, not faster, and pass.
+    expect(await failureOf(convertSvg('ttf', modest))).toBeInstanceOf(ConversionFailedError);
+    const { largeResult } = await expectSizeIndependentOnInputs(label, (svg: string) => failureOf(convertSvg('ttf', svg)), {
+      modest,
+      huge,
+    });
     return largeResult;
   }
 
   it('rejects glyphs whose arcs expand into far more curve pieces than the path allows, without converting them all', async () => {
-    const failure = await expectEarlyRejection(
-      'arc amplification',
-      svgWith(glyphsWithPath(AMPLIFIED_GLYPHS, BIG_ARC, ARC_REPEATS)),
-      svgWith(glyphsWithPath(AMPLIFIED_GLYPHS * SCALING_FACTOR, BIG_ARC, ARC_REPEATS))
-    );
+    const failure = await expectEarlyRejection('arc amplification', AMPLIFIED_GLYPHS, BIG_ARC, ARC_REPEATS);
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(/more than \d+ points|too many segments/i);
@@ -575,22 +586,14 @@ describe('SVG font: output point counts are bounded while paths are converted', 
 
   it('stops converting once the glyphs of the font together pass the shared point budget', async () => {
     // About 59,000 points per glyph (below the per-glyph limit): 70 of them pass the 4,000,000 point budget.
-    const failure = await expectEarlyRejection(
-      'shared point budget',
-      svgWith(glyphsWithPath(BUDGET_GLYPHS, WIDE_CUBIC, BUDGET_CUBICS)),
-      svgWith(glyphsWithPath(BUDGET_GLYPHS * SCALING_FACTOR, WIDE_CUBIC, BUDGET_CUBICS))
-    );
+    const failure = await expectEarlyRejection('shared point budget', BUDGET_GLYPHS, WIDE_CUBIC, BUDGET_CUBICS);
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(/points together/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('stops converting a glyph as soon as it passes the 65,535 points of the glyf format', async () => {
-    const failure = await expectEarlyRejection(
-      'per-glyph point limit',
-      svgWith(glyphsWithPath(CUBIC_GLYPHS, WIDE_CUBIC, CUBIC_REPEATS)),
-      svgWith(glyphsWithPath(CUBIC_GLYPHS * SCALING_FACTOR, WIDE_CUBIC, CUBIC_REPEATS))
-    );
+    const failure = await expectEarlyRejection('per-glyph point limit', CUBIC_GLYPHS, WIDE_CUBIC, CUBIC_REPEATS);
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(FontOutlinesMissingError);
     expect((failure as Error).message).toMatch(new RegExp(`more than ${TRUETYPE_POINT_LIMIT} points`));

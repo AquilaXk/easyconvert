@@ -783,7 +783,10 @@ describe('SVG document model for metafile encoders', () => {
     }, SCALING_TEST_TIMEOUT_MS);
 
     const STRIPS = 150;
-    const POLYGON_POINTS = 600_000;
+    const PAST_CAP_POINTS = 500_001;
+    const LONGEST_POINT_LIST = 1_200_000;
+    /** Below the 2.4x of a reader that parses the whole list, above the 1x of one that stops at the cap. */
+    const POINT_LIST_RATIO_BOUND = 1.6;
 
     function strips(count: number): string {
       const parts: string[] = [];
@@ -829,14 +832,18 @@ describe('SVG document model for metafile encoders', () => {
     }, SCALING_TEST_TIMEOUT_MS);
 
     it('charges polygon point lists against the vertex cap while parsing', async () => {
+      // Single-digit coordinates keep a point at 4 characters, so the largest list the 5 MiB document limit admits
+      // (about 1.3 million points) is 2.4x a list one point past the 500,000 vertex cap. A reader that parsed the
+      // whole list before charging it would take 2.4x as long for the longer one; one that charges as it reads
+      // stops at the cap in both. A list below the cap would be read and encoded whole, which is different work.
       const polygonDoc = (points: number) => {
-        const pts = Array.from({ length: points }, (_, k) => `${k % 100},${(k * 7) % 100}`).join(' ');
+        const pts = Array.from({ length: points }, (_, k) => `${k % 10},${(k * 7) % 10}`).join(' ');
         return svgDoc(`<polygon fill="#000" points="${pts}"/>`);
       };
-      // The cap is charged while the list is read, so 4x the points is refused after about the same work.
       const { largeResult } = await expectSizeIndependentOnInputs('polygon point cap', (svg: Buffer) => settle(() => encodeWmf(svg)), {
-        modest: polygonDoc(POLYGON_POINTS / SCALING_FACTOR),
-        huge: polygonDoc(POLYGON_POINTS),
+        modest: polygonDoc(PAST_CAP_POINTS),
+        huge: polygonDoc(LONGEST_POINT_LIST),
+        maxRatio: POINT_LIST_RATIO_BOUND,
       });
       if (largeResult.ok) throw new Error('the over-complex polygon was encoded instead of refused');
       expect((largeResult.error as Error).message).toMatch(/too complex/);

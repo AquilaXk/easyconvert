@@ -21,6 +21,8 @@ const OBJSTM_BODY_MIB = 8;
 const HEADER_FLOOD_PAIRS = 32 * MIB;
 const LENGTH_TARGET_ELEMENTS = 500 * 1000;
 const LENGTH_REFERENCING_STREAMS = 400;
+const LENGTH_TARGET_OBJECT = 20;
+const UNREFERENCED_ARRAY_OBJECT = 21;
 const FIRST_OBJECT_NUMBER = 100;
 
 const catalog: CraftObject[] = [
@@ -141,26 +143,30 @@ describe('a document defines a bounded number of objects', () => {
 
 describe('an indirect /Length costs a constant per stream', () => {
   it('reads only the leading integer of the length object', async () => {
-    // The /Length target is an array of LENGTH_TARGET_ELEMENTS integers read by 400 streams. A reader that
-    // parses the whole target per stream costs 4x as much for a 4x longer array; reading only the leading
-    // integer costs the same for both.
+    // The /Length target is an array read by 400 streams. A reader that parses the whole target per stream costs 4x
+    // as much for a 4x longer array; reading only the leading integer costs the same for both. The file is indexed
+    // in one pass whatever the target holds, so both files have the same size: the elements the shorter target
+    // lacks sit in an array that no stream refers to, and only the cost of reading the target can differ.
     const pdfWithLengthTarget = (elements: number): Buffer => {
-      const lengthTarget: CraftObject = { id: 20, raw: `[${'1 '.repeat(elements)}]` };
+      const lengthTarget: CraftObject = { id: LENGTH_TARGET_OBJECT, raw: `[${'1 '.repeat(elements)}]` };
+      const unreferenced: CraftObject = { id: UNREFERENCED_ARRAY_OBJECT, raw: `[${'1 '.repeat(LENGTH_TARGET_ELEMENTS - elements)}]` };
       const streams: CraftObject[] = [];
       for (let i = 0; i < LENGTH_REFERENCING_STREAMS; i++) {
-        streams.push({ id: 100 + i, raw: '<< /Length 20 0 R >>\nstream\nab\nendstream' });
+        streams.push({ id: 100 + i, raw: `<< /Length ${LENGTH_TARGET_OBJECT} 0 R >>\nstream\nab\nendstream` });
       }
       const content = singlePagePdf(flate(textContent('LENGTH-LIES'))).buffer;
       return Buffer.concat([
         content.subarray(0, content.indexOf('xref')),
-        Buffer.from(`${lengthTarget.id} 0 obj\n${lengthTarget.raw}\nendobj\n`, 'latin1'),
-        ...streams.map((s) => Buffer.from(`${s.id} 0 obj\n${s.raw}\nendobj\n`, 'latin1')),
+        ...[lengthTarget, unreferenced, ...streams].map((o) => Buffer.from(`${o.id} 0 obj\n${o.raw}\nendobj\n`, 'latin1')),
         content.subarray(content.indexOf('xref')),
       ]);
     };
+    const modest = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS / SCALING_FACTOR);
+    const huge = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS);
+    expect(modest.length).toBe(huge.length);
     const { largeResult } = await expectSizeIndependentOnInputs('indirect length target', (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
-      modest: pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS / SCALING_FACTOR),
-      huge: pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS),
+      modest,
+      huge,
     });
     expect(largeResult.text).toBe('LENGTH-LIES');
   });

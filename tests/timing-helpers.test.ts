@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  EXTRA_PASS_RATIO_MARGIN,
   expectLinearScaling,
+  expectNoSlowerThanReference,
   expectSizeIndependent,
+  LINEAR_RATIO_SLACK,
+  MAX_SCALING_PASSES,
   measureInterleaved,
   MIN_SAMPLE_MS,
+  SCALING_PASSES,
   SCALING_FACTOR,
   SCALING_TEST_TIMEOUT_MS,
 } from './helpers/timing';
@@ -21,6 +26,12 @@ const FAST_BASE = 5;
 const CONSTANT_STEPS = 20_000;
 const MODEST_CLAIM = 1000;
 const HUGE_CLAIM = 1_000_000;
+/**
+ * A modest size whose quadratic run takes a fraction of a millisecond, the regime in which a fixed floor on the
+ * baseline used to hide growth: 4x the size is 16x the work, and still under 10 ms.
+ */
+const SHORT_QUADRATIC_MODEST = 600;
+const SHORT_LINEAR_MODEST = 100;
 /** Steps per claimed unit for a reader that trusts the claim and walks it. */
 const CLAIM_WALK_STEPS_PER_UNIT = 50;
 
@@ -100,4 +111,123 @@ describe('size-independence check', () => {
       expectSizeIndependent('claim walker', claimWalkingWork, { modestSize: MODEST_CLAIM, hugeSize: HUGE_CLAIM })
     ).rejects.toThrow(/claim walker: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
+
+  it('rejects quadratic work at 4x the input even when the modest run is a fraction of a millisecond', async () => {
+    await expect(
+      expectSizeIndependent('short quadratic', quadraticWork, {
+        modestSize: SHORT_QUADRATIC_MODEST,
+        hugeSize: SHORT_QUADRATIC_MODEST * SCALING_FACTOR,
+      })
+    ).rejects.toThrow(/short quadratic: the larger input took .* the work must not grow with the input/);
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('rejects linear work at 4x the input', async () => {
+    await expect(
+      expectSizeIndependent('short linear', linearWork, {
+        modestSize: SHORT_LINEAR_MODEST,
+        hugeSize: SHORT_LINEAR_MODEST * SCALING_FACTOR,
+      })
+    ).rejects.toThrow(/short linear: the larger input took .* the work must not grow with the input/);
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('accepts constant work measured over the same sizes', async () => {
+    await expectSizeIndependent('short constant', constantWork, {
+      modestSize: SHORT_QUADRATIC_MODEST,
+      hugeSize: SHORT_QUADRATIC_MODEST * SCALING_FACTOR,
+    });
+  }, SCALING_TEST_TIMEOUT_MS);
+});
+
+describe('reference comparison', () => {
+  it('rejects a candidate that does 16x the work of a sub-millisecond reference', async () => {
+    await expect(
+      expectNoSlowerThanReference(
+        'quadratic candidate',
+        () => quadraticWork(SHORT_QUADRATIC_MODEST),
+        () => quadraticWork(SHORT_QUADRATIC_MODEST * SCALING_FACTOR)
+      )
+    ).rejects.toThrow(/quadratic candidate: the candidate took .* for the reference/);
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('accepts a candidate that does the same work as the reference', async () => {
+    await expectNoSlowerThanReference(
+      'identical candidate',
+      () => quadraticWork(SHORT_QUADRATIC_MODEST),
+      () => quadraticWork(SHORT_QUADRATIC_MODEST)
+    );
+  }, SCALING_TEST_TIMEOUT_MS);
+});
+
+describe('extra passes on a loaded runner', () => {
+  // A virtual clock makes the load deterministic: each run advances it by a fixed cost, and no real time passes.
+  const SMALL_COST_MS = 10;
+  const LINEAR_COST_MS = SMALL_COST_MS * SCALING_FACTOR;
+  const QUADRATIC_COST_MS = SMALL_COST_MS * SCALING_FACTOR * SCALING_FACTOR;
+  /** Linear work slowed 2.5x reads as 10x: over the 8x bound, inside the margin that earns extra passes. */
+  const LOADED_LINEAR_COST_MS = LINEAR_COST_MS * 2.5;
+  /** The warm-up run and the first SCALING_PASSES passes of the large side. */
+  const LOADED_LARGE_RUNS = SCALING_PASSES + 1;
+  const LINEAR_BOUND = SCALING_FACTOR * LINEAR_RATIO_SLACK;
+
+  let clockMs = 0;
+
+  function installVirtualClock(): void {
+    clockMs = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => clockMs);
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function measureWith(largeCostMs: (largeRun: number) => number, acceptRatio?: number) {
+    installVirtualClock();
+    let largeRuns = 0;
+    return measureInterleaved(
+      () => {
+        clockMs += SMALL_COST_MS;
+      },
+      () => {
+        largeRuns++;
+        clockMs += largeCostMs(largeRuns);
+      },
+      SCALING_PASSES,
+      acceptRatio
+    );
+  }
+
+  it('keeps the best of three passes when no bound is given', async () => {
+    const measurement = await measureWith((run) => (run <= LOADED_LARGE_RUNS ? LOADED_LINEAR_COST_MS : LINEAR_COST_MS));
+    expect(measurement.ratio).toBeCloseTo(LOADED_LINEAR_COST_MS / SMALL_COST_MS, 10);
+  });
+
+  it('takes more passes when load alone put a linear run just over its bound, and then accepts it', async () => {
+    const measurement = await measureWith(
+      (run) => (run <= LOADED_LARGE_RUNS ? LOADED_LINEAR_COST_MS : LINEAR_COST_MS),
+      LINEAR_BOUND
+    );
+    expect(measurement.ratio).toBeCloseTo(SCALING_FACTOR, 10);
+  });
+
+  it('still refuses work that is slow on every pass, however many passes it takes', async () => {
+    let largeRuns = 0;
+    const measurement = await measureWith((run) => {
+      largeRuns = run;
+      return LOADED_LINEAR_COST_MS;
+    }, LINEAR_BOUND);
+    expect(measurement.ratio).toBeCloseTo(LOADED_LINEAR_COST_MS / SMALL_COST_MS, 10);
+    expect(measurement.ratio).toBeGreaterThan(LINEAR_BOUND);
+    // The warm-up run plus one run per pass, up to the cap.
+    expect(largeRuns).toBe(MAX_SCALING_PASSES + 1);
+  });
+
+  it('refuses quadratic work after the first passes without retrying it', async () => {
+    let largeRuns = 0;
+    const measurement = await measureWith(() => {
+      largeRuns++;
+      return QUADRATIC_COST_MS;
+    }, LINEAR_BOUND);
+    expect(measurement.ratio).toBeGreaterThan(LINEAR_BOUND * EXTRA_PASS_RATIO_MARGIN);
+    expect(largeRuns).toBe(SCALING_PASSES + 1);
+  });
 });
