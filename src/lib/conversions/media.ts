@@ -34,6 +34,7 @@ import {
   resamplePlanarFloat,
   type ResampleOptions,
 } from './audio-resampler';
+import { readWavPcmInfo } from './wav-header';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -130,6 +131,9 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
   if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
     return options.duration;
   }
+  // The duration of a WAVE file with uncompressed samples is in its header; no prober process is needed.
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return wav.durationSeconds;
   const ffprobe = getFfprobePath();
   if (ffprobe && fs.existsSync(filePath)) {
     try {
