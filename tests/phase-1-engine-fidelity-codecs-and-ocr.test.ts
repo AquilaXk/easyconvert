@@ -16,11 +16,11 @@ import {
   createLosslessSandwichPdfFromImage,
   createLosslessSandwichPdfFromPdf,
   createToUnicodeCMap,
-  createWinAnsiToUnicodeCMap,
   ensureUnicodeFont,
   registerFontOnPage,
   safeEncodeText,
 } from '../src/lib/conversions/ocr-pdf-combiner';
+import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/pdf-winansi-tounicode';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';

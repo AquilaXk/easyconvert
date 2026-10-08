@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import iconv from 'iconv-lite';
-import { PDFDict, PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
-import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/ocr-pdf-combiner';
+import { PDFDict, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
+import { applyPdfWatermark } from '../src/lib/conversions/pdf-postprocess/watermark';
+import { createWinAnsiToUnicodeCMap } from '../src/lib/conversions/pdf-winansi-tounicode';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { lookupCode, readToUnicodeCMap } from './helpers/cmap-reader';
@@ -47,18 +48,49 @@ describe('WinAnsi ToUnicode CMap', () => {
     expect(lookupCode(cmap, 0x97)).toBe('—');
     expect(lookupCode(cmap, 0x99)).toBe('™');
   });
+});
 
-  oracleTest('lets pdftotext read the euro sign, curly quotes and dashes of a standard-font page', ['pdftotext'], async () => {
+/**
+ * The standard-font text this product writes is the watermark stamped by applyPdfWatermark (Helvetica-Bold, which pdf-lib
+ * encodes with WinAnsiEncoding). The page below goes through that entry point; nothing here attaches the CMap by hand.
+ */
+describe('a text watermark carries the WinAnsi ToUnicode CMap', () => {
+  const WATERMARK = '\u20ac5 \u201cquoted\u201d \u2013 done \u2014 \u2122';
+  const PAGE_WIDTH = 400;
+  const PAGE_HEIGHT = 200;
+  const WATERMARK_SIZE = 14;
+
+  async function stampedPdf(): Promise<Buffer> {
     const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    // The CMap is attached to the font dictionary the way a writer that wants searchable standard-font text does it.
-    await font.embed();
-    const cmapStream = doc.context.stream(createWinAnsiToUnicodeCMap());
-    (doc.context.lookup(font.ref) as PDFDict).set(PDFName.of('ToUnicode'), doc.context.register(cmapStream));
-    const page = doc.addPage([400, 100]);
-    const line = '\u20ac5 \u201cquoted\u201d \u2013 done \u2014 \u2122';
-    page.drawText(line, { x: 20, y: 50, size: 14, font });
-    const text = extractTextWithExternalPdftotext(Buffer.from(await doc.save()));
-    expect(text?.trim()).toBe(line);
+    doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    const blank = Buffer.from(await doc.save());
+    return applyPdfWatermark(blank, { text: WATERMARK, rotation: 0, fontSize: WATERMARK_SIZE, opacity: 1 });
+  }
+
+  /** The font dictionaries of the first page, read from the saved file with a fresh parse. */
+  async function pageFontDicts(pdf: Buffer): Promise<PDFDict[]> {
+    const reloaded = await PDFDocument.load(pdf);
+    const fonts = reloaded.getPage(0).node.Resources()?.lookup(PDFName.of('Font'), PDFDict);
+    if (!fonts) throw new Error('the stamped page has no font resources');
+    return fonts.keys().map((key) => fonts.lookup(key, PDFDict));
+  }
+
+  it('writes the text in a WinAnsiEncoding standard font whose /ToUnicode decodes each byte as windows-1252 does', async () => {
+    const [font, ...others] = await pageFontDicts(await stampedPdf());
+    expect(others).toEqual([]);
+    expect(font.lookup(PDFName.of('Encoding'))).toBe(PDFName.of('WinAnsiEncoding'));
+    expect(font.lookup(PDFName.of('BaseFont'))).toBe(PDFName.of('Helvetica-Bold'));
+    const stream = font.lookup(PDFName.of('ToUnicode'));
+    if (!(stream instanceof PDFRawStream)) throw new Error('the watermark font has no /ToUnicode stream');
+    const cmap = readToUnicodeCMap(Buffer.from(stream.getContents()).toString('latin1'));
+    // The bytes the watermark is drawn with, per the Windows 1252 tables of iconv-lite (an independent source).
+    const bytes = iconv.encode(WATERMARK, 'win1252');
+    const decoded = [...bytes].map((code) => lookupCode(cmap, code)).join('');
+    expect(decoded).toBe(WATERMARK);
+  });
+
+  oracleTest('lets pdftotext read the euro sign, curly quotes and dashes of the stamped page', ['pdftotext'], async () => {
+    const text = extractTextWithExternalPdftotext(await stampedPdf());
+    expect(text?.trim()).toBe(WATERMARK);
   });
 });
