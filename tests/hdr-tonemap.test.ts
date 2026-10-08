@@ -9,7 +9,7 @@ import {
   pqSignalToNits,
   toneMapToSdr,
 } from '../src/lib/conversions/hdr-tonemap';
-import { HAS_ZSCALE, runFloatFilter, tagRgb } from './helpers/zimg-oracle';
+import { HAS_ZSCALE, bt2390Expression, runFloatFilter, tagRgb } from './helpers/zimg-oracle';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -43,7 +43,6 @@ function referenceEetf(signal: number, lb: number, lw: number, lmin: number, lma
 }
 
 const RAMP_SAMPLES = 1000;
-const FULL_SCALE_16 = 65_535;
 
 describe('BT.2390 EETF', () => {
   it.each([1000, 4000, 10_000])('matches the published formula on a %i-sample PQ ramp for a %i nit source', (sourcePeak) => {
@@ -129,18 +128,6 @@ describe.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))('agains
     }
   });
 
-  /** BT.2390 as a lutrgb expression (16-bit PQ code values), built from the test-side constants above. */
-  function eetfExpression(sourcePeak: number, targetPeak: number): string {
-    const sp = pq(sourcePeak);
-    const maxLum = pq(targetPeak) / sp;
-    const ks = 1.5 * maxLum - 0.5;
-    // lutrgb's own `maxval` is not the 16-bit full scale for this pixel format, so the code range is spelled out.
-    const e1 = `min(val/${FULL_SCALE_16}/${sp},1)`;
-    const t = `((${e1}-${ks})/${1 - ks})`;
-    const spline = `((2*pow(${t},3)-3*pow(${t},2)+1)*${ks}+(pow(${t},3)-2*pow(${t},2)+${t})*${1 - ks}+(-2*pow(${t},3)+3*pow(${t},2))*${maxLum})`;
-    return `clip(${FULL_SCALE_16}*${sp}*if(lt(${e1},${ks}),${e1},${spline}),0,${FULL_SCALE_16})`;
-  }
-
   it('the whole chain (EETF per component, BT.2020 to BT.709, clip) matches zscale plus lutrgb within 3e-3', () => {
     const peak = 1000;
     // colours across the gamut and the range, in linear BT.2020 nits
@@ -149,7 +136,7 @@ describe.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))('agains
     for (const r of levels) for (const g of [0, 40, 400, 1000]) for (const b of [0, 90, 800]) rgb.push(r, g, b);
     const nits = Float32Array.from(rgb);
     const width = nits.length / 3;
-    const expression = eetfExpression(peak, SDR_PEAK_NITS);
+    const expression = bt2390Expression(peak, SDR_PEAK_NITS);
     // The input is clamped to the source peak by the expression (min(.., 1)), like the production table.
     const oracle = runFloatFilter(
       nits.map((value) => value / PQ_PEAK_NITS),

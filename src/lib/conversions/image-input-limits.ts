@@ -68,6 +68,12 @@ export const RAW_SENSOR_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, sco
  */
 export const HDR_FLOAT_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scope: 'Ultra HDR float reconstruction' };
 
+/**
+ * HDR tone mapping holds the decoded samples (2 B each), the luminance array (4 B each) and the rendition, about
+ * 30 B per pixel. 36 megapixels (the OpenEXR decoder's limit) keeps a job near 1.1 GB.
+ */
+export const HDR_TONE_MAP_PIXEL_BUDGET: PixelBudget = { maxPixels: 36_000_000, scope: 'HDR tone mapping' };
+
 /** A whole number of pixels in plain decimal digits: no sign, exponent, fraction or radix prefix. */
 const DECIMAL_PIXEL_COUNT = /^\d{1,64}$/;
 

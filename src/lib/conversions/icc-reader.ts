@@ -1,5 +1,5 @@
 import { ConversionFailedError } from '../types';
-import { type Chromaticities, type Matrix3, BT709_PRIMARIES, D65_WHITE, invert3, multiply3, rgbToXyzMatrix, xyzOfXy } from './colour-primaries';
+import { type Chromaticities, type Matrix3, BT709_PRIMARIES, D65_WHITE, bradfordAdaptation, invert3, multiply3, rgbToXyzMatrix, xyzOfXy } from './colour-primaries';
 
 /**
  * Reader for matrix/TRC ICC profiles (ICC.1:2022, sections 7 and 10): the colorant tags rXYZ/gXYZ/bXYZ and the
@@ -37,8 +37,6 @@ const PARA_PARAMETER_COUNTS: readonly number[] = [1, 3, 4, 5, 7];
 /** PCS illuminant, D50 (ICC.1:2022 section 7.2.16). */
 const D50_WHITE_XYZ: readonly [number, number, number] = [0.9642, 1, 0.8249];
 const D65_WHITE_XYZ = xyzOfXy(D65_WHITE);
-/** Bradford cone response matrix. */
-const BRADFORD: Matrix3 = [0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296];
 
 const MATRIX_TRC_TAGS: readonly string[] = ['rXYZ', 'gXYZ', 'bXYZ', 'rTRC', 'gTRC', 'bTRC'];
 
@@ -197,20 +195,6 @@ export function readIccProfile(buf: Buffer): IccProfile {
     rgbToXyzD50,
     curves: [readCurve(buf, tags, 'rTRC'), readCurve(buf, tags, 'gTRC'), readCurve(buf, tags, 'bTRC')],
   };
-}
-
-/** Bradford chromatic adaptation taking XYZ relative to `from` white to XYZ relative to `to` white. */
-export function bradfordAdaptation(from: readonly [number, number, number], to: readonly [number, number, number]): Matrix3 {
-  const inverse = invert3(BRADFORD);
-  const cone = (white: readonly [number, number, number]): number[] => [
-    BRADFORD[0] * white[0] + BRADFORD[1] * white[1] + BRADFORD[2] * white[2],
-    BRADFORD[3] * white[0] + BRADFORD[4] * white[1] + BRADFORD[5] * white[2],
-    BRADFORD[6] * white[0] + BRADFORD[7] * white[1] + BRADFORD[8] * white[2],
-  ];
-  const source = cone(from);
-  const target = cone(to);
-  const scale: Matrix3 = [target[0] / source[0], 0, 0, 0, target[1] / source[1], 0, 0, 0, target[2] / source[2]];
-  return multiply3(inverse, multiply3(scale, BRADFORD));
 }
 
 /** Linear RGB of a matrix/TRC profile to linear Rec. 709 (D65), through the D50 profile connection space. */

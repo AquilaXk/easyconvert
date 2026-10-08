@@ -101,12 +101,29 @@ export function rgbToXyzMatrix(c: Chromaticities): Matrix3 {
   return [r[0] * sr, g[0] * sg, b[0] * sb, r[1] * sr, g[1] * sg, b[1] * sb, r[2] * sr, g[2] * sg, b[2] * sb];
 }
 
+/** Bradford cone response matrix. */
+const BRADFORD: Matrix3 = [0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296];
+
+/** Bradford chromatic adaptation taking XYZ relative to the `from` white to XYZ relative to the `to` white. */
+export function bradfordAdaptation(from: readonly [number, number, number], to: readonly [number, number, number]): Matrix3 {
+  const cone = (white: readonly [number, number, number]): number[] => [
+    BRADFORD[0] * white[0] + BRADFORD[1] * white[1] + BRADFORD[2] * white[2],
+    BRADFORD[3] * white[0] + BRADFORD[4] * white[1] + BRADFORD[5] * white[2],
+    BRADFORD[6] * white[0] + BRADFORD[7] * white[1] + BRADFORD[8] * white[2],
+  ];
+  const source = cone(from);
+  const target = cone(to);
+  const scale: Matrix3 = [target[0] / source[0], 0, 0, 0, target[1] / source[1], 0, 0, 0, target[2] / source[2]];
+  return multiply3(invert3(BRADFORD), multiply3(scale, BRADFORD));
+}
+
 /**
- * Matrix taking linear RGB of the `from` primaries to linear RGB of the `to` primaries. Both sets must share a
- * white point (the case for every space handled here); different whites need a chromatic adaptation first.
+ * Matrix taking linear RGB of the `from` primaries to linear RGB of the `to` primaries. When the white points
+ * differ the colours are adapted between them with the Bradford transform.
  */
 export function primariesToPrimaries(from: Chromaticities, to: Chromaticities): Matrix3 {
-  return multiply3(invert3(rgbToXyzMatrix(to)), rgbToXyzMatrix(from));
+  const adaptation = bradfordAdaptation(xyzOfXy(from.white), xyzOfXy(to.white));
+  return multiply3(invert3(rgbToXyzMatrix(to)), multiply3(adaptation, rgbToXyzMatrix(from)));
 }
 
 function sameXy(a: Xy, b: Xy): boolean {

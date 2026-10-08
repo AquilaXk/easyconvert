@@ -179,14 +179,16 @@ describe('OpenEXR source conversions', () => {
 
   beforeAll(async () => {
     exr = buildPatchExr('half');
+    // The default tone mapping is BT.2390 (tests/hdr-tone-mapping.test.ts); these checks pin the hard clip at SDR
+    // white, which is what the IEC 61966-2-1 expectations below describe.
     for (const target of ['avif', 'bmp', 'exr', 'jpg', 'png', 'tiff', 'ultrahdr', 'webp']) {
-      const result = await convertFile(exr, 'exr', target, {}, 'patches.exr');
+      const result = await convertFile(exr, 'exr', target, { toneMap: 'clip' }, 'patches.exr');
       outputs.set(target, result.buffer);
     }
   }, 120_000);
 
   it.each(Object.keys(SDR_TARGET_CHECKS) as SdrTarget[])(
-    'exr -> %s keeps the dimensions and renders each patch at its sRGB tone-mapped colour',
+    'exr -> %s with toneMap clip keeps the dimensions and renders each patch at its clipped sRGB colour',
     async (target) => {
       const pixels = await decodeSdrOutput(target, outputs.get(target)!);
       expect(pixels.width).toBe(HDR_IMAGE_WIDTH);

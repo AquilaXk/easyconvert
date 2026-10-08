@@ -223,6 +223,12 @@ export const ConversionOptionsSchema = {
       description:
         'TIFF output compression. Defaults to deflate with a horizontal predictor (lossless); jpeg is lossy and used only when requested, and quality does not select it.',
     },
+    toneMap: {
+      type: 'string',
+      enum: ['none', 'clip', 'bt2390'],
+      description:
+        'HDR to SDR rendering of OpenEXR, PQ or HLG tagged pictures and HDR video. bt2390 (default) compresses highlights with the ITU-R BT.2390 EETF toward a 100 cd/m2 display; clip cuts everything above SDR white; none keeps HDR and is accepted only for targets that hold it (AVIF, PNG, EXR, Ultra HDR).',
+    },
 
     // CAD & NURBS options
     uSamples: {

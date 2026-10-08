@@ -17,6 +17,12 @@ export const AVIF_MAX_BOX_DEPTH = 6;
 export const AV1_MAX_OBUS = 16;
 
 const BOX_HEADER_BYTES = 8;
+const FTYP_MIN_BYTES = 16;
+const FTYP_BRANDS_START = 8;
+const FTYP_MINOR_VERSION_AT = 12;
+const FTYP_BRAND_BYTES = 4;
+/** An ftyp box lists a handful of brands; anything longer is not scanned further. */
+const FTYP_MAX_SCANNED_BYTES = 256;
 const LARGE_BOX_HEADER_BYTES = 16;
 const FULL_BOX_EXTRA_BYTES = 4;
 const NCLX_BYTES = 7;
@@ -310,6 +316,19 @@ function locate(buf: Buffer): Located {
     offset = at + size;
   }
   return { nclx, sequence: null, sequenceStart: -1 };
+}
+
+/** True when the file's ftyp box names the AVIF brands (`avif` or `avis`) as its major or a compatible brand. */
+export function isAvif(buf: Buffer): boolean {
+  if (buf.length < FTYP_MIN_BYTES || buf.toString('latin1', 4, 8) !== 'ftyp') return false;
+  const size = Math.min(buf.readUInt32BE(0), buf.length, FTYP_MAX_SCANNED_BYTES);
+  for (let at = FTYP_BRANDS_START; at + FTYP_BRAND_BYTES <= size; at += FTYP_BRAND_BYTES) {
+    // bytes 8-11 hold the major brand, 12-15 the minor version (not a brand), then come the compatible brands
+    if (at === FTYP_MINOR_VERSION_AT) continue;
+    const brand = buf.toString('latin1', at, at + FTYP_BRAND_BYTES);
+    if (brand === 'avif' || brand === 'avis') return true;
+  }
+  return false;
 }
 
 /** The colour description of an AVIF: its nclx property if any, otherwise the AV1 sequence header's. */

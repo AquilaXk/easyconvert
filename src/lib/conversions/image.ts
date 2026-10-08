@@ -27,6 +27,13 @@ import {
   resolveKernel,
 } from './image-resample';
 import { decodeIco, decodeIcns } from './ico';
+import { setAvifColour } from './avif-colour';
+import { CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
+import { BT709_PRIMARIES, samePrimaries, primariesToPrimaries } from './colour-primaries';
+import { type HdrStillTarget, type ToneMapReport, NO_TONE_MAP_MESSAGE, PQ_OUTPUT_TARGETS, encodePq2020, exrNits, exrPrimaries, hdrTransferOf, holdsHdr, renderHdrStill, renderNitsAsSdr, resolveToneMap } from './hdr-image';
+import { encodeSrgb } from './hdr-tonemap';
+import { decodeLinearBt709 } from './sdr-linear';
+import { readStillCicp } from './still-cicp';
 import { pipelineFromBitmap, pipelineFromIcon } from './bitmap-pipeline';
 import { buildOpenXpsPackage, withPngDensity96 } from './openxps';
 import { HDR_FLOAT_PIXEL_BUDGET, InputPixelLimitError, QUANTIZER_PIXEL_BUDGET, RAW_SENSOR_PIXEL_BUDGET, assertEncodedImageWithinLimit, assertInputPixels, assertPixelBudget, asInputPixelLimitError, openInputImage, openLimitedSharp, resizedDimensions, rethrowInputPixelLimit } from './image-input-limits';
@@ -2303,6 +2310,8 @@ const DEFAULT_DENSITY_PPI = 72;
  * tag from the kept EXIF block.
  */
 async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp> {
+  // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
+  if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await pipeline.metadata();
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
   const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
@@ -2449,6 +2458,13 @@ function isIconContainer(buffer: Buffer, sourceFormat: string): boolean {
 /** Bytes of the icon directory header that identify the container: reserved 0, type 1 or 2, high byte 0. */
 const ICON_DIRECTORY_SIGNATURE_BYTES = 4;
 
+const BYTE_MAX_VALUE = 255;
+/** Code bits of PQ output: a PNG keeps all 16, an AVIF is written at 10. */
+const pqBitsFor = (target: string): number => (target === 'png' ? 16 : 10);
+
+/** Targets written from linear float light, whose colour description is read from the input. */
+const FLOAT_TARGETS: ReadonlySet<string> = new Set(['exr', 'ultrahdr']);
+
 /** Targets that can store more than 8 bits per sample, and whose output depth follows the input's. */
 const DEPTH_AWARE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'png', 'tiff']);
 
@@ -2542,6 +2558,8 @@ export async function convertImage(
   const src = (sourceFormat || '').toLowerCase();
   // Checked before any early-return target (PDF, hOCR, ALTO) does work.
   const background = parseBackground(options.background);
+  // Validated up front so a typo is never ignored, whatever the source turns out to be.
+  const toneMap = resolveToneMap(options);
 
   // Special case: Image to PDF
   if (fmt === 'pdf') {
@@ -2620,6 +2638,12 @@ export async function convertImage(
 
   let pipeline: Sharp;
   let frameSelection: FrameSelection | undefined;
+  // HDR handling: what the tone mapping did, whether the output must be tagged BT.2020 / PQ, the colour tag of the
+  // input, and radiance already decoded for a float target.
+  let toneMapReport: ToneMapReport | undefined;
+  let tagsPq = false;
+  let inputCicp: Cicp | null = null;
+  let hdrRadiance: { rgb: Float32Array; width: number; height: number } | undefined;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
   const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
@@ -2696,24 +2720,42 @@ export async function convertImage(
         activeBuffer[3] === 0x01)
     ) {
       const exrDecoded = decodeOpenExr(activeBuffer);
-      const sdrRgb = Buffer.alloc(exrDecoded.width * exrDecoded.height * 3);
-      const rgb16 = new Uint16Array(exrDecoded.width * exrDecoded.height * 3);
-      for (let i = 0; i < exrDecoded.width * exrDecoded.height * 3; i++) {
-        const linVal = exrDecoded.rgb[i];
-        const srgbVal = applyIec61966SrgbGamma(linVal);
-        sdrRgb[i] = Math.max(0, Math.min(255, Math.round(srgbVal * 255.0)));
-        rgb16[i] = Math.max(0, Math.min(65535, Math.round(srgbVal * 65535.0)));
+      if (toneMap === 'none' && !holdsHdr(fmt, options)) {
+        throw new UnsupportedOptionError(NO_TONE_MAP_MESSAGE);
+      }
+      const renderMode = toneMap === 'none' ? 'bt2390' : toneMap;
+      const exrColour = exrPrimaries(exrDecoded.attrs);
+      const nits = exrNits(exrDecoded, renderMode);
+      const rendition = renderNitsAsSdr(nits, exrColour, renderMode);
+      toneMapReport = toneMap === 'none' ? undefined : rendition.report;
+      // Float output keeps the radiance, in Rec. 709 primaries (the EXR default) whatever the source declared.
+      let radiance = exrDecoded.rgb;
+      if (!samePrimaries(exrColour, BT709_PRIMARIES)) {
+        const toBt709 = primariesToPrimaries(exrColour, BT709_PRIMARIES);
+        radiance = new Float32Array(exrDecoded.rgb.length);
+        for (let i = 0; i < radiance.length; i += RGB_CHANNEL_COUNT) {
+          const [r, g, b] = [exrDecoded.rgb[i], exrDecoded.rgb[i + 1], exrDecoded.rgb[i + 2]];
+          radiance[i] = toBt709[0] * r + toBt709[1] * g + toBt709[2] * b;
+          radiance[i + 1] = toBt709[3] * r + toBt709[4] * g + toBt709[5] * b;
+          radiance[i + 2] = toBt709[6] * r + toBt709[7] * g + toBt709[8] * b;
+        }
       }
       rawDemosaiced = {
-        rgb: sdrRgb,
-        rgbFloat: exrDecoded.rgb,
-        rgb16,
+        rgb: rendition.rgb,
+        rgbFloat: radiance,
+        rgb16: rendition.rgb16,
         width: exrDecoded.width,
         height: exrDecoded.height,
       };
-      pipeline = sharp(sdrRgb, {
-        raw: { width: exrDecoded.width, height: exrDecoded.height, channels: 3 },
-      });
+      if (toneMap === 'none' && PQ_OUTPUT_TARGETS.has(fmt)) {
+        // HDR output: 10-bit PQ in BT.2020, tagged after encoding.
+        pipeline = sharp(encodePq2020(nits, exrColour, pqBitsFor(fmt)), { raw: { width: exrDecoded.width, height: exrDecoded.height, channels: RGB_CHANNEL_COUNT } });
+        tagsPq = true;
+      } else {
+        pipeline = sharp(rendition.rgb, {
+          raw: { width: exrDecoded.width, height: exrDecoded.height, channels: 3 },
+        });
+      }
     } else if (src === 'ultrahdr') {
       const uHdr = await reconstructUltraHdr(activeBuffer);
       const rgb16 = new Uint16Array(uHdr.width * uHdr.height * 3);
@@ -2739,6 +2781,24 @@ export async function convertImage(
       const packaged = await packageMultiFrameSource(frameSelection);
       if (packaged) return packaged;
       pipeline = openLimitedSharp(frameSelection.source, frameSelection.input);
+      inputCicp = readStillCicp(activeBuffer);
+      const hdrTransfer = hdrTransferOf(inputCicp);
+      if (inputCicp !== null && hdrTransfer !== null) {
+        if (toneMap === 'none' && !holdsHdr(fmt, options)) throw new UnsupportedOptionError(NO_TONE_MAP_MESSAGE);
+        let hdrTarget: HdrStillTarget = 'sdr';
+        if (fmt === 'exr') hdrTarget = 'radiance';
+        else if (toneMap === 'none' && PQ_OUTPUT_TARGETS.has(fmt)) hdrTarget = 'hdr-pq';
+        if (hdrTarget === 'radiance' && requestedResizeOf(options) !== null) {
+          throw new UnsupportedOptionError('width and height are not applied to HDR radiance output; convert at full size or choose another target');
+        }
+        const hdr = await renderHdrStill(pipeline, inputCicp, toneMap, hdrTarget, pqBitsFor(fmt));
+        pipeline = hdr.pipeline;
+        toneMapReport = hdr.report;
+        tagsPq = hdr.tagsPq;
+        if (hdr.radiance) hdrRadiance = { rgb: hdr.radiance, width: hdr.width, height: hdr.height };
+        // The pipeline now holds the rendition (sRGB, or PQ for HDR output): the input's tag no longer describes it.
+        inputCicp = null;
+      }
     }
 
     if (isRawInput) {
@@ -2780,7 +2840,7 @@ export async function convertImage(
 
   // What the input is, before any resize: a grey source stays a one-component picture in JPEG (three components
   // that always agree only cost bytes), and a source with 16 bits per sample keeps them in PNG and TIFF.
-  const inputMeta = DEPTH_AWARE_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
+  const inputMeta = DEPTH_AWARE_TARGETS.has(fmt) || FLOAT_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
   const inputSpace = inputMeta?.space;
   const deepColourspace = deepColourspaceOf(inputMeta, options);
 
@@ -2846,7 +2906,8 @@ export async function convertImage(
         if (
           (options.outputDepth === 16 || options.colorDepth === 16) &&
           rawDemosaiced &&
-          rawDemosaiced.rgb16
+          rawDemosaiced.rgb16 &&
+          !tagsPq
         ) {
           const icc =
             options.targetColorSpace === 'display-p3'
@@ -2896,6 +2957,7 @@ export async function convertImage(
         } else {
           outputBuffer = await (deepColourspace ? pipeline.toColourspace(deepColourspace) : pipeline).png({ compressionLevel: 8 }).toBuffer();
         }
+        if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });
         mimeType = 'image/png';
         break;
       }
@@ -2907,6 +2969,7 @@ export async function convertImage(
 
       case 'avif':
         outputBuffer = await encodeAvifFromPipeline(pipeline, options, content);
+        if (tagsPq) outputBuffer = setAvifColour(outputBuffer, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ);
         mimeType = 'image/avif';
         break;
 
@@ -2964,20 +3027,16 @@ export async function convertImage(
             }
           }
 
-          if (hdrFloat && imgW > 0 && imgH > 0) {
+          if (hdrRadiance) {
+            outputBuffer = await encodeOpenExrAsync(hdrRadiance.rgb, hdrRadiance.width, hdrRadiance.height, options.outputDepth !== 32);
+          } else if (hdrFloat && imgW > 0 && imgH > 0) {
             outputBuffer = await encodeOpenExrAsync(hdrFloat, imgW, imgH, options.outputDepth !== 32);
           } else {
             await assertFloatBudgetBeforeDecode(pipeline, options);
-            const { data, info } = await pipeline
-              .raw()
-              .toBuffer({ resolveWithObject: true });
-            assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
-            assertRgbSamples(info, fmt);
-            const floatPix = new Float32Array(info.width * info.height * 3);
-            for (let i = 0; i < data.length; i++) {
-              floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
-            }
-            outputBuffer = await encodeOpenExrAsync(floatPix, info.width, info.height, options.outputDepth !== 32);
+            // The picture's own colour description (ICC profile or CICP tag) is applied; untagged means sRGB.
+            const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await pipeline.metadata()), inputCicp);
+            assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
+            outputBuffer = await encodeOpenExrAsync(linear.rgb, linear.width, linear.height, options.outputDepth !== 32);
           }
         }
         mimeType = 'image/x-exr';
@@ -2995,16 +3054,16 @@ export async function convertImage(
           );
         } else {
           await assertFloatBudgetBeforeDecode(pipeline, options);
-          const { data, info } = await pipeline
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-          assertPixelBudget(info.width, info.height, HDR_FLOAT_PIXEL_BUDGET);
-          assertRgbSamples(info, fmt);
-          const floatPix = new Float32Array(info.width * info.height * 3);
-          for (let i = 0; i < data.length; i++) {
-            floatPix[i] = inverseIec61966SrgbGamma(data[i] / 255.0);
+          const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await pipeline.metadata()), inputCicp);
+          assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
+          // The SDR base is the sRGB rendition of the same light, so a wide-gamut or 16-bit source needs no second guess.
+          const base = Buffer.allocUnsafe(linear.rgb.length);
+          const floatPix = new Float32Array(linear.rgb.length);
+          for (let i = 0; i < base.length; i++) {
+            base[i] = Math.round(encodeSrgb(linear.rgb[i]) * BYTE_MAX_VALUE);
+            floatPix[i] = Math.max(0, linear.rgb[i]);
           }
-          outputBuffer = await encodeUltraHdrJpeg(data, floatPix, info.width, info.height, { quality });
+          outputBuffer = await encodeUltraHdrJpeg(base, floatPix, linear.width, linear.height, { quality });
         }
         mimeType = 'image/jpeg';
         break;
@@ -3177,6 +3236,7 @@ export async function convertImage(
     filename: `${baseName}.${outExt}`,
     size: outputBuffer.length,
     isEmbeddedPreview: isEmbeddedPreview || undefined,
+    ...(toneMapReport === undefined ? {} : { metadata: { toneMap: toneMapReport } }),
     ...(frameSelection?.sourceFrameCount === undefined
       ? {}
       : { sourceFrameCount: frameSelection.sourceFrameCount, frameUsed: frameSelection.frameUsed }),

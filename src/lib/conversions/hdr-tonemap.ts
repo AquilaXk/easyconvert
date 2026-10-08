@@ -174,3 +174,16 @@ export function toneMapToSdr(rgbNits: Float32Array, options: ToneMapOptions): Fl
   }
   return out;
 }
+
+// IEC 61966-2-1 sRGB encoding.
+const SRGB_LINEAR_SEGMENT_END = 0.0031308;
+const SRGB_LINEAR_SLOPE = 12.92;
+const SRGB_SCALE = 1.055;
+const SRGB_OFFSET = 0.055;
+const SRGB_GAMMA = 2.4;
+
+/** sRGB opto-electronic transfer of linear light, clamped to [0, 1]. */
+export function encodeSrgb(linear: number): number {
+  const v = Math.min(1, Math.max(0, linear));
+  return v <= SRGB_LINEAR_SEGMENT_END ? SRGB_LINEAR_SLOPE * v : SRGB_SCALE * Math.pow(v, 1 / SRGB_GAMMA) - SRGB_OFFSET;
+}
