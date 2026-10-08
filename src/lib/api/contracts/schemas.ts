@@ -298,6 +298,12 @@ export const ConversionOptionsSchema = {
       description:
         'Detect the page orientation and script of scans that read badly, and read them again turned upright. Omit it to detect when the OCR orientation data is installed; true requires it and fails with 503 when it is missing; false never detects.',
     },
+    ocrEngineMarkup: {
+      type: 'string',
+      enum: ['hocr', 'alto'],
+      description:
+        'Debug and verification only: also return the OCR engine\'s own hOCR or ALTO of each recognized PDF page in the result metadata, next to the product export. Needs the tesseract command line (503 when missing).',
+    },
     ocrDensityThreshold: {
       type: 'number',
       minimum: 0,

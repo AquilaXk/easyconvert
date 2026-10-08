@@ -331,7 +331,20 @@ export interface CliOcrRequest {
   imageHeight?: number;
   /** Text rows counted in a short image; one row is read as a single line. */
   textRows?: number;
+  /**
+   * Also write the engine's own markup of the page (hOCR or ALTO) and return it on the result as `engineMarkup`.
+   * For checking the product exports against the engine; it costs no second run.
+   */
+  engineMarkup?: OcrEngineMarkupFormat;
 }
+
+/** The markup formats the engine writes itself. */
+export type OcrEngineMarkupFormat = 'hocr' | 'alto';
+/** Tesseract config variable and output file extension of each engine markup format. */
+const ENGINE_MARKUP_OUTPUT: Readonly<Record<OcrEngineMarkupFormat, { variable: string; extension: string }>> = {
+  hocr: { variable: 'tessedit_create_hocr', extension: 'hocr' },
+  alto: { variable: 'tessedit_create_alto', extension: 'xml' },
+};
 
 function isTimeout(err: unknown): boolean {
   return err instanceof SandboxedTimeoutError || (err instanceof Error && err.name === 'TimeoutError');
@@ -417,6 +430,7 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
     '--oem', String(engineMode),
     '-c', 'tessedit_create_tsv=1',
     '-c', 'tessedit_create_txt=1',
+    ...(request.engineMarkup ? ['-c', `${ENGINE_MARKUP_OUTPUT[request.engineMarkup].variable}=1`] : []),
   ];
   try {
     try {
@@ -437,7 +451,11 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
     }
     const tsv = await readJobOutput(`${outputBase}.tsv`, maxOutputBytes, 'TSV');
     const pageText = await readJobOutput(`${outputBase}.txt`, maxOutputBytes, 'text');
-    return parseTesseractTsv(tsv, request.tesseractLang, pageText);
+    const parsed = parseTesseractTsv(tsv, request.tesseractLang, pageText);
+    if (!request.engineMarkup) return parsed;
+    const { extension } = ENGINE_MARKUP_OUTPUT[request.engineMarkup];
+    const content = await readJobOutput(`${outputBase}.${extension}`, maxOutputBytes, request.engineMarkup);
+    return { ...parsed, engineMarkup: { format: request.engineMarkup, content } };
   } finally {
     await fs.promises.rm(jobDir, { recursive: true, force: true });
   }

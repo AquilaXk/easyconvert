@@ -162,6 +162,11 @@ export interface ConversionOptions {
    * when the data is missing; `false` never looks.
    */
   ocrDetectOrientation?: boolean;
+  /**
+   * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata
+   * (`metadata.ocrEngineMarkup`). For verification and debugging; it needs the tesseract command line.
+   */
+  ocrEngineMarkup?: 'hocr' | 'alto';
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;

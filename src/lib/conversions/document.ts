@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
 import {
   convertOffice,
@@ -14,7 +14,7 @@ import {
   TableBorder,
 } from './office';
 import {
-  recognizePdfPages,
+  recognizeRenderedPdfPages,
   generateSearchablePdf,
   OcrResult,
   OcrPageResult,
@@ -38,11 +38,9 @@ import {
   type PdfToUnicodeCMap,
   type XyCutOptions,
 } from './pdf-utils';
-import { extractRasterImagesFromPdf, ExtractedPdfImage } from './pdf-rasterizer';
 import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
-import { appendOcrResultBelow } from './ocr-geometry';
 import { characterWeightedConfidence } from './ocr-calibration';
 import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
@@ -51,6 +49,18 @@ import { decodeTextInput } from './text-input';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from './markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
+
+/**
+ * Facts about how the PDF's pages were recognized, for the result metadata: pages the WebAssembly engine failed on
+ * and the native one read (`engineFallback`), and the engine's own markup when it was asked for (`ocrEngineMarkup`).
+ * Undefined when there is nothing to report.
+ */
+function pdfOcrMetadata(results: Map<number, OcrResult>): Record<string, unknown> | undefined {
+  const fallbacks = [...results].filter(([, result]) => result.engineFallback).map(([pageNumber, result]) => ({ pageNumber, ...result.engineFallback }));
+  const markup = [...results].filter(([, result]) => result.engineMarkup).map(([pageNumber, result]) => ({ pageNumber, ...result.engineMarkup }));
+  if (fallbacks.length === 0 && markup.length === 0) return undefined;
+  return { ...(fallbacks.length > 0 ? { engineFallback: fallbacks } : {}), ...(markup.length > 0 ? { ocrEngineMarkup: markup } : {}) };
+}
 
 export {
   extractTextFromPdf,
@@ -217,46 +227,39 @@ export async function convertDocument(
     const shouldRunOcr = options.ocrEnabled || isScanned || tgt === 'hocr' || tgt === 'alto';
 
     if (shouldRunOcr && (pagesNeedingOcr.length > 0 || (pageAnalyses.length === 0 && (options.ocrEnabled || isScanned)))) {
-      let rasterImages: ExtractedPdfImage[] = [];
+      // The pages are recognized as displayed (rendered by Poppler), not read from the images they contain.
+      let recognizedPages = new Map<number, OcrResult>();
       try {
-        rasterImages = await extractRasterImagesFromPdf(
-          inputBuffer,
-          options.dpi || 300,
-          pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined
-        );
-      } catch (err: any) {
+        recognizedPages = await recognizeRenderedPdfPages(inputBuffer, pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined, {
+          dpi: options.dpi,
+          language: options.ocrLanguage,
+          detectOrientation: options.ocrDetectOrientation,
+          engineMarkup: options.ocrEngineMarkup,
+        });
+      } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
         rethrowInputPixelLimit(err);
-        if (options.ocrEnabled) {
+        // OCR that nobody asked for (a scanned page converted to text) is best effort when no engine can render the
+        // pages; the text stays as extracted. A requested OCR, or a target that is OCR output, never is.
+        const optional = !options.ocrEnabled && tgt !== 'hocr' && tgt !== 'alto';
+        if (!(optional && err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError))) {
           if (err instanceof ConversionFailedError) throw err;
-          const rawMsg = err?.message || 'Unsupported compression filter in PDF document.';
-          const cleanMsg = rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg;
-          throw new ConversionFailedError(`PDF OCR failed: ${cleanMsg}`);
+          const rawMsg = err instanceof Error ? err.message : String(err);
+          throw new ConversionFailedError(`PDF OCR failed: ${rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg}`);
         }
       }
 
-      if (rasterImages.length === 0 && options.ocrEnabled && pagesNeedingOcr.length > 0) {
-        throw new ConversionFailedError('PDF OCR failed: PDF contains no renderable raster pages or images. Page rasterization requires the native worker.');
-      }
-
-      if (rasterImages.length > 0) {
+      if (recognizedPages.size > 0) {
         const ocrTexts: string[] = [];
         const ocrTextPages: { pageNumber: number; text: string }[] = [];
         let totalConfidence = 0;
         let count = 0;
 
-        const recognized = await recognizePdfPages(rasterImages, options.ocrLanguage, undefined, options.ocrDetectOrientation);
-        for (const [index, img] of rasterImages.entries()) {
-          const ocr = recognized[index];
-          if (ocr && ocr.text) {
+        for (const [pageNumber, ocr] of [...recognizedPages].sort(([a], [b]) => a - b)) {
+          if (ocr.text) {
             ocrTexts.push(ocr.text);
-            ocrTextPages.push({ pageNumber: img.pageNumber, text: ocr.text });
-            const existing = pageOcrResults.get(img.pageNumber);
-            if (!existing) {
-              pageOcrResults.set(img.pageNumber, ocr);
-            } else {
-              pageOcrResults.set(img.pageNumber, appendOcrResultBelow(existing, ocr, img.width, img.height));
-            }
+            ocrTextPages.push({ pageNumber, text: ocr.text });
+            pageOcrResults.set(pageNumber, ocr);
             lastOcrResult = ocr;
             if (ocr.confidence !== null) {
               totalConfidence += ocr.confidence;
@@ -277,21 +280,23 @@ export async function convertDocument(
               }
             }
           } else {
-            // Without a per-page analysis the images come in the order the file stores them, not the page order.
-            allTextParts.push(...[...ocrTextPages].sort((a, b) => a.pageNumber - b.pageNumber).map((page) => page.text));
+            allTextParts.push(...ocrTextPages.map((page) => page.text));
           }
           extractedText = allTextParts.join('\n\n').trim();
+          // No recognized word had a confidence: the page is read, but how well is not known, so none is reported.
           ocrInfo = {
             text: extractedText,
-            confidence: count > 0 ? totalConfidence / count : 0.9,
+            confidence: count > 0 ? totalConfidence / count : null,
           };
         } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
           throw new ConversionFailedError('PDF OCR failed: Optical character recognition failed to detect readable text.');
         }
       } else if (options.ocrEnabled && pagesNeedingOcr.length > 0) {
-        throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+        throw new ConversionFailedError('PDF OCR failed: no page could be rendered and recognized.');
       }
     }
+
+    const ocrMetadata = pdfOcrMetadata(pageOcrResults);
 
     // Collect bounding boxes for Document Layout Analysis (DLA)
     let dlaBoxes: DlaBoundingBox[] = [];
@@ -357,7 +362,15 @@ export async function convertDocument(
 
     // The boxes of several scanned pages all start at the top of their own page: analysed together they interleave
     // by height, so a multi-page scan keeps its text in page order instead of going through the layout analysis.
-    const dlaLayout = dlaBoxes.length > 0 && pageOcrResults.size <= 1 ? analyzeDocumentLayout(dlaBoxes, 612, 792) : null;
+    // The layout is measured against the page the boxes are on (the render's pixels for a recognized page, the
+    // page's points for its text); a page of unknown size gets no layout, not an assumed one.
+    const [layoutPage] = pageOcrResults.size === 1 ? [...pageOcrResults.values()] : [];
+    const layoutWidth = layoutPage ? layoutPage.imageWidth : pageAnalyses[0]?.width;
+    const layoutHeight = layoutPage ? layoutPage.imageHeight : pageAnalyses[0]?.height;
+    const dlaLayout =
+      dlaBoxes.length > 0 && pageOcrResults.size <= 1 && layoutWidth && layoutHeight
+        ? analyzeDocumentLayout(dlaBoxes, layoutWidth, layoutHeight)
+        : null;
 
     if (tgt === 'txt') {
       const textToEmit = dlaLayout && dlaLayout.fullText ? dlaLayout.fullText : extractedText;
@@ -369,6 +382,7 @@ export async function convertDocument(
         size: buffer.length,
         ocrExtractedText: ocrInfo.text,
         ocrConfidence: ocrInfo.confidence,
+        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
     }
 
@@ -409,6 +423,7 @@ export async function convertDocument(
         size: buffer.length,
         ocrExtractedText: ocrInfo.text,
         ocrConfidence: ocrInfo.confidence,
+        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
     }
 
@@ -445,6 +460,7 @@ export async function convertDocument(
         size: buffer.length,
         ocrExtractedText: ocrInfo.text,
         ocrConfidence: ocrInfo.confidence,
+        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
     }
 
@@ -464,6 +480,7 @@ export async function convertDocument(
               size: searchablePdf.length,
               ocrExtractedText: ocrInfo.text,
               ocrConfidence: ocrInfo.confidence,
+              ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
             };
           } catch (pdfErr: any) {
             throw new ConversionFailedError(
@@ -492,6 +509,7 @@ export async function convertDocument(
         size: inputBuffer.length,
         ocrExtractedText: ocrInfo.text,
         ocrConfidence: ocrInfo.confidence,
+        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
     }
 
@@ -515,6 +533,7 @@ export async function convertDocument(
         size: buffer.length,
         ocrExtractedText: combinedResult.text,
         ocrConfidence: combinedResult.confidence,
+        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
     }
 

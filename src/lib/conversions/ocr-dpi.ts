@@ -9,8 +9,15 @@
  * value outside OCR_DPI_RANGE, counts as undeclared.
  */
 
-/** Resolution assumed for an image that declares none; recorded wherever it is used. */
+/**
+ * Resolution assumed for an image that declares none, and the resolution PDF pages are rendered at for OCR when
+ * the request sets none; recorded wherever it is used.
+ */
 export const OCR_DEFAULT_DPI = 300;
+/** Highest resolution a PDF page is rendered at for OCR; above it a page is an unbounded raster. */
+export const OCR_MAX_DPI = 600;
+/** Lowest resolution a PDF page is rendered at for OCR; text is not recognizable below it. */
+export const OCR_MIN_RENDER_DPI = 72;
 /**
  * Declared resolutions outside this range are not believed. The lower bound is above 25.4 dpi
  * (1 pixel per millimetre), the density libvips writes into an image whose maker set none, which

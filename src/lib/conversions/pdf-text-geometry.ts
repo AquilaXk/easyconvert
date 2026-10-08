@@ -1259,8 +1259,9 @@ async function readPage(pdfjs: PdfJs, page: PdfJsPage, content: PageContent, pag
   for (const block of lineBlocks) wordCount += block.words.length;
   return {
     text: lines.join('\n'),
-    // The page's own text layer is exact; word confidence is left unknown.
-    confidence: 1,
+    // The page's own text layer is exact, but nothing measured how well it was read, so it has no confidence.
+    confidence: null,
+    source: 'text-layer',
     wordCount,
     lines,
     lineBlocks,
@@ -1289,7 +1290,9 @@ function textLayerCharCount(pageText: string): number {
 }
 
 function densityAnalysis(page: PdfJsPage, pageNumber: number, pageText: string, densityThreshold: number): PdfPageAnalysis {
-  const view = page.view || [0, 0, 612, 792];
+  const view = page.view;
+  // A page that reports no box has no size to give; none is assumed.
+  if (!view) throw new PdfTextGeometryError(`PDF page ${pageNumber} reports no page box.`);
   const charCount = textLayerCharCount(pageText);
   return {
     pageNumber,

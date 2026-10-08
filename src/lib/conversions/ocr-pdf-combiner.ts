@@ -28,6 +28,8 @@ import {
 import { combineWordMerge, mergeWordsWithPageText, type OcrWordMerge } from './ocr-word-merge';
 import type { OcrOrientation } from './ocr-osd';
 import { resolveImageDpi, type ImageDpi } from './ocr-dpi';
+import { mapOcrResultToSource } from './ocr-geometry';
+import { unrotatedPageGeometry, unrotatedPageScale, type RenderedPdfPage } from './pdf-page-geometry';
 import { placeWords, writeTextLayer } from './ocr-text-layer';
 import { embedImagePlan, type PdfImagePlan } from './pdf-image-xobject';
 
@@ -108,12 +110,18 @@ export interface OcrLineBlock {
   descenders?: number;
 }
 
+/** Where a page's text comes from: recognized from pixels, or read from the PDF's own text layer. */
+export type OcrTextSource = 'ocr' | 'text-layer';
+
 export interface OcrPageResult {
   pageNumber: number;
   width: number;
   height: number;
   text: string;
+  /** Mean word confidence 0..1; null when the page has none, as a page read from the PDF's text layer. */
   confidence: number | null;
+  /** Where the text comes from; absent means recognized. */
+  source?: OcrTextSource;
   lineBlocks: OcrLineBlock[];
   lines?: string[];
   /** Recognition language, as the engine code (`eng`) or a BCP 47 tag. */
@@ -144,8 +152,33 @@ export interface OcrResult {
   orientation?: OcrOrientation;
   /** Resolution of the scan, from its header or assumed (`assumed` true); the searchable PDF is sized with it. */
   imageDpi?: ImageDpi;
+  /** Where the text comes from; absent means recognized. */
+  source?: OcrTextSource;
   /** Directory the recognition's language data was read from; for diagnostics, never sent to a client. */
   languageDataDirectory?: string;
+  /**
+   * Set when the result is of a PDF page rendered for recognition: how the page's pixels relate to the PDF page
+   * (frame, resolution, size), so the boxes can be placed on the page in user space.
+   */
+  pageRender?: RenderedPdfPage;
+  /**
+   * The engine's own markup of the page, when it was asked for (`ocrEngineMarkup`): for checking the product hOCR or
+   * ALTO against what the engine wrote. Its boxes are in the pixels of the page as submitted.
+   */
+  engineMarkup?: { format: 'hocr' | 'alto'; content: string };
+  /**
+   * Set when a failure of the WebAssembly engine was answered by the native one: what failed and what read the page.
+   * Absent when the first engine read it.
+   */
+  engineFallback?: OcrEngineFallback;
+}
+
+/** A page the WebAssembly engine could not read and the native tool did, with the class of failure. */
+export interface OcrEngineFallback {
+  from: 'wasm';
+  to: 'cli';
+  /** Documented recoverable failure class of the first engine (see ocr-engine-failure.ts). */
+  reason: string;
 }
 
 export interface ColumnGutter {
@@ -1519,24 +1552,37 @@ export function injectInvisibleTextLayer(
   page: PDFPage,
   ocrResult: OcrResult,
   scaleX: number = 1.0,
-  scaleY: number = 1.0
+  scaleY: number = 1.0,
+  placement?: TextLayerPlacement
 ): void {
   const safeScaleX = Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1.0;
   const safeScaleY = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1.0;
-  const { height: pageHeight, width: pageWidth } = page.getSize();
+  const { height: mediaHeight, width: pageWidth } = page.getSize();
+  // The page's top edge in user space: the MediaBox top unless the caller placed the pixel grid on another box.
+  const pageTop = placement?.top ?? mediaHeight;
   // Engine results come in reading order already (parseTesseractBlocks sorts them in the frame the
   // page was read in); a page that was turned must keep that order, because sorting by position in
   // the page as scanned would read its lines the wrong way. Results built by hand are sorted.
   const rawBlocks = ocrResult.lineBlocks ?? [];
-  const turned = (ocrResult.orientation?.rotationApplied ?? 0) !== 0;
+  const turned = placement?.keepOrder === true || (ocrResult.orientation?.rotationApplied ?? 0) !== 0;
   const lineBlocks = turned
     ? rawBlocks
-    : sortLineBlocksTopological(rawBlocks, ocrResult.imageWidth ?? pageWidth / safeScaleX, ocrResult.imageHeight ?? pageHeight / safeScaleY);
-  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageHeight);
+    : sortLineBlocksTopological(rawBlocks, ocrResult.imageWidth ?? pageWidth / safeScaleX, ocrResult.imageHeight ?? pageTop / safeScaleY);
+  const words = placeWords({ ...ocrResult, lineBlocks }, safeScaleX, safeScaleY, pageTop, placement?.originX ?? 0);
   if (words.length === 0) return;
   const font = ensureUnicodeFont(page.doc);
   registerFontOnPage(page, font);
   writeTextLayer(page, words, font);
+}
+
+/** Where the result's pixel grid sits on the page: its top-left corner in user space. */
+export interface TextLayerPlacement {
+  /** User-space x of the grid's left edge. */
+  originX: number;
+  /** User-space y of the grid's top edge. */
+  top: number;
+  /** Keep the result's line order, for a result whose order was set in a frame other than the page's own. */
+  keepOrder?: boolean;
 }
 
 /**
@@ -1557,6 +1603,10 @@ export async function createLosslessSandwichPdfFromPdf(
     if (!ocrResult) continue;
 
     const page = doc.getPage(i);
+    if (ocrResult.pageRender) {
+      injectRenderedPageTextLayer(page, ocrResult, ocrResult.pageRender);
+      continue;
+    }
     const { width: pageWidth, height: pageHeight } = page.getSize();
 
     const imgWidth = ocrResult.imageWidth || pageWidth;
@@ -1570,6 +1620,17 @@ export async function createLosslessSandwichPdfFromPdf(
 
   const pdfBytes = await doc.save();
   return Buffer.from(pdfBytes);
+}
+
+/**
+ * Writes the text layer of a page that was rendered for recognition. The boxes are in the pixels of the displayed
+ * page (CropBox, turned by /Rotate), so they are first returned to the unrotated page, whose pixel grid starts at
+ * the CropBox's top-left corner and is 72 / dpi points per pixel.
+ */
+function injectRenderedPageTextLayer(page: PDFPage, ocrResult: OcrResult, render: RenderedPdfPage): void {
+  const unrotated = mapOcrResultToSource(ocrResult, unrotatedPageGeometry(render));
+  const { scaleX, scaleY, originX, top } = unrotatedPageScale(render);
+  injectInvisibleTextLayer(page, unrotated, scaleX, scaleY, { originX, top, keepOrder: true });
 }
 
 /** PDF user space unit: 1/72 inch. */
