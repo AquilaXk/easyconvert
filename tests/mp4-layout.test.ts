@@ -39,11 +39,24 @@ function tool(name: 'ffmpeg' | 'ffprobe'): string {
 
 const VIDEO_IN = ['-f', 'lavfi', '-i', `testsrc2=size=${SIZE}:rate=24:duration=${SECONDS}`];
 const AUDIO_IN = ['-f', 'lavfi', '-i', `sine=frequency=${TONE_HZ}:sample_rate=44100:duration=${SECONDS}`];
+const PQ_TRANSFER_CODE = 16;
+const BT709_TRANSFER_CODE = 1;
 const H264 = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast'];
 
 /** `setparams` options that tag the frames, which the encoder writes into the stream and the container. */
 function tagged(transfer: string, primaries: string): string {
   return `color_trc=${transfer}:color_primaries=${primaries}:colorspace=${primaries === 'bt709' ? 'bt709' : 'bt2020nc'}`;
+}
+
+/** Transfer codes (ISO/IEC 23091-2) of the `nclx` colour boxes in a file, read from its bytes and not from any prober. */
+function nclxTransferCodes(file: string): number[] {
+  const bytes = fs.readFileSync(file);
+  const codes: number[] = [];
+  for (let at = bytes.indexOf('colrnclx', 0, 'latin1'); at !== -1; at = bytes.indexOf('colrnclx', at + 1, 'latin1')) {
+    // colr, nclx, then the primaries, the transfer and the matrix as 16-bit codes.
+    codes.push(bytes.readUInt16BE(at + 'colrnclx'.length + 2));
+  }
+  return codes;
 }
 
 /** Writes `name` with ffmpeg run on `args` and returns its path. */
@@ -147,14 +160,6 @@ describe('inputs the header reader answers exactly', () => {
       name: 'an HLG picture signalled only in the H.264 stream',
       expectedTransfer: 'arib-std-b67',
       build: () => make('hlg-stream.mp4', [...VIDEO_IN, ...H264, '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']),
-    },
-    {
-      name: 'a PQ picture tagged only in the container',
-      expectedTransfer: 'smpte2084',
-      build: () => {
-        const both = make('pq-both.mp4', [...VIDEO_IN, '-vf', `setparams=${tagged('smpte2084', 'bt2020')}`, ...H264]);
-        return make('pq-container.mp4', ['-i', both, '-c', 'copy', '-bsf:v', 'h264_metadata=colour_primaries=2:transfer_characteristics=2:matrix_coefficients=2']);
-      },
     },
   ];
 
@@ -269,17 +274,38 @@ describe('inputs left to ffprobe', () => {
   );
 
   oracleTest(
-    'gives no answer when the container tag and the stream tag of the transfer disagree',
-    ['ffmpeg', 'ffprobe'],
+    'gives no answer when only the container states the transfer',
+    ['ffmpeg'],
     () => {
       requireEncoders('libx264');
+      const both = make('pq-both.mp4', [...VIDEO_IN, '-vf', `setparams=${tagged('smpte2084', 'bt2020')}`, ...H264]);
+      const file = make('pq-container.mp4', ['-i', both, '-c', 'copy', '-bsf:v', 'h264_metadata=colour_primaries=2:transfer_characteristics=2:matrix_coefficients=2']);
+      // ffprobe 6.1 reports no transfer for this file and ffprobe 7 and later report PQ, so the reader declines.
+      expect(nclxTransferCodes(file)).toEqual([PQ_TRANSFER_CODE]);
+      expect(readMp4Layout(file)).toBeNull();
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'gives no answer when the container tag and the stream tag of the transfer disagree',
+    ['ffmpeg'],
+    () => {
+      requireEncoders('libx264');
+      // The stream states PQ in its parameter sets. The box ffmpeg writes depends on its release, so the container's
+      // statement is set here, in the bytes: BT.709 in the primaries, the transfer and the matrix.
       const file = make('conflict.mp4', [
         ...VIDEO_IN, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast',
-        '-x264-params', 'colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc',
-        '-color_trc', 'bt709', '-color_primaries', 'bt709', '-colorspace', 'bt709', '-movflags', '+write_colr',
+        '-x264-params', 'colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc', '-movflags', '+write_colr',
       ]);
-      // ffprobe settles on neither statement (it reports no transfer at all), so the reader must not pick one.
-      expect(referenceFacts(file).streams[0].colorTransfer).toBeUndefined();
+      const bytes = fs.readFileSync(file);
+      const box = bytes.indexOf('colrnclx', 0, 'latin1');
+      expect(box).not.toBe(-1);
+      for (const field of [0, 1, 2]) bytes.writeUInt16BE(BT709_TRANSFER_CODE, box + 'colrnclx'.length + field * 2);
+      fs.writeFileSync(file, bytes);
+      // The container states BT.709 and the stream PQ. ffprobe 6.1 answers with the stream's statement and ffprobe 7
+      // and later with none, so the reader must not pick one: it declines and the caller asks ffprobe.
+      expect(nclxTransferCodes(file)).toEqual([BT709_TRANSFER_CODE]);
       expect(readMp4Layout(file)).toBeNull();
     },
     TEST_TIMEOUT_MS

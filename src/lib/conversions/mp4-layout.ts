@@ -361,11 +361,13 @@ function videoEntry(buf: Buffer, fourcc: string, entryBody: number, entryEnd: nu
   // A stream that marks its transfer unspecified makes no statement.
   const streamCode = streamStated === TRANSFER_UNSPECIFIED ? undefined : streamStated;
   const container = colourBoxTransfer(buf, children);
-  // A container that describes the colours is the prober's source for them, and the stream's own statement is
-  // used only when the container makes none. Two statements that differ are left to the prober.
+  // The prober settles a container tag that the stream does not repeat differently by release: ffprobe 7 and later
+  // take the container's tag when the stream states none and report no transfer when the two differ, while 6.1
+  // reports the stream's statement in both cases (and nothing when the stream states none). Only the shapes every
+  // release answers alike are read here: a stream alone, or a container and a stream that agree.
   let code: number | undefined;
   if (container === null) code = streamCode;
-  else if (streamCode === undefined || streamCode === container.code) code = container.code;
+  else if (streamCode === container.code || (streamCode === undefined && container.code === TRANSFER_UNSPECIFIED)) code = streamCode;
   else unsupported();
   return {
     type: 'video',
