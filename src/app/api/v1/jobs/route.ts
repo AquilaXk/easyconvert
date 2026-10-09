@@ -6,6 +6,8 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { JobDeadlineError } from '@/lib/queue/job-deadline';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -667,7 +669,7 @@ export async function POST(req: NextRequest) {
         fileSize,
         storageKey,
         inputBufferBase64,
-        options,
+        options: stripEngineControls(options),
         webhookUrl: effectiveWebhookUrl,
         webhookSecret: effectiveWebhookSecret,
         userId: auth.user.id,
@@ -720,6 +722,11 @@ export async function POST(req: NextRequest) {
     const storageProblem = describeStorageError(error);
     if (storageProblem) {
       return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
+    }
+    if (error instanceof JobDeadlineError) {
+      // The detail names a deadline setting, so it stays in the server log.
+      console.error('[Jobs] Invalid deadline setting or input:', error);
+      return failWithRollback(500, 'Internal server error', 'Internal Server Error');
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');

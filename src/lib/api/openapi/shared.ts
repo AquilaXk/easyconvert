@@ -161,10 +161,10 @@ export const CONVERT_FORM_PROPERTIES = {
   options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
 };
 
-/** The 504 of a synchronous conversion that ran past its wall-clock deadline (JOB_DEADLINE_* settings). */
+/** The 504 of a synchronous conversion that ran past its wall-clock deadline (JOB_DEADLINE_* and SYNC_DEADLINE_MAX_MS settings). */
 export const JOB_TIMEOUT_DESCRIPTION =
-  'The conversion did not finish within the wall-clock limit of the account tier (problem type `https://api.easyconvert.io/problems/job-timeout`, with the limit in `timeoutMs`). The conversion was stopped, its processes were killed and the quota reservation was rolled back. A queued job that hits the same limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, and is not retried.';
+  'The conversion did not finish within its wall-clock limit (problem type `https://api.easyconvert.io/problems/job-timeout`, with the limit in `timeoutMs` and the asynchronous endpoint in `asyncEndpoint`). A synchronous request is held to 120 s by default, below the limit of the account tier; use `POST /api/v1/jobs` for conversions that need longer. The conversion was stopped and its processes were killed. The quota unit is consumed, not refunded, because the engine worked for the whole limit. A queued job that hits its limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, consumes its quota the same way and is not retried.';
 
 /** The 499 of a synchronous conversion whose client closed the connection. */
 export const CLIENT_CLOSED_DESCRIPTION =
-  'The client closed the connection before the conversion finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The conversion was aborted and the quota reservation was rolled back; no client is left to read this answer.';
+  'The client closed the connection before the conversion finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The conversion was aborted. The quota reservation is rolled back only if no engine call had started; otherwise the unit is consumed. No client is left to read this answer.';

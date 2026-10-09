@@ -14,6 +14,7 @@ import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { RequestAbortedError } from '../src/lib/types';
+import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
 
 /**
  * The synchronous conversion routes run under the same deadline as a queued job and stop when the client goes away.
@@ -27,6 +28,8 @@ const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_CLIENT_CLOSED = 499;
 const JOB_TIMEOUT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/job-timeout';
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
+/** Engine control options a client sends: none of them may reach the engine. */
+const CLIENT_CONTROLS = JSON.stringify({ timeoutMs: 999_999_999, signal: {}, deadlineAt: 1 });
 
 interface Seen {
   options: Record<string, unknown>;
@@ -52,6 +55,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   dispatch.mockReset();
   vi.unstubAllEnvs();
 });
@@ -76,10 +80,15 @@ function hangHonoringSignal(onStart?: () => void): void {
   }) as never);
 }
 
+async function usedToday(): Promise<number> {
+  return (await redisKeyStore.getQuotaUsage(userId)).usedToday;
+}
+
 function csvForm(extra: Record<string, string> = {}): FormData {
   const form = new FormData();
   form.append('file', new File([CSV_INPUT], 'scores.csv', { type: 'text/csv' }));
   form.append('targetFormat', 'json');
+  form.append('options', CLIENT_CONTROLS);
   for (const [key, value] of Object.entries(extra)) form.append(key, value);
   return form;
 }
@@ -88,6 +97,7 @@ function batchForm(): FormData {
   const form = new FormData();
   form.append('files', new File([CSV_INPUT], 'scores.csv', { type: 'text/csv' }));
   form.append('targetFormats', JSON.stringify({ default: 'json' }));
+  form.append('options', CLIENT_CONTROLS);
   return form;
 }
 
@@ -132,7 +142,7 @@ describe.each(ROUTES)('$label', (route) => {
     expect(body.detail).toContain('time limit');
 
     expect(seen).toHaveLength(1);
-    expect(seen[0].options.timeoutMs).toBe(DEADLINE_MS);
+    expect(seen[0].options.timeoutMs).toBeUndefined();
     expect(seen[0].signal.aborted).toBe(true);
   });
 
@@ -143,22 +153,29 @@ describe.each(ROUTES)('$label', (route) => {
     expect((await res.json()).type).toBe(JOB_TIMEOUT_PROBLEM_TYPE);
   });
 
-  it('gives the conversion the deadline in timeoutMs and replaces a client-supplied one', async () => {
+  it('gives the conversion the job deadline and signal and drops the controls a client sent', async () => {
     dispatch.mockImplementation((async (_input: unknown, _s: string, _t: string, options: Record<string, unknown>) => {
       seen.push({ options, signal: options.signal as AbortSignal });
       throw new Error('stop after the options are captured');
     }) as never);
+    const before = Date.now();
     await route.call(request(route));
     expect(seen).toHaveLength(1);
-    expect(seen[0].options.timeoutMs).toBe(DEADLINE_MS);
+    const options = seen[0].options;
+    // The client sent timeoutMs, signal and deadlineAt: none arrives, the engine keeps its own stage limits.
+    expect(options.timeoutMs).toBeUndefined();
+    expect(Object.hasOwn(options, 'deadlineAt')).toBe(false);
     expect(seen[0].signal).toBeInstanceOf(AbortSignal);
     expect(seen[0].signal.aborted).toBe(false);
+    const deadlineAt = options[JOB_DEADLINE_AT as unknown as string] as number;
+    expect(deadlineAt).toBeGreaterThanOrEqual(before + DEADLINE_MS - 50);
+    expect(deadlineAt).toBeLessThanOrEqual(Date.now() + DEADLINE_MS);
   });
 
-  it('aborts the conversion when the client disconnects, and charges no quota', async () => {
+  it('aborts the conversion when the client disconnects after it started, and the quota stays consumed', async () => {
     const client = new AbortController();
     const started = new Promise<void>((resolve) => hangHonoringSignal(resolve));
-    const quotaBefore = JSON.stringify(await redisKeyStore.getQuotaUsage(userId));
+    const usedBefore = await usedToday();
     const pending = route.call(request(route, client.signal));
     await started;
     const abortedAt = Date.now();
@@ -170,16 +187,27 @@ describe.each(ROUTES)('$label', (route) => {
     expect(seen).toHaveLength(1);
     expect(seen[0].signal.aborted).toBe(true);
     expect(seen[0].signal.reason).toBeInstanceOf(RequestAbortedError);
-    expect(JSON.stringify(await redisKeyStore.getQuotaUsage(userId))).toBe(quotaBefore);
+    expect(await usedToday()).toBe(usedBefore + 1);
   });
 
-  it('does not start the conversion for a client that is already gone', async () => {
+  it('does not start the conversion for a client that is already gone, and rolls the quota back', async () => {
     const client = new AbortController();
     client.abort();
     hangHonoringSignal();
+    const usedBefore = await usedToday();
     const res = await route.call(request(route, client.signal));
     expect(res.status).toBe(HTTP_CLIENT_CLOSED);
-    expect(seen.every((call) => call.signal.aborted)).toBe(true);
+    expect(seen).toEqual([]);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(await usedToday()).toBe(usedBefore);
+  });
+
+  it('consumes the quota of a conversion that ran past its deadline', async () => {
+    hangIgnoringSignal();
+    const usedBefore = await usedToday();
+    const res = await route.call(request(route));
+    expect(res.status).toBe(HTTP_GATEWAY_TIMEOUT);
+    expect(await usedToday()).toBe(usedBefore + 1);
   });
 });
 
@@ -204,29 +232,49 @@ describe('a conversion that finishes inside its deadline', () => {
   });
 });
 
-describe('the media ceiling on the synchronous routes', () => {
-  /** RIFF/WAVE header of an empty PCM stream: the magic bytes the spoof check reads. */
-  const WAV = Buffer.concat([
-    Buffer.from('RIFF'), Buffer.from([36, 0, 0, 0]), Buffer.from('WAVEfmt '), Buffer.from([16, 0, 0, 0, 1, 0, 1, 0, 0x44, 0xac, 0, 0, 0x88, 0x58, 1, 0, 2, 0, 16, 0]),
-    Buffer.from('data'), Buffer.from([0, 0, 0, 0]),
-  ]);
-  const MEDIA_MAX_MS = 180_000;
+describe('the synchronous cap (SYNC_DEADLINE_MAX_MS)', () => {
+  const SYNC_CAP_MS = 200;
 
-  it.each([
-    ['POST /api/convert', '/api/convert', convertRoute],
-    ['POST /api/v1/convert', '/api/v1/convert', v1ConvertRoute],
-  ])('%s gives a free media conversion at most 180 000 ms even when the job deadline is longer', async (_label, route, call) => {
-    vi.stubEnv('JOB_DEADLINE_BASE_MS_FREE', '500000');
+  beforeEach(() => {
+    vi.stubEnv('JOB_DEADLINE_BASE_MS_FREE', '100');
     vi.stubEnv('JOB_DEADLINE_MAX_MS_FREE', '600000');
-    dispatch.mockImplementation((async (_input: unknown, _s: string, _t: string, options: Record<string, unknown>) => {
-      seen.push({ options, signal: options.signal as AbortSignal });
-      throw new Error('stop after the options are captured');
-    }) as never);
-    const form = new FormData();
-    form.append('file', new File([new Uint8Array(WAV)], 'clip.wav', { type: 'audio/wav' }));
-    form.append('targetFormat', 'mp3');
-    await call(new NextRequest(`${BASE_URL}${route}`, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form }));
-    expect(seen).toHaveLength(1);
-    expect(seen[0].options.timeoutMs).toBe(MEDIA_MAX_MS);
+    vi.stubEnv('SYNC_DEADLINE_MAX_MS', String(SYNC_CAP_MS));
+  });
+
+  it.each(ROUTES)('$label stops at the cap, below the job deadline, and points to the asynchronous API', async (route) => {
+    hangHonoringSignal();
+    const startedAt = Date.now();
+    const res = await route.call(request(route));
+    const elapsed = Date.now() - startedAt;
+    expect(res.status).toBe(HTTP_GATEWAY_TIMEOUT);
+    expect(elapsed).toBeGreaterThanOrEqual(SYNC_CAP_MS - 50);
+    expect(elapsed).toBeLessThan(2_000);
+    const body = await res.json();
+    expect(body.type).toBe(JOB_TIMEOUT_PROBLEM_TYPE);
+    expect(body.timeoutMs).toBe(SYNC_CAP_MS);
+    expect(body.asyncEndpoint).toBe('/api/v1/jobs');
+    expect(body.detail).toContain('/api/v1/jobs');
+    const deadlineAt = seen[0].options[JOB_DEADLINE_AT as unknown as string] as number;
+    expect(deadlineAt - Date.now()).toBeLessThanOrEqual(SYNC_CAP_MS);
+  });
+
+  it('defaults to 120 s', async () => {
+    vi.unstubAllEnvs();
+    const { jobDeadlineSettings } = await import('../src/lib/queue/job-deadline');
+    expect(jobDeadlineSettings({}).syncMaxMs).toBe(120_000);
+  });
+});
+
+describe('an invalid deadline setting never reaches the client', () => {
+  it.each(ROUTES)('$label answers a generic 500 without the setting name or the error class', async (route) => {
+    vi.stubEnv('JOB_DEADLINE_PER_MIB_MS', 'abc');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    hangHonoringSignal();
+    const res = await route.call(request(route));
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).not.toContain('JOB_DEADLINE');
+    expect(text).not.toContain('RangeError');
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });

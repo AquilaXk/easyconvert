@@ -835,12 +835,17 @@ export class JobTimeoutError extends ConversionFailedError {
 
 /**
  * The client of a synchronous conversion closed the connection before the answer was ready. The conversion is
- * aborted with this error as the signal's reason; no answer is delivered and no quota is charged.
+ * aborted with this error as the signal's reason and no answer is delivered. `conversionStarted` tells whether an
+ * engine call had begun: a request that never started is rolled back, one that did is charged (QA decision
+ * 2026-10-10), because the engine's work cannot be undone.
  */
 export class RequestAbortedError extends Error {
-  constructor() {
+  readonly conversionStarted: boolean;
+
+  constructor(conversionStarted: boolean) {
     super('The client closed the connection before the conversion finished');
     this.name = 'RequestAbortedError';
+    this.conversionStarted = conversionStarted;
   }
 }
 

@@ -1,4 +1,5 @@
 import type { NextResponse } from 'next/server';
+import { JobDeadlineError } from '../queue/job-deadline';
 import { JobTimeoutError, RequestAbortedError } from '../types';
 import { createProblemDetailsResponse } from './problem-details';
 
@@ -11,9 +12,15 @@ import { createProblemDetailsResponse } from './problem-details';
 
 /** What a conversion under a deadline receives: merge it into the conversion options. */
 export interface DeadlineLimits {
+  /** Length of the deadline, for the answer; it is not given to the engines as a stage limit. */
   timeoutMs: number;
+  /** Absolute time of the deadline. */
+  deadlineAt: number;
   signal: AbortSignal;
 }
+
+/** The asynchronous endpoint a conversion that needs more than the synchronous cap should use. */
+export const ASYNC_JOBS_ENDPOINT = '/api/v1/jobs';
 
 /** Problem type of a conversion that ran past its deadline. */
 export const JOB_TIMEOUT_PROBLEM_TYPE = 'https://api.easyconvert.io/problems/job-timeout';
@@ -36,9 +43,10 @@ export async function runUnderDeadline<T>(
   run: (limits: DeadlineLimits) => Promise<T>
 ): Promise<T> {
   const clientSignal = request.signal;
-  if (clientSignal.aborted) throw new RequestAbortedError();
+  if (clientSignal.aborted) throw new RequestAbortedError(false);
 
   const controller = new AbortController();
+  let started = false;
   let timer: NodeJS.Timeout | undefined;
   let onClientAbort: (() => void) | undefined;
   const stopped = new Promise<never>((_resolve, reject) => {
@@ -48,14 +56,15 @@ export async function runUnderDeadline<T>(
       reject(reason);
     }, timeoutMs);
     onClientAbort = () => {
-      const reason = new RequestAbortedError();
+      const reason = new RequestAbortedError(started);
       controller.abort(reason);
       reject(reason);
     };
     clientSignal.addEventListener('abort', onClientAbort, { once: true });
   });
 
-  const work = run({ timeoutMs, signal: controller.signal });
+  started = true;
+  const work = run({ timeoutMs, deadlineAt: Date.now() + timeoutMs, signal: controller.signal });
   // What the conversion reports after the deadline or the disconnect is not the answer.
   work.catch(() => undefined);
   try {
@@ -70,8 +79,20 @@ export async function runUnderDeadline<T>(
 }
 
 /**
- * The problem+json response for a conversion that ran past its deadline (504) or whose client went away (499), or
- * undefined for any other error.
+ * Whether the stop of a conversion still charges the quota (QA decision 2026-10-10): a deadline does, because the
+ * engine worked for the whole limit; a client that left does once the conversion had started. A request that never
+ * started, and every other failure, is rolled back.
+ */
+export function consumesQuota(error: unknown): boolean {
+  return error instanceof JobTimeoutError || (error instanceof RequestAbortedError && error.conversionStarted);
+}
+
+const INTERNAL_DETAIL = 'Internal conversion error';
+
+/**
+ * The problem+json response for a conversion that ran past its deadline (504, with a pointer to the asynchronous
+ * API for work that needs longer), a client that went away (499) or an invalid deadline setting (a generic 500 whose
+ * detail stays in the server log), or undefined for any other error.
  */
 export function deadlineErrorResponse(
   error: unknown,
@@ -82,13 +103,13 @@ export function deadlineErrorResponse(
     const seconds = Math.ceil(error.timeoutMs / MS_PER_SECOND);
     return createProblemDetailsResponse(
       error.status,
-      `The conversion did not finish within its time limit of ${seconds} seconds and was stopped.`,
+      `The conversion did not finish within its time limit of ${seconds} seconds and was stopped. Use the asynchronous API (POST ${ASYNC_JOBS_ENDPOINT}) for conversions that need longer.`,
       instance,
       'Gateway Timeout',
       JOB_TIMEOUT_PROBLEM_TYPE,
       extraHeaders,
       undefined,
-      { timeoutMs: error.timeoutMs }
+      { timeoutMs: error.timeoutMs, asyncEndpoint: ASYNC_JOBS_ENDPOINT }
     );
   }
   if (error instanceof RequestAbortedError) {
@@ -100,6 +121,10 @@ export function deadlineErrorResponse(
       CLIENT_CLOSED_PROBLEM_TYPE,
       extraHeaders
     );
+  }
+  if (error instanceof JobDeadlineError) {
+    console.error('[deadline] Invalid deadline setting or input:', error);
+    return createProblemDetailsResponse(500, INTERNAL_DETAIL, instance, 'Internal Server Error', undefined, extraHeaders);
   }
   return undefined;
 }

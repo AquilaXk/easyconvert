@@ -93,7 +93,7 @@ describe('no conversion job is queued without a deadline', () => {
   it('sets the timeout in the wrapper itself, and the options type has no timeout to supply', () => {
     const wrapper = fs.readFileSync(path.join(SRC_DIR, 'lib/queue/enqueue.ts'), 'utf8');
     expect(wrapper).toMatch(/Omit<JobOptions,\s*'timeout'>/);
-    expect(wrapper).toMatch(/\{\s*\.\.\.opts,\s*timeout\s*\}/);
+    expect(wrapper).toMatch(/\.\.\.opts,\s*timeout,/);
   });
 
   it('puts the computed deadline on the job and refuses a timeout passed through the options', async () => {
@@ -252,6 +252,38 @@ describe('each route leaves a job with its tier deadline', () => {
     const graphId = (await res.json()).jobId as string;
     const node = await conversionQueue.getJob(`${graphId}:up`);
     expect(node?.opts.timeout).toBe(PRO_MAX_MS);
+  });
+
+  it.each([
+    ['POST /api/queue/jobs', '/api/queue/jobs', queueJobsRoute, { filename: 'scores.csv', targetFormat: 'json' }],
+    ['POST /api/v1/jobs', '/api/v1/jobs', v1JobsRoute, { filename: 'scores.csv', targetFormat: 'json' }],
+  ])('%s answers a generic 500 for an invalid deadline setting, without the setting name', async (_label, url, route, body) => {
+    vi.stubEnv('JOB_DEADLINE_PER_MIB_MS', 'abc');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await route(
+      jsonRequest(url, 'free', { ...body, inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64') })
+    );
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).not.toContain('JOB_DEADLINE');
+    expect(text).not.toContain('RangeError');
+  });
+
+  it.each([
+    ['POST /api/queue/jobs', '/api/queue/jobs', queueJobsRoute, 200],
+    ['POST /api/v1/jobs', '/api/v1/jobs', v1JobsRoute, 202],
+  ])('%s stores no signal, timeout or deadline from the request options', async (_label, url, route, status) => {
+    const res = await route(
+      jsonRequest(url, 'free', {
+        filename: 'scores.csv',
+        targetFormat: 'json',
+        inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64'),
+        options: { timeoutMs: 999_999_999, signal: {}, deadlineAt: 1, quality: 80 },
+      })
+    );
+    expect(res.status).toBe(status);
+    const job = await conversionQueue.getJob((await res.json()).jobId);
+    expect(job?.data.options).toEqual({ quality: 80 });
   });
 
   it('a graph node of an unknown or anonymous owner gets the free maximum', async () => {

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { conversionDeadlineMs, converterTimeoutMs } from '@/lib/queue/job-deadline';
-import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { consumesQuota, deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
@@ -180,22 +181,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
-    const deadlineMs = conversionDeadlineMs({
-      tier: auth.user?.tier,
-      sourceFormat: detectedDef.extension,
-      targetFormat: tgt,
-      inputBytes: inputBuffer.length,
-    });
+    const deadlineMs = syncDeadlineMs(
+      conversionDeadlineMs({
+        tier: auth.user?.tier,
+        sourceFormat: detectedDef.extension,
+        targetFormat: tgt,
+        inputBytes: inputBuffer.length,
+      })
+    );
     const result = await runUnderDeadline(req, deadlineMs, (limits) =>
       dispatchConversion(
         inputBuffer,
         detectedDef.extension,
         tgt,
-        {
-          ...withTierPageCap(options, tierMaxPages(auth.user?.tier)),
-          ...limits,
-          timeoutMs: converterTimeoutMs(detectedDef.extension, tgt, limits.timeoutMs),
-        },
+        bindJobLimits(withTierPageCap(options, tierMaxPages(auth.user?.tier)), limits),
         file.name
       )
     );
@@ -222,7 +221,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (reservationId) {
-      await rollbackQuota(reservationId);
+      // A deadline, or a client that left after the conversion started, consumes the quota; anything else refunds it.
+      if (consumesQuota(error)) await commitQuota(reservationId);
+      else await rollbackQuota(reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;

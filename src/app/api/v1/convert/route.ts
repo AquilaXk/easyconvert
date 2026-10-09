@@ -3,8 +3,10 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
-import { conversionDeadlineMs, converterTimeoutMs } from '@/lib/queue/job-deadline';
-import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { consumesQuota, deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
@@ -300,7 +302,7 @@ export async function POST(req: NextRequest) {
           targetFormat: targetDef.id,
           fileSize: file.size,
           storageKey: uploadedStorageKey,
-          options,
+          options: stripEngineControls(options),
           webhookUrl: effectiveWebhookUrl,
           webhookSecret: effectiveWebhookSecret,
           userId: auth.user.id,
@@ -361,22 +363,20 @@ export async function POST(req: NextRequest) {
 
     // Convert through the shared dispatcher (native engines first, in-process where valid)
     const ownerTier = auth.user.tier;
-    const deadlineMs = conversionDeadlineMs({
-      tier: ownerTier,
-      sourceFormat: sourceDef.id,
-      targetFormat: targetDef.id,
-      inputBytes: inputBuffer.length,
-    });
+    const deadlineMs = syncDeadlineMs(
+      conversionDeadlineMs({
+        tier: ownerTier,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        inputBytes: inputBuffer.length,
+      })
+    );
     const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
       dispatchConversion(
         inputBuffer,
         sourceDef.id,
         targetDef.id,
-        {
-          ...withTierPageCap(options, tierMaxPages(ownerTier)),
-          ...limits,
-          timeoutMs: converterTimeoutMs(sourceDef.id, targetDef.id, limits.timeoutMs),
-        },
+        bindJobLimits(withTierPageCap(options, tierMaxPages(ownerTier)), limits),
         file.name
       )
     );
@@ -463,7 +463,9 @@ export async function POST(req: NextRequest) {
       await idempotencyCtx.abort();
     }
     if (reservation?.reservationId) {
-      await redisKeyStore.rollbackQuota(reservation.reservationId);
+      // A deadline, or a client that left after the conversion started, consumes the quota; anything else refunds it.
+      if (consumesQuota(err)) await redisKeyStore.commitQuota(reservation.reservationId);
+      else await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
     if (deadlineProblem) return deadlineProblem;

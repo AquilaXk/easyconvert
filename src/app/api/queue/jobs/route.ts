@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { JobDeadlineError } from '@/lib/queue/job-deadline';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
@@ -150,7 +152,7 @@ export async function POST(req: NextRequest) {
         fileSize,
         storageKey,
         inputBufferBase64,
-        options,
+        options: stripEngineControls(options),
         userId: auth.user.id,
         reservationId,
       },
@@ -177,6 +179,11 @@ export async function POST(req: NextRequest) {
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
     if (storageProblem) return storageProblem;
+    if (error instanceof JobDeadlineError) {
+      // The detail names a deadline setting, so it stays in the server log.
+      console.error('[queue/jobs] Invalid deadline setting or input:', error);
+      return NextResponse.json({ success: false, error: 'Job enqueue error' }, { status: 500 });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
       { status: 500 }

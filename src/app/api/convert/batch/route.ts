@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { conversionDeadlineMs, converterTimeoutMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
-import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { consumesQuota, deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
     }
 
     // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
-    const batchDeadlineMs = Math.min(
+    const batchDeadlineMs = syncDeadlineMs(Math.min(
       planned.reduce(
         (total, item) =>
           total +
@@ -147,7 +148,7 @@ export async function POST(req: NextRequest) {
         0
       ),
       tierMaxDeadlineMs(auth.user.tier)
-    );
+    ));
 
     const convertedFiles: { filename: string; buffer: Buffer }[] = [];
     const usedNames = new Set<string>();
@@ -163,11 +164,7 @@ export async function POST(req: NextRequest) {
           inputBuffer,
           extension,
           targetFormat,
-          {
-            ...withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)),
-            ...limits,
-            timeoutMs: converterTimeoutMs(extension, targetFormat, limits.timeoutMs),
-          },
+          bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), limits),
           file.name
         );
 
@@ -216,7 +213,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (reservationId) {
-      await rollbackQuota(reservationId);
+      // A deadline, or a client that left after the conversion started, consumes the quota; anything else refunds it.
+      if (consumesQuota(error)) await commitQuota(reservationId);
+      else await rollbackQuota(reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
