@@ -96,9 +96,12 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
 
 /**
  * Number of channels in the selected audio stream (the first by default), or 0 when the file has no audio stream.
- * Throws when ffprobe cannot read the file instead of reporting a silent input.
+ * Throws when ffprobe cannot read the file instead of reporting a silent input. A WAVE file with uncompressed
+ * samples answers from its header, without a process.
  */
 export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return streamIndex === 0 ? wav.channels : 0;
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
   if (out === '') {
     return 0;
@@ -118,8 +121,13 @@ export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): n
   return out === '' ? 0 : out.split('\n').length;
 }
 
-/** Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. */
+/**
+ * Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. A WAVE file with
+ * uncompressed samples answers from its header, without a process.
+ */
 export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return streamIndex === 0 ? wav.sampleRate : 0;
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
   if (out === '') {
     return 0;
