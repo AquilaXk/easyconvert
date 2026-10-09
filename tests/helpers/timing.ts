@@ -41,12 +41,12 @@ export const SCALING_FACTOR = 4;
  */
 export const LINEAR_RATIO_SLACK = 2;
 /**
- * A timed sample must last at least this long for a ratio to mean anything; below it a timer tick or a garbage
- * collection dominates. Work faster than that is repeated inside the sample, so a fast machine measures as well as
- * a slow one: a run that takes 0.9 ms on an idle core and 3 ms on a loaded one is timed over enough repetitions to
- * pass this floor on both.
+ * A timed sample must last at least this long for a ratio to mean anything; below it a timer tick, a garbage
+ * collection or one scheduler slice on a shared CI shard dominates. Work faster than that is repeated inside the
+ * sample, so a fast machine measures as well as a slow one. At 5 ms, runs of 4 ms to 10 ms in a sharded run moved
+ * ratios past their bounds (3.1 against 2, 8.5 against 8) on work that was constant or linear.
  */
-export const MIN_SAMPLE_MS = 5;
+export const MIN_SAMPLE_MS = 25;
 /** Most repetitions of one run inside a sample; work that is still shorter than MIN_SAMPLE_MS then is too trivial to compare. */
 export const MAX_SAMPLE_REPETITIONS = 4096;
 /** Calibration aims this much past MIN_SAMPLE_MS. */
