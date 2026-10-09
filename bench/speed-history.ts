@@ -52,10 +52,11 @@ export const T_QUANTILE_ONE_SIDED_99: Readonly<Record<number, number>> = {
 
 /** The level the table above is for. */
 const TABLE_CONFIDENCE = 0.99;
+const CONFIDENCE_TOLERANCE = 1e-12;
 
 /** Refuses a confidence the quantile table is not for, so changing the constant cannot silently keep the 99 percent table. */
 export function assertSupportedConfidence(confidence: number): void {
-  if (confidence !== TABLE_CONFIDENCE) {
+  if (!(Math.abs(confidence - TABLE_CONFIDENCE) <= CONFIDENCE_TOLERANCE)) {
     throw new BenchArgumentError(`SPEED_HISTORY_CONFIDENCE is ${confidence}, but the Student's t table in bench/speed-history.ts is for ${TABLE_CONFIDENCE} only; add the quantiles for the new level first`);
   }
 }
