@@ -251,7 +251,7 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 100 }, 'hdr.png', 'png');
     const samePath = file('same.avif', out.buffer);
     expect(probe(samePath)).toMatchObject({ color_primaries: 'bt2020', color_transfer: 'smpte2084' });
-    // HDR AVIF stays 10-bit: the 12 bits SDR deep-colour pictures get are not used for PQ output.
+    // HDR AVIF is 10-bit, the depth every deep AVIF this converter writes is capped at (AV1 Main profile).
     expect(execFileSync(requireOracleTool('avifdec'), ['--info', samePath], { encoding: 'utf8' })).toMatch(/Bit Depth\s*:\s*10/);
     await expect(convertImage(tagged, 'jpg', { toneMap: 'none' }, 'hdr.png', 'png')).rejects.toThrow(/toneMap "none" keeps HDR/);
   });

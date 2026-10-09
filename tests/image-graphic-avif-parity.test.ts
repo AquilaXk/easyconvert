@@ -20,7 +20,6 @@ const REQUEST_QUALITIES = [40, 55, 70, 85];
 const AVIF_REFERENCE_QUALITIES = Array.from({ length: 15 }, (_, i) => 10 + 6 * i);
 const AVIF_REFERENCE_SPEED = '6';
 const SSIM_TO_DB = 10;
-const AVIF_DEEP_DEPTH = 12;
 const PSNR_SLACK_DB = 0.1;
 const SSIM_SLACK_DB = 0.1;
 
@@ -39,10 +38,6 @@ function writeIn(name: string, bytes: Buffer): string {
 }
 
 describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of a 16-bit interface against avifenc at the same size', () => {
-  const avifDepth = (file: string): number => {
-    const out = execFileSync(requireOracleTool('avifdec'), ['--info', file], { encoding: 'utf-8' });
-    return Number(/Bit Depth\s*:\s*(\d+)/.exec(out)?.[1]);
-  };
   const avifdec = (file: string, name: string): string => {
     const decoded = path.join(workDir, `${name}.png`);
     execFileSync(requireOracleTool('avifdec'), [file, decoded]);
@@ -52,16 +47,6 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of a 16-
     const { ssim, psnr } = measureSsimPsnr(requireOracleTool('ffmpeg'), decoded, source);
     return { psnr, ssimDb: -SSIM_TO_DB * Math.log10(1 - ssim) };
   };
-
-  it('keeps the depth avifenc picks for a 16-bit source', async () => {
-    const png = await interface16();
-    const source = writeIn('avif-depth-source.png', png);
-    const referenceFile = path.join(workDir, 'depth-ref.avif');
-    execFileSync(requireOracleTool('avifenc'), ['-q', '70', '-s', AVIF_REFERENCE_SPEED, source, referenceFile], { stdio: 'ignore' });
-    expect(avifDepth(referenceFile)).toBe(AVIF_DEEP_DEPTH);
-    const ours = writeIn('depth-ours.avif', (await convertImage(png, 'avif', { quality: 70 }, 'g.png', 'png')).buffer);
-    expect(avifDepth(ours)).toBe(AVIF_DEEP_DEPTH);
-  }, 60_000);
 
   it('matches the reference SSIM and PSNR for the same bytes at every quality tested', async () => {
     const png = await interface16();

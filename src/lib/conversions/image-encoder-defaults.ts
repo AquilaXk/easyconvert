@@ -65,23 +65,13 @@ export const AVIF_EFFORT_HUGE = 2;
 export const AVIF_EFFORT = 3;
 
 /**
- * AVIF bit depth for colour sources with more than 8 bits per sample: 12, the most AV1 carries and the depth the
- * reference encoder picks for a 16-bit picture. Flat colours and hard edges survive the RGB to YUV and back
- * rounding only with the extra precision: at 10 bits a screenshot's SSIM stopped near 29.5 dB at any quality
- * (reference 32.3 dB) and the file needed 4% more bytes at equal SSIM; at 12 bits it needs 5.6% fewer.
+ * Bit depth of AVIF output for sources with more than 8 bits per sample (colour, grey and HDR alike): 10, the most
+ * the AV1 Main profile carries. The AVIF Baseline profile is AV1 Main, and decoders such as Android 14's only
+ * guarantee Baseline, so 12-bit (AV1 Professional) output would be unreadable on part of the audience. The 8-bit
+ * path would cap a deep picture near 51 dB PSNR whatever the quality; HDR output (PQ or HLG, BT.2020) is delivered
+ * at 10 bits for the same reason.
  */
-export const AVIF_DEEP_BITDEPTH = 12;
-/**
- * Bit depth for grey sources with more than 8 bits per sample. A grey picture has no colour conversion to round,
- * so 12 bits buys nothing there and, measured over seven qualities on the benchmark's line art, costs 7.7%
- * (BD-rate in SSIM +4.1% against -3.6% at 10 bits).
- */
-export const AVIF_DEEP_GREY_BITDEPTH = 10;
-/**
- * Bit depth of HDR output (PQ or HLG, BT.2020). HDR AVIF is delivered at 10 bits: the HDR profiles of AVIF, the
- * decoders and the HDR delivery chains all assume it, and 12-bit HDR still pictures are not widely decodable.
- */
-export const AVIF_HDR_BITDEPTH = 10;
+export const AVIF_DEEP_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
 
 export function avifEffortFor(pixels: number, content: ContentClass): number {
@@ -131,13 +121,11 @@ export function webpOptionsFor(requestedQuality: number | undefined, content: Co
   return { quality, effort: WEBP_EFFORT, smartSubsample: content === 'graphic' };
 }
 
-export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_GREY_BITDEPTH | typeof AVIF_HDR_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
+export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
 
-/** `hdr` marks output that carries a PQ or HLG transfer (every HDR AVIF this converter writes is PQ). */
-export function avifBitdepthFor(deep: boolean, grey: boolean, hdr: boolean): AvifBitdepth {
-  if (!deep) return AVIF_STANDARD_BITDEPTH;
-  if (hdr) return AVIF_HDR_BITDEPTH;
-  return grey ? AVIF_DEEP_GREY_BITDEPTH : AVIF_DEEP_BITDEPTH;
+/** 8 bits for 8-bit sources, 10 for anything deeper: the AV1 Main profile has no more. */
+export function avifBitdepthFor(deep: boolean): AvifBitdepth {
+  return deep ? AVIF_DEEP_BITDEPTH : AVIF_STANDARD_BITDEPTH;
 }
 
 export function avifOptionsFor(

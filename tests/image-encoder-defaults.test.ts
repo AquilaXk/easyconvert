@@ -196,13 +196,12 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(levels).toBeGreaterThan(256);
   }, 60_000);
 
-  it('encodes a 16-bit RGB source at 12 bits and keeps HDR output at 10 bits', async () => {
-    expect([avifBitdepthFor(false, false, false), avifBitdepthFor(true, false, false), avifBitdepthFor(true, true, false)]).toEqual([8, 12, 10]);
-    expect([avifBitdepthFor(true, false, true), avifBitdepthFor(true, true, true)]).toEqual([10, 10]);
+  it('encodes a 16-bit RGB source at 10 bits, within the AV1 Main profile, and keeps HDR output at 10 bits', async () => {
+    expect([avifBitdepthFor(false), avifBitdepthFor(true)]).toEqual([8, 10]);
     const rgb16 = runConvert(['-size', '64x64', 'gradient:#102030-#f0e0d0', '-depth', '16', 'png:-']);
     expect(await sharp(rgb16).metadata()).toMatchObject({ depth: 'ushort', channels: 3 });
     const out = (await convertImage(rgb16, 'avif', { quality: 90 }, 'rgb16.png', 'png')).buffer;
-    expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(12);
+    expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(10);
   });
 
   it('keeps an 8-bit source at 8 bits', async () => {
