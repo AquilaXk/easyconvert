@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent } from '../src/lib/conversions/image-content';
-import { avifBitdepthFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
+import { AVIF_CLI_MAX_PIXELS, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -353,4 +353,15 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
       expect(oursSsim + SSIM_SLACK, `${label}: ${ours.length} B vs ${old.length} B`).toBeGreaterThanOrEqual(oldSsim);
     }
   }, 240_000);
+});
+
+describe('avifEncoderFor', () => {
+  it('gives grey and graphic pictures to the library encoder, colour photographs and oversized pictures to the image library, and everything to the image library without the tool', () => {
+    expect(avifEncoderFor('graphic', false, 1_000, true)).toBe('library-cli');
+    expect(avifEncoderFor('photo', true, 1_000, true)).toBe('library-cli');
+    expect(avifEncoderFor('photo', false, 1_000, true)).toBe('image-library');
+    expect(avifEncoderFor('graphic', false, AVIF_CLI_MAX_PIXELS, true)).toBe('library-cli');
+    expect(avifEncoderFor('graphic', true, AVIF_CLI_MAX_PIXELS + 1, true)).toBe('image-library');
+    expect(avifEncoderFor('graphic', true, 1_000, false)).toBe('image-library');
+  });
 });

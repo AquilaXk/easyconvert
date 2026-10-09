@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
+import { avifEffortFor, avifSpeedFor } from '../src/lib/conversions/image-encoder-defaults';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { injectExifOrientation } from './helpers/exif-orientation';
@@ -171,14 +171,26 @@ describe('grey sources', () => {
 
 describe('colour sources', () => {
   oracleTest(
-    'graphic content stays full-resolution chroma (YUV444) at 10 bits, a photograph below quality 80 is YUV420 at 8 bits',
+    'graphic content is written by the library encoder at full-resolution chroma (YUV444) and 10 bits',
     ['avifenc', 'avifdec'],
     async () => {
       const graphic = await convertImage(await interface16(), 'avif', { quality: 50 }, 'ui.png', 'png');
       expect(avifInfo(writeIn('graphic.avif', graphic.buffer))).toMatchObject({ format: 'YUV444', depth: 10 });
       expect(graphic.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+    },
+    60_000
+  );
+
+  oracleTest(
+    'a colour photograph stays on the image library: YUV420 at 8 bits below quality 80, and the metadata names the encoder',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const tool = failingTool('never-run-for-photos', 'exit 0');
+      process.env.AVIFENC_PATH = tool.script;
       const photo = await convertImage(await photoPng(), 'avif', { quality: 50 }, 'p.png', 'png');
+      expect(photo.metadata).toMatchObject({ avifEncoder: 'image-library' });
       expect(avifInfo(writeIn('photo.avif', photo.buffer))).toMatchObject({ format: 'YUV420', depth: 8 });
+      expect(existsSync(tool.marker)).toBe(false);
     },
     60_000
   );
@@ -248,7 +260,7 @@ describe('colour sources', () => {
 
 describe('HDR output', () => {
   oracleTest(
-    'a PQ picture is written at 10 bits with BT.2020 / PQ colour tags and a BT.2020 matrix',
+    'a PQ photograph is written at 10 bits with BT.2020 / PQ colour tags by the image library',
     ['avifenc', 'avifdec'],
     async () => {
       const side = 32;
@@ -258,8 +270,8 @@ describe('HDR output', () => {
       const { writePngCicp } = await import('../src/lib/conversions/cicp');
       const tagged = writePngCicp(png16, { primaries: 9, transfer: 16, matrix: 0, fullRange: true });
       const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 90 }, 'pq.png', 'png');
-      expect(avifInfo(writeIn('pq.avif', out.buffer))).toMatchObject({ depth: 10, primaries: 9, transfer: 16, matrix: 9 });
-      expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+      expect(avifInfo(writeIn('pq.avif', out.buffer))).toMatchObject({ depth: 10, primaries: 9, transfer: 16 });
+      expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
     },
     60_000
   );
@@ -272,15 +284,16 @@ describe('encoder arguments', () => {
     async () => {
       const wrapper = recordingWrapper('args-wrapper');
       process.env.AVIFENC_PATH = wrapper.script;
-      await convertImage(await photoPng(), 'avif', { quality: 55 }, 'p.png', 'png');
+      const ui = await interface16();
+      const { width = 0, height = 0 } = await sharp(ui).metadata();
+      await convertImage(ui, 'avif', { quality: 55 }, 'ui.png', 'png');
       const args = readFileSync(wrapper.argsFile, 'utf-8').trim().split('\n');
       const valueOf = (flag: string): string | undefined => args[args.indexOf(flag) + 1];
       expect(valueOf('-q')).toBe('55');
       expect(valueOf('--qalpha')).toBe('55');
-      // effort 3 for a small photograph is the reference encoder's speed 6
-      expect(valueOf('-s')).toBe('6');
-      expect(valueOf('-d')).toBe('8');
-      expect(valueOf('-y')).toBe('420');
+      expect(valueOf('-s')).toBe(String(avifSpeedFor(avifEffortFor(width * height, 'graphic', 'library-cli'))));
+      expect(valueOf('-d')).toBe('10');
+      expect(valueOf('-y')).toBe('444');
       expect(Number(valueOf('-j'))).toBeGreaterThanOrEqual(1);
       expect(Number(valueOf('-j'))).toBeLessThanOrEqual(os.availableParallelism());
       expect(args).toContain('--stdin');
@@ -317,24 +330,25 @@ describe('without the library encoder', () => {
 });
 
 describe('sandbox and limits', () => {
-  it('refuses a picture over the encoder pixel budget before the encoder is started', async () => {
-    const tool = failingTool('never-run', 'exit 0');
-    process.env.AVIFENC_PATH = tool.script;
-    const huge = await sharp({ create: { width: OVERSIZED_SIDE, height: OVERSIZED_OTHER_SIDE, channels: 3, background: { r: 128, g: 128, b: 128 } } }).toColourspace('b-w').png().toBuffer();
-    const failure = await convertImage(huge, 'avif', {}, 'huge.png', 'png').then(
-      () => null,
-      (err: unknown) => err
-    );
-    expect(failure).toBeInstanceOf(InputPixelLimitError);
-    expect((failure as InputPixelLimitError).status).toBe(413);
-    expect((failure as Error).message).toMatch(/AVIF encoding/);
-    expect(existsSync(tool.marker)).toBe(false);
-  }, 120_000);
+  oracleTest(
+    'a picture over the encoder pixel budget falls back to the image library instead of being refused, and the tool is not started',
+    ['avifdec'],
+    async () => {
+      const tool = failingTool('never-run', 'exit 0');
+      process.env.AVIFENC_PATH = tool.script;
+      const huge = await sharp({ create: { width: OVERSIZED_SIDE, height: OVERSIZED_OTHER_SIDE, channels: 3, background: { r: 128, g: 128, b: 128 } } }).toColourspace('b-w').png().toBuffer();
+      const out = await convertImage(huge, 'avif', {}, 'huge.png', 'png');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+      expect(avifInfo(writeIn('huge.avif', out.buffer)).format).toBe('YUV444');
+      expect(existsSync(tool.marker)).toBe(false);
+    },
+    240_000
+  );
 
   it('turns an encoder failure into a typed conversion error that does not show the tool path', async () => {
     const tool = failingTool('exits-nonzero', `echo 'bad input at ${workDir}' >&2\nexit ${FAILURE_EXIT_STATUS}`);
     process.env.AVIFENC_PATH = tool.script;
-    const failure = await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png').then(
+    const failure = await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png').then(
       () => null,
       (err: unknown) => err
     );
@@ -347,7 +361,7 @@ describe('sandbox and limits', () => {
   it('turns an encoder that exits cleanly without a file into a typed conversion error', async () => {
     const tool = failingTool('writes-nothing', 'exit 0');
     process.env.AVIFENC_PATH = tool.script;
-    const failure = await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png').then(
+    const failure = await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png').then(
       () => null,
       (err: unknown) => err
     );
@@ -360,7 +374,7 @@ describe('sandbox and limits', () => {
     const envFile = path.join(workDir, 'seen-env.txt');
     const tool = failingTool('dumps-env', `env > '${envFile}'\nexit ${FAILURE_EXIT_STATUS}`);
     process.env.AVIFENC_PATH = tool.script;
-    await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png').catch(() => undefined);
+    await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png').catch(() => undefined);
     const seen = readFileSync(envFile, 'utf-8');
     expect(seen).not.toContain('must-not-reach-the-encoder');
     expect(seen).toMatch(/^PATH=/m);
@@ -372,7 +386,7 @@ describe('sandbox and limits', () => {
     async () => {
       const leftovers = (): string[] => readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-avif-'));
       const before = new Set(leftovers());
-      await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png');
+      await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png');
       const after = leftovers();
       expect(after.filter((name) => !before.has(name))).toEqual([]);
     },

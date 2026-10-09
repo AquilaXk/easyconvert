@@ -12,7 +12,6 @@ import {
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
-import type { PixelBudget } from './image-input-limits';
 
 /**
  * AVIF written by the reference AVIF library's command-line encoder (`avifenc`, which drives the AV1 encoder), run
@@ -33,13 +32,6 @@ export const AVIF_ENCODER_IMAGE_LIBRARY: AvifEncoder = 'image-library';
 export const AVIFENC_PATH_ENV = 'AVIFENC_PATH';
 const AVIFENC_CANDIDATES = ['/usr/bin/avifenc', '/usr/local/bin/avifenc', '/opt/homebrew/bin/avifenc'];
 
-/**
- * Resident memory of one run, measured: 37 bytes per pixel for 8-bit RGB at speeds 2, 3 and 6 (591 MB at 16
- * megapixels, 1.32 GB at 36) and 45 bytes per pixel for 16-bit RGB written as 10-bit 4:4:4 (2.87 GB at 64
- * megapixels). 48 megapixels (an 8000 x 6000 frame) keeps one run near 2.2 GB of the 3.3 GB that docker-compose.yml
- * gives each of 3 concurrent jobs, with the raster and the PNG this process holds on top.
- */
-export const AVIFENC_PIXEL_BUDGET: PixelBudget = { maxPixels: 48_000_000, scope: 'AVIF encoding' };
 /** Resident memory the sandbox allows one run before it kills the process group. */
 export const AVIFENC_MEMORY_LIMIT_MB = 3072;
 /** A run that has not finished in this time is stuck, not slow: the slowest tier (a few megapixels at speed 4) takes under a minute. */

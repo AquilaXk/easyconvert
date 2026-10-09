@@ -95,6 +95,28 @@ export const AVIF_EFFORT = 3;
 export const AVIF_DEEP_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
 
+/**
+ * Largest picture, in pixels, the library's command-line encoder is given; larger pictures go to the image library.
+ * Resident memory of one run, measured: 37 bytes per pixel for 8-bit RGB at speeds 2, 3 and 6 (591 MB at 16
+ * megapixels, 1.32 GB at 36) and 45 bytes per pixel for 16-bit RGB written as 10-bit 4:4:4 (2.87 GB at 64
+ * megapixels). 48 megapixels (an 8000 x 6000 frame) keeps one run near 2.2 GB of the 3.3 GB that docker-compose.yml
+ * gives each of 3 concurrent jobs, with the raster and the PNG this process holds on top.
+ */
+export const AVIF_CLI_MAX_PIXELS = 48_000_000;
+
+/**
+ * Which encoder writes an AVIF. The library's command-line encoder takes grey and graphic content (screenshots,
+ * line art) and wins on both quality and speed there. Colour photographs stay on the in-process image library:
+ * measured against it, the CLI's encoder gain on a photograph was about 2x in encode time but the fixed cost of
+ * the process, the PNG hand-off and the temp files outweighed it (speed ratio 1.97 and 1.69, at parity), with
+ * no change in photo BD-rate. Pictures above `AVIF_CLI_MAX_PIXELS` also stay on the image library, which encoded
+ * them before the tool existed, so no picture size is refused that was accepted earlier.
+ */
+export function avifEncoderFor(content: ContentClass, grey: boolean, pixels: number, toolAvailable: boolean): AvifEncoder {
+  if (!toolAvailable || pixels > AVIF_CLI_MAX_PIXELS) return 'image-library';
+  return grey || content === 'graphic' ? 'library-cli' : 'image-library';
+}
+
 export function avifEffortFor(pixels: number, content: ContentClass, encoder: AvifEncoder = 'image-library'): number {
   const tiers = encoder === 'library-cli' ? AVIF_CLI_EFFORT_TIERS : AVIF_EFFORT_TIERS;
   for (const tier of tiers) {

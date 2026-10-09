@@ -16,6 +16,7 @@ import {
   AVIF_TUNE,
   FALLBACK_QUALITY,
   avifLibraryOptionsOf,
+  avifEncoderFor,
   avifPolicyFor,
   type AvifEncoder,
   clampQuality,
@@ -33,7 +34,6 @@ import { setAvifColour } from './avif-colour';
 import {
   AVIF_ENCODER_IMAGE_LIBRARY,
   AVIF_ENCODER_LIBRARY_CLI,
-  AVIFENC_PIXEL_BUDGET,
   encodeAvifWithCli,
   findAvifenc,
   type AvifCicp,
@@ -1762,10 +1762,10 @@ async function encodeAvifFromPipeline(
   const target = resizedDimensions(upright.width, upright.height, options);
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
   const avifenc = findAvifenc();
-  const encoder = avifenc === null ? AVIF_ENCODER_IMAGE_LIBRARY : AVIF_ENCODER_LIBRARY_CLI;
-  const policy = avifPolicyFor(options.quality, content, target.width * target.height, deep, grey, encoder);
-  if (avifenc !== null) {
-    assertPixelBudget(target.width, target.height, AVIFENC_PIXEL_BUDGET);
+  const pixels = target.width * target.height;
+  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
+  const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
+  if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
     const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();
     const buffer = await encodeAvifWithCli(avifenc, {
