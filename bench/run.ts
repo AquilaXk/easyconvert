@@ -161,6 +161,7 @@ function describeRow(row: BenchRow): string {
 function printGate(result: GateResult, out: (line: string) => void): void {
   out(`gate: ${result.compared} metrics compared, ${result.regressions.length} regressed, ${result.improvements.length} improved, ${result.unbaselined.length} without baseline, ${result.skipped.length} skipped`);
   for (const regression of result.regressions) out(`REGRESSION ${regression.message}`);
+  for (const note of result.speedNotes) out(`note ${note}`);
   for (const id of result.unbaselined) out(`no baseline yet: ${id}`);
 }
 

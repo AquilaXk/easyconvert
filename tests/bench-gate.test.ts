@@ -98,12 +98,25 @@ describe('regression gate', () => {
     expect(result.regressions[0].id).toBe(SSIM_ID);
   });
 
-  it('gates throughput by the speed ratio to the reference, not by absolute speed', () => {
+  it('never fails a throughput row: absolute speed and a drifting speed ratio are only reported', () => {
+    // A faster or slower machine moves the absolute numbers; the ratio to the reference drifts with the runner's load.
     const fasterMachine = withRow(SPEED_ID, { ours: 20, reference: 40, delta: -20, ratio: 0.5 });
-    expect(evaluateGate(fasterMachine, BASELINE).regressions).toEqual([]);
+    const faster = evaluateGate(fasterMachine, BASELINE);
+    expect(faster.regressions).toEqual([]);
+    expect(faster.speedNotes).toEqual([]);
     const slowerThanReference = withRow(SPEED_ID, { ours: 1.0, reference: 4.0, delta: -3, ratio: 0.25 });
     const result = evaluateGate(slowerThanReference, BASELINE);
-    expect(result.regressions.map((r) => [r.id, r.check])).toEqual([[SPEED_ID, 'speed-ratio']]);
+    expect(result.regressions).toEqual([]);
+    expect(result.compared).toBe(3);
+    expect(result.speedNotes).toEqual([`${SPEED_ID}: speed ratio to the reference tool 0.25 is under baseline 0.5 by more than 0.175 (informational, speed is judged by the parity speed jobs)`]);
+  });
+
+  it('keeps the speed ratio informational at the tolerance edge, and still requires the row to be produced', () => {
+    // Tolerance is 0.35 * 0.5 = 0.175: a ratio of 0.33 is inside it, 0.32 is outside.
+    expect(evaluateGate(withRow(SPEED_ID, { ratio: 0.33 }), BASELINE).speedNotes).toEqual([]);
+    expect(evaluateGate(withRow(SPEED_ID, { ratio: 0.32 }), BASELINE).speedNotes).toHaveLength(1);
+    const without = report(baselineRows().filter((r) => r.id !== SPEED_ID));
+    expect(evaluateGate(without, BASELINE).regressions.map((r) => [r.id, r.check])).toEqual([[SPEED_ID, 'missing']]);
   });
 
   it('names every regressed metric, not only the first', () => {

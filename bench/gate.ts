@@ -7,8 +7,10 @@ import { type BenchReport, type BenchRow, type Direction, type Family, type Tole
  * Regression gate. Each baseline entry stores a direction (which way is better) and a tolerance. A measured row is
  * compared to its entry twice: our own value against the baseline value, and our delta to the reference tool
  * against the baseline delta (so a reference that got better, or ours falling behind it, is caught even when our
- * absolute number is steady). Throughput rows depend on the machine, so only the speed ratio to the reference
- * tool run in the same window is gated.
+ * absolute number is steady). Throughput rows depend on the machine, and a shared runner moves even their ratio to the
+ * reference tool by several percent from one run to the next, so they never fail this gate: a ratio worse than its
+ * baseline by more than the tolerance is reported as a note. Speed is judged only by the parity speed jobs, from ratios
+ * measured interleaved in one job and compared with the history of the tracked rows (bench/parity.ts).
  */
 
 export interface BaselineEntry {
@@ -18,7 +20,7 @@ export interface BaselineEntry {
   ours: number | null;
   /** ours - reference; null for rows gated by ratio. */
   delta: number | null;
-  /** ours / reference; set only for throughput rows. */
+  /** ours / reference; set only for throughput rows. Informational: see the header. */
   ratio: number | null;
 }
 
@@ -27,7 +29,7 @@ export interface Baseline {
   entries: Record<string, BaselineEntry>;
 }
 
-export type RegressionCheck = 'baseline' | 'reference-delta' | 'speed-ratio' | 'missing';
+export type RegressionCheck = 'baseline' | 'reference-delta' | 'missing';
 
 export interface Regression {
   id: string;
@@ -46,6 +48,8 @@ export interface GateResult {
   skipped: string[];
   /** Measured rows that beat their baseline by more than the tolerance. */
   improvements: string[];
+  /** Throughput rows whose speed ratio is worse than the baseline's by more than the tolerance; informational, never a failure. */
+  speedNotes: string[];
   compared: number;
 }
 
@@ -104,6 +108,7 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
   const unbaselined: string[] = [];
   const skipped: string[] = [];
   const improvements: string[] = [];
+  const speedNotes: string[] = [];
   let compared = 0;
   const byId = new Map(report.rows.map((row) => [row.id, row] as const));
   for (const row of report.rows) {
@@ -115,8 +120,13 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
     }
     if (options.include && !options.include(row.id, entry)) continue;
     compared++;
-    if (entry.ratio !== null) {
-      checkOne(regressions, row, entry, 'speed-ratio', 'speed ratio to the reference tool', entry.ratio, row.ratio);
+    if (entry.ratio !== null && row.ratio !== null) {
+      const allowed = allowedWorsening(entry.tolerance, entry.ratio);
+      if (worsening(entry.direction, entry.ratio, row.ratio) > allowed + GATE_EPSILON) {
+        speedNotes.push(
+          `${row.id}: speed ratio to the reference tool ${show(row.ratio)} is under baseline ${show(entry.ratio)} by more than ${show(allowed)} (informational, speed is judged by the parity speed jobs)`
+        );
+      }
     }
     checkOne(regressions, row, entry, 'baseline', 'our value', entry.ours, row.ours);
     // The tolerance of a delta is scaled by the metric's own magnitude, not by the (often near zero) delta.
@@ -137,7 +147,7 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
       skipped.push(id);
     }
   }
-  return { regressions, unbaselined, skipped, improvements, compared };
+  return { regressions, unbaselined, skipped, improvements, speedNotes, compared };
 }
 
 /**
