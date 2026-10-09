@@ -2,6 +2,7 @@ import { PdfPageFrameError } from './pdf-page-geometry';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
+import { unconvertibleOfficeTarget } from './native-office-targets';
 import {
   convertOffice,
   extractTextFromRtf,
@@ -657,7 +658,7 @@ export async function convertDocument(
     };
   }
 
-  throw new Error(`Unsupported document conversion from ${sourceFormat} to ${targetFormat}`);
+  throw unconvertibleOfficeTarget(src, tgt);
 }
 
 // Defense in depth for the generated page: no script execution or network access beyond images,
