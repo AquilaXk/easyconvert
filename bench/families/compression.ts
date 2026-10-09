@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { convertWithProject } from '../convert';
+import { IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError } from '../errors';
 import { numberRecord } from '../ref-cache';
@@ -121,18 +122,22 @@ export const runCompression: FamilyRunner = async (ctx) => {
       tool: `zstd -${ZSTD_LEVEL}`,
       stream: (): Buffer => runTool(zstd, [`-${ZSTD_LEVEL}`, '-q', '-c', mixedPath]).stdout,
       reference: (stream: string): Buffer => runTool(zstd, ['-d', '-q', '-c', stream]).stdout,
+      // Our Zstandard decode takes milliseconds, so one call per sample is decided by scheduler jitter.
+      oursRepeats: IN_PROCESS_REPEATS,
     },
     {
       name: 'xz',
       tool: `xz -${XZ_LEVEL}`,
       stream: (): Buffer => runTool(xz, [`-${XZ_LEVEL}`, '-c', mixedPath]).stdout,
       reference: (stream: string): Buffer => runTool(xz, ['-d', '-c', stream]).stdout,
+      oursRepeats: 1,
     },
     {
       name: '7z',
       tool: `7z -mx=${SEVEN_ZIP_LEVEL}`,
       stream: sevenRef,
       reference: (stream: string): Buffer => runTool(sevenZip, ['x', '-so', '-y', stream]).stdout,
+      oursRepeats: 1,
     },
   ];
   for (const item of decompress) {
@@ -145,14 +150,14 @@ export const runCompression: FamilyRunner = async (ctx) => {
     assertSame(`our ${item.name} decode`, tarMember(await ours(), tarBin), original);
     assertSame(`the ${item.tool} decode`, item.reference(streamFile), original);
     if (ctx.speed) {
-      rows.push(throughputRow('compression', caseName, original.length, await timeBoth(ctx, ours, () => item.reference(streamFile)), item.tool));
+      rows.push(throughputRow('compression', caseName, original.length, await timeBoth(ctx, ours, () => item.reference(streamFile), item.oursRepeats), item.tool));
     }
   }
   return rows;
 };
 
-/** Interleaved timing of two actions whose results are not needed. */
-function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: () => unknown): ReturnType<FamilyContext['time']> {
+/** Interleaved timing of two actions whose results are not needed; `oursRepeats` calls of ours make one sample. */
+function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: () => unknown, oursRepeats = 1): ReturnType<FamilyContext['time']> {
   return ctx.time(
     async () => {
       await ours();
@@ -160,6 +165,7 @@ function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: (
     () => {
       reference();
     },
-    'light'
+    'light',
+    oursRepeats
   );
 }

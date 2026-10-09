@@ -298,6 +298,9 @@ describe('the known gaps', () => {
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([487, 487, 487]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
+    // The decode row is at the pass line, so it is tracked; its own issue is still to be filed (the note says so).
+    expect(byId['compression/mixed.zst->tar/throughput']).toBe(497);
+    expect(shipped.gaps.find((g) => g.id === 'compression/mixed.zst->tar/throughput')?.note).toContain('TODO(lead)');
   });
 });
 
