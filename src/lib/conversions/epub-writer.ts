@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
-import { detectLanguage, normalizeLanguageTag } from './document-language';
+import { resolveLanguage } from './document-language';
 import { renderBlocksHtml, renderNotesHtml, type HtmlRenderOptions } from './document-html';
 import {
   IMAGE_FILE_EXTENSION,
@@ -25,10 +25,10 @@ import {
  * what the content supports, and images packaged with their original bytes where the EPUB core media types allow.
  */
 
+const UNDETERMINED_LANGUAGE = 'und';
 /** Most content documents and images one book may hold. */
 export const EPUB_WRITER_MAX_CHAPTERS = 10_000;
 export const EPUB_WRITER_MAX_IMAGES = 5_000;
-const UNDETERMINED_LANGUAGE = 'und';
 const NAV_DOCUMENT_PATH = 'nav.xhtml';
 const NCX_PATH = 'toc.ncx';
 const STYLESHEET_PATH = 'styles.css';
@@ -111,21 +111,6 @@ function splitChapters(blocks: readonly DocBlock[]): Chapter[] {
 
 function chapterFile(index: number): string {
   return `chapter${index + 1}.xhtml`;
-}
-
-function resolveLanguage(model: DocModel, requested: string | undefined): string {
-  if (requested !== undefined) {
-    const tag = normalizeLanguageTag(requested);
-    if (tag === undefined) throw new UnsupportedOptionError(`The language option "${requested}" is not a BCP 47 language tag.`);
-    return tag;
-  }
-  const declared = model.language ? normalizeLanguageTag(model.language) : undefined;
-  if (declared) return declared;
-  const text: string[] = [];
-  walkBlocks(model.blocks, (block) => {
-    if (block.kind === 'heading' || block.kind === 'paragraph' || block.kind === 'listItem') text.push(inlinesToText(block.inlines));
-  });
-  return detectLanguage(text.join('\n')) ?? UNDETERMINED_LANGUAGE;
 }
 
 async function packageImages(model: DocModel): Promise<{ byData: Map<Buffer, PackagedImage>; list: PackagedImage[] }> {
@@ -241,7 +226,7 @@ function accessibilityMetadata(model: DocModel, hasHeadings: boolean): string[] 
 export async function writeEpub(model: DocModel, options: EpubWriteOptions): Promise<Buffer> {
   const chapters = splitChapters(model.blocks);
   if (chapters.length === 0) throw new ConversionFailedError('The document has no content to put in an EPUB.');
-  const language = resolveLanguage(model, options.language);
+  const language = resolveLanguage(model, options.language) ?? UNDETERMINED_LANGUAGE;
   const title = stripXmlForbidden((model.title ?? options.title).trim() || options.title);
   const bookId = `urn:uuid:${crypto.randomUUID()}`;
   const { byData, list: images } = await packageImages(model);

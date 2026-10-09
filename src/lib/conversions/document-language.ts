@@ -1,3 +1,6 @@
+import { UnsupportedOptionError } from '../types';
+import { inlinesToText, walkBlocks, type DocModel } from './document-model';
+
 /**
  * BCP 47 language tags for documents: validating a tag a request or a source names, and recognising the language of
  * text when nothing names it. Detection answers only when the evidence is clear (a script that belongs to one
@@ -85,4 +88,23 @@ export function detectLanguage(text: string): string | undefined {
   const [best, second] = scores;
   if (best.hits >= MIN_FUNCTION_WORD_HITS && best.hits >= second.hits * FUNCTION_WORD_LEAD) return best.language;
   return undefined;
+}
+
+/**
+ * The language of a document for targets that record one: the `requested` tag (refused when it is not a BCP 47 tag),
+ * else the language the source declares, else the language recognised from the text. Undefined when nothing says.
+ */
+export function resolveLanguage(model: DocModel, requested: string | undefined): string | undefined {
+  if (requested !== undefined) {
+    const tag = normalizeLanguageTag(requested);
+    if (tag === undefined) throw new UnsupportedOptionError(`The language option "${requested}" is not a BCP 47 language tag.`);
+    return tag;
+  }
+  const declared = model.language ? normalizeLanguageTag(model.language) : undefined;
+  if (declared) return declared;
+  const text: string[] = [];
+  walkBlocks(model.blocks, (block) => {
+    if (block.kind === 'heading' || block.kind === 'paragraph' || block.kind === 'listItem') text.push(inlinesToText(block.inlines));
+  });
+  return detectLanguage(text.join('\n'));
 }

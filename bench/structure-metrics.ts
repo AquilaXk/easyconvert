@@ -84,7 +84,7 @@ export function structureOfHtml(html: string, resolveImage?: (src: string) => Bu
     const enteringNote = NOTE_CONTAINER.test(id) && (tag === 'li' || tag === 'div' || tag === 'aside' || tag === 'section');
     if (enteringNote && !inNote) {
       // A note's own numeral and the back-link arrow are reading aids, not its text.
-      structure.notes.push(normalizeText(textOf(node)).replace(/^\d+\s*/, '').replace(/\s*↩$/, ''));
+      structure.notes.push(normalizeText(textOf(node)).replace(/^(?:\d+\s*|[ivx]+\s+)/, '').replace(/\s*↩$/, ''));
       return;
     }
     if (HEADING_TAGS.has(tag)) {
