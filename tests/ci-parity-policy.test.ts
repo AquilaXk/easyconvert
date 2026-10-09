@@ -360,3 +360,90 @@ describe('the pieces', () => {
     expect(body.split('\n').filter((line) => line.startsWith('| compression/case-')).length).toBe(200);
   });
 });
+
+/**
+ * The requests the exemption sends, written out by hand: what a security pull request leaves on GitHub is a comment
+ * and a gap issue, and these are the exact parameters of each call (owner, repository, number, title, labels, body).
+ */
+describe('the exact requests of the security exemption', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parity-exact-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const OWNER_REPO = { owner: 'AquilaXk', repo: 'easyconvert' };
+  const RUN_URL = 'https://github.com/AquilaXk/easyconvert/actions/runs/4242';
+  const table = [
+    '| Row | Detail | Gap |',
+    '|---|---|---|',
+    '| compression/mixed.xz->tar/throughput | throughput is below the reference | #487 |',
+  ].join('\n');
+  const expectedGapIssueBody = [
+    'Rows of the `compression` family are below the reference tool. A pull request that touches this family has to bring every row to parity; this issue tracks the rows.',
+    '',
+    table,
+    '',
+    `Last seen on #640: ${RUN_URL}`,
+    '',
+  ].join('\n');
+  const expectedComment = [
+    '<!-- parity-exemption:speed -->',
+    '**Reference parity (speed) waived by the `security` exemption** (linked #585).',
+    '',
+    '1 row is below the reference tool. The exemption covers this verdict only: tests, the guard, lint, build, the container and conformance still have to pass, and no metric may be worse than our own baseline.',
+    '',
+    table,
+    '',
+    'Tracking issues:',
+    '- compression: #700',
+    '',
+  ].join('\n');
+
+  function apply(labels: string[], body: string, github: ReturnType<typeof fakeGithub>): Promise<string> {
+    const file = path.join(dir, 'parity-verdict.json');
+    fs.writeFileSync(file, JSON.stringify(runFile([failing(XZ, 487), passing(SEVEN)])));
+    const core = { info: () => undefined, warning: () => undefined, setFailed: () => undefined };
+    const context = {
+      repo: OWNER_REPO,
+      serverUrl: 'https://github.com',
+      runId: 4242,
+      payload: { pull_request: { number: 640, title: 'Harden the reader', body, labels: labels.map((name) => ({ name })) } },
+    };
+    return applyParityVerdict({ github, context, core, fs, runFilePath: file, scope: 'speed' });
+  }
+
+  it('looks the linked issue up, ensures the label, opens the family issue and posts the comment, with these parameters', async () => {
+    const github = fakeGithub({ issues: { 585: {} } });
+    expect(await apply(['security'], 'Closes #585', github)).toBe('exempt');
+    expect(github.calls).toEqual([
+      { method: 'issues.get', args: { ...OWNER_REPO, issue_number: 585 } },
+      { method: 'issues.createLabel', args: { ...OWNER_REPO, name: 'parity-gap', color: 'fbca04', description: 'A family has rows below the reference tool' } },
+      { method: 'issues.create', args: { ...OWNER_REPO, title: 'Parity gap: compression', labels: ['parity-gap'], body: expectedGapIssueBody } },
+      { method: 'issues.createComment', args: { ...OWNER_REPO, issue_number: 640, body: expectedComment } },
+    ]);
+  });
+
+  it('rewrites the open family issue and the earlier comment in place, with these parameters', async () => {
+    const github = fakeGithub({
+      issues: { 585: {} },
+      comments: [{ id: 11, body: 'a human comment' }, { id: 12, body: '<!-- parity-exemption:speed -->\nolder run' }, { id: 13, body: '<!-- parity-exemption:quality -->\nquality run' }],
+      openIssues: [{ number: 55, title: 'Parity gap: compression' }, { number: 56, title: 'Parity gap: image' }],
+    });
+    expect(await apply(['security', 'bug'], 'Fixes #585', github)).toBe('exempt');
+    expect(github.calls).toEqual([
+      { method: 'issues.get', args: { ...OWNER_REPO, issue_number: 585 } },
+      { method: 'issues.createLabel', args: { ...OWNER_REPO, name: 'parity-gap', color: 'fbca04', description: 'A family has rows below the reference tool' } },
+      { method: 'issues.update', args: { ...OWNER_REPO, issue_number: 55, body: expectedGapIssueBody } },
+      { method: 'issues.updateComment', args: { ...OWNER_REPO, comment_id: 12, body: expectedComment.replace('- compression: #700', '- compression: #55') } },
+    ]);
+  });
+
+  it('does not even look an issue up for a pull request without the security label', async () => {
+    const github = fakeGithub({ issues: { 585: {} } });
+    expect(await apply(['bug', 'automerge'], 'Closes #585', github)).toBe('fail');
+    expect(github.calls).toEqual([]);
+  });
+});
