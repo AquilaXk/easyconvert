@@ -249,7 +249,10 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
   it('a PQ picture to a PQ AVIF keeps its tag and values; to toneMap "none" JPEG it is refused', async () => {
     const tagged = writePngCicp(png16(STILL_W, STILL_H, hdrSignals(pqOfNits(1000))), { primaries: 9, transfer: 16, matrix: 0, fullRange: true });
     const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 100 }, 'hdr.png', 'png');
-    expect(probe(file('same.avif', out.buffer))).toMatchObject({ color_primaries: 'bt2020', color_transfer: 'smpte2084' });
+    const samePath = file('same.avif', out.buffer);
+    expect(probe(samePath)).toMatchObject({ color_primaries: 'bt2020', color_transfer: 'smpte2084' });
+    // HDR AVIF is 10-bit, the depth every deep AVIF this converter writes is capped at (AV1 Main profile).
+    expect(execFileSync(requireOracleTool('avifdec'), ['--info', samePath], { encoding: 'utf8' })).toMatch(/Bit Depth\s*:\s*10/);
     await expect(convertImage(tagged, 'jpg', { toneMap: 'none' }, 'hdr.png', 'png')).rejects.toThrow(/toneMap "none" keeps HDR/);
   });
 

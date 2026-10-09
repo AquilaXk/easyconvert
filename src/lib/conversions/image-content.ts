@@ -57,8 +57,23 @@ export async function withoutOpaqueAlpha(pipeline: Sharp): Promise<Sharp> {
 }
 
 const SIXTEEN_BIT_DEPTH = 'ushort';
-const OPAQUE_8_BIT = 255;
-const OPAQUE_16_BIT = 65_535;
+const OPAQUE_BYTE = 0xff;
+/** Bytes compared per native call; the all-ones block is allocated once. */
+const OPAQUE_BLOCK_BYTES = 64 * 1024;
+const OPAQUE_BLOCK = Buffer.alloc(OPAQUE_BLOCK_BYTES, OPAQUE_BYTE);
+
+/**
+ * True when every byte is 0xff. The maximum alpha of an 8-bit plane is 255 and of a 16-bit plane 65535, so in both
+ * depths the opaque plane is one run of 0xff bytes whatever the byte order; comparing it block by block against a
+ * constant block runs in native code, where a loop over 16-bit samples in script was the larger half of the check.
+ */
+function isAllOpaqueBytes(data: Buffer): boolean {
+  for (let at = 0; at < data.length; at += OPAQUE_BLOCK_BYTES) {
+    const end = Math.min(at + OPAQUE_BLOCK_BYTES, data.length);
+    if (data.compare(OPAQUE_BLOCK, 0, end - at, at, end) !== 0) return false;
+  }
+  return true;
+}
 
 /**
  * True when every alpha sample is the maximum. The alpha plane is read on its own at the picture's own depth
@@ -71,10 +86,5 @@ async function alphaIsOpaque(pipeline: Sharp, deep: boolean): Promise<boolean> {
   const { data } = await (deep ? plane.toColourspace('grey16') : plane)
     .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : 'uchar' })
     .toBuffer({ resolveWithObject: true });
-  if (!deep) {
-    for (let i = 0; i < data.length; i += 1) if (data[i] !== OPAQUE_8_BIT) return false;
-    return true;
-  }
-  for (let i = 0; i + 1 < data.length; i += 2) if (data.readUInt16LE(i) !== OPAQUE_16_BIT) return false;
-  return true;
+  return isAllOpaqueBytes(data);
 }

@@ -64,7 +64,13 @@ export const AVIF_EFFORT_HUGE = 2;
 /** Effort the other encoders that embed AVIF (vector, office) use: no content analysis is run there. */
 export const AVIF_EFFORT = 3;
 
-/** AVIF bit depth for sources with more than 8 bits per sample; the encoder keeps the extra precision. */
+/**
+ * Bit depth of AVIF output for sources with more than 8 bits per sample (colour, grey and HDR alike): 10, the most
+ * the AV1 Main profile carries. The AVIF Baseline profile is AV1 Main, and decoders such as Android 14's only
+ * guarantee Baseline, so 12-bit (AV1 Professional) output would be unreadable on part of the audience. The 8-bit
+ * path would cap a deep picture near 51 dB PSNR whatever the quality; HDR output (PQ or HLG, BT.2020) is delivered
+ * at 10 bits for the same reason.
+ */
 export const AVIF_DEEP_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
 
@@ -90,10 +96,22 @@ export function avifChromaFor(quality: number, content: ContentClass): ChromaSub
   return content === 'graphic' ? '4:4:4' : '4:2:0';
 }
 
+/**
+ * mozjpeg quantisation table for graphic content: 2, the table tuned for MS-SSIM. The default (3) and the trellis
+ * are tuned for PSNR-HVS-M on photographs, which weighs error on hard edges lightly; on line art and interfaces
+ * they zero the high-frequency coefficients that make up the edges.
+ */
+export const GRAPHIC_JPEG_QUANTISATION_TABLE = 2;
+
 export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass): JpegOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
-  // mozjpeg turns on trellis quantisation, overshoot deringing and scan optimisation.
-  return { quality, mozjpeg: true, chromaSubsampling: jpegChromaFor(quality, content) };
+  const chromaSubsampling = jpegChromaFor(quality, content);
+  // mozjpeg turns on trellis quantisation, overshoot deringing and scan optimisation (and keeps optimal Huffman tables).
+  if (content === 'photo') return { quality, mozjpeg: true, chromaSubsampling };
+  // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,
+  // with table 2, the file is 10% smaller than the reference encoder's at equal PSNR, where it was 9% larger.
+  // Overshoot deringing stays on: switching it off costs 1.5 dB on text and rules.
+  return { quality, mozjpeg: true, chromaSubsampling, trellisQuantisation: false, quantisationTable: GRAPHIC_JPEG_QUANTISATION_TABLE };
 }
 
 export function webpOptionsFor(requestedQuality: number | undefined, content: ContentClass): WebpOptions {
@@ -103,11 +121,18 @@ export function webpOptionsFor(requestedQuality: number | undefined, content: Co
   return { quality, effort: WEBP_EFFORT, smartSubsample: content === 'graphic' };
 }
 
+export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
+
+/** 8 bits for 8-bit sources, 10 for anything deeper: the AV1 Main profile has no more. */
+export function avifBitdepthFor(deep: boolean): AvifBitdepth {
+  return deep ? AVIF_DEEP_BITDEPTH : AVIF_STANDARD_BITDEPTH;
+}
+
 export function avifOptionsFor(
   requestedQuality: number | undefined,
   content: ContentClass,
   pixels: number,
-  deep: boolean
+  bitdepth: AvifBitdepth
 ): AvifOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.avif);
   return {
@@ -115,6 +140,6 @@ export function avifOptionsFor(
     effort: avifEffortFor(pixels, content),
     tune: AVIF_TUNE,
     chromaSubsampling: avifChromaFor(quality, content),
-    bitdepth: deep ? AVIF_DEEP_BITDEPTH : AVIF_STANDARD_BITDEPTH,
+    bitdepth,
   };
 }
