@@ -1,4 +1,6 @@
+import { promisify } from 'node:util';
 import zlib from 'node:zlib';
+import { runCpuTask } from '../workers/cpu-pool';
 import { readXMins, reconstructGlyf, reconstructHmtx, serializeLoca, transformGlyf, transformHmtx, type GlyfReconstruction } from './font-woff2-glyf';
 import {
   WOFF2_EXPANSION_RATIO_FLOOR_BYTES,
@@ -516,6 +518,58 @@ function dataView(bytes: Uint8Array): DataView {
  * at its strongest setting in font mode.
  */
 export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2InputTable>): Buffer {
+  const prepared = prepareWoff2Container(flavor, input);
+  return finishWoff2Container(prepared, zlib.brotliCompressSync(prepared.stream, woff2BrotliOptions(prepared.stream.length)));
+}
+
+/**
+ * Table data above which the whole encode (table transforms and Brotli) moves to a CPU pool thread: the transforms alone
+ * hold the event loop for about 60 ms per megabyte, so a font this size would pass the 100 ms budget on its own.
+ */
+export const WOFF2_POOL_MIN_TABLE_BYTES = 1024 * 1024;
+
+/**
+ * Same container as `encodeWoff2Container` without holding the event loop: large fonts are encoded on a CPU pool thread,
+ * smaller ones run the (fast) table transforms inline and the Brotli step, which takes seconds per megabyte at quality 11,
+ * on the libuv thread pool.
+ */
+export async function encodeWoff2ContainerAsync(
+  flavor: number,
+  input: ReadonlyArray<Woff2InputTable>,
+  options: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const tableBytes = input.reduce((sum, table) => sum + table.data.length, 0);
+  if (tableBytes >= WOFF2_POOL_MIN_TABLE_BYTES) {
+    const bytes = await runCpuTask<Uint8Array>('woff2', { flavor, tables: input.map((table) => ({ tag: table.tag, data: table.data })) }, { signal: options.signal });
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  const prepared = prepareWoff2Container(flavor, input);
+  const compressed = await brotliCompressAsync(prepared.stream, woff2BrotliOptions(prepared.stream.length));
+  return finishWoff2Container(prepared, compressed);
+}
+
+const brotliCompressAsync = promisify(zlib.brotliCompress);
+
+function woff2BrotliOptions(streamBytes: number): zlib.BrotliOptions {
+  return {
+    params: {
+      [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_FONT,
+      [zlib.constants.BROTLI_PARAM_QUALITY]: woff2BrotliQuality(streamBytes),
+      [zlib.constants.BROTLI_PARAM_SIZE_HINT]: streamBytes,
+    },
+  };
+}
+
+interface PreparedWoff2 {
+  flavor: number;
+  tagCount: number;
+  directory: number[];
+  sfntSize: number;
+  /** The tables as stored, concatenated: the input of the Brotli step. */
+  stream: Buffer;
+}
+
+function prepareWoff2Container(flavor: number, input: ReadonlyArray<Woff2InputTable>): PreparedWoff2 {
   const byTag = new Map<string, Woff2InputTable>();
   let inputBytes = 0;
   for (const table of input) {
@@ -614,21 +668,18 @@ export function encodeWoff2Container(flavor: number, input: ReadonlyArray<Woff2I
     at += stored.length;
   }
 
-  const compressed = zlib.brotliCompressSync(stream, {
-    params: {
-      [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_FONT,
-      [zlib.constants.BROTLI_PARAM_QUALITY]: woff2BrotliQuality(stream.length),
-      [zlib.constants.BROTLI_PARAM_SIZE_HINT]: stream.length,
-    },
-  });
+  return { flavor, tagCount: tags.length, directory, sfntSize, stream };
+}
 
+function finishWoff2Container(prepared: PreparedWoff2, compressed: Buffer): Buffer {
+  const { flavor, tagCount, directory, sfntSize } = prepared;
   const fontBytes = HEADER_BYTES + directory.length + compressed.length;
   const total = alignUp(fontBytes);
   const out = Buffer.alloc(total, PAD_BYTE);
   out.writeUInt32BE(WOFF2_SIGNATURE, 0);
   out.writeUInt32BE(flavor >>> 0, HEADER_FLAVOR_AT);
   out.writeUInt32BE(total, HEADER_LENGTH_AT);
-  out.writeUInt16BE(tags.length, HEADER_NUM_TABLES_AT);
+  out.writeUInt16BE(tagCount, HEADER_NUM_TABLES_AT);
   out.writeUInt32BE(sfntSize, HEADER_TOTAL_SFNT_AT);
   out.writeUInt32BE(compressed.length, HEADER_COMPRESSED_SIZE_AT);
   out.writeUInt16BE(WOFF2_MAJOR_VERSION, HEADER_MAJOR_VERSION_AT);

@@ -128,7 +128,14 @@ export function readHuffmanTable(
   return { table: weightsToDecodeTable(weights, count), bytesRead };
 }
 
-/** Decodes exactly `count` symbols from one backward Huffman stream into `out`. */
+/**
+ * Decodes exactly `count` symbols from one backward Huffman stream into `out`.
+ *
+ * The hot loop reads the next `maxBits` bits straight from the byte array (a 32-bit little-endian window shifted to the
+ * bit position) instead of going through ReverseBitReader. Bytes past `end` can enter the window only in bits above the
+ * ones the index uses, which the mask drops; the slow branch handles the last bytes of the buffer and positions below 0
+ * (bits before the stream start read as zero, as in ReverseBitReader).
+ */
 export function decodeHuffmanStream(
   table: HuffmanDecodeTable,
   buf: Uint8Array,
@@ -144,12 +151,23 @@ export function decodeHuffmanStream(
   }
   const reader = new ReverseBitReader(buf, start, end);
   const { maxBits, symbol, nbBits } = table;
+  const mask = (1 << maxBits) - 1;
+  const bufLength = buf.length;
+  let bitsLeft = reader.bitsLeft;
   for (let i = 0; i < count; i++) {
-    const index = reader.peek(maxBits);
+    const pos = bitsLeft - maxBits;
+    const at = start + (pos >> 3);
+    let index: number;
+    if (pos >= 0 && at + 3 < bufLength) {
+      index = (((buf[at] | (buf[at + 1] << 8) | (buf[at + 2] << 16) | (buf[at + 3] << 24)) >>> (pos & 7)) & mask) | 0;
+    } else {
+      reader.bitsLeft = bitsLeft;
+      index = reader.peek(maxBits);
+    }
     out[outStart + i] = symbol[index];
-    reader.consume(nbBits[index]);
+    bitsLeft -= nbBits[index];
   }
-  if (reader.bitsLeft !== 0) zstdFail('Malformed Zstandard Huffman stream: bitstream not fully consumed.');
+  if (bitsLeft !== 0) zstdFail('Malformed Zstandard Huffman stream: bitstream not fully consumed.');
 }
 
 /** Decodes a Huffman-coded literals payload of 1 or 4 streams into `out`. */

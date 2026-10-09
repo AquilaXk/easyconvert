@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { demosaicAhdBayerCfa as referenceAhd, demosaicAmazeBayerCfa as referenceAmaze } from '../src/lib/conversions/image';
+import { legacyDemosaicAhdBayerCfa as referenceAhd, legacyDemosaicAmazeBayerCfa as referenceAmaze } from './raw-demosaic/legacy-demosaic';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from '../src/lib/conversions/raw-demosaic';
 import { OracleToolMissingError } from './helpers/differential-oracle';
 import { cropSensor, type RealCropCase } from './raw-demosaic/inputs';
@@ -9,7 +9,7 @@ import { IMX477_SAMPLE_PATH, loadImx477Plane } from './raw-demosaic/golden';
 import { measureInterleaved } from './helpers/timing';
 
 /**
- * Speed of the flat-plane AHD and AMaZE against the implementation they replaced (still in image.ts), measured on a
+ * Speed of the flat-plane AHD and AMaZE against the implementation they replaced (kept in tests/raw-demosaic/legacy-demosaic.ts), measured on a
  * 1 MP window of the real imx477 sample on the same machine in the same process, best of REPEATS runs each. The
  * best of several runs filters scheduler noise on a shared runner; two runs measured a 2.95x AHD floor miss there.
  * The new engine is called the way processFloat32LinearPipeline calls it (float planes only, no 8-bit buffer); the

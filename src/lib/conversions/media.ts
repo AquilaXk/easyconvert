@@ -28,12 +28,13 @@ import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { describeDroppedStreams } from './media-dropped-streams';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
-import { encodeFlacStream } from './media-encoder';
+import { encodeFlacStreamAsync } from './flac-encoder';
 import {
   resampleInterleavedInt16,
   resamplePlanarFloat,
   type ResampleOptions,
 } from './audio-resampler';
+import { readWavPcmInfo } from './wav-header';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -130,6 +131,9 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
   if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
     return options.duration;
   }
+  // The duration of a WAVE file with uncompressed samples is in its header; no prober process is needed.
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return wav.durationSeconds;
   const ffprobe = getFfprobePath();
   if (ffprobe && fs.existsSync(filePath)) {
     try {
@@ -316,7 +320,7 @@ export async function convertMedia(
   }
 
   // Pure TypeScript zero-dependency pipeline for the lossless targets (WAV, FLAC)
-  return processMediaPure(inputBuffer, src, tgt, options, baseName);
+  return await processMediaPure(inputBuffer, src, tgt, options, baseName);
 }
 
 /** A ConversionFailedError subclass (no video stream, too many streams, ...): a verdict on the input that keeps its type. */
@@ -630,13 +634,13 @@ export async function packageHlsDashMedia(
  * Parses RIFF WAV, decodes PCM audio, performs sample rate conversion,
  * applies volume normalization, generates valid audio frames and containers.
  */
-function processMediaPure(
+async function processMediaPure(
   inputBuffer: Buffer,
   src: string,
   tgt: string,
   options: ConversionOptions,
   baseName: string
-): ConversionResult {
+): Promise<ConversionResult> {
   // 1. Extract PCM audio samples from source using pure audio decoder stack
   const decoded = decodeAudioBuffer(inputBuffer, src);
   assertPureSourceIsFaithful(decoded);
@@ -705,7 +709,7 @@ function processMediaPure(
       break;
 
     case 'flac':
-      outputBuffer = encodeFlacContainer(pcmData, sampleRate, channels);
+      outputBuffer = await encodeFlacStreamAsync(pcmData, sampleRate, channels);
       break;
 
     default:
@@ -1027,14 +1031,6 @@ export function createOggPage(
 
   return page;
 }
-
-/**
- * Encodes FLAC container with fLaC magic marker, STREAMINFO metadata, and RFC 9639 frames
- */
-function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  return encodeFlacStream(samples, sampleRate, channels);
-}
-
 
 /**
  * Bandlimited polyphase resampler (Kaiser-windowed sinc, cutoff scaled to the lower rate).

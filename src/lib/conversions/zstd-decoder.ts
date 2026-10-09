@@ -389,6 +389,39 @@ function readLiteralsSection(src: Uint8Array, start: number, end: number, state:
 }
 
 /**
+ * Typed copies of the code tables, read in the sequence loop. Module-local constants avoid an accessor call per use when the
+ * imported bindings are compiled to getters (CommonJS interop), and typed arrays are cheaper to index than plain ones.
+ */
+const LL_BASELINE_TABLE = Uint32Array.from(LL_BASELINE);
+const LL_BITS_TABLE = Uint8Array.from(LL_BITS);
+const ML_BASELINE_TABLE = Uint32Array.from(ML_BASELINE);
+const ML_BITS_TABLE = Uint8Array.from(ML_BITS);
+
+/** Widest field the single 32-bit window read below can return (the window holds 25 usable bits at any shift). */
+const WINDOW_FIELD_BITS_MAX = 24;
+const OFFSET_EXTRA_BITS_SPLIT = 24;
+const OFFSET_EXTRA_BITS_RADIX = 2 ** OFFSET_EXTRA_BITS_SPLIT;
+
+/**
+ * Bits [pos, pos + n) of the backward stream that starts at src[base], n <= 24, bits below position 0 reading as zero.
+ * Equivalent to ReverseBitReader's field read; inlined by the JIT into the sequence loop. Bytes past the end of the
+ * stream can enter the 32-bit window only above bit pos + n, which the mask drops.
+ */
+function streamBits(src: Uint8Array, base: number, pos: number, n: number): number {
+  const at = base + (pos >> 3);
+  if (pos >= 0 && at + 3 < src.length) {
+    return ((src[at] | (src[at + 1] << 8) | (src[at + 2] << 16) | (src[at + 3] << 24)) >>> (pos & 7)) & ((1 << n) - 1);
+  }
+  let word = 0;
+  for (let k = 0; k < 4; k++) {
+    const index = at + k;
+    const byte = pos >= 0 || index >= base ? (index < src.length ? src[index] : 0) : 0;
+    word |= byte << (8 * k);
+  }
+  return (word >>> (pos & 7)) & ((1 << n) - 1);
+}
+
+/**
  * Decodes one compressed block (src[start..end)) and appends its output to `out`.
  * `frameStart` is the output offset where the current frame began; offsets are validated against it.
  */
@@ -446,9 +479,11 @@ export function decodeCompressedBlock(
   pos = mlRead.next;
 
   const reader = new ReverseBitReader(src, pos, end);
+  const streamBase = pos;
   let llState = reader.read(llTable.accuracyLog);
   let ofState = reader.read(ofTable.accuracyLog);
   let mlState = reader.read(mlTable.accuracyLog);
+  let bitsLeft = reader.bitsLeft;
 
   const data = out.data;
   let outLen = out.length;
@@ -460,14 +495,46 @@ export function decodeCompressedBlock(
   const windowLimit = state.windowSize + state.dictionaryLength;
   const availableHistoryBase = frameStart - state.dictionaryLength;
   const litTotal = literals.length;
+  const llSymbol = llTable.symbol;
+  const llNbBits = llTable.nbBits;
+  const llBase = llTable.base;
+  const mlSymbol = mlTable.symbol;
+  const mlNbBits = mlTable.nbBits;
+  const mlBase = mlTable.base;
+  const ofSymbol = ofTable.symbol;
+  const ofNbBits = ofTable.nbBits;
+  const ofBase = ofTable.base;
+  const lastSequence = numSeq - 1;
 
   for (let i = 0; i < numSeq; i++) {
-    const ofCode = ofTable.symbol[ofState];
-    const mlCode = mlTable.symbol[mlState];
-    const llCode = llTable.symbol[llState];
-    const ofValue = 2 ** ofCode + reader.read(ofCode);
-    const matchLen = ML_BASELINE[mlCode] + reader.read(ML_BITS[mlCode]);
-    const litLen = LL_BASELINE[llCode] + reader.read(LL_BITS[llCode]);
+    const ofCode = ofSymbol[ofState];
+    const mlCode = mlSymbol[mlState];
+    const llCode = llSymbol[llState];
+    // Extra bits are read offset first, then match length, then literal length (RFC 8878 section 3.1.1.4).
+    let ofValue: number;
+    if (ofCode === 0) {
+      ofValue = 1;
+    } else if (ofCode <= WINDOW_FIELD_BITS_MAX) {
+      bitsLeft -= ofCode;
+      ofValue = (1 << ofCode) + streamBits(src, streamBase, bitsLeft, ofCode);
+    } else {
+      bitsLeft -= ofCode;
+      const low = streamBits(src, streamBase, bitsLeft, OFFSET_EXTRA_BITS_SPLIT);
+      const high = streamBits(src, streamBase, bitsLeft + OFFSET_EXTRA_BITS_SPLIT, ofCode - OFFSET_EXTRA_BITS_SPLIT);
+      ofValue = 2 ** ofCode + high * OFFSET_EXTRA_BITS_RADIX + low;
+    }
+    const mlBits = ML_BITS_TABLE[mlCode];
+    let matchLen = ML_BASELINE_TABLE[mlCode];
+    if (mlBits > 0) {
+      bitsLeft -= mlBits;
+      matchLen += streamBits(src, streamBase, bitsLeft, mlBits);
+    }
+    const llBits = LL_BITS_TABLE[llCode];
+    let litLen = LL_BASELINE_TABLE[llCode];
+    if (llBits > 0) {
+      bitsLeft -= llBits;
+      litLen += streamBits(src, streamBase, bitsLeft, llBits);
+    }
 
     let offset: number;
     if (ofValue > 3) {
@@ -497,12 +564,18 @@ export function decodeCompressedBlock(
     }
     if (offset <= 0) zstdFail('Corrupt Zstandard sequence: invalid offset 0.');
 
-    if (i < numSeq - 1) {
-      llState = llTable.base[llState] + reader.read(llTable.nbBits[llState]);
-      mlState = mlTable.base[mlState] + reader.read(mlTable.nbBits[mlState]);
-      ofState = ofTable.base[ofState] + reader.read(ofTable.nbBits[ofState]);
+    if (i < lastSequence) {
+      const llUpdateBits = llNbBits[llState];
+      bitsLeft -= llUpdateBits;
+      llState = llBase[llState] + (llUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, llUpdateBits) : 0);
+      const mlUpdateBits = mlNbBits[mlState];
+      bitsLeft -= mlUpdateBits;
+      mlState = mlBase[mlState] + (mlUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, mlUpdateBits) : 0);
+      const ofUpdateBits = ofNbBits[ofState];
+      bitsLeft -= ofUpdateBits;
+      ofState = ofBase[ofState] + (ofUpdateBits > 0 ? streamBits(src, streamBase, bitsLeft, ofUpdateBits) : 0);
     }
-    if (reader.overflowed) zstdFail('Malformed Zstandard sequences: bitstream over-read.');
+    if (bitsLeft < 0) zstdFail('Malformed Zstandard sequences: bitstream over-read.');
 
     if (outLen - blockStart + litLen + matchLen > budget) {
       zstdFail('Corrupt Zstandard block: decoded size exceeds the block maximum or declared content size.');
@@ -527,7 +600,7 @@ export function decodeCompressedBlock(
     }
     outLen += matchLen;
   }
-  if (reader.bitsLeft !== 0) zstdFail('Malformed Zstandard sequences: bitstream not fully consumed.');
+  if (bitsLeft !== 0) zstdFail('Malformed Zstandard sequences: bitstream not fully consumed.');
 
   const trailing = litTotal - litPos;
   if (outLen - blockStart + trailing > budget) {
