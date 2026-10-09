@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { assertEncodedImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
@@ -31,6 +32,8 @@ import { openPdfPageRenderer } from './pdf-page-render';
 import {
   fallbackReadsMore,
   OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
+  OCR_PSM_AUTO,
+  ocrBandsAllowedFor,
   OCR_ALTERNATIVE_TRIGGER_QUALITY,
   ocrFallbackPageSegMode,
   ocrSegmentationFor,
@@ -67,7 +70,14 @@ import {
   type OcrPreprocessResult,
   type OcrPreprocessSteps,
 } from './ocr-preprocess';
-import { getSharedOcrWorkerPool, shutdownSharedOcrWorkerPool } from './ocr-worker-pool';
+import { mergeBandReadings, OCR_BAND_MAX_BANDS, planBands, sliceNetpbmRows, type BandReading, type OcrBand } from './ocr-bands';
+import {
+  getSharedOcrWorkerPool,
+  OCR_POOL_MAX_WORKERS_PER_KEY,
+  shutdownSharedOcrWorkerPool,
+  type OcrWorkerPool,
+  type OcrWorkerSpec,
+} from './ocr-worker-pool';
 
 export type { ColumnGutter, OcrBBox, OcrWord, OcrLineBlock, OcrResult, OcrPageResult };
 export {
@@ -199,7 +209,12 @@ export interface RecognizedPage {
   result: OcrResult;
   enginePath: OcrEnginePath;
   /** How the page was prepared for the reading that was kept. */
-  preparation?: { binarized: boolean; unevenBackground: number };
+  preparation?: {
+    binarized: boolean;
+    unevenBackground: number;
+    /** Engine runs the reading took: 1 for a page read whole, more for a page read in bands. */
+    bands: number;
+  };
 }
 
 export interface OcrRecognitionOptions {
@@ -213,6 +228,11 @@ export interface OcrRecognitionOptions {
    * with OcrEngineUnavailableError (503) when the data or engine is missing; `false` switches it off.
    */
   detectOrientation?: boolean;
+  /**
+   * Whether a page of plain text lines may be cut into bands that separate engine workers read side by side (see
+   * ocr-bands.ts). On unless `false`; tests and measurements switch it off to read the same page whole.
+   */
+  parallelBands?: boolean;
 }
 
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
@@ -258,7 +278,7 @@ export async function recognizePage(
   language: string = 'auto',
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
-  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation } = options;
+  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands } = options;
   const requested = resolveOcrLanguages(language);
   const requestedLanguage = requested.joined;
   const requestedData = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
@@ -273,7 +293,7 @@ export async function recognizePage(
   });
 
   const attempt = (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: LanguageData) =>
-    recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language });
+    recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language, parallelBands });
   const first = await attempt(0, requestedLanguage, requestedData);
   if (detectOrientation === false) return finish(first, { status: 'disabled', rotationApplied: 0 });
   if (!looksMisread(first.result)) return finish(first, { status: 'not-needed', rotationApplied: 0 });
@@ -338,6 +358,7 @@ interface RecognitionAttempt {
   enginePath?: OcrEnginePath;
   /** The language as the request named it, for messages. */
   language: string;
+  parallelBands?: boolean;
 }
 
 /**
@@ -406,19 +427,32 @@ async function readPreparedPage(
 
   // 2. Try High-Performance WebAssembly Inference Engine (Tesseract.js)
   let fallback: OcrEngineFallback | undefined;
+  let bandsRead = 1;
   if (enginePath !== 'cli') {
     try {
       const { pageSegMode, engineMode } = ocrSegmentationFor(tesseractLang);
-      const ret = await getSharedOcrWorkerPool().run(
-        {
-          langs: tesseractLang,
-          langPath: localLangPath,
-          gzip: isGzip,
-          engineMode,
-          parameters: { tessedit_pageseg_mode: pageSegMode },
-        },
+      const spec: OcrWorkerSpec = {
+        langs: tesseractLang,
+        langPath: localLangPath,
+        gzip: isGzip,
+        engineMode,
+        parameters: { tessedit_pageseg_mode: pageSegMode },
+      };
+      const pool = getSharedOcrWorkerPool();
+      const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
+      // A page of plain text lines is read in bands by as many idle workers as there are, instead of by one.
+      const bands =
+        attempt.parallelBands === false ||
+        !ocrBandsAllowedFor(tesseractLang) ||
+        imageMode !== OCR_PSM_AUTO ||
+        pageSegMode !== OCR_PSM_AUTO
+          ? null
+          : planPageBands(pool, spec, prepared);
+      const banded = bands ? await recognizeInBands(pool, spec, ocrInput, bands) : null;
+      if (banded) bandsRead = bands?.length ?? 1;
+      const ret = banded ?? await pool.run(
+        spec,
         async (recognize, recognizeWith) => {
-          const imageMode = ocrSegmentationFor(tesseractLang, inputHeight, inputTextRows).pageSegMode;
           if (imageMode !== pageSegMode) {
             return recognizeWith({ tessedit_pageseg_mode: imageMode }, ocrInput, {}, { blocks: true });
           }
@@ -461,7 +495,7 @@ async function readPreparedPage(
           },
           prepared.geometry
         ));
-        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath), prepared };
+        return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath, bandsRead), prepared };
       }
     } catch (err: unknown) {
       if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
@@ -492,7 +526,7 @@ async function readPreparedPage(
         prepared.geometry
       )
     );
-    const page = withPreparation({ result, enginePath: 'cli' }, prepared, localLangPath);
+    const page = withPreparation({ result, enginePath: 'cli' }, prepared, localLangPath, 1);
     return { page: fallback ? { ...page, result: { ...page.result, engineFallback: fallback } } : page, prepared };
   }
 
@@ -501,12 +535,57 @@ async function readPreparedPage(
   );
 }
 
-function withPreparation(page: RecognizedPage, prepared: OcrPreprocessResult, languageDataDirectory: string): RecognizedPage {
+function withPreparation(
+  page: RecognizedPage,
+  prepared: OcrPreprocessResult,
+  languageDataDirectory: string,
+  bands: number
+): RecognizedPage {
   return {
     ...page,
     result: { ...page.result, languageDataDirectory },
-    preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground },
+    preparation: { binarized: prepared.applied.binarize, unevenBackground: prepared.unevenBackground, bands },
   };
+}
+
+/**
+ * The bands a prepared page is cut into for the workers that are idle now, or null to read it whole. A page that
+ * would be cut but finds fewer than two idle workers is read whole and starts the missing workers for the pages
+ * after it.
+ */
+function planPageBands(pool: OcrWorkerPool, spec: OcrWorkerSpec, prepared: OcrPreprocessResult): OcrBand[] | null {
+  if (!prepared.ink) return null;
+  const { profile, lineHeightPx } = prepared.ink;
+  const wanted = Math.min(OCR_BAND_MAX_BANDS, os.availableParallelism(), OCR_POOL_MAX_WORKERS_PER_KEY);
+  if (planBands(profile, lineHeightPx, wanted) === null) return null;
+  const idle = pool.idleWorkers(spec);
+  if (idle < 2) {
+    pool.warm(spec, wanted);
+    return null;
+  }
+  return planBands(profile, lineHeightPx, Math.min(idle, wanted));
+}
+
+/**
+ * Reads the bands of a page side by side, one worker each, and returns the reading of the page. Null when the bands
+ * hold no word: the page is then read whole, with the single-block retry that a page without text gets.
+ */
+async function recognizeInBands(
+  pool: OcrWorkerPool,
+  spec: OcrWorkerSpec,
+  page: Buffer,
+  bands: readonly OcrBand[]
+): Promise<{ data: BandReading } | null> {
+  const readings = await Promise.all(
+    bands.map((band) =>
+      pool.run(spec, async (recognize) => {
+        const read = await recognize(sliceNetpbmRows(page, band.top, band.bottom), {}, { blocks: true });
+        return { text: read.data.text ?? '', blocks: read.data.blocks };
+      })
+    )
+  );
+  const merged = mergeBandReadings(bands, readings);
+  return countWords(merged.text) > 0 ? { data: merged } : null;
 }
 
 /**
