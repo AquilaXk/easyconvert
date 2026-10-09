@@ -1,9 +1,17 @@
 name: CI setup
 description: >-
   Installs the conversion and oracle CLI tools, the Python format oracles and veraPDF, fetches the
-  RAW samples, and starts the S3 test server. Shared by every CI job that runs test suites.
-  The .deb files of the package install and the veraPDF install are cached, and the independent parts of the
-  setup run at once (see install-tools.sh).
+  RAW samples, and, for a job that asks for it, starts the S3 test server. Shared by every CI job that runs test
+  suites. The .deb files of the package install, the veraPDF install and the S3 test server image are cached, and
+  the independent parts of the setup run at once, each under a time limit (see install-tools.sh).
+
+inputs:
+  s3-test-server:
+    description: >-
+      'true' starts the S3 test server that the real-server storage tests read through STORAGE_TEST_S3_*, which the
+      job must set; 'false' (the default) leaves it out. Only a job that runs those tests asks for it.
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -51,8 +59,19 @@ runs:
         path: tests/fixtures/raw/.cache
         key: raw-fixtures-${{ hashFiles('tests/fixtures/raw/manifest.json', 'tests/fixtures/raw/variants.json') }}
 
-    # Packages, Python oracles, veraPDF, RAW samples and the S3 test server, at once. The S3 server image is pinned
-    # by digest; move the pin if that image repository is removed.
+    # The S3 test server image is pinned by digest in s3-test-server-image.txt, which is also the key of its cache:
+    # a job that starts the server loads the image from the cache instead of pulling it from the registry, which
+    # limits anonymous pulls per address. Move the pin if that image repository is removed.
+    - name: Restore the cached S3 test server image
+      if: inputs.s3-test-server == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/s3-test-server-image
+        key: s3-test-server-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/s3-test-server-image.txt') }}
+
+    # Packages, Python oracles, veraPDF and RAW samples at once, and the S3 test server when the job asked for it,
+    # each part under its own time limit (see install-tools.sh). The name stays the one that the strict-mode failure
+    # message of tests/helpers/s3-test-server.ts points to.
     - name: Install the tools and start the S3 test server
       shell: bash
       env:
@@ -60,5 +79,6 @@ runs:
         APT_DEBS: ${{ runner.temp }}/apt-debs
         APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
-        S3_TEST_SERVER_IMAGE: bitnamilegacy/minio:2025.7.23@sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7
+        S3_TEST_SERVER: ${{ inputs.s3-test-server }}
+        S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
       run: bash "$ACTION_PATH/install-tools.sh"

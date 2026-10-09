@@ -142,6 +142,8 @@ const MIME_TYPES: Record<string, string> = {
   odg: 'application/vnd.oasis.opendocument.graphics',
   odd: 'application/vnd.oasis.opendocument.graphics-template',
   csv: 'text/csv',
+  doc: 'application/msword',
+  rtf: 'application/rtf',
 };
 
 const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);

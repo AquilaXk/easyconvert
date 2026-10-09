@@ -47,6 +47,7 @@ export type ExternalOracleTool =
   | 'zipinfo'
   | 'unshare'
   | 'magick'
+  | 'convert'
   | 'identify'
   | 'unrar'
   | 'qpdf'
@@ -63,6 +64,7 @@ export type ExternalOracleTool =
   | 'exiftool'
   | 'avifenc'
   | 'avifdec'
+  | 'heif-enc'
   | 'cwebp'
   | 'dwebp'
   | 'epubcheck';
