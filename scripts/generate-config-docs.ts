@@ -3,7 +3,7 @@ import path from 'node:path';
 import { renderConfigurationDoc, renderEnvExample } from '../src/lib/config/render-docs';
 
 /**
- * Writes docs/configuration.md and .env.example from the configuration schema (src/lib/config/schema.ts).
+ * Writes docs/configuration.md and docs/configuration.example.env from the configuration schema (src/lib/config/schema.ts).
  * `--check` writes nothing and exits 1 when a committed file differs from what the schema renders.
  */
 
@@ -12,7 +12,7 @@ const CHECK_FLAG = '--check';
 
 const OUTPUTS: ReadonlyArray<{ file: string; render: () => string }> = [
   { file: path.join(ROOT_DIR, 'docs', 'configuration.md'), render: renderConfigurationDoc },
-  { file: path.join(ROOT_DIR, '.env.example'), render: renderEnvExample },
+  { file: path.join(ROOT_DIR, 'docs', 'configuration.example.env'), render: renderEnvExample },
 ];
 
 function main(): void {

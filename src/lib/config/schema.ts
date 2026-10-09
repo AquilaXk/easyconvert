@@ -3,7 +3,7 @@ import { BlockList, isIP } from 'node:net';
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
  * production requirement and owning area. `index.ts` validates an environment against it at start-up;
- * `render-docs.ts` writes docs/configuration.md and .env.example from it.
+ * `render-docs.ts` writes docs/configuration.md and docs/configuration.example.env from it.
  *
  * Names and defaults are those the code uses today. A parser is no stricter than the code that consumes the
  * variable, except where that code silently replaced a malformed value with a default: a set-but-malformed
@@ -130,7 +130,7 @@ export interface VariableSpec {
   readonly secret: boolean;
   /** The processes that read the variable; a production requirement is enforced in these. */
   readonly roles: readonly ProcessRole[];
-  /** The platform sets it (not the operator), so .env.example leaves it out. */
+  /** The platform sets it (not the operator), so the example file leaves it out. */
   readonly platformManaged?: boolean;
 }
 

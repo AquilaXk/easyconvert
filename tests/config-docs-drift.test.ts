@@ -6,14 +6,14 @@ import { parseConfig } from '../src/lib/config';
 import { renderConfigurationDoc, renderEnvExample } from '../src/lib/config/render-docs';
 
 /**
- * docs/configuration.md and .env.example are generated from the schema (`npm run config:docs`). Rendering again in
+ * docs/configuration.md and docs/configuration.example.env are generated from the schema (`npm run config:docs`). Rendering again in
  * memory and comparing with the committed files fails when the schema changed and the files were not regenerated.
  * The example file is also read back with a line parser that shares no code with the generator.
  */
 
 const ROOT = path.resolve(__dirname, '..');
 const DOC_PATH = path.join(ROOT, 'docs', 'configuration.md');
-const EXAMPLE_PATH = path.join(ROOT, '.env.example');
+const EXAMPLE_PATH = path.join(ROOT, 'docs', 'configuration.example.env');
 
 const doc = readFileSync(DOC_PATH, 'utf8');
 const example = readFileSync(EXAMPLE_PATH, 'utf8');
@@ -41,7 +41,7 @@ describe('generated configuration files', () => {
     expect(doc).toBe(renderConfigurationDoc());
   });
 
-  it('.env.example is what the schema renders', () => {
+  it('docs/configuration.example.env is what the schema renders', () => {
     expect(example).toBe(renderEnvExample());
   });
 
@@ -57,7 +57,7 @@ describe('generated configuration files', () => {
   });
 });
 
-describe('.env.example', () => {
+describe('docs/configuration.example.env', () => {
   const assignments = exampleAssignments();
   const operatorVariables = CONFIG_SCHEMA.filter((spec) => spec.platformManaged !== true);
 

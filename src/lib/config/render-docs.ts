@@ -9,13 +9,13 @@ import {
 } from './schema';
 
 /**
- * Renders docs/configuration.md and .env.example from the schema. Pure functions: scripts/generate-config-docs.ts
+ * Renders docs/configuration.md and docs/configuration.example.env from the schema. Pure functions: scripts/generate-config-docs.ts
  * writes the files, and tests/config-docs-drift.test.ts renders again and compares with the committed files, so a
  * schema change that is not regenerated fails the test.
  */
 
 const GENERATED_NOTICE = 'Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand.';
-/** Width at which .env.example wraps its comments. */
+/** Width at which the example file wraps its comments. */
 const ENV_COMMENT_WIDTH = 100;
 
 const AREA_ORDER: readonly ConfigArea[] = [
@@ -128,7 +128,7 @@ export function renderConfigurationDoc(
     '',
     `<!-- ${GENERATED_NOTICE} -->`,
     '',
-    `EasyConvert reads ${schema.length} environment variables. The schema in ${code('src/lib/config/schema.ts')} declares each one with its type, default, production requirement and owning area; this page and ${code('.env.example')} are generated from it.`,
+    `EasyConvert reads ${schema.length} environment variables. The schema in ${code('src/lib/config/schema.ts')} declares each one with its type, default, production requirement and owning area; this page and ${code('docs/configuration.example.env')} are generated from it.`,
     '',
     '## How the configuration is checked',
     '',
@@ -187,7 +187,7 @@ function isRequiredLine(spec: VariableSpec, groups: readonly AnyOfGroup[]): bool
   return groups.some((group) => group.names[0] === spec.name);
 }
 
-/** .env.example: every operator-set variable, secrets always empty. */
+/** docs/configuration.example.env: every operator-set variable, secrets always empty. */
 export function renderEnvExample(
   schema: readonly VariableSpec[] = CONFIG_SCHEMA,
   groups: readonly AnyOfGroup[] = PRODUCTION_ANY_OF_GROUPS
