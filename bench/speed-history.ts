@@ -19,7 +19,7 @@ import { BenchArgumentError } from './errors';
  * at that confidence with n - 1 degrees of freedom. The sqrt(1 + 1/n) factor makes it a prediction bound for one new
  * observation rather than a bound on the mean (Hahn and Meeker, Statistical Intervals: A Guide for Practitioners). The row fails when its median is under that bound
  * (the history stores medians, so the bound predicts a median). The bound is never allowed to fall under SPEED_GAP_FLOOR
- * of the latest recorded median, and with fewer than SPEED_HISTORY_MIN_POINTS points the floor is the only limit.
+ * of the history's median, and with fewer than SPEED_HISTORY_MIN_POINTS points the floor is the only limit.
  *
  * A prediction bound assumes exchangeable points. A speed-up that landed on main breaks that: points from before and
  * after it differ by the code, not by the runner, and the spread of the window then measures the change. A history
@@ -139,9 +139,9 @@ export function appendSpeedHistory(history: readonly SpeedHistoryPoint[], ratio:
 }
 
 export interface SpeedGapThreshold {
-  /** The latest recorded median: the last point of the history, or the recorded ratio of a row with no points. */
-  latest: number;
-  /** SPEED_GAP_FLOOR of the latest recorded median. */
+  /** What the floor is taken from: the median of the history since its last step, or the recorded ratio of a row with no points. */
+  level: number;
+  /** SPEED_GAP_FLOOR of the level. */
   floor: number;
   /** The prediction bound of the history, or null while it has too few points. */
   bound: PredictionBound | null;
@@ -149,10 +149,17 @@ export interface SpeedGapThreshold {
   lower: number;
 }
 
+/** Median of positive ratios; for an even count the geometric mean of the two middle ones, as ratios combine multiplicatively. */
+function medianRatio(ratios: readonly number[]): number {
+  const sorted = [...ratios].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[middle] : Math.sqrt(sorted[middle - 1] * sorted[middle]);
+}
+
 /** The lowest median a tracked row may have, from its history (oldest first) and its recorded ratio. */
 export function speedGapThreshold(ratios: readonly number[], recorded: number): SpeedGapThreshold {
-  const latest = ratios.length > 0 ? ratios[ratios.length - 1] : recorded;
-  const floor = SPEED_GAP_FLOOR * latest;
+  const level = ratios.length > 0 ? medianRatio(ratios) : recorded;
+  const floor = SPEED_GAP_FLOOR * level;
   const bound = predictionLowerBound(ratios);
-  return { latest, floor, bound, lower: Math.max(floor, bound?.lower ?? 0) };
+  return { level, floor, bound, lower: Math.max(floor, bound?.lower ?? 0) };
 }

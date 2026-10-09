@@ -93,31 +93,38 @@ export const SPEED_MAX_SAMPLE_REPEATS = 1000;
 /**
  * Tracked gaps (bench/parity-gaps.json) keep the speed ratios of the latest CI-measured runs per row. A tracked row
  * fails when its median speed ratio is below what that history predicts (the lower edge of a one-sided Student's t
- * prediction bound, bench/speed-history.ts) or below a fixed share of its latest recorded median, whichever is higher.
+ * prediction bound, bench/speed-history.ts) or below a fixed share of the median of that history, whichever is higher.
  */
 export const SPEED_HISTORY_MAX_POINTS = 10;
-/** Fewer points than this and there is no prediction bound; the fixed share of the latest median is the only limit. */
+/** Fewer points than this and there is no prediction bound; the fixed share of the median is the only limit. */
 export const SPEED_HISTORY_MIN_POINTS = 3;
 /** One-sided confidence of the prediction bound. The t quantiles in bench/speed-history.ts are for this level only. */
 export const SPEED_HISTORY_CONFIDENCE = 0.99;
 /**
- * A tracked row fails when its median falls below this share of its latest recorded median, whatever the spread of its
- * history. The prediction bound alone admits a large slowdown once a history spans a step or a noisy week; this floor is
- * the limit of the damage. The spread of CI runs of unchanged code is about 7 percent (standard deviation of the log
- * ratio of one run, 0.10 between two runs over 32 rows of two nightly runs), and no row of those two runs fell by more
- * than 6.2 percent, so a drop of 15 percent is outside what the runner does to unchanged code on most nights.
+ * A tracked row fails when its median falls below this share of the median of its history (since its last step), or of its
+ * recorded ratio while it has no history, whatever the spread of that history. The prediction bound alone admits a large
+ * slowdown once a history is noisy; this floor is the limit of the damage.
+ *
+ * It is set from the runner, not from a wish. Over three nightly runs of this branch (32 rows each, 64 consecutive
+ * changes of rows whose code did not change) the log ratio moved by a standard deviation of 0.152 from one run to the next,
+ * 0.108 for one run; the worst fall between two runs was 31 percent (0.69 times), the fifth percentile 24 percent, and
+ * a whole run can be fast or slow together (the second run was 15 to 30 percent above both others on every CPU-bound row).
+ * A first draft of 85 percent of the latest point failed 7 of 17 gated rows on the next run of unchanged code. 65 percent
+ * lies under the worst fall seen against a history median, and still fails a halving of a speed.
  */
-export const SPEED_GAP_FLOOR = 0.85;
+export const SPEED_GAP_FLOOR = 0.65;
 /**
  * Smallest spread (standard deviation of the log ratios) the step test assumes of a history, so a history of near-equal
  * points does not call every small rise a step. It is the per-run spread measured on the runner (see SPEED_GAP_FLOOR).
  */
-export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.07;
+export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.11;
 /**
  * A run this many times above the geometric mean of a history is a step: a speed-up that landed on main, after which the
- * older points describe code that no longer exists. The largest rise between two runs of unchanged code was 1.33 times.
+ * older points describe code that no longer exists. A run of unchanged code rose by as much as 1.33 times over the run
+ * before and 1.53 times over the history it joined; the speed-ups that did land (AVIF through the reference library,
+ * archive streaming, OCR in bands) were 1.65 times or more.
  */
-export const SPEED_STEP_FACTOR = 1.4;
+export const SPEED_STEP_FACTOR = 1.6;
 /** Branch whose nightly and push runs may extend a speed history. */
 export const DEFAULT_BRANCH = 'main';
 /** Workflow events of the default branch that may extend a speed history. */

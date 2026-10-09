@@ -12,7 +12,7 @@ import { appendSpeedHistory, isStepUp, predictionLowerBound, sinceLastStep, spee
 
 /**
  * The tracked-gap rules added after the first review of the gate: a history restarts at a step (a speed-up that
- * landed), a tracked row never falls below a fixed share of its latest recorded median whatever the history's spread,
+ * landed), a tracked row never falls below a fixed share of its history's median whatever the spread,
  * and a history only takes runs of the default branch (or one named branch). Every expected number below is worked out
  * from the constants named in the test, not read back from the code under test.
  */
@@ -21,10 +21,10 @@ const at = (day: number): string => `2026-10-${String(day).padStart(2, '0')}T02:
 const points = (...ratios: number[]): { ratio: number; at: string }[] => ratios.map((ratio, index) => ({ ratio, at: at(index + 1) }));
 
 describe('the policy constants', () => {
-  it('floor a tracked row at 85 percent of its latest median and call a 40 percent jump a step', () => {
-    expect(SPEED_GAP_FLOOR).toBe(0.85);
-    expect(SPEED_STEP_FACTOR).toBe(1.4);
-    expect(SPEED_HISTORY_MIN_LOG_SPREAD).toBe(0.07);
+  it('floor a tracked row at 65 percent of the median of its history and call a 60 percent jump a step', () => {
+    expect(SPEED_GAP_FLOOR).toBe(0.65);
+    expect(SPEED_STEP_FACTOR).toBe(1.6);
+    expect(SPEED_HISTORY_MIN_LOG_SPREAD).toBe(0.11);
     expect(DEFAULT_BRANCH).toBe('main');
   });
 });
@@ -34,22 +34,22 @@ describe('recognising a step in a speed history', () => {
     expect(isStepUp([], 0.9)).toBe(false);
   });
 
-  it('calls a jump of 1.4 times the geometric mean a step, with one or two points as well', () => {
-    expect(isStepUp([0.5], 0.69)).toBe(false);
-    expect(isStepUp([0.5], 0.71)).toBe(true);
-    // geometric mean of 0.4 and 0.9 is 0.6; 1.4 * 0.6 = 0.84
-    expect(isStepUp([0.4, 0.9], 0.83)).toBe(false);
-    expect(isStepUp([0.4, 0.9], 0.85)).toBe(true);
+  it('calls a jump of 1.6 times the geometric mean a step, with one or two points as well', () => {
+    expect(isStepUp([0.5], 0.79)).toBe(false);
+    expect(isStepUp([0.5], 0.81)).toBe(true);
+    // geometric mean of 0.4 and 0.9 is 0.6; 1.6 * 0.6 = 0.96
+    expect(isStepUp([0.4, 0.9], 0.95)).toBe(false);
+    expect(isStepUp([0.4, 0.9], 0.97)).toBe(true);
     // a drop is never a step: it is the regression the gate is there to catch
     expect(isStepUp([0.5, 0.5], 0.05)).toBe(false);
   });
 
-  it('calls a run above the prediction interval of a full history a step even under 1.4 times its mean', () => {
-    // Flat history of ten at 0.5: the spread is lifted to 0.07, t(0.99, 9) = 2.821438, factor sqrt(1.1):
-    // upper edge = 0.5 * exp(2.821438 * 0.07 * 1.048809) = 0.5 * 1.23 = 0.615
+  it('calls a run above the prediction interval of a full history a step even under 1.6 times its mean', () => {
+    // Flat history of ten at 0.5: the spread is lifted to 0.11, t(0.99, 9) = 2.821438, factor sqrt(1.1):
+    // upper edge = 0.5 * exp(2.821438 * 0.11 * 1.048809) = 0.5 * 1.385 = 0.6924
     const flat = Array<number>(10).fill(0.5);
-    expect(isStepUp(flat, 0.61)).toBe(false);
-    expect(isStepUp(flat, 0.62)).toBe(true);
+    expect(isStepUp(flat, 0.69)).toBe(false);
+    expect(isStepUp(flat, 0.7)).toBe(true);
   });
 
   it('keeps a history of nearly equal points from calling every small rise a step', () => {
@@ -92,12 +92,18 @@ describe('keeping the points since the last step', () => {
 describe('the lowest median a tracked row may have', () => {
   it('is the floor alone while the history is too short for a bound, taken from the recorded ratio when there are no points', () => {
     const none = speedGapThreshold([], 1.48);
-    expect(none.latest).toBe(1.48);
+    expect(none.level).toBe(1.48);
     expect(none.bound).toBeNull();
-    expect(none.lower).toBeCloseTo(0.85 * 1.48, 12);
+    expect(none.lower).toBeCloseTo(0.65 * 1.48, 12);
+    // two points: the level is their geometric mean, sqrt(0.9 * 0.5)
     const two = speedGapThreshold([0.9, 0.5], 0.5);
-    expect(two.latest).toBe(0.5);
-    expect(two.lower).toBeCloseTo(0.425, 12);
+    expect(two.level).toBeCloseTo(Math.sqrt(0.45), 12);
+    expect(two.lower).toBeCloseTo(0.65 * Math.sqrt(0.45), 12);
+  });
+
+  it('takes the level from the median of the history, so one lucky run does not set it', () => {
+    // median of [0.5, 0.52, 0.9] is 0.52, not the latest 0.9
+    expect(speedGapThreshold([0.5, 0.52, 0.9], 0.9).level).toBe(0.52);
   });
 
   it('is the prediction bound when the history is quiet enough that the bound is above the floor', () => {
@@ -106,23 +112,23 @@ describe('the lowest median a tracked row may have', () => {
     expect(bound).not.toBeNull();
     const threshold = speedGapThreshold(quiet, 0.83);
     expect(threshold.lower).toBeCloseTo(bound?.lower as number, 12);
-    expect(threshold.lower).toBeGreaterThan(0.85 * 0.83);
+    expect(threshold.lower).toBeGreaterThan(0.65 * Math.sqrt(0.81 * 0.82));
   });
 
   it('is the floor when the history is so noisy that its bound would admit a large slowdown', () => {
     const noisy = [0.3, 0.5, 0.4, 0.6];
-    // the 99 percent bound of this history is about 0.096, a slowdown of more than 80 percent from the latest 0.6
+    // the 99 percent bound of this history is about 0.096, a slowdown of more than 75 percent from its median 0.447
     expect(predictionLowerBound(noisy)?.lower).toBeCloseTo(0.0957, 3);
-    expect(speedGapThreshold(noisy, 0.6).lower).toBeCloseTo(0.51, 12);
+    expect(speedGapThreshold(noisy, 0.6).lower).toBeCloseTo(0.65 * Math.sqrt(0.4 * 0.5), 12);
   });
 
-  it('never lets any of the bounds of the shipped gap file fall under 85 percent of the latest recorded median', () => {
+  it('never lets any of the bounds of the shipped gap file fall under 65 percent of the median of its history', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     for (const gap of shipped.gaps) {
       if (gap.ratio === null) continue;
       const history = (gap.history ?? []).map((point) => point.ratio);
       const threshold = speedGapThreshold(history, gap.ratio);
-      expect(threshold.lower, gap.id).toBeGreaterThanOrEqual(0.85 * threshold.latest - 1e-12);
+      expect(threshold.lower, gap.id).toBeGreaterThanOrEqual(0.65 * threshold.level - 1e-12);
     }
   });
 
@@ -194,26 +200,35 @@ describe('judging a tracked row by its median', () => {
     );
   });
 
-  it('holds a noisy history to 85 percent of its latest median', () => {
-    // the 99 percent bound of this history is 0.286; the floor 0.85 * 0.47 = 0.3995 is what binds
-    const gaps = gapsWith([0.38, 0.46, 0.5, 0.42, 0.47], 0.47);
-    expect(verdictOf(speed({ ratioMedian: 0.4 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
-    expect(verdictOf(speed({ ratioMedian: 0.39 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-    expect(verdictOf(speed({ ratioMedian: 0.39 }), gaps).detail).toMatch(/^speed ratio 0\.39 \[0\.4, 0\.9\] over 7 pairs; tracked \(issue #685\), but its median 0\.39 is below 85% of the latest recorded median 0\.47 \(0\.3995\), which is above the 99% one-sided prediction bound 0\.2\d* over the last 5 CI runs: it got slower than its history$/);
+  it('holds a noisy history to 65 percent of its median', () => {
+    // the 99 percent bound of this history is 0.0957; the floor 0.65 * sqrt(0.4 * 0.5) = 0.2907 is what binds
+    const gaps = gapsWith([0.3, 0.5, 0.4, 0.6], 0.6);
+    expect(verdictOf(speed({ ratioMedian: 0.3 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+    expect(verdictOf(speed({ ratioMedian: 0.28 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+    expect(verdictOf(speed({ ratioMedian: 0.28 }), gaps).detail).toMatch(
+      /^speed ratio 0\.28 \[0\.4, 0\.9\] over 7 pairs; tracked \(issue #685\), but its median 0\.28 is below 65% of the median 0\.4472\d* of its last 4 CI runs \(0\.290\d*\), which is above the 99% one-sided prediction bound 0\.09\d* over the last 4 CI runs: it got slower than its history$/
+    );
+  });
+
+  it('does not fail a row that falls back after one lucky run, which an 85 percent floor on the latest point did', () => {
+    // history 0.66, 0.69, 0.585, 0.69 ... a fast runner on the last night lifts the latest point to 0.69; the next night's 0.55 is normal
+    const gaps = gapsWith([0.5719, 0.5913, 0.6092, 0.6903], 0.69);
+    expect(verdictOf(speed({ ratioMedian: 0.556 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
   });
 
   it.each([[[]], [[0.46]], [[0.46, 0.46]]])('judges a row with the history %j by the floor instead of letting any slowdown pass', (history) => {
     const gaps = gapsWith(history, 0.46);
     expect(verdictOf(speed({ ratioMedian: 0.07, ratioHigh: 0.1 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-    // 0.85 * 0.46 = 0.391
-    expect(verdictOf(speed({ ratioMedian: 0.4 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
-    expect(verdictOf(speed({ ratioMedian: 0.39 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+    // 0.65 * 0.46 = 0.299
+    expect(verdictOf(speed({ ratioMedian: 0.3 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
+    expect(verdictOf(speed({ ratioMedian: 0.29 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
   });
 
   it('counts the median of a run that was unstable at the cap against the floor', () => {
     const gaps = gapsWith([], 1.48);
+    // 0.65 * 1.48 = 0.962
     expect(verdictOf(speed({ unstableAtCap: true, ratioMedian: 1.5, ratioLow: 0.8, ratioHigh: 1.7 }), gaps)).toMatchObject({ outcome: 'pass' });
-    expect(verdictOf(speed({ unstableAtCap: true, ratioMedian: 1.2, ratioLow: 0.5, ratioHigh: 1.7 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+    expect(verdictOf(speed({ unstableAtCap: true, ratioMedian: 0.9, ratioLow: 0.5, ratioHigh: 1.7 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
   });
 
   it('still reports a tracked row that now passes the normal rule as at parity', () => {

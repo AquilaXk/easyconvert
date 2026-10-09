@@ -231,7 +231,7 @@ describe('the known gaps', () => {
   });
 
   it('does not fail a tracked row for a drop inside the run-to-run noise that a fixed percentage would have caught', () => {
-    // 0.41 is 11 percent under the 0.46 the fixed rule recorded, yet inside the spread of a noisy history and above 85 percent of the latest 0.47.
+    // 0.41 is 11 percent under the 0.46 the fixed rule recorded, yet inside the spread of a noisy history and above 65 percent of its median 0.46.
     const noisy: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.47, note: 'LZMA decode speed', history: history(0.38, 0.46, 0.5, 0.42, 0.47) }] };
     const verdict = evaluateParity(report([speed(XZ, { ratioLow: 0.38, ratioHigh: 0.5, ratioMedian: 0.41 })]), noisy);
     expect(verdict.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
@@ -244,16 +244,17 @@ describe('the known gaps', () => {
     expect(failureLines(verdict)[0]).toMatch(/^BELOW REFERENCE compression\/mixed\.xz->tar\/throughput: .*got slower than its history.*known gap, issue #487/);
   });
 
-  it('holds a tracked row whose history has fewer than three runs to 85 percent of its latest median', () => {
+  it('holds a tracked row whose history has fewer than three runs to 65 percent of its median', () => {
     for (const points of [[], [0.46], [0.46, 0.46]]) {
       const short: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed', history: history(...points) }] };
       const slow = evaluateParity(report([speed(XZ, { ratioLow: 0.05, ratioHigh: 0.1, ratioMedian: 0.07 })]), short);
       expect(slow.verdict).toBe('fail');
       expect(slow.rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-      const near = evaluateParity(report([speed(XZ, { ratioLow: 0.3, ratioHigh: 0.5, ratioMedian: 0.4 })]), short);
+      const near = evaluateParity(report([speed(XZ, { ratioLow: 0.3, ratioHigh: 0.5, ratioMedian: 0.31 })]), short);
       expect(near.verdict).toBe('pass');
       expect(near.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
-      expect(near.rows[0].detail).toContain(`${points.length} of the 3 CI-measured runs a bound needs: judged by 85% of the latest recorded median 0.46`);
+      const basis = points.length === 0 ? 'its recorded ratio 0.46' : `the median 0.46 of its last ${points.length} CI runs`;
+      expect(near.rows[0].detail).toContain(`${points.length} of the 3 CI-measured runs a bound needs: judged by 65% of ${basis} (0.299)`);
       expect(near.summary).toMatchObject({ fail: 0, tracked: 1 });
     }
     const noHistory: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed' }] };

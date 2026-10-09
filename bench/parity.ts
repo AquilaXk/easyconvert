@@ -142,7 +142,8 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
     const threshold = speedGapThreshold(tracked.history, tracked.recorded);
     const share = `${show(SPEED_GAP_FLOOR * 100)}%`;
     const confidence = `${show(SPEED_HISTORY_CONFIDENCE * 100)}%`;
-    const floor = `${share} of the latest recorded median ${show(threshold.latest)} (${show(threshold.floor)})`;
+    const basis = tracked.history.length > 0 ? `the median ${show(threshold.level)} of its last ${tracked.history.length} CI runs` : `its recorded ratio ${show(threshold.level)}`;
+    const floor = `${share} of ${basis} (${show(threshold.floor)})`;
     const bound = threshold.bound;
     let limit: string;
     if (bound === null) {

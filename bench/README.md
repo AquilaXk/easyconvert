@@ -139,7 +139,7 @@ own name.
   by #640 and still fail).
 - *A speed row that is not listed* has to pass the sign-test rule outright.
 - *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when its median gets
-  slower than its own history predicts or falls 15 percent under its latest recorded median (next section). A tracked row that now passes the normal rule is reported as
+  slower than its own history predicts or falls 35 percent under the median of its history (next section). A tracked row that now passes the normal rule is reported as
   "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
   interval lower bound at or above 0.97 in the same job, unchanged.
 - *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
@@ -166,16 +166,19 @@ continuous benchmarking (`bench/speed-history.ts`):
   The interval of the job's own pairs decides only whether the row passes the normal rule; its upper end, which for a
   heavy row can be a single lucky pair, is not used.
 - **The floor.** The bound alone admits a large slowdown whenever a history is noisy, so a tracked row also fails when
-  its median is below `SPEED_GAP_FLOOR` (0.85) times its latest recorded median, whichever limit is higher. Run-to-run
-  spread of unchanged code on the runner is about 7 percent (a log standard deviation of 0.10 between two runs over 32
-  rows, with no row falling by more than 6.2 percent), so 15 percent leaves room for the runner and none for a slowdown.
+  its median is below `SPEED_GAP_FLOOR` (0.65) times the median of its history since the last step, whichever limit is
+  higher. The number comes from the runner: over three nightly runs of unchanged code the log ratio of a row moved by a
+  standard deviation of 0.108 per run, the worst fall between two runs was 31 percent and the fifth percentile 24 percent,
+  and a whole run is fast or slow together. A floor of 85 percent of the latest point failed 7 of 17 rows on the next
+  run, so the level is the history's median (one lucky run does not set it) and the share is 65 percent, which still
+  fails a halving of a speed.
 - With fewer than `SPEED_HISTORY_MIN_POINTS` (3) runs there is no bound, and the floor is the only limit: a row with no
-  history is held to 85 percent of its recorded `ratio`. A run that ended undecided at the cap counts the same way, by its
+  history is held to 65 percent of its recorded `ratio`. A run that ended undecided at the cap counts the same way, by its
   median; the pass line of 0.97 is not used for a tracked row.
 - **A history restarts at a step.** A speed-up that lands on main puts the older points on the wrong side of a code
-  change, and their spread then measures the change, not the runner. A run more than `SPEED_STEP_FACTOR` (1.4) times the
+  change, and their spread then measures the change, not the runner. A run more than `SPEED_STEP_FACTOR` (1.6) times the
   geometric mean of the history, or above the upper edge of its 99 percent prediction interval (the spread no lower than
-  `SPEED_HISTORY_MIN_LOG_SPREAD`, 0.07), is a step up: the history restarts at that run. A drop never restarts it.
+  `SPEED_HISTORY_MIN_LOG_SPREAD`, 0.11), is a step up: the history restarts at that run. A drop never restarts it.
   `bench:refresh-speed -- --reseed --write` applies this to the histories on file.
 - Each point keeps the commit its report was measured at.
 - A tracked row's `ratio` field is the latest point rounded down, kept for display and for the gap note.
