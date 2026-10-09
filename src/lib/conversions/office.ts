@@ -5858,10 +5858,10 @@ async function convertXlsxSource(
   if (tgt === 'tsv') {
     let tsvContent: string;
     if (allSheets.length <= 1) {
-      tsvContent = primaryRows.map((r) => r.join('\t')).join(lineEnding);
+      tsvContent = primaryRows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     } else {
       tsvContent = allSheets
-        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.join('\t')).join(lineEnding))
+        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding))
         .join(lineEnding + lineEnding);
     }
     const buffer = Buffer.from(tsvContent, 'utf-8');
@@ -8560,7 +8560,7 @@ export async function convertOdsSource(
   // ODS -> TSV
   if (tgt === 'tsv') {
     const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
-    const tsv = rows.map((r) => r.join('\t')).join(lineEnding);
+    const tsv = rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     const buffer = Buffer.from(tsv, 'utf-8');
     return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
   }
@@ -8584,7 +8584,8 @@ export async function convertOdsSource(
 
   // ODS -> XLSX
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
@@ -8872,7 +8873,7 @@ const delimitedLayout = (delimiter: string): XlsTextLayout => ({
   head: '',
   rowSeparator: '\n',
   tail: '',
-  renderRow: (cells) => cells.join(delimiter),
+  renderRow: (cells) => cells.map((cell) => formatCsvCell(cell, delimiter)).join(delimiter),
 });
 
 /** The layout of `JSON.stringify(rows, null, 2)` for an array of non-empty rows of strings. */
@@ -9209,7 +9210,8 @@ export async function convertXlsSource(
   const rows = sheet.toRows(tgt === 'pdf' ? PDF_TEXT_LIMIT : GRID_LIMIT);
 
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
