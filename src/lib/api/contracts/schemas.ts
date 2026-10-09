@@ -16,7 +16,11 @@ export const PdfWatermarkOptionsSchema = {
     type: { type: 'string', enum: ['text', 'image'] },
     text: { type: 'string', description: 'Watermark text.' },
     fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-    fontColor: { type: 'string', description: 'Hex or RGB color string.' },
+    fontColor: {
+      type: 'string',
+      pattern: '^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\\(\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*\\))$',
+      description: 'Text colour as `#rgb`, `#rrggbb` or `rgb(r,g,b)`. Any other value is a 400.',
+    },
     fontFamily: { type: 'string', description: 'Font family name.' },
     image: { type: 'string', description: 'Base64 image data or URI.' },
     imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },

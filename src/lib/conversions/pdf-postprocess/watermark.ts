@@ -15,38 +15,32 @@ import {
   PdfWatermarkPosition,
   PdfWatermarkLayer,
   PdfPostprocessError,
+  UnsupportedOptionError,
 } from '../../types';
 
+const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+const RGB_COLOR = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i;
+const CHANNEL_MAX = 255;
+const DEFAULT_WATERMARK_GRAY = 0.5;
+
+/**
+ * The colour of a text watermark: `#rgb`, `#rrggbb` or `rgb(r,g,b)`; neutral gray when none is given. A value that is
+ * not one of these (or has a channel above 255) is refused, not replaced by gray.
+ */
 function parseRgbColor(colorStr?: string) {
-  if (!colorStr) {
-    return rgb(0.5, 0.5, 0.5); // Default neutral gray
+  if (colorStr === undefined) return rgb(DEFAULT_WATERMARK_GRAY, DEFAULT_WATERMARK_GRAY, DEFAULT_WATERMARK_GRAY);
+  const str = colorStr.trim();
+  const hex = HEX_COLOR.exec(str);
+  if (hex) {
+    const digits = hex[1].length === 3 ? [...hex[1]].map((digit) => digit + digit).join('') : hex[1];
+    const channel = (index: number): number => Number.parseInt(digits.slice(index * 2, index * 2 + 2), 16) / CHANNEL_MAX;
+    return rgb(channel(0), channel(1), channel(2));
   }
-  const str = colorStr.trim().toLowerCase();
-  if (str.startsWith('#')) {
-    const hex = str.slice(1);
-    let step = 0;
-    if (hex.length === 3) {
-      step = 1;
-    } else if (hex.length === 6) {
-      step = 2;
-    }
-    if (step > 0) {
-      const getVal = (idx: number) => {
-        const seg = step === 1 ? hex[idx] + hex[idx] : hex.slice(idx * 2, idx * 2 + 2);
-        return Number.parseInt(seg, 16) / 255;
-      };
-      return rgb(getVal(0), getVal(1), getVal(2));
-    }
+  const channels = RGB_COLOR.exec(str)?.slice(1, 4).map((value) => Number.parseInt(value, 10));
+  if (channels && channels.every((value) => value <= CHANNEL_MAX)) {
+    return rgb(channels[0] / CHANNEL_MAX, channels[1] / CHANNEL_MAX, channels[2] / CHANNEL_MAX);
   }
-  const rgbMatch = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(str);
-  if (rgbMatch) {
-    return rgb(
-      Number.parseInt(rgbMatch[1], 10) / 255,
-      Number.parseInt(rgbMatch[2], 10) / 255,
-      Number.parseInt(rgbMatch[3], 10) / 255
-    );
-  }
-  return rgb(0.5, 0.5, 0.5);
+  throw new UnsupportedOptionError(`The watermark fontColor "${colorStr}" is not a #rgb, #rrggbb or rgb(r,g,b) colour.`);
 }
 
 function parseImageBuffer(imageSource: Buffer | string): { buffer: Buffer; format: 'png' | 'jpeg' } {
