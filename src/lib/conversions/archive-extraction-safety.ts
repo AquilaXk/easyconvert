@@ -417,6 +417,9 @@ function occupyPath(occupied: Set<string>, rawPath: string): void {
   }
 }
 
+/** A name that ends this way names a directory in every writer; a file entry carrying it is a disguised directory header. */
+const TRAILING_SEPARATOR_PATTERN = /[\\/]$/;
+
 function assertSafeEntryPath(rawPath: string): void {
   const problem = entryPathProblem(rawPath);
   if (problem === 'invalid-entry-name') {
@@ -471,6 +474,9 @@ export function assertSafeArchiveListing(
     }
     if (entry.isSpecial) {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
+    }
+    if (!entry.isDirectory && TRAILING_SEPARATOR_PATTERN.test(entry.path)) {
+      throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains a file entry whose name ends in a path separator.');
     }
     occupyPath(occupied, entry.path);
     if (occupied.size > limits.MAX_FILES) {

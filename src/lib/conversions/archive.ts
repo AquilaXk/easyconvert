@@ -892,6 +892,7 @@ export interface TarEntryHeaderSpec {
   size: number | bigint;
   mtime?: Date;
   mode?: number;
+  /** Whether the entry is a directory; when absent, a trailing slash in `filename` decides. A file never ends with a slash. */
   directory?: boolean;
 }
 
@@ -1016,7 +1017,10 @@ function normalizeTarWriteName(filename: string, directory: boolean): string {
  * @internal exported so oversized (>= 8 GiB) entries can be verified without allocating their body.
  */
 export function buildTarEntryHeaders(spec: TarEntryHeaderSpec): Buffer {
-  const directory = spec.directory === true || spec.filename.endsWith('/');
+  if (spec.directory === false && spec.filename.endsWith('/')) {
+    throw tarWriteError(`file entry '${spec.filename}' ends with a slash, which names a directory`);
+  }
+  const directory = spec.directory ?? spec.filename.endsWith('/');
   const fullPath = normalizeTarWriteName(spec.filename, directory);
   const size = directory ? 0 : spec.size;
   if (typeof size === 'number' ? !Number.isSafeInteger(size) || size < 0 : size < 0n) {
