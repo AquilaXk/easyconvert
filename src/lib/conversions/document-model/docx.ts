@@ -47,6 +47,7 @@ const NS_PIC = 'http://schemas.openxmlformats.org/drawingml/2006/picture';
 const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 const RTL_LETTER = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
 const LINE_OR_TAB = /[\n\t]/;
+const LINE_OR_TAB_ALL = /[\n\t]/g;
 
 const twips = (points: number): number => Math.round(points * TWIPS_PER_POINT);
 const attr = (value: string | number): string => escapeXmlText(String(value));
@@ -58,7 +59,7 @@ const attr = (value: string | number): string => escapeXmlText(String(value));
 /** Text with tabs and line breaks as the elements Word expects. */
 function textElements(text: string): string {
   const parts = text.split(LINE_OR_TAB);
-  const breaks = text.match(LINE_OR_TAB) ?? [];
+  const breaks = text.match(LINE_OR_TAB_ALL) ?? [];
   let xml = '';
   parts.forEach((part, index) => {
     if (part !== '') xml += `<w:t xml:space="preserve">${escapeXmlText(part)}</w:t>`;
