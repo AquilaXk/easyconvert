@@ -13,7 +13,6 @@ import { buildHwpCompoundFile } from '../src/lib/conversions/hwp';
 import { parseHtmlToPdfBlocks } from '../src/lib/conversions/html-blocks';
 import { executeWorkerConversion } from '../src/worker/engines';
 import {
-  ComplexScriptRequiresNativeEngineError,
   ConversionFailedError,
   EngineUnavailableError,
 } from '../src/lib/types';
@@ -544,14 +543,9 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     expectNoBranding(result.buffer);
   });
 
-  it('keeps refusing Arabic in the in-process writer, which cannot shape it', async () => {
-    const error = await convertFile(buildSource('hwp', [ARABIC_LINE]), 'hwp', 'pdf', {}, 'arabic.hwp').then(
-      () => null,
-      (err: unknown) => err
-    );
-    expect(error).toBeInstanceOf(ComplexScriptRequiresNativeEngineError);
-    expect((error as Error).name).toBe('ComplexScriptRequiresNativeEngineError');
-    expect((error as Error).message).toMatch(/\(Arabic\)/);
+  oracleTest('shapes Arabic in the in-process writer and returns it in logical order', ['pdftotext', 'pdffonts'], async () => {
+    const result = await convertFile(buildSource('hwp', [ARABIC_LINE]), 'hwp', 'pdf', {}, 'arabic.hwp');
+    expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(ARABIC_LINE));
   });
 });
 
@@ -1157,14 +1151,12 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     expect({ invoked: fs.existsSync(svgMarker), name: (error as Error)?.name }).toEqual({ invoked: false, name: 'EngineUnavailableError' });
   });
 
-  it('reports a LibreOffice failure on complex-script text as EngineUnavailableError (503)', async () => {
-    const { error } = await settle(
-      withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
-        executeWorkerConversion(Buffer.from(ARABIC_LINE, 'utf-8'), 'txt', 'pdf', {}, 'arabic.txt')
-      )
+  oracleTest('shapes complex-script text in-process when LibreOffice fails on it', ['pdftotext'], async () => {
+    const result = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () =>
+      executeWorkerConversion(Buffer.from(ARABIC_LINE, 'utf-8'), 'txt', 'pdf', {}, 'arabic.txt')
     );
-    expect((error as Error)?.name).toBe('EngineUnavailableError');
-    expect((error as EngineUnavailableError).engineName).toBe('soffice');
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(normalizeText(pdfText(result.buffer))).toBe(normalizeText(ARABIC_LINE));
   });
 
   oracleTest('an explicit orientation keeps non-complex-script HTML in-process on landscape pages', ['pdfinfo', 'pdftotext'], async () => {

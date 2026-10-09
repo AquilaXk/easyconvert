@@ -16,7 +16,11 @@ export const PdfWatermarkOptionsSchema = {
     type: { type: 'string', enum: ['text', 'image'] },
     text: { type: 'string', description: 'Watermark text.' },
     fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-    fontColor: { type: 'string', description: 'Hex or RGB color string.' },
+    fontColor: {
+      type: 'string',
+      pattern: '^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\\(\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*\\))$',
+      description: 'Text colour as `#rgb`, `#rrggbb` or `rgb(r,g,b)`. Any other value is a 400.',
+    },
     fontFamily: { type: 'string', description: 'Font family name.' },
     image: { type: 'string', description: 'Base64 image data or URI.' },
     imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
@@ -295,6 +299,14 @@ export const ConversionOptionsSchema = {
     preserveTables: {
       type: 'boolean',
       description: 'Maintain table structures during text or markup extraction.',
+    },
+    language: {
+      type: 'string',
+      minLength: 2,
+      maxLength: 16,
+      pattern: '^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$',
+      description:
+        'BCP 47 language of the document content (`en`, `ko`, `zh-Hant`), written to the language metadata of EPUB output. Left out, the language of the source is used, or recognised from the text when the script or common words make it clear; otherwise it is recorded as undetermined (`und`). A value that is not a language tag is a 400.',
     },
     ocrEnabled: {
       type: 'boolean',

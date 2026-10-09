@@ -1,8 +1,8 @@
 name: Nightly
 
 # Checks that need a quiet machine or a long time, kept out of the pull request gate (ci.yml): the timing-ratio
-# suites (*.perf.test.ts), the quality benchmark and the dependency licence gate. A failure opens one issue labelled
-# `nightly-regression`, or adds a comment to the one that is already open.
+# suites (*.perf.test.ts), the quality benchmark, the real-world corpus run and the dependency licence gate. A failure
+# opens one issue labelled `nightly-regression`, or adds a comment to the one that is already open.
 on:
   schedule:
     # 02:37 UTC every day, off the busy top of the hour.
@@ -272,9 +272,93 @@ jobs:
             echo "skipped: package.json has no licenses:check script yet"
           fi
 
+  # Real-world files through every advertised pair (bench/realworld): zero crashes, hangs and bad outputs, and no growth
+  # of any pair's typed-refusal rate past bench/realworld/baseline.json. Files are fetched by digest and cached per shard.
+  realworld:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: realworld-${{ matrix.shard }}-
+
+      - name: Run the corpus shard
+        run: npm run bench:realworld -- run --shard ${{ matrix.shard }}/10 --out realworld-shard-${{ matrix.shard }}.json
+
+      - name: Upload the shard report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: realworld-shard-${{ matrix.shard }}
+          path: realworld-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  realworld-gate:
+    needs: [realworld]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download the shard reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: realworld-shard-*
+          path: realworld-shards
+          merge-multiple: true
+
+      - name: Merge and gate
+        shell: bash
+        run: npm run bench:realworld -- merge --out realworld-results realworld-shards/*.json
+
+      - name: Upload the corpus report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: realworld-results
+          path: realworld-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place.
   report:
-    needs: [perf, bench, bench-parity-quality, bench-parity-speed, licenses]
+    needs: [perf, bench, bench-parity-quality, bench-parity-speed, licenses, realworld, realworld-gate]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10

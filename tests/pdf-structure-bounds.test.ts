@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { extractStructuredTextFromPdf } from '../src/lib/conversions/pdf-utils';
+import { PdfDocument, PdfStructureError } from '../src/lib/conversions/pdf-document';
+
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
 import { SCALING_FACTOR, settle, expectNoHangOnInput } from './helpers/timing';
 
@@ -32,6 +32,18 @@ const catalog: CraftObject[] = [
 
 vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
+/** What the structure reader hands to the text extraction: the decoded content of every stream the pages draw. */
+function drawnContent(pdf: Buffer): string {
+  const parts: string[] = [];
+  new PdfDocument(pdf).contentStreams((content) => parts.push(content));
+  return parts.join('\n');
+}
+
+/** The literal strings the content shows with Tj, in order. */
+function shownStrings(content: string): string[] {
+  return [...content.matchAll(/\(([^)]*)\) Tj/g)].map((match) => match[1]);
+}
+
 function timed<T>(run: () => T): { value?: T; err?: unknown; ms: number } {
   const started = Date.now();
   try {
@@ -59,7 +71,7 @@ describe('object stream entries are read in time linear in the stream', () => {
       };
       const { largeResult } = await expectNoHangOnInput(
         `unterminated ${opener}`,
-        (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
+        (pdf: Buffer) => settle(() => drawnContent(pdf)),
         objectStreamPdf(OBJSTM_ENTRIES)
       );
       expect(largeResult.ok, 'the object stream is read without error').toBe(true);
@@ -80,7 +92,7 @@ describe('object stream entries are read in time linear in the stream', () => {
       objectStream,
       { id: 4, dict: '/Filter /FlateDecode', stream: flate(textContent('PACKED-PAGE-TREE')) },
     ];
-    expect(extractStructuredTextFromPdf(buildPdf(objects, 1).buffer).text).toBe('PACKED-PAGE-TREE');
+    expect(shownStrings(drawnContent(buildPdf(objects, 1).buffer))).toEqual(['PACKED-PAGE-TREE']);
   });
 });
 
@@ -94,7 +106,7 @@ describe('an object stream cannot make the reader tokenise or allocate its whole
     };
     const pdf = buildPdf([...catalog, objectStream], 1).buffer;
     const rssBefore = process.resourceUsage().maxRSS;
-    const { err } = timed(() => extractStructuredTextFromPdf(pdf));
+    const { err } = timed(() => drawnContent(pdf));
     expect(err).toBeInstanceOf(PdfStructureError);
     expect((err as Error).message).toMatch(/\/First/);
     expect((process.resourceUsage().maxRSS - rssBefore) / 1024).toBeLessThan(300);
@@ -106,7 +118,7 @@ describe('an object stream cannot make the reader tokenise or allocate its whole
       dict: '/Type /ObjStm /N 1 /First 4000 /Filter /FlateDecode',
       stream: flate('2 0 << >>'),
     };
-    const err = timed(() => extractStructuredTextFromPdf(buildPdf([...catalog, objectStream], 1).buffer)).err;
+    const err = timed(() => drawnContent(buildPdf([...catalog, objectStream], 1).buffer)).err;
     expect(err).toBeInstanceOf(PdfStructureError);
     expect((err as Error).message).toMatch(/\/First/);
   });
@@ -123,23 +135,15 @@ describe('a document defines a bounded number of objects', () => {
   }
 
   it('refuses more objects than the cap in time linear in the file (hang guard; growth ratio in the perf suite)', async () => {
-    const { largeResult } = await expectNoHangOnInput(
-      'objects past the cap',
-      (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
-      tinyObjects(OBJECT_CAP + 1)
-    );
+    const { largeResult } = await expectNoHangOnInput('objects past the cap', (pdf: Buffer) => settle(() => drawnContent(pdf)), tinyObjects(OBJECT_CAP + 1));
     if (largeResult.ok) throw new Error('a file with more objects than the cap was accepted');
     expect(largeResult.error).toBeInstanceOf(PdfStructureError);
     expect((largeResult.error as Error).message).toMatch(/more than 500000 objects/);
   });
 
   it('reads a file with no root and many objects that name no type in linear time (hang guard; growth ratio in the perf suite)', async () => {
-    const { largeResult } = await expectNoHangOnInput(
-      'objects without a type',
-      (pdf: Buffer) => extractStructuredTextFromPdf(pdf),
-      tinyObjects(OBJECT_CAP)
-    );
-    expect(largeResult.text).toBe('');
+    const { largeResult } = await expectNoHangOnInput('objects without a type', (pdf: Buffer) => drawnContent(pdf), tinyObjects(OBJECT_CAP));
+    expect(largeResult).toBe('');
   });
 });
 
@@ -166,12 +170,8 @@ describe('an indirect /Length costs a constant per stream', () => {
     const modest = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS / SCALING_FACTOR);
     const huge = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS);
     expect(modest.length).toBe(huge.length);
-    const { largeResult } = await expectNoHangOnInput(
-      'indirect length target',
-      (pdf: Buffer) => extractStructuredTextFromPdf(pdf),
-      huge
-    );
-    expect(largeResult.text).toBe('LENGTH-LIES');
+    const { largeResult } = await expectNoHangOnInput('indirect length target', (pdf: Buffer) => drawnContent(pdf), huge);
+    expect(shownStrings(largeResult)).toEqual(['LENGTH-LIES']);
   });
 
   it('honours an indirect /Length that is an integer', () => {
@@ -187,6 +187,6 @@ describe('an indirect /Length costs a constant per stream', () => {
         raw: `<< /Length 6 0 R >>\nstream\n${payload}${textContent('LENGTH-HONOURED')}endstream`,
       },
     ];
-    expect(extractStructuredTextFromPdf(buildPdf(objects, 1).buffer).text).toBe('LENGTH-HONOURED');
+    expect(shownStrings(drawnContent(buildPdf(objects, 1).buffer))).toEqual(['LENGTH-HONOURED']);
   });
 });

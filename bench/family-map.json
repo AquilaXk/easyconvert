@@ -60,7 +60,11 @@
     },
     {
       "families": ["document"],
-      "match": "^src/lib/conversions/(document|office|markdown|markdown-pdf|html-[^/]*|text-input|text-wrap|css-references|ctl|hwp[^/]*|cfbf-writer)\\.ts$|^src/lib/conversions/office/|^src/worker/libreoffice-pool\\.ts$"
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|source-model|text-input|text-wrap|css-references|ctl|hwp[^/]*|cfbf-writer|xml-tree)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/libreoffice-pool\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^src/lib/conversions/(pdf-text-[^/]*|pdf-winansi-tounicode|pdf-office|pdf-blocks|pdf-fonts)\\.ts$|^src/lib/conversions/(pdf-layout|text-shaping)/"
     },
     {
       "families": ["pdf-ops"],

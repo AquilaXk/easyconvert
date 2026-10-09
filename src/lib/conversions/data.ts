@@ -25,7 +25,6 @@ import {
 } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { assertNoComplexScript } from './ctl';
 import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
@@ -1098,9 +1097,6 @@ async function renderDataToPdf(table: DataTable, title: string): Promise<Buffer>
     throw new ConversionFailedError('The dataset has no rows to draw in a PDF.');
   }
   const strings = tableStrings(table);
-  for (const text of [title, ...strings.flat()]) {
-    assertNoComplexScript(text, 'Pure-TS Data to PDF');
-  }
   return renderPdfTables(
     [{ rows: strings.map((row) => row.map((text) => ({ text }))), headerRows: 1 }],
     { title, orientation: 'landscape' }

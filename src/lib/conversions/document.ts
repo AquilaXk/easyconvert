@@ -23,27 +23,17 @@ import {
   exportAlto,
   parseHocr,
   parseAlto,
-  inspectPdfPagesTextDensity,
   evaluatePageOcrDecisions,
   assembleCombinedOcrResult,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
-import {
-  extractTextFromPdf,
-  extractEmbeddedImageFromPdf,
-  extractStructuredTextFromPdf,
-  parseToUnicodeCMap,
-  extractPdfFontCMaps,
-  recursiveXyCut,
-  type PdfTextBlock,
-  type PdfToUnicodeCMap,
-  type XyCutOptions,
-} from './pdf-utils';
-import { analyzePdfPagesWithGeometry } from './pdf-text-geometry';
+import { PdfTextGeometryError } from './pdf-text-types';
+import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
+import { documentToHtml } from './document-model/html';
+import { documentToMarkdown } from './document-model/markdown';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { characterWeightedConfidence } from './ocr-calibration';
-import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeTextInput } from './text-input';
@@ -64,12 +54,6 @@ function pdfOcrMetadata(results: Map<number, OcrResult>): Record<string, unknown
 }
 
 export {
-  extractTextFromPdf,
-  extractEmbeddedImageFromPdf,
-  extractStructuredTextFromPdf,
-  parseToUnicodeCMap,
-  extractPdfFontCMaps,
-  recursiveXyCut,
   analyzeDocumentLayout,
   extractTextFromOdt,
   extractTextFromDoc,
@@ -79,7 +63,7 @@ export {
   parseHocr,
   parseAlto,
 };
-export type { DrawingMlShape, TableBorder, PdfTextBlock, PdfToUnicodeCMap, XyCutOptions, DlaBoundingBox, DlaBlock, DlaPageLayout };
+export type { DrawingMlShape, TableBorder, DlaBoundingBox, DlaBlock, DlaPageLayout };
 
 /**
  * Strips LaTeX macro commands
@@ -93,14 +77,9 @@ export function extractTextFromTex(tex: string): string {
     .trim();
 }
 
-/**
- * Reading a text layer is best effort for conversions that do not export its geometry: a document whose
- * text layer cannot be read is handled as a scanned one. An engine that cannot run at all is the service's
- * failure and is reported, not hidden behind that fallback.
- */
-function treatUnreadableTextLayerAsScanned(error: unknown): PdfPageAnalysis[] {
-  if (error instanceof EngineUnavailableError) throw error;
-  return [];
+/** The text of a PDF (its text layer, in reading order); see `extractPdfDocument` for the failures. */
+export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<string> {
+  return (await extractPdfDocument(pdfBuffer)).text;
 }
 
 export async function convertDocument(
@@ -201,30 +180,39 @@ export async function convertDocument(
 
   // PDF as source format
   if (src === 'pdf') {
-    const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
-    let extractedText = structuredPdf.text;
+    assertPdfHeader(inputBuffer);
     let ocrInfo: { text?: string; confidence?: number | null } = {};
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
-    // Inspect each page for existing text layer density to enable Smart Multi-Page OCR
+    // The text layer, its structure, the per-page density (Smart Multi-Page OCR) and, for hOCR and ALTO, the word
+    // geometry of pages that keep their own text come from one pass over the document. Fonts with no Unicode mapping
+    // are refused unless OCR is on, which then recognizes those pages.
     const ocrMode = options.ocrMode || 'skip_text';
     const densityThreshold = options.ocrDensityThreshold || 15;
-    let pageAnalyses: PdfPageAnalysis[];
-    // Word geometry of pages that keep their own text layer, read in the same pass as the density analysis.
-    let textLayerResults = new Map<number, OcrResult>();
-    if ((tgt === 'hocr' || tgt === 'alto') && ocrMode !== 'force' && ocrMode !== 'redo') {
-      const read = await analyzePdfPagesWithGeometry(inputBuffer, densityThreshold);
-      pageAnalyses = read.analyses;
-      textLayerResults = read.geometry;
-    } else {
-      pageAnalyses = await inspectPdfPagesTextDensity(inputBuffer, densityThreshold).catch(treatUnreadableTextLayerAsScanned);
+    const geometryWanted = (tgt === 'hocr' || tgt === 'alto') && ocrMode !== 'force' && ocrMode !== 'redo';
+    let read: ReadPdfResult | null = null;
+    try {
+      read = await readPdfDocument(inputBuffer, {
+        densityThreshold,
+        geometry: geometryWanted ? 'text-pages' : 'none',
+        onUnmapped: options.ocrEnabled ? 'omit' : 'throw',
+        images: tgt === 'html' || tgt === 'md',
+      });
+    } catch (err) {
+      // A document pdfjs cannot read is recognized as displayed when OCR was asked for; otherwise it is refused.
+      if (!(options.ocrEnabled && err instanceof PdfTextGeometryError)) throw err;
     }
+    const structuredPdf: ExtractedPdfDocument | null = read?.extracted ?? null;
+    let extractedText = structuredPdf?.text ?? '';
+    const pageAnalyses: PdfPageAnalysis[] = read?.analyses ?? [];
+    // Word geometry of pages that keep their own text layer.
+    const textLayerResults = read?.geometry ?? new Map<number, OcrResult>();
 
     const { pageDecisions, pagesNeedingOcr } = evaluatePageOcrDecisions(pageAnalyses, ocrMode);
 
     // If scanned document or OCR is requested or target is hocr/alto
-    const isScanned = !structuredPdf.hasTextLayer || !extractedText || extractedText.trim() === '';
+    const isScanned = extractedText.trim() === '';
     const shouldRunOcr = options.ocrEnabled || isScanned || tgt === 'hocr' || tgt === 'alto';
 
     if (shouldRunOcr && (pagesNeedingOcr.length > 0 || (pageAnalyses.length === 0 && (options.ocrEnabled || isScanned)))) {
@@ -352,15 +340,6 @@ export async function convertDocument(
           }
         }
       }
-    } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {
-      dlaBoxes = structuredPdf.blocks.map((b) => ({
-        x: b.x,
-        y: b.y,
-        width: Math.max(1, b.width),
-        height: Math.max(1, b.height),
-        text: b.text,
-        fontSize: b.fontSize,
-      }));
     }
 
     // The boxes of several scanned pages all start at the top of their own page: analysed together they interleave
@@ -387,6 +366,20 @@ export async function convertDocument(
         ocrConfidence: ocrInfo.confidence,
         ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
       };
+    }
+
+    // Pages that keep their own text are written from the structure the layout analysis found (headings, lists,
+    // tables, columns); the layout of recognized pages is that of the OCR boxes, below.
+    const structured = structuredPdf !== null && pageOcrResults.size === 0 && extractedText.trim() !== '' ? structuredPdf.model : null;
+
+    if (tgt === 'html' && structured) {
+      const buffer = Buffer.from(documentToHtml(structured, baseName), 'utf-8');
+      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    }
+
+    if (tgt === 'md' && structured) {
+      const buffer = Buffer.from(`${documentToMarkdown(structured)}\n`, 'utf-8');
+      return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
     }
 
     if (tgt === 'html') {
@@ -772,8 +765,6 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  assertNoComplexScript(text, `Pure-TS ${sourceType.toUpperCase()} to PDF conversion`);
-
   let blocks: PdfBlock[];
   let title = baseName;
   if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {

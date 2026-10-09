@@ -7,7 +7,8 @@ import { characterErrorRatePercent, normalizeOcrText } from '../tests/helpers/oc
 
 export { characterErrorRatePercent };
 
-const WORD_PATTERN = /[\p{L}\p{N}]+/gu;
+/** A word is a run of letters and digits; each Han or kana character is a word of its own, since those scripts have no spaces. */
+const WORD_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}])[\p{L}\p{N}])+/gu;
 
 function words(text: string): string[] {
   return normalizeOcrText(text).toLowerCase().match(WORD_PATTERN) ?? [];

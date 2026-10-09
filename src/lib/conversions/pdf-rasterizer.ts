@@ -192,6 +192,15 @@ async function paintedImageObject(pdfjs: any, page: any, opList: any, index: num
   return null;
 }
 
+/** PNG of a decoded pdfjs image object (grayscale, RGB or RGBA), or undefined when the object holds no pixels. */
+export async function pdfjsImageToPng(imgObj: unknown): Promise<{ png: Buffer; width: number; height: number } | undefined> {
+  const image = await imageObjectToPng(imgObj, 0, PNG_DEFAULT_DENSITY);
+  return image ? { png: image.buffer, width: image.width, height: image.height } : undefined;
+}
+
+/** Density written into PNGs made for documents: the image's own, as pixels per inch of the page unit. */
+const PNG_DEFAULT_DENSITY = 72;
+
 /** pdfjs image kinds (ImageKind): 1 is 1-bit gray, 2 is RGB, 3 is RGBA. */
 const IMAGE_KIND_GRAYSCALE_1BPP = 1;
 const IMAGE_KIND_RGB_24BPP = 2;

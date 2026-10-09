@@ -4,6 +4,9 @@ import path from 'node:path';
 
 export const REPO_ROOT = path.resolve(__dirname, '..');
 export const CORPUS_DIR = path.join(__dirname, 'corpus');
+/** Authored documents the document family converts (their provenance and hand-written structure live with the tests). */
+export const DOCUMENT_FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'document');
+export const HWP_FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'hwp');
 export const BASELINE_PATH = path.join(__dirname, 'baseline.json');
 export const RESULTS_DIR = path.join(REPO_ROOT, 'bench-results');
 
@@ -14,6 +17,8 @@ export const DEFAULT_RUNS = 5;
 export const MAX_RUNS = 25;
 /** Slow encoders (video, office) use at most this many timing runs so the whole benchmark stays short. */
 export const HEAVY_RUNS_CAP = 3;
+/** Calls of an in-process conversion timed back to back per sample, so a conversion of milliseconds is not decided by scheduler jitter. */
+export const IN_PROCESS_REPEATS = 5;
 /** Untimed runs before the measured ones, so module loading and worker start-up are not in the first sample. */
 export const WARMUP_RUNS = 1;
 

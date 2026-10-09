@@ -122,6 +122,8 @@ export interface SpeedPlan {
   maxPairs: number;
   step: number;
   warmup: number;
+  /** Back-to-back calls of our side timed per sample (the sample is the mean per call); 1 when omitted. */
+  oursRepeats?: number;
   tolerance?: number;
   confidence?: number;
 }
@@ -151,20 +153,27 @@ export async function adaptiveSpeedTiming(
     throw new SpeedSampleError(`the cap must be from ${plan.initialPairs} to ${MAX_INTERVAL_PAIRS} pairs, got ${plan.maxPairs}`);
   }
   if (!Number.isInteger(plan.step) || plan.step < 1) throw new SpeedSampleError(`the step must be a positive integer, got ${plan.step}`);
+  const repeats = plan.oursRepeats ?? 1;
+  if (!Number.isInteger(repeats) || repeats < 1) throw new SpeedSampleError(`oursRepeats must be a positive integer, got ${repeats}`);
   for (let i = 0; i < plan.warmup; i++) {
     await ours();
     await reference();
   }
   const oursMs: number[] = [];
   const referenceMs: number[] = [];
+  // A side that finishes in milliseconds is timed over several calls so scheduler jitter does not decide the pair.
+  const oursSample = async (): Promise<number> =>
+    (await timed(async () => {
+      for (let repeat = 0; repeat < repeats; repeat++) await ours();
+    }, now)) / repeats;
   const collect = async (count: number): Promise<void> => {
     for (let i = 0; i < count; i++) {
       if (oursMs.length % 2 === 0) {
-        oursMs.push(await timed(ours, now));
+        oursMs.push(await oursSample());
         referenceMs.push(await timed(reference, now));
       } else {
         referenceMs.push(await timed(reference, now));
-        oursMs.push(await timed(ours, now));
+        oursMs.push(await oursSample());
       }
     }
   };

@@ -99,7 +99,6 @@ import {
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
 import {
-  LIBREOFFICE_POOL_ENGINE_NAME,
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
   resolveLibreOfficeFilter,
@@ -1152,6 +1151,11 @@ async function countPagesOfReadablePdf(
   throw new Error('Unable to determine PDF page count: invalid or corrupted PDF structure.');
 }
 
+/** Raster density of a PDF page image: the default and the range the API accepts. */
+const PDF_RASTER_DEFAULT_DPI = 150;
+const PDF_RASTER_MIN_DPI = 72;
+const PDF_RASTER_MAX_DPI = 600;
+
 function buildPdftoppmArgs(
   tgt: string,
   options: WorkerEngineOptions,
@@ -1160,7 +1164,10 @@ function buildPdftoppmArgs(
   inputPath: string,
   prefix: string
 ): string[] {
-  const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
+  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
+  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
+    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
+  }
   const args: string[] = ['-r', String(dpi)];
 
   if (tgt === 'png') {
@@ -2103,7 +2110,7 @@ const PAGE_SIZE_CSS: Readonly<Record<'portrait' | 'landscape', string>> = {
 type PageOrientation = 'portrait' | 'landscape';
 
 interface TextPdfRoute {
-  /** Text has Arabic, Hebrew, Indic or another script the in-process writer cannot shape. */
+  /** Text has Arabic, Hebrew, Indic or another complex script: LibreOffice lays it out first, the in-process shaper is the fallback. */
   readonly complexScript: boolean;
   /** LibreOffice renders this input first when installed. */
   readonly preferNative: boolean;
@@ -2149,16 +2156,7 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
 }
 
 /**
- * Whether LibreOffice is not installed, as opposed to installed but failing. The daemon pool reports
- * its own failures (a readiness probe that fails or hangs) as EngineUnavailableError under its own
- * engine name; those are LibreOffice failures, not a missing renderer.
- */
-function isLibreOfficeMissing(err: unknown): err is EngineUnavailableError {
-  return err instanceof EngineUnavailableError && err.engineName !== LIBREOFFICE_POOL_ENGINE_NAME;
-}
-
-/**
- * Decides how text and HTML go to PDF. Complex-script text needs LibreOffice. HTML prefers it for
+ * Decides how text and HTML go to PDF. Complex-script text prefers LibreOffice and is shaped in-process without it. HTML prefers it for
  * its full structure, and so do CJK Markdown and HWP; plain CJK text stays in-process when the
  * installed fonts cover it. With an explicit orientation, everything but complex-script text stays
  * in-process, which applies the orientation itself. Both engines draw with the installed fonts, so
@@ -2294,7 +2292,6 @@ export async function executeWorkerConversion(
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
   const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation);
-  const isComplexText = Boolean(textPdfRoute?.complexScript);
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
@@ -2317,14 +2314,6 @@ export async function executeWorkerConversion(
       if (isNativeTextPdf && !options.signal?.aborted) {
         // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
         const message = err instanceof Error ? err.message : String(err);
-        if (isComplexText && isLibreOfficeMissing(err)) {
-          throw new ComplexScriptRequiresNativeEngineError(
-            `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
-          );
-        }
-        if (isComplexText) {
-          throw new EngineUnavailableError('soffice', `LibreOffice failed to render complex-script text (${src} to pdf): ${message}`);
-        }
         if (options.pdfStandard) {
           throw new EngineUnavailableError('soffice', `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}': ${message}`);
         }

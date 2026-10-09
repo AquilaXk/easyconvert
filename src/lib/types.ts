@@ -135,6 +135,8 @@ export interface ConversionOptions {
   password?: string;
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
+  /** BCP 47 language of the document content, written to the language metadata of targets that carry it (EPUB). */
+  language?: string;
   ocrEnabled?: boolean;
   ocrLanguage?:
     | 'auto'
@@ -910,6 +912,29 @@ export class ComplexScriptRequiresNativeEngineError extends EngineMissingError {
   }
 }
 
+/**
+ * Text of a script that needs shaping contains a character no installed font covers. The font set is part of the
+ * request's environment and not a missing engine, so it answers HTTP 400 (through `status`) rather than 503.
+ */
+export class FontCoverageError extends ConversionFailedError {
+  readonly status = 400;
+  /** The first uncovered code point. */
+  readonly codePoint: number;
+  constructor(message: string, codePoint: number) {
+    super(message);
+    this.name = 'FontCoverageError';
+    this.codePoint = codePoint;
+  }
+}
+
+/** Text to shape is longer than the shaping limits allow (one paragraph, or all glyphs of one document). HTTP 413. */
+export class ShapingLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShapingLimitError';
+  }
+}
+
 export class InvalidSheetIndexError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
@@ -1098,6 +1123,18 @@ export interface PdfAConversionResult {
   buffer: Buffer;
   pdfaValidated: boolean;
   conformanceLevel: string;
+}
+
+/**
+ * A text watermark the request cannot get: a font family that is not installed or has no glyph for the text, a
+ * text over the length cap, or a line break. The request is wrong, so it is a client error (400), not a missing
+ * engine (503) and not a post-processing failure of a good document (422).
+ */
+export class WatermarkFontError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WatermarkFontError';
+  }
 }
 
 export class PdfPostprocessError extends Error {

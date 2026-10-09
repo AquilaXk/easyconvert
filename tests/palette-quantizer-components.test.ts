@@ -284,10 +284,13 @@ describe('GIF writer', () => {
     const expected = expectedRgba(palette, indices, transparent);
     expect(decoded).toHaveLength(expected.length);
     // ffmpeg leaves the colour of a transparent pixel unspecified: alpha must agree everywhere, colour where opaque.
+    // Mismatching byte offsets are collected in one pass; one expect per pixel took seconds on the larger cases.
+    const mismatches: number[] = [];
     for (let i = 0; i < expected.length; i += 4) {
-      expect(decoded[i + 3]).toBe(expected[i + 3]);
-      if (expected[i + 3] === 255) expect([...decoded.subarray(i, i + 3)]).toEqual([...expected.subarray(i, i + 3)]);
+      const channels = expected[i + 3] === 255 ? 4 : 1;
+      for (let c = 4 - channels; c < 4; c += 1) if (decoded[i + c] !== expected[i + c]) mismatches.push(i + c);
     }
+    expect(mismatches.slice(0, 8)).toEqual([]);
   });
 
   const pillow = spawnSync('python3', ['-I', '-c', 'import PIL.GifImagePlugin'], { encoding: 'utf-8' }).status === 0;

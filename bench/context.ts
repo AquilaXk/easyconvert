@@ -52,8 +52,11 @@ export interface FamilyContext {
   refCache: ReferenceCache;
   /** Whether the case runs in this invocation: every case, or the `--quick` subset of its family. */
   inScope: (family: Family, caseName: string) => boolean;
-  /** Interleaved timing of `ours` against `reference`: fixed runs, or adaptive paired runs in a parity run. */
-  time: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight) => Promise<InterleavedTiming | AdaptiveTiming>;
+  /**
+   * Interleaved timing of `ours` against `reference`: fixed runs, or adaptive paired runs in a parity run. A side that
+   * finishes in milliseconds passes `oursRepeats` > 1 to time that many back-to-back calls per sample.
+   */
+  time: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats?: number) => Promise<InterleavedTiming | AdaptiveTiming>;
   /** Scratch directory of this run; removed by the runner. */
   work: string;
   log: (message: string) => void;
@@ -101,12 +104,12 @@ export function createContext(init: ContextInit): FamilyContext {
   return {
     ...rest,
     inScope: (family, caseName) => caseInScope(quick, family, caseName),
-    time: (rawOurs, reference, weight) => {
+    time: (rawOurs, reference, weight, oursRepeats = 1) => {
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
       if (init.parity) {
-        return adaptiveSpeedTiming(ours, reference, weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN);
+        return adaptiveSpeedTiming(ours, reference, { ...(weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN), oursRepeats });
       }
-      return interleavedTiming(ours, reference, weight === 'heavy' ? init.heavyRuns : init.runs, init.warmup);
+      return interleavedTiming(ours, reference, weight === 'heavy' ? init.heavyRuns : init.runs, init.warmup, oursRepeats);
     },
     plan: (required, context, options) => planTools(required, context, init.resolve, init.strict, options),
     corpusPath: (name) => path.join(CORPUS_DIR, name),

@@ -822,6 +822,45 @@ async function verifyImages(images: readonly PendingImage[]): Promise<void> {
   }
 }
 
+/** Raster formats a document reader hands over that are redrawn as PNG because a PDF cannot carry them. */
+const REDRAWN_IMAGE_FORMATS: ReadonlySet<string> = new Set(['gif', 'tiff', 'webp', 'heif']);
+
+/**
+ * One image of a document for the PDF writer, from the bytes of the source file. A JPEG a PDF can carry is embedded
+ * byte for byte after one verifying decode; other PNG and JPEG images are decoded once into 8-bit sRGB with their
+ * orientation applied; GIF, TIFF and WebP are redrawn as PNG (first frame). Larger than MAX_IMAGE_PIXELS, or in any
+ * other format (BMP, SVG), is a typed error naming `label`.
+ */
+export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promise<PdfRasterImage> {
+  let metadata: Metadata;
+  try {
+    metadata = await sharp(bytes, { limitInputPixels: false }).metadata();
+  } catch (err) {
+    throw new ConversionFailedError(`${label} could not be read: ${(err as Error).message}`);
+  }
+  const format = metadata.format ?? 'unknown';
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+  if (!ALLOWED_IMAGE_FORMATS.has(format) && !REDRAWN_IMAGE_FORMATS.has(format)) throw new EngineUnavailableError('soffice', `${label} is in ${format} format, which the in-process PDF renderer cannot draw; rendering it needs the native LibreOffice engine`);
+  if (width <= 0 || height <= 0) throw new ConversionFailedError(`${label} declares no pixel size`);
+  if (width * height > MAX_IMAGE_PIXELS) {
+    throw new ConversionFailedError(`${label} is ${width}x${height} pixels, above the ${MAX_IMAGE_PIXELS}-pixel limit of the in-process PDF renderer`);
+  }
+  try {
+    const decoder = sharp(bytes, { limitInputPixels: MAX_IMAGE_PIXELS });
+    if (format === 'jpeg' && canEmbedJpegAsIs(bytes, metadata)) {
+      await decoder.raw().toBuffer();
+      return { data: bytes, widthPx: width, heightPx: height };
+    }
+    const pipeline = decoder.rotate().toColourspace('srgb');
+    const encoded = format === 'jpeg' ? pipeline.jpeg({ quality: LOSSLESS_JPEG_QUALITY, chromaSubsampling: '4:4:4' }) : pipeline.png();
+    const { data, info } = await encoded.toBuffer({ resolveWithObject: true });
+    return { data, widthPx: info.width, heightPx: info.height };
+  } catch (err) {
+    throw new ConversionFailedError(`${label} could not be decoded: ${(err as Error).message}`);
+  }
+}
+
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
  * engine draws (embedded media, form fields, SVG, MathML, non-PNG/JPEG images) and
