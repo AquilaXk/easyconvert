@@ -85,9 +85,9 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       expect(worker.cap_add).toBeUndefined();
       expect(worker.cap_drop).toContain('ALL');
 
-      // Secure tmpfs mounts with noexec and nosuid
+      // Secure tmpfs mounts with noexec, nosuid and nodev
       expect(worker.tmpfs).toBeDefined();
-      expect(worker.tmpfs).toContain('/tmp:size=8g,noexec,nosuid');
+      expect(worker.tmpfs).toContain('/tmp:size=8g,noexec,nosuid,nodev');
       expect(worker.tmpfs).toContain('/home/easyconvert:size=512m,nosuid,nodev');
 
       // PID limits and Ulimits

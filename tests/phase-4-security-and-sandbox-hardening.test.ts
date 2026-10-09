@@ -230,10 +230,10 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       // Values come from the parsed service: comments in the file mention some of these words.
       expect(worker.init).toBe(true);
       expect(worker.cap_drop).toEqual(['ALL']);
-      expect(worker.security_opt).toEqual(['no-new-privileges:true']);
+      expect(worker.security_opt).toEqual(['no-new-privileges:true', 'seccomp=./docker/seccomp-worker.json']);
       expect(worker.read_only).toBe(true);
-      // /tmp is a size-capped tmpfs that cannot run binaries or carry setuid files.
-      expect(worker.tmpfs).toContain('/tmp:size=8g,noexec,nosuid');
+      // /tmp is a size-capped tmpfs that cannot run binaries, carry setuid files or hold device nodes.
+      expect(worker.tmpfs).toContain('/tmp:size=8g,noexec,nosuid,nodev');
       expect(worker.volumes).not.toContain('worker-tmp:/tmp');
     });
   });
