@@ -280,8 +280,8 @@ describe('colour sources', () => {
   );
 
   oracleTest(
-    'a Display P3 source keeps its colours: the pixels are the sRGB values ImageMagick computes from the embedded profile',
-    ['avifenc', 'avifdec'],
+    'a Display P3 source keeps its colours: the pixels are the sRGB values littlecms (Pillow) computes from the embedded profile',
+    ['avifenc', 'avifdec', 'python3'],
     async () => {
       const patches = [[250, 20, 20], [20, 200, 40], [30, 60, 240], [128, 128, 128]];
       const raw = Buffer.alloc(patches.length * PATCH * PATCH * 3);
@@ -290,9 +290,12 @@ describe('colour sources', () => {
       }
       const rawOptions = { raw: { width: patches.length * PATCH, height: PATCH, channels: 3 } } as const;
       const p3 = await sharp(raw, rawOptions).withIccProfile('p3').png().toBuffer();
-      const srgbProfile = (await sharp(await sharp(raw, rawOptions).withIccProfile('srgb').png().toBuffer()).metadata()).icc as Buffer;
-      const profilePath = writeIn('srgb.icc', srgbProfile);
-      const expected = runConvert([writeIn('p3-in.png', p3), '-profile', profilePath, '-depth', '8', 'rgb:-']);
+      const profilePath = writeIn('p3.icc', (await sharp(p3).metadata()).icc as Buffer);
+      // The PNG holds the patches re-encoded in Display P3. Pillow reads those stored numbers as they are (the image library
+      // would already convert them to sRGB on load) and littlecms converts them with the embedded profile.
+      const python = requireOracleTool('python3');
+      const stored = execFileSync(python, ['-I', '-c', "import sys; from PIL import Image; sys.stdout.buffer.write(Image.open(sys.argv[1]).convert('RGB').tobytes())", writeIn('p3-in.png', p3)], { maxBuffer: raw.length * 2 });
+      const expected = execFileSync(python, ['-I', path.join(__dirname, 'helpers', 'icc_oracle.py'), profilePath], { input: stored, maxBuffer: stored.length * 2 });
       const avif = writeIn('p3.avif', (await convertImage(p3, 'avif', { quality: 100 }, 'p3.png', 'png')).buffer);
       expect(avifInfo(avif)).toMatchObject({ icc: 'Absent', primaries: 1 });
       const decodedPath = path.join(workDir, 'p3-decoded.png');
@@ -303,10 +306,10 @@ describe('colour sources', () => {
         const at = ((PATCH >> 1) * width + patch * PATCH + (PATCH >> 1)) * 3;
         for (let c = 0; c < 3; c += 1) expect(Math.abs(decoded[at + c] - expected[at + c]), `patch ${patch} channel ${c}`).toBeLessThanOrEqual(COLOUR_TOLERANCE);
       }
-      // The profile mattered: some converted value differs from the stored one by more than the tolerance.
-      const stored = patches.flat();
-      const shifts = patches.flatMap((_, patch) => stored.slice(patch * 3, patch * 3 + 3).map((value, c) => Math.abs(expected[(((PATCH >> 1) * width) + patch * PATCH + (PATCH >> 1)) * 3 + c] - value)));
-      expect(Math.max(...shifts)).toBeGreaterThan(COLOUR_TOLERANCE);
+      // The profile mattered: some converted value differs from the stored number by more than the tolerance.
+      const centre = (patch: number): number => (((PATCH >> 1) * width) + patch * PATCH + (PATCH >> 1)) * 3;
+      const shifts = patches.flatMap((_, patch) => [0, 1, 2].map((c) => Math.abs(expected[centre(patch) + c] - stored[centre(patch) + c])));
+      expect(Math.max(...shifts)).toBeGreaterThan(COLOUR_TOLERANCE * 4);
     },
     60_000
   );
