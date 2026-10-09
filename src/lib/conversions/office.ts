@@ -26,6 +26,10 @@ import { htmlToText } from './office/html-text';
 import { decodeWindows1252 } from './office/windows-1252';
 import { EncryptedOfficeDocumentError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
+import { readDocxModel } from './docx-model';
+import { renderModelHtml } from './document-html';
+import { renderModelMarkdown, renderModelText } from './document-markdown';
+import type { DocModel } from './document-model';
 
 export { buildOpenXpsPackage };
 
@@ -734,6 +738,22 @@ async function readOdtText(input: Buffer): Promise<string> {
   return paragraphs.join(PARAGRAPH_SEPARATOR);
 }
 
+/** Targets written from the structured DOCX model. */
+const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md']);
+
+function convertDocxFromModel(model: DocModel, tgt: string, baseName: string): ConversionResult {
+  if (tgt === 'txt') {
+    const buffer = Buffer.from(renderModelText(model), 'utf-8');
+    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+  }
+  if (tgt === 'html') {
+    const buffer = Buffer.from(renderModelHtml(model, baseName), 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+  const buffer = Buffer.from(renderModelMarkdown(model), 'utf-8');
+  return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+}
+
 /**
  * DOCX Source Parser & Converter
  */
@@ -751,6 +771,13 @@ async function convertDocxSource(
 
   const xmlText = await docXmlFile.async('text');
   assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
+
+  // Documents without charts or drawing shapes are read into the structured model (styles, numbering, images,
+  // notes); the targets it serves are written from it. Documents with shapes keep the drawing-aware reader below.
+  const read = await readDocxModel(zip);
+  if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
+    return convertDocxFromModel(read.model, tgt, baseName);
+  }
 
   // Load chart relationships and parts if present
   const chartMap = new Map<string, string>();

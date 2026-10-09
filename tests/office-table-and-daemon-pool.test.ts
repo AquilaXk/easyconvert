@@ -253,7 +253,7 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       const htmlResult = await convertOffice(docxBuffer, 'docx', 'html');
       const htmlString = htmlResult.buffer.toString('utf-8');
 
-      expect(htmlString).toContain('Parent Row 1 Header<br/>Parent Subtitle Line');
+      expect(htmlString).toContain('<p>Parent Row 1 Header</p>\n<p>Parent Subtitle Line</p>');
       expect(htmlString).toContain('Nested Cell 1');
       expect(htmlString).toContain('Nested Cell 2');
     });
