@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 96 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 97 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -226,6 +226,7 @@ Generate a secret with `openssl rand -hex 32`.
 | --- | --- | --- | --- | --- |
 | `FFMPEG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FFPROBE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `AVIFENC_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `P7ZIP_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `P7Z_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `ZIP_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -247,6 +248,7 @@ Generate a secret with `openssl rand -hex 32`.
 
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
+- `AVIFENC_PATH`: Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.
 - `P7ZIP_PATH`: Path of the 7-Zip executable (`7zz`, `7z` or `7za`).
 - `P7Z_PATH`: Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.
 - `ZIP_PATH`: Path of the Info-ZIP `zip` executable.

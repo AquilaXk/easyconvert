@@ -15,8 +15,10 @@ import {
   AVIF_EFFORT,
   AVIF_TUNE,
   FALLBACK_QUALITY,
-  avifBitdepthFor,
-  avifOptionsFor,
+  avifLibraryOptionsOf,
+  avifEncoderFor,
+  avifPolicyFor,
+  type AvifEncoder,
   clampQuality,
   jpegOptionsFor,
   webpOptionsFor,
@@ -29,7 +31,14 @@ import {
 } from './image-resample';
 import { decodeIco, decodeIcns } from './ico';
 import { setAvifColour } from './avif-colour';
-import { CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
+import {
+  AVIF_ENCODER_IMAGE_LIBRARY,
+  AVIF_ENCODER_LIBRARY_CLI,
+  encodeAvifWithCli,
+  findAvifenc,
+  type AvifCicp,
+} from './avif-cli';
+import { CICP_MATRIX_BT2020_NCL, CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
 import { BT709_PRIMARIES, samePrimaries, primariesToPrimaries } from './colour-primaries';
 import { type HdrStillTarget, type ToneMapReport, NO_TONE_MAP_MESSAGE, PQ_OUTPUT_TARGETS, encodePq2020, exrNits, exrPrimaries, hdrTransferOf, holdsHdr, renderHdrStill, renderNitsAsSdr, resolveToneMap } from './hdr-image';
 import { encodeSrgb } from './hdr-tonemap';
@@ -1720,12 +1729,30 @@ function isNeutralColour(colour: { r: number; g: number; b: number } | undefined
 /** Targets whose encoder choices (chroma, effort, smart subsampling) follow the content of the picture. */
 const LOSSY_CONTENT_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
 
+/** zlib level of the PNG handed to the AVIF encoder: it is read once and thrown away, so speed matters and size does not. */
+const AVIFENC_INPUT_PNG_COMPRESSION = 1;
+/** Colour tags of an HDR AVIF: BT.2020 primaries, PQ transfer and the matching BT.2020 matrix. */
+const PQ_AVIF_CICP: AvifCicp = { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_BT2020_NCL };
+
+/** What `encodeAvifFromPipeline` returns: the file and the encoder that wrote it. */
+interface EncodedAvif {
+  buffer: Buffer;
+  encoder: AvifEncoder;
+}
+
 /**
  * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits, the most the AV1 Main
  * profile carries (the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
- * that is fully opaque is dropped instead of encoded as a second plane.
+ * that is fully opaque is dropped instead of encoded as a second plane. The reference library's encoder writes the
+ * file when it is installed (grey sources as monochrome); without it the image library does.
  */
-async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOptions, content: ContentClass): Promise<Buffer> {
+async function encodeAvifFromPipeline(
+  pipeline: Sharp,
+  options: ConversionOptions,
+  content: ContentClass,
+  keepsGrey: boolean,
+  cicp: AvifCicp | undefined
+): Promise<EncodedAvif> {
   const source = await pipeline.metadata();
   const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
   const opaque = await withoutOpaqueAlpha(pipeline);
@@ -1733,9 +1760,30 @@ async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOption
   const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
   const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
   const target = resizedDimensions(upright.width, upright.height, options);
-  const grey = source.space === 'b-w' || source.space === 'grey16';
+  const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
+  const avifenc = await findAvifenc();
+  const pixels = target.width * target.height;
+  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
+  const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
+  if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
+    const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
+    const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();
+    const buffer = await encodeAvifWithCli(avifenc, {
+      png,
+      width: target.width,
+      height: target.height,
+      quality: policy.quality,
+      effort: policy.effort,
+      bitdepth: policy.bitdepth,
+      layout: policy.layout,
+      tune: policy.tune,
+      cicp,
+      signal: options.signal,
+    });
+    return { buffer, encoder };
+  }
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
-  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, avifBitdepthFor(deep))).toBuffer();
+  return { buffer: await prepared.avif(avifLibraryOptionsOf(policy)).toBuffer(), encoder };
 }
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
@@ -2116,6 +2164,7 @@ export async function convertImage(
 
   let outputBuffer: Buffer;
   let mimeType: string;
+  let avifEncoder: AvifEncoder | undefined;
 
   try {
     switch (fmt) {
@@ -2201,11 +2250,16 @@ export async function convertImage(
         mimeType = 'image/webp';
         break;
 
-      case 'avif':
-        outputBuffer = await encodeAvifFromPipeline(pipeline, options, content);
-        if (tagsPq) outputBuffer = setAvifColour(outputBuffer, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ);
+      case 'avif': {
+        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined);
+        // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
+        // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
+        // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
+        outputBuffer = tagsPq && avif.encoder === AVIF_ENCODER_IMAGE_LIBRARY ? setAvifColour(avif.buffer, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ) : avif.buffer;
+        avifEncoder = avif.encoder;
         mimeType = 'image/avif';
         break;
+      }
 
       case 'tiff': {
         if (
@@ -2470,7 +2524,9 @@ export async function convertImage(
     filename: `${baseName}.${outExt}`,
     size: outputBuffer.length,
     isEmbeddedPreview: isEmbeddedPreview || undefined,
-    ...(toneMapReport === undefined ? {} : { metadata: { toneMap: toneMapReport } }),
+    ...(toneMapReport === undefined && avifEncoder === undefined
+      ? {}
+      : { metadata: { ...(toneMapReport === undefined ? {} : { toneMap: toneMapReport }), ...(avifEncoder === undefined ? {} : { avifEncoder }) } }),
     ...(frameSelection?.sourceFrameCount === undefined
       ? {}
       : { sourceFrameCount: frameSelection.sourceFrameCount, frameUsed: frameSelection.frameUsed }),
