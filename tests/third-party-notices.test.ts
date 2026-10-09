@@ -426,3 +426,27 @@ describe('Third-party notices generator on fixture lockfiles', () => {
     expect(output).toContain('````text\nbefore\n```\ninside\n```\nafter\n````');
   });
 });
+
+describe('worker image build context', () => {
+  /** Docker applies .dockerignore rules in order and the last matching rule decides. */
+  function excludedFromContext(file: string, rules: string[]): boolean {
+    let excluded = false;
+    for (const raw of rules) {
+      const rule = raw.trim();
+      if (!rule || rule.startsWith('#')) continue;
+      const negated = rule.startsWith('!');
+      const pattern = negated ? rule.slice(1) : rule;
+      const regex = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')}$`);
+      if (regex.test(file)) excluded = !negated;
+    }
+    return excluded;
+  }
+
+  it('sends THIRD_PARTY_NOTICES.md to the image build that copies it', () => {
+    const dockerfile = node_fs.readFileSync(node_path.join(REPO_ROOT, 'Dockerfile.worker'), 'utf8');
+    expect(dockerfile).toMatch(/^COPY THIRD_PARTY_NOTICES\.md \/licenses\/$/m);
+    const rules = node_fs.readFileSync(node_path.join(REPO_ROOT, '.dockerignore'), 'utf8').split('\n');
+    expect(excludedFromContext('README.md', rules)).toBe(true);
+    expect(excludedFromContext('THIRD_PARTY_NOTICES.md', rules)).toBe(false);
+  });
+});
