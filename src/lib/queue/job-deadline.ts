@@ -1,4 +1,5 @@
 import { tierMaxPages } from '../conversions/page-range';
+import { DEFAULT_MEDIA_TIER_MAX_MS } from '../conversions/media';
 import { getFormatByExtension } from '../registry';
 import type { ConversionOptions } from '../types';
 import type { ConversionEnginePort } from './engine-port';
@@ -205,6 +206,15 @@ export function conversionDeadlineMs(
   );
 }
 
+/**
+ * The ceiling a converter receives as `timeoutMs`. The media engines read it as the most a transcode may run, so a
+ * media conversion keeps the media maximum (`DEFAULT_MEDIA_TIER_MAX_MS`, 180 s) when the job deadline is longer: the
+ * deadline bounds the job, it never loosens the engine's own limit. Every other conversion gets the deadline.
+ */
+export function converterTimeoutMs(sourceFormat: string, targetFormat: string, deadlineMs: number): number {
+  return jobDeadlineFamily(sourceFormat, targetFormat) === 'media' ? Math.min(deadlineMs, DEFAULT_MEDIA_TIER_MAX_MS) : deadlineMs;
+}
+
 /** What an engine wrapper needs of a queue job: its attempt signal and its options. */
 export interface DeadlinedJob {
   signal: AbortSignal;
@@ -227,7 +237,7 @@ export function deadlineBoundEngine(engine: ConversionEnginePort, job: Deadlined
         input,
         sourceFormat,
         targetFormat,
-        { ...options, timeoutMs, signal: options.signal ?? job.signal },
+        { ...options, timeoutMs: converterTimeoutMs(sourceFormat, targetFormat, timeoutMs), signal: options.signal ?? job.signal },
         originalFilename
       ),
   };

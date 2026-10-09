@@ -6,7 +6,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Queue, Worker, JobTimeoutError, type Job } from '../src/lib/queue/bullmq-engine';
 import { processNodeJob } from '../src/lib/queue/node-processor';
 import { classifyJobFailure, isFinalFailure } from '../src/lib/queue/job-failure';
-import { deadlineBoundEngine } from '../src/lib/queue/job-deadline';
+import { converterTimeoutMs, deadlineBoundEngine } from '../src/lib/queue/job-deadline';
+import { DEFAULT_MEDIA_TIER_MAX_MS } from '../src/lib/conversions/media';
 import type { ConversionEnginePort, EngineResult } from '../src/lib/queue/engine-port';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { s3Storage } from '../src/lib/storage/s3-storage';
@@ -313,5 +314,57 @@ describe('a deadline is a verdict on the job, not a transient fault', () => {
     expect(err.message).toBe('Job timed out after 1500ms');
     expect(classifyJobFailure(err)).toEqual({ code: 'JobTimeoutError', status: HTTP_GATEWAY_TIMEOUT, retryable: false });
     expect(isFinalFailure({ attemptsMade: 1, opts: { attempts: 3 } }, err)).toBe(true);
+  });
+});
+
+describe('the ceiling a media engine receives is never above the media maximum', () => {
+  const MEDIA_MAX_MS = 180_000;
+  const FREE_MAX_MS = 600_000;
+  const ENTERPRISE_MAX_MS = 3_600_000;
+
+  it('is the existing media maximum of 180 s', () => {
+    expect(DEFAULT_MEDIA_TIER_MAX_MS).toBe(MEDIA_MAX_MS);
+  });
+
+  it.each([
+    ['a free media job at the free maximum', 'wav', 'mp3', FREE_MAX_MS, MEDIA_MAX_MS],
+    ['an enterprise media job at the enterprise maximum', 'mp4', 'webm', ENTERPRISE_MAX_MS, MEDIA_MAX_MS],
+    ['a media job with a deadline below the maximum', 'wav', 'mp3', 62_000, 62_000],
+    ['a media job whose deadline equals the maximum', 'wav', 'mp3', MEDIA_MAX_MS, MEDIA_MAX_MS],
+    ['a media source converted to a still image', 'mp4', 'jpg', FREE_MAX_MS, MEDIA_MAX_MS],
+    ['a document job, which is not media', 'pdf', 'txt', FREE_MAX_MS, FREE_MAX_MS],
+    ['an image job, which is not media', 'png', 'webp', ENTERPRISE_MAX_MS, ENTERPRISE_MAX_MS],
+  ])('gives %s the right ceiling', (_label, source, target, deadline, expected) => {
+    expect(converterTimeoutMs(source as string, target as string, deadline as number)).toBe(expected);
+  });
+
+  it('reaches the media engine of a queued free job as at most 180 000 ms, and leaves other jobs the full deadline', async () => {
+    const fake = createFakeEngine();
+    const { queue, worker } = startWorker('deadline-media-cap', fake.engine);
+    const done = nextEvent(worker, 'completed');
+    await queue.add('convert', jobData('clip', { sourceFormat: 'wav', targetFormat: 'mp3', originalFilename: 'clip.wav' }), {
+      attempts: 1,
+      timeout: 600_000,
+    });
+    await done;
+    const done2 = nextEvent(worker, 'completed');
+    await queue.add('convert', jobData('plain'), { attempts: 1, timeout: 600_000 });
+    await done2;
+    expect(fake.seen.map((call) => call.options.timeoutMs)).toEqual([180_000, 600_000]);
+  });
+
+  it('keeps the 180 s ceiling for media conversions between the pair of a pipeline stage', async () => {
+    const received: number[] = [];
+    const inner: ConversionEnginePort = {
+      name: 'inner',
+      async convert(_input, _src, _tgt, options) {
+        received.push(options.timeoutMs as number);
+        return OK_RESULT;
+      },
+    };
+    const bound = deadlineBoundEngine(inner, { signal: new AbortController().signal, opts: { timeout: ENTERPRISE_MAX_MS } });
+    await bound.convert(Buffer.alloc(1), 'mp4', 'webm', {}, 'a.mp4');
+    await bound.convert(Buffer.alloc(1), 'csv', 'json', {}, 'a.csv');
+    expect(received).toEqual([MEDIA_MAX_MS, ENTERPRISE_MAX_MS]);
   });
 });

@@ -203,3 +203,30 @@ describe('a conversion that finishes inside its deadline', () => {
     expect(seen[0].signal.aborted).toBe(false);
   });
 });
+
+describe('the media ceiling on the synchronous routes', () => {
+  /** RIFF/WAVE header of an empty PCM stream: the magic bytes the spoof check reads. */
+  const WAV = Buffer.concat([
+    Buffer.from('RIFF'), Buffer.from([36, 0, 0, 0]), Buffer.from('WAVEfmt '), Buffer.from([16, 0, 0, 0, 1, 0, 1, 0, 0x44, 0xac, 0, 0, 0x88, 0x58, 1, 0, 2, 0, 16, 0]),
+    Buffer.from('data'), Buffer.from([0, 0, 0, 0]),
+  ]);
+  const MEDIA_MAX_MS = 180_000;
+
+  it.each([
+    ['POST /api/convert', '/api/convert', convertRoute],
+    ['POST /api/v1/convert', '/api/v1/convert', v1ConvertRoute],
+  ])('%s gives a free media conversion at most 180 000 ms even when the job deadline is longer', async (_label, route, call) => {
+    vi.stubEnv('JOB_DEADLINE_BASE_MS_FREE', '500000');
+    vi.stubEnv('JOB_DEADLINE_MAX_MS_FREE', '600000');
+    dispatch.mockImplementation((async (_input: unknown, _s: string, _t: string, options: Record<string, unknown>) => {
+      seen.push({ options, signal: options.signal as AbortSignal });
+      throw new Error('stop after the options are captured');
+    }) as never);
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array(WAV)], 'clip.wav', { type: 'audio/wav' }));
+    form.append('targetFormat', 'mp3');
+    await call(new NextRequest(`${BASE_URL}${route}`, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].options.timeoutMs).toBe(MEDIA_MAX_MS);
+  });
+});

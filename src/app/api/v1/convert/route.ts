@@ -3,7 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
-import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
+import { conversionDeadlineMs, converterTimeoutMs } from '@/lib/queue/job-deadline';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
@@ -372,7 +372,11 @@ export async function POST(req: NextRequest) {
         inputBuffer,
         sourceDef.id,
         targetDef.id,
-        { ...withTierPageCap(options, tierMaxPages(ownerTier)), ...limits },
+        {
+          ...withTierPageCap(options, tierMaxPages(ownerTier)),
+          ...limits,
+          timeoutMs: converterTimeoutMs(sourceDef.id, targetDef.id, limits.timeoutMs),
+        },
         file.name
       )
     );

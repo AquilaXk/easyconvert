@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { conversionDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
+import { conversionDeadlineMs, converterTimeoutMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
@@ -163,7 +163,11 @@ export async function POST(req: NextRequest) {
           inputBuffer,
           extension,
           targetFormat,
-          { ...withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), ...limits },
+          {
+            ...withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)),
+            ...limits,
+            timeoutMs: converterTimeoutMs(extension, targetFormat, limits.timeoutMs),
+          },
           file.name
         );
 

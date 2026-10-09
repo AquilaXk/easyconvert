@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
+import { conversionDeadlineMs, converterTimeoutMs } from '@/lib/queue/job-deadline';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
@@ -191,7 +191,11 @@ export async function POST(req: NextRequest) {
         inputBuffer,
         detectedDef.extension,
         tgt,
-        { ...withTierPageCap(options, tierMaxPages(auth.user?.tier)), ...limits },
+        {
+          ...withTierPageCap(options, tierMaxPages(auth.user?.tier)),
+          ...limits,
+          timeoutMs: converterTimeoutMs(detectedDef.extension, tgt, limits.timeoutMs),
+        },
         file.name
       )
     );
