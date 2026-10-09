@@ -24,6 +24,7 @@ import {
 } from './media-audio-targets';
 import {
   FfprobePath,
+  firstVideoStream,
   layoutColorTransfer,
   probeStreamLayout,
   probeAudioChannels,
@@ -36,6 +37,7 @@ import {
   VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
+import { softwareEncoderThreads } from './media-encoder-threads';
 import type { LayoutStream } from './mp4-layout';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
@@ -1094,6 +1096,14 @@ export function buildFfmpegArguments(
       assertTwoPassSupported(options, tgt, codec);
     }
 
+    // The picture the encoder receives when no filter below changes its size; undefined when one may.
+    const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !burnBitmapStream;
+    const sourcePicture = inputLayout ? firstVideoStream(inputLayout.streams) : undefined;
+    const unscaledPicture =
+      sizeUntouched && sourcePicture?.width !== undefined && sourcePicture.height !== undefined
+        ? { width: sourcePicture.width, height: sourcePicture.height }
+        : undefined;
+
     // 6. Strict Filter Graph Construction
     // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
     const videoFilters: string[] = [];
@@ -1252,6 +1262,13 @@ export function buildFfmpegArguments(
           }
           if (isH264 && videoOpts?.level) {
             outputArgs.push('-level', videoOpts.level);
+          }
+          // Both passes of a two-pass encode must agree, and an encode held to a bitrate estimates its rate worse
+          // with more threads; neither is given a count.
+          const unconstrained = bitrateControlArgs(rateControl, options, codec).length === 0;
+          const threads = passStage || !unconstrained ? undefined : softwareEncoderThreads(codec, unscaledPicture);
+          if (threads !== undefined) {
+            outputArgs.push('-threads', String(threads));
           }
         }
       } else if (codec === 'vp9') {
