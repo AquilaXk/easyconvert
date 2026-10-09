@@ -72,3 +72,6 @@ tests/fixtures/raw/.cache/
 
 # Quality benchmark reports (npm run bench:quality)
 bench-results/
+
+# Reference-side measurements cached by the parity benchmark (npm run bench:quality -- --parity)
+.bench-cache/

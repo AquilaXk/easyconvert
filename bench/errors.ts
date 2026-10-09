@@ -30,3 +30,6 @@ export class BenchArgumentError extends BenchError {}
 
 /** A conversion produced output the independent decoders reject, or output that is not the lossless round trip. */
 export class OutputIntegrityError extends BenchError {}
+
+/** A report cannot be judged for parity: a throughput row carries no speed decision, or a verdict file is malformed. */
+export class ParityInputError extends BenchError {}

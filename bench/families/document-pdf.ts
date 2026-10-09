@@ -2,10 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
-import { REPO_ROOT } from '../config';
+import { IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
-import { interleavedTiming } from '../stats';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import { readDocxStructure } from '../../tests/helpers/docx-structure';
@@ -53,6 +52,7 @@ async function oursText(pdf: Buffer, name: string): Promise<string> {
 }
 
 const runText: FamilyRunner = async (ctx) => {
+  if (!ctx.inScope('document', TEXT_CASE)) return [];
   const plan = ctx.plan(['pdftotext'], TEXT_CASE);
   if (!plan.ok) return skippedGroup('document', TEXT_CASE, TEXT_SPECS, TEXT_REFERENCE, plan);
   ctx.log(`document ${TEXT_CASE}`);
@@ -65,26 +65,30 @@ const runText: FamilyRunner = async (ctx) => {
   }));
   const referenceText = (file: string): string => runTool(pdftotext, ['-enc', 'UTF-8', file, '-']).stdout.toString('utf8');
 
-  const ours = await Promise.all(documents.map((document) => oursText(document.pdf, document.name)));
-  const reference = documents.map((document) => referenceText(document.file));
-  const score = (texts: string[], metric: (truth: string, text: string) => number): number =>
-    mean(documents.map((document, index) => metric(document.truth, texts[index])));
-
-  const rows: BenchRow[] = [
-    measuredRow('document', TEXT_CASE, SPEC.cer, score(ours, characterErrorRatePercent), score(reference, characterErrorRatePercent), TEXT_REFERENCE),
-    measuredRow('document', TEXT_CASE, SPEC.wordF1, score(ours, wordF1), score(reference, wordF1), TEXT_REFERENCE),
-  ];
-  const timing = await interleavedTiming(
-    async () => {
-      for (const document of documents) await oursText(document.pdf, document.name);
-    },
-    () => {
-      for (const document of documents) referenceText(document.file);
-    },
-    ctx.runs,
-    ctx.warmup
-  );
-  rows.push(throughputRow('document', TEXT_CASE, documents.reduce((sum, document) => sum + document.pdf.length, 0), timing, TEXT_REFERENCE));
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const ours = await Promise.all(documents.map((document) => oursText(document.pdf, document.name)));
+    const reference = documents.map((document) => referenceText(document.file));
+    const score = (texts: string[], metric: (truth: string, text: string) => number): number =>
+      mean(documents.map((document, index) => metric(document.truth, texts[index])));
+    rows.push(
+      measuredRow('document', TEXT_CASE, SPEC.cer, score(ours, characterErrorRatePercent), score(reference, characterErrorRatePercent), TEXT_REFERENCE),
+      measuredRow('document', TEXT_CASE, SPEC.wordF1, score(ours, wordF1), score(reference, wordF1), TEXT_REFERENCE)
+    );
+  }
+  if (ctx.speed) {
+    const timing = await ctx.time(
+      async () => {
+        for (const document of documents) await oursText(document.pdf, document.name);
+      },
+      () => {
+        for (const document of documents) referenceText(document.file);
+      },
+      'light',
+      IN_PROCESS_REPEATS
+    );
+    rows.push(throughputRow('document', TEXT_CASE, documents.reduce((sum, document) => sum + document.pdf.length, 0), timing, TEXT_REFERENCE));
+  }
   return rows;
 };
 
@@ -94,6 +98,7 @@ function officeImport(soffice: string, profile: string, files: string[], outDir:
 }
 
 const runStructure: FamilyRunner = async (ctx) => {
+  if (!ctx.inScope('document', STRUCTURE_CASE)) return [];
   const plan = ctx.plan(['soffice'], STRUCTURE_CASE);
   if (!plan.ok) return skippedGroup('document', STRUCTURE_CASE, STRUCTURE_SPECS, STRUCTURE_REFERENCE, plan);
   ctx.log(`document ${STRUCTURE_CASE}`);
@@ -103,43 +108,46 @@ const runStructure: FamilyRunner = async (ctx) => {
   const files = names.map((name) => path.join(STRUCTURE_FIXTURE_DIR, `${name}.pdf`));
   const truths = names.map((name) => JSON.parse(fs.readFileSync(path.join(STRUCTURE_FIXTURE_DIR, `${name}.truth.json`), 'utf8')) as StructureTruth);
 
-  const oursScores = [];
-  for (const [index, name] of names.entries()) {
-    const converted = await convertWithProject(fs.readFileSync(files[index]), 'pdf', 'docx', {}, `${name}.pdf`);
-    oursScores.push(scoreStructure(truths[index], await readDocxStructure(converted.buffer)));
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const oursScores = [];
+    for (const [index, name] of names.entries()) {
+      const converted = await convertWithProject(fs.readFileSync(files[index]), 'pdf', 'docx', {}, `${name}.pdf`);
+      oursScores.push(scoreStructure(truths[index], await readDocxStructure(converted.buffer)));
+    }
+    const referenceDir = ctx.scratch('structure-reference');
+    officeImport(soffice, profile, files, referenceDir);
+    const referenceScores = [];
+    for (const [index, name] of names.entries()) {
+      referenceScores.push(scoreStructure(truths[index], await readDocxStructure(fs.readFileSync(path.join(referenceDir, `${name}.docx`)))));
+    }
+    const ours = aggregate(oursScores);
+    const reference = aggregate(referenceScores);
+    rows.push(
+      measuredRow('document', STRUCTURE_CASE, SPEC.headingF1, ours.heading.f1, reference.heading.f1, STRUCTURE_REFERENCE),
+      measuredRow('document', STRUCTURE_CASE, SPEC.listF1, ours.list.f1, reference.list.f1, STRUCTURE_REFERENCE),
+      measuredRow('document', STRUCTURE_CASE, SPEC.tableTeds, ours.tableTeds, reference.tableTeds, STRUCTURE_REFERENCE),
+      measuredRow('document', STRUCTURE_CASE, SPEC.columnAccuracy, ours.columnAccuracy, reference.columnAccuracy, STRUCTURE_REFERENCE),
+      measuredRow('document', STRUCTURE_CASE, SPEC.paragraphCountError, ours.paragraphCountError, reference.paragraphCountError, STRUCTURE_REFERENCE),
+      measuredRow('document', STRUCTURE_CASE, SPEC.readingOrderTau, ours.readingOrderTau, reference.readingOrderTau, STRUCTURE_REFERENCE)
+    );
   }
-  const referenceDir = ctx.scratch('structure-reference');
-  officeImport(soffice, profile, files, referenceDir);
-  const referenceScores = [];
-  for (const [index, name] of names.entries()) {
-    referenceScores.push(scoreStructure(truths[index], await readDocxStructure(fs.readFileSync(path.join(referenceDir, `${name}.docx`)))));
+
+  if (ctx.speed) {
+    const timed = STRUCTURE_TIMED.map((name) => ({ name, file: path.join(STRUCTURE_FIXTURE_DIR, `${name}.pdf`) }));
+    const timing = await ctx.time(
+      async () => {
+        for (const document of timed) await convertWithProject(fs.readFileSync(document.file), 'pdf', 'docx', {}, `${document.name}.pdf`);
+      },
+      () => {
+        // One office process per document, as a user converting one file runs it.
+        for (const document of timed) officeImport(soffice, profile, [document.file], ctx.scratch('structure-timing'));
+      },
+      'heavy'
+    );
+    const bytes = timed.reduce((sum, document) => sum + fs.statSync(document.file).size, 0);
+    rows.push(throughputRow('document', STRUCTURE_CASE, bytes, timing, STRUCTURE_REFERENCE));
   }
-  const ours = aggregate(oursScores);
-  const reference = aggregate(referenceScores);
-
-  const rows: BenchRow[] = [
-    measuredRow('document', STRUCTURE_CASE, SPEC.headingF1, ours.heading.f1, reference.heading.f1, STRUCTURE_REFERENCE),
-    measuredRow('document', STRUCTURE_CASE, SPEC.listF1, ours.list.f1, reference.list.f1, STRUCTURE_REFERENCE),
-    measuredRow('document', STRUCTURE_CASE, SPEC.tableTeds, ours.tableTeds, reference.tableTeds, STRUCTURE_REFERENCE),
-    measuredRow('document', STRUCTURE_CASE, SPEC.columnAccuracy, ours.columnAccuracy, reference.columnAccuracy, STRUCTURE_REFERENCE),
-    measuredRow('document', STRUCTURE_CASE, SPEC.paragraphCountError, ours.paragraphCountError, reference.paragraphCountError, STRUCTURE_REFERENCE),
-    measuredRow('document', STRUCTURE_CASE, SPEC.readingOrderTau, ours.readingOrderTau, reference.readingOrderTau, STRUCTURE_REFERENCE),
-  ];
-
-  const timed = STRUCTURE_TIMED.map((name) => ({ name, file: path.join(STRUCTURE_FIXTURE_DIR, `${name}.pdf`) }));
-  const timing = await interleavedTiming(
-    async () => {
-      for (const document of timed) await convertWithProject(fs.readFileSync(document.file), 'pdf', 'docx', {}, `${document.name}.pdf`);
-    },
-    () => {
-      // One office process per document, as a user converting one file runs it.
-      for (const document of timed) officeImport(soffice, profile, [document.file], ctx.scratch('structure-timing'));
-    },
-    ctx.heavyRuns,
-    ctx.warmup
-  );
-  const bytes = timed.reduce((sum, document) => sum + fs.statSync(document.file).size, 0);
-  rows.push(throughputRow('document', STRUCTURE_CASE, bytes, timing, STRUCTURE_REFERENCE));
   return rows;
 };
 

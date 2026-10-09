@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -28,6 +29,7 @@ import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
 import { buildMobiFromBytes } from './helpers/mobi-builder';
 import { buildAzw4, textPdf } from './helpers/print-replica-builder';
+import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 
 /**
@@ -95,9 +97,14 @@ const CATEGORY_TIMEOUT_MS = 600_000;
 const RAW_SOURCE_TIMEOUT_MS = 900_000;
 
 /**
- * CONFORMANCE_PART=i/n runs part i of n: every registry pair belongs to exactly one part (by a stable hash
- * of `source->target`), and the checks that cover the whole registry run in part 1. CI runs the parts in
- * parallel jobs; unset, the single part 1/1 runs everything.
+ * CONFORMANCE_PART=i/n runs part i of n: every work key (a registry pair `source->target`, a RAW sensor variant,
+ * an audio target) belongs to exactly one part, and the checks that cover the whole registry run in part 1. The keys
+ * are packed into the parts by their recorded duration (.github/ci/conformance-durations.json, planned by
+ * scripts/ci-conformance-parts.mjs), with part 1 starting with the cost of the registry-wide checks; a key the plan
+ * does not list goes to a part by its hash, so none can fall out. CI runs the parts in parallel jobs; unset, the
+ * single part 1/1 runs everything.
+ *
+ * With CONFORMANCE_DURATIONS_OUT=<file> the run writes what each key cost, for `ci-conformance-parts.mjs --update`.
  */
 const CONFORMANCE_PART_PATTERN = /^([1-9]\d*)\/([1-9]\d*)$/;
 const [PART_INDEX, PART_COUNT] = ((): [number, number] => {
@@ -110,9 +117,9 @@ const [PART_INDEX, PART_COUNT] = ((): [number, number] => {
 })();
 const IS_FIRST_PART = PART_INDEX === 1;
 
-/** Whether a `source->target` key belongs to this part. */
+/** Whether a work key belongs to this part. The plan is built once the RAW variant manifest is loaded, below. */
 function inPart(key: string): boolean {
-  return createHash('sha256').update(key).digest().readUInt32BE(0) % PART_COUNT === PART_INDEX - 1;
+  return partOfKey(PART_PLAN, key, PART_COUNT) === PART_INDEX;
 }
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
@@ -211,6 +218,69 @@ for (const entry of RAW_VARIANT_MANIFEST) {
   if (bytes) RAW_VARIANT_SAMPLES.set(name, bytes);
   else RAW_SAMPLES_MISSING.push(name);
 }
+
+/** Every work key of the gate: the registry pairs, the pairs of each RAW sensor variant, and the audio targets. */
+function conformanceKeys(): string[] {
+  const keys = new Set<string>();
+  for (const [source, def] of Object.entries(FORMAT_REGISTRY)) {
+    for (const target of def.targetFormats) {
+      keys.add(`${source}->${target}`);
+      if (MEDIA_CATEGORIES.has(def.category) && FORMAT_REGISTRY[target].category === 'audio') keys.add(`audio-target:${target}`);
+    }
+  }
+  for (const entry of RAW_VARIANT_MANIFEST) {
+    for (const target of FORMAT_REGISTRY[entry.format].targetFormats) keys.add(`${entry.format}-${entry.variant}->${target}`);
+  }
+  return [...keys];
+}
+const PART_PLAN = planConformanceParts(conformanceKeys(), loadConformanceDurations(), PART_COUNT);
+
+const DURATIONS_OUT = process.env.CONFORMANCE_DURATIONS_OUT;
+const recordedMs = new Map<string, number>();
+/** Adds `ms` to the cost recorded for a work key (only when a recording was asked for). */
+function recordCost(key: string, ms: number): void {
+  if (DURATIONS_OUT) recordedMs.set(key, (recordedMs.get(key) ?? 0) + ms);
+}
+const FIRST_PART_COST_KEY = '@first-part';
+/** Titles of the checks only part 1 runs; their cost is the load part 1 carries besides its share of the keys. */
+const FIRST_PART_ONLY_TESTS: readonly RegExp[] = [
+  /^recognizes engine routing rejections/,
+  /^flags non-media sources/,
+  /^rejects pairs the registry does not advertise/,
+  /advertises none of its withdrawn targets$/,
+  /^converts every toml pair/,
+  /^lists the allowlist sorted/,
+  /^has an intact sample for every RAW/,
+  /^has a validator for every target/,
+  /^lists only pairs the registry advertises/,
+];
+/** A test that converts one pair is named `<source> -> <target> ...`. */
+const PAIR_TEST_NAME = /^(\S+) -> (\S+) /;
+const testStartedAt = new Map<string, number>();
+beforeEach(({ task }) => {
+  if (DURATIONS_OUT) testStartedAt.set(task.id, performance.now());
+});
+afterEach(({ task }) => {
+  const started = testStartedAt.get(task.id);
+  if (!DURATIONS_OUT || started === undefined) return;
+  const ms = performance.now() - started;
+  if (FIRST_PART_ONLY_TESTS.some((pattern) => pattern.test(task.name))) {
+    // The toml probes also count under their pair keys; the check itself is part 1's own work.
+    recordCost(FIRST_PART_COST_KEY, ms);
+    return;
+  }
+  const pair = PAIR_TEST_NAME.exec(task.name);
+  if (pair) recordCost(`${pair[1]}->${pair[2]}`, ms);
+});
+afterAll(() => {
+  if (!DURATIONS_OUT) return;
+  // Every key this part runs is written, the ones that cost nothing as 0, so a key that never runs does not weigh the
+  // median of the keys without an entry. Only part 1 has the registry-wide checks to report.
+  const seconds = Object.fromEntries(conformanceKeys().filter(inPart).map((key) => [key, (recordedMs.get(key) ?? 0) / 1000]));
+  const firstPart = IS_FIRST_PART ? { firstPartSeconds: (recordedMs.get(FIRST_PART_COST_KEY) ?? 0) / 1000 } : {};
+  writeFileSync(DURATIONS_OUT, `${JSON.stringify({ ...firstPart, seconds }, null, 2)}\n`);
+});
+
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 /** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
 const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
@@ -563,7 +633,8 @@ function probePairCached(source: string, target: string): Promise<{ outcome: Pai
   const key = `${source}->${target}`;
   let pending = probeCache.get(key);
   if (!pending) {
-    pending = probePair(source, target);
+    const started = performance.now();
+    pending = probePair(source, target).finally(() => recordCost(key, performance.now() - started));
     probeCache.set(key, pending);
   }
   return pending;
@@ -994,7 +1065,9 @@ describe('every advertised registry pair has an engine path', () => {
           else covered.add(target);
         };
         for (const [index, pair] of pairs.entries()) {
+          const started = performance.now();
           await checkPair(index, pair);
+          recordCost(`audio-target:${pair[1]}`, performance.now() - started);
         }
         expect(failures).toEqual([]);
         // Every encodable target is proven by at least one source, so a skipped source cannot hide a target.

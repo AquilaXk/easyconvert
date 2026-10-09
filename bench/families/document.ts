@@ -3,9 +3,9 @@ import path from 'node:path';
 import { DOCUMENT_FIXTURES_DIR, HWP_FIXTURES_DIR, IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import { convertInProcess } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
+import { stringValue } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
-import { interleavedTiming } from '../stats';
 import { structureOfDocx, structureOfEpub, structureOfOdt } from '../structure-extract';
 import { emptyStructure, normalizeText, scoreStructure, STRUCTURE_CATEGORIES, structureOfHtml, type DocumentStructure, type StructureCategory } from '../structure-metrics';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
@@ -122,6 +122,7 @@ function countStructure(count: number, truth: DocumentStructure): DocumentStruct
 
 async function runStructureDocx(ctx: FamilyContext): Promise<BenchRow[]> {
   const caseOf = (target: StructureTarget): string => `${STRUCTURE_DOCX}->${target}`;
+  if (!ctx.inScope('document', caseOf('html'))) return [];
   const plan = ctx.plan(['soffice', 'pdftotext', 'pdfimages', 'epubcheck'], caseOf('html'));
   if (!plan.ok) {
     const specs = [SPEC.structurePrecision, SPEC.structureRecall, SPEC.throughput];
@@ -140,52 +141,56 @@ async function runStructureDocx(ctx: FamilyContext): Promise<BenchRow[]> {
     const caseName = caseOf(target);
     const ours = (): Promise<Buffer> => convertInProcess(docx, 'docx', target, {}, STRUCTURE_DOCX);
     const reference = (outDir: string): string => sofficeExport(soffice, profile, docxFile, target, outDir);
-    const oursBytes = await ours();
-    const referenceOut = ctx.scratch(`ref-${target}`);
-    const referenceFile = reference(referenceOut);
+    if (ctx.quality) {
+      const oursBytes = await ours();
+      const referenceOut = ctx.scratch(`ref-${target}`);
+      const referenceFile = reference(referenceOut);
 
-    if (target === 'pdf') {
-      const oursPdf = ctx.scratch('ours-structure.pdf');
-      fs.writeFileSync(oursPdf, oursBytes);
-      const text = (pdf: string): string => runTool(pdftotext, ['-layout', '-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
-      const expected = truthText(truth);
-      rows.push(
-        measuredRow('document', caseName, SPEC.wordF1, wordF1(expected, text(oursPdf)), wordF1(expected, text(referenceFile)), REFERENCE),
-        ...structureRows(caseName, truth, ['images'], countStructure(pdfImageCount(pdfimages, oursPdf), truth), countStructure(pdfImageCount(pdfimages, referenceFile), truth), REFERENCE)
-      );
-    } else {
-      const resolveReferenceImage = (src: string): Buffer | undefined => {
-        const candidate = path.join(referenceOut, decodeURIComponent(src));
-        return fs.existsSync(candidate) ? fs.readFileSync(candidate) : undefined;
-      };
-      const oursStructure = await readStructure(target, oursBytes);
-      const referenceStructure = await readStructure(target, fs.readFileSync(referenceFile), resolveReferenceImage);
-      rows.push(...structureRows(caseName, truth, categories, oursStructure, referenceStructure, REFERENCE));
-      if (target === 'epub') {
+      if (target === 'pdf') {
+        const oursPdf = ctx.scratch('ours-structure.pdf');
+        fs.writeFileSync(oursPdf, oursBytes);
+        const text = (pdf: string): string => runTool(pdftotext, ['-layout', '-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
+        const expected = truthText(truth);
         rows.push(
-          measuredRow('document', caseName, SPEC.epubcheckErrors, epubcheckErrors(epubcheck, ctx.scratch, oursBytes), epubcheckErrors(epubcheck, ctx.scratch, fs.readFileSync(referenceFile)), REFERENCE)
+          measuredRow('document', caseName, SPEC.wordF1, wordF1(expected, text(oursPdf)), wordF1(expected, text(referenceFile)), REFERENCE),
+          ...structureRows(caseName, truth, ['images'], countStructure(pdfImageCount(pdfimages, oursPdf), truth), countStructure(pdfImageCount(pdfimages, referenceFile), truth), REFERENCE)
         );
+      } else {
+        const resolveReferenceImage = (src: string): Buffer | undefined => {
+          const candidate = path.join(referenceOut, decodeURIComponent(src));
+          return fs.existsSync(candidate) ? fs.readFileSync(candidate) : undefined;
+        };
+        const oursStructure = await readStructure(target, oursBytes);
+        const referenceStructure = await readStructure(target, fs.readFileSync(referenceFile), resolveReferenceImage);
+        rows.push(...structureRows(caseName, truth, categories, oursStructure, referenceStructure, REFERENCE));
+        if (target === 'epub') {
+          rows.push(
+            measuredRow('document', caseName, SPEC.epubcheckErrors, epubcheckErrors(epubcheck, ctx.scratch, oursBytes), epubcheckErrors(epubcheck, ctx.scratch, fs.readFileSync(referenceFile)), REFERENCE)
+          );
+        }
       }
     }
 
-    const timing = await interleavedTiming(
-      async () => {
-        await ours();
-      },
-      () => {
-        reference(ctx.scratch(`timing-${target}`));
-      },
-      ctx.heavyRuns,
-      ctx.warmup,
-      IN_PROCESS_REPEATS
-    );
-    rows.push(throughputRow('document', caseName, docx.length, timing, REFERENCE));
+    if (ctx.speed) {
+      const timing = await ctx.time(
+        async () => {
+          await ours();
+        },
+        () => {
+          reference(ctx.scratch(`timing-${target}`));
+        },
+        'heavy',
+        IN_PROCESS_REPEATS
+      );
+      rows.push(throughputRow('document', caseName, docx.length, timing, REFERENCE));
+    }
   }
   return rows;
 }
 
 /** The EPUB authored with ebooklib (tests/fixtures/document/PROVENANCE.md) and the structure written for it by hand. */
 async function runBook(ctx: FamilyContext): Promise<BenchRow[]> {
+  if (!ctx.quality || !ctx.inScope('document', BOOK_CASE)) return [];
   ctx.log(`document ${BOOK_CASE}`);
   const book = fs.readFileSync(path.join(DOCUMENT_FIXTURES_DIR, 'book.epub'));
   const picture = (await structureOfEpub(book)).images;
@@ -210,6 +215,7 @@ interface HwpReference {
 async function runHwp(ctx: FamilyContext): Promise<BenchRow[]> {
   const htmlCase = `${HWP_FILE}->html`;
   const txtCase = `${HWP_FILE}->txt`;
+  if (!ctx.inScope('document', htmlCase)) return [];
   const plan = ctx.plan(['python3', OLEFILE_PSEUDO_TOOL], htmlCase);
   if (!plan.ok) {
     const specs = [SPEC.structurePrecision, SPEC.structureRecall, SPEC.cer, SPEC.throughput];
@@ -221,74 +227,88 @@ async function runHwp(ctx: FamilyContext): Promise<BenchRow[]> {
   const readerScript = path.join(HWP_FIXTURES_DIR, 'reference-extract.py');
   const hwp = fs.readFileSync(hwpFile);
   const reference = (): HwpReference => JSON.parse(runTool(python, ['-I', readerScript, hwpFile], { cwd: REPO_ROOT }).stdout.toString('utf8')) as HwpReference;
-  const read = reference();
+  const rows: BenchRow[] = [];
 
-  const truth = emptyStructure();
-  for (const table of read.tables) {
-    for (const span of table.spans) truth.tableCells.push(`${normalizeText(table.cells[span.row][span.col])}|${span.colSpan}|${span.rowSpan}`);
+  if (ctx.quality) {
+    const read = reference();
+    const truth = emptyStructure();
+    for (const table of read.tables) {
+      for (const span of table.spans) truth.tableCells.push(`${normalizeText(table.cells[span.row][span.col])}|${span.colSpan}|${span.rowSpan}`);
+    }
+    truth.images = read.pictures.map((picture) => picture.sha256);
+    const html = await convertInProcess(hwp, 'hwp', 'html', {}, HWP_FILE);
+    rows.push(...structureRows(htmlCase, truth, ['tableCells', 'images'], structureOfHtml(html.toString('utf8')), null, HWP_REFERENCE));
+
+    const expectedText = [
+      ...read.body.map((item) => (item.kind === 'paragraph' ? item.text : read.tables[item.index].cells.flat().filter((cell) => cell !== '').join(' '))),
+      ...read.captions,
+    ].join(' ');
+    const text = (await convertInProcess(hwp, 'hwp', 'txt', {}, HWP_FILE)).toString('utf8');
+    rows.push(measuredRow('document', txtCase, SPEC.cer, characterErrorRatePercent(expectedText, text), IDEAL_CER_PERCENT, HWP_REFERENCE));
   }
-  truth.images = read.pictures.map((picture) => picture.sha256);
-  const html = await convertInProcess(hwp, 'hwp', 'html', {}, HWP_FILE);
-  const rows = structureRows(htmlCase, truth, ['tableCells', 'images'], structureOfHtml(html.toString('utf8')), null, HWP_REFERENCE);
 
-  const expectedText = [
-    ...read.body.map((item) => (item.kind === 'paragraph' ? item.text : read.tables[item.index].cells.flat().filter((cell) => cell !== '').join(' '))),
-    ...read.captions,
-  ].join(' ');
-  const text = (await convertInProcess(hwp, 'hwp', 'txt', {}, HWP_FILE)).toString('utf8');
-  rows.push(measuredRow('document', txtCase, SPEC.cer, characterErrorRatePercent(expectedText, text), IDEAL_CER_PERCENT, HWP_REFERENCE));
-
-  const timing = await interleavedTiming(
-    async () => {
-      await convertInProcess(hwp, 'hwp', 'txt', {}, HWP_FILE);
-    },
-    () => {
-      reference();
-    },
-    ctx.heavyRuns,
-    ctx.warmup,
-    IN_PROCESS_REPEATS
-  );
-  rows.push(throughputRow('document', txtCase, hwp.length, timing, HWP_REFERENCE));
+  if (ctx.speed) {
+    const timing = await ctx.time(
+      async () => {
+        await convertInProcess(hwp, 'hwp', 'txt', {}, HWP_FILE);
+      },
+      () => {
+        reference();
+      },
+      'heavy',
+      IN_PROCESS_REPEATS
+    );
+    rows.push(throughputRow('document', txtCase, hwp.length, timing, HWP_REFERENCE));
+  }
   return rows;
 }
 
 async function runReport(ctx: FamilyContext): Promise<BenchRow[]> {
+  if (!ctx.inScope('document', REPORT_CASE)) return [];
   const plan = ctx.plan(['pdftotext', 'soffice'], REPORT_CASE);
   if (!plan.ok) return skippedGroup('document', REPORT_CASE, REPORT_SPECS, REFERENCE, plan);
   ctx.log(`document ${REPORT_CASE}`);
   const { pdftotext, soffice } = plan.paths;
   const docx = ctx.corpusBuffer('report.docx');
   const docxFile = ctx.corpusPath('report.docx');
-  const truth = fs.readFileSync(ctx.corpusPath('report.gt.txt'), 'utf8');
   const profile = `file://${path.join(ctx.work, 'soffice-profile')}`;
 
   const oursPdf = (): Promise<Buffer> => convertInProcess(docx, 'docx', 'pdf', {}, 'report.docx');
   const referencePdf = (outDir: string): string => sofficeExport(soffice, profile, docxFile, 'pdf', outDir);
   const textOf = (pdf: string): string => runTool(pdftotext, ['-layout', '-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
 
-  const oursFile = ctx.scratch('ours.pdf');
-  fs.writeFileSync(oursFile, await oursPdf());
-  const oursText = textOf(oursFile);
-  const referenceText = textOf(referencePdf(ctx.scratch('ref-out')));
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const truth = fs.readFileSync(ctx.corpusPath('report.gt.txt'), 'utf8');
+    const oursFile = ctx.scratch('ours.pdf');
+    fs.writeFileSync(oursFile, await oursPdf());
+    const oursText = textOf(oursFile);
+    // The reference's text is a function of the office suite, pdftotext and the document alone.
+    const referenceText = await ctx.refCache.value(
+      'document',
+      { kind: 'soffice-pdf-text', tools: ['soffice', 'pdftotext'], files: ['report.docx'], settings: { case: REPORT_CASE, layout: true, encoding: 'UTF-8' } },
+      stringValue,
+      () => textOf(referencePdf(ctx.scratch('ref-out')))
+    );
+    rows.push(
+      measuredRow('document', REPORT_CASE, SPEC.wordF1, wordF1(truth, oursText), wordF1(truth, referenceText), REFERENCE),
+      measuredRow('document', REPORT_CASE, SPEC.cer, characterErrorRatePercent(truth, oursText), characterErrorRatePercent(truth, referenceText), REFERENCE)
+    );
+  }
 
-  const rows: BenchRow[] = [
-    measuredRow('document', REPORT_CASE, SPEC.wordF1, wordF1(truth, oursText), wordF1(truth, referenceText), REFERENCE),
-    measuredRow('document', REPORT_CASE, SPEC.cer, characterErrorRatePercent(truth, oursText), characterErrorRatePercent(truth, referenceText), REFERENCE),
-  ];
-
-  const timing = await interleavedTiming(
-    async () => {
-      await oursPdf();
-    },
-    () => {
-      referencePdf(ctx.scratch('timing-out'));
-    },
-    ctx.heavyRuns,
-    ctx.warmup,
-    IN_PROCESS_REPEATS
-  );
-  rows.push(throughputRow('document', REPORT_CASE, docx.length, timing, REFERENCE));
+  if (ctx.speed) {
+    const timing = await ctx.time(
+      async () => {
+        await oursPdf();
+      },
+      () => {
+        referencePdf(ctx.scratch('timing-out'));
+      },
+      'heavy',
+      IN_PROCESS_REPEATS
+    );
+    rows.push(throughputRow('document', REPORT_CASE, docx.length, timing, REFERENCE));
+  }
   return rows;
 }
 

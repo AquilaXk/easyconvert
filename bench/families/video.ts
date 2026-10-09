@@ -4,9 +4,9 @@ import { BITS_PER_BYTE, BITS_PER_KILOBIT } from '../config';
 import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
 import { fileSize, measureVmaf, pictureQuality, probeFile } from '../measure';
+import { numberRecord } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow } from '../rows';
-import { interleavedTiming } from '../stats';
 import { LIBVMAF_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -45,6 +45,10 @@ interface Encoded {
   file: string;
 }
 
+/** What is cached of a reference encode: the numbers, not the file. */
+const parseReference = numberRecord(['kbps', 'ssim', 'psnr']);
+const parseReferenceWithVmaf = numberRecord(['kbps', 'ssim', 'psnr', 'vmaf']);
+
 export const runVideo: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
   const clipFile = ctx.corpusPath('clip.mp4');
@@ -53,6 +57,7 @@ export const runVideo: FamilyRunner = async (ctx) => {
 
   for (const codec of CODECS) {
     const caseName = `clip.mp4->${codec.name}`;
+    if (!ctx.inScope('video', caseName)) continue;
     const plan = ctx.plan(['ffmpeg', 'ffprobe'], caseName);
     if (!plan.ok) {
       rows.push(...skippedGroup('video', caseName, GROUP_SPECS, codec.tool, plan));
@@ -68,49 +73,74 @@ export const runVideo: FamilyRunner = async (ctx) => {
       const out = await convertWithProject(clip, 'mp4', codec.target, { video: { codec: codec.name, rateControl: { mode: 'crf', crf }, ...(preset ? { preset } : {}) } }, 'clip.mp4');
       return out.buffer;
     };
-    const measure = (file: string): Encoded => {
-      const seconds = Number(probeFile(plan.paths.ffprobe, file).format.duration);
-      const quality = pictureQuality(ffmpeg, file, clipFile);
-      return { kbps: (fileSize(file) * BITS_PER_BYTE) / seconds / BITS_PER_KILOBIT, ssim: quality.ssim, psnr: capPsnr(quality.psnr), file };
-    };
-
-    const ours: Encoded[] = [];
-    const reference: Encoded[] = [];
-    for (const crf of codec.crfs) {
-      const oursFile = ctx.scratch(`ours-crf${crf}.${codec.target}`);
-      fs.writeFileSync(oursFile, await oursEncode(crf));
-      ours.push(measure(oursFile));
-      const refFile = ctx.scratch(`ref-crf${crf}.${codec.target}`);
-      referenceEncode(crf, refFile);
-      reference.push(measure(refFile));
-    }
-
-    const o = ours[HEADLINE_INDEX];
-    const r = reference[HEADLINE_INDEX];
-    rows.push(measuredRow('video', caseName, SPEC.ssim, o.ssim, r.ssim, codec.tool));
-    rows.push(measuredRow('video', caseName, SPEC.psnr, o.psnr, r.psnr, codec.tool));
-    rows.push(measuredRow('video', caseName, SPEC.bitrate, o.kbps, r.kbps, codec.tool));
-    const curve = (points: Encoded[], quality: (e: Encoded) => number): RdPoint[] => points.map((e) => ({ rate: e.kbps, quality: quality(e) }));
-    rows.push(measuredRow('video', caseName, SPEC.bdRatePsnr, bdRate(curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)), 0, codec.tool));
-    rows.push(measuredRow('video', caseName, SPEC.bdRateSsim, bdRate(curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))), 0, codec.tool));
-
-    if (vmafPlan.ok) {
-      rows.push(measuredRow('video', caseName, SPEC.vmaf, measureVmaf(vmafPlan.paths[LIBVMAF_PSEUDO_TOOL], o.file, clipFile), measureVmaf(vmafPlan.paths[LIBVMAF_PSEUDO_TOOL], r.file, clipFile), codec.tool));
-    } else {
-      rows.push(skippedRow('video', caseName, SPEC.vmaf, codec.tool, 'optional-tool', vmafPlan.reason));
-    }
-
-    const timingOut = ctx.scratch(`timing.${codec.target}`);
     const headlineCrf = codec.crfs[HEADLINE_INDEX];
-    const timing = await interleavedTiming(
-      async () => {
-        await oursEncode(headlineCrf);
-      },
-      () => referenceEncode(headlineCrf, timingOut),
-      ctx.heavyRuns,
-      ctx.warmup
-    );
-    rows.push(throughputRow('video', caseName, clip.length, timing, codec.tool));
+
+    if (ctx.quality) {
+      const measure = (file: string): Encoded => {
+        const seconds = Number(probeFile(plan.paths.ffprobe, file).format.duration);
+        const quality = pictureQuality(ffmpeg, file, clipFile);
+        return { kbps: (fileSize(file) * BITS_PER_BYTE) / seconds / BITS_PER_KILOBIT, ssim: quality.ssim, psnr: capPsnr(quality.psnr), file };
+      };
+      const vmafBinary = vmafPlan.ok ? vmafPlan.paths[LIBVMAF_PSEUDO_TOOL] : null;
+
+      const ours: Encoded[] = [];
+      const reference: Omit<Encoded, 'file'>[] = [];
+      let referenceVmaf: number | null = null;
+      for (const crf of codec.crfs) {
+        const oursFile = ctx.scratch(`ours-crf${crf}.${codec.target}`);
+        fs.writeFileSync(oursFile, await oursEncode(crf));
+        ours.push(measure(oursFile));
+        // The reference encode and its scores are functions of ffmpeg's encoder, the clip and the rate alone. The
+        // headline point also carries the reference's VMAF when the metric is available.
+        const withVmaf = crf === headlineCrf && vmafBinary !== null;
+        const point = await ctx.refCache.value(
+          'video',
+          {
+            kind: withVmaf ? 'encode-measure-vmaf' : 'encode-measure',
+            tools: ['ffmpeg', 'ffprobe'],
+            files: ['clip.mp4'],
+            settings: { case: caseName, crf, encoder: codec.encoderArgs.join(' '), vmaf: withVmaf },
+          },
+          withVmaf ? parseReferenceWithVmaf : parseReference,
+          () => {
+            const refFile = ctx.scratch(`ref-crf${crf}.${codec.target}`);
+            referenceEncode(crf, refFile);
+            const { file, ...measured } = measure(refFile);
+            return withVmaf && vmafBinary !== null ? { ...measured, vmaf: measureVmaf(vmafBinary, file, clipFile) } : measured;
+          }
+        );
+        reference.push(point);
+        if (withVmaf) referenceVmaf = (point as { vmaf: number }).vmaf;
+      }
+
+      const o = ours[HEADLINE_INDEX];
+      const r = reference[HEADLINE_INDEX];
+      rows.push(measuredRow('video', caseName, SPEC.ssim, o.ssim, r.ssim, codec.tool));
+      rows.push(measuredRow('video', caseName, SPEC.psnr, o.psnr, r.psnr, codec.tool));
+      rows.push(measuredRow('video', caseName, SPEC.bitrate, o.kbps, r.kbps, codec.tool));
+      const curve = (points: { kbps: number; ssim: number; psnr: number }[], quality: (e: { ssim: number; psnr: number }) => number): RdPoint[] =>
+        points.map((e) => ({ rate: e.kbps, quality: quality(e) }));
+      rows.push(measuredRow('video', caseName, SPEC.bdRatePsnr, bdRate(curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)), 0, codec.tool));
+      rows.push(measuredRow('video', caseName, SPEC.bdRateSsim, bdRate(curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))), 0, codec.tool));
+
+      if (vmafBinary !== null && referenceVmaf !== null) {
+        rows.push(measuredRow('video', caseName, SPEC.vmaf, measureVmaf(vmafBinary, o.file, clipFile), referenceVmaf, codec.tool));
+      } else if (!vmafPlan.ok) {
+        rows.push(skippedRow('video', caseName, SPEC.vmaf, codec.tool, 'optional-tool', vmafPlan.reason));
+      }
+    }
+
+    if (ctx.speed) {
+      const timingOut = ctx.scratch(`timing.${codec.target}`);
+      const timing = await ctx.time(
+        async () => {
+          await oursEncode(headlineCrf);
+        },
+        () => referenceEncode(headlineCrf, timingOut),
+        'heavy'
+      );
+      rows.push(throughputRow('video', caseName, clip.length, timing, codec.tool));
+    }
   }
   return rows;
 };
