@@ -269,6 +269,7 @@ function toListedEntry(file: ReturnType<typeof listSevenZipEntries>['files'][num
   };
 }
 
+/** The Unix rwx bits a 7z member records; setuid, setgid and sticky are dropped, as a root-owned tar must not carry them. */
 function unixModeOf(attributes: number | undefined): number | undefined {
   if (attributes === undefined || (attributes & ATTRIBUTE_UNIX_EXTENSION) === 0) return undefined;
   return (attributes >>> UNIX_MODE_SHIFT) & PERMISSION_BITS;

@@ -8,7 +8,7 @@ import { convertWithNative7z } from '../src/worker/engines';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { hostileTarMember, pythonTarEntries, pythonTarMember } from './helpers/hostile-tar';
 import { oracleTest } from './helpers/oracle-test';
-import { craftSevenZip, S_IFLNK, unixAttributes } from './helpers/seven-zip-craft';
+import { ATTRIBUTE_ARCHIVE, ATTRIBUTE_DIRECTORY, craftSevenZip, S_IFDIR, S_IFLNK, S_IFREG, unixAttributes } from './helpers/seven-zip-craft';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
 
 /**
@@ -148,4 +148,32 @@ describe('a link member that declares data', () => {
       TEST_TIMEOUT_MS
     );
   }
+});
+
+describe('a member with mode bits beyond rwx', () => {
+  oracleTest(
+    'is written to the tar with the rwx bits only: no setuid, setgid or sticky bit reaches a tar that may be extracted as root',
+    [...TOOLS],
+    async () => {
+      const archive = craftSevenZip([
+        { name: 'bin', directory: true, attributes: unixAttributes(S_IFDIR | 0o1777, ATTRIBUTE_DIRECTORY) },
+        { name: 'bin/suid', data: Buffer.from('#!/bin/sh\n'), attributes: unixAttributes(S_IFREG | 0o4755, ATTRIBUTE_ARCHIVE) },
+        { name: 'bin/sgid', data: Buffer.from('#!/bin/sh\n'), attributes: unixAttributes(S_IFREG | 0o2750, ATTRIBUTE_ARCHIVE) },
+        { name: 'bin/plain', data: Buffer.from('x'), attributes: unixAttributes(S_IFREG | 0o640, ATTRIBUTE_ARCHIVE) },
+      ]);
+      // 7-Zip reports the dangerous modes the header carries.
+      expect(sevenZipFields(archive, 'modes').map((fields) => fields.get('Attributes'))).toEqual(['D drwxrwxrwt', 'A -rwsr-xr-x', 'A -rwxr-s---', 'A -rw-r-----']);
+
+      const result = await convertWithNative7z(archive, '7z', 'tar', {}, 'modes.7z');
+      if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
+
+      expect(pythonTarEntries(result.buffer).map((entry) => [entry.name, entry.mode.toString(8)])).toEqual([
+        ['bin', '777'],
+        ['bin/suid', '755'],
+        ['bin/sgid', '750'],
+        ['bin/plain', '640'],
+      ]);
+    },
+    TEST_TIMEOUT_MS
+  );
 });
