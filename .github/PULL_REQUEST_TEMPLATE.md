@@ -52,3 +52,4 @@
 - [ ] Claude Code review findings are addressed and all review threads are resolved.
 - [ ] Changes match acceptance criteria of the related issue.
 - [ ] No extraneous files or secrets included.
+- [ ] If a conversion family changed: `parity quality` passes, and the `automerge` label has been added so `parity speed` runs on the final commit (rows listed in `bench/parity-gaps.json` must not get slower than their recorded ratio).

@@ -3,18 +3,29 @@ import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION } from './config
 import { ReportSchemaError } from './errors';
 
 /**
- * Rows that are below the reference tool today, each with the issue that tracks it. The file names an existing gap in
- * a failure message and in the security-exemption comment; it never excuses a row. A pull request that touches a
- * family must bring every row of that family to parity, whether or not the row is listed here.
+ * Rows that are below the reference tool today, each with the issue that tracks it.
+ *
+ * Quality rows are never excused: an entry only names the issue in the failure message and in the security-exemption
+ * comment, and the row still fails.
+ *
+ * A speed (throughput) row listed here is "tracked": being below the reference does not fail it, but getting slower
+ * than the recorded `ratio` does (the upper bound of its speed-ratio interval below ratio * (1 - tolerance)), and a
+ * tracked row that reaches parity is reported so its entry can be removed. A speed row that is not listed has to pass
+ * the parity rule outright.
  */
 
 export interface GapEntry {
   /** Row id `<family>/<case>/<metric>`. */
   id: string;
-  /** The issue that tracks the gap, or null when none is filed yet (the failure message then says so). */
-  issue: number | null;
+  /** The issue that tracks the gap; every entry has one. */
+  issue: number;
+  /** Speed rows: the speed ratio (reference time / our time) the row had when the gap was recorded. Quality rows: null. */
+  ratio: number | null;
   note: string;
 }
+
+const THROUGHPUT_SUFFIX = '/throughput';
+export const isSpeedRowId = (id: string): boolean => id.endsWith(THROUGHPUT_SUFFIX);
 
 export interface GapFile {
   schemaVersion: number;
@@ -38,11 +49,17 @@ export function validateGaps(value: unknown): GapFile {
     if (seen.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is listed twice`);
     seen.add(entry.id);
     const issue = entry.issue;
-    if (issue !== null && (typeof issue !== 'number' || !Number.isInteger(issue) || issue < 1)) {
-      throw new ReportSchemaError(`parity gaps: ${path}.issue must be a positive integer or null`);
+    if (typeof issue !== 'number' || !Number.isInteger(issue) || issue < 1) {
+      throw new ReportSchemaError(`parity gaps: ${path}.issue must be a positive integer; every gap names the issue that tracks it`);
+    }
+    const ratio = entry.ratio;
+    if (isSpeedRowId(entry.id)) {
+      if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) throw new ReportSchemaError(`parity gaps: ${path}.ratio must be a positive speed ratio for the speed row ${entry.id}`);
+    } else if (ratio !== null) {
+      throw new ReportSchemaError(`parity gaps: ${path}.ratio must be null for the quality row ${entry.id}, which a gap never excuses`);
     }
     if (typeof entry.note !== 'string' || entry.note === '') throw new ReportSchemaError(`parity gaps: ${path}.note must be a non-empty string`);
-    return { id: entry.id, issue: issue as number | null, note: entry.note };
+    return { id: entry.id, issue, ratio: ratio as number | null, note: entry.note };
   });
   return { schemaVersion: PARITY_SCHEMA_VERSION, gaps };
 }
@@ -60,5 +77,5 @@ export function gapIndex(file: GapFile): ReadonlyMap<string, GapEntry> {
 /** How a gap reads in a message: the issue that tracks it, or the fact that none is filed. */
 export function describeGap(gap: GapEntry | undefined): string {
   if (!gap) return 'not a known gap: bring it to parity, or file a gap issue and list the row in bench/parity-gaps.json';
-  return gap.issue === null ? `known gap, no issue filed yet: ${gap.note}` : `known gap, issue #${gap.issue}: ${gap.note}`;
+  return `known gap, issue #${gap.issue}: ${gap.note}`;
 }

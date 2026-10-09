@@ -3,148 +3,195 @@
   "gaps": [
     {
       "id": "audio/music.wav->aac/throughput",
-      "issue": null,
-      "note": "speed ratio 0.64 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 642,
+      "ratio": 0.64,
+      "note": "speed ratio 0.64 or below when recorded (baseline 0.64, measured 0.98): ours is slower than the reference tool"
+    },
+    {
+      "id": "audio/music.wav->flac/throughput",
+      "issue": 642,
+      "ratio": 0.94,
+      "note": "speed ratio 0.94 or below when recorded (baseline 0.95, measured 0.97): ours is slower than the reference tool"
     },
     {
       "id": "audio/music.wav->opus/throughput",
-      "issue": null,
-      "note": "speed ratio 0.42 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 642,
+      "ratio": 0.41,
+      "note": "speed ratio 0.41 or below when recorded (baseline 0.42, measured 0.61): ours is slower than the reference tool"
     },
     {
       "id": "audio/speech.wav->aac/throughput",
-      "issue": null,
-      "note": "speed ratio 0.48 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 642,
+      "ratio": 0.48,
+      "note": "speed ratio 0.48 or below when recorded (baseline 0.48, measured 0.95): ours is slower than the reference tool"
+    },
+    {
+      "id": "audio/speech.wav->flac/throughput",
+      "issue": 642,
+      "ratio": 0.92,
+      "note": "speed ratio 0.92 or below when recorded (baseline 0.97, measured 0.92): ours is slower than the reference tool"
     },
     {
       "id": "audio/speech.wav->opus/throughput",
-      "issue": null,
-      "note": "speed ratio 0.57 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 642,
+      "ratio": 0.57,
+      "note": "speed ratio 0.57 or below when recorded (baseline 0.57, measured 0.77): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.7z->tar/throughput",
-      "issue": null,
-      "note": "speed ratio 0.58 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 487,
+      "ratio": 0.47,
+      "note": "speed ratio 0.47 or below when recorded (baseline 0.58, measured 0.47): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.tar->7z/throughput",
       "issue": 487,
-      "note": "speed ratio 0.79 at the recorded baseline: ours is slower than the reference tool"
+      "ratio": 0.75,
+      "note": "speed ratio 0.75 or below when recorded (baseline 0.79, measured 0.75): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.tar->zst/throughput",
-      "issue": null,
-      "note": "speed ratio 0.85 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 497,
+      "ratio": 0.46,
+      "note": "speed ratio 0.46 or below when recorded (baseline 0.85, measured 0.46): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.xz->tar/throughput",
-      "issue": null,
-      "note": "speed ratio 0.46 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 487,
+      "ratio": 0.46,
+      "note": "speed ratio 0.46 or below when recorded (baseline 0.46, measured 0.46): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->avif/throughput",
-      "issue": null,
-      "note": "speed ratio 0.073 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.06,
+      "note": "speed ratio 0.06 or below when recorded (baseline 0.073, measured 0.067): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->jpg/bd_rate_psnr",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "bd_rate_psnr 10.28 against the reference 0 at the recorded baseline (lower is better)"
     },
     {
       "id": "image/lineart.png->jpg/psnr",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "psnr 32.42 against the reference 38.23 at the recorded baseline (higher is better)"
     },
     {
       "id": "image/lineart.png->jpg/throughput",
-      "issue": null,
-      "note": "speed ratio 0.29 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.27,
+      "note": "speed ratio 0.27 or below when recorded (baseline 0.29, measured 0.27): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->webp/throughput",
-      "issue": null,
-      "note": "speed ratio 0.37 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.36,
+      "note": "speed ratio 0.36 or below when recorded (baseline 0.37, measured 0.43): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-a.jpg->avif/throughput",
-      "issue": null,
-      "note": "speed ratio 0.85 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.83,
+      "note": "speed ratio 0.83 or below when recorded (baseline 0.85, measured 0.83): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-a.jpg->jpg/throughput",
-      "issue": null,
-      "note": "speed ratio 0.63 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.54,
+      "note": "speed ratio 0.54 or below when recorded (baseline 0.63, measured 0.54): ours is slower than the reference tool"
+    },
+    {
+      "id": "image/photo-a.jpg->webp/throughput",
+      "issue": 641,
+      "ratio": 0.89,
+      "note": "speed ratio 0.89 or below when recorded (baseline 0.96, measured 0.89): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->avif/throughput",
-      "issue": null,
-      "note": "speed ratio 0.64 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.64,
+      "note": "speed ratio 0.64 or below when recorded (baseline 0.64, measured 0.72): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->jpg/throughput",
-      "issue": null,
-      "note": "speed ratio 0.48 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.48,
+      "note": "speed ratio 0.48 or below when recorded (baseline 0.48, measured 0.5): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->webp/throughput",
-      "issue": null,
-      "note": "speed ratio 0.83 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.79,
+      "note": "speed ratio 0.79 or below when recorded (baseline 0.83, measured 0.79): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->avif/bd_rate_ssim",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "bd_rate_ssim 6.041 against the reference 0 at the recorded baseline (lower is better)"
     },
     {
       "id": "image/screenshot.png->avif/bytes",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "bytes 8993 against the reference 8480 at the recorded baseline (lower is better)"
     },
     {
       "id": "image/screenshot.png->avif/psnr",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "psnr 53.9 against the reference 53.63 at the recorded baseline (higher is better)"
     },
     {
       "id": "image/screenshot.png->avif/ssim",
-      "issue": null,
+      "issue": 640,
+      "ratio": null,
       "note": "ssim 0.9985 against the reference 0.9987 at the recorded baseline (higher is better)"
     },
     {
       "id": "image/screenshot.png->avif/throughput",
-      "issue": null,
-      "note": "speed ratio 0.44 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.43,
+      "note": "speed ratio 0.43 or below when recorded (baseline 0.44, measured 0.44): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->jpg/throughput",
-      "issue": null,
-      "note": "speed ratio 0.26 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.25,
+      "note": "speed ratio 0.25 or below when recorded (baseline 0.26, measured 0.27): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->webp/throughput",
-      "issue": null,
-      "note": "speed ratio 0.28 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 641,
+      "ratio": 0.27,
+      "note": "speed ratio 0.27 or below when recorded (baseline 0.28, measured 0.32): ours is slower than the reference tool"
     },
     {
       "id": "ocr/scan.png->pdf/throughput",
-      "issue": null,
-      "note": "speed ratio 0.46 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 644,
+      "ratio": 0.42,
+      "note": "speed ratio 0.42 or below when recorded (baseline 0.46, measured 0.42): ours is slower than the reference tool"
     },
     {
       "id": "video/clip.mp4->h264/throughput",
-      "issue": null,
-      "note": "speed ratio 0.36 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 643,
+      "ratio": 0.35,
+      "note": "speed ratio 0.35 or below when recorded (baseline 0.36, measured 0.39): ours is slower than the reference tool"
     },
     {
       "id": "video/clip.mp4->hevc/throughput",
-      "issue": null,
-      "note": "speed ratio 0.53 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 643,
+      "ratio": 0.52,
+      "note": "speed ratio 0.52 or below when recorded (baseline 0.53, measured 0.58): ours is slower than the reference tool"
     },
     {
       "id": "video/clip.mp4->vp9/throughput",
-      "issue": null,
-      "note": "speed ratio 0.67 at the recorded baseline: ours is slower than the reference tool"
+      "issue": 643,
+      "ratio": 0.66,
+      "note": "speed ratio 0.66 or below when recorded (baseline 0.67, measured 0.73): ours is slower than the reference tool"
     }
   ]
 }

@@ -109,9 +109,23 @@ family with `"bench": null` (cad, font, raw, data, ebook, pdf-ops, vector, hdr-i
 bench rows for <family>" until the same change adds a runner in `bench/families/` and sets the family's `bench` to its
 own name.
 
-**Known gaps** are listed in `bench/parity-gaps.json`, each with the issue that tracks it (`null` where none is filed).
-The file is not an exemption: a pull request that touches a family has to bring every row of that family to parity.
-It only lets a failure message name the existing gap.
+**Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
+
+- *Quality is immediate.* Every quality row of a touched family must be at or above the reference. `bench/parity-gaps.json`
+  never excuses a quality row: an entry only names the issue in the failure message (the image quality rows are tracked
+  by #640 and still fail).
+- *A speed row that is not listed* has to pass the sign-test rule outright.
+- *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when it gets slower
+  than the `ratio` recorded for it: the upper bound of its speed-ratio interval below `ratio * (1 - SPEED_PARITY_TOLERANCE)`.
+  The baseline gate still applies to it. A tracked row that now passes the normal rule is reported as "now at parity:
+  remove it from bench/parity-gaps.json".
+- *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
+  #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497. Speed entries carry
+  the `ratio` they had when recorded, the lower of the baseline ratio and a local measurement; lower the entry only with
+  a reviewed reason, and remove it when the row reaches parity.
+
+The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
+the rows at or above the reference and the rows not evaluated.
 
 **The `security` exemption** (`scripts/ci-parity-policy.mjs`): a pull request labelled `security` that links an issue
 (`Closes #N`, `Refs #N`, ...) is excused from the parity verdict only. Tests, the guard, lint, build, the container and
