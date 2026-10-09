@@ -158,9 +158,7 @@ jobs:
         run: npm run guard:anti-cheat
 
       - name: Verify third-party notices and dependency licences
-        run: |
-          node scripts/third-party-notices.mjs
-          git diff --exit-code THIRD_PARTY_NOTICES.md
+        run: npm run licenses:check
 
       - name: Run linter
         run: npm run lint
