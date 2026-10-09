@@ -28,8 +28,8 @@ x-worker: &worker
   stop_grace_period: 120s
   read_only: true
   tmpfs:
-    - /tmp:size=8g,noexec,nosuid,nodev
-    - /home/easyconvert:size=512m,nosuid,nodev
+    - /tmp:size=8g,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
+    - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
   # Some Compose releases reject `pids_limit` next to a `deploy.resources.limits` block unless
   # `limits.pids` repeats it, so both carry the same value.
   pids_limit: 256

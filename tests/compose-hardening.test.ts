@@ -46,6 +46,17 @@ const EXPECTED_QUEUES: Record<string, string> = {
 };
 const DEFAULT_SERVICES = ['redis', 'worker'];
 const COMPOSE_TIMEOUT_MS = 60_000;
+const DOCKERFILE_PATH = path.join(ROOT, 'Dockerfile.worker');
+
+/** The image user's uid and the mode the image gives /tmp, read from the Dockerfile so compose cannot drift from it. */
+function imageUserFacts(): { uid: string; tmpMode: string } {
+  const dockerfile = readFileSync(DOCKERFILE_PATH, 'utf-8');
+  const uid = /useradd -u (\d+) /.exec(dockerfile)?.[1];
+  const tmpMode = /chmod (0[0-7]{3}) \/tmp /.exec(dockerfile)?.[1];
+  if (!uid || !tmpMode) throw new Error('Dockerfile.worker no longer names the worker uid or the /tmp mode');
+  return { uid, tmpMode };
+}
+const { uid: WORKER_UID, tmpMode: TMPFS_MODE } = imageUserFacts();
 
 /** Variables that must never carry a default: secrets, keys, and the cloud identifiers of the object store. */
 const NO_DEFAULT_NAME = /(_SECRET|_KEY)|^OCI_NAMESPACE$|^OCI_ENDPOINT$/;
@@ -92,7 +103,15 @@ describe('docker-compose.yml worker hardening', () => {
       expect(options.has('nosuid'), mount).toBe(true);
     }
     const temp = tmpfs.find((mount) => mount.startsWith('/tmp:'));
-    expect(temp).toBe('/tmp:size=8g,noexec,nosuid,nodev');
+    expect(temp).toBe(`/tmp:size=8g,noexec,nosuid,nodev,uid=${WORKER_UID},gid=${WORKER_UID},mode=${TMPFS_MODE}`);
+  });
+
+  it.each(WORKER_SERVICES)('%s mounts every tmpfs owned by the image user, so the worker can write to it', (name) => {
+    // A tmpfs is root-owned unless the mount names an owner; the worker runs as the non-root image user.
+    for (const mount of base.services[name].tmpfs ?? []) {
+      const options = new Set(mount.slice(mount.indexOf(':') + 1).split(','));
+      expect([options.has(`uid=${WORKER_UID}`), options.has(`gid=${WORKER_UID}`), options.has(`mode=${TMPFS_MODE}`)], mount).toEqual([true, true, true]);
+    }
   });
 
   it.each(WORKER_SERVICES)('%s applies the worker seccomp profile with no-new-privileges, read-only root and no capabilities', (name) => {

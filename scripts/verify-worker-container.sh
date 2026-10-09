@@ -3,7 +3,7 @@
 #
 # Run it as the image's own user with the runtime settings the worker uses, for example:
 #   docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
-#     --security-opt seccomp=docker/seccomp-worker.json --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g \
+#     --security-opt seccomp=docker/seccomp-worker.json --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g,uid=10001,gid=10001,mode=0750 \
 #     -v "$PWD/scripts/verify-worker-container.sh:/verify.sh:ro" --entrypoint /bin/bash <image> /verify.sh
 #
 # Checks (each prints PASS or FAIL; the exit status is 1 when any fails):
