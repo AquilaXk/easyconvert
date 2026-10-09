@@ -65,8 +65,12 @@ const FONTCONFIG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 /** A failed fontconfig listing (missing, failing or timed-out fc-list) is retried after this long. */
 const FONTCONFIG_RETRY_MS = 60_000;
 const FONTCONFIG_FIELD_SEPARATOR = '\t';
-/** One line per installed face: file, face index, format, colour flag, first family name, character set. */
-const FONTCONFIG_FORMAT = ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family[0]}', '%{charset}'].join(FONTCONFIG_FIELD_SEPARATOR) + '\n';
+/** One line per installed face: file, face index, format, colour flag, every family name (comma separated), character set. */
+const FONTCONFIG_FORMAT = ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family}', '%{charset}'].join(FONTCONFIG_FIELD_SEPARATOR) + '\n';
+/** fontconfig separates the several names of one family with commas. */
+const FONTCONFIG_FAMILY_SEPARATOR = ',';
+/** Style names of the upright regular face of a family. */
+const REGULAR_STYLE = /^(?:regular|normal|book|roman)$/i;
 const FONTCONFIG_FIELD_COUNT = 6;
 /** fontconfig formats pdfkit can embed. */
 const EMBEDDABLE_FONTCONFIG_FORMATS: ReadonlySet<string> = new Set(['TrueType', 'CFF']);
@@ -111,6 +115,7 @@ const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 interface FontkitFace {
   postscriptName: string | null;
   familyName?: string;
+  subfamilyName?: string;
   unitsPerEm: number;
   directory: { tables: Record<string, unknown> };
   hasGlyphForCodePoint(codePoint: number): boolean;
@@ -162,6 +167,8 @@ interface IndexedFontFace {
   readonly path: string;
   readonly index: number;
   readonly ranges: Uint32Array;
+  /** Every family name of the face, lower-cased. */
+  readonly families: readonly string[];
 }
 
 let faceCounter = 0;
@@ -252,6 +259,10 @@ function rangesContain(ranges: Uint32Array, codePoint: number): boolean {
   return false;
 }
 
+function normalizeFamily(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 /** Keeps embeddable outline faces that are neither colour nor placeholder-box fonts. */
 function parseFontconfigListing(listing: string): IndexedFontFace[] {
   const faces: IndexedFontFace[] = [];
@@ -262,7 +273,12 @@ function parseFontconfigListing(listing: string): IndexedFontFace[] {
     if (!EMBEDDABLE_FONT_FILE.test(file) || !EMBEDDABLE_FONTCONFIG_FORMATS.has(format)) continue;
     if (color === FONTCONFIG_TRUE || PLACEHOLDER_FONT_FAMILY.test(family)) continue;
     const faceIndex = Number.parseInt(index, DECIMAL_RADIX);
-    faces.push({ path: file, index: Number.isFinite(faceIndex) ? faceIndex : 0, ranges: parseCharset(charset) });
+    faces.push({
+      path: file,
+      index: Number.isFinite(faceIndex) ? faceIndex : 0,
+      ranges: parseCharset(charset),
+      families: family.split(FONTCONFIG_FAMILY_SEPARATOR).map(normalizeFamily),
+    });
   }
   return faces;
 }
@@ -321,15 +337,43 @@ function systemFaceFor(codePoint: number): PdfFontFace | null {
   return found;
 }
 
-function orderedFaces(customFontPath?: string): PdfFontFace[] {
+/** A preferred font: the path of a font file (its first face) or a face already found. */
+export type PdfPreferredFont = string | PdfFontFace;
+
+function orderedFaces(customFont?: PdfPreferredFont): PdfFontFace[] {
   ensureWellKnownFaces();
-  const custom = customFontPath ? loadFace(customFontPath) : null;
+  let custom: PdfFontFace | null = null;
+  if (typeof customFont === 'string') custom = customFont ? loadFace(customFont) : null;
+  else if (customFont) custom = customFont;
   return custom ? [custom, ...systemFaces.filter((face) => face !== custom)] : [...systemFaces];
 }
 
-function faceFor(codePoint: number, customFontPath?: string): PdfFontFace | null {
+function faceFor(codePoint: number, customFontPath?: PdfPreferredFont): PdfFontFace | null {
   const preferred = orderedFaces(customFontPath).find((face) => face.font.hasGlyphForCodePoint(codePoint));
   return preferred ?? systemFaceFor(codePoint);
+}
+
+/**
+ * The installed face of a font family (case-insensitive), preferring its regular style; null when no
+ * installed embeddable face has the family name. Awaits the fontconfig listing first.
+ */
+export async function findFaceByFamily(family: string): Promise<PdfFontFace | null> {
+  await loadFontCoverageIndex();
+  const wanted = normalizeFamily(family);
+  if (wanted === '') return null;
+  ensureWellKnownFaces();
+  const candidates: PdfFontFace[] = systemFaces.filter((face) => normalizeFamily(face.font.familyName ?? '') === wanted);
+  for (const entry of fontconfigIndex ?? []) {
+    if (!entry.families.includes(wanted)) continue;
+    const face = loadFace(entry.path, entry.index);
+    if (face && !candidates.includes(face)) candidates.push(face);
+  }
+  return candidates.find((face) => REGULAR_STYLE.test(face.font.subfamilyName ?? '')) ?? candidates[0] ?? null;
+}
+
+/** Whether the face has a glyph for every code point that needs one in the text. */
+export function faceCoversText(face: PdfFontFace, text: string): boolean {
+  return glyphCodePoints(toDrawableText(text)).every((cp) => face.font.hasGlyphForCodePoint(cp));
 }
 
 /**
@@ -416,7 +460,7 @@ export function findUncoveredCodePoint(text: string, customFontPath?: string): n
 }
 
 /** First face, in preference order, that covers every code point; null when no single face does. */
-function singleCoveringFace(codePoints: readonly number[], customFontPath?: string): PdfFontFace | null {
+function singleCoveringFace(codePoints: readonly number[], customFontPath?: PdfPreferredFont): PdfFontFace | null {
   return orderedFaces(customFontPath).find((face) => codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
 }
 
@@ -453,7 +497,7 @@ function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, link: stri
  * the character, else the first face that does. Throws ConversionFailedError for code points no
  * font can render and EngineUnavailableError at the first character no installed font covers.
  */
-export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: string): PdfFontRun[] {
+export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: PdfPreferredFont): PdfFontRun[] {
   const runs: PdfFontRun[] = [];
   for (const segment of segments) {
     const text = toDrawableText(segment.text);
@@ -498,7 +542,7 @@ export class PdfUnicodeTextWriter {
 
   constructor(
     private readonly doc: PDFKit.PDFDocument,
-    private readonly customFontPath?: string
+    private readonly customFontPath?: PdfPreferredFont
   ) {}
 
   /** Selects a face in the document, embedding it on first use. */

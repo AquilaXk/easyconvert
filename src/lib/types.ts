@@ -1100,6 +1100,18 @@ export interface PdfAConversionResult {
   conformanceLevel: string;
 }
 
+/**
+ * A text watermark the request cannot get: a font family that is not installed or has no glyph for the text, a
+ * text over the length cap, or a line break. The request is wrong, so it is a client error (400), not a missing
+ * engine (503) and not a post-processing failure of a good document (422).
+ */
+export class WatermarkFontError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WatermarkFontError';
+  }
+}
+
 export class PdfPostprocessError extends Error {
   readonly status = 422;
   constructor(message: string) {
