@@ -5,55 +5,13 @@ import { ConversionFailedError, ConversionOptions, ConversionResult, CorruptStre
 import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
-import { assertNoComplexScript } from './ctl';
-import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { renderHwpToSvg } from './hwp-render';
 import { buildCfbfContainer } from './cfbf-writer';
+import { readHwpSections } from './hwp-reader';
+import { renderModelTarget } from './document-targets';
+import { emptyDocModel, type DocInline, type DocModel } from './document-model';
+import { HWP_TAGS, HWP_UTF16_UNIT_BYTES, buildHwpRecord, decodeHwpText, parseHwpRecords, type HwpRecord } from './hwp-records';
 import { HWP_EQ_GREEK, HWP_EQ_SYMBOLS, hwpEquationToLaTeX, hwpEquationToMathML } from './hwp-equation';
-
-/**
- * HWP 5.0 Record Tag IDs
- */
-export const HWP_TAGS = {
-  DOCUMENT_PROPERTIES: 16,
-  ID_MAPPINGS: 17,
-  BIN_DATA: 18,
-  FACE_NAME: 19,
-  BORDER_FILL: 20,
-  CHAR_SHAPE: 21,
-  TAB_DEF: 22,
-  NUMBERING: 23,
-  BULLET: 24,
-  PARA_SHAPE: 25,
-  STYLE: 26,
-  DOC_DATA: 27,
-  DISTRIBUTE_DOC_DATA: 28,
-
-  // Section / BodyText Tags
-  PARA_HEADER: 66,
-  PARA_TEXT: 67,
-  PARA_CHAR_SHAPE: 68,
-  PARA_LINE_SEG: 69,
-  PARA_RANGE_TAG: 70,
-  CTRL_HEADER: 71,
-  LIST_HEADER: 72,
-  PAGE_DEF: 73,
-  FOOTNOTE: 74,
-  PAGE_BORDER_FILL: 75,
-  SHAPE_COMPONENT: 76,
-  TABLE: 77,
-  SHAPE_COMPONENT_LINE: 78,
-  SHAPE_COMPONENT_RECTANGLE: 79,
-  SHAPE_COMPONENT_ELLIPSE: 80,
-  SHAPE_COMPONENT_ARC: 81,
-  SHAPE_COMPONENT_POLYGON: 82,
-  SHAPE_COMPONENT_CURVE: 83,
-  SHAPE_COMPONENT_OLE: 84,
-  SHAPE_COMPONENT_PICTURE: 85,
-  SHAPE_COMPONENT_CONTAINER: 86,
-  CTRL_DATA: 87,
-  EQEDIT: 88,
-} as const;
 
 export interface HwpEquation {
   script: string;
@@ -83,12 +41,31 @@ export interface HwpDocument {
   paragraphs: HwpParagraph[];
   tables: HwpTable[];
   equations?: HwpEquation[];
+  /** The document in reading order with headings, lists, tables with merged cells, pictures, links and notes. */
+  model: DocModel;
   metadata: {
     title?: string;
     author?: string;
     creator?: string;
     date?: string;
   };
+}
+
+/** A flat paragraph and table list as a block model: paragraphs first, then the tables (no position is known). */
+export function legacyHwpModel(paragraphs: readonly HwpParagraph[], tables: readonly HwpTable[]): DocModel {
+  const model = emptyDocModel();
+  for (const paragraph of paragraphs) {
+    const inlines: DocInline[] = [{ kind: 'text', text: paragraph.text }];
+    model.blocks.push(paragraph.isHeading ? { kind: 'heading', level: 2, inlines } : { kind: 'paragraph', inlines });
+  }
+  for (const table of tables) {
+    const rows = table.rows.map((row) => ({
+      header: false,
+      cells: row.map((text) => ({ blocks: text === '' ? [] : [{ kind: 'paragraph' as const, inlines: [{ kind: 'text' as const, text }] }], colSpan: 1, rowSpan: 1, header: false })),
+    }));
+    model.blocks.push({ kind: 'table', rows, columnCount: table.colCount });
+  }
+  return model;
 }
 
 export interface CfbfDirectoryEntry {
@@ -391,133 +368,7 @@ export function decompressHwpStream(buf: Buffer, budget?: InflateBudget, streamN
   return inflateBounded(buf, { label, format: 'zlib', budget });
 }
 
-/**
- * HWP 5.0 Record representation
- */
-export interface HwpRecord {
-  tagId: number;
-  level: number;
-  size: number;
-  payload: Buffer;
-}
-
-/**
- * Builds an HWP 5.0 record buffer with support for extended sizes (>= 0xFFF)
- */
-export function buildHwpRecord(tagId: number, level: number, payload: Buffer): Buffer {
-  const size = payload.length;
-  if (size < 0xfff) {
-    const header = ((tagId & 0x3ff) | ((level & 0x3ff) << 10) | ((size & 0xfff) << 20)) >>> 0;
-    const rec = Buffer.alloc(4 + size);
-    rec.writeUInt32LE(header, 0);
-    payload.copy(rec, 4);
-    return rec;
-  } else {
-    const header = ((tagId & 0x3ff) | ((level & 0x3ff) << 10) | (0xfff << 20)) >>> 0;
-    const rec = Buffer.alloc(4 + 4 + size);
-    rec.writeUInt32LE(header, 0);
-    rec.writeUInt32LE(size, 4);
-    payload.copy(rec, 8);
-    return rec;
-  }
-}
-
-/** A 12-bit record size of 0xfff means the real size follows as a 32-bit word (HWP 5.0 file format, record structure). */
-const HWP_EXTENDED_SIZE_MARKER = 0xfff;
-
-/**
- * Parses sequential HWP 5.0 records from a decompressed stream buffer
- */
-export function parseHwpRecords(buffer: Buffer): HwpRecord[] {
-  const records: HwpRecord[] = [];
-  let offset = 0;
-
-  while (offset + 4 <= buffer.length) {
-    const header = buffer.readUInt32LE(offset);
-    offset += 4;
-
-    const tagId = header & 0x3ff;
-    const level = (header >> 10) & 0x3ff;
-    let size = (header >> 20) & 0xfff;
-
-    if (size === HWP_EXTENDED_SIZE_MARKER) {
-      if (offset + 4 > buffer.length) {
-        throw new CorruptStreamError(`Corrupt HWP record: tag ${tagId} is cut off inside its extended size field.`);
-      }
-      size = buffer.readUInt32LE(offset);
-      offset += 4;
-    }
-
-    if (offset + size > buffer.length) {
-      throw new CorruptStreamError(
-        `Corrupt HWP record: tag ${tagId} declares ${size} payload bytes but only ${buffer.length - offset} remain.`
-      );
-    }
-
-    const payload = Buffer.from(buffer.subarray(offset, offset + size));
-    offset += size;
-
-    records.push({ tagId, level, size, payload });
-  }
-
-  if (offset < buffer.length) {
-    throw new CorruptStreamError(`Corrupt HWP record stream: ${buffer.length - offset} stray bytes follow the last record.`);
-  }
-
-  return records;
-}
-
-/** A control character that carries data takes 8 UTF-16 units in paragraph text: the code, six data units, the code again. */
-const HWP_CONTROL_UNITS = 8;
-/** Control codes 1-9, 11, 12 and 14-23 are inline or extended controls of HWP_CONTROL_UNITS units (HWP 5.0 file format, control characters). */
-const HWP_DATA_CONTROLS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]);
-const HWP_TAB = 0x09;
-const HWP_LINE_BREAK = 0x0a;
-const HWP_HYPHEN = 0x18;
-/** Non-breaking and fixed-width spaces. */
-const HWP_SPACE_CONTROLS: ReadonlySet<number> = new Set([0x1e, 0x1f]);
-const HWP_FIRST_PRINTABLE = 0x20;
-const HWP_UTF16_UNIT_BYTES = 2;
-/** Characters turned into a string per call, so a large paragraph cannot overflow the argument stack. */
-const HWP_TEXT_CHUNK_UNITS = 4096;
-
-/**
- * Decodes the UTF-16LE text of a paragraph record. Controls that carry data (section and column definitions, tables,
- * fields, footnotes, bookmarks and the like) take 8 units and contribute no text, except the tab; a line break stays a
- * newline; the paragraph end and other single-unit controls contribute nothing. A control cut off by the end of the
- * record, or an odd byte count, is a corrupt record.
- */
-export function decodeHwpText(buffer: Buffer): string {
-  if (buffer.length % HWP_UTF16_UNIT_BYTES !== 0) {
-    throw new CorruptStreamError('Corrupt HWP paragraph text: the record does not hold whole UTF-16 characters.');
-  }
-  const unitCount = buffer.length / HWP_UTF16_UNIT_BYTES;
-  const units: number[] = [];
-  for (let index = 0; index < unitCount; index += 1) {
-    const code = buffer.readUInt16LE(index * HWP_UTF16_UNIT_BYTES);
-    if (HWP_DATA_CONTROLS.has(code)) {
-      if (index + HWP_CONTROL_UNITS > unitCount) {
-        throw new CorruptStreamError(`Corrupt HWP paragraph text: control character ${code} is cut off by the end of the record.`);
-      }
-      if (code === HWP_TAB) units.push(HWP_TAB);
-      index += HWP_CONTROL_UNITS - 1;
-    } else if (code === HWP_LINE_BREAK) {
-      units.push(HWP_LINE_BREAK);
-    } else if (code === HWP_HYPHEN) {
-      units.push(0x2d);
-    } else if (HWP_SPACE_CONTROLS.has(code)) {
-      units.push(HWP_FIRST_PRINTABLE);
-    } else if (code >= HWP_FIRST_PRINTABLE) {
-      units.push(code);
-    }
-  }
-  let result = '';
-  for (let index = 0; index < units.length; index += HWP_TEXT_CHUNK_UNITS) {
-    result += String.fromCodePoint(...units.slice(index, index + HWP_TEXT_CHUNK_UNITS));
-  }
-  return result;
-}
-
+export { HWP_TAGS, buildHwpRecord, decodeHwpText, parseHwpRecords, type HwpRecord };
 export { HWP_EQ_GREEK, HWP_EQ_SYMBOLS, hwpEquationToMathML, hwpEquationToLaTeX };
 
 const HWP_FILE_HEADER_SIGNATURE = 'HWP Document File';
@@ -643,19 +494,27 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
   const sectionBuffers = bodyTextSections(cfbf).map((stream, index) =>
     isCompressed ? decompressHwpStream(stream, inflateBudget, `Section${index}`) : stream
   );
+  const sectionRecords = sectionBuffers.map((buffer) => parseHwpRecords(buffer));
+  const docInfoStream = cfbf.paths.get('DocInfo');
+  const docInfoRecords = docInfoStream ? parseHwpRecords(isCompressed ? decompressHwpStream(docInfoStream, inflateBudget, 'DocInfo') : docInfoStream) : [];
+  const model = readHwpSections(docInfoRecords, sectionRecords, (streamName, compress) => {
+    const stream = cfbf.paths.get(streamName);
+    if (!stream) return undefined;
+    return (compress ?? isCompressed) ? decompressHwpStream(stream, inflateBudget, streamName) : stream;
+  });
 
   const paragraphs: HwpParagraph[] = [];
   const tables: HwpTable[] = [];
   const allEquations: HwpEquation[] = [];
 
-  for (const sectionBuffer of sectionBuffers) {
+  for (const records of sectionRecords) {
     const openTables: HwpTableState[] = [];
     const closeInnermost = (): void => {
       const closed = openTables.pop() as HwpTableState;
       closeHwpTable(closed, openTables[openTables.length - 1], tables);
     };
 
-    for (const rec of parseHwpRecords(sectionBuffer)) {
+    for (const rec of records) {
       while (openTables.length > 0 && rec.level <= openTables[openTables.length - 1].controlLevel) closeInnermost();
       const table = openTables[openTables.length - 1];
 
@@ -707,6 +566,7 @@ export function parseHwpDocument(inputBuffer: Buffer): HwpDocument {
     paragraphs,
     tables,
     equations: allEquations.length > 0 ? allEquations : undefined,
+    model,
     metadata: {},
   };
 }
@@ -853,6 +713,9 @@ export function buildHwpCompoundFile(params: {
   ]);
 }
 
+/** Targets HWP documents are written to from the block model. */
+const HWP_MODEL_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf', 'epub', 'docx', 'odt']);
+
 /**
  * Converts parsed HWP document AST to PDF, OpenXML DOCX, ODT, HTML, TXT, RTF, MD, HWPX, or raster images.
  */
@@ -863,6 +726,9 @@ export async function convertHwpDocument(
   baseName: string
 ): Promise<ConversionResult> {
   const tgt = targetFormat.toLowerCase();
+
+  // Targets written from the document model keep headings, lists, merged cells, pictures, links and notes in order.
+  if (HWP_MODEL_TARGETS.has(tgt)) return renderModelTarget(doc.model, tgt, options, baseName);
 
   // 1. Target: HWPX (KS X 6101 standard Open Packaging Convention XML container)
   if (tgt === 'hwpx') {
@@ -890,98 +756,7 @@ export async function convertHwpDocument(
     };
   }
 
-  // 3. Target: Markdown (MD)
-  if (tgt === 'md' || tgt === 'markdown') {
-    let md = '';
-    if (doc.metadata?.title) {
-      md += `# ${doc.metadata.title}\n\n`;
-    }
-    doc.paragraphs.forEach((p) => {
-      if (p.isHeading) {
-        md += `## ${p.text}\n\n`;
-      } else {
-        md += `${p.text}\n\n`;
-      }
-    });
-    doc.tables.forEach((t) => {
-      if (t.rows.length > 0) {
-        md += '| ' + t.rows[0].join(' | ') + ' |\n';
-        md += '| ' + t.rows[0].map(() => '---').join(' | ') + ' |\n';
-        t.rows.slice(1).forEach((r) => {
-          md += '| ' + r.join(' | ') + ' |\n';
-        });
-        md += '\n';
-      }
-    });
-    const buffer = Buffer.from(md.trim(), 'utf-8');
-    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
-  }
-
-  // 4. Target: PDF with structured tables and paragraphs
-  if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromHwp(doc, options, baseName);
-    return {
-      buffer: pdfBuffer,
-      mimeType: 'application/pdf',
-      filename: `${baseName}.pdf`,
-      size: pdfBuffer.length,
-    };
-  }
-
-  // 5. Target: DOCX with OpenXML tables and formatted paragraphs
-  if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromHwp(doc, baseName);
-    return {
-      buffer: docxBuffer,
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      filename: `${baseName}.docx`,
-      size: docxBuffer.length,
-    };
-  }
-
-  // 6. Target: HTML with structured markup
-  if (tgt === 'html') {
-    let html = `<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<title>${escapeHtml(baseName)}</title>\n`;
-    html += `<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:40px;color:#1F2340}h1,h2{color:#5C6BC0}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{border:1px solid #CCD2FC;padding:8px 12px;text-align:left}th{background:#F0F2FE}</style>\n</head>\n<body>\n`;
-
-    doc.paragraphs.forEach((p) => {
-      if (p.isHeading) {
-        html += `<h2>${escapeHtml(p.text)}</h2>\n`;
-      } else {
-        html += `<p>${escapeHtml(p.text)}</p>\n`;
-      }
-    });
-
-    doc.tables.forEach((t) => {
-      html += '<table>\n';
-      t.rows.forEach((row, rIdx) => {
-        html += '  <tr>\n';
-        const tag = rIdx === 0 ? 'th' : 'td';
-        row.forEach((cell) => {
-          html += `    <${tag}>${escapeHtml(cell)}</${tag}>\n`;
-        });
-        html += '  </tr>\n';
-      });
-      html += '</table>\n';
-    });
-
-    html += '</body>\n</html>';
-    const buffer = Buffer.from(html, 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-  }
-
-  // 7. Target: TXT
-  if (tgt === 'txt') {
-    const parts: string[] = doc.paragraphs.map((p) => p.text);
-    doc.tables.forEach((t) => {
-      parts.push(t.rows.map((r) => r.join('\t')).join('\n'));
-    });
-    const text = parts.join('\n\n');
-    const buffer = Buffer.from(text, 'utf-8');
-    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-  }
-
-  // 8. Target: RTF
+  // RTF
   if (tgt === 'rtf') {
     const bodyParts: string[] = [];
     doc.paragraphs.forEach((p) => {
@@ -995,17 +770,6 @@ export async function convertHwpDocument(
     const rtf = `{\\rtf1\\ansi\\deff0 {\\fonttbl {\\f0 Malgun Gothic;\\f1 Times New Roman;}}\\fs24 ${bodyParts.join('\\par\\par ')}}\n`;
     const buffer = Buffer.from(rtf, 'utf-8');
     return { buffer, mimeType: 'application/rtf', filename: `${baseName}.rtf`, size: buffer.length };
-  }
-
-  // 9. Target: ODT (OpenDocument Text)
-  if (tgt === 'odt') {
-    const odtBuffer = await generateOdtFromHwp(doc, baseName);
-    return {
-      buffer: odtBuffer,
-      mimeType: 'application/vnd.oasis.opendocument.text',
-      filename: `${baseName}.odt`,
-      size: odtBuffer.length,
-    };
   }
 
   // 10. Target: DOC (Word RTF-based)
@@ -1057,199 +821,12 @@ export async function convertHwp(
   return convertHwpDocument(doc, targetFormat, options, baseName);
 }
 
-/** Heading level HWP heading paragraphs are drawn at. */
-const HWP_PDF_HEADING_LEVEL = 3;
-
-/**
- * Renders HWP paragraphs and tables into PDF. The page holds only the document content (the
- * title goes to the PDF metadata), drawn with embedded fonts covering every character.
- */
-async function generatePdfFromHwp(
-  doc: HwpDocument,
-  options: ConversionOptions,
-  title: string
-): Promise<Buffer> {
-  for (const p of doc.paragraphs ?? []) {
-    if (p.text) assertNoComplexScript(p.text, 'Pure-TS HWP to PDF');
-  }
-  for (const tbl of doc.tables ?? []) {
-    for (const r of tbl.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS HWP to PDF');
-      }
-    }
-  }
-
-  const blocks: PdfBlock[] = [];
-  for (const p of doc.paragraphs ?? []) {
-    blocks.push(
-      p.isHeading
-        ? { kind: 'heading', level: HWP_PDF_HEADING_LEVEL, content: [{ text: p.text }] }
-        : { kind: 'paragraph', content: [{ text: p.text }] }
-    );
-  }
-  for (const tbl of doc.tables ?? []) {
-    if (tbl.rows.length === 0) continue;
-    blocks.push({ kind: 'table', rows: tbl.rows.map((row) => row.map((cell) => ({ content: [{ text: cell }], span: 1 }))) });
-  }
-  return renderPdfBlocks(blocks, { orientation: options.orientation, title });
-}
-
-/**
- * Builds authentic OpenXML DOCX containing structured tables and paragraphs
- */
-async function generateDocxFromHwp(doc: HwpDocument, title: string): Promise<Buffer> {
-  const zip = new JSZip();
-
-  // [Content_Types].xml
-  zip.file(
-    '[Content_Types].xml',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-</Types>`
-  );
-
-  // _rels/.rels
-  zip.file(
-    '_rels/.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>`
-  );
-
-  // word/_rels/document.xml.rels
-  zip.file(
-    'word/_rels/document.xml.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-</Relationships>`
-  );
-
-  let bodyXml = '';
-
-  // Title
-  bodyXml += `<w:p><w:pPr><w:pStyle w:val="Title"/><w:spacing w:after="240"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="36"/><w:color w:val="1F2340"/></w:rPr><w:t>${escapeXml(
-    title
-  )}</w:t></w:r></w:p>`;
-
-  // Paragraphs
-  for (const p of doc.paragraphs) {
-    if (p.isHeading) {
-      bodyXml += `<w:p><w:pPr><w:spacing w:before="200" w:after="120"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/><w:color w:val="5C6BC0"/></w:rPr><w:t>${escapeXml(
-        p.text
-      )}</w:t></w:r></w:p>`;
-    } else {
-      bodyXml += `<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:sz w:val="22"/><w:color w:val="2D3748"/></w:rPr><w:t>${escapeXml(
-        p.text
-      )}</w:t></w:r></w:p>`;
-    }
-  }
-
-  // Tables
-  for (const tbl of doc.tables) {
-    if (tbl.rows.length === 0) continue;
-    let tblXml = `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4" w:color="CCD2FC"/><w:bottom w:val="single" w:sz="4" w:color="CCD2FC"/><w:left w:val="single" w:sz="4" w:color="CCD2FC"/><w:right w:val="single" w:sz="4" w:color="CCD2FC"/><w:insideH w:val="single" w:sz="4" w:color="E1E4EE"/><w:insideV w:val="single" w:sz="4" w:color="E1E4EE"/></w:tblBorders></w:tblPr>`;
-    const colCount = Math.max(1, tbl.colCount || tbl.rows[0].length);
-    tblXml += `<w:tblGrid>${new Array(colCount).fill('<w:gridCol/>').join('')}</w:tblGrid>`;
-
-    tbl.rows.forEach((row, rIdx) => {
-      tblXml += `<w:tr>`;
-      const isHeader = rIdx === 0;
-      row.forEach((cell) => {
-        tblXml += `<w:tc><w:tcPr>${
-          isHeader ? '<w:shd w:val="clear" w:color="auto" w:fill="F0F2FE"/>' : ''
-        }</w:tcPr><w:p><w:r><w:rPr>${
-          isHeader ? '<w:b/><w:color w:val="1F2340"/>' : '<w:color w:val="4A5568"/>'
-        }</w:rPr><w:t>${escapeXml(cell)}</w:t></w:r></w:p></w:tc>`;
-      });
-      tblXml += `</w:tr>`;
-    });
-
-    tblXml += `</w:tbl>`;
-    bodyXml += tblXml;
-  }
-
-  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:body>
-    ${bodyXml}
-    <w:sectPr>
-      <w:pgSz w:w="11906" w:h="16838"/>
-      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
-    </w:sectPr>
-  </w:body>
-</w:document>`;
-
-  zip.file('word/document.xml', documentXml);
-
-  return zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  });
-}
-
 function escapeXml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function escapeHtml(str: string): string {
   return escapeXml(str);
-}
-
-/**
- * Builds OpenDocument Text (ODT) ZIP package containing structured content
- */
-async function generateOdtFromHwp(doc: HwpDocument, title: string): Promise<Buffer> {
-  const zip = new JSZip();
-  zip.file('mimetype', 'application/vnd.oasis.opendocument.text', { compression: 'STORE' });
-  zip.file(
-    'META-INF/manifest.xml',
-    `<?xml version="1.0" encoding="UTF-8"?>
-<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
-  <manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>
-  <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
-</manifest:manifest>`
-  );
-
-  let contentBody = `<text:h text:outline-level="1">${escapeXml(title)}</text:h>\n`;
-  doc.paragraphs.forEach((p) => {
-    if (p.isHeading) {
-      contentBody += `<text:h text:outline-level="2">${escapeXml(p.text)}</text:h>\n`;
-    } else {
-      contentBody += `<text:p>${escapeXml(p.text)}</text:p>\n`;
-    }
-  });
-
-  doc.tables.forEach((t) => {
-    contentBody += `<table:table table:name="Table">\n`;
-    t.rows.forEach((row) => {
-      contentBody += `  <table:table-row>\n`;
-      row.forEach((cell) => {
-        contentBody += `    <table:table-cell office:value-type="string"><text:p>${escapeXml(cell)}</text:p></table:table-cell>\n`;
-      });
-      contentBody += `  </table:table-row>\n`;
-    });
-    contentBody += `</table:table>\n`;
-  });
-
-  const contentXml = `<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
-  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
-  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
-  <office:body>
-    <office:text>
-      ${contentBody}
-    </office:text>
-  </office:body>
-</office:document-content>`;
-
-  zip.file('content.xml', contentXml);
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
 /**

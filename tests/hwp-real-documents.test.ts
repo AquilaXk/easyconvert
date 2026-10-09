@@ -22,6 +22,7 @@ interface ReferenceTable {
   rows: number;
   cols: number;
   cells: string[][];
+  spans: { row: number; col: number; colSpan: number; rowSpan: number }[];
 }
 
 interface Reference {
@@ -80,7 +81,7 @@ describe('real HWP documents', () => {
     expect(doc.isEncrypted).toBe(reference.encrypted);
     expect(doc.isDistributed).toBe(reference.distributed);
 
-    expect(doc.tables.map((table) => ({ rows: table.rowCount, cols: table.colCount, cells: table.rows }))).toEqual(reference.tables);
+    expect(doc.tables.map((table) => ({ rows: table.rowCount, cols: table.colCount, cells: table.rows }))).toEqual(reference.tables.map(({ rows, cols, cells }) => ({ rows, cols, cells })));
 
     const found = sortedWords([...doc.paragraphs.map((p) => p.text), ...doc.tables.flatMap((table) => table.rows.flat())]);
     const expected = sortedWords([...reference.paragraphs.map((p) => p.text), ...reference.tables.flatMap((table) => table.cells.flat())]);

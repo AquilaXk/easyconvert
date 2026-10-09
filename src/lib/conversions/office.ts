@@ -446,12 +446,7 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'hwp') {
-    const doc = parseHwpDocument(inputBuffer);
-    const parts = doc.paragraphs.map((p) => p.text);
-    doc.tables.forEach((t) => {
-      parts.push(t.rows.map((r) => r.join('\t')).join('\n'));
-    });
-    return parts.join('\n\n');
+    return renderModelText(parseHwpDocument(inputBuffer).model);
   }
 
   const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([
