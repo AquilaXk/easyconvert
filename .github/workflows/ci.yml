@@ -157,7 +157,31 @@ jobs:
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
 
+      # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
+      # lockfile cannot bring in a new licence.
+      - name: Decide whether dependencies changed
+        id: deps
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEPENDENCY_PATHS: '^(package\.json|package-lock\.json|licenses\.allow\.json|THIRD_PARTY_NOTICES\.md|scripts/third-party-notices\.mjs)$'
+        run: |
+          # Fail open: when the base commit cannot be compared, run the gate.
+          zero_sha=0000000000000000000000000000000000000000
+          changed=true
+          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            if ! git diff --name-only "$base" HEAD | grep -Eq "$DEPENDENCY_PATHS"; then
+              changed=false
+              echo "skipped: no dependency changes"
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
       - name: Verify third-party notices and dependency licences
+        if: steps.deps.outputs.changed == 'true'
         run: npm run licenses:check
 
       - name: Run linter
