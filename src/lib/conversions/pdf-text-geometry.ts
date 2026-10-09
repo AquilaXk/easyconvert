@@ -1,16 +1,22 @@
 import './pdfjs-node-compat';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { PdfPageAnalysis } from '../types';
+import { ConversionFailedError, type PdfPageAnalysis } from '../types';
 import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import { runPdfTextJobInThread } from './pdf-text-host';
+import { FontTable, readPageContent } from './pdf-text-content';
+import { ImageExtractor } from './pdf-text-images';
+import { assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import {
+  PDF_TEXT_MAX_PAGES,
+  PDF_TEXT_MAX_IMAGE_PIXELS,
   PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
   PDF_TEXT_MAX_WORDS_PER_PAGE,
   PDF_TEXT_OPERATOR_LIST_MAX_ITEMS,
   PdfTextGeometryError,
+  pdfTextFailure,
   type PdfTextJob,
   type PdfTextJobResult,
 } from './pdf-text-types';
@@ -131,6 +137,8 @@ interface TextItem {
 }
 
 interface FontStyle {
+  /** The generic family pdfjs derives for the font: `serif`, `sans-serif` or `monospace`. */
+  fontFamily?: string;
   ascent?: number;
   descent?: number;
   vertical?: boolean;
@@ -1183,8 +1191,10 @@ interface PageContent {
 interface PdfJsPage {
   view: number[];
   getViewport(options: { scale: number }): Viewport;
-  getTextContent(): Promise<PageContent>;
+  getTextContent(options?: { includeMarkedContent?: boolean }): Promise<PageContent>;
+  commonObjs: { has(id: string): boolean; get(id: string): unknown };
   getOperatorList(): Promise<OperatorList>;
+  objs: { has(id: string): boolean; get(id: string): unknown };
 }
 
 interface PdfJsDocument {
@@ -1315,7 +1325,18 @@ function requirePages(explicit: Set<number> | null, pageCount: number): void {
 
 /** Whether a page is read at all: for the density analysis, because it was asked for, or because geometry is wanted for every page. */
 function needsPage(job: PdfTextJob, explicit: Set<number> | null, pageNumber: number): boolean {
-  return job.densityThreshold !== undefined || explicit?.has(pageNumber) === true || job.geometry === 'text-pages';
+  return (
+    job.densityThreshold !== undefined ||
+    explicit?.has(pageNumber) === true ||
+    job.geometry === 'text-pages' ||
+    wantsContent(job, pageNumber)
+  );
+}
+
+/** Whether the job asks for the positioned content of the page. */
+function wantsContent(job: PdfTextJob, pageNumber: number): boolean {
+  if (job.content === undefined || job.content === false) return false;
+  return job.content === true || job.content.includes(pageNumber);
 }
 
 /**
@@ -1331,15 +1352,27 @@ function wantsGeometry(job: PdfTextJob, explicit: Set<number> | null, pageNumber
 }
 
 /** Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next. */
-async function readPages(pdfjs: PdfJs, doc: PdfJsDocument, job: PdfTextJob, explicit: Set<number> | null, result: PdfTextJobResult): Promise<void> {
+async function readPages(
+  pdfjs: PdfJs,
+  doc: PdfJsDocument,
+  job: PdfTextJob,
+  explicit: Set<number> | null,
+  result: PdfTextJobResult,
+  fonts: FontTable,
+  images: ImageExtractor | null
+): Promise<void> {
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
     if (!needsPage(job, explicit, pageNumber)) continue;
     const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
-    const content = await page.getTextContent(); // NOSONAR S9382 sequential
+    const content = await page.getTextContent({ includeMarkedContent: false }); // NOSONAR S9382 sequential
     const pageText = content.items
       .map((item) => (item as { str?: string }).str || '')
       .join(' ')
       .trim();
+    if (wantsContent(job, pageNumber)) {
+      const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
+      result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, readOperators, images)); // NOSONAR S9382 sequential
+    }
     if (job.densityThreshold !== undefined) result.analyses.push(densityAnalysis(page, pageNumber, pageText, job.densityThreshold));
     if (wantsGeometry(job, explicit, pageNumber, pageText)) {
       result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
@@ -1354,26 +1387,38 @@ async function readPages(pdfjs: PdfJs, doc: PdfJsDocument, job: PdfTextJob, expl
  * exceeds the item, word or length limits.
  */
 export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, job: PdfTextJob): Promise<PdfTextJobResult> {
-  const result: PdfTextJobResult = { analyses: [], geometry: new Map() };
+  const result: PdfTextJobResult = { analyses: [], geometry: new Map(), content: [], fonts: [] };
   const explicit = Array.isArray(job.geometry) ? new Set<number>(job.geometry) : null;
-  if (job.densityThreshold === undefined && (explicit?.size === 0 || job.geometry === 'none')) return result;
+  const contentWanted = job.content !== undefined && job.content !== false && !(Array.isArray(job.content) && job.content.length === 0);
+  if (job.densityThreshold === undefined && !contentWanted && (explicit?.size === 0 || job.geometry === 'none')) return result;
+  const fonts = new FontTable();
   let task: PdfJsLoadingTask | undefined;
   try {
+    // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end.
+    if (contentWanted) assertPdfStreamsWithinLimits(Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength));
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
     task = pdfjs.getDocument({
       data: new Uint8Array(pdfBuffer),
       useSystemFonts: true,
       disableFontFace: true,
       isEvalSupported: false,
+      maxImageSize: PDF_TEXT_MAX_IMAGE_PIXELS,
       standardFontDataUrl: standardFontDataUrl(),
       verbosity: 0,
     });
     const doc = await task.promise;
+    if (contentWanted && doc.numPages > PDF_TEXT_MAX_PAGES) {
+      throw pdfTextFailure('limit', `PDF has ${doc.numPages} pages; at most ${PDF_TEXT_MAX_PAGES} can be read.`);
+    }
     requirePages(explicit, doc.numPages);
-    await readPages(pdfjs, doc, job, explicit, result);
+    await readPages(pdfjs, doc, job, explicit, result, fonts, job.images === true ? new ImageExtractor(new Uint8Array(pdfBuffer)) : null);
+    result.fonts = fonts.fonts;
     return result;
   } catch (err) {
-    if (err instanceof PdfTextGeometryError) throw err;
+    if (err instanceof ConversionFailedError) throw err;
+    if ((err as { name?: unknown } | null)?.name === 'PasswordException') {
+      throw pdfTextFailure('encrypted', 'PDF is encrypted and needs a password, so its text cannot be read.');
+    }
     throw new PdfTextGeometryError(`PDF text geometry could not be read: ${messageOf(err)}`);
   } finally {
     await task?.destroy().catch(() => undefined);

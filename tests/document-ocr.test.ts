@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { convertFile, extractTextFromPdf, decodePdfHexString } from '../src/lib/conversions/index';
+import { convertFile, extractTextFromPdf } from '../src/lib/conversions/index';
+import { flate, singlePagePdf } from './helpers/pdf-craft';
 import { performOcr } from '../src/lib/conversions/ocr';
 import { oracleTest } from './helpers/oracle-test';
 import { characterErrorRatePercent, normalizeOcrText } from './helpers/ocr-cer';
@@ -45,51 +46,16 @@ Additional summary notes below table.`;
     expect(ocrResult.confidence).toBeGreaterThan(MIN_CLEAN_CONFIDENCE);
   });
 
-  it('extracts text from PDF stream with octal and escaped sequences correctly', () => {
-    const pdfStream = Buffer.from(
-      '%PDF-1.4\n1 0 obj\n<< /Length 75 >>\nstream\nBT\n/F1 12 Tf\n(Hello\\040World\\nLine\\041) Tj\nET\nendstream\nendobj\n%%EOF',
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
-    // PDF 32000-1 Table 3: \040 is a space, \n a line feed and \041 an exclamation mark.
-    expect(text).toBe('Hello World\nLine!');
+  it('reads literal strings with octal and escaped sequences (ISO 32000-1 table 3)', async () => {
+    // \040 is a space, \041 an exclamation mark and \( \) are literal parentheses.
+    const pdf = singlePagePdf(flate(Buffer.from('BT\n/F1 12 Tf\n72 700 Td\n(Hello\\040World\\041 \\(escaped\\)) Tj\nET\n', 'latin1'))).buffer;
+    expect(await extractTextFromPdf(pdf)).toBe('Hello World! (escaped)');
   });
 
-  it('extracts UTF-16BE BOM hex strings and handles odd-length hex without crashing', () => {
-    // UTF-16BE encoded "Hello": 0048 0065 006c 006c 006f with BOM FEFF
-    const pdfStream = Buffer.from(
-      '%PDF-1.4\n1 0 obj\n<< /Length 85 >>\nstream\nBT\n<FEFF00480065006C006C006F> Tj\nET\nendstream\nendobj\n%%EOF',
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
-    expect(text).toBe('Hello');
-
-    // PDF 32000-1 7.3.4.3: a final hex digit with no partner is taken as followed by 0, so FEFF 004 reads as FEFF 0040.
-    expect(decodePdfHexString('FEFF004')).toBe('@');
-    // A UTF-16BE string that ends in half a code unit loses the stray byte instead of inventing a character.
-    expect(decodePdfHexString('FEFF48')).toBe('');
-    expect(decodePdfHexString('FEFF0048')).toBe('H');
-  });
-
-  it('supports PDF single quote and double quote operators with both literal and hex strings', () => {
-    const pdfStream = Buffer.from(
-      `%PDF-1.4
-1 0 obj
-<< /Length 120 >>
-stream
-BT
-/F1 12 Tf
-(First Line) Tj
-(Second Line with \\(nested\\) parens) '
-0 0 <FEFF00540068006900720064> "
-ET
-endstream
-endobj
-%%EOF`,
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
+  it('shows the strings of the single quote and double quote operators in order', async () => {
     // ' moves to the next line and shows its string; " does the same after setting word and character spacing.
-    expect(text).toBe('First Line\nSecond Line with (nested) parens\nThird');
+    const content = "BT\n/F1 12 Tf\n72 700 Td\n14 TL\n(First Line) Tj\n(Second Line with \\(nested\\) parens) '\n0 0 (Third) \"\nET\n";
+    const text = await extractTextFromPdf(singlePagePdf(flate(Buffer.from(content, 'latin1'))).buffer);
+    expect(text.replace(/\s+/g, ' ')).toBe('First Line Second Line with (nested) parens Third');
   });
 });

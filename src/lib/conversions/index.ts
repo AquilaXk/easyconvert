@@ -111,7 +111,6 @@ import {
   type DecodedAudio,
   BitReader,
 } from './media-decoder';
-import { decodePdfHexString, unescapePdfString } from './pdf-utils';
 import {
   convertArchive,
   convertToArchive,
@@ -275,8 +274,6 @@ export {
   encodeFlacStream,
   BitWriter,
   parseSvgPathToBezierPoints,
-  decodePdfHexString,
-  unescapePdfString,
   quantizeMedianCut,
   quantizeNeuQuant,
   encodeBmp8,

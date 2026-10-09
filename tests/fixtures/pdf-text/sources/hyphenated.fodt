@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:font-face-decls><style:font-face style:name="DejaVu Serif" svg:font-family="'DejaVu Serif'"/></office:font-face-decls>
+ <office:styles>
+  <style:default-style style:family="paragraph"><style:paragraph-properties fo:margin-bottom="0.25cm"/><style:text-properties style:font-name="DejaVu Serif" fo:font-size="12pt" fo:language="en" fo:country="US"/></style:default-style>
+  <style:style style:name="Body" style:family="paragraph"><style:paragraph-properties fo:text-align="justify"/></style:style>
+ </office:styles>
+ <office:automatic-styles>
+  <style:page-layout style:name="pm1"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" fo:margin-top="2cm" fo:margin-bottom="2cm" fo:margin-left="2cm" fo:margin-right="2cm"/></style:page-layout>
+  <style:style style:name="Sect1" style:family="section"><style:section-properties text:dont-balance-text-columns="true"><style:columns fo:column-count="3" fo:column-gap="1cm"/></style:section-properties></style:style>
+ </office:automatic-styles>
+ <office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles>
+ <office:body><office:text><text:section text:style-name="Sect1" text:name="Body1">
+  <text:p text:style-name="Body">Inter­na­tion­al­iza­tion re­quire­ments strength­en the or­gan­iza­tion­al re­spon­si­bil­i­ties of the ad­min­is­tra­tion. Not­with­stand­ing the char­ac­ter­is­ti­cal­ly un­com­pro­mis­ing spec­i­fi­ca­tions, the doc­u­men­ta­tion was straight­for­ward­ly com­pre­hen­si­ble.</text:p>
+  <text:p text:style-name="Body">Un­ques­tion­ably, tele­com­mu­ni­ca­tions in­fra­struc­ture de­vel­op­ment ne­ces­si­tates coun­ter­in­tu­i­tive re­con­sid­er­a­tion of elec­tro­mag­net­i­cal­ly in­com­pat­i­ble in­stru­men­ta­tion through­out the es­tab­lish­ment.</text:p>
+ </text:section></office:text></office:body>
+</office:document>
