@@ -123,12 +123,6 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -196,12 +190,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
 
     steps:
       - name: Checkout repository
