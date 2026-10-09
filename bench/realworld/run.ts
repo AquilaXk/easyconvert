@@ -18,7 +18,8 @@ import { getAvailableTargetFormats } from '../../src/lib/registry';
 import { ensureCached, mapLimit } from './fetch';
 import { readManifest } from './manifest';
 import { planJobs, shardJobs } from './plan';
-import { JobPool } from './pool';
+import { ocrPageCount } from './ocr-path';
+import { JobPool, scaledDeadlineMs } from './pool';
 import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
 
 const EXIT_PASS = 0;
@@ -97,9 +98,17 @@ async function runShard(args: string[]): Promise<number> {
     env: { ...process.env, REALWORLD_PDFINFO: toolPath('pdfinfo'), REALWORLD_IDENTIFY: toolPath('identify') },
   });
   let done = 0;
+  const pages = new Map<string, number>();
+  for (const file of files.filter((candidate) => candidate.format === 'pdf')) pages.set(file.id, await ocrPageCount(fs.readFileSync(paths.get(file.id)!)));
   const outcomes = await pool
     .runAll(
-      jobs.map((job) => ({ path: paths.get(job.file.id)!, name: `${job.file.id}`, format: job.file.format, target: job.target })),
+      jobs.map((job) => ({
+        path: paths.get(job.file.id)!,
+        name: `${job.file.id}`,
+        format: job.file.format,
+        target: job.target,
+        deadlineMs: scaledDeadlineMs(deadlineMs, pages.get(job.file.id) ?? 0),
+      })),
       () => {
         done++;
         if (done % PROGRESS_EVERY === 0) console.log(`  ${done}/${jobs.length}`);

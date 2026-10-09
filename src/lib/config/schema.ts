@@ -1054,6 +1054,17 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'EASYCONVERT_OCR_PAGE_BUDGET_MS',
+    area: 'limits',
+    description:
+      'Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job\'s own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 10_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
     area: 'limits',
     description:

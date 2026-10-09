@@ -6,6 +6,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
+import { ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
 import { isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
@@ -18,6 +19,32 @@ export interface PoolOptions {
   heapMb: number;
   env: NodeJS.ProcessEnv;
 }
+
+/** Workers of a nightly shard: the 4-vCPU runner minus one (see `workers` in run.ts). */
+export const NIGHTLY_WORKERS = 3;
+/** Jobs that may hang at the longest deadline before they use up half of a shard's `timeout-minutes` (nightly.yml, job realworld). */
+export const TOLERATED_HUNG_JOBS = 10;
+const NIGHTLY_SHARD_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * Longest a single job may run whatever its size. The pool runs `NIGHTLY_WORKERS` jobs at a time, so
+ * `TOLERATED_HUNG_JOBS` hung jobs hold it for TOLERATED_HUNG_JOBS x cap / NIGHTLY_WORKERS, and that is kept to half of
+ * the shard timeout (30 min -> 9 min per job): a shard that is cancelled loses its report, and with it the hangs.
+ */
+export const MAX_JOB_DEADLINE_MS = (NIGHTLY_SHARD_TIMEOUT_MS / 2 * NIGHTLY_WORKERS) / TOLERATED_HUNG_JOBS;
+
+/**
+ * The deadline of a job on a file that is read by OCR, of `pages` pages (0 for any other file): the base deadline plus
+ * the page budget the converter itself allows each page (src/lib/conversions/ocr-work-budget.ts), so a long scan that is
+ * still being read is not reported as hung while the converter's own limits (a typed 413) are what bound it. A file
+ * that is not read by OCR keeps the base deadline: its work is bounded by the parser deadline, not by pages.
+ */
+export function scaledDeadlineMs(baseMs: number, pages: number): number {
+  return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * ocrPageBudgetMs()));
+}
+
+/** A job the pool runs: what the job server needs, and optionally its own deadline in place of the pool's. */
+export type PoolJob = Omit<JobRequest, 'id'> & { deadlineMs?: number };
 
 export interface JobOutcome {
   verdict: Verdict;
@@ -93,7 +120,8 @@ export class JobPool {
     slot.child = await spawnChild(this.options);
   }
 
-  private runOn(slot: Slot, request: Omit<JobRequest, 'id'>): Promise<JobOutcome> {
+  private runOn(slot: Slot, job: PoolJob): Promise<JobOutcome> {
+    const { deadlineMs = this.options.deadlineMs, ...request } = job;
     const id = this.nextId++;
     const started = performance.now();
     return new Promise((resolve) => {
@@ -115,8 +143,8 @@ export class JobPool {
         finish({ verdict: 'crash', ms: performance.now() - started, detail: `job server died (code ${code}, signal ${signal})` }, true);
       };
       const timer = setTimeout(() => {
-        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${this.options.deadlineMs} ms` }, true);
-      }, this.options.deadlineMs);
+        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${deadlineMs} ms` }, true);
+      }, deadlineMs);
       slot.child.on('message', onMessage);
       slot.child.once('exit', onExit);
       slot.child.send({ ...request, id });
@@ -124,7 +152,7 @@ export class JobPool {
   }
 
   /** Runs every request with at most `workers` in flight; outcomes come back in request order. */
-  async runAll(requests: readonly Omit<JobRequest, 'id'>[], onDone?: (index: number, outcome: JobOutcome) => void): Promise<JobOutcome[]> {
+  async runAll(requests: readonly PoolJob[], onDone?: (index: number, outcome: JobOutcome) => void): Promise<JobOutcome[]> {
     const outcomes = new Array<JobOutcome>(requests.length);
     let next = 0;
     await Promise.all(
