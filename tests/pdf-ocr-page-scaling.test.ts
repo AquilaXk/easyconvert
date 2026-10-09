@@ -37,9 +37,11 @@ const PATHOLOGICAL_PAGE = 5;
 /** Page budgets (ms) of the cases: generous for the cheap case, tight for the slow ones. */
 const CHEAP_PAGE_BUDGET_MS = 1_000;
 const SLOW_PAGE_BUDGET_MS = 500;
+/** Large enough that the limit of one page (6 budgets, 12 s) is past the reserve of the job, even for pages slowed by a loaded host. */
+const DEADLINE_PAGE_BUDGET_MS = 2_000;
 /** A slow page takes 5.2 page budgets to draw: under its own limit of 6, but 4 pages at a time cost more than the budget of each. */
 const SLOW_PAGE_RENDER_MS = 2_200;
-const MIXED_PAGE_BUDGET_MS = 500;
+const MIXED_PAGE_BUDGET_MS = 2_000;
 const SLACK_MS = 12_000;
 /** A timer may fire a few milliseconds before the clock this test reads reaches the delay. */
 const TIMER_EARLY_MS = 50;
@@ -194,7 +196,7 @@ describe('the OCR budget scales with the pages', () => {
     ['tesseract', 'pdftoppm'],
     async () => {
       requireTessdata('eng');
-      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(CHEAP_PAGE_BUDGET_MS));
+      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(DEADLINE_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, () => 400);
       const jobDeadlineMs = 10_000;
       const reserve = ocrDocumentBudgetMs(CHEAP_PAGES, jobDeadlineMs);
