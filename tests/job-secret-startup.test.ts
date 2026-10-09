@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as createJob } from '../src/app/api/v1/jobs/route';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph';
-import { SealingKeyConfigError, type SealingKeyConfigError as SealingKeyConfigErrorType } from '../src/lib/security/job-secret-seal';
+import { SealingKeyConfigError } from '../src/lib/security/job-secret-seal';
+import type { ConfigurationError as ConfigurationErrorType } from '../src/lib/config';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { getQueueForResourceClass } from '../src/lib/queue/conversion-queue';
@@ -31,30 +32,36 @@ afterEach(() => {
 
 describe('worker startup', () => {
   /** Imports the worker entry in a fresh module registry; returns what it threw with that registry's error class. */
-  async function importWorker(): Promise<{ error: unknown; SealingKeyConfigError: typeof SealingKeyConfigErrorType }> {
+  async function importWorker(): Promise<{ error: unknown; ConfigurationError: typeof ConfigurationErrorType }> {
     vi.resetModules();
-    const { SealingKeyConfigError } = await import('../src/lib/security/job-secret-seal');
+    const { ConfigurationError } = await import('../src/lib/config');
     try {
       await import('../src/worker/index');
     } catch (error) {
-      return { error, SealingKeyConfigError };
+      return { error, ConfigurationError };
     }
-    return { error: undefined, SealingKeyConfigError };
+    return { error: undefined, ConfigurationError };
   }
 
-  it('throws a typed error when no sealing key is configured in production', async () => {
+  // The configuration check is the first import of the worker entry, so it reports the missing or malformed key
+  // (with every other bad variable) before the sealing module is loaded; the sealing module's own checks stay
+  // as a second gate and are covered in job-secret-seal.test.ts.
+  it('throws a typed error naming JOB_SECRET_KEK when no sealing key is configured in production', async () => {
     stubProductionWithoutKey();
-    const { error, SealingKeyConfigError } = await importWorker();
-    expect(error).toBeInstanceOf(SealingKeyConfigError);
-    expect((error as SealingKeyConfigErrorType).code).toBe('MISSING');
+    const { error, ConfigurationError } = await importWorker();
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect((error as ConfigurationErrorType).failures).toEqual([{ variable: 'JOB_SECRET_KEK', rule: 'is required in production' }]);
   });
 
-  it('throws a typed error when JOB_SECRET_KEK is malformed in production', async () => {
+  it('throws a typed error naming JOB_SECRET_KEK when it is malformed in production, without its value', async () => {
     stubProductionWithoutKey();
     vi.stubEnv('JOB_SECRET_KEK', 'too-short');
-    const { error, SealingKeyConfigError } = await importWorker();
-    expect(error).toBeInstanceOf(SealingKeyConfigError);
-    expect((error as SealingKeyConfigErrorType).code).toBe('MALFORMED');
+    const { error, ConfigurationError } = await importWorker();
+    expect(error).toBeInstanceOf(ConfigurationError);
+    expect((error as ConfigurationErrorType).failures).toEqual([
+      { variable: 'JOB_SECRET_KEK', rule: 'must be at least 32 bytes (UTF-8 text, not decoded) in production' },
+    ]);
+    expect((error as Error).message).not.toContain('too-short');
   });
 });
 
