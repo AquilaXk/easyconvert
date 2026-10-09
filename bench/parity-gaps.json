@@ -8,14 +8,6 @@
       "note": "speed ratio 0.84 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
       "history": [
         {
-          "ratio": 0.5454,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.4558,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
           "ratio": 0.8332,
           "at": "2026-10-09T16:06:56.945Z"
         },
@@ -52,18 +44,6 @@
       "note": "speed ratio 0.87 or below when recorded on the CI runner (previous record 0.65): ours is slower than the reference tool",
       "history": [
         {
-          "ratio": 0.5052,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.5833,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.6577,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
-        {
           "ratio": 0.8731,
           "at": "2026-10-09T16:36:46.008Z"
         }
@@ -75,14 +55,6 @@
       "ratio": 0.82,
       "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record 0.84): ours is slower than the reference tool",
       "history": [
-        {
-          "ratio": 0.4991,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.4514,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
         {
           "ratio": 0.8487,
           "at": "2026-10-09T16:06:56.945Z"
@@ -100,18 +72,6 @@
       "note": "speed ratio 0.8 or below when recorded on the CI runner (previous record 0.07): ours is slower than the reference tool",
       "history": [
         {
-          "ratio": 0.0513,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.0553,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.0722,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
-        {
           "ratio": 0.8028,
           "at": "2026-10-09T16:36:46.008Z"
         }
@@ -123,18 +83,6 @@
       "ratio": 0.4,
       "note": "speed ratio 0.4 or below when recorded on the CI runner (previous record 0.35): ours is slower than the reference tool",
       "history": [
-        {
-          "ratio": 0.2461,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.2579,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.3522,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
         {
           "ratio": 0.4001,
           "at": "2026-10-09T16:36:46.008Z"
@@ -292,18 +240,6 @@
       "note": "speed ratio 0.93 or below when recorded on the CI runner (previous record 0.43): ours is slower than the reference tool",
       "history": [
         {
-          "ratio": 0.3245,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.3604,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.4353,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
-        {
           "ratio": 0.9388,
           "at": "2026-10-09T16:36:46.008Z"
         }
@@ -315,14 +251,6 @@
       "ratio": 0.48,
       "note": "speed ratio 0.48 or below when recorded on the CI runner (previous record 0.39): ours is slower than the reference tool",
       "history": [
-        {
-          "ratio": 0.2476,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.2559,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
         {
           "ratio": 0.3964,
           "at": "2026-10-09T16:06:56.945Z"
@@ -363,14 +291,6 @@
       "ratio": 0.83,
       "note": "speed ratio 0.83 or below when recorded on the CI runner (previous record 0.79): ours is slower than the reference tool",
       "history": [
-        {
-          "ratio": 0.4251,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.4829,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
         {
           "ratio": 0.7929,
           "at": "2026-10-09T16:06:56.945Z"
