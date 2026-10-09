@@ -23,6 +23,7 @@
     "bench:quality:update-baseline": "tsx bench/run.ts --update-baseline",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
     "generate:sdk": "tsx scripts/generate-sdk.ts",
+    "config:docs": "tsx scripts/generate-config-docs.ts",
     "build:raw-worker": "esbuild src/worker/raw-decode-worker.ts --bundle --platform=node --target=node20 --outfile=dist/raw-decode-worker.js --packages=external",
     "build:cpu-worker": "esbuild src/lib/workers/cpu-worker.ts --bundle --platform=node --target=node20 --outfile=dist/cpu-worker.js --packages=external",
     "build:pdf-text-worker": "esbuild src/lib/conversions/pdf-text-worker.ts --bundle --platform=node --target=node20 --outfile=dist/pdf-text-worker.js --packages=external"

@@ -17,9 +17,15 @@ export function firstChar(text: string): string {
   return String.fromCodePoint(text.codePointAt(0) ?? 0);
 }
 
+const LOW_SURROGATE_FIRST = 0xdc00;
+const LOW_SURROGATE_LAST = 0xdfff;
+
+/** The last code point of the text; reads at most two UTF-16 units, so it costs the same whatever the length. */
 export function lastChar(text: string): string {
-  const units = Array.from(text);
-  return units.length > 0 ? units[units.length - 1] : '';
+  if (text.length === 0) return '';
+  const unit = text.charCodeAt(text.length - 1);
+  const isLowSurrogate = unit >= LOW_SURROGATE_FIRST && unit <= LOW_SURROGATE_LAST;
+  return text.slice(isLowSurrogate && text.length > 1 ? text.length - 2 : text.length - 1);
 }
 
 export function isRightToLeftLetter(char: string): boolean {

@@ -123,48 +123,63 @@ function startsParagraph(previous: LayoutLine, line: LayoutLine, flow: FlowMetri
   return false;
 }
 
-/** The hyphen that ends `text` when it is a line-end break inside a word, or null. */
-function trailingHyphen(text: string): string | null {
-  const last = lastChar(text);
+/** The hyphen that ends `tail` when it is a line-end break inside a word, or null. `tail` holds the end of the text. */
+function trailingHyphen(tail: string): string | null {
+  const last = lastChar(tail);
   if (!HYPHENS.has(last)) return null;
-  const before = Array.from(text);
-  const letter = before.length >= 2 ? before[before.length - 2] : '';
+  const before = Array.from(tail.slice(0, tail.length - last.length));
+  const letter = before.length >= 1 ? before[before.length - 1] : '';
   return isLetter(letter) ? last : null;
 }
+
+/**
+ * Characters of the text so far that the joining rules look at (the last two code points). The text itself is kept in
+ * pieces and joined once: testing the end of one ever-growing string line by line would flatten it every time.
+ */
+const TAIL_UNITS = 8;
 
 /** Joins the lines of a paragraph, rejoining words that a hyphen broke at the end of a line. */
 function joinLines(lines: LayoutLine[]): { runs: StyledRun[]; text: string } {
   const runs: StyledRun[] = [];
-  let text = '';
+  const pieces: string[] = [];
+  let tail = '';
+  const append = (piece: string): void => {
+    pieces.push(piece);
+    tail = (tail + piece).slice(-TAIL_UNITS);
+  };
   lines.forEach((line, index) => {
-    let lineRuns = line.runs.map((run) => ({ ...run }));
-    let lineText = line.text;
+    const lineRuns = line.runs.map((run) => ({ ...run }));
+    const lineText = line.text;
     if (index > 0) {
-      const previousText = text;
-      const hyphen = trailingHyphen(previousText);
+      const hyphen = trailingHyphen(tail);
       const startsLower = isLowercase(firstChar(lineText));
       if (hyphen !== null && startsLower) {
         // Rejoin "adminis-" and "tration": drop the hyphen from the previous run and the text so far.
-        text = previousText.slice(0, previousText.length - hyphen.length);
+        let remaining = hyphen.length;
+        while (remaining > 0 && pieces.length > 0) {
+          const piece = pieces[pieces.length - 1];
+          const keep = Math.max(0, piece.length - remaining);
+          remaining -= piece.length - keep;
+          pieces[pieces.length - 1] = piece.slice(0, keep);
+        }
+        tail = tail.slice(0, tail.length - hyphen.length);
         const last = runs[runs.length - 1];
         last.text = last.text.slice(0, last.text.length - hyphen.length);
       } else if (hyphen !== null) {
         // A hyphen before a capital letter or a digit is part of the compound ("Anglo-Saxon"): kept, with no space after it.
-      } else if (needsSpaceBetween(previousText, lineText)) {
-        text += ' ';
+      } else if (needsSpaceBetween(tail, lineText)) {
+        append(' ');
         runs[runs.length - 1].text += ' ';
       }
     }
-    if (lineRuns.length === 0) lineRuns = [];
     for (const run of lineRuns) {
       const last = runs[runs.length - 1];
       if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) last.text += run.text;
       else runs.push(run);
     }
-    text += lineText;
-    lineText = '';
+    append(lineText);
   });
-  return { runs, text };
+  return { runs, text: pieces.join('') };
 }
 
 function paragraphOf(lines: LayoutLine[], flow: number, pageNumber: number, full: boolean): Paragraph {

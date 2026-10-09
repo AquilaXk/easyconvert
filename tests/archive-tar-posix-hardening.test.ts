@@ -32,7 +32,7 @@ import {
   padToBlock,
   paxRecordBytes,
 } from './helpers/tar-craft';
-import { expectLinearScaling, expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -123,7 +123,7 @@ describe('TAR reader: cumulative extension-header budget', () => {
     expect(readTarEntries(tar).map((e) => e.filename)).toEqual(['f']);
   });
 
-  it('stops a flood of maximum-size pax headers within a bounded amount of work', async () => {
+  it('stops a flood of maximum-size pax headers within a bounded amount of work (hang guard; growth ratio in the perf suite)', async () => {
     // The reader refuses the archive once the pax budget is spent, so a flood four times as long must be
     // refused after about the same work (tests/helpers/timing.ts), not after reading all of it.
     const floodTar = (headers: number) => {
@@ -133,10 +133,10 @@ describe('TAR reader: cumulative extension-header budget', () => {
       }
       return Buffer.concat([...flood, craftEntry('f', 'X'), END_OF_ARCHIVE]);
     };
-    const { largeResult } = await expectSizeIndependentOnInputs(
+    const { largeResult } = await expectNoHangOnInput(
       'pax flood',
       (tar: Buffer) => settle(() => readTarEntries(tar)),
-      { modest: floodTar(PAX_FLOOD_HEADERS), huge: floodTar(PAX_FLOOD_HEADERS * SCALING_FACTOR) }
+      floodTar(PAX_FLOOD_HEADERS * SCALING_FACTOR)
     );
     expect(largeResult.ok).toBe(false);
     expect(!largeResult.ok && largeResult.error).toBeInstanceOf(ConversionFailedError);
@@ -463,7 +463,7 @@ describe('TAR writer: collisions keep directories as directories', () => {
     expect(resolveArchiveEntryCollisions(files, 'rename').map((f) => f.filename)).toEqual(['a.txt', 'a-1.txt']);
   });
 
-  it('writes and reads names made of long slash runs in linear time', async () => {
+  it('writes and reads names made of long slash runs in linear time (hang guard; growth ratio in the perf suite)', async () => {
     // The writer refuses names over 8192 characters, so the largest run is 8000 slashes; repeating the round
     // trip makes the smallest run long enough to time.
     const roundTrip = (slashes: number) => {
@@ -474,7 +474,11 @@ describe('TAR writer: collisions keep directories as directories', () => {
       }
       return filename;
     };
-    const { largeResult } = await expectLinearScaling('slash-run names', roundTrip, { baseSize: SLASH_RUN_BASE });
+    const { largeResult } = await expectNoHangOnInput(
+      'slash-run names',
+      roundTrip,
+      SLASH_RUN_BASE * SCALING_FACTOR
+    );
     expect(largeResult).toBe('a/b');
   }, SCALING_TEST_TIMEOUT_MS);
 });

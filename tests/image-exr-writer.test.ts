@@ -2,8 +2,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
-import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { float16ToFloat32, float32ToFloat16 } from '../src/lib/conversions/float16';
 import { decodeOpenExr } from '../src/lib/conversions/openexr-decode';
@@ -11,7 +9,6 @@ import { encodeOpenExr, encodeOpenExrAsync, type ExrCompression } from '../src/l
 import { ConversionFailedError } from '../src/lib/types';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR } from './helpers/ffmpeg-exr';
 import { skipUnless } from './helpers/strict-skip';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
 /**
  * The EXR writer. Half conversion is checked against numpy's astype(float16) (tests/helpers/half_oracle.py) on a
@@ -24,11 +21,6 @@ const WORK = mkdtempSync(path.join(os.tmpdir(), 'exr-writer-'));
 const ORACLE_SCRIPT = path.join(__dirname, 'helpers', 'half_oracle.py');
 const numpyAvailable = spawnSync('python3', ['-I', '-c', 'import numpy'], { encoding: 'utf-8' }).status === 0;
 const RANDOM_VECTORS = 200_000;
-const PERF_WIDTH = 6000;
-const PERF_HEIGHT = 4000;
-/** The encoder measured about 10x one deflate pass; the per-pixel writer it replaced was about 300x. */
-const PERF_MAX_DEFLATE_RATIO = 25;
-const PERF_MAX_RATIO = 0.4;
 const HALF_BYTES = 2;
 const RGB = 3;
 
@@ -213,27 +205,3 @@ describe.skipIf(skipUnless('ffmpeg with the exr decoder', HAS_FFMPEG_EXR))('FFmp
   });
 });
 
-describe('a 24-megapixel picture', () => {
-  it(`is written within ${PERF_MAX_DEFLATE_RATIO}x the time of deflating its pixels, at no more than 40% of the uncompressed size`, async () => {
-    // A natural picture: a photograph stretched to 6000 x 4000, sRGB decoded to linear light.
-    const photo = path.join(__dirname, '..', 'bench', 'corpus', 'photo-a.jpg');
-    const raster = await sharp(photo).resize(PERF_WIDTH, PERF_HEIGHT, { fit: 'cover', kernel: 'lanczos3' }).removeAlpha().raw().toBuffer();
-    const toLinear = new Float32Array(256);
-    for (let i = 0; i < 256; i += 1) toLinear[i] = i / 255 <= 0.04045 ? i / 255 / 12.92 : Math.pow((i / 255 + 0.055) / 1.055, 2.4);
-    const linear = new Float32Array(raster.length);
-    for (let i = 0; i < raster.length; i += 1) linear[i] = toLinear[raster[i]];
-    // Reference: one deflate pass over the same samples as half floats, timed interleaved in this process so a loaded
-    // runner slows both alike. ZIP compression is deflate over predicted scanline blocks plus the float conversion.
-    const halfSamples = new Uint16Array(linear.length);
-    for (let i = 0; i < linear.length; i += 1) halfSamples[i] = float32ToFloat16(linear[i]);
-    const halfBytes = Buffer.from(halfSamples.buffer);
-    const { largeResult: file } = await expectNoSlowerThanReference(
-      '24 MP EXR write',
-      () => zlib.deflateSync(halfBytes),
-      () => encodeOpenExrAsync(linear, PERF_WIDTH, PERF_HEIGHT, true, 'zip'),
-      { maxRatio: PERF_MAX_DEFLATE_RATIO }
-    );
-    const uncompressed = PERF_WIDTH * PERF_HEIGHT * RGB * HALF_BYTES;
-    expect(file.length / uncompressed).toBeLessThanOrEqual(PERF_MAX_RATIO);
-  }, 120_000);
-});

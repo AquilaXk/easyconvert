@@ -22,6 +22,9 @@ const CHAR_WIDTH = 6;
 const REGULAR: PdfContentFont = { name: 'Body', bold: false, italic: false, monospace: false, serif: false };
 const BOLD: PdfContentFont = { name: 'Body-Bold', bold: true, italic: false, monospace: false, serif: false };
 const FONTS = [REGULAR, BOLD];
+const COLUMN_LINES = 50_000;
+const STAIRCASE_RUNS = 5_000;
+const HOSTILE_TEST_TIMEOUT_MS = 60_000;
 
 function item(text: string, x: number, baseline: number, size = BODY, font = 0): PdfContentItem {
   return { text, x, baseline, width: text.length * CHAR_WIDTH * (size / BODY), size, font, rtl: false, angled: false, vertical: false };
@@ -193,6 +196,18 @@ describe('hostile pages', () => {
       expect(outcome.model.pageCount).toBe(1);
     }
   });
+
+  it('lays out a column of 50,000 lines top to bottom without hanging (growth ratio in the perf suite)', async () => {
+    const items = Array.from({ length: COLUMN_LINES }, (_, i) => item(`r${i}`, 20, 20 + i * 20));
+    const model = await expectNoHang('column of lines', () => layoutPdfDocument([page(items)], FONTS), 30_000);
+    expect(documentToText(model).match(/r\d+/g)).toEqual(items.map((entry) => entry.text));
+  }, HOSTILE_TEST_TIMEOUT_MS);
+
+  it('lays out a staircase that peels one run per cut without hanging', async () => {
+    const items = Array.from({ length: STAIRCASE_RUNS }, (_, i) => item(`s${i}`, 20 + (i % 5) * 100, 20 + i * 14));
+    const model = await expectNoHang('staircase', () => layoutPdfDocument([page(items)], FONTS), 30_000);
+    expect([...(documentToText(model).match(/s\d+/g) ?? [])].sort()).toEqual(items.map((entry) => entry.text).sort());
+  }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('lays out a page of many tiny gaps without recursing without bound', async () => {
     const items: PdfContentItem[] = [];

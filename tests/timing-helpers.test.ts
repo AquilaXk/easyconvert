@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   EXTRA_PASS_RATIO_MARGIN,
   expectLinearScaling,
+  expectNoHangOnInput,
   expectNoSlowerThanReference,
   expectSizeIndependent,
   LINEAR_RATIO_SLACK,
@@ -229,5 +230,39 @@ describe('extra passes on a loaded runner', () => {
     }, LINEAR_BOUND);
     expect(measurement.ratio).toBeGreaterThan(LINEAR_BOUND * EXTRA_PASS_RATIO_MARGIN);
     expect(largeRuns).toBe(SCALING_PASSES + 1);
+  });
+});
+
+describe('expectNoHangOnInput', () => {
+  const GUARD_MS = 50;
+  const SLOW_WORK_MS = 120;
+
+  it('runs the work once, on the given input, and returns its result as largeResult', async () => {
+    const seen: number[] = [];
+    const { largeResult } = await expectNoHangOnInput('doubling', (input: number) => {
+      seen.push(input);
+      return input * 2;
+    }, 21);
+    expect(seen).toEqual([21]);
+    expect(largeResult).toBe(42);
+  });
+
+  it('awaits asynchronous work', async () => {
+    const { largeResult } = await expectNoHangOnInput('async', async (input: string) => input.toUpperCase(), 'abc');
+    expect(largeResult).toBe('ABC');
+  });
+
+  it('fails, naming the label and the guard, when the work outlasts the guard', async () => {
+    const slow = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, SLOW_WORK_MS));
+    await expect(expectNoHangOnInput('stuck parse', slow, null, GUARD_MS)).rejects.toThrow(/stuck parse: took \d+ ms; the hang guard is 50 ms/);
+  });
+
+  it('passes an error thrown by the work through unchanged', async () => {
+    const failure = new RangeError('typed refusal');
+    await expect(
+      expectNoHangOnInput('throws', () => {
+        throw failure;
+      }, 0)
+    ).rejects.toBe(failure);
   });
 });

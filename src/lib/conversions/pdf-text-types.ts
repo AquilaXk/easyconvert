@@ -25,6 +25,10 @@ export const PDF_TEXT_DEADLINE_ENV = 'EASYCONVERT_PDF_TEXT_DEADLINE_MS';
 export const PDF_TEXT_MAX_IMAGE_PIXELS = 50_000_000;
 /** Pages a document may have for its text content to be read; a larger document is refused with 413. */
 export const PDF_TEXT_MAX_PAGES = 2_000;
+/** Text items a whole document may have; with the per-page cap alone, a few thousand pages could still hold hundreds of millions. */
+export const PDF_TEXT_MAX_ITEMS_PER_DOCUMENT = 500_000;
+/** Text a whole document may hold, in UTF-16 units. */
+export const PDF_TEXT_MAX_CHARS_PER_DOCUMENT = 16_777_216;
 /** Graphics operators one page may have before the page's rules and images are no longer collected. */
 export const PDF_CONTENT_MAX_OPERATORS_PER_PAGE = 2_000_000;
 /** Ruling lines one page may contribute; more are dropped (the page is flagged), as they only serve table detection. */

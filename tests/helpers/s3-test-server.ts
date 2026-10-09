@@ -1,7 +1,7 @@
 /**
  * Locates the independent S3-compatible server that the real-server storage tests run against. It
  * is a server this repository did not write, and it verifies SigV4 itself: CI starts a pinned
- * MinIO image (.github/workflows/ci.yml) and exports the variables read here.
+ * MinIO image (.github/actions/ci-setup/install-tools.sh) and exports the variables read here.
  *
  *   STORAGE_TEST_S3_ENDPOINT, STORAGE_TEST_S3_ACCESS_KEY_ID, STORAGE_TEST_S3_SECRET_ACCESS_KEY
  *                                      required
@@ -57,6 +57,6 @@ export function readRealS3Server(env: Env = process.env): RealS3Server | undefin
 export function missingRealS3ServerMessage(): string {
   return (
     `ORACLE_STRICT_MODE=1 requires an S3-compatible test server: set ${REAL_S3_REQUIRED_VARIABLES.join(', ')} ` +
-    '(CI starts one in the "Start the S3 test server" step of .github/workflows/ci.yml).'
+    '(CI starts one in the "Install the tools and start the S3 test server" step of .github/actions/ci-setup/action.yml).'
   );
 }

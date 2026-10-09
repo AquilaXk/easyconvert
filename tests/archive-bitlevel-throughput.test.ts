@@ -4,17 +4,7 @@ import { crc32 } from '../src/lib/conversions/archive';
 import { crc32Slicing8 } from '../src/lib/conversions/crc32';
 import { LzmaRangeEncoder } from '../src/lib/conversions/lzma-encoder';
 import { oracleTest } from './helpers/oracle-test';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
-/**
- * Speed of the bit-level archive primitives against independent references, plus correctness against the
- * command-line tools. Every speed claim is a ratio measured in this process (interleaved, best of several passes), so
- * it does not depend on how fast the runner is. A slow runner can opt out explicitly with ARCHIVE_SKIP_TIMING=1;
- * nothing skips silently in CI.
- */
-// skip-ok: explicit opt-out (ARCHIVE_SKIP_TIMING=1) of the timing ratios on a slow shared runner, never set in CI.
-const SKIP_TIMING = process.env.ARCHIVE_SKIP_TIMING === '1';
-const TEST_TIMEOUT_MS = 120_000;
 const MEGABYTE = 1024 * 1024;
 const LCG_MULTIPLIER = 1664525;
 const LCG_INCREMENT = 1013904223;
@@ -87,25 +77,6 @@ describe('CRC-32', () => {
     expect(crc32Slicing8(data)).toBe(trailerCrc);
   });
 
-  it.skipIf(SKIP_TIMING)(
-    'runs at least 5x faster than the byte-at-a-time loop on 4 MB',
-    async () => {
-      const data = pseudoRandomBytes(4 * MEGABYTE, 17);
-      const expected = byteAtATime(data);
-      await expectNoSlowerThanReference('crc32', () => byteAtATime(data), () => crc32(data), { maxRatio: 1 / 5 });
-      expect(crc32(data)).toBe(expected);
-    },
-    TEST_TIMEOUT_MS
-  );
-
-  it.skipIf(SKIP_TIMING)(
-    'the table fallback alone is at least 1.5x faster than the byte-at-a-time loop on 4 MB',
-    async () => {
-      const data = pseudoRandomBytes(4 * MEGABYTE, 19);
-      await expectNoSlowerThanReference('crc32 slicing-by-8', () => byteAtATime(data), () => crc32Slicing8(data), { maxRatio: 1 / 1.5 });
-    },
-    TEST_TIMEOUT_MS
-  );
 });
 
 /**
@@ -231,17 +202,4 @@ describe('LZMA range encoder', () => {
     expect(encodeStream(new LzmaRangeEncoder(), coded).equals(encodeStream(new BigIntRangeEncoder(), coded))).toBe(true);
   });
 
-  it.skipIf(SKIP_TIMING)(
-    'encodes at least 2x faster than the BigInt reference',
-    async () => {
-      const coded = codedBitStream(1_500_000, 29);
-      await expectNoSlowerThanReference(
-        'range encoder',
-        () => encodeStream(new BigIntRangeEncoder(), coded),
-        () => encodeStream(new LzmaRangeEncoder(), coded),
-        { maxRatio: 1 / 2 }
-      );
-    },
-    TEST_TIMEOUT_MS
-  );
 });

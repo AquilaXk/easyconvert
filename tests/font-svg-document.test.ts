@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { parseSvgFontDocument, SvgFontFormatError, type SvgFont } from '../src/lib/conversions/font-svg';
 import { ConversionFailedError } from '../src/lib/types';
-import { expectLinearOnInputs, expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * SVG 1.1 font document reading (section 20) and XML 1.0 lexical rules for start tags, comments and
- * attributes. Expected values are written by hand from the markup in each test. Each hostile input is
- * built at 1 MB and at 4 MB; a reader whose cost grows with the square of the input takes 16x as long on
- * the larger one, a linear scan about 4x (tests/helpers/timing.ts), whatever the runner's speed.
+ * attributes. Expected values are written by hand from the markup in each test. Each hostile input must be read
+ * within the hang guard (tests/helpers/timing.ts); font-svg-document.perf.test.ts builds it at 1 MB and at 4 MB and
+ * checks that a reader's cost grows linearly (a quadratic scan takes 16x as long on the larger one, a linear scan 4x).
  */
 
 const HOSTILE_BYTES = 1_000_000;
@@ -31,10 +31,9 @@ function timed<T>(run: () => T): { result: T | null; error: unknown; elapsed: nu
 
 type Scan = { result: SvgFont | null; error: unknown };
 
-/** Parses `build(HOSTILE_BYTES)` and `build(4 * HOSTILE_BYTES)`, asserts linear growth, returns the large outcome. */
-async function expectLinearScan(label: string, build: (bytes: number) => string, baseBytes: number = HOSTILE_BYTES): Promise<Scan> {
-  const { largeResult } = await expectLinearOnInputs(label, scan, { small: build(baseBytes), large: build(baseBytes * SCALING_FACTOR) });
-  return largeResult;
+/** Parses `build(4 * HOSTILE_BYTES)` under the hang guard and returns the outcome; the growth ratio is measured by font-svg-document.perf.test.ts. */
+async function expectLargeScanTerminates(label: string, build: (bytes: number) => string, baseBytes: number = HOSTILE_BYTES): Promise<Scan> {
+  return expectScanDoesNotHang(label, build(baseBytes * SCALING_FACTOR));
 }
 
 function scan(document: string): Scan {
@@ -56,31 +55,31 @@ function expectFormatError(error: unknown, pattern: RegExp): void {
   expect((error as Error).message).toMatch(pattern);
 }
 
-describe('SVG font document: start tags, comments and attributes are scanned in linear time', () => {
-  it('rejects a megabyte of unterminated comment openers in linear time', async () => {
-    const { error } = await expectLinearScan('comment openers', (bytes) => wrap('<!--'.repeat(bytes / 4)));
+describe('SVG font document: start tags, comments and attributes are scanned without hanging', () => {
+  it('rejects a megabyte of unterminated comment openers without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('comment openers', (bytes) => wrap('<!--'.repeat(bytes / 4)));
     expectFormatError(error, /comment/i);
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a megabyte of glyph tag openers that never close in linear time', async () => {
-    const { error } = await expectLinearScan('glyph openers', (bytes) => wrap('<glyph '.repeat(bytes / 7)));
+  it('rejects a megabyte of glyph tag openers that never close without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('glyph openers', (bytes) => wrap('<glyph '.repeat(bytes / 7)));
     expectFormatError(error, /<glyph>.*'<'|inside/i);
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a megabyte of unterminated attribute quotes in linear time', async () => {
-    const { error } = await expectLinearScan('attribute quotes', (bytes) => wrap('<glyph d="'.repeat(bytes / 10)), ATTRIBUTE_QUOTE_BASE_BYTES);
+  it('rejects a megabyte of unterminated attribute quotes without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('attribute quotes', (bytes) => wrap('<glyph d="'.repeat(bytes / 10)), ATTRIBUTE_QUOTE_BASE_BYTES);
     expectFormatError(error, /<glyph>|quote|'<'/i);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('reads a glyph whose attribute name is a megabyte of junk without time growing quadratically', async () => {
-    const { result, error } = await expectLinearScan('junk attribute name', (bytes) => wrap(`<glyph ${'a'.repeat(bytes)} />`));
+    const { result, error } = await expectLargeScanTerminates('junk attribute name', (bytes) => wrap(`<glyph ${'a'.repeat(bytes)} />`));
     expect(error).toBeNull();
     expect((result as SvgFont).glyphs).toHaveLength(1);
     expect((result as SvgFont).glyphs[0].d).toBeNull();
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('reads a glyph followed by a megabyte of attribute names without values in linear time', async () => {
-    const { result, error } = await expectLinearScan('valueless attribute names', (bytes) =>
+  it('reads a glyph followed by a megabyte of attribute names without values without hanging', async () => {
+    const { result, error } = await expectLargeScanTerminates('valueless attribute names', (bytes) =>
       wrap(`<glyph ${'abc '.repeat(bytes / 4)}unicode="Q" d="M0 0 H1 V1 Z"/>`)
     );
     expect(error).toBeNull();
@@ -88,12 +87,12 @@ describe('SVG font document: start tags, comments and attributes are scanned in 
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects a tag that is never closed, however long it runs', async () => {
-    const { error } = await expectLinearScan('unclosed tag', (bytes) => `<svg><font><glyph ${'a '.repeat(bytes / 2)}`);
+    const { error } = await expectLargeScanTerminates('unclosed tag', (bytes) => `<svg><font><glyph ${'a '.repeat(bytes / 2)}`);
     expectFormatError(error, /not closed|unterminated/i);
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a numeric attribute that is a megabyte of digits followed by junk in linear time', async () => {
-    const { error } = await expectLinearScan(
+  it('rejects a numeric attribute that is a megabyte of digits followed by junk without hanging', async () => {
+    const { error } = await expectLargeScanTerminates(
       'digit run',
       (bytes) => `<svg><font><font-face units-per-em="${'1'.repeat(bytes)}x"/><glyph unicode="A" d="M0 0"/></font></svg>`
     );

@@ -9,6 +9,8 @@ import { ImageExtractor } from './pdf-text-images';
 import { assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import {
   PDF_TEXT_MAX_PAGES,
+  PDF_TEXT_MAX_ITEMS_PER_DOCUMENT,
+  PDF_TEXT_MAX_CHARS_PER_DOCUMENT,
   PDF_TEXT_MAX_IMAGE_PIXELS,
   PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
@@ -1361,6 +1363,8 @@ async function readPages(
   fonts: FontTable,
   images: ImageExtractor | null
 ): Promise<void> {
+  let documentItems = 0;
+  let documentChars = 0;
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
     if (!needsPage(job, explicit, pageNumber)) continue;
     const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
@@ -1372,6 +1376,14 @@ async function readPages(
     if (wantsContent(job, pageNumber)) {
       const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
       result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, readOperators, images)); // NOSONAR S9382 sequential
+      documentItems += content.items.length;
+      documentChars += pageText.length;
+      if (documentItems > PDF_TEXT_MAX_ITEMS_PER_DOCUMENT || documentChars > PDF_TEXT_MAX_CHARS_PER_DOCUMENT) {
+        throw pdfTextFailure(
+          'limit',
+          `PDF text content passes the document limit of ${PDF_TEXT_MAX_ITEMS_PER_DOCUMENT} text items or ${PDF_TEXT_MAX_CHARS_PER_DOCUMENT} characters.`
+        );
+      }
     }
     if (job.densityThreshold !== undefined) result.analyses.push(densityAnalysis(page, pageNumber, pageText, job.densityThreshold));
     if (wantsGeometry(job, explicit, pageNumber, pageText)) {
