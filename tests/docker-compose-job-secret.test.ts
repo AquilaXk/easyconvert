@@ -12,17 +12,22 @@ import { parse } from 'yaml';
 const ROOT = path.resolve(__dirname, '..');
 const LOCAL_FILE = 'docker-compose.yml';
 const PRODUCTION_FILE = 'docker-compose.prod.yml';
-const WORKER_SERVICES = ['worker', 'worker-gpu'];
+const WORKER_SERVICES = ['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu'];
 const REQUIRED_VALUE = /^JOB_SECRET_KEK=\$\{JOB_SECRET_KEK:\?[^}]+\}$/;
-const FORWARDED_VALUE = /^JOB_SECRET_KEK=\$\{JOB_SECRET_KEK\}$/;
+/** A bare name passes the shell's value through and sets nothing when the shell has none. */
+const FORWARDED_VALUE = /^JOB_SECRET_KEK$/;
 /** Any default form (`:-`, `-`) for JOB_SECRET_KEK itself; JOB_SECRET_KEK_PREVIOUS does not match. */
 const KEK_DEFAULT = /\$\{JOB_SECRET_KEK:?-/;
 
 function workerKekEntries(file: string, service: string): string[] {
-  const compose = parse(fs.readFileSync(path.join(ROOT, file), 'utf8')) as {
-    services: Record<string, { environment?: string[] }>;
+  const compose = parse(fs.readFileSync(path.join(ROOT, file), 'utf8'), { merge: true }) as {
+    services: Record<string, { environment?: string[] | Record<string, string | number | null> }>;
   };
-  return (compose.services[service].environment ?? []).filter((entry) => entry.startsWith('JOB_SECRET_KEK='));
+  const environment = compose.services[service].environment ?? [];
+  const entries = Array.isArray(environment)
+    ? environment
+    : Object.entries(environment).map(([name, value]) => (value === null ? name : `${name}=${String(value)}`));
+  return entries.filter((entry) => entry === 'JOB_SECRET_KEK' || entry.startsWith('JOB_SECRET_KEK='));
 }
 
 describe('docker compose worker services', () => {

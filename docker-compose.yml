@@ -1,6 +1,6 @@
 version: '3.8'
 
-# Local development: `docker compose up` starts Redis and a worker that keeps objects on the shared
+# Local development: `docker compose up` starts Redis and one worker that keeps objects on the shared
 # volume (STORAGE_DRIVER=local, NODE_ENV=development). It asks for no cloud setting and no secret.
 #
 # Production: add the overlay, which switches the workers to NODE_ENV=production and refuses to
@@ -8,6 +8,72 @@ version: '3.8'
 # `openssl rand -hex 32`):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # See docker-compose.prod.yml for the OCI_* / S3_* variables each driver needs.
+#
+# Split deployment: `--profile split` adds one worker per resource class (light, cpu, memory, gpu),
+# each subscribed to its own queue through WORKER_QUEUES. The default `worker` subscribes to every
+# queue and keeps running, so turn it off to avoid two consumers of the same queues:
+#   docker compose --profile split up -d --scale worker=0
+# The gpu worker also starts alone with `--profile gpu` and needs /dev/dri on the host.
+
+# Hardening shared by every worker service: read-only root, no capabilities, no new privileges, the
+# worker seccomp profile (docker/seccomp-worker.json adds only the namespace calls the per-child
+# sandbox needs; see docker/AIRGAP.md D12) and noexec/nosuid/nodev scratch space. Services merge this
+# block with `<<: *worker` and set only their name, queues, concurrency and limits.
+x-worker: &worker
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 120s
+  read_only: true
+  tmpfs:
+    - /tmp:size=8g,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
+    - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
+  # Some Compose releases reject `pids_limit` next to a `deploy.resources.limits` block unless
+  # `limits.pids` repeats it, so both carry the same value.
+  pids_limit: 256
+  ulimits:
+    nproc: 256
+    nofile:
+      soft: 65536
+      hard: 65536
+    fsize: 10737418240
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=./docker/seccomp-worker.json
+  depends_on:
+    - redis
+  volumes:
+    - shared-storage:/shared/storage
+  environment: &worker-environment
+    # Local mode: no cloud account and no secret are needed. Production values live in
+    # docker-compose.prod.yml (see the note at the top of this file).
+    NODE_ENV: development
+    # Passed through from the shell or .env when set, left unset otherwise (no default is invented).
+    # JOB_SECRET_KEK seals the URLs and headers stored in queued jobs: optional here (a development
+    # key is used when unset), required by docker-compose.prod.yml.
+    JOB_SECRET_KEK:
+    JOB_SECRET_KEK_PREVIOUS:
+    # Only needed to sign upload and download URLs. Unset, signing is refused, never faked.
+    STORAGE_SIGNING_SECRET:
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    STORAGE_DRIVER: local
+    WORKER_CONCURRENCY: "3"
+    EASYCONVERT_STORAGE_DIR: /shared/storage
+    STRICT_SANDBOX: "true"
+  deploy:
+    resources:
+      limits:
+        cpus: '2.5'
+        memory: 10G
+        pids: 256
+      reservations:
+        cpus: '0.5'
+        memory: 1G
 
 services:
   # 1. Distributed Queue Broker
@@ -26,117 +92,83 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  # 2. EasyConvert OCI Backend Worker Daemon (CPU / Default)
+  # 2. EasyConvert OCI Backend Worker Daemon (all queues: the local default)
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    <<: *worker
     container_name: easyconvert-oci-worker
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 120s
-    read_only: true
-    tmpfs:
-      - /tmp:size=8g,noexec,nosuid
-      - /home/easyconvert:size=512m,nosuid,nodev
-    pids_limit: 256
-    ulimits:
-      nproc: 256
-      nofile:
-        soft: 65536
-        hard: 65536
-      fsize: 10737418240
-    cap_drop:
-      - ALL
-    # Security Note: SYS_ADMIN capability is deliberately removed for zero-trust least privilege
-    # (Previously added for unshare; removed to prevent container breakout)
-    # cap_add: SYS_ADMIN [REMOVED]
-    security_opt:
-      - no-new-privileges:true
-    depends_on:
-      - redis
+
+  # 3. Split deployment (`--profile split`): one worker per resource class. They differ from the
+  # default worker only in WORKER_QUEUES, concurrency and resource limits.
+  worker-light:
+    <<: *worker
+    container_name: easyconvert-oci-worker-light
+    profiles:
+      - split
     environment:
-      # Local mode: no cloud account and no secret are needed. Production values live in
-      # docker-compose.prod.yml (see the note at the top of this file).
-      - NODE_ENV=development
-      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
-      # unset), required by docker-compose.prod.yml.
-      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
-      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - STORAGE_DRIVER=local
-      # Optional: only needed to sign upload and download URLs. Unset, signing is refused, never faked.
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-}
-      - WORKER_CONCURRENCY=3
-      - EASYCONVERT_STORAGE_DIR=/shared/storage
-      - STRICT_SANDBOX=true
-    volumes:
-      - shared-storage:/shared/storage
-      # Replaced worker-tmp:/tmp with secure tmpfs /tmp:size=8g,noexec,nosuid
+      <<: *worker-environment
+      WORKER_QUEUES: light
+      WORKER_CONCURRENCY: "6"
     deploy:
       resources:
         limits:
-          cpus: '2.5'
-          memory: 10G
+          cpus: '2.0'
+          memory: 4G
+          pids: 256
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+
+  worker-cpu:
+    <<: *worker
+    container_name: easyconvert-oci-worker-cpu
+    profiles:
+      - split
+    environment:
+      <<: *worker-environment
+      WORKER_QUEUES: cpu
+      WORKER_CONCURRENCY: "3"
+
+  worker-memory:
+    <<: *worker
+    container_name: easyconvert-oci-worker-memory
+    profiles:
+      - split
+    environment:
+      <<: *worker-environment
+      WORKER_QUEUES: memory
+      WORKER_CONCURRENCY: "1"
+      # One job may legitimately hold most of the container's memory; recycle near the limit.
+      WORKER_MAX_RSS_MB: "12288"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 14G
+          pids: 256
         reservations:
           cpus: '0.5'
-          memory: 1G
+          memory: 2G
 
-  # 3. EasyConvert OCI Backend Worker Daemon (GPU Profile with VA-API /dev/dri)
+  # 4. GPU worker (VA-API through /dev/dri): `--profile gpu` alone, or with `--profile split`.
   worker-gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    <<: *worker
     container_name: easyconvert-oci-worker-gpu
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 120s
-    read_only: true
-    tmpfs:
-      - /tmp:size=8g,noexec,nosuid
-      - /home/easyconvert:size=512m,nosuid,nodev
-    pids_limit: 256
-    ulimits:
-      nproc: 256
-      nofile:
-        soft: 65536
-        hard: 65536
-      fsize: 10737418240
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     devices:
       - /dev/dri:/dev/dri
     profiles:
       - gpu
-    depends_on:
-      - redis
+      - split
     environment:
-      # Local mode: no cloud account and no secret are needed. Production values live in
-      # docker-compose.prod.yml (see the note at the top of this file).
-      - NODE_ENV=development
-      # Seals the URLs and headers stored in queued jobs; optional here (a development key is used when
-      # unset), required by docker-compose.prod.yml.
-      - JOB_SECRET_KEK=${JOB_SECRET_KEK}
-      - JOB_SECRET_KEK_PREVIOUS=${JOB_SECRET_KEK_PREVIOUS}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - STORAGE_DRIVER=local
-      # Optional: only needed to sign upload and download URLs. Unset, signing is refused, never faked.
-      - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:-}
-      - WORKER_CONCURRENCY=3
-      - EASYCONVERT_STORAGE_DIR=/shared/storage
-      - STRICT_SANDBOX=true
-      - HWACCEL_ENABLED=true
-    volumes:
-      - shared-storage:/shared/storage
+      <<: *worker-environment
+      WORKER_QUEUES: gpu
+      WORKER_CONCURRENCY: "3"
+      HWACCEL_ENABLED: "true"
     deploy:
       resources:
         limits:
           cpus: '4.0'
           memory: 12G
+          pids: 256
         reservations:
           cpus: '1.0'
           memory: 2G

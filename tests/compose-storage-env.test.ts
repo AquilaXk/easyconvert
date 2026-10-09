@@ -20,16 +20,18 @@ import {
  * - `docker-compose.prod.yml` is the production overlay: it selects NODE_ENV=production and refuses
  *   to start without the settings production needs.
  *
- * Oracles, none from src/: the `yaml` package parses the files; variable interpolation follows the
+ * Oracles, none from src/: the `yaml` package parses the files (anchors and merge keys expanded); variable
+ * interpolation follows the
  * Compose specification (`${VAR}`, `${VAR:-default}`, `${VAR-default}`, `${VAR:?error}`,
- * `${VAR?error}`, `$$`), implemented below; expected endpoints are written out by hand from
+ * `${VAR?error}`, `$$`) plus pass-through entries (`NAME`, `NAME:`: the shell's value when set, unset
+ * otherwise), implemented below; expected endpoints are written out by hand from
  * Oracle's documented S3 compatibility endpoint format.
  */
 
 const ROOT = path.join(__dirname, '..');
 const LOCAL_FILE = 'docker-compose.yml';
 const PRODUCTION_FILE = 'docker-compose.prod.yml';
-const WORKER_SERVICES = ['worker', 'worker-gpu'] as const;
+const WORKER_SERVICES = ['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu'] as const;
 const SIGNING_SECRET_BYTES = 32;
 
 type Environment = Record<string, string>;
@@ -72,23 +74,24 @@ function interpolate(template: string, env: Environment): Interpolated {
 }
 
 function readCompose(file: string): ComposeFile {
-  return parse(fs.readFileSync(path.join(ROOT, file), 'utf-8')) as ComposeFile;
+  return parse(fs.readFileSync(path.join(ROOT, file), 'utf-8'), { merge: true }) as ComposeFile;
 }
 
-function environmentEntries(raw: string[] | Record<string, string | number | null> | undefined): Array<[string, string]> {
+/** [name, template] pairs; a null template is a pass-through (`NAME` in the list form, `NAME:` in the mapping form). */
+function environmentEntries(raw: string[] | Record<string, string | number | null> | undefined): Array<[string, string | null]> {
   if (raw === undefined) return [];
   if (Array.isArray(raw)) {
     return raw.map((entry) => {
       const equals = entry.indexOf('=');
-      return equals === -1 ? [entry, ''] : [entry.slice(0, equals), entry.slice(equals + 1)];
+      return equals === -1 ? [entry, null] : [entry.slice(0, equals), entry.slice(equals + 1)];
     });
   }
-  return Object.entries(raw).map(([name, value]) => [name, value === null ? '' : String(value)]);
+  return Object.entries(raw).map(([name, value]) => [name, value === null ? null : String(value)]);
 }
 
 /** The environment of one service after merging the files in order (later files win per variable) and interpolating. */
 function resolveServiceEnvironment(files: string[], service: string, shell: Environment): { env: Environment; missing: string[] } {
-  const merged = new Map<string, string>();
+  const merged = new Map<string, string | null>();
   for (const file of files) {
     for (const [name, value] of environmentEntries(readCompose(file).services?.[service]?.environment)) {
       merged.set(name, value);
@@ -97,6 +100,10 @@ function resolveServiceEnvironment(files: string[], service: string, shell: Envi
   const env: Environment = {};
   const missing: string[] = [];
   for (const [name, template] of merged) {
+    if (template === null) {
+      if (shell[name] !== undefined) env[name] = shell[name];
+      continue;
+    }
     const result = interpolate(template, shell);
     env[name] = result.value;
     missing.push(...result.missing);

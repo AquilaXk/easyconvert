@@ -65,7 +65,7 @@ FROM node:20-bookworm-slim AS runner
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Tini Init, util-linux (prlimit), Native Conversion Engines (7-Zip comes from the pinned stage), and CJK Font Packages
+# 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage), and CJK Font Packages
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
     && apt-get update \
     && EXTRA_PKGS="" \
@@ -75,6 +75,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
     && apt-get install -y --no-install-recommends \
         tini \
         util-linux \
+        libcap2-bin \
         ca-certificates \
         curl \
         ffmpeg \
@@ -88,10 +89,10 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         fonts-noto-core \
         fonts-noto-ui-core \
         fonts-noto-color-emoji \
-        libreoffice-calc \
-        libreoffice-impress \
-        libreoffice-nogpu \
-        libreoffice-writer \
+        libreoffice-calc-nogui \
+        libreoffice-impress-nogui \
+        libreoffice-core-nogui \
+        libreoffice-writer-nogui \
         libraw-bin \
         poppler-utils \
         tesseract-ocr \

@@ -729,7 +729,7 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       // explains why it was removed.
       expect(worker.cap_drop).toEqual(['ALL']);
       expect(worker.cap_add ?? []).not.toContain('SYS_ADMIN');
-      expect(worker.security_opt).toEqual(['no-new-privileges:true']);
+      expect(worker.security_opt).toEqual(['no-new-privileges:true', 'seccomp=./docker/seccomp-worker.json']);
     });
 
     it('enforces Zip Slip directory traversal sanitization across Unix and Windows paths', () => {
