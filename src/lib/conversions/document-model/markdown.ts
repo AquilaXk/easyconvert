@@ -21,8 +21,9 @@ function inlineMarkdown(runs: Inline[]): string {
   return runs
     .map((run) => {
       if (run.text.trim() === '') return run.text;
-      const lead = run.text.match(/^\s*/)?.[0] ?? '';
-      const trail = run.text.match(/\s*$/)?.[0] ?? '';
+      // Linear in the run: an anchored \s*$ pattern would retry from every position of a long run without spaces.
+      const lead = run.text.slice(0, run.text.length - run.text.trimStart().length);
+      const trail = run.text.slice(run.text.trimEnd().length);
       const core = run.text.trim();
       let text = run.monospace ? `${MONO_FENCE}${core.replace(/`/g, '\\`')}${MONO_FENCE}` : escapeMarkdown(core);
       if (run.bold && run.italic) text = `***${text}***`;

@@ -435,7 +435,7 @@ export function toDrawableText(text: string): string {
  * joining) and the bidi marks and embedding controls. They have no glyph of their own, but removing them would change
  * how their neighbours are shaped or ordered.
  */
-const SHAPING_CONTROL_CHARACTER = /[\u200C\u200D\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/;
+const SHAPING_CONTROL_CHARACTER = /\u200C|\u200D|[\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/;
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 
 /** Like toDrawableText, but keeps the invisible characters that shaping and bidi reordering use. */

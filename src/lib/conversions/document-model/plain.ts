@@ -11,7 +11,14 @@ const PARAGRAPH_BREAK = /\n[ \t]*\n+/;
 export function plainTextModel(text: string): DocumentModel {
   const blocks: ParagraphBlock[] = text
     .split(PARAGRAPH_BREAK)
-    .map((part) => part.replace(/\s*\n\s*/g, ' ').trim())
+    // Join the lines of a paragraph with one space; a split is linear where a \s*\n\s* pattern backtracks on long runs.
+    .map((part) =>
+      part
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '')
+        .join(' ')
+    )
     .filter((part) => part !== '')
     .map((part) => ({ type: 'paragraph', runs: [{ text: part, bold: false, italic: false, monospace: false }], rtl: false, align: 'left' }));
   return {
