@@ -225,6 +225,14 @@ describe('XML safety', () => {
       '<w:t xml:space="preserve">tab</w:t><w:tab/><w:t xml:space="preserve">and astral \u{1f600} and \u{20000}</w:t>'
     );
   });
+
+  it('writes every tab of a run, not only the first', async () => {
+    const docx = await documentToDocx(plainTextModel('a\tb\t\tc'));
+    const document = await part(docx, 'word/document.xml');
+    expect(/<w:r>(.*?)<\/w:r>/.exec(document)?.[1]).toBe(
+      '<w:t xml:space="preserve">a</w:t><w:tab/><w:t xml:space="preserve">b</w:t><w:tab/><w:tab/><w:t xml:space="preserve">c</w:t>'
+    );
+  });
 });
 
 describe('other writers of the same structure', () => {
