@@ -76,7 +76,9 @@ describe('concurrency and triggers of ci.yml', () => {
 
   it('runs on pushes to main only, so a pull request commit is not built twice', () => {
     expect(ci.on.push).toEqual({ branches: ['main'] });
-    expect(ci.on.pull_request).toEqual({ branches: ['main'] });
+    // Labels decide two verdicts (the automerge label starts speed parity, the security label excuses parity), so a
+    // label change needs a fresh run; no other event type is added.
+    expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'] });
   });
 
   it('reads the repository and nothing else', () => {
@@ -165,7 +167,7 @@ describe('the nightly workflow', () => {
 
   it('opens or updates one nightly-regression issue when a job fails, with the permissions to do it', () => {
     const report = nightly.jobs.report;
-    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'licenses', 'perf']);
+    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf']);
     expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
     expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
     const script = String(report.steps[0].with?.script);
@@ -307,12 +309,17 @@ describe('the verify gate of ci.yml', () => {
   const bash = spawnSync('bash', ['--version'], { encoding: 'utf-8' });
   const script = stepRun(ci, 'verify', 'Require every job to pass, or to be skipped for a documentation-only change');
 
-  function gate(code: string, results: Partial<Record<'changes' | 'checks' | 'tests' | 'conformance' | 'integration' | 'container', string>>): number {
+  type JobName = 'changes' | 'checks' | 'tests' | 'conformance' | 'integration' | 'container';
+  /** A pull request that changes no conversion family: the parity jobs are skipped (quality) or say there is nothing to measure (speed). */
+  const NO_BENCH = { EVENT_NAME: 'pull_request', BENCH_CHANGED: 'false', HAS_AUTOMERGE_LABEL: 'false', PARITY_QUALITY_RESULT: 'skipped', PARITY_SPEED_RESULT: 'success' };
+
+  function gate(code: string, results: Partial<Record<JobName, string>>, parity: Record<string, string> = NO_BENCH): number {
     const all = { changes: 'success', checks: 'success', tests: 'success', conformance: 'success', integration: 'success', container: 'success', ...results };
     const result = spawnSync('bash', ['-c', script], {
       encoding: 'utf-8',
       env: {
         ...process.env,
+        ...parity,
         CODE_CHANGED: code,
         CHANGES_RESULT: all.changes,
         CHECKS_RESULT: all.checks,

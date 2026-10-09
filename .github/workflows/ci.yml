@@ -6,13 +6,22 @@ name: CI
 #
 # Wall time is set by the slowest job, so the work is split into jobs of about the same length:
 #   - the unit/integration files by recorded duration (scripts/ci-test-shards.mjs, .github/ci/test-durations.json),
-#   - the registry conformance pairs by a stable hash, in as many parts as keep each part near the tests.
+#   - the registry conformance pairs by recorded duration, in as many parts as keep each part near the tests.
 # Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
+#
+# Reference parity: a conversion change merges only when it is at or above the reference tool in quality and speed.
+#   - parity-quality measures the changed families' quality rows on every push to the pull request;
+#   - parity-speed measures their speed rows once the `automerge` label is on (and again for a commit pushed after it),
+#     so the timing run is the last gate before the merge. Without the label, and with a conversion family changed, it
+#     is skipped, which `verify` reports as not yet satisfied: automerge cannot merge before speed parity has run on
+#     the current head.
+# The label-dependent verdicts need a fresh run when a label is added or removed, so those events trigger this workflow.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -29,6 +38,11 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
+      # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
+      bench_families: ${{ steps.families.outputs.families }}
+      bench_unmapped: ${{ steps.families.outputs.unmapped }}
+      bench_changed: ${{ steps.families.outputs.changed }}
 
     env:
       # A file is documentation when it is under docs/ or is a Markdown file outside the directories whose
@@ -68,6 +82,38 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code changed: $code"
+
+      # Which benchmark families the reference-parity jobs must measure. Only a pull request has them; the map is
+      # bench/family-map.json and the mapper needs no installed dependencies.
+      - name: Map changed paths to benchmark families
+        id: families
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression
+        run: |
+          families=""
+          unmapped=""
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+              mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)"
+              printf '%s\n' "$mapped"
+              families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
+              unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
+            else
+              # Fail open: without a comparable base, measure every family.
+              families="$ALL_BENCH_FAMILIES"
+            fi
+          fi
+          changed=false
+          if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
+          {
+            echo "families=$families"
+            echo "unmapped=$unmapped"
+            echo "changed=$changed"
+          } >> "$GITHUB_OUTPUT"
+          echo "benchmark families: ${families:-none}; without bench rows: ${unmapped:-none}"
 
   # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
   # type-checks). They run in their own job so the tool install does not delay them.
@@ -235,12 +281,24 @@ jobs:
         uses: ./.github/actions/ci-setup
 
       # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
-      # pairs (CONFORMANCE_PART), and part 1 also runs the registry-wide checks.
+      # pairs (CONFORMANCE_PART), packed by recorded duration (.github/ci/conformance-durations.json), and part 1 also
+      # runs the registry-wide checks. The part writes what each of its keys cost; the upload below keeps it, so the
+      # table is refreshed from real CI numbers with `node scripts/ci-conformance-parts.mjs --update <recordings>`.
       - name: Run the registry conformance gate
         env:
           ORACLE_STRICT_MODE: "1"
           CONFORMANCE_PART: ${{ matrix.part }}/${{ strategy.job-total }}
+          CONFORMANCE_DURATIONS_OUT: ${{ runner.temp }}/conformance-part-${{ matrix.part }}.json
         run: npx --no-install vitest run tests/registry-engine-conformance.test.ts
+
+      - name: Upload the recorded durations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conformance-durations-${{ matrix.part }}
+          path: ${{ runner.temp }}/conformance-part-${{ matrix.part }}.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   # The checks that need both the tools and Redis and are not part of the shards.
   integration:
@@ -428,26 +486,244 @@ jobs:
         if: always() && steps.changes.outputs.relevant == 'true'
         run: docker compose down --volumes
 
+  # Reference parity, quality half: the changed families' quality rows (BD-rate, CER, F1, size, SSIM/PSNR) against the
+  # reference tools, on the quick subset of each family (QUICK_SUBSET in bench/config.ts). The reference side is
+  # deterministic for fixed tool versions, so it is read from the cache the nightly run keeps; ours is measured here.
+  # Runs only when a conversion family changed. A `security` label with a linked issue excuses the parity verdict and
+  # nothing else (scripts/ci-parity-policy.mjs).
+  parity-quality:
+    name: parity quality
+    needs: changes
+    if: needs.changes.outputs.bench_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    env:
+      ORACLE_STRICT_MODE: "1"
+      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # A family with no reference-compared rows cannot be judged, so a change to it cannot merge until the same
+      # change adds the rows and points its entry in bench/family-map.json at them.
+      - name: Require bench rows for every changed conversion family
+        if: env.BENCH_UNMAPPED != ''
+        run: |
+          for family in ${BENCH_UNMAPPED//,/ }; do
+            echo "::error::add reference-compared bench rows for $family"
+          done
+          exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Fingerprint the reference tools
+        id: tools
+        run: echo "fingerprint=$(npx --no-install tsx bench/run.ts --print-tool-fingerprint)" >> "$GITHUB_OUTPUT"
+
+      # Read-only: the nightly run on main writes this cache (a pull request cannot save into main's scope).
+      - name: Restore the reference measurements
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .bench-cache
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}
+          restore-keys: |
+            bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
+
+      # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
+      # file it leaves is what the policy step below reads, so this step never fails the job by itself.
+      - name: Measure quality against the reference tools
+        id: bench
+        run: |
+          set +e
+          npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES"
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark exit code: $code"
+          exit 0
+
+      - name: Publish the parity table
+        if: always()
+        run: |
+          if [ -f bench-results/parity-verdict.md ]; then
+            { echo '### Reference parity: quality'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-quality-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Apply the parity verdict and the security exemption
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
+            await policy.applyParityVerdict({
+              github,
+              context,
+              core,
+              fs: require('node:fs'),
+              runFilePath: 'bench-results/parity-verdict.json',
+              scope: 'quality',
+            });
+
+  # Reference parity, speed half: ours against the reference tool, interleaved in this job, for the changed families'
+  # throughput rows, decided by a confidence interval of the speed ratio (bench/speed-parity.ts). Timing is never
+  # cached and never compared with a stored number. It runs once the `automerge` label is on, and again for a commit
+  # pushed after the label, so it is the last gate before the merge.
+  #   - nothing to measure (no conversion family changed): the job runs, says so, and succeeds;
+  #   - a conversion family changed and the label is on: the job measures;
+  #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
+  #     added, so automerge cannot merge before this job has run on the current head.
+  parity-speed:
+    name: parity speed
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    env:
+      ORACLE_STRICT_MODE: "1"
+      BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
+      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Say that there is nothing to measure
+        if: env.BENCH_CHANGED != 'true'
+        run: echo "speed parity runs when the automerge label is added; no conversion family changed, so there is nothing to measure"
+
+      - name: Checkout repository
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Require bench rows for every changed conversion family
+        if: env.BENCH_UNMAPPED != ''
+        run: |
+          for family in ${BENCH_UNMAPPED//,/ }; do
+            echo "::error::add reference-compared bench rows for $family"
+          done
+          exit 1
+
+      - name: Setup Node.js
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: env.BENCH_CHANGED == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        if: env.BENCH_CHANGED == 'true'
+        uses: ./.github/actions/ci-setup
+
+      - name: Measure speed against the reference tools
+        id: bench
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          set +e
+          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark exit code: $code"
+          exit 0
+
+      - name: Publish the parity table
+        if: always() && env.BENCH_CHANGED == 'true'
+        run: |
+          if [ -f bench-results/parity-verdict.md ]; then
+            { echo '### Reference parity: speed'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark report
+        if: always() && env.BENCH_CHANGED == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-speed-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Apply the parity verdict and the security exemption
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
+            await policy.applyParityVerdict({
+              github,
+              context,
+              core,
+              fs: require('node:fs'),
+              runFilePath: 'bench-results/parity-verdict.json',
+              scope: 'speed',
+            });
+
   # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
-  # other skipped, cancelled or failed job fails the gate.
+  # other skipped, cancelled or failed job fails the gate. The parity jobs follow the same rule with their own
+  # verdict: quality runs when a conversion family changed, and speed runs when nothing needs measuring or the
+  # `automerge` label is on; a skipped speed job with a conversion family changed is not yet satisfied.
   verify:
     if: always()
-    needs: [changes, checks, tests, conformance, integration, container]
+    needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every job to pass, or to be skipped for a documentation-only change
         env:
+          EVENT_NAME: ${{ github.event_name }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
+          HAS_AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           TESTS_RESULT: ${{ needs.tests.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           CONTAINER_RESULT: ${{ needs.container.result }}
+          PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
+          PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
         run: |
-          echo "code changed: $CODE_CHANGED"
-          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT"
+          echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
+          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
           failed=0
           if [ "$CHANGES_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
           # The expected result of the heavy jobs follows from the filter's verdict alone.
@@ -459,6 +735,22 @@ jobs:
           for result in "$CHECKS_RESULT" "$TESTS_RESULT" "$CONFORMANCE_RESULT" "$INTEGRATION_RESULT"; do
             if [ "$result" != "$expected" ]; then failed=1; fi
           done
+          # Parity quality runs on a pull request that changes a conversion family, and on nothing else.
+          quality_expected=skipped
+          if [ "$EVENT_NAME" = pull_request ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
+          if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
+          # Parity speed: success when nothing needs measuring or the label started the measurement. With a
+          # conversion family changed and no label the job is skipped, and that is not yet satisfied.
+          speed_expected=skipped
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if [ "$BENCH_CHANGED" != true ] || [ "$HAS_AUTOMERGE_LABEL" = true ]; then
+              speed_expected=success
+            else
+              echo "::error::speed parity has not run: add the automerge label to run it before the merge"
+              failed=1
+            fi
+          fi
+          if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"
             exit 1

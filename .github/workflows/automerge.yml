@@ -6,6 +6,13 @@ name: Automerge Label
 #
 # Note: a merge enabled with GITHUB_TOKEN does not trigger `push` workflows on
 # `main`; PR-level CI (`verify`) is the gate.
+#
+# Speed parity gates the merge through `verify`, not through this workflow. Adding the `automerge` label also starts a
+# fresh CI run (ci.yml listens to `labeled`), whose `parity-speed` job is the last measurement before the merge, and a
+# commit pushed after the label starts another. While a conversion family is changed and the label is missing,
+# `verify` fails ("add the automerge label"), so auto-merge cannot fire early on a head that never had its speed
+# measured; once the label is on, `verify` stays pending until `parity-speed` has finished on the current head.
+# A PR that changes no conversion family needs no measurement and is merged as before.
 
 on:
   pull_request_target:
