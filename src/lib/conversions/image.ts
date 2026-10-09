@@ -60,7 +60,7 @@ import {
   type DitherKind,
 } from './color-quantizer';
 import { encodeGif } from './gif-writer';
-import { performOcr, generateSearchablePdf, exportHocr, exportAlto } from './ocr';
+import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
@@ -1808,7 +1808,7 @@ export async function convertImage(
   // Special case: Image to hOCR 1.2 XHTML or ALTO 4.x XML
   if (fmt === 'hocr' || fmt === 'alto') {
     await assertEncodedImageWithinLimit(inputBuffer);
-    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage, undefined, options.ocrDetectOrientation);
+    const ocrResult = await performOcr(inputBuffer, options.ocrLanguage, undefined, options.ocrDetectOrientation, !STRUCTURED_OCR_TARGETS.has(fmt));
     const isHocr = fmt === 'hocr';
     const xml = isHocr
       ? exportHocr(ocrResult, { documentTitle: baseName, filename: originalFilename })

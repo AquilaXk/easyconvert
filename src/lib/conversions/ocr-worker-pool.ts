@@ -3,8 +3,11 @@ import path from 'node:path';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OcrEngineUnavailableError } from '../types';
 
-/** Workers kept per language set. Each holds a WebAssembly heap of roughly 100-300 MB. */
-export const OCR_POOL_MAX_WORKERS_PER_KEY = 2;
+/**
+ * Workers kept per language set. Each holds a WebAssembly heap of roughly 100-300 MB (about 50 MB for English
+ * alone). Four let one page's bands (see ocr-bands.ts) be read side by side.
+ */
+export const OCR_POOL_MAX_WORKERS_PER_KEY = 4;
 /** Workers kept across all language sets; the least recently idle one is evicted for another set. */
 export const OCR_POOL_MAX_WORKERS_TOTAL = 4;
 /** An idle worker is terminated after this long without a job. */
@@ -167,6 +170,39 @@ export class OcrWorkerPool {
     let starting = 0;
     for (const count of this.creating.values()) starting += count;
     return this.entries.size + starting;
+  }
+
+  /**
+   * How many idle, healthy workers could take a job for `spec` this instant. Zero while jobs are queued or the pool
+   * is closing, so a page that wants several workers never takes them from other requests.
+   */
+  idleWorkers(spec: OcrWorkerSpec): number {
+    if (this.closing || this.waiters.length > 0) return 0;
+    const key = keyFor(spec);
+    let idle = 0;
+    for (const entry of this.entries) {
+      if (entry.key === key && !entry.busy && !entry.health.failed) idle++;
+    }
+    return idle;
+  }
+
+  /**
+   * Starts workers for `spec` in the background until `count` of them exist (at most the per-set and pool limits),
+   * and leaves them idle. A page cut into bands can only use workers that are already running: starting one costs
+   * more than the band it would read. A start that fails is dropped; the next job that needs a worker starts its own
+   * and reports the failure. Nothing is started while jobs are queued.
+   */
+  warm(spec: OcrWorkerSpec, count: number): void {
+    if (this.closing || this.waiters.length > 0) return;
+    const key = keyFor(spec);
+    const missing = Math.min(count, this.limits.maxWorkersPerKey) - this.countFor(key);
+    const room = this.limits.maxWorkersTotal - this.size;
+    for (let started = 0; started < Math.min(missing, room); started++) {
+      this.startEntry(key, spec).then(
+        (entry) => this.release(entry),
+        () => undefined
+      );
+    }
   }
 
   /**

@@ -6,6 +6,7 @@ import { identityGeometry, type OcrGeometry, type OcrQuarterTurn } from './ocr-g
 import { CliSemaphore } from './ocr-cli';
 import { countTextRows, OCR_SMALL_CROP_MAX_HEIGHT_PX } from './ocr-config';
 import { encodePbm, encodePgm, encodePpm, isBitonal } from './pnm';
+import { measureInk, OCR_BAND_MIN_LINES, type OcrInkProfile } from './ocr-bands';
 
 /**
  * Prepares a page image for recognition: lines of text are levelled (deskew), scaled up to a size
@@ -100,7 +101,30 @@ export interface OcrPreprocessResult {
   unevenBackground: number;
   /** Whether the page has text lines large enough for binarization to apply, whatever the steps asked for. */
   binarizable: boolean;
+  /**
+   * Where the ink of the page sits, as handed to the recognizer, and the height of its text lines in those pixels, for
+   * cutting the page into bands (see ocr-bands.ts). Left out for a colour page, a page whose text line height is
+   * unknown and a page too short to hold two bands.
+   */
+  ink?: { profile: OcrInkProfile; lineHeightPx: number };
   applied: { rescale: boolean; deskew: boolean; binarize: boolean };
+}
+
+/**
+ * The ink of a gray page for cutting it into bands, or nothing when the page cannot be cut into two or its text lines
+ * are below OCR_MIN_LINE_HEIGHT_PX. Such a page is one the recognizer reads poorly to begin with (the pipeline enlarges
+ * it, or reads it as submitted because enlarging made it worse), and a band of a few small noisy lines reads worse than
+ * the page does: measured, a cut page as submitted lost up to 2 points of character error to the whole page, while the
+ * page is so small that reading it whole is cheap.
+ */
+function bandInk(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  lineHeightPx: number | null
+): OcrPreprocessResult['ink'] {
+  if (lineHeightPx === null || lineHeightPx < OCR_MIN_LINE_HEIGHT_PX || height < 2 * OCR_BAND_MIN_LINES * lineHeightPx) return undefined;
+  return { profile: measureInk(gray, width, height), lineHeightPx };
 }
 
 /**
@@ -367,6 +391,7 @@ async function prepare(
       skewDegrees,
       unevenBackground,
       binarizable,
+      ink: page.channels === GRAY_CHANNELS ? bandInk(page.data, page.width, page.height, lineHeightPx) : undefined,
       applied: { rescale: false, deskew: false, binarize: false },
     };
   };
@@ -439,6 +464,7 @@ async function prepare(
     skewDegrees: skew.degrees,
     unevenBackground,
     binarizable: binarizableWindow !== null,
+    ink: bandInk(pixels, held.page.width, held.page.height, scaledLineHeight),
     applied: { rescale: scale > 1, deskew: turned, binarize: binarizeWindow !== null },
   };
 }
