@@ -15,6 +15,7 @@ import {
   AVIF_EFFORT,
   AVIF_TUNE,
   FALLBACK_QUALITY,
+  avifBitdepthFor,
   avifOptionsFor,
   clampQuality,
   jpegOptionsFor,
@@ -1732,9 +1733,9 @@ async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOption
   const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
   const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
   const target = resizedDimensions(upright.width, upright.height, options);
-  let prepared = opaque;
-  if (deep) prepared = opaque.toColourspace(source.space === 'b-w' || source.space === 'grey16' ? 'grey16' : 'rgb16');
-  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, deep)).toBuffer();
+  const grey = source.space === 'b-w' || source.space === 'grey16';
+  const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
+  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, avifBitdepthFor(deep, grey))).toBuffer();
 }
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */

@@ -179,7 +179,7 @@ describe.skipIf(skipWithoutTools('exiftool'))('metadata on lossy outputs', () =>
 });
 
 describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
-  it('encodes a source with more than 8 bits per sample at 10 bits and keeps more than 256 levels', async () => {
+  it('encodes a source with more than 8 bits per sample at 10 bits when it is grey and keeps more than 256 levels', async () => {
     // A 16-bit grey ramp: 1024 columns, 64 apart in 16-bit value, so 8 bits cannot hold it.
     const columns = 1024;
     const rows = 8;
