@@ -1721,11 +1721,11 @@ function isNeutralColour(colour: { r: number; g: number; b: number } | undefined
 const LOSSY_CONTENT_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
 
 /**
- * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits (the 8-bit path
- * would cap the result near 51 dB PSNR whatever the quality), and an alpha channel that is fully opaque is
+ * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 or 12 bits (the 8-bit path
+ * would cap the result near 51 dB PSNR whatever the quality; HDR output stays at 10), and an alpha channel that is fully opaque is
  * dropped instead of encoded as a second plane.
  */
-async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOptions, content: ContentClass): Promise<Buffer> {
+async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOptions, content: ContentClass, hdr: boolean): Promise<Buffer> {
   const source = await pipeline.metadata();
   const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
   const opaque = await withoutOpaqueAlpha(pipeline);
@@ -1735,7 +1735,7 @@ async function encodeAvifFromPipeline(pipeline: Sharp, options: ConversionOption
   const target = resizedDimensions(upright.width, upright.height, options);
   const grey = source.space === 'b-w' || source.space === 'grey16';
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
-  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, avifBitdepthFor(deep, grey))).toBuffer();
+  return prepared.avif(avifOptionsFor(options.quality, content, target.width * target.height, avifBitdepthFor(deep, grey, hdr))).toBuffer();
 }
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
@@ -2202,7 +2202,7 @@ export async function convertImage(
         break;
 
       case 'avif':
-        outputBuffer = await encodeAvifFromPipeline(pipeline, options, content);
+        outputBuffer = await encodeAvifFromPipeline(pipeline, options, content, tagsPq);
         if (tagsPq) outputBuffer = setAvifColour(outputBuffer, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ);
         mimeType = 'image/avif';
         break;

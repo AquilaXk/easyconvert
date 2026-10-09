@@ -77,6 +77,11 @@ export const AVIF_DEEP_BITDEPTH = 12;
  * (BD-rate in SSIM +4.1% against -3.6% at 10 bits).
  */
 export const AVIF_DEEP_GREY_BITDEPTH = 10;
+/**
+ * Bit depth of HDR output (PQ or HLG, BT.2020). HDR AVIF is delivered at 10 bits: the HDR profiles of AVIF, the
+ * decoders and the HDR delivery chains all assume it, and 12-bit HDR still pictures are not widely decodable.
+ */
+export const AVIF_HDR_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
 
 export function avifEffortFor(pixels: number, content: ContentClass): number {
@@ -126,10 +131,12 @@ export function webpOptionsFor(requestedQuality: number | undefined, content: Co
   return { quality, effort: WEBP_EFFORT, smartSubsample: content === 'graphic' };
 }
 
-export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_GREY_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
+export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_GREY_BITDEPTH | typeof AVIF_HDR_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
 
-export function avifBitdepthFor(deep: boolean, grey: boolean): AvifBitdepth {
+/** `hdr` marks output that carries a PQ or HLG transfer (every HDR AVIF this converter writes is PQ). */
+export function avifBitdepthFor(deep: boolean, grey: boolean, hdr: boolean): AvifBitdepth {
   if (!deep) return AVIF_STANDARD_BITDEPTH;
+  if (hdr) return AVIF_HDR_BITDEPTH;
   return grey ? AVIF_DEEP_GREY_BITDEPTH : AVIF_DEEP_BITDEPTH;
 }
 
