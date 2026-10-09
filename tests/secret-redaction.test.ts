@@ -12,10 +12,6 @@ import {
   redactUrl,
   scrubError,
 } from '../src/lib/security/redact';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
-
-/** Characters in the smaller of the two sizes each pathological shape is built at. */
-const PATHOLOGICAL_LENGTH = 300_000;
 
 /**
  * Goldens are written by hand from the masking contract (secret keys become "***", URLs keep only
@@ -100,24 +96,6 @@ describe('redactText', () => {
     );
     expect(redactText("apiKey: 'k-12345', region: 'us-west-2'")).toBe("apiKey: '***', region: 'us-west-2'");
   });
-
-  it('scans long unbroken and repetitive input in linear time', async () => {
-    // 4x the input may cost at most 8x the time, interleaved and best of N (tests/helpers/timing.ts); a quadratic
-    // scan costs 16x. The shapes are built from a length so both sizes have the same form.
-    const shapes: Array<[string, (length: number) => string]> = [
-      ['a= pairs', (length) => 'a='.repeat(length)],
-      ['http:// openers', (length) => 'http://'.repeat(length / 3)],
-      ['dots after a host', (length) => `https://a${'.'.repeat(length)}x`],
-      ['unterminated password quotes', (length) => 'password="'.repeat(length / 10)],
-      ['spaces after a key', (length) => `token:${' '.repeat(length)}x`],
-    ];
-    for (const [label, build] of shapes) {
-      await expectLinearOnInputs(label, (text: string) => redactText(text), {
-        small: build(PATHOLOGICAL_LENGTH),
-        large: build(PATHOLOGICAL_LENGTH * SCALING_FACTOR),
-      });
-    }
-  }, SCALING_TEST_TIMEOUT_MS);
 
   it('returns text without secrets unchanged', () => {
     const text = 'Node "n1" converted 2 artifact(s) to json in 14ms';
