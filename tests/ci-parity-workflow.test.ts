@@ -410,6 +410,19 @@ describe('the nightly run', () => {
     expect(quality.steps.some((step) => /--speed-only/.test(step.run ?? ''))).toBe(false);
   });
 
+  it('keeps the measured speed ratios as an artifact and lists what a refresh from them would change', () => {
+    const upload = speedJob.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(upload?.with?.name).toBe('bench-speed-results');
+    expect(upload?.with?.path).toBe('bench-results/');
+    expect(upload?.if).toBe('always()');
+    const dryRun = stepNamed(speedJob, 'Show what refreshing the recorded speed ratios would change');
+    expect(dryRun.if).toBe('always()');
+    expect((dryRun as { 'continue-on-error'?: boolean })['continue-on-error']).toBe(true);
+    expect(dryRun.run).toContain('bench/refresh-speed.ts bench-results');
+    expect(dryRun.run).not.toContain('--write');
+    expect(speedJob.steps.indexOf(dryRun)).toBeLessThan(speedJob.steps.indexOf(upload as Step));
+  });
+
   it('reports a failing night through the existing nightly-regression issue', () => {
     const report = nightly.jobs.report;
     expect([...(report.needs as string[])]).toEqual(expect.arrayContaining(['bench', 'bench-parity-quality', 'bench-parity-speed']));

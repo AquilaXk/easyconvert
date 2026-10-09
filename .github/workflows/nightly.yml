@@ -236,6 +236,20 @@ jobs:
           ORACLE_STRICT_MODE: "1"
         run: npm run bench:quality -- --parity --speed-only
 
+      # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This
+      # step lists what refreshing them from this run would change; the refresh itself is a reviewed commit:
+      #   gh run download <run id> -n bench-speed-results -D speed-results && npm run bench:refresh-speed -- --write speed-results
+      - name: Show what refreshing the recorded speed ratios would change
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            echo '### Recorded speed ratios: dry run of the refresh'
+            echo '```'
+            npx --no-install tsx bench/refresh-speed.ts bench-results
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the benchmark report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -90,6 +90,10 @@ numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound i
 more pairs are added, up to 25 for light rows and 12 for video, OCR and office. An interval that still straddles 0.97 at
 the cap is a failure. The interval of a median is as wide as the noise of a single pair, so a row whose true ratio
 sits at the pass line ends UNSTABLE: ours has to be clearly at or above the reference, not merely not behind it.
+A side that finishes in milliseconds (the in-process document conversions, the Zstandard decode) is timed over
+`IN_PROCESS_REPEATS` back-to-back calls per sample, and the sample is the mean per call, so scheduler jitter does not
+decide a pair (`ctx.time(..., oursRepeats)`). Batching cuts noise; it cannot decide a row whose true ratio sits at the pass
+line, and such a row is tracked in `bench/parity-gaps.json`.
 
 **Quality** of the reference side is deterministic for fixed tool versions, so it is cached in `.bench-cache/`
 (ignored by version control), keyed on the reference tool names and versions, the content hash of every corpus file, the
@@ -122,7 +126,7 @@ own name.
   The baseline gate still applies to it. A tracked row that now passes the normal rule is reported as "now at parity:
   remove it from bench/parity-gaps.json".
 - *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
-  #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497. Speed entries carry
+  #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497 (and the near-parity zstd decode row, `compression/mixed.zst->tar/throughput`, until it has an issue of its own; its note says so). Speed entries carry
   the `ratio` they had when recorded, the lower of the baseline ratio and a local measurement; lower the entry only with
   a reviewed reason, and remove it when the row reaches parity.
 
@@ -139,6 +143,36 @@ family; `parity-speed` runs when the `automerge` label is on (and again for a co
 conversion family changed and no label, `parity-speed` is skipped and `verify` fails with "add the automerge label",
 so auto-merge cannot fire before speed parity ran on the current head. The nightly workflow runs the full parity
 benchmark on every family and case.
+
+## Refreshing recorded numbers from CI
+
+Speed depends on the machine, so the speed ratios in `bench/baseline.json` and `bench/parity-gaps.json`, and the
+per-part durations in `.github/ci/conformance-durations.json`, are recorded from a CI run and never from a laptop.
+
+**Speed ratios.** The nightly workflow's `bench-parity-speed` job measures every throughput row on the runner and keeps
+the report as the `bench-speed-results` artifact for 30 days (the `parity speed` job of a pull request keeps
+`parity-speed-results` for 7 days). The job summary also lists what a refresh would change. To refresh:
+
+```sh
+gh workflow run nightly.yml --ref <branch>        # main once merged; or pick the run of a pull request's parity speed job
+gh run download <run id> -n bench-speed-results -D speed-results
+npm run bench:refresh-speed -- speed-results            # dry run: prints every change
+npm run bench:refresh-speed -- --write speed-results    # rewrites baseline.json and parity-gaps.json
+```
+
+The command takes only reports measured on Linux under `ORACLE_STRICT_MODE=1` by a `--parity` run, without an injected
+regression; anything else is exit 2. It sets the baseline `ratio` of every measured speed row, and sets the `ratio` of a
+tracked gap to the median of its interval rounded down to two decimals (a note it generated is rewritten with it; a note
+written by hand stays). A row whose interval was still undecided at the cap changes nothing. A tracked row that now
+passes is listed, not removed: delete its entry by hand in the same commit. Review the diff before committing.
+
+**Conformance durations.** Each part of the `conformance` job uploads `conformance-durations-<part>` (14 days):
+
+```sh
+gh run download <run id> -p 'conformance-durations-*' -D conformance-durations
+node scripts/ci-conformance-parts.mjs --update conformance-durations/*/conformance-part-*.json
+node scripts/ci-conformance-parts.mjs --summary 10    # planned load per part, to check the balance
+```
 
 ## Real-world corpus
 
