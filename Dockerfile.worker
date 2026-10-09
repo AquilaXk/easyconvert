@@ -91,7 +91,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         fonts-noto-color-emoji \
         libreoffice-calc \
         libreoffice-impress \
-        libreoffice-nogpu \
+        libreoffice-core-nogui \
         libreoffice-writer \
         libraw-bin \
         poppler-utils \
