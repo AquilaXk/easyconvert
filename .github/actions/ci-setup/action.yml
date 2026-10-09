@@ -6,6 +6,15 @@ description: >-
 runs:
   using: composite
   steps:
+    - name: Allow unprivileged user namespaces for the child sandbox
+      shell: bash
+      run: |
+        # The runner's AppArmor policy denies unprivileged user namespaces; the worker's per-child sandbox
+        # (unshare -r -n) needs them, and the strict sandbox suites fail closed without them.
+        if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+        unshare -r -n -p --fork true
     - name: Install external conversion and oracle CLI tools
       shell: bash
       run: |

@@ -8,6 +8,7 @@ import {
   NoVideoStreamError,
   TooManyMediaStreamsError,
 } from '../types';
+import { readWavPcmInfo } from './wav-header';
 
 /**
  * ffprobe access for the media conversions: the binary lookup, the scalar probes the argument
@@ -110,6 +111,8 @@ export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, strea
 
 /** Number of audio streams in the file; 0 when it has none. Throws when ffprobe cannot read the file. */
 export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
+  // A WAVE file with uncompressed samples has exactly one audio stream; its header says so without a process.
+  if (readWavPcmInfo(filePath) !== null) return 1;
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
   return out === '' ? 0 : out.split('\n').length;
 }

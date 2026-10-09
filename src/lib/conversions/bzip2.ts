@@ -7,6 +7,8 @@
  */
 
 import { ConversionFailedError } from '../types';
+import { copyYielding, CPU_POOL_MIN_BYTES, getCpuPool, yieldToEventLoop } from '../workers/cpu-pool';
+import { burrowsWheelerTransform, BwtWorkspace } from './bzip2-bwt';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
@@ -141,6 +143,34 @@ class BitWriter {
     }
     return Buffer.from(this.buffer.subarray(0, this.bytePos));
   }
+
+  /** Bits written so far, including those still in the accumulator. */
+  get bitLength(): number {
+    return this.bytePos * BYTE_BITS + this.accBits;
+  }
+
+  /** The written bits as bytes plus their count; the last byte is zero-padded when the count is not a multiple of 8. */
+  takeBitStream(): BitStream {
+    const bitLength = this.bitLength;
+    const bytes = new Uint8Array(Math.ceil(bitLength / BYTE_BITS));
+    bytes.set(this.buffer.subarray(0, this.bytePos));
+    if (this.accBits > 0) bytes[this.bytePos] = (this.acc << (BYTE_BITS - this.accBits)) & BZ_BYTE_MASK;
+    return { bytes, bitLength };
+  }
+
+  /** Appends the first `bitLength` bits of `bytes` (most significant bit first). */
+  writeBitStream(stream: BitStream): void {
+    const whole = Math.floor(stream.bitLength / BYTE_BITS);
+    for (let i = 0; i < whole; i++) this.writeBits(stream.bytes[i], BYTE_BITS);
+    const rest = stream.bitLength - whole * BYTE_BITS;
+    if (rest > 0) this.writeBits(stream.bytes[whole] >>> (BYTE_BITS - rest), rest);
+  }
+}
+
+/** A run of bits that does not end on a byte boundary: bzip2 blocks are bit-aligned, not byte-aligned. */
+export interface BitStream {
+  bytes: Uint8Array;
+  bitLength: number;
 }
 
 class BitReader {
@@ -208,77 +238,6 @@ class BitReader {
   bytesRemaining(): number {
     return ((this.bitCnt - this.padBits) >> 3) + (this.data.length - this.pos);
   }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Encoder: BWT by prefix doubling over cyclic rotations
-// ---------------------------------------------------------------------------------------------
-
-interface BwtResult {
-  lColumn: Uint8Array;
-  origPtr: number;
-}
-
-/** Sorts all cyclic rotations of `block` in O(n log n) (prefix doubling, counting sort). */
-function burrowsWheelerTransform(block: Uint8Array): BwtResult {
-  const n = block.length;
-  const lColumn = new Uint8Array(n);
-  if (n === 1) {
-    lColumn[0] = block[0];
-    return { lColumn, origPtr: 0 };
-  }
-
-  let p = new Int32Array(n);
-  let pn = new Int32Array(n);
-  let c = new Int32Array(n);
-  let cn = new Int32Array(n);
-  const cnt = new Int32Array(Math.max(n, BZ_ALPHABET));
-
-  for (let i = 0; i < n; i++) cnt[block[i]]++;
-  for (let i = 1; i < BZ_ALPHABET; i++) cnt[i] += cnt[i - 1];
-  for (let i = n - 1; i >= 0; i--) p[--cnt[block[i]]] = i;
-
-  let classes = 1;
-  c[p[0]] = 0;
-  for (let i = 1; i < n; i++) {
-    if (block[p[i]] !== block[p[i - 1]]) classes++;
-    c[p[i]] = classes - 1;
-  }
-
-  for (let h = 1; h < n && classes < n; h *= 2) {
-    for (let i = 0; i < n; i++) {
-      const shifted = p[i] - h;
-      pn[i] = shifted < 0 ? shifted + n : shifted;
-    }
-    cnt.fill(0, 0, classes);
-    for (let i = 0; i < n; i++) cnt[c[pn[i]]]++;
-    for (let i = 1; i < classes; i++) cnt[i] += cnt[i - 1];
-    for (let i = n - 1; i >= 0; i--) p[--cnt[c[pn[i]]]] = pn[i];
-
-    cn[p[0]] = 0;
-    classes = 1;
-    for (let i = 1; i < n; i++) {
-      const curA = c[p[i]];
-      const prevA = c[p[i - 1]];
-      let curSecond = p[i] + h;
-      if (curSecond >= n) curSecond -= n;
-      let prevSecond = p[i - 1] + h;
-      if (prevSecond >= n) prevSecond -= n;
-      if (curA !== prevA || c[curSecond] !== c[prevSecond]) classes++;
-      cn[p[i]] = classes - 1;
-    }
-    const swap = c;
-    c = cn;
-    cn = swap;
-  }
-
-  let origPtr = 0;
-  for (let i = 0; i < n; i++) {
-    const idx = p[i];
-    if (idx === 0) origPtr = i;
-    lColumn[i] = block[idx === 0 ? n - 1 : idx - 1];
-  }
-  return { lColumn, origPtr };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -366,9 +325,9 @@ function chooseTreeCount(symbolCount: number): number {
 // Encoder: one block
 // ---------------------------------------------------------------------------------------------
 
-function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number): void {
+function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number, workspace: BwtWorkspace): void {
   const n = rle1Block.length;
-  const { lColumn, origPtr } = burrowsWheelerTransform(rle1Block);
+  const { lColumn, origPtr } = burrowsWheelerTransform(rle1Block, workspace);
 
   const unseqToSeq = new Int16Array(BZ_ALPHABET).fill(-1);
   const inUse = new Uint8Array(BZ_ALPHABET);
@@ -548,43 +507,171 @@ function encodeBlock(bw: BitWriter, rle1Block: Uint8Array, blockCrc: number): vo
   }
 }
 
+/** The input bytes of one bzip2 block. */
+export interface Bzip2BlockRange {
+  start: number;
+  end: number;
+}
+
+const BZ_BLOCK_LIMIT = BZ_MAX_LEVEL * BZ_BLOCK_UNIT - BZ_BLOCK_SLACK;
+
+/**
+ * Applies the initial run-length encoding (stage 1 of the format) from `start` until the encoded block holds the
+ * block limit. Writes the encoded block into `rle1` when given; returns its length and where the input stopped.
+ */
+function scanRle1(input: Uint8Array, start: number, rle1: Uint8Array | null): { length: number; end: number } {
+  let pos = start;
+  let n = 0;
+  while (pos < input.length && n < BZ_BLOCK_LIMIT) {
+    const byte = input[pos];
+    let run = 1;
+    while (run < BZ_RLE1_MAX_RUN && pos + run < input.length && input[pos + run] === byte) run++;
+    pos += run;
+    if (run < BZ_RLE1_MIN_RUN) {
+      if (rle1 !== null) for (let k = 0; k < run; k++) rle1[n + k] = byte;
+      n += run;
+    } else {
+      if (rle1 !== null) {
+        for (let k = 0; k < BZ_RLE1_MIN_RUN; k++) rle1[n + k] = byte;
+        rle1[n + BZ_RLE1_MIN_RUN] = run - BZ_RLE1_MIN_RUN;
+      }
+      n += BZ_RLE1_MIN_RUN + 1;
+    }
+  }
+  return { length: n, end: pos };
+}
+
+/** Splits the input into the byte ranges that become bzip2 blocks; a count-only pass, far cheaper than encoding. */
+export function planBzip2Blocks(input: Uint8Array): Bzip2BlockRange[] {
+  const blocks: Bzip2BlockRange[] = [];
+  let pos = 0;
+  while (pos < input.length) {
+    const { end } = scanRle1(input, pos, null);
+    blocks.push({ start: pos, end });
+    pos = end;
+  }
+  return blocks;
+}
+
+/** `planBzip2Blocks` that lets the event loop run between blocks (each block's scan is a few milliseconds). */
+async function planBzip2BlocksYielding(input: Uint8Array): Promise<Bzip2BlockRange[]> {
+  const blocks: Bzip2BlockRange[] = [];
+  let pos = 0;
+  while (pos < input.length) {
+    const { end } = scanRle1(input, pos, null);
+    blocks.push({ start: pos, end });
+    pos = end;
+    await yieldToEventLoop();
+  }
+  return blocks;
+}
+
+function newRle1Scratch(inputLength: number): Uint8Array {
+  return new Uint8Array(Math.min(BZ_BLOCK_LIMIT, Math.ceil((inputLength * BZ_RLE1_RUN_BYTES) / BZ_RLE1_MIN_RUN)) + BZ_RLE1_RUN_BYTES);
+}
+
+/** Encodes one planned block into `bw` and returns its CRC. */
+function encodePlannedBlock(bw: BitWriter, input: Uint8Array, range: Bzip2BlockRange, rle1: Uint8Array, workspace: BwtWorkspace): number {
+  const { length } = scanRle1(input, range.start, rle1);
+  const blockCrc = computeBzBlockCrc(input.subarray(range.start, range.end));
+  encodeBlock(bw, rle1.subarray(0, length), blockCrc, workspace);
+  return blockCrc;
+}
+
+/**
+ * Encodes one block of `input` on its own, for a worker thread: the block's bits (not byte aligned) and its CRC. The
+ * pieces of all blocks are joined with `joinBzip2Blocks` into the same stream `compressBzip2` writes.
+ */
+export function encodeBzip2Block(input: Uint8Array, range: Bzip2BlockRange): { stream: BitStream; crc: number } {
+  const bw = new BitWriter(Math.ceil((range.end - range.start) / 2) + 1024);
+  const crc = encodePlannedBlock(bw, input, range, newRle1Scratch(range.end - range.start), new BwtWorkspace());
+  return { stream: bw.takeBitStream(), crc };
+}
+
+/** Joins independently encoded blocks (in input order) into one bzip2 stream. */
+export function joinBzip2Blocks(blocks: ReadonlyArray<{ stream: BitStream; crc: number }>): Buffer {
+  const total = blocks.reduce((sum, block) => sum + block.stream.bytes.length, 0);
+  const bw = new BitWriter(total + 64);
+  BZ_SIGNATURE.forEach((b) => bw.writeByte(b));
+  bw.writeByte(BZ_DIGIT_ZERO + BZ_MAX_LEVEL);
+  let combinedCrc = 0;
+  for (const block of blocks) {
+    combinedCrc = combineCrc(combinedCrc, block.crc);
+    bw.writeBitStream(block.stream);
+  }
+  BZ_END_MAGIC.forEach((b) => bw.writeByte(b));
+  bw.writeBits(combinedCrc, BZ_CRC_BITS);
+  return bw.finish();
+}
+
+/** `joinBzip2Blocks` that lets the event loop run between blocks (copying a block's bits is a few milliseconds). */
+async function joinBzip2BlocksYielding(blocks: ReadonlyArray<{ stream: BitStream; crc: number }>): Promise<Buffer> {
+  const total = blocks.reduce((sum, block) => sum + block.stream.bytes.length, 0);
+  const bw = new BitWriter(total + 64);
+  BZ_SIGNATURE.forEach((b) => bw.writeByte(b));
+  bw.writeByte(BZ_DIGIT_ZERO + BZ_MAX_LEVEL);
+  let combinedCrc = 0;
+  for (const block of blocks) {
+    combinedCrc = combineCrc(combinedCrc, block.crc);
+    bw.writeBitStream(block.stream);
+    await yieldToEventLoop();
+  }
+  BZ_END_MAGIC.forEach((b) => bw.writeByte(b));
+  bw.writeBits(combinedCrc, BZ_CRC_BITS);
+  return bw.finish();
+}
+
 /**
  * Compresses an input buffer to a standard single-stream bzip2 file (block size 900k).
  */
 export function compressBzip2(input: Buffer): Buffer {
-  const level = BZ_MAX_LEVEL;
-  const blockLimit = level * BZ_BLOCK_UNIT - BZ_BLOCK_SLACK;
   const bw = new BitWriter(Math.ceil(input.length / 2) + 1024);
   BZ_SIGNATURE.forEach((b) => bw.writeByte(b));
-  bw.writeByte(BZ_DIGIT_ZERO + level);
+  bw.writeByte(BZ_DIGIT_ZERO + BZ_MAX_LEVEL);
 
-  const rle1Capacity = Math.min(blockLimit, Math.ceil((input.length * BZ_RLE1_RUN_BYTES) / BZ_RLE1_MIN_RUN)) + BZ_RLE1_RUN_BYTES;
-  const rle1 = new Uint8Array(rle1Capacity);
+  const rle1 = newRle1Scratch(input.length);
+  const workspace = new BwtWorkspace();
   let combinedCrc = 0;
   let pos = 0;
   while (pos < input.length) {
-    const start = pos;
-    let n = 0;
-    while (pos < input.length && n < blockLimit) {
-      const byte = input[pos];
-      let run = 1;
-      while (run < BZ_RLE1_MAX_RUN && pos + run < input.length && input[pos + run] === byte) run++;
-      pos += run;
-      if (run < BZ_RLE1_MIN_RUN) {
-        for (let k = 0; k < run; k++) rle1[n++] = byte;
-      } else {
-        for (let k = 0; k < BZ_RLE1_MIN_RUN; k++) rle1[n++] = byte;
-        rle1[n++] = run - BZ_RLE1_MIN_RUN;
-      }
-    }
-    const blockCrc = computeBzBlockCrc(input.subarray(start, pos));
+    const { length, end } = scanRle1(input, pos, rle1);
+    const blockCrc = computeBzBlockCrc(input.subarray(pos, end));
     combinedCrc = combineCrc(combinedCrc, blockCrc);
-    encodeBlock(bw, rle1.subarray(0, n), blockCrc);
+    encodeBlock(bw, rle1.subarray(0, length), blockCrc, workspace);
+    pos = end;
   }
 
   BZ_END_MAGIC.forEach((b) => bw.writeByte(b));
   bw.writeBits(combinedCrc, BZ_CRC_BITS);
   return bw.finish();
+}
+
+/**
+ * Compresses without holding the event loop: the blocks of a large input are encoded on pool threads, a few at a time,
+ * and joined in order, which yields byte-for-byte the stream `compressBzip2` writes. The input is copied once into
+ * shared memory that every thread reads. Small inputs run inline.
+ */
+export async function compressBzip2Async(input: Buffer, options: { signal?: AbortSignal } = {}): Promise<Buffer> {
+  if (input.length < CPU_POOL_MIN_BYTES) return compressBzip2(input);
+  const plan = await planBzip2BlocksYielding(input);
+  const shared = await copyYielding<Uint8Array>(input, new Uint8Array(new SharedArrayBuffer(input.length)));
+  const pool = getCpuPool();
+  // Keep a few more blocks in flight than there are threads, but never fill the queue: a long input is fed as blocks finish.
+  const inFlightMax = Math.max(2, pool.threadLimit * 2);
+  const results: Array<{ stream: BitStream; crc: number }> = new Array(plan.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < plan.length) {
+      const at = next++;
+      results[at] = await pool.submit<{ stream: BitStream; crc: number }>(
+        'bzip2Block',
+        { data: shared, start: plan[at].start, end: plan[at].end },
+        { signal: options.signal }
+      );
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(inFlightMax, plan.length) }, () => lane()));
+  return joinBzip2BlocksYielding(results);
 }
 
 // ---------------------------------------------------------------------------------------------

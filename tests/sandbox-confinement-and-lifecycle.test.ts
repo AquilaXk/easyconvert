@@ -192,8 +192,11 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       expect(resolved.binary.length).toBeGreaterThan(5);
       if (getPrlimitCapability().available && process.platform === 'linux') {
         expect(resolved.wrapped).toBe(true);
-        expect(resolved.args[0]).toBe('--as=536870912');
-        expect(resolved.args[1]).toBe('--fsize=1048576');
+        // The namespace wrapper, when the host has one, comes first; the rlimits always sit right before the tool.
+        const command = [resolved.binary, ...resolved.args];
+        const prlimitAt = command.findIndex((part) => part.endsWith('/prlimit'));
+        expect(prlimitAt).toBeGreaterThanOrEqual(0);
+        expect(command.slice(prlimitAt + 1)).toEqual(['--as=536870912', '--fsize=1048576', '--', '/usr/bin/ffmpeg', '-version']);
       } else {
         expect(resolved.args).toEqual(['-version']);
       }
