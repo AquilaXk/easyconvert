@@ -28,7 +28,7 @@
     },
     {
       "families": ["image"],
-      "match": "^src/lib/conversions/(avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-reader|ico|image[^/]*|kd-tree|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-reader|ico|image[^/]*|kd-tree|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {
       "families": ["hdr-image"],
