@@ -28,6 +28,9 @@ qpdf
 ghostscript
 libraw-bin
 libavif-bin
+libheif-examples
+libheif-plugin-x265
+libheif-plugin-aomenc
 libimage-exiftool-perl
 libtiff-tools
 pngcheck

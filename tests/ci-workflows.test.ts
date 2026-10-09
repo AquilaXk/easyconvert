@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { listShardedTests } from '../scripts/ci-test-shards.mjs';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -51,7 +52,7 @@ const nightlyText = read(path.join(WORKFLOWS, 'nightly.yml'));
 const setupText = read(SETUP_ACTION);
 const ci = parse(ciText) as Workflow;
 const nightly = parse(nightlyText) as Workflow;
-const setup = parse(setupText) as { runs: { steps: Step[] } };
+const setup = parse(setupText) as { inputs?: Record<string, { default?: string; required?: boolean }>; runs: { steps: Step[] } };
 
 /** The longest a job may be allowed to run: a hung job must not hold a runner for hours. */
 const MAX_JOB_TIMEOUT_MINUTES = 60;
@@ -240,6 +241,89 @@ describe('the tool setup', () => {
       'fi',
       'unshare -r -n -p --fork true',
     ]);
+  });
+});
+
+describe('the S3 test server', () => {
+  const SETUP_USE = './.github/actions/ci-setup';
+  const S3_VARIABLES = ['STORAGE_TEST_S3_ENDPOINT', 'STORAGE_TEST_S3_ACCESS_KEY_ID', 'STORAGE_TEST_S3_SECRET_ACCESS_KEY', 'STORAGE_TEST_S3_BUCKET'];
+  const PIN_FILE = '.github/actions/ci-setup/s3-test-server-image.txt';
+  const IMAGE_PIN = /^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/;
+
+  /** Jobs whose ci-setup step turns the server on, per workflow. */
+  function jobsWithServer(workflow: Workflow): string[] {
+    return Object.entries(workflow.jobs)
+      .filter(([, job]) => job.steps.some((step) => step.uses === SETUP_USE && step.with?.['s3-test-server'] === 'true'))
+      .map(([name]) => name);
+  }
+
+  const setupStep = (name: string): Step => {
+    const found = setup.runs.steps.find((step) => step.name === name);
+    if (!found) throw new Error(`no step ${name} in the setup action`);
+    return found;
+  };
+
+  it('is off unless a job asks for it, and the switch takes only the strings true and false', () => {
+    expect(setup.inputs?.['s3-test-server']?.default).toBe('false');
+    expect(setup.inputs?.['s3-test-server']?.required).toBe(false);
+    const install = setupStep('Install the tools and start the S3 test server');
+    expect(install.env?.S3_TEST_SERVER).toBe('${{ inputs.s3-test-server }}');
+    expect(install.env?.S3_IMAGE_CACHE_DIR).toBe('${{ runner.temp }}/s3-test-server-image');
+  });
+
+  it('is started by the integration job of the pull request workflow and by no other job', () => {
+    expect(jobsWithServer(ci)).toEqual(['integration']);
+    expect(jobsWithServer(nightly)).toEqual([]);
+  });
+
+  it('gives a job the server settings exactly when it starts the server', () => {
+    for (const [file, workflow] of [['ci.yml', ci], ['nightly.yml', nightly]] as const) {
+      const starting = jobsWithServer(workflow);
+      for (const [name, job] of Object.entries(workflow.jobs)) {
+        const declared = S3_VARIABLES.filter((variable) => job.env?.[variable] !== undefined);
+        expect(declared, `${file} ${name}`).toEqual(starting.includes(name) ? S3_VARIABLES : []);
+      }
+    }
+  });
+
+  it('runs every test file that reads the server in a job that starts it, in strict mode, and in no shard', () => {
+    const readers = readdirSync(path.join(ROOT, 'tests'))
+      .filter((file) => file.endsWith('.test.ts'))
+      .filter((file) => /^\} from '\.\/helpers\/s3-test-server';$|^import .* from '\.\/helpers\/s3-test-server';$/m.test(read(path.join(ROOT, 'tests', file))))
+      .map((file) => `tests/${file}`)
+      .sort();
+    expect(readers.length).toBeGreaterThan(0);
+    const sharded = new Set(listShardedTests());
+    for (const file of readers) expect(sharded.has(file), `${file} must not be in a shard`).toBe(false);
+    const [jobName] = jobsWithServer(ci);
+    const steps = ci.jobs[jobName].steps.filter((step) => readers.every((file) => (step.run ?? '').includes(file)));
+    expect(steps, 'one step of the integration job runs all of them').toHaveLength(1);
+    expect(steps[0].env?.ORACLE_STRICT_MODE).toBe('1');
+    expect(steps[0].run).toMatch(/^npx --no-install vitest run /);
+  });
+
+  it('caches the image keyed on the pinned digest, only for the jobs that start the server', () => {
+    const cache = setupStep('Restore the cached S3 test server image');
+    expect(cache.if).toBe("inputs.s3-test-server == 'true'");
+    expect(String(cache.uses)).toMatch(/^actions\/cache@[0-9a-f]{40}$/);
+    expect(cache.with?.path).toBe('${{ runner.temp }}/s3-test-server-image');
+    expect(cache.with?.key).toBe(`s3-test-server-image-\${{ runner.os }}-\${{ runner.arch }}-\${{ hashFiles('${PIN_FILE}') }}`);
+    const pin = read(path.join(ROOT, PIN_FILE)).trim();
+    expect(pin).toMatch(IMAGE_PIN);
+    expect(read(path.join(ROOT, PIN_FILE))).toBe(`${pin}\n`);
+  });
+
+  it('keeps the pin in one place, not in the action or the script', () => {
+    const pin = read(path.join(ROOT, PIN_FILE)).trim();
+    const [repository] = pin.split(':');
+    expect(setupText).not.toContain(repository);
+    expect(read(path.join(ROOT, '.github', 'actions', 'ci-setup', 'install-tools.sh'))).not.toContain(repository);
+  });
+
+  it('restores the image cache before the tools are installed', () => {
+    const names = setup.runs.steps.map((step) => step.name);
+    expect(names.indexOf('Restore the cached S3 test server image')).toBeGreaterThan(-1);
+    expect(names.indexOf('Restore the cached S3 test server image')).toBeLessThan(names.indexOf('Install the tools and start the S3 test server'));
   });
 });
 

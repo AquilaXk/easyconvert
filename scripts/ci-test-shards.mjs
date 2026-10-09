@@ -19,9 +19,16 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TESTS_DIR = 'tests';
 const DURATIONS_FILE = path.join(ROOT, '.github', 'ci', 'test-durations.json');
 const TEST_SUFFIX = '.test.ts';
-/** Files the sharded job does not run: the timing suites run nightly and the conformance gate has its own jobs. */
+/**
+ * Files the sharded job does not run: the timing suites run nightly, the conformance gate has its own jobs, and the
+ * real-server storage tests run in the one job that starts the S3 test server (the `integration` job of ci.yml).
+ */
 const EXCLUDED_SUFFIXES = ['.perf.test.ts'];
-const EXCLUDED_FILES = new Set(['tests/registry-engine-conformance.test.ts']);
+const EXCLUDED_FILES = new Set([
+  'tests/registry-engine-conformance.test.ts',
+  'tests/s3-minio-integration.test.ts',
+  'tests/s3-object-client.test.ts',
+]);
 /** Upper bound on the shard count: a larger value is a typo, not a plan. */
 export const MAX_SHARDS = 64;
 const MS_PER_SECOND = 1000;

@@ -197,14 +197,6 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -255,14 +247,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
-
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
 
     steps:
       - name: Checkout repository
@@ -320,8 +304,8 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
+    # Dummy credentials of the throwaway S3 test server started below (the only job that starts it), shared by
+    # the step that starts it and by the storage tests that read STORAGE_TEST_S3_*.
     env:
       STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
       STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
@@ -343,6 +327,16 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+        with:
+          s3-test-server: 'true'
+
+      # The storage tests that need a server this repository did not write. They are not in the shards
+      # (scripts/ci-test-shards.mjs), so this is the one job that starts the S3 test server; with
+      # ORACLE_STRICT_MODE a missing server is a failure, not a skip.
+      - name: Run the S3 storage tests against the real server
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npx --no-install vitest run tests/s3-minio-integration.test.ts tests/s3-object-client.test.ts
 
       # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
       # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
