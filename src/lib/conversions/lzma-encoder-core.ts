@@ -505,18 +505,22 @@ export class LzmaEncoderCore {
   }
 
   private relax(node: number, price: number, len: number, dist: number, previous: number, state: number, r0: number, r1: number, r2: number, r3: number): void {
-    if (price < this.optPrice[node]) {
-      this.optPrice[node] = price;
-      this.optLength[node] = len;
-      this.optDistance[node] = dist;
-      this.optPrevious[node] = previous;
-      this.optState[node] = state;
-      this.optRep0[node] = r0;
-      this.optRep1[node] = r1;
-      this.optRep2[node] = r2;
-      this.optRep3[node] = r3;
-      if (node > this.optEnd) this.optEnd = node;
+    if (node > this.optEnd) {
+      // Prices past the last node reached are set when the window grows to them, not for the whole window up front.
+      for (let i = this.optEnd + 1; i < node; i++) this.optPrice[i] = PRICE_INFINITY;
+      this.optEnd = node;
+    } else if (price >= this.optPrice[node]) {
+      return;
     }
+    this.optPrice[node] = price;
+    this.optLength[node] = len;
+    this.optDistance[node] = dist;
+    this.optPrevious[node] = previous;
+    this.optState[node] = state;
+    this.optRep0[node] = r0;
+    this.optRep1[node] = r1;
+    this.optRep2[node] = r2;
+    this.optRep3[node] = r3;
   }
 
   /**
@@ -559,7 +563,6 @@ export class LzmaEncoderCore {
       return;
     }
 
-    for (let i = 0; i <= window + OPT_NODE_PAD; i++) this.optPrice[i] = PRICE_INFINITY;
     this.optPrice[0] = 0;
     this.optState[0] = this.state;
     this.optRep0[0] = this.rep0;
