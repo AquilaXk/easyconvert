@@ -227,6 +227,7 @@ export async function convertDocument(
           detectOrientation: options.ocrDetectOrientation,
           engineMarkup: options.ocrEngineMarkup,
           parallelBands: STRUCTURED_OCR_TARGETS.has(tgt) ? false : undefined,
+          jobDeadlineMs: options.timeoutMs,
         });
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.

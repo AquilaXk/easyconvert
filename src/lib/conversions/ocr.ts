@@ -29,6 +29,7 @@ import {
   OcrEngineFallback,
 } from './ocr-pdf-combiner';
 import { openPdfPageRenderer } from './pdf-page-render';
+import { OcrWorkBudget } from './ocr-work-budget';
 import {
   fallbackReadsMore,
   OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN,
@@ -115,9 +116,10 @@ export async function performOcr(
   language: string = 'auto',
   steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
   detectOrientation?: boolean,
-  parallelBands?: boolean
+  parallelBands?: boolean,
+  signal?: AbortSignal
 ): Promise<OcrResult> {
-  const recognized = await recognizePage(imageBuffer, language, { steps, detectOrientation, parallelBands });
+  const recognized = await recognizePage(imageBuffer, language, { steps, detectOrientation, parallelBands, signal });
   return calibrateOcrResult(recognized.result, recognized.enginePath);
 }
 
@@ -153,6 +155,8 @@ export interface RenderedPdfOcrOptions {
   engineMarkup?: OcrEngineMarkupFormat;
   /** Passed to the page reading (see OcrRecognitionOptions.parallelBands); `false` reads each page whole. */
   parallelBands?: boolean;
+  /** The job's own deadline in milliseconds, when it has one: the OCR stops before it (see ocr-work-budget.ts). */
+  jobDeadlineMs?: number;
 }
 
 /**
@@ -161,6 +165,9 @@ export interface RenderedPdfOcrOptions {
  * in flight are held. The result of a page is in the pixels of its render, and records how they relate to the PDF
  * page (`pageRender`) so a text layer can be placed on it. Without Poppler the request fails with an
  * OcrEngineUnavailableError (503); pages are never read from the image objects they contain instead.
+ * @throws OcrWorkLimitError (413) when rendering and reading the pages takes longer than the document's work budget,
+ * which grows with the number of pages, or one page takes longer than its own limit (ocr-work-budget.ts); no page is
+ * returned then, since a partial document would read as a complete one.
  */
 export async function recognizeRenderedPdfPages(
   pdf: Buffer,
@@ -172,12 +179,18 @@ export async function recognizeRenderedPdfPages(
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
     // With several pages the pages run side by side and each is read whole; bands are for a lone page.
     const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
-    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), async (index) => {
-      const rendered = await renderer.render(index);
-      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed);
-      const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
-      return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
-    });
+    const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs);
+    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), (index) =>
+      budget.guardPage(renderer.plan.pageNumbers[index], async (signal) => {
+        const rendered = await renderer.render(index);
+        // A page that was refused while it was being drawn costs no reading.
+        signal.throwIfAborted();
+        const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed, signal);
+        signal.throwIfAborted();
+        const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
+        return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
+      })
+    );
     return new Map(recognized.map((entry) => [entry.pageNumber, entry.result]));
   } finally {
     await renderer.close();
@@ -245,6 +258,11 @@ export interface OcrRecognitionOptions {
    * ocr-bands.ts). On unless `false`; tests and measurements switch it off to read the same page whole.
    */
   parallelBands?: boolean;
+  /**
+   * Stops the page: checked before every stage that costs a reading, and given to the worker pool so that a reading
+   * still waiting for a worker is dropped and a running one is interrupted. The signal's reason is thrown.
+   */
+  signal?: AbortSignal;
 }
 
 const TESSERACT_CLI_CANDIDATES = ['/usr/bin/tesseract', '/usr/local/bin/tesseract', '/opt/homebrew/bin/tesseract'];
@@ -290,7 +308,7 @@ export async function recognizePage(
   language: string = 'auto',
   options: OcrRecognitionOptions = {}
 ): Promise<RecognizedPage> {
-  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands } = options;
+  const { steps = OCR_PREPROCESS_STEPS, enginePath, detectOrientation, parallelBands, signal } = options;
   const requested = resolveOcrLanguages(language);
   const requestedLanguage = requested.joined;
   const requestedData = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
@@ -305,7 +323,7 @@ export async function recognizePage(
   });
 
   const attempt = (quarterTurn: OcrQuarterTurn, tesseractLang: string, languageData: LanguageData) =>
-    recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language, parallelBands });
+    recognizeAttempt({ imageBuffer, steps, quarterTurn, tesseractLang, languageData, enginePath, language, parallelBands, signal });
   const first = await attempt(0, requestedLanguage, requestedData);
   if (detectOrientation === false) return finish(first, { status: 'disabled', rotationApplied: 0 });
   if (!looksMisread(first.result)) return finish(first, { status: 'not-needed', rotationApplied: 0 });
@@ -313,7 +331,9 @@ export async function recognizePage(
   // The page reads badly, so it may be sideways, upside down or in another script: look at it. The
   // engine's turn is kept only when reading again scores better, so a doubtful reading costs
   // time and never a page that was read correctly.
+  signal?.throwIfAborted();
   const detection = await detectPageOrientation(imageBuffer, detectOrientation === true);
+  signal?.throwIfAborted();
   const scriptLanguage = requested.auto ? languageForScript(detection.orientation) : null;
   const scriptData = scriptLanguage === null ? undefined : locateLanguageData(scriptLanguage);
   const switchTo = scriptLanguage !== null && scriptData && scriptLanguage !== requestedLanguage ? scriptLanguage : null;
@@ -327,7 +347,7 @@ export async function recognizePage(
     );
   } catch (err) {
     rethrowSandboxUnavailable(err);
-    if (detectOrientation === true) throw err;
+    if (detectOrientation === true || signal?.aborted) throw err;
     return finish(first, { ...detection.orientation, status: 'unavailable', rotationApplied: 0 });
   }
   if (readingQuality(second.result) >= readingQuality(first.result) + OSD_MIN_QUALITY_GAIN) {
@@ -371,6 +391,7 @@ interface RecognitionAttempt {
   /** The language as the request named it, for messages. */
   language: string;
   parallelBands?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -383,7 +404,7 @@ interface RecognitionAttempt {
  * read twice and a page that an alternative would only damage keeps its first reading.
  */
 async function recognizeAttempt(attempt: RecognitionAttempt): Promise<RecognizedPage> {
-  const { steps } = attempt;
+  const { steps, signal } = attempt;
   const plain = await readPreparedPage(attempt, { ...steps, binarize: false });
   const needed =
     plain.prepared.unevenBackground >= OCR_UNEVEN_BACKGROUND_RATIO || readingQuality(plain.page.result) < OCR_ALTERNATIVE_TRIGGER_QUALITY;
@@ -394,6 +415,7 @@ async function recognizeAttempt(attempt: RecognitionAttempt): Promise<Recognized
   let best = plain;
   let bestEvidence = readingEvidence(plain.page.result);
   for (const alternative of alternatives) {
+    signal?.throwIfAborted();
     const candidate = await readPreparedPage(attempt, alternative);
     const evidence = readingEvidence(candidate.page.result);
     if (evidence >= bestEvidence * OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN) {
@@ -414,7 +436,8 @@ async function readPreparedPage(
   attempt: RecognitionAttempt,
   steps: OcrPreprocessSteps
 ): Promise<{ page: RecognizedPage; prepared: OcrPreprocessResult }> {
-  const { imageBuffer, quarterTurn, tesseractLang, enginePath, language } = attempt;
+  const { imageBuffer, quarterTurn, tesseractLang, enginePath, language, signal } = attempt;
+  signal?.throwIfAborted();
   const localLangPath = attempt.languageData.dir;
   const isGzip = attempt.languageData.gzip;
 
@@ -431,6 +454,7 @@ async function readPreparedPage(
     if (err instanceof OcrPreprocessError || err instanceof OcrEngineUnavailableError) throw err;
     throw new ConversionFailedError('Invalid image: the OCR input could not be decoded.');
   }
+  signal?.throwIfAborted();
   const ocrInput = prepared.image;
   // Segmentation follows the page as submitted: an enlarged label is still a label. Its text rows
   // are counted on the prepared image, which scaling and binarization leave in the same number.
@@ -460,7 +484,7 @@ async function readPreparedPage(
         pageSegMode !== OCR_PSM_AUTO
           ? null
           : planPageBands(pool, spec, prepared);
-      const banded = bands ? await recognizeInBands(pool, spec, ocrInput, bands) : null;
+      const banded = bands ? await recognizeInBands(pool, spec, ocrInput, bands, signal) : null;
       if (banded) bandsRead = bands?.length ?? 1;
       const ret = banded ?? await pool.run(
         spec,
@@ -479,7 +503,8 @@ async function readPreparedPage(
             { blocks: true }
           );
           return fallbackReadsMore(0, countWords(retry.data.text)) ? retry : first;
-        }
+        },
+        signal
       );
 
       if (ret && ret.data) {
@@ -510,7 +535,7 @@ async function readPreparedPage(
         return { page: withPreparation({ result, enginePath: 'wasm' }, prepared, localLangPath, bandsRead), prepared };
       }
     } catch (err: unknown) {
-      if (err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
+      if (signal?.aborted || err instanceof OcrEngineUnavailableError || err instanceof OcrLanguageUnavailableError) {
         throw err;
       }
       // Only a failure of the WebAssembly runtime itself is answered by the native tool, and the answer is recorded.
@@ -524,6 +549,7 @@ async function readPreparedPage(
 
   // 3. Try System Native Tesseract CLI if available
   const tesseractCli = findTesseractCli();
+  signal?.throwIfAborted();
   if (tesseractCli) {
     const result = trimOverreachingWords(
       mapOcrResultToSource(
@@ -586,14 +612,19 @@ async function recognizeInBands(
   pool: OcrWorkerPool,
   spec: OcrWorkerSpec,
   page: Buffer,
-  bands: readonly OcrBand[]
+  bands: readonly OcrBand[],
+  signal?: AbortSignal
 ): Promise<{ data: BandReading } | null> {
   const readings = await Promise.all(
     bands.map((band) =>
-      pool.run(spec, async (recognize) => {
-        const read = await recognize(sliceNetpbmRows(page, band.top, band.bottom), {}, { blocks: true });
-        return { text: read.data.text ?? '', blocks: read.data.blocks };
-      })
+      pool.run(
+        spec,
+        async (recognize) => {
+          const read = await recognize(sliceNetpbmRows(page, band.top, band.bottom), {}, { blocks: true });
+          return { text: read.data.text ?? '', blocks: read.data.blocks };
+        },
+        signal
+      )
     )
   );
   const merged = mergeBandReadings(bands, readings);
@@ -800,6 +831,7 @@ export async function performSmartMultiPagePdfOcr(
           dpi: options.dpi,
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
+          jobDeadlineMs: options.timeoutMs,
         })
       : new Map<number, OcrResult>();
 

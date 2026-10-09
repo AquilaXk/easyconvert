@@ -232,11 +232,23 @@ export class OcrWorkerPool {
     return worker as unknown as OcrPooledWorker;
   }
 
+  /**
+   * Runs `job` on a worker for `spec`. When `signal` fires the job ends with the signal's reason: a job still waiting
+   * for a worker gives up its place and never starts, and a running one is interrupted and its worker terminated and
+   * replaced, since the engine cannot cancel a single reading.
+   */
   async run<T>(
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>,
+    signal?: AbortSignal
   ): Promise<T> {
-    const entry = await this.acquire(spec);
+    signal?.throwIfAborted();
+    const entry = await this.acquire(spec, signal);
+    if (signal?.aborted) {
+      // The signal fired while the worker was being handed out; it is idle again for the next job.
+      this.release(entry);
+      throw signal.reason;
+    }
     if (!this.entries.has(entry)) {
       // A shutdown retired the worker between hand-out and start.
       throw new OcrEngineUnavailableError('The OCR worker pool was shut down.');
@@ -253,8 +265,13 @@ export class OcrWorkerPool {
         this.limits.jobTimeoutMs
       );
     });
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal?.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
     try {
-      const outcome = await Promise.race([this.execute(entry, spec, job), interrupted, timedOut]);
+      const outcome = await Promise.race([this.execute(entry, spec, job), interrupted, timedOut, cancelled]);
       this.release(entry);
       return outcome;
     } catch (err) {
@@ -262,6 +279,7 @@ export class OcrWorkerPool {
       throw err;
     } finally {
       clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
       entry.abort = null;
     }
   }
@@ -313,10 +331,11 @@ export class OcrWorkerPool {
     return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith, detect);
   }
 
-  private async acquire(spec: OcrWorkerSpec): Promise<PoolEntry> {
+  private async acquire(spec: OcrWorkerSpec, signal?: AbortSignal): Promise<PoolEntry> {
     const key = keyFor(spec);
     let queued = false;
     for (;;) {
+      signal?.throwIfAborted();
       if (this.closing) {
         throw new OcrEngineUnavailableError('The OCR worker pool is shutting down.');
       }
@@ -339,7 +358,20 @@ export class OcrWorkerPool {
         );
       }
       queued = true;
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await new Promise<void>((resolve) => {
+        const leave = (): void => {
+          signal?.removeEventListener('abort', leave);
+          const index = this.waiters.indexOf(wake);
+          if (index >= 0) this.waiters.splice(index, 1);
+          resolve();
+        };
+        const wake = (): void => {
+          signal?.removeEventListener('abort', leave);
+          resolve();
+        };
+        this.waiters.push(wake);
+        signal?.addEventListener('abort', leave, { once: true });
+      });
     }
   }
 

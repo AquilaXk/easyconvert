@@ -3,12 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
+import sharp from 'sharp';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
 import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
 import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
-import { JobPool } from '../bench/realworld/pool';
+import { ocrPageCount } from '../bench/realworld/ocr-path';
+import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { captureError } from './helpers/capture-error';
 import { oracleTest } from './helpers/oracle-test';
 import { authorWithReferenceSuite } from './helpers/office-pair-fixtures';
@@ -234,6 +238,78 @@ describe('isolated job pool', () => {
       expect(first.detail).toMatch(/no answer within 1 ms/);
     } finally {
       hanging.stop();
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('job deadline by size', () => {
+  const BASE_MS = 180_000;
+  const SHARD_PAGES = 20;
+
+  it('is the base deadline for a file without OCR pages, and grows by the converter page budget for each page', () => {
+    expect(scaledDeadlineMs(BASE_MS, 0)).toBe(BASE_MS);
+    expect(scaledDeadlineMs(BASE_MS, 1)).toBe(BASE_MS + OCR_PAGE_BUDGET_MS);
+    expect(scaledDeadlineMs(BASE_MS, SHARD_PAGES)).toBe(BASE_MS + SHARD_PAGES * OCR_PAGE_BUDGET_MS);
+  });
+
+  it('stops growing at the longest a job may run, and never goes below the base deadline', () => {
+    expect(scaledDeadlineMs(BASE_MS, 100_000)).toBe(MAX_JOB_DEADLINE_MS);
+    expect(scaledDeadlineMs(2 * MAX_JOB_DEADLINE_MS, 100_000)).toBe(2 * MAX_JOB_DEADLINE_MS);
+  });
+
+  it('keeps TOLERATED_HUNG_JOBS jobs hung at the longest deadline inside half of the nightly shard timeout', () => {
+    const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'nightly.yml'), 'utf8');
+    const realworld = workflow.slice(workflow.indexOf('\n  realworld:'), workflow.indexOf('\n  realworld-gate:'));
+    const minutes = Number(/timeout-minutes:\s*(\d+)/.exec(realworld)?.[1]);
+    expect(minutes, 'timeout-minutes of the realworld job').toBeGreaterThan(0);
+    const holdMs = (TOLERATED_HUNG_JOBS * MAX_JOB_DEADLINE_MS) / NIGHTLY_WORKERS;
+    expect(holdMs).toBeLessThanOrEqual((minutes * 60_000) / 2);
+    expect(MAX_JOB_DEADLINE_MS).toBe(540_000);
+  });
+
+  describe('which files are read by OCR', () => {
+    async function pdfOf(pages: Array<'text' | 'picture'>): Promise<Buffer> {
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      const picture = await doc.embedPng(await sharp({ create: { width: 64, height: 64, channels: 3, background: '#808080' } }).png().toBuffer());
+      for (const kind of pages) {
+        const page = doc.addPage([612, 792]);
+        if (kind === 'text') page.drawText('The committee reviewed the quarterly report and approved the budget for the water project.', { x: 36, y: 700, size: 12, font });
+        else page.drawImage(picture, { x: 36, y: 36, width: 540, height: 720 });
+      }
+      return Buffer.from(await doc.save());
+    }
+
+    it('counts every page of a PDF that has no text, the pages the converter recognizes', async () => {
+      expect(await ocrPageCount(await pdfOf(['picture', 'picture', 'picture']))).toBe(3);
+    });
+
+    it('counts none of a PDF that has text, which the converter reads without OCR, even when some pages are pictures', async () => {
+      expect(await ocrPageCount(await pdfOf(['text', 'text']))).toBe(0);
+      expect(await ocrPageCount(await pdfOf(['text', 'picture', 'picture']))).toBe(0);
+    });
+
+    it('counts none of a file the PDF reader cannot open', async () => {
+      expect(await ocrPageCount(Buffer.from('not a pdf'))).toBe(0);
+    });
+  });
+
+  it('takes the deadline of a job in place of the pool deadline, so a job given time is not reported as hung', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-deadline-'));
+    const good = path.join(dir, 'good.png');
+    fs.writeFileSync(good, PNG_1X1);
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    try {
+      const [given, notGiven] = await pool.runAll([
+        { path: good, name: 'good.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
+        { path: good, name: 'good.png', format: 'png', target: 'bmp' },
+      ]);
+      expect(given.verdict).toBe('ok');
+      expect(notGiven.verdict).toBe('hang');
+    } finally {
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);
 });
