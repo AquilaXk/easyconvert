@@ -14,15 +14,19 @@
   "exceptions": {
     "argparse@2.0.1": {
       "license": "Python-2.0",
-      "reason": "Permissive Python Software Foundation License used for CLI parsing"
+      "reason": "Python Software Foundation licence: permissive, attribution only, no copyleft"
     },
     "caniuse-lite@1.0.30001812": {
       "license": "CC-BY-4.0",
-      "reason": "Browser support database, attribution only, non-copyleft"
+      "reason": "Browser support data under CC-BY-4.0: attribution only, no copyleft"
     },
     "pako@1.0.11": {
-      "license": "Zlib",
-      "reason": "Permissive zlib component in dual license (MIT AND Zlib)"
+      "license": "(MIT AND Zlib)",
+      "reason": "Both parts are permissive: MIT plus the zlib licence for the ported deflate and inflate code"
+    },
+    "png-js@1.1.0": {
+      "license": "MIT",
+      "reason": "The lockfile entry has no licence field; the package ships an MIT LICENSE file (checked by hand at 1.1.0)"
     }
   }
 }

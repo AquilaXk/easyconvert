@@ -97,9 +97,25 @@ The inclusion of software supporting these formats does not constitute a patent 
 
 ---
 
-## 6. Dependency License Governance in CI
+## 6. Dependency Licence Governance in CI
 
-EasyConvert enforces strict automated license gating in continuous integration:
-- **Policy File**: [`licenses.allow.json`](../licenses.allow.json) defines approved open-source licenses and vetted package exceptions.
-- **Prohibited Licenses**: Reciprocal network copyleft licenses (AGPL) and non-commercial/source-available restrictions are strictly rejected.
-- **Audit Script**: `scripts/third-party-notices.mjs` verifies that every production dependency is permitted and that [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) reflects the exact installed dependency graph.
+`npm run licenses:check` runs in the `checks` job of `.github/workflows/ci.yml`. It reads only `package-lock.json`, `licenses.allow.json` and the installed `node_modules`, needs no network, and takes a few seconds. `npm run licenses:generate` rewrites the notices file; commit the result together with any lockfile change.
+
+### 6.1 What is checked
+
+- **Package set**: every entry of `package-lock.json` (lockfileVersion 3) except the root and entries marked `dev: true`. The name is the path after the last `node_modules/` (scopes kept); version and licence come from the lockfile entry. The installed tree and `npm ls` are never consulted for the set, so the result is the same on every host and platform. Optional platform packages (`@img/sharp-*`, `@napi-rs/canvas-*`, `@next/swc-*`) are included.
+- **Licence policy**: the lockfile licence is evaluated as an SPDX expression against `allowed` in [`licenses.allow.json`](../licenses.allow.json). `A OR B` passes when any branch is allowed; `A AND B` only when every part is allowed; `AND` binds tighter than `OR`; `X WITH Y` passes only when that exact pair is listed. A missing, unparseable or disallowed licence fails the run. Nothing is guessed from licence file text.
+- **Exceptions**: `exceptions` is keyed by the exact `name@version` and each needs a non-empty `reason`. When the lockfile has no licence, the exception must name it with `license`; when both are present they must agree. A version bump drops the exception, so the package fails until it is reviewed again. An exception whose `name@version` is not a production package of the lockfile is stale and fails the check.
+- **Drift**: the generated file is compared byte for byte with the committed [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). A difference exits 1 and lists the added, removed and changed packages.
+- **Exit codes**: 0 ok, 1 policy failure or drift, 2 malformed input (a typed error such as `LockfileError`, `AllowlistError` or `InstallError`).
+
+### 6.2 Licence text inclusion rule
+
+The notices file must not change with the host that generates it, so text inclusion depends only on the lockfile:
+
+- **Non-optional packages** (no `optional` flag in the lockfile): the file lists name, version, licence, source tarball URL and repository, followed by the full text of every `LICENSE`, `LICENCE`, `COPYING` and `NOTICE` file (including variants such as `LICENSE-MIT`) found in `node_modules/<path>`. Every host installs these with identical contents. A non-optional package that is not installed, or installed at another version, is an error rather than a silent omission. A package that ships no such file is listed with a note saying so.
+- **Optional packages** (platform binaries, installed only on matching hosts): listed with name, version, licence and source tarball URL, plus a note that the licence text ships in the package. Their text is not embedded, because whether it is on disk depends on the host. In the worker image the installed copy stays in `node_modules/<path>`, together with the notices of the native libraries it bundles.
+
+### 6.3 Why LGPL-3.0 is allowed
+
+`LGPL-3.0` (which also matches `LGPL-3.0-only` and `LGPL-3.0-or-later`) is on the allowlist only because of the prebuilt `libvips` binaries (`@img/sharp-libvips-*`). `sharp` loads them dynamically as shared libraries that the user can replace (see section 3). Do not use the entry to admit a package that is statically linked or bundled into application code; such a package needs a reviewed exception instead. Strong network copyleft (AGPL) and non-commercial licences are never allowed.
