@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { AVIFENC_MAX_THREADS, avifencArguments, encodeAvifWithCli, findAvifenc, type AvifCliRequest } from '../src/lib/conversions/avif-cli';
+import { AVIFENC_MAX_THREADS, AVIFENC_PROBE_RETRY_MS, avifencArguments, encodeAvifWithCli, findAvifenc, type AvifCliRequest } from '../src/lib/conversions/avif-cli';
 import { avifEffortFor, avifSpeedFor } from '../src/lib/conversions/image-encoder-defaults';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -758,6 +758,72 @@ describe('finding the encoder', () => {
       }
       const justBelow = versionTool('find-v0-99-9', 'Version: 0.99.9 (aom)');
       expect(await findAvifenc(envWith(justBelow))).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /** A tool whose first `--version` runs `firstRun` (a shell fragment) and whose later ones answer `answer`; every ask is logged. */
+  function flakyVersionTool(name: string, firstRun: string, answer: string): { script: string; asks: () => number } {
+    const log = path.join(workDir, `${name}.asks`);
+    const script = writeIn(name, `#!/bin/sh\n[ "$1" = "--version" ] || exit ${FAILURE_EXIT_STATUS}\necho x >> '${log}'\n[ "$(wc -l < '${log}')" -gt 1 ] || { ${firstRun}; }\nprintf '%s\\n' '${answer}'\n`);
+    chmodSync(script, SCRIPT_MODE);
+    return { script, asks: () => (existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').length : 0) };
+  }
+
+  /** Runs `body` with the clock moved forward by the milliseconds passed to `advance`. */
+  async function withClockOffset(body: (advance: (ms: number) => void) => Promise<void>): Promise<void> {
+    let offset = 0;
+    const realNow = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      await body((ms) => {
+        offset += ms;
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  }
+
+  it.each([
+    { name: 'exits with an error', firstRun: `exit ${FAILURE_EXIT_STATUS}`, timeoutMs: undefined },
+    { name: 'outlives the probe timeout', firstRun: 'exec sleep 30', timeoutMs: 300 },
+  ])('does not cache a version probe that $name as "not installed": the tool is used again once the retry delay has passed', async ({ name, firstRun, timeoutMs }) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const tool = flakyVersionTool(`flaky-${name.replace(/\W+/g, '-')}`, firstRun, 'Version: 1.4.2 (aom)');
+      await withClockOffset(async (advance) => {
+        expect(await findAvifenc(envWith(tool.script), timeoutMs)).toBeNull();
+        expect(tool.asks()).toBe(1);
+        // Inside the delay the failure stands and the tool is left alone.
+        advance(AVIFENC_PROBE_RETRY_MS - 1000);
+        expect(await findAvifenc(envWith(tool.script), timeoutMs)).toBeNull();
+        expect(tool.asks()).toBe(1);
+        // After it the tool is asked again, answers, and the answer is kept.
+        advance(2000);
+        expect(await findAvifenc(envWith(tool.script), timeoutMs)).toBe(tool.script);
+        expect(tool.asks()).toBe(2);
+        advance(10 * AVIFENC_PROBE_RETRY_MS);
+        expect(await findAvifenc(envWith(tool.script), timeoutMs)).toBe(tool.script);
+        expect(tool.asks()).toBe(2);
+      });
+      expect(warn.mock.calls.map((call) => String(call[0])).filter((line) => /could not report its version/.test(line))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 60_000);
+
+  it('keeps a definite "too old" answer: the tool is not asked again after the retry delay', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const tool = flakyVersionTool('definite-old', 'true', 'Version: 0.11.1 (aom)');
+      await withClockOffset(async (advance) => {
+        // The first ask answers 0.11.1 as well (the fragment changes nothing), so the answer is definite at once.
+        expect(await findAvifenc(envWith(tool.script))).toBeNull();
+        advance(10 * AVIFENC_PROBE_RETRY_MS);
+        expect(await findAvifenc(envWith(tool.script))).toBeNull();
+        expect(tool.asks()).toBe(1);
+      });
     } finally {
       warn.mockRestore();
     }

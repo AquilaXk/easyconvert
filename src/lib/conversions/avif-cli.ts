@@ -150,32 +150,52 @@ function isAtLeast(version: readonly number[], minimum: readonly number[]): bool
   return true;
 }
 
-/** Verdicts by tool path, size and modification time: the tool is asked for its version once, not per picture. */
-const versionVerdicts = new Map<string, Promise<boolean>>();
+/**
+ * What is known about a tool, by path, size and modification time. A version the tool printed is a definite answer and
+ * is kept (it is asked once, not per picture). A probe that failed to run (timeout, spawn error, killed) says nothing
+ * about the version: the tool counts as unavailable for `AVIFENC_PROBE_RETRY_MS` and is asked again after that.
+ */
+interface ProbeState {
+  verdict?: boolean;
+  failedAt?: number;
+  pending?: Promise<boolean>;
+}
+const probes = new Map<string, ProbeState>();
+/** How long a probe that failed to run keeps the tool out of use before it is tried again. */
+export const AVIFENC_PROBE_RETRY_MS = 60_000;
 
-async function reportsSupportedVersion(avifenc: string): Promise<boolean> {
+async function probeVersion(avifenc: string, key: string, state: ProbeState, timeoutMs: number): Promise<boolean> {
+  try {
+    const result = await executeSandboxedBinary(avifenc, ['--version'], { timeoutMs, maxBuffer: AVIFENC_PROBE_MAX_BYTES, networkIsolated: true });
+    const version = parseAvifencVersion(result.stdout.toString('utf-8'));
+    state.verdict = version !== null && isAtLeast(version, AVIFENC_MIN_VERSION);
+    if (!state.verdict) {
+      reportOnce(key, `${avifenc} reports ${version === null ? 'no version' : `libavif ${version.join('.')}`}; libavif ${AVIFENC_MIN_VERSION.join('.')} or newer is needed, so the image library encodes AVIF`);
+    }
+    return state.verdict;
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    state.failedAt = Date.now();
+    console.warn(`[avif] ${avifenc} could not report its version; the image library encodes AVIF and the tool is asked again in ${AVIFENC_PROBE_RETRY_MS / 1000} s`);
+    return false;
+  } finally {
+    state.pending = undefined;
+  }
+}
+
+async function reportsSupportedVersion(avifenc: string, probeTimeoutMs: number): Promise<boolean> {
   const stat = fs.statSync(avifenc);
   const key = `${avifenc}|${stat.size}|${stat.mtimeMs}`;
-  let verdict = versionVerdicts.get(key);
-  if (verdict === undefined) {
-    verdict = executeSandboxedBinary(avifenc, ['--version'], { timeoutMs: AVIFENC_PROBE_TIMEOUT_MS, maxBuffer: AVIFENC_PROBE_MAX_BYTES, networkIsolated: true }).then(
-      (result) => {
-        const version = parseAvifencVersion(result.stdout.toString('utf-8'));
-        if (version !== null && isAtLeast(version, AVIFENC_MIN_VERSION)) return true;
-        reportOnce(key, `${avifenc} reports ${version === null ? 'no version' : `libavif ${version.join('.')}`}; libavif ${AVIFENC_MIN_VERSION.join('.')} or newer is needed, so the image library encodes AVIF`);
-        return false;
-      },
-      (err: unknown) => {
-        rethrowSandboxUnavailable(err);
-        reportOnce(key, `${avifenc} could not report its version; the image library encodes AVIF`);
-        return false;
-      }
-    );
-    versionVerdicts.set(key, verdict);
-    // A tool that could not be asked at all (no sandbox) is asked again on the next picture.
-    verdict.catch(() => versionVerdicts.delete(key));
+  let state = probes.get(key);
+  if (state === undefined) {
+    state = {};
+    probes.set(key, state);
   }
-  return verdict;
+  if (state.verdict !== undefined) return state.verdict;
+  if (state.pending !== undefined) return state.pending;
+  if (state.failedAt !== undefined && Date.now() - state.failedAt < AVIFENC_PROBE_RETRY_MS) return false;
+  state.pending = probeVersion(avifenc, key, state, probeTimeoutMs);
+  return state.pending;
 }
 
 /**
@@ -184,15 +204,15 @@ async function reportsSupportedVersion(avifenc: string): Promise<boolean> {
  * regular file; one that is not means the image library encodes, and is logged once because the operator asked
  * for something else.
  */
-export async function findAvifenc(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+export async function findAvifenc(env: NodeJS.ProcessEnv = process.env, probeTimeoutMs: number = AVIFENC_PROBE_TIMEOUT_MS): Promise<string | null> {
   const override = env[AVIFENC_PATH_ENV];
   if (override !== undefined && override !== '') {
-    if (path.isAbsolute(override) && isExecutableFile(override)) return (await reportsSupportedVersion(override)) ? override : null;
+    if (path.isAbsolute(override) && isExecutableFile(override)) return (await reportsSupportedVersion(override, probeTimeoutMs)) ? override : null;
     reportOnce(override, `${AVIFENC_PATH_ENV} is set but is not the absolute path of an executable file; the image library encodes AVIF`);
     return null;
   }
   for (const candidate of AVIFENC_CANDIDATES) {
-    if (isExecutableFile(candidate) && (await reportsSupportedVersion(candidate))) return candidate;
+    if (isExecutableFile(candidate) && (await reportsSupportedVersion(candidate, probeTimeoutMs))) return candidate;
   }
   return null;
 }
