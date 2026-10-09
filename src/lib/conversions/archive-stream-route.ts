@@ -47,17 +47,20 @@ export type NativeArchiveRoute =
 /** The request fields that decide whether a route applies. */
 export interface ArchiveRouteRequest {
   password?: string;
+  /** The request must not hold archive bytes in memory; every streaming route buffers them. */
+  zeroHeap?: boolean;
   entries?: string[];
   archiveParts?: unknown[];
 }
 
 /**
  * The streaming route for a pair, or null when the general extract-then-pack pipeline serves it. A password, a
- * selective-entry request and a multi-volume input need that pipeline's listing, filtering and spanning, so they
- * never take a streaming route.
+ * selective-entry request and a multi-volume input need that pipeline's listing, filtering and spanning, and a
+ * zero-heap request needs its disk-backed streams, so they never take a streaming route.
  */
 export function planNativeArchiveRoute(src: string, tgt: string, request: ArchiveRouteRequest): NativeArchiveRoute | null {
   if (request.password) return null;
+  if (request.zeroHeap) return null;
   if (request.entries && request.entries.length > 0) return null;
   if (request.archiveParts && request.archiveParts.length > 0) return null;
   if (tgt === 'tar') {

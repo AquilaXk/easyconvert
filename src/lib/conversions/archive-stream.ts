@@ -38,9 +38,9 @@ import { classifyUnpacked, type StreamSource } from './archive-stream-route';
  *    come out of one `7z x -so` call in table order, to be cut up by their stated sizes and checked by their CRC-32.
  *  - stageTarForSevenZip: the tar is read and vetted in process and written once into a staging tree for `7z a`.
  *
- * Every function returns null when the general pipeline must serve the request instead (an input too large to hold in
- * memory, an encrypted or undecodable header, an empty archive); the pipeline then reports whatever is wrong with the
- * input with its own typed errors.
+ * Every function returns null when the general pipeline must serve the request instead (an input or output too large
+ * to hold in memory under MAX_IN_MEMORY_BYTES, an encrypted or undecodable header, an empty archive); the pipeline then
+ * reports whatever is wrong with the input with its own typed errors.
  */
 
 const LIMITS = ARCHIVE_SECURITY_LIMITS;
@@ -211,6 +211,9 @@ function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPol
   }
 }
 
+/** The unpacked bytes are within the archive caps but would not fit the in-process budget: the disk pipeline serves the request. */
+class ExceedsMemoryBudget extends Error {}
+
 async function runSevenZip(
   p7zBin: string,
   args: string[],
@@ -236,17 +239,26 @@ async function runSevenZip(
  * policy and written again from its entries; otherwise a one-member tar is written around the bytes, named after the
  * source file.
  */
-export async function streamToTar(request: StreamRunOptions & { compressor: StreamSource['compressor'] }): Promise<StreamedArchive> {
+export async function streamToTar(request: StreamRunOptions & { compressor: StreamSource['compressor'] }): Promise<StreamedArchive | null> {
   const archiveBytes = sourceBytes(request.source);
   const cap = unpackedBytesCap(archiveBytes, LIMITS);
+  // The output is held in memory, so it is bounded by the in-process budget as well as by the archive caps.
+  const memoryBound = getMaxInMemoryBytes();
+  const bound = Math.min(cap, memoryBound);
   const input = request.source.buffer === undefined ? [request.source.filePath as string] : ['-si'];
-  const unpacked = await runSevenZip(request.p7zBin, ['x', '-so', '-y', `-t${request.compressor}`, ...input], {
-    maxBuffer: cap + STDERR_ALLOWANCE_BYTES,
-    timeoutMs: request.timeoutMs,
-    stdin: request.source.buffer,
-    signal: request.signal,
-    onLimit: () => unpackedBytesCapError(archiveBytes, LIMITS),
-  });
+  let unpacked: Buffer;
+  try {
+    unpacked = await runSevenZip(request.p7zBin, ['x', '-so', '-y', `-t${request.compressor}`, ...input], {
+      maxBuffer: bound + STDERR_ALLOWANCE_BYTES,
+      timeoutMs: request.timeoutMs,
+      stdin: request.source.buffer,
+      signal: request.signal,
+      onLimit: () => (memoryBound < cap ? new ExceedsMemoryBudget() : unpackedBytesCapError(archiveBytes, LIMITS)),
+    });
+  } catch (err) {
+    if (err instanceof ExceedsMemoryBudget) return null;
+    throw err;
+  }
   if (unpacked.length > cap) throw unpackedBytesCapError(archiveBytes, LIMITS);
   // A first block that passes the tar header test makes the payload a tar, and one that then fails to read is damaged.
   if (classifyUnpacked(unpacked) === 'plain') {
@@ -319,6 +331,7 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
   } catch (err) {
     throw toArchiveFailure(err, 'archive', 'list', LIMITS, false);
   }
+  if (streamBytes > getMaxInMemoryBytes()) return null; // within the caps, but not for memory: the disk pipeline serves it
   const cap = unpackedBytesCap(archive.length, LIMITS);
   const unpacked =
     streamBytes === 0
