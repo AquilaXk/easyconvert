@@ -1,4 +1,5 @@
 import { BlockList, isIP } from 'node:net';
+import path from 'node:path';
 
 /**
  * The configuration schema: every environment variable the application reads, with its parser, default,
@@ -89,6 +90,7 @@ export type ValueKind =
   | { readonly type: 'cidrList'; readonly allowNone: boolean }
   | { readonly type: 'enum'; readonly values: readonly string[]; readonly caseInsensitive: boolean }
   | { readonly type: 'executable' }
+  | { readonly type: 'absoluteExecutable' }
   | { readonly type: 'path' }
   | { readonly type: 'boolean' }
   | { readonly type: 'string'; readonly maxLength?: number };
@@ -102,6 +104,7 @@ export interface KindValues {
   cidrList: readonly string[];
   enum: string;
   executable: string;
+  absoluteExecutable: string;
   path: string;
   boolean: boolean;
   string: string;
@@ -310,6 +313,13 @@ function parsePath(raw: string): string {
   return raw;
 }
 
+/** An executable that is only ever run from the path given, never found by name: the path must be absolute. */
+function parseAbsolutePath(raw: string): string {
+  const value = parsePath(raw);
+  if (!path.isAbsolute(value)) return fail('must be an absolute path');
+  return value;
+}
+
 function parseBoolean(raw: string): boolean {
   const text = raw.trim().toLowerCase();
   if (text === 'true') return true;
@@ -342,6 +352,8 @@ export function parseKind(kind: ValueKind, raw: string, context: ParseContext): 
     case 'executable':
     case 'path':
       return parsePath(raw);
+    case 'absoluteExecutable':
+      return parseAbsolutePath(raw);
     case 'boolean':
       return parseBoolean(raw);
     case 'string':
@@ -363,6 +375,19 @@ function toolPath<const N extends string>(name: N, description: string, roles: r
     area: 'tools',
     description,
     kind: { type: 'executable' },
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+/** Like `toolPath`, for a tool that is run only from the absolute path given (`AVIFENC_PATH`). */
+function absoluteToolPath<const N extends string>(name: N, description: string, roles: readonly ProcessRole[]) {
+  return {
+    name,
+    area: 'tools',
+    description,
+    kind: { type: 'absoluteExecutable' },
     requiredInProduction: false,
     secret: false,
     roles,
@@ -1126,7 +1151,7 @@ const SCHEMA_ENTRIES = [
   // ---- tools ------------------------------------------------------------------------------------------
   toolPath('FFMPEG_PATH', 'Path of the ffmpeg executable; searched in the standard locations when unset.', BOTH),
   toolPath('FFPROBE_PATH', 'Path of the ffprobe executable.', BOTH),
-  toolPath('AVIFENC_PATH', 'Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed or the value is not an absolute path to an executable file.', BOTH),
+  absoluteToolPath('AVIFENC_PATH', 'Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.', BOTH),
   toolPath('P7ZIP_PATH', 'Path of the 7-Zip executable (`7zz`, `7z` or `7za`).', BOTH),
   toolPath('P7Z_PATH', 'Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.', BOTH),
   toolPath('ZIP_PATH', 'Path of the Info-ZIP `zip` executable.', BOTH),
