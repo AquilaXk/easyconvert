@@ -5,12 +5,11 @@ import path from 'node:path';
 import { recognizePage, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { convertImage } from '../src/lib/conversions/image';
 import { convertDocument } from '../src/lib/conversions/document';
-import { requireMagick } from './helpers/imagemagick';
 import { execFileSync } from 'node:child_process';
 import { OCR_BAND_MAX_BANDS } from '../src/lib/conversions/ocr-bands';
 import { getSharedOcrWorkerPool, OCR_POOL_MAX_WORKERS_PER_KEY, type OcrWorkerSpec } from '../src/lib/conversions/ocr-worker-pool';
 import { locateLanguageData } from '../src/lib/conversions/ocr-language-data';
-import { OracleToolMissingError } from './helpers/differential-oracle';
+import { OracleToolMissingError, requireOracleTool } from './helpers/differential-oracle';
 import { requireTessdata } from './helpers/ocr-fixtures';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -112,7 +111,7 @@ describe('the OCR exports of an image page that could be read in bands', () => {
   ] as const) {
     oracleTest(
       `reads each page of a PDF whole for ${format}`,
-      ['tesseract', 'pdftoppm', 'magick'],
+      ['tesseract', 'pdftoppm'],
       async (ctx) => {
         if (needsSeveralCpus(ctx)) return;
         engineSpec();
@@ -121,7 +120,7 @@ describe('the OCR exports of an image page that could be read in bands', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-band-pdf-'));
         try {
           const pdfPath = path.join(dir, 'scan.pdf');
-          execFileSync(requireMagick(), [path.join(__dirname, '..', 'bench', 'corpus', 'scan.png'), '-density', '150', pdfPath]);
+          execFileSync(requireOracleTool(['magick', 'convert']), [path.join(__dirname, '..', 'bench', 'corpus', 'scan.png'), '-density', '150', pdfPath]);
           const pdf = fs.readFileSync(pdfPath);
           const run = vi.spyOn(getSharedOcrWorkerPool(), 'run');
           const result = await convertDocument(pdf, 'pdf', format, { ocrEnabled: true }, 'scan.pdf');
@@ -140,7 +139,7 @@ describe('the OCR exports of an image page that could be read in bands', () => {
     try {
       const pdfPath = path.join(dir, 'scan.pdf');
       const png = path.join(__dirname, '..', 'bench', 'corpus', 'scan.png');
-      execFileSync(requireMagick(), [...Array<string>(count).fill(png), '-density', '150', pdfPath]);
+      execFileSync(requireOracleTool(['magick', 'convert']), [...Array<string>(count).fill(png), '-density', '150', pdfPath]);
       return fs.readFileSync(pdfPath);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -149,7 +148,7 @@ describe('the OCR exports of an image page that could be read in bands', () => {
 
   oracleTest(
     'reads the pages of a 3-page PDF whole and side by side for the searchable PDF',
-    ['tesseract', 'pdftoppm', 'magick'],
+    ['tesseract', 'pdftoppm'],
     async (ctx) => {
       if (needsSeveralCpus(ctx)) return;
       engineSpec();
@@ -178,7 +177,7 @@ describe('the OCR exports of an image page that could be read in bands', () => {
 
   oracleTest(
     'still reads a 1-page PDF in bands for the searchable PDF',
-    ['tesseract', 'pdftoppm', 'magick'],
+    ['tesseract', 'pdftoppm'],
     async (ctx) => {
       if (needsSeveralCpus(ctx)) return;
       engineSpec();
