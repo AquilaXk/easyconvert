@@ -133,8 +133,14 @@ RUN mkdir -p /shared/storage /tmp /home/easyconvert \
 
 # 4. Copy system copyright notices and third-party notices
 RUN mkdir -p /licenses \
-    && for d in /usr/share/doc/*; do [ -f "$d/copyright" ] && cp "$d/copyright" "/licenses/$(basename "$d").copyright" 2>/dev/null; done \
-    && cp -r /usr/share/doc/*/copyright /licenses/ 2>/dev/null || true
+    && copied=0 \
+    && for d in /usr/share/doc/*; do \
+         if [ -f "$d/copyright" ]; then \
+           cp "$d/copyright" "/licenses/$(basename "$d").copyright" || exit 1; \
+           copied=$((copied + 1)); \
+         fi; \
+       done \
+    && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN chmod -R a+rX /licenses
 
