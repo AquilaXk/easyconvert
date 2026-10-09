@@ -47,8 +47,20 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
     return { psnr, ssimDb: -SSIM_TO_DB * Math.log10(1 - ssim) };
   };
 
+  /** Runs `body` with the converter's AVIF tool set to `tool`, restoring the environment afterwards. */
+  async function withAvifencPath(tool: string, body: () => Promise<void>): Promise<void> {
+    const saved = process.env.AVIFENC_PATH;
+    process.env.AVIFENC_PATH = tool;
+    try {
+      await body();
+    } finally {
+      if (saved === undefined) delete process.env.AVIFENC_PATH;
+      else process.env.AVIFENC_PATH = saved;
+    }
+  }
+
   /** Encodes `png` at every quality with the reference and with the converter, and gates both BD-rates. */
-  async function expectParityWithReference(png: Buffer, name: string): Promise<void> {
+  async function expectParityWithReference(png: Buffer, name: string, encoder: 'library-cli' | 'image-library'): Promise<void> {
     const source = writeIn(`${name}-source.png`, png);
     const reference = { psnr: [] as Point[], ssim: [] as Point[] };
     const ours = { psnr: [] as Point[], ssim: [] as Point[] };
@@ -62,7 +74,9 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
       reference.psnr.push({ bytes: referenceBytes, value: measuredReference.psnr });
       reference.ssim.push({ bytes: referenceBytes, value: measuredReference.ssimDb });
 
-      const converted = (await convertImage(png, 'avif', { quality }, `${name}.png`, 'png')).buffer;
+      const result = await convertImage(png, 'avif', { quality }, `${name}.png`, 'png');
+      expect(result.metadata, `${name}: encoder that wrote quality ${quality}`).toMatchObject({ avifEncoder: encoder });
+      const converted = result.buffer;
       const measuredOurs = measure(avifdec(writeIn(`${name}-ours-${quality}.avif`, converted), `${name}-ours-${quality}`), source);
       ours.psnr.push({ bytes: converted.length, value: measuredOurs.psnr });
       ours.ssim.push({ bytes: converted.length, value: measuredOurs.ssimDb });
@@ -74,11 +88,19 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
     expect(bdPsnr, `${name}: BD-rate in PSNR ${bdPsnr.toFixed(2)}%`).toBeLessThanOrEqual(BD_RATE_ALLOWANCE_PERCENT);
   }
 
-  it('needs no more bytes than the reference for the same SSIM and PSNR on an interface, by BD-rate over the quality curve', async () => {
-    await expectParityWithReference(await interface16(), 'interface');
+  // The converter writes graphic AVIF with the same library encoder when it is installed, so these two cases check
+  // that the policy (quality, speed, bit depth, chroma, tuning) matches the reference command line, not the encoder itself.
+  it('policy parity with the reference command line: an interface needs no more bytes for the same SSIM and PSNR, by BD-rate over the quality curve', async () => {
+    await expectParityWithReference(await interface16(), 'interface', 'library-cli');
   }, 480_000);
 
-  it('needs no more bytes than the reference for the same SSIM and PSNR on 16-bit grey line art, by BD-rate over the quality curve', async () => {
-    await expectParityWithReference(await lineArt16(), 'line-art');
+  it('policy parity with the reference command line: 16-bit grey line art needs no more bytes for the same SSIM and PSNR, by BD-rate over the quality curve', async () => {
+    await expectParityWithReference(await lineArt16(), 'line-art', 'library-cli');
+  }, 480_000);
+
+  // Without the executable the image library encodes; it must keep the parity it had before the tool was used.
+  it('the image library alone (no avifenc installed) needs no more bytes than the reference on an interface, by BD-rate', async () => {
+    const png = await interface16();
+    await withAvifencPath(path.join(workDir, 'no-such-avifenc'), () => expectParityWithReference(png, 'library-interface', 'image-library'));
   }, 480_000);
 });
