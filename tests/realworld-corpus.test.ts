@@ -8,7 +8,8 @@ import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } fr
 import { planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
 import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
-import { JobPool } from '../bench/realworld/pool';
+import { JobPool, MAX_JOB_DEADLINE_MS, scaledDeadlineMs } from '../bench/realworld/pool';
+import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { captureError } from './helpers/capture-error';
 import { oracleTest } from './helpers/oracle-test';
 import { authorWithReferenceSuite } from './helpers/office-pair-fixtures';
@@ -234,6 +235,40 @@ describe('isolated job pool', () => {
       expect(first.detail).toMatch(/no answer within 1 ms/);
     } finally {
       hanging.stop();
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('job deadline by size', () => {
+  const BASE_MS = 180_000;
+
+  it('is the base deadline for a file without pages, and grows by the converter page budget for each page', () => {
+    expect(scaledDeadlineMs(BASE_MS, 0)).toBe(BASE_MS);
+    expect(scaledDeadlineMs(BASE_MS, 1)).toBe(BASE_MS + OCR_PAGE_BUDGET_MS);
+    expect(scaledDeadlineMs(BASE_MS, 73)).toBe(BASE_MS + 73 * OCR_PAGE_BUDGET_MS);
+  });
+
+  it('stops growing at the longest a job may run, and never goes below the base deadline', () => {
+    expect(scaledDeadlineMs(BASE_MS, 100_000)).toBe(MAX_JOB_DEADLINE_MS);
+    expect(scaledDeadlineMs(2 * MAX_JOB_DEADLINE_MS, 100_000)).toBe(2 * MAX_JOB_DEADLINE_MS);
+  });
+
+  it('takes the deadline of a job in place of the pool deadline, so a job given time is not reported as hung', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-deadline-'));
+    const good = path.join(dir, 'good.png');
+    fs.writeFileSync(good, PNG_1X1);
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    try {
+      const [given, notGiven] = await pool.runAll([
+        { path: good, name: 'good.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
+        { path: good, name: 'good.png', format: 'png', target: 'bmp' },
+      ]);
+      expect(given.verdict).toBe('ok');
+      expect(notGiven.verdict).toBe('hang');
+    } finally {
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);
 });

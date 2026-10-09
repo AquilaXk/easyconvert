@@ -6,6 +6,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
+import { ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
 import { isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
@@ -18,6 +19,21 @@ export interface PoolOptions {
   heapMb: number;
   env: NodeJS.ProcessEnv;
 }
+
+/** Longest a single job may run whatever its size; a shard has to finish inside its CI job. */
+export const MAX_JOB_DEADLINE_MS = 1_200_000;
+
+/**
+ * The deadline of a job on a file of `pages` pages: the base deadline plus the page budget the converter itself allows
+ * each page of a scanned document (src/lib/conversions/ocr-work-budget.ts), so a long scan that is still being read
+ * is not reported as hung while the converter's own limits (which answer with a typed 413) are what bound it.
+ */
+export function scaledDeadlineMs(baseMs: number, pages: number): number {
+  return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * ocrPageBudgetMs()));
+}
+
+/** A job the pool runs: what the job server needs, and optionally its own deadline in place of the pool's. */
+export type PoolJob = Omit<JobRequest, 'id'> & { deadlineMs?: number };
 
 export interface JobOutcome {
   verdict: Verdict;
@@ -93,7 +109,8 @@ export class JobPool {
     slot.child = await spawnChild(this.options);
   }
 
-  private runOn(slot: Slot, request: Omit<JobRequest, 'id'>): Promise<JobOutcome> {
+  private runOn(slot: Slot, job: PoolJob): Promise<JobOutcome> {
+    const { deadlineMs = this.options.deadlineMs, ...request } = job;
     const id = this.nextId++;
     const started = performance.now();
     return new Promise((resolve) => {
@@ -115,8 +132,8 @@ export class JobPool {
         finish({ verdict: 'crash', ms: performance.now() - started, detail: `job server died (code ${code}, signal ${signal})` }, true);
       };
       const timer = setTimeout(() => {
-        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${this.options.deadlineMs} ms` }, true);
-      }, this.options.deadlineMs);
+        finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${deadlineMs} ms` }, true);
+      }, deadlineMs);
       slot.child.on('message', onMessage);
       slot.child.once('exit', onExit);
       slot.child.send({ ...request, id });
@@ -124,7 +141,7 @@ export class JobPool {
   }
 
   /** Runs every request with at most `workers` in flight; outcomes come back in request order. */
-  async runAll(requests: readonly Omit<JobRequest, 'id'>[], onDone?: (index: number, outcome: JobOutcome) => void): Promise<JobOutcome[]> {
+  async runAll(requests: readonly PoolJob[], onDone?: (index: number, outcome: JobOutcome) => void): Promise<JobOutcome[]> {
     const outcomes = new Array<JobOutcome>(requests.length);
     let next = 0;
     await Promise.all(

@@ -18,7 +18,7 @@ import { getAvailableTargetFormats } from '../../src/lib/registry';
 import { ensureCached, mapLimit } from './fetch';
 import { readManifest } from './manifest';
 import { planJobs, shardJobs } from './plan';
-import { JobPool } from './pool';
+import { JobPool, scaledDeadlineMs } from './pool';
 import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
 
 const EXIT_PASS = 0;
@@ -27,6 +27,7 @@ const EXIT_ERROR = 2;
 const DEFAULT_PER_FILE = 3;
 const DEFAULT_DEADLINE_MS = 180_000;
 const DEFAULT_HEAP_MB = 3072;
+const PAGE_COUNT_TIMEOUT_MS = 30_000;
 const FETCH_CONCURRENCY = 8;
 const PROGRESS_EVERY = 100;
 const DEFAULT_CACHE = path.join(os.homedir(), '.cache', 'easyconvert-realworld');
@@ -55,6 +56,17 @@ const TOOL_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/bin'] as const;
 function toolPath(name: string): string {
   const found = TOOL_DIRECTORIES.map((dir) => path.join(dir, name)).find((candidate) => fs.existsSync(candidate));
   return found ?? '';
+}
+
+/** Pages of a PDF as `pdfinfo` reports them, or 0 when the tool is missing or cannot read the file. */
+function pdfPageCount(pdfinfo: string, file: string): number {
+  if (pdfinfo === '') return 0;
+  try {
+    const report = execFileSync(pdfinfo, [file], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PAGE_COUNT_TIMEOUT_MS });
+    return Number(/^Pages:\s+(\d+)/m.exec(report)?.[1] ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 function commit(): string {
@@ -97,9 +109,17 @@ async function runShard(args: string[]): Promise<number> {
     env: { ...process.env, REALWORLD_PDFINFO: toolPath('pdfinfo'), REALWORLD_IDENTIFY: toolPath('identify') },
   });
   let done = 0;
+  const pdfinfo = toolPath('pdfinfo');
+  const pages = new Map(files.filter((file) => file.format === 'pdf').map((file) => [file.id, pdfPageCount(pdfinfo, paths.get(file.id)!)]));
   const outcomes = await pool
     .runAll(
-      jobs.map((job) => ({ path: paths.get(job.file.id)!, name: `${job.file.id}`, format: job.file.format, target: job.target })),
+      jobs.map((job) => ({
+        path: paths.get(job.file.id)!,
+        name: `${job.file.id}`,
+        format: job.file.format,
+        target: job.target,
+        deadlineMs: scaledDeadlineMs(deadlineMs, pages.get(job.file.id) ?? 0),
+      })),
       () => {
         done++;
         if (done % PROGRESS_EVERY === 0) console.log(`  ${done}/${jobs.length}`);
