@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 106 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 108 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -176,6 +176,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `CHECK_REDIS` | `true` or `false` | `true` | no | worker |
 | `WORKER_QUEUES` | text | none | no | worker |
 | `LIBREOFFICE_POOL_READINESS_TIMEOUT_MS` | integer, 5000 to 40000 | `30000` | no | worker |
+| `JOB_STUCK_RECYCLE_MS` | integer, 1 to 2147483647 | `30000` | no | worker |
 
 - `WORKER_CONCURRENCY`: Jobs a worker runs at once.
 - `WORKER_MAX_JOBS`: Jobs after which the worker drains and exits so the container manager restarts it. `0` turns recycling by job count off.
@@ -187,6 +188,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `CHECK_REDIS`: Set to `false` to skip the Redis connection check of the container health check.
 - `WORKER_QUEUES`: Comma-separated queues this worker takes jobs from (`default`, `light`, `cpu`, `memory`, `gpu`). All queues when unset.
 - `LIBREOFFICE_POOL_READINESS_TIMEOUT_MS`: Milliseconds the LibreOffice pool waits for a worker process to become ready (5000 to 40000).
+- `JOB_STUCK_RECYCLE_MS`: Milliseconds a conversion that ignored its abort at the job deadline may stay unfinished before the worker drains and exits to be restarted (a processor that does not look at its signal cannot be stopped otherwise). The aborted conversion keeps its concurrency slot until it finishes.
 
 ### Limits
 
@@ -205,6 +207,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `JOB_DEADLINE_PER_PAGE_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
 | `JOB_DEADLINE_PER_MIB_MS` | integer, 1 to 2147483647 | `2000` | no | web, worker |
 | `JOB_DEADLINE_PER_MEDIA_SECOND_MS` | integer, 1 to 2147483647 | `3000` | no | web, worker |
+| `SYNC_DEADLINE_MAX_MS` | integer, 1 to 2147483647 | `120000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_GRID_CELLS` | integer, at least 1 | `4194304` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS` | integer, at least 1 | `500000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
@@ -228,6 +231,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `JOB_DEADLINE_PER_PAGE_MS`: Milliseconds added to a job deadline for each page of a document (the page limit of the tier when the count is unknown). The default is the OCR page budget.
 - `JOB_DEADLINE_PER_MIB_MS`: Milliseconds added to a job deadline for each started MiB of input.
 - `JOB_DEADLINE_PER_MEDIA_SECOND_MS`: Milliseconds added to a job deadline for each second of audio or video, when the length is known.
+- `SYNC_DEADLINE_MAX_MS`: Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.
 - `EASYCONVERT_XLS_MAX_GRID_CELLS`: Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.
 - `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS`: Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.
 - `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).

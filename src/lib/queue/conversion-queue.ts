@@ -8,6 +8,9 @@ import { processNodeJob } from './node-processor';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
+import { JobTimeoutError } from '../types';
+import { legacyJobTimeoutMs } from './enqueue';
+import { graphScheduler } from './graph/scheduler';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
@@ -119,15 +122,28 @@ export function attachJobLifecycleListeners(
   worker.on(
     'failed',
     async (job: Job<ConversionJobData, ConversionJobResult>, err: any) => {
-      // 2-Phase Quota: Rollback quota reservation upon unrecoverable job failure
+      // A job past its deadline consumed the engine's time, so its quota is committed (QA decision 2026-10-10).
+      // Any other unrecoverable failure rolls the reservation back.
+      const pastDeadline = err instanceof JobTimeoutError;
       if (job.data?.reservationId) {
         try {
-          await redisKeyStore.rollbackQuota(job.data.reservationId);
+          if (pastDeadline) await redisKeyStore.commitQuota(job.data.reservationId);
+          else await redisKeyStore.rollbackQuota(job.data.reservationId);
         } catch (rollbackErr) {
           console.error(
             `[ConversionQueue] Failed to rollback quota for reservation ${job.data.reservationId}:`,
             rollbackErr
           );
+        }
+      }
+
+      // A graph node past its deadline is failed in the graph from here as well: a processor that never settles
+      // would otherwise leave the node running and the graph unsettled. The scheduler ignores a second report.
+      if (pastDeadline && job.data?.graphId && job.data.graphNodeId) {
+        try {
+          await graphScheduler.onNodeFailed(job.data.graphId, job.data.graphNodeId, err.message);
+        } catch (graphErr) {
+          console.error(`[ConversionQueue] Failed to fail graph node ${job.data.graphNodeId} of ${job.data.graphId}:`, graphErr);
         }
       }
 
@@ -448,7 +464,7 @@ export function startConversionWorker(
   const worker = new Worker<ConversionJobData, ConversionJobResult>(
     queuesToSubscribe,
     processConversionJob,
-    { concurrency: opts.concurrency || 5 }
+    { concurrency: opts.concurrency || 5, defaultTimeoutMs: legacyJobTimeoutMs }
   );
   attachJobLifecycleListeners(worker);
   attachInputCleanupOnCompletion(worker);

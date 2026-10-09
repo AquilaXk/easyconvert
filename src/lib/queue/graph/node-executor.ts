@@ -32,6 +32,7 @@ import {
 import {
   ConversionFailedError,
   GraphExportError,
+  JobTimeoutError,
   MediaPackagingOptions,
   UnknownArtifactFormatError,
   WorkerOutputMissingError,
@@ -47,6 +48,7 @@ import {
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
 import { deadlineBoundEngine } from '../job-deadline';
+import { stripEngineControls } from '../../conversions/job-time';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
@@ -176,7 +178,11 @@ export async function processGraphNodeJob(
   const attemptSignal = job.signal;
   const graphId = job.data.graphId!;
   const nodeId = job.data.graphNodeId!;
-  const node = job.data.graphNode as any;
+  const submittedNode = job.data.graphNode as any;
+  // Node options come from the request body: they cannot carry the signal, a timeout or a deadline into an engine.
+  const node = submittedNode?.options && typeof submittedNode.options === 'object'
+    ? { ...submittedNode, options: stripEngineControls(submittedNode.options) }
+    : submittedNode;
   const effectiveStorage: IStorageBackend = scope.storage;
   const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
     pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
@@ -614,6 +620,9 @@ export async function processGraphNodeJob(
       ? await describePrimaryOutput(effectiveStorage, primaryKey, node.op === 'archive.extract')
       : { mimeType: NO_OUTPUT_MIME_TYPE, size: 0 };
 
+    // An engine that ignored the abort and returned late has no say: the queue already failed this attempt (deadline,
+    // cancel or takeover), so the node is never recorded as completed.
+    attemptSignal.throwIfAborted();
     await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, 1);
 
     return {
@@ -632,11 +641,15 @@ export async function processGraphNodeJob(
     // A retry may still succeed, and a cancelled attempt is not a failure: only the last
     // failed attempt fails the node (and, under fail_fast, the graph). A failure that cannot be
     // retried is the last one.
-    if (!attemptSignal.aborted && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, err)) {
-      const errorMsg = redactText(err instanceof Error ? err.message : String(err));
+    // A deadline aborts the signal too, but it is a failure of the node: the graph must settle (fail_fast fails it,
+    // continue skips what depends on the node). Only a cancel or a takeover leaves the node to its own path.
+    const pastDeadline = attemptSignal.reason instanceof JobTimeoutError;
+    const failure: unknown = pastDeadline ? attemptSignal.reason : err;
+    if ((!attemptSignal.aborted || pastDeadline) && isFinalFailure({ attemptsMade: job.attemptsMade, opts: { attempts: job.opts?.attempts ?? 1 } }, failure)) {
+      const errorMsg = redactText(failure instanceof Error ? failure.message : String(failure));
       await graphScheduler.onNodeFailed(graphId, nodeId, errorMsg);
     }
-    throw err;
+    throw failure;
   } finally {
     await scope.releaseAll();
   }

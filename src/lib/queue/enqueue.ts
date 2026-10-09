@@ -1,7 +1,8 @@
 import type { ConversionJobData, ConversionJobResult } from '../types';
 import type { IStorageBackend } from '../storage/oci-storage';
 import type { IQueueEngine, Job, JobOptions } from './bullmq-engine';
-import { conversionDeadlineMs } from './job-deadline';
+import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
+import { tierForOwner } from './page-cap';
 
 /**
  * The one way a conversion job reaches a queue. The job's wall-clock deadline is computed here from the owner's
@@ -16,6 +17,11 @@ export interface JobDeadlineOwner {
   tier?: string;
   /** Size of the input in bytes as the server knows it (never a client-declared size); missing means unknown. */
   inputBytes?: number;
+  /**
+   * Latest time the job may still be running, as an absolute time. A graph node gets the end of its graph's
+   * deadline, so a graph never runs longer than the maximum of its tier, whatever its node count.
+   */
+  notAfter?: number;
 }
 
 export type ConversionJobOptions = Omit<JobOptions, 'timeout'>;
@@ -34,7 +40,11 @@ export function enqueueConversionJob(
     targetFormat: data.targetFormat,
     inputBytes: owner.inputBytes,
   });
-  return queue.add(name, data, { ...opts, timeout });
+  return queue.add(name, data, {
+    ...opts,
+    timeout,
+    ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
+  });
 }
 
 /** Byte length of a base64 payload without decoding it. */
@@ -58,4 +68,12 @@ export async function trustedInputBytes(
   }
   if (input.inputBufferBase64) return base64ByteLength(input.inputBufferBase64);
   return undefined;
+}
+
+/**
+ * The timeout of a job that reaches a worker without one (queued before deadlines existed): the maximum of its
+ * owner's tier, so no job runs unbounded.
+ */
+export async function legacyJobTimeoutMs(job: { data: Pick<ConversionJobData, 'userId'> }): Promise<number> {
+  return tierMaxDeadlineMs(await tierForOwner(job.data.userId));
 }

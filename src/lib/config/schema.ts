@@ -1153,6 +1153,28 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'SYNC_DEADLINE_MAX_MS',
+    area: 'limits',
+    description:
+      'Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 120_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_STUCK_RECYCLE_MS',
+    area: 'worker',
+    description:
+      'Milliseconds a conversion that ignored its abort at the job deadline may stay unfinished before the worker drains and exits to be restarted (a processor that does not look at its signal cannot be stopped otherwise). The aborted conversion keeps its concurrency slot until it finishes.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 30_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: ['worker'],
+  },
+  {
     name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
     area: 'limits',
     description:
