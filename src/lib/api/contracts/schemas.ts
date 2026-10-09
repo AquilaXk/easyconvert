@@ -1,5 +1,6 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
 import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
+import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/lib/conversions/archive-compression-level';
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 
 import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
@@ -414,8 +415,8 @@ export const ConversionOptionsSchema = {
     // Archive options
     compressionLevel: {
       type: 'integer',
-      minimum: 0,
-      maximum: 9,
+      minimum: ARCHIVE_COMPRESSION_LEVEL_MIN,
+      maximum: ARCHIVE_COMPRESSION_LEVEL_MAX,
       description: 'Archive compression level (0-9).',
     },
     archiveCoder: {

@@ -26,15 +26,18 @@ export interface LzmaCompressResult {
   uncompressedSize: number;
 }
 
-/** Smallest range before the encoder shifts a byte out (LZMA specification, kTopValue). */
-const RC_TOP_VALUE = 0x01000000;
+/** The encoder shifts a byte out when the top byte of the range is empty (range < 2^24; LZMA specification, kTopValue). */
+const RC_TOP_BITS = 24;
+/** Flipping the top bit turns an unsigned compare of two uint32 patterns into a signed one. */
+const RC_SIGN_BIT = -0x80000000;
 const RC_BIT_MODEL_TOTAL_BITS = 11;
 const RC_MOVE_BITS = 5;
 const RC_BIT_MODEL_TOTAL = 1 << RC_BIT_MODEL_TOTAL_BITS;
-const RC_INITIAL_RANGE = 0xffffffff;
+/** The full range 0xFFFFFFFF as an int32 bit pattern. */
+const RC_INITIAL_RANGE = -1;
 const RC_FLUSH_BYTES = 5;
 /** The low register keeps its top byte unless a carry arrives: bytes at or above this value may still change. */
-const RC_PENDING_BYTE_FLOOR = 0xff000000;
+const RC_PENDING_BYTE = 0xff;
 const RC_LOW_KEEP_MASK = 0x00ffffff;
 const BYTE_MASK = 0xff;
 const RC_INITIAL_CAPACITY = 1 << 16;
@@ -42,9 +45,9 @@ const RC_INITIAL_CAPACITY = 1 << 16;
 export const LZMA_MAX_ENCODED_BYTES = 0xffffffff;
 
 /**
- * LZMA range encoder (LZMA specification, "Range Encoder"). The 33-bit `low` register is held as a uint32 `lowLo`
- * plus a carry bit `lowCarry`, so no arithmetic leaves the double-precision integer range or touches BigInt; the
- * output is a growable Uint8Array.
+ * LZMA range encoder (LZMA specification, "Range Encoder"). The 33-bit `low` register is held as the int32 bit pattern
+ * of its low 32 bits `lowLo` plus a carry bit `lowCarry`, and `range` as an int32 pattern too, so every step is
+ * 32-bit integer arithmetic (no BigInt, no doubles); the output is a growable Uint8Array.
  */
 export class LzmaRangeEncoder {
   private lowLo = 0;
@@ -57,41 +60,35 @@ export class LzmaRangeEncoder {
 
   encodeBit(probs: Uint16Array, index: number, bit: number): void {
     const prob = probs[index];
-    const bound = (this.range >>> RC_BIT_MODEL_TOTAL_BITS) * prob;
+    const range = this.range;
+    const bound = Math.imul(range >>> RC_BIT_MODEL_TOTAL_BITS, prob);
     if (bit === 0) {
       this.range = bound;
       probs[index] = prob + ((RC_BIT_MODEL_TOTAL - prob) >>> RC_MOVE_BITS);
     } else {
-      const sum = this.lowLo + bound;
-      if (sum > RC_INITIAL_RANGE) {
-        this.lowCarry = 1;
-        this.lowLo = sum - 0x100000000;
-      } else {
-        this.lowLo = sum;
-      }
-      this.range -= bound;
+      this.addToLow(bound);
+      this.range = (range - bound) | 0;
       probs[index] = prob - (prob >>> RC_MOVE_BITS);
     }
-    while (this.range < RC_TOP_VALUE) {
-      this.range = (this.range << 8) >>> 0;
+    while (this.range >>> RC_TOP_BITS === 0) {
+      this.range <<= 8;
       this.shiftLow();
     }
+  }
+
+  /** Adds `amount` (a uint32 pattern) to `low`; the sum wrapped around exactly when it is below the amount, compared as unsigned. */
+  private addToLow(amount: number): void {
+    const sum = (this.lowLo + amount) | 0;
+    if ((sum ^ RC_SIGN_BIT) < (amount ^ RC_SIGN_BIT)) this.lowCarry = 1;
+    this.lowLo = sum;
   }
 
   encodeDirectBits(val: number, numBits: number): void {
     for (let i = numBits - 1; i >= 0; i--) {
       this.range >>>= 1;
-      if (((val >>> i) & 1) === 1) {
-        const sum = this.lowLo + this.range;
-        if (sum > RC_INITIAL_RANGE) {
-          this.lowCarry = 1;
-          this.lowLo = sum - 0x100000000;
-        } else {
-          this.lowLo = sum;
-        }
-      }
-      if (this.range < RC_TOP_VALUE) {
-        this.range = (this.range << 8) >>> 0;
+      if (((val >>> i) & 1) === 1) this.addToLow(this.range);
+      if (this.range >>> RC_TOP_BITS === 0) {
+        this.range <<= 8;
         this.shiftLow();
       }
     }
@@ -136,16 +133,16 @@ export class LzmaRangeEncoder {
 
   private shiftLow(): void {
     const carry = this.lowCarry;
-    if (this.lowLo < RC_PENDING_BYTE_FLOOR || carry !== 0) {
+    if (this.lowLo >>> RC_TOP_BITS !== RC_PENDING_BYTE || carry !== 0) {
       let temp = this.cache;
       do {
         this.writeByte((temp + carry) & BYTE_MASK);
         temp = BYTE_MASK;
       } while (--this.cacheSize !== 0);
-      this.cache = this.lowLo >>> 24;
+      this.cache = this.lowLo >>> RC_TOP_BITS;
     }
     this.cacheSize++;
-    this.lowLo = ((this.lowLo & RC_LOW_KEEP_MASK) << 8) >>> 0;
+    this.lowLo = (this.lowLo & RC_LOW_KEEP_MASK) << 8;
     this.lowCarry = 0;
   }
 
