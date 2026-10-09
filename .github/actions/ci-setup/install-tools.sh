@@ -4,6 +4,7 @@
 #   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
+#   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket
 # Each part logs to its own file; the logs are printed in groups afterwards and a failed part fails the step.
@@ -18,11 +19,12 @@ apt_cache_hit="${APT_CACHE_HIT:-false}"
 verapdf_cache_hit="${VERAPDF_CACHE_HIT:-false}"
 verapdf_dir=/opt/verapdf
 
-# Python format oracles (columnar readers, PDF text extraction): the tests run python3 -I, which ignores user
+# Python format oracles (columnar readers, PDF text extraction, Word, EPUB and OLE2 readers): the tests run python3 -I, which ignores user
 # site-packages, so the pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
 task_pip() {
-  sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2
+  sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
+    python-docx==1.2.0 ebooklib==0.20 olefile==0.47
 }
 
 task_apt() {
@@ -39,6 +41,22 @@ task_verapdf() {
   else
     sudo scripts/install-verapdf.sh "$verapdf_dir"
   fi
+}
+
+EPUBCHECK_VERSION=5.2.1
+EPUBCHECK_SHA256=0532f6291faa2bb729dd253f958868a2a57dbd2c32f881a97c7c980c5940309e
+
+# EPUB outputs are checked by the EPUB validator; the archive is checked before anything in it runs.
+task_epubcheck() {
+  local archive dir
+  archive="$(mktemp --suffix=.zip)"
+  dir=/opt/epubcheck
+  curl -fsSL --retry 3 -o "$archive" "https://github.com/w3c/epubcheck/releases/download/v$EPUBCHECK_VERSION/epubcheck-$EPUBCHECK_VERSION.zip" || return 1
+  echo "$EPUBCHECK_SHA256  $archive" | sha256sum -c - || return 1
+  sudo rm -rf "$dir" && sudo mkdir -p "$dir" && sudo unzip -q "$archive" -d "$dir" || return 1
+  printf '#!/bin/sh\nexec java -Djava.awt.headless=true -jar %s/epubcheck-%s/epubcheck.jar "$@"\n' "$dir" "$EPUBCHECK_VERSION" | sudo tee /usr/local/bin/epubcheck > /dev/null
+  sudo chmod 755 /usr/local/bin/epubcheck
+  epubcheck --version
 }
 
 task_raw() {
@@ -102,7 +120,7 @@ task_s3() {
 }
 
 logs="$(mktemp -d)"
-tasks=(apt pip verapdf raw s3)
+tasks=(apt pip verapdf epubcheck raw s3)
 declare -A pids
 
 for task in "${tasks[@]}"; do
