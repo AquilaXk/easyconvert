@@ -17,15 +17,7 @@ import { createZipArchive } from '../src/lib/conversions/archive';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { proseText, SeededRandom } from './helpers/archive-corpus';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
-/**
- * ZIP output against independent readers: `zipinfo`, `unzip -t`, `7z t` and Python's zipfile. The reference tools are
- * the oracle for the structure (entry count past 65,535, ZIP64 records, data descriptors, Stored versus Deflated);
- * nothing here parses an archive with the code under test.
- */
-// skip-ok: explicit opt-out (ARCHIVE_SKIP_TIMING=1) of the timing ratios on a slow shared runner, never set in CI.
-const SKIP_TIMING = process.env.ARCHIVE_SKIP_TIMING === '1';
 // skip-ok: the multi-gigabyte ZIP64 cases run in the nightly job (ZIP64_NIGHTLY=1); the PR job runs the forced-ZIP64 cases.
 const SKIP_NIGHTLY = process.env.ZIP64_NIGHTLY !== '1';
 const TEST_TIMEOUT_MS = 180_000;
@@ -291,39 +283,6 @@ describe('createZipArchive', () => {
     const files = Array.from({ length: 50_001 }, (_, i) => ({ filename: `f${i}.txt`, buffer: Buffer.from('x') }));
     await expect(createZipArchive(files)).rejects.toMatchObject({ name: 'PayloadLimitError' });
   });
-});
-
-describe.skipIf(SKIP_TIMING)('ZIP writer throughput', () => {
-  oracleTest(
-    'writes a mixed corpus in no more than 1.25x the time of `zip -6`',
-    ['zip'],
-    async () => {
-      const zip = getOracleToolPath('zip')!;
-      const dir = scratchDir();
-      const files: Array<{ name: string; data: Buffer }> = [];
-      const jpeg = fs.readFileSync(path.join(__dirname, '..', 'bench', 'corpus', 'photo-a.jpg'));
-      for (let i = 0; i < 12; i++) files.push({ name: `text${i}.txt`, data: proseText(1_500_000, 100 + i) });
-      for (let i = 0; i < 6; i++) files.push({ name: `noise${i}.bin`, data: new SeededRandom(200 + i).bytes(1_000_000) });
-      for (let i = 0; i < 6; i++) files.push({ name: `photo${i}.jpg`, data: jpeg });
-      for (const f of files) fs.writeFileSync(path.join(dir, f.name), f.data);
-      const names = files.map((f) => f.name);
-      const referenceFile = path.join(dir, 'reference.zip');
-      const oursFile = path.join(dir, 'ours.zip');
-      await expectNoSlowerThanReference(
-        'zip writer against zip -6',
-        () => {
-          fs.rmSync(referenceFile, { force: true });
-          execFileSync(zip, ['-6', '-q', '-X', referenceFile, ...names], { cwd: dir });
-        },
-        async () => {
-          await writeZipFile(oursFile, files.map((f) => ({ name: f.name, data: fs.readFileSync(path.join(dir, f.name)), level: 6 })));
-        },
-        { maxRatio: 1.25, passes: 5 }
-      );
-      execFileSync(getOracleToolPath('unzip')!, ['-tq', oursFile]);
-    },
-    TEST_TIMEOUT_MS
-  );
 });
 
 describe.skipIf(SKIP_NIGHTLY)('ZIP64 at its real thresholds (nightly)', () => {

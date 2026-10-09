@@ -6,7 +6,6 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions';
 import { encodeWoff2, decodeWoff2, createCanonicalFont } from '../src/lib/conversions/font';
 import { extractStepBRepMesh, parseStepEntities, extractStepPoint } from '../src/lib/conversions/cad-nurbs';
-import { extractEmbeddedImageFromPdf } from '../src/lib/conversions/pdf-utils';
 import { ConversionFailedError, CorruptStreamError, FileExtensionSpoofError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -480,16 +479,5 @@ END-ISO-10303-21;`;
 
       expect(() => decodeWoff2(corruptWoff2, 'corrupt.woff2')).toThrow(/not a valid Brotli stream/);
     });
-
-    it('extracts embedded image from PDF when /Filter /DCTDecode has whitespace formatting', () => {
-      const pdfWithSpaces = Buffer.from(
-        '%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image /Width 10 /Height 10 /Filter /DCTDecode /Length 12 >>\nstream\n' +
-        'FAKE_JPG_DATA\nendstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF'
-      );
-      const extracted = extractEmbeddedImageFromPdf(pdfWithSpaces);
-      expect(extracted).not.toBeNull();
-      expect(extracted!.toString('ascii')).toBe('FAKE_JPG_DATA');
-    });
-
   });
 });

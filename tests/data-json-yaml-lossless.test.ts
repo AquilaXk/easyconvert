@@ -15,7 +15,7 @@ import {
   UnsupportedTargetError,
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 import { oracleTest } from './helpers/oracle-test';
 
 /**
@@ -294,16 +294,15 @@ describe('YAML keys are checked in linear time', () => {
    * pairwise uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
    */
   const LARGE_KEY_COUNT = SMALL_KEY_COUNT * SCALING_FACTOR;
-  const SCALING_PASSES_FOR_CONVERSION = 2;
 
   const yamlWithKeys = (keyCount: number) =>
     Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
 
-  it('converts YAML maps in time linear in their key count', async () => {
-    const { largeResult } = await expectLinearOnInputs(
+  it('converts YAML maps in time linear in their key count (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
       'yaml to json',
       (yamlText: Buffer) => convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml'),
-      { small: yamlWithKeys(SMALL_KEY_COUNT), large: yamlWithKeys(LARGE_KEY_COUNT), passes: SCALING_PASSES_FOR_CONVERSION }
+      yamlWithKeys(LARGE_KEY_COUNT)
     );
     const parsed = JSON.parse(largeResult.buffer.toString('utf-8')) as Record<string, number>;
     expect(Object.keys(parsed)).toHaveLength(LARGE_KEY_COUNT);

@@ -27,7 +27,7 @@ import {
   singleSequenceBlock,
   twoSymbolHuffmanStream,
 } from './helpers/zstd-frames';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -373,7 +373,7 @@ describe('decoder accepts valid hand-built frames', () => {
     });
   }
 
-  it('decodes tens of thousands of tiny and empty frames without quadratic cost', async () => {
+  it('decodes tens of thousands of tiny and empty frames without quadratic cost (hang guard; growth ratio in the perf suite)', async () => {
     const framesOf = (count: number) => {
       const frames: Buffer[] = [];
       const expected = Buffer.alloc(count);
@@ -386,12 +386,12 @@ describe('decoder accepts valid hand-built frames', () => {
       return { concatenated: Buffer.concat(frames), expected };
     };
     // 4x the frames may cost at most 8x the time; re-concatenating the output per frame costs 16x (tests/helpers/timing.ts).
-    const small = framesOf(TINY_FRAME_BASE_COUNT);
     const large = framesOf(TINY_FRAME_BASE_COUNT * SCALING_FACTOR);
-    const { largeResult: decoded } = await expectLinearOnInputs('tiny frames', (input: Buffer) => repoDecode(input) as Buffer, {
-      small: small.concatenated,
-      large: large.concatenated,
-    });
+    const { largeResult: decoded } = await expectNoHangOnInput(
+      'tiny frames',
+      (input: Buffer) => repoDecode(input) as Buffer,
+      large.concatenated
+    );
     expect(Buffer.compare(decoded, large.expected)).toBe(0);
   }, SCALING_TEST_TIMEOUT_MS);
 

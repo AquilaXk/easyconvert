@@ -59,7 +59,7 @@ async function createTestDocx(paragraphs: string[]): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
-describe('WP-42: Complex Text Layout (CTL) Script Detection & Fail-Closed Routing', () => {
+describe('WP-42: Complex Text Layout (CTL) Script Detection and Routing', () => {
   describe('Unit Tests: Unicode CTL / Bidi Script Probing', () => {
     it('detects complex scripts accurately across diverse languages', () => {
       expect(hasComplexTextScript('مرحبا بالعالم')).toBe(true); // Arabic
@@ -99,43 +99,39 @@ describe('WP-42: Complex Text Layout (CTL) Script Detection & Fail-Closed Routin
     });
   });
 
-  describe('Fail-Closed Enforcement on Pure-TS PDF Generation Paths', () => {
-    it('rejects text-to-pdf conversion with Arabic script when pure-TS engine is used', async () => {
-      const arabicText = Buffer.from('مرحبا بكم في الاختبار', 'utf-8');
-      await expect(
-        convertDocument(arabicText, 'txt', 'pdf', {}, 'arabic')
-      ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
+  describe('In-process PDF generation shapes complex scripts instead of refusing them', () => {
+    /** Logical text of a PDF as Poppler extracts it: no bidi marks, no whitespace. */
+    function logicalText(pdf: Buffer): string {
+      return (extractTextWithExternalPdftotext(pdf) ?? '').normalize('NFC').replace(/\p{Cf}/gu, '').replace(/\s+/g, '');
+    }
+
+    oracleTest('renders text-to-pdf conversion with Arabic script', ['pdftotext'], async () => {
+      const result = await convertDocument(Buffer.from('مرحبا بكم في الاختبار', 'utf-8'), 'txt', 'pdf', {}, 'arabic');
+      expect(logicalText(result.buffer)).toBe('مرحبابكمفيالاختبار');
     });
 
-    it('rejects markdown-to-pdf conversion with Hebrew script when pure-TS engine is used', async () => {
-      const hebrewMd = Buffer.from('# שלום עולם\n\nבדיקת תאימות מערכת', 'utf-8');
-      await expect(
-        convertDocument(hebrewMd, 'md', 'pdf', {}, 'hebrew')
-      ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
+    oracleTest('renders markdown-to-pdf conversion with Hebrew script', ['pdftotext'], async () => {
+      const result = await convertDocument(Buffer.from('# שלום עולם\n\nבדיקת תאימות מערכת', 'utf-8'), 'md', 'pdf', {}, 'hebrew');
+      expect(logicalText(result.buffer).match(/שלוםעולם|בדיקתתאימותמערכת/g)).toEqual(['שלוםעולם', 'בדיקתתאימותמערכת']);
     });
 
-    it('rejects docx-to-pdf conversion with Thai script in pure-TS engine', async () => {
-      const thaiDocx = await createTestDocx(['สวัสดีชาวโลก', 'การทดสอบเอกสาร']);
-      await expect(
-        convertOffice(thaiDocx, 'docx', 'pdf', {}, 'thai')
-      ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
+    oracleTest('renders docx-to-pdf conversion with Thai script', ['pdftotext'], async () => {
+      const result = await convertOffice(await createTestDocx(['สวัสดีชาวโลก']), 'docx', 'pdf', {}, 'thai');
+      expect(logicalText(result.buffer)).toBe('สวัสดีชาวโลก');
     });
 
-    it('rejects data-to-pdf (csv) conversion with Devanagari script in pure-TS engine', async () => {
-      const hindiCsv = Buffer.from('id,name\n1,नमस्ते\n2,दुनिया', 'utf-8');
-      await expect(
-        convertData(hindiCsv, 'csv', 'pdf', {}, 'hindi')
-      ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
+    oracleTest('renders data-to-pdf (csv) conversion with Devanagari script', ['pdftotext'], async () => {
+      const result = await convertData(Buffer.from('id,name\n1,नमस्ते\n2,दुनिया', 'utf-8'), 'csv', 'pdf', {}, 'hindi');
+      expect(logicalText(result.buffer).match(/नमस्ते|दुनिया/g)).toEqual(['नमस्ते', 'दुनिया']);
     });
 
-    it('fails closed in executeWorkerConversion when complex text is routed to PDF and native soffice is unavailable', async () => {
+    oracleTest('renders complex text in-process in executeWorkerConversion when native soffice is unavailable', ['pdftotext'], async () => {
       const prevSoffice = process.env.SOFFICE_PATH;
       process.env.SOFFICE_PATH = '/nonexistent/soffice_binary';
       try {
-        const arabicInput = Buffer.from('مرحبا بالعالم', 'utf-8');
-        await expect(
-          executeWorkerConversion(arabicInput, 'txt', 'pdf', {}, 'arabic.txt')
-        ).rejects.toThrow(ComplexScriptRequiresNativeEngineError);
+        const result = await executeWorkerConversion(Buffer.from('مرحبا بالعالم', 'utf-8'), 'txt', 'pdf', {}, 'arabic.txt');
+        expect(result.engineUsed).toBe('internal-fallback');
+        expect(logicalText(result.buffer)).toBe('مرحبابالعالم');
       } finally {
         if (prevSoffice === undefined) {
           delete process.env.SOFFICE_PATH;

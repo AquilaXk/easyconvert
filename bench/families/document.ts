@@ -11,6 +11,8 @@ import { emptyStructure, normalizeText, scoreStructure, STRUCTURE_CATEGORIES, st
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { OLEFILE_PSEUDO_TOOL, runTool } from '../tools';
 import { richStructureTruth } from '../../tests/helpers/document-fixtures';
+import { runDocumentPdf } from './document-pdf';
+import { runDocumentShaping } from './document-shaping';
 
 /**
  * Document family. Three groups of cases:
@@ -287,4 +289,11 @@ async function runReport(ctx: FamilyContext): Promise<BenchRow[]> {
   return rows;
 }
 
-export const runDocument: FamilyRunner = async (ctx) => [...(await runReport(ctx)), ...(await runStructureDocx(ctx)), ...(await runBook(ctx)), ...(await runHwp(ctx))];
+export const runDocument: FamilyRunner = async (ctx) => [
+  ...(await runReport(ctx)),
+  ...(await runStructureDocx(ctx)),
+  ...(await runBook(ctx)),
+  ...(await runHwp(ctx)),
+  ...(await runDocumentPdf(ctx)),
+  ...(await runDocumentShaping(ctx)),
+];

@@ -34,7 +34,7 @@ import {
   rleTableSequencesBlock,
   type TestBlock,
 } from './helpers/zstd-frames';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -147,14 +147,14 @@ describe('dictionary frames decode through the bounded block decoder', () => {
     expect((error as Error).message).toMatch(/Archive bomb detected: compression ratio \(\d+\.\d:1\) exceeds 100:1 limit/);
   });
 
-  it('decodes tens of thousands of sequences in linear time', async () => {
+  it('decodes tens of thousands of sequences in linear time (hang guard; growth ratio in the perf suite)', async () => {
     const count = 30000;
     const frameOf = (sequences: number) => dictFrame([compressedBlock(rleTableSequencesBlock(sequences, 0x61))]);
     // 4x the sequences may cost at most 8x the time (tests/helpers/timing.ts); a quadratic decoder costs 16x.
-    const { largeResult: decoded } = await expectLinearOnInputs(
+    const { largeResult: decoded } = await expectNoHangOnInput(
       'dictionary sequences',
       (frame: Buffer) => decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV),
-      { small: frameOf(count / SCALING_FACTOR), large: frameOf(count) }
+      frameOf(count)
     );
     expect(decoded.length).toBe(count * 4);
     expect(decoded.every((b) => b === 0x61)).toBe(true);
@@ -274,7 +274,7 @@ describe('dictionary compression stays inside the 128 KiB block maximum', () => 
     });
   });
 
-  it('bounds the match search so low-entropy input does not make compression quadratic', async () => {
+  it('bounds the match search so low-entropy input does not make compression quadratic (hang guard; growth ratio in the perf suite)', async () => {
     const lowEntropy = (bytes: number) => {
       const rng = makeRng(2024);
       const input = Buffer.alloc(bytes);
@@ -282,12 +282,11 @@ describe('dictionary compression stays inside the 128 KiB block maximum', () => 
       return input;
     };
     // 4x the input may cost at most 8x the time; an unbounded match search costs 16x (tests/helpers/timing.ts).
-    const small = lowEntropy(LOW_ENTROPY_BASE_BYTES);
     const input = lowEntropy(LOW_ENTROPY_BASE_BYTES * SCALING_FACTOR);
-    const { largeResult: frame } = await expectLinearOnInputs(
+    const { largeResult: frame } = await expectNoHangOnInput(
       'low-entropy compression',
       (data: Buffer) => compressWithZstdDict(data, DATA_DICTIONARY_JSON_CSV),
-      { small, large: input }
+      input
     );
     assertFrameChecksum(frame, input);
     expect(Buffer.compare(decompressWithZstdDict(frame, DATA_DICTIONARY_JSON_CSV), input)).toBe(0);

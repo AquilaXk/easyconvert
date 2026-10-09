@@ -1,0 +1,192 @@
+name: Nightly
+
+# Checks that need a quiet machine or a long time, kept out of the pull request gate (ci.yml): the timing-ratio
+# suites (*.perf.test.ts), the quality benchmark and the dependency licence gate. A failure opens one issue labelled
+# `nightly-regression`, or adds a comment to the one that is already open.
+on:
+  schedule:
+    # 02:37 UTC every day, off the busy top of the hour.
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Timing comparisons run one file at a time, so a suite neither starves the others nor is starved by them.
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Run performance suites
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npx --no-install vitest run --no-file-parallelism .perf.test.ts
+
+  # Output quality against reference encoders, gated on bench/baseline.json.
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Run the quality benchmark
+        shell: bash
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['bench:quality'] ? 0 : 1)"; then
+            npm run bench:quality
+          else
+            echo "skipped: package.json has no bench:quality script"
+          fi
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The dependency licence gate arrives with its own script; until the script exists the job says so and passes.
+  licenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check dependency licences
+        shell: bash
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['licenses:check'] ? 0 : 1)"; then
+            npm run licenses:check
+          else
+            echo "skipped: package.json has no licenses:check script yet"
+          fi
+
+  # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place.
+  report:
+    needs: [perf, bench, licenses]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+
+    steps:
+      - name: Open or update the nightly-regression issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const label = 'nightly-regression';
+            const title = 'Nightly regression';
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,
+              repo,
+              run_id: context.runId,
+              per_page: 100,
+            });
+            const failed = jobs.filter((job) => job.conclusion === 'failure');
+            const lines = failed.map((job) => `- [${job.name}](${job.html_url})`);
+            const body = [
+              `Run [${context.runId}](${runUrl}) failed on ${context.sha.slice(0, 7)}.`,
+              '',
+              'Failing jobs:',
+              ...(lines.length > 0 ? lines : ['- (the failing job could not be listed)']),
+            ].join('\n');
+
+            const open = await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 });
+            if (open.data.length > 0) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open.data[0].number, body });
+              return;
+            }
+            try {
+              await github.rest.issues.createLabel({ owner, repo, name: label, color: 'b60205', description: 'A scheduled check failed' });
+            } catch (error) {
+              if (error.status !== 422) throw error;
+            }
+            await github.rest.issues.create({ owner, repo, title, labels: [label], body });

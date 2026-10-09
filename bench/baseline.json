@@ -451,6 +451,26 @@
       "delta": 0,
       "ratio": null
     },
+    "document/complex-script txt->pdf/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -2.7925822035218952,
+      "ratio": null
+    },
+    "document/complex-script txt->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 23.8599863024443
+    },
     "document/noori.hwp->html:images/structure_precision": {
       "direction": "higher",
       "tolerance": {
@@ -511,6 +531,106 @@
       "delta": null,
       "ratio": 5.735985688787682
     },
+    "document/pdf-structure->docx/column_accuracy": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.05,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.25,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/heading_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/list_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/paragraph_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -15.061111111111112,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/reading_order_tau": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9983359133126936,
+      "delta": 0.0965811965811968,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/table_teds": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 23.82794358402252
+    },
+    "document/pdf-text->txt/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -24.38101963028649,
+      "ratio": null
+    },
+    "document/pdf-text->txt/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.146516279349439
+    },
+    "document/pdf-text->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "document/report.docx->pdf/cer": {
       "direction": "lower",
       "tolerance": {
@@ -540,6 +660,26 @@
       "ours": 1,
       "delta": 0,
       "ratio": null
+    },
+    "document/rich-structure.docx->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -2,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 74.46799262154171
     },
     "document/rich-structure.docx->epub:headings/structure_precision": {
       "direction": "higher",
@@ -641,17 +781,7 @@
       "delta": 0.19999999999999996,
       "ratio": null
     },
-    "document/rich-structure.docx->epub/epubcheck_errors": {
-      "direction": "lower",
-      "tolerance": {
-        "abs": 0,
-        "rel": 0
-      },
-      "ours": 0,
-      "delta": -2,
-      "ratio": null
-    },
-    "document/rich-structure.docx->epub/throughput": {
+    "document/rich-structure.docx->html/throughput": {
       "direction": "higher",
       "tolerance": {
         "abs": 0,
@@ -659,7 +789,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 74.46799262154171
+      "ratio": 86.4348149903141
     },
     "document/rich-structure.docx->html:headings/structure_precision": {
       "direction": "higher",
@@ -761,7 +891,7 @@
       "delta": 0,
       "ratio": null
     },
-    "document/rich-structure.docx->html/throughput": {
+    "document/rich-structure.docx->odt/throughput": {
       "direction": "higher",
       "tolerance": {
         "abs": 0,
@@ -769,7 +899,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 86.4348149903141
+      "ratio": 89.67016355261406
     },
     "document/rich-structure.docx->odt:headings/structure_precision": {
       "direction": "higher",
@@ -871,7 +1001,7 @@
       "delta": 0,
       "ratio": null
     },
-    "document/rich-structure.docx->odt/throughput": {
+    "document/rich-structure.docx->pdf/throughput": {
       "direction": "higher",
       "tolerance": {
         "abs": 0,
@@ -879,7 +1009,17 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 89.67016355261406
+      "ratio": 14.071719061830018
+    },
+    "document/rich-structure.docx->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.7272727272727273,
+      "delta": 0.003868471953578423,
+      "ratio": null
     },
     "document/rich-structure.docx->pdf:images/structure_precision": {
       "direction": "higher",
@@ -899,26 +1039,6 @@
       },
       "ours": 1,
       "delta": 0,
-      "ratio": null
-    },
-    "document/rich-structure.docx->pdf/throughput": {
-      "direction": "higher",
-      "tolerance": {
-        "abs": 0,
-        "rel": 0.35
-      },
-      "ours": null,
-      "delta": null,
-      "ratio": 14.071719061830018
-    },
-    "document/rich-structure.docx->pdf/word_f1": {
-      "direction": "higher",
-      "tolerance": {
-        "abs": 0.02,
-        "rel": 0
-      },
-      "ours": 0.7272727272727273,
-      "delta": 0.003868471953578423,
       "ratio": null
     },
     "image/lineart.png->avif/bd_rate_psnr": {

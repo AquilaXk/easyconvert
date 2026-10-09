@@ -1,33 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { SvgSanitizationError } from '../src/lib/types';
-import { expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { expectNoHangOnInput, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
- * Linear-time claims compare the sanitizer on n bytes with 16n bytes of the same adversarial shape, interleaved
- * and best-of-N (tests/helpers/timing.ts), so a loaded runner slows both sizes and the ratio holds. A quadratic
- * sanitizer takes 256x. Linear work measured 19x locally and up to 50x on a loaded shard, where the multi-megabyte
- * output strings add collector time the 128 KiB run does not pay, so the bound is 64x: four times the growth factor.
+ * The adversarial documents below are sanitized once, at GROWTH_FACTOR times BASE_BYTES, under the hang guard of
+ * tests/helpers/timing.ts. That the time grows linearly from n to 16n bytes (a quadratic sanitizer takes 256x) is
+ * measured by svg-sanitizer-xss.perf.test.ts.
  */
 const GROWTH_FACTOR = 16;
-const MAX_GROWTH_RATIO = GROWTH_FACTOR * 4;
 const BASE_BYTES = 128 * 1024;
 /** Element counts for the tests that scale the number of tags rather than the number of bytes. */
 const BASE_COUNT = 2_500;
 
-/** A test that compares two input sizes needs more than the 5 s default on a loaded runner. */
+/** A test that sanitizes a multi-megabyte document needs more than the 5 s default on a loaded runner. */
 const linearIt = (name: string, body: () => Promise<void>) => it(name, body, SCALING_TEST_TIMEOUT_MS);
 
-/** Builds the adversarial document at both sizes, checks linear scaling, then lets `check` inspect the large output. */
-async function expectLinearSanitization(
+/** Builds the adversarial document at the large size, sanitizes it under the hang guard, then lets `check` inspect the output. */
+async function expectTerminatingSanitization(
   label: string,
   build: (bytes: number) => string,
   check?: (out: string) => void,
   baseSize: number = BASE_BYTES
 ): Promise<void> {
-  const small = build(baseSize);
   const large = build(baseSize * GROWTH_FACTOR);
-  await expectLinearOnInputs(label, (svg: string) => sanitizeSvgString(svg), { small, large, factor: GROWTH_FACTOR, maxRatio: MAX_GROWTH_RATIO });
+  await expectNoHangOnInput(label, (svg: string) => sanitizeSvgString(svg), large);
   check?.(sanitizeSvgString(large));
 }
 
@@ -194,8 +191,8 @@ describe('on* attribute stripping without leading whitespace (item 4)', () => {
     expect(out).toBe('<svg a="b"');
   });
 
-  linearIt('strips handlers on a large tag in linear time', async () => {
-    await expectLinearSanitization(
+  linearIt('strips handlers on a large tag without hanging', async () => {
+    await expectTerminatingSanitization(
       'handlers on one tag',
       (count) => `<svg${' a="1"onload=x'.repeat(count)}>`,
       (out) => {
@@ -236,8 +233,8 @@ describe('@import, namespaced elements and animation targets (item 5)', () => {
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  linearIt('strips many distinct prefixed openers in linear time', async () => {
-    await expectLinearSanitization(
+  linearIt('strips many distinct prefixed openers without hanging', async () => {
+    await expectTerminatingSanitization(
       'distinct prefixed script openers',
       (count) => `<svg>${Array.from({ length: count }, (_, i) => `<p${i}:script>`).join('')}</svg>`,
       (out) => expect(out).toBe('<svg></svg>'),
@@ -453,7 +450,7 @@ describe('CSS escape and comment obfuscation (issue #401 item 1)', () => {
     );
   });
 
-  describe('linear time on adversarial CSS', () => {
+  describe('termination on adversarial CSS', () => {
     const adversarial: Array<[string, (n: number) => string]> = [
       ['backslashes', (n) => '\\'.repeat(n / 2)],
       ['escape digits', (n) => '\\6'.repeat(n / 3)],
@@ -466,7 +463,7 @@ describe('CSS escape and comment obfuscation (issue #401 item 1)', () => {
 
     for (const [label, css] of adversarial) {
       linearIt(`handles ${label}`, async () => {
-        await expectLinearSanitization(
+        await expectTerminatingSanitization(
           label,
           (n) => `<svg><style>${css(n)}</style></svg>`,
           (out) => expect(cssLeaks(out)).toEqual([])
@@ -593,8 +590,8 @@ describe('namespace-prefixed <style> elements (issue #401 item 4)', () => {
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  linearIt('handles many prefixed style openers in linear time', async () => {
-    await expectLinearSanitization(
+  linearIt('handles many prefixed style openers without hanging', async () => {
+    await expectTerminatingSanitization(
       'distinct prefixed style openers',
       (count) => `<svg>${Array.from({ length: count }, (_, i) => `<p${i}:style>`).join('')}</svg>`,
       undefined,
@@ -662,7 +659,7 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
     expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
   });
 
-  describe('linear time on adversarial entity input', () => {
+  describe('termination on adversarial entity input', () => {
     const adversarial: Array<[string, (n: number) => string]> = [
       ['bare reference openers', (n) => '&#'.repeat(n / 2)],
       ['unterminated hex run', (n) => `&#x${'0'.repeat(n)}`],
@@ -681,7 +678,7 @@ describe('XML entity layer before CSS matching (issue #401 entity follow-up)', (
         ['a style attribute', (c: string) => `<svg><rect style='${c.replace(/'/g, '&apos;')}'/></svg>`],
       ] as Array<[string, (c: string) => string]>) {
         linearIt(`handles ${label} in ${place}`, async () => {
-          await expectLinearSanitization(
+          await expectTerminatingSanitization(
             label,
             (n) => wrap(css(n)),
             (out) => {
@@ -737,7 +734,7 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
     }
   });
 
-  describe('linear time on adversarial input', () => {
+  describe('termination on adversarial input', () => {
     const adversarial: Array<[string, (n: number) => string]> = [
       ['unterminated comment openers', (n) => '<!--'.repeat(n / 4)],
       ['unterminated PI openers', (n) => '<?'.repeat(n / 2)],
@@ -750,7 +747,7 @@ describe('comments, CDATA and processing instructions are not tokenized as tags 
 
     for (const [label, body] of adversarial) {
       linearIt(`handles ${label}`, async () => {
-        await expectLinearSanitization(
+        await expectTerminatingSanitization(
           label,
           (n) => `<svg>${body(n)}</svg>`,
           (out) => {
@@ -791,8 +788,8 @@ describe('</style> inside CDATA does not end the style element (PR #402 review i
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  linearIt('finds the close tag in linear time past many CDATA sections', async () => {
-    await expectLinearSanitization(
+  linearIt('finds the close tag past many CDATA sections without hanging', async () => {
+    await expectTerminatingSanitization(
       'CDATA sections holding close tags',
       (n) => `<svg><style>${'<![CDATA[</style>]]>'.repeat(n / 20)}@import "http://e";</style></svg>`,
       (out) => {
@@ -842,7 +839,7 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
     expect(sanitizeSvgString(`<svg><style>${css}</style></svg>`)).toBe(`<svg><style>${css}</style></svg>`);
   });
 
-  describe('linear time on adversarial CSS', () => {
+  describe('termination on adversarial CSS', () => {
     const adversarial: Array<[string, (n: number) => string]> = [
       ['unterminated image-set openers', (n) => 'image-set('.repeat(n / 10)],
       ['nested benign image-sets', (n) => `${'image-set('.repeat(n / 20)}${')'.repeat(n / 20)}`],
@@ -856,7 +853,7 @@ describe('external CSS reference forms (PR #402 review item 3)', () => {
 
     for (const [label, css] of adversarial) {
       linearIt(`handles ${label}`, async () => {
-        await expectLinearSanitization(label, (n) => `<svg><style>${css(n)}</style></svg>`);
+        await expectTerminatingSanitization(label, (n) => `<svg><style>${css(n)}</style></svg>`);
       });
     }
   });
@@ -955,7 +952,7 @@ describe('external references in presentation attributes (issue #403 item 1)', (
     expect(sanitizeSvgString(input)).toBe(input);
   });
 
-  describe('linear time on adversarial attributes', () => {
+  describe('termination on adversarial attributes', () => {
     const adversarial: Array<[string, (bytes: number) => string]> = [
       ['url openers', (bytes) => `<rect fill="${'url('.repeat(bytes / 4)}"/>`],
       ['many attributes', (bytes) => `<rect ${'fill="url(http://e/x)" '.repeat(Math.floor(bytes / 24))}/>`],
@@ -963,7 +960,7 @@ describe('external references in presentation attributes (issue #403 item 1)', (
     ];
     for (const [label, build] of adversarial) {
       linearIt(`handles ${label}`, async () => {
-        await expectLinearSanitization(label, (bytes) => `<svg>${build(bytes)}</svg>`);
+        await expectTerminatingSanitization(label, (bytes) => `<svg>${build(bytes)}</svg>`);
       });
     }
   });
@@ -1013,9 +1010,9 @@ describe('animations writing external references into presentation attributes (i
     });
   }
 
-  linearIt('removes many hostile animations in linear time', async () => {
+  linearIt('removes many hostile animations without hanging', async () => {
     const unit = '<set attributeName="fill" to="url(http://e/x)"/>';
-    await expectLinearSanitization(
+    await expectTerminatingSanitization(
       'hostile animations',
       (bytes) => `<svg>${unit.repeat(bytes / unit.length)}</svg>`,
       (out) => expect(out).toBe('<svg></svg>')
@@ -1062,9 +1059,9 @@ describe('animations writing dangerous URIs into any attribute (issue #403 item 
     });
   }
 
-  linearIt('removes many hostile animations in linear time', async () => {
+  linearIt('removes many hostile animations without hanging', async () => {
     const unit = '<set attributeName="x" to="javascript:alert(1)"/>';
-    await expectLinearSanitization(
+    await expectTerminatingSanitization(
       'hostile animations writing URIs',
       (bytes) => `<svg>${unit.repeat(bytes / unit.length)}</svg>`,
       (out) => expect(out).toBe('<svg></svg>')

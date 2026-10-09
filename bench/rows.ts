@@ -35,6 +35,12 @@ export const SPEC = {
   structurePrecision: { metric: 'structure_precision', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
   structureRecall: { metric: 'structure_recall', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
   epubcheckErrors: { metric: 'epubcheck_errors', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  headingF1: { metric: 'heading_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  listF1: { metric: 'list_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  tableTeds: { metric: 'table_teds', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  columnAccuracy: { metric: 'column_accuracy', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.05, 0) },
+  paragraphCountError: { metric: 'paragraph_count_error', unit: 'ratio', direction: 'lower', kind: 'quality', tolerance: tol(0.03, 0) },
+  readingOrderTau: { metric: 'reading_order_tau', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
   throughput: { metric: 'throughput', unit: 'MB/s', direction: 'higher', kind: 'throughput', tolerance: tol(0, 0.35) },
 } as const satisfies Record<string, MetricSpec>;

@@ -12,7 +12,7 @@ import { convertMedia } from '../src/lib/conversions/media';
 /**
  * Encode speed of the AV1 default. SVT-AV1 takes every core, and whether a 10 s 720p clip fits the media timeout
  * depends on how fast the machine is, so this runs with the other performance suites (one file at a time, see
- * .github/workflows/ci.yml) and not beside the correctness shards. The correctness of the AV1 arguments and of the
+ * .github/workflows/nightly.yml) and not beside the correctness shards. The correctness of the AV1 arguments and of the
  * decoded picture at the other defaults stays in media-encoder-defaults.test.ts.
  */
 

@@ -27,7 +27,7 @@ import {
   createHostileWorkspace,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 const LINEAR_PROBE_SMALL = 12_250;
 const LINEAR_PROBE_LARGE = 49_000;
@@ -88,27 +88,27 @@ describe('NEW-1: implied directories count toward the entry cap', () => {
     expect(assertSafeArchiveListing([entry('./a/b'), entry('a//b/', true)], 1_000, small).entryCount).toBe(2);
   });
 
-  it('rejects 300 entries that each imply 254 directories after the work of counting them, not of creating them', async () => {
+  it('rejects 300 entries that each imply 254 directories after the work of counting them, not of creating them (hang guard; growth ratio in the perf suite)', async () => {
     const fan = (entries: number) => Array.from({ length: entries }, (_, i) => entry(`${i}/${'d/'.repeat(FAN_DEPTH)}f`));
     // 300 entries imply about 76,000 directories, over the 50,000 cap. Linear accounting costs 4x for 4x the
     // entries (tests/helpers/timing.ts); creating or deduplicating directories pairwise would cost 16x.
-    const { largeResult } = await expectLinearOnInputs(
+    const { largeResult } = await expectNoHangOnInput(
       'implied directory accounting',
       (entries: ListedArchiveEntry[]) => settle(() => assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS)),
-      { small: fan(FAN_ENTRIES), large: fan(FAN_ENTRIES * SCALING_FACTOR) }
+      fan(FAN_ENTRIES * SCALING_FACTOR)
     );
     expect(largeResult.ok).toBe(false);
     expect(!largeResult.ok && (largeResult.error as { reason?: string }).reason).toBe('entry-count');
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('accounts 49,000 deep entries under one prefix in linear time', async () => {
+  it('accounts 49,000 deep entries under one prefix in linear time (hang guard; growth ratio in the perf suite)', async () => {
     const shared = 'p/'.repeat(100);
     const listing = (count: number) => Array.from({ length: count }, (_, i) => entry(`${shared}${i}`));
     // 4x the entries: linear work grows about 4x, the old quadratic accounting about 16x.
-    const { largeResult } = await expectLinearOnInputs(
+    const { largeResult } = await expectNoHangOnInput(
       'assertSafeArchiveListing',
       (entries: ListedArchiveEntry[]) => assertSafeArchiveListing(entries, 1_000_000, ARCHIVE_SECURITY_LIMITS),
-      { small: listing(LINEAR_PROBE_SMALL), large: listing(LINEAR_PROBE_LARGE) }
+      listing(LINEAR_PROBE_LARGE)
     );
     expect(largeResult.entryCount).toBe(LINEAR_PROBE_LARGE);
     expect(assertSafeArchiveListing(listing(LINEAR_PROBE_SMALL), 1_000_000, ARCHIVE_SECURITY_LIMITS).entryCount).toBe(LINEAR_PROBE_SMALL);

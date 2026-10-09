@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
-import { ConversionFailedError, EngineUnavailableError } from '../types';
+import { ConversionFailedError, EngineUnavailableError, FontCoverageError } from '../types';
+import { hasComplexTextScript } from './ctl';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
+import { ShapingBudget } from './text-shaping/limits';
+import { layoutShapedText, type LayoutAlign, type TextLayout } from './text-shaping/paragraph-layout';
+import { loadTextShaper } from './text-shaping/shape';
+import { ShapedTextDrawer } from './text-shaping/shaped-text-drawer';
 
 /**
  * Unicode font coverage for the in-process PDF writers (pdfkit).
@@ -65,9 +70,22 @@ const FONTCONFIG_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 /** A failed fontconfig listing (missing, failing or timed-out fc-list) is retried after this long. */
 const FONTCONFIG_RETRY_MS = 60_000;
 const FONTCONFIG_FIELD_SEPARATOR = '\t';
-/** One line per installed face: file, face index, format, colour flag, first family name, character set. */
-const FONTCONFIG_FORMAT = ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family[0]}', '%{charset}'].join(FONTCONFIG_FIELD_SEPARATOR) + '\n';
-const FONTCONFIG_FIELD_COUNT = 6;
+/** One line per installed face: file, face index, format, colour flag, every family name (comma separated), character set. */
+const FONTCONFIG_FORMAT =
+  ['%{file}', '%{index}', '%{fontformat}', '%{color}', '%{family}', '%{weight}', '%{slant}', '%{width}', '%{spacing}', '%{charset}'].join(
+    FONTCONFIG_FIELD_SEPARATOR
+  ) + '\n';
+/** fontconfig separates the several names of one family with commas. */
+const FONTCONFIG_FAMILY_SEPARATOR = ',';
+/** Style names of the upright regular face of a family. */
+const REGULAR_STYLE = /^(?:regular|normal|book|roman)$/i;
+const FONTCONFIG_FIELD_COUNT = 10;
+/** fontconfig's weight, width and spacing values of an upright, regular-weight, normal-width, proportional face. */
+const FONTCONFIG_REGULAR_WEIGHT = 80;
+const FONTCONFIG_NORMAL_WIDTH = 100;
+/** Family names of faces that are poor defaults: serif and looped designs, user-interface cuts. */
+const LESS_NEUTRAL_FAMILY = /serif|looped|\bui\b|display|mono/i;
+const SANS_FAMILY = /sans/i;
 /** fontconfig formats pdfkit can embed. */
 const EMBEDDABLE_FONTCONFIG_FORMATS: ReadonlySet<string> = new Set(['TrueType', 'CFF']);
 const FONTCONFIG_TRUE = 'True';
@@ -111,7 +129,11 @@ const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
 interface FontkitFace {
   postscriptName: string | null;
   familyName?: string;
+  subfamilyName?: string;
   unitsPerEm: number;
+  ascent: number;
+  descent: number;
+  lineGap: number;
   directory: { tables: Record<string, unknown> };
   hasGlyphForCodePoint(codePoint: number): boolean;
   /** Shapes the text with the font's default features; advanceWidth is in font units. */
@@ -162,6 +184,12 @@ interface IndexedFontFace {
   readonly path: string;
   readonly index: number;
   readonly ranges: Uint32Array;
+  /** Every family name of the face, lower-cased. */
+  readonly families: readonly string[];
+  /** How far this face is from a regular-weight, upright, normal-width, proportional sans design (0 is closest). */
+  readonly rank: number;
+  /** Number of code points the face covers; script-specific fonts are small. */
+  readonly coverage: number;
 }
 
 let faceCounter = 0;
@@ -252,19 +280,47 @@ function rangesContain(ranges: Uint32Array, codePoint: number): boolean {
   return false;
 }
 
+function normalizeFamily(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 /** Keeps embeddable outline faces that are neither colour nor placeholder-box fonts. */
 function parseFontconfigListing(listing: string): IndexedFontFace[] {
   const faces: IndexedFontFace[] = [];
   for (const line of listing.split('\n')) {
     const fields = line.split(FONTCONFIG_FIELD_SEPARATOR);
     if (fields.length !== FONTCONFIG_FIELD_COUNT) continue;
-    const [file, index, format, color, family, charset] = fields;
+    const [file, index, format, color, family, weight, slant, width, spacing, charset] = fields;
     if (!EMBEDDABLE_FONT_FILE.test(file) || !EMBEDDABLE_FONTCONFIG_FORMATS.has(format)) continue;
     if (color === FONTCONFIG_TRUE || PLACEHOLDER_FONT_FAMILY.test(family)) continue;
     const faceIndex = Number.parseInt(index, DECIMAL_RADIX);
-    faces.push({ path: file, index: Number.isFinite(faceIndex) ? faceIndex : 0, ranges: parseCharset(charset) });
+    const ranges = parseCharset(charset);
+    faces.push({
+      path: file,
+      index: Number.isFinite(faceIndex) ? faceIndex : 0,
+      ranges,
+      families: family.split(FONTCONFIG_FAMILY_SEPARATOR).map(normalizeFamily),
+      rank: faceRank(family, weight, slant, width, spacing),
+      coverage: countCovered(ranges),
+    });
   }
   return faces;
+}
+
+function countCovered(ranges: Uint32Array): number {
+  let covered = 0;
+  for (let i = 0; i < ranges.length; i += 2) covered += ranges[i + 1] - ranges[i] + 1;
+  return covered;
+}
+
+/** Lower is a more neutral default text face: regular weight, upright, normal width, proportional, sans. */
+function faceRank(family: string, weight: string, slant: string, width: string, spacing: string): number {
+  const weightGap = Math.abs((Number.parseInt(weight, DECIMAL_RADIX) || FONTCONFIG_REGULAR_WEIGHT) - FONTCONFIG_REGULAR_WEIGHT);
+  const widthGap = Math.abs((Number.parseInt(width, DECIMAL_RADIX) || FONTCONFIG_NORMAL_WIDTH) - FONTCONFIG_NORMAL_WIDTH);
+  const slanted = (Number.parseInt(slant, DECIMAL_RADIX) || 0) > 0 ? 1 : 0;
+  const fixedPitch = spacing.trim() === '' ? 0 : 1;
+  const unusual = LESS_NEUTRAL_FAMILY.test(family) && !SANS_FAMILY.test(family) ? 1 : 0;
+  return weightGap + widthGap + slanted * 1000 + fixedPitch * 1000 + unusual * 500;
 }
 
 /** Lists installed fonts with fontconfig; null when fc-list is missing, fails or times out. */
@@ -292,13 +348,16 @@ export function loadFontCoverageIndex(): Promise<void> {
   if (!fontconfigIndexLoad || retryDue) {
     fontconfigFailedAt = null;
     fontconfigIndexLoad = queryFontconfig().then((faces) => {
-      fontconfigIndex = faces ?? [];
+      // Most neutral faces first (stable), so the first face covering a character is a regular-weight sans one.
+      fontconfigIndex = (faces ?? []).sort((a, b) => a.rank - b.rank);
       fontconfigFailedAt = faces ? null : Date.now();
       // Misses recorded against an earlier listing may now be covered.
       coverageCache.clear();
+      scriptFaceCache.clear();
     });
   }
-  return fontconfigIndexLoad;
+  // The shaping engine loads with the font index, so the synchronous drawing code can shape text that needs it.
+  return Promise.all([fontconfigIndexLoad, loadTextShaper()]).then(() => undefined);
 }
 
 /** Finds a system face covering the code point: well-known files first, then the fontconfig index. */
@@ -321,15 +380,43 @@ function systemFaceFor(codePoint: number): PdfFontFace | null {
   return found;
 }
 
-function orderedFaces(customFontPath?: string): PdfFontFace[] {
+/** A preferred font: the path of a font file (its first face) or a face already found. */
+export type PdfPreferredFont = string | PdfFontFace;
+
+function orderedFaces(customFont?: PdfPreferredFont): PdfFontFace[] {
   ensureWellKnownFaces();
-  const custom = customFontPath ? loadFace(customFontPath) : null;
+  let custom: PdfFontFace | null = null;
+  if (typeof customFont === 'string') custom = customFont ? loadFace(customFont) : null;
+  else if (customFont) custom = customFont;
   return custom ? [custom, ...systemFaces.filter((face) => face !== custom)] : [...systemFaces];
 }
 
-function faceFor(codePoint: number, customFontPath?: string): PdfFontFace | null {
+function faceFor(codePoint: number, customFontPath?: PdfPreferredFont): PdfFontFace | null {
   const preferred = orderedFaces(customFontPath).find((face) => face.font.hasGlyphForCodePoint(codePoint));
   return preferred ?? systemFaceFor(codePoint);
+}
+
+/**
+ * The installed face of a font family (case-insensitive), preferring its regular style; null when no
+ * installed embeddable face has the family name. Awaits the fontconfig listing first.
+ */
+export async function findFaceByFamily(family: string): Promise<PdfFontFace | null> {
+  await loadFontCoverageIndex();
+  const wanted = normalizeFamily(family);
+  if (wanted === '') return null;
+  ensureWellKnownFaces();
+  const candidates: PdfFontFace[] = systemFaces.filter((face) => normalizeFamily(face.font.familyName ?? '') === wanted);
+  for (const entry of fontconfigIndex ?? []) {
+    if (!entry.families.includes(wanted)) continue;
+    const face = loadFace(entry.path, entry.index);
+    if (face && !candidates.includes(face)) candidates.push(face);
+  }
+  return candidates.find((face) => REGULAR_STYLE.test(face.font.subfamilyName ?? '')) ?? candidates[0] ?? null;
+}
+
+/** Whether the face has a glyph for every code point that needs one in the text. */
+export function faceCoversText(face: PdfFontFace, text: string): boolean {
+  return glyphCodePoints(toDrawableText(text)).every((cp) => face.font.hasGlyphForCodePoint(cp));
 }
 
 /**
@@ -341,6 +428,22 @@ export function toDrawableText(text: string): string {
     .replace(/\r\n?/g, '\n')
     .replace(/\t/g, TAB_STOP_SPACES)
     .replace(NON_RENDERING_CHARACTERS, (ch) => (ch.codePointAt(0) === LINE_FEED ? ch : ''));
+}
+
+/**
+ * Invisible characters shaping and bidi reordering act on: zero-width joiners (they control Indic conjuncts and Arabic
+ * joining) and the bidi marks and embedding controls. They have no glyph of their own, but removing them would change
+ * how their neighbours are shaped or ordered.
+ */
+const SHAPING_CONTROL_CHARACTER = /\u200C|\u200D|[\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/;
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+
+/** Like toDrawableText, but keeps the invisible characters that shaping and bidi reordering use. */
+export function toShapableText(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, TAB_STOP_SPACES)
+    .replace(NON_RENDERING_CHARACTERS, (ch) => (ch.codePointAt(0) === LINE_FEED || SHAPING_CONTROL_CHARACTER.test(ch) ? ch : ''));
 }
 
 function isVariationSelector(codePoint: number): boolean {
@@ -364,7 +467,14 @@ function assertFontable(codePoint: number): void {
   }
 }
 
-function uncoveredError(codePoint: number): EngineUnavailableError {
+function uncoveredError(codePoint: number): EngineUnavailableError | FontCoverageError {
+  // Text that needs shaping has no other engine to try, so a missing glyph is a request the fonts cannot serve (400).
+  if (hasComplexTextScript(String.fromCodePoint(codePoint))) {
+    return new FontCoverageError(
+      `No installed font has a glyph for ${formatCodePoint(codePoint)} '${String.fromCodePoint(codePoint)}'; install a font covering this script`,
+      codePoint
+    );
+  }
   return new EngineUnavailableError(
     UNICODE_FONT_ENGINE,
     `No installed font has a glyph for ${formatCodePoint(codePoint)} '${String.fromCodePoint(codePoint)}'; install a font covering this script (for Chinese, Japanese and Korean text, Noto Sans CJK)`
@@ -416,7 +526,7 @@ export function findUncoveredCodePoint(text: string, customFontPath?: string): n
 }
 
 /** First face, in preference order, that covers every code point; null when no single face does. */
-function singleCoveringFace(codePoints: readonly number[], customFontPath?: string): PdfFontFace | null {
+function singleCoveringFace(codePoints: readonly number[], customFontPath?: PdfPreferredFont): PdfFontFace | null {
   return orderedFaces(customFontPath).find((face) => codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
 }
 
@@ -453,7 +563,7 @@ function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, link: stri
  * the character, else the first face that does. Throws ConversionFailedError for code points no
  * font can render and EngineUnavailableError at the first character no installed font covers.
  */
-export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: string): PdfFontRun[] {
+export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: PdfPreferredFont): PdfFontRun[] {
   const runs: PdfFontRun[] = [];
   for (const segment of segments) {
     const text = toDrawableText(segment.text);
@@ -482,6 +592,96 @@ export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFon
   return runs;
 }
 
+/** Faces chosen for a set of code points, by the code points joined; null when no installed font covers them all. */
+const scriptFaceCache = new Map<string, PdfFontFace | null>();
+
+/** Families made for one script in the plain sans design ("Noto Sans Devanagari"), not its decorative or UI cuts. */
+const SCRIPT_SANS_FAMILY = /^noto sans (?!mono|display|symbols|cjk|math|ui)[a-z]+(?: [a-z]+)?$/;
+/** General-purpose sans families that include several scripts. */
+const GENERAL_SANS_FAMILY = /^(?:noto sans|dejavu sans|liberation sans|freesans|arimo)$/;
+const SCRIPT_FACE_TIER_SCRIPT = 0;
+const SCRIPT_FACE_TIER_GENERAL = 1;
+const SCRIPT_FACE_TIER_OTHER = 2;
+
+function scriptFaceTier(entry: IndexedFontFace): number {
+  if (entry.families.some((family) => SCRIPT_SANS_FAMILY.test(family) && !/\bui\b/.test(family))) return SCRIPT_FACE_TIER_SCRIPT;
+  if (entry.families.some((family) => GENERAL_SANS_FAMILY.test(family))) return SCRIPT_FACE_TIER_GENERAL;
+  return SCRIPT_FACE_TIER_OTHER;
+}
+
+/** Whether `candidate` is a better face for complex-script text than `current`: tier, then neutrality, then size. */
+function betterScriptFace(candidate: IndexedFontFace, current: IndexedFontFace): boolean {
+  const byTier = scriptFaceTier(candidate) - scriptFaceTier(current);
+  if (byTier !== 0) return byTier < 0;
+  if (candidate.rank !== current.rank) return candidate.rank < current.rank;
+  return candidate.coverage < current.coverage;
+}
+
+/**
+ * The installed face best suited to text of a complex script: of the faces that cover every code point, the one made
+ * for the script in a plain sans design, else a general sans font, else the most neutral remaining design.
+ */
+function scriptSpecificFace(codePoints: readonly number[]): PdfFontFace | null {
+  if (!fontconfigIndex || codePoints.length === 0) return null;
+  const key = codePoints.join(',');
+  const cached = scriptFaceCache.get(key);
+  if (cached !== undefined) return cached;
+  let best: IndexedFontFace | null = null;
+  for (const entry of fontconfigIndex) {
+    if (best && !betterScriptFace(entry, best)) continue;
+    if (!codePoints.every((cp) => rangesContain(entry.ranges, cp))) continue;
+    best = entry;
+  }
+  const face = best ? loadFace(best.path, best.index) : null;
+  const usable = face && codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp)) ? face : null;
+  scriptFaceCache.set(key, usable);
+  return usable;
+}
+
+/** A stretch of shapable text and the face that draws it. */
+export interface PdfFontRange {
+  readonly start: number;
+  readonly end: number;
+  readonly face: PdfFontFace;
+}
+
+function needsGlyphToShape(codePoint: number): boolean {
+  return needsGlyph(codePoint) && !DEFAULT_IGNORABLE.test(String.fromCodePoint(codePoint));
+}
+
+/**
+ * Partitions shapable text (see toShapableText) into stretches that one face covers, so that every offset belongs to
+ * exactly one range. Invisible characters never need a glyph and join their neighbour's range. Throws
+ * ConversionFailedError for code points no font can render and FontCoverageError (400) at the first character no
+ * installed font covers.
+ */
+export function fontRangesForShaping(text: string, customFontPath?: PdfPreferredFont): PdfFontRange[] {
+  const needed = glyphCodePoints(text.replace(NON_RENDERING_CHARACTERS, ''));
+  const specific = customFontPath === undefined && hasComplexTextScript(text) ? scriptSpecificFace(needed) : null;
+  const single = specific ?? singleCoveringFace(needed, customFontPath);
+  if (single) return text.length > 0 ? [{ start: 0, end: text.length, face: single }] : [];
+
+  const ranges: PdfFontRange[] = [];
+  let current: PdfFontFace | null = null;
+  let rangeStart = 0;
+  let index = 0;
+  for (const ch of text) {
+    const cp = ch.codePointAt(0) as number;
+    if (needsGlyphToShape(cp) && !(current && current.font.hasGlyphForCodePoint(cp))) {
+      const face = faceFor(cp, customFontPath);
+      if (!face) throw uncoveredError(cp);
+      if (current && index > rangeStart) {
+        ranges.push({ start: rangeStart, end: index, face: current });
+        rangeStart = index;
+      }
+      current = face;
+    }
+    index += ch.length;
+  }
+  if (current) ranges.push({ start: rangeStart, end: text.length, face: current });
+  return ranges;
+}
+
 /** Path of the preferred installed Unicode font, or null when none is installed. */
 export function preferredUnicodeFontPath(customFontPath?: string): string | null {
   return orderedFaces(customFontPath)[0]?.path ?? null;
@@ -495,10 +695,13 @@ export type PdfWriterTextOptions = Omit<PDFKit.Mixins.TextOptions, 'continued'>;
  */
 export class PdfUnicodeTextWriter {
   private readonly registered = new Set<string>();
+  /** Glyphs shaped for this document, against SHAPE_MAX_GLYPHS_PER_DOCUMENT. */
+  private readonly shapingBudget = new ShapingBudget();
+  private shapedDrawer: ShapedTextDrawer | null = null;
 
   constructor(
     private readonly doc: PDFKit.PDFDocument,
-    private readonly customFontPath?: string
+    private readonly customFontPath?: PdfPreferredFont
   ) {}
 
   /** Selects a face in the document, embedding it on first use. */
@@ -614,6 +817,55 @@ export class PdfUnicodeTextWriter {
     return out;
   }
 
+  /** Whether some of the text needs shaping and bidi reordering (Arabic, Hebrew, Indic, Thai and other complex scripts). */
+  private needsShaping(content: string | readonly PdfTextSegment[]): boolean {
+    if (typeof content === 'string') return hasComplexTextScript(content);
+    return content.some((segment) => hasComplexTextScript(segment.text));
+  }
+
+  private currentFontSize(): number {
+    return (this.doc as unknown as { _fontSize: number })._fontSize;
+  }
+
+  /** Shapes and breaks the content into lines of at most `width` points (0: one line per paragraph). */
+  private shapedLayout(content: string | readonly PdfTextSegment[], width: number, align?: LayoutAlign): TextLayout {
+    const primary = orderedFaces(this.customFontPath)[0];
+    if (!primary) throw uncoveredError(SPACE);
+    const segments = (typeof content === 'string' ? [{ text: content }] : content).map((segment) => ({
+      text: toShapableText(segment.text),
+      link: segment.link,
+    }));
+    return layoutShapedText({
+      segments,
+      fontSize: this.currentFontSize(),
+      width,
+      align,
+      fonts: (text) => fontRangesForShaping(text, this.customFontPath),
+      blankLineFace: primary,
+      budget: this.shapingBudget,
+    });
+  }
+
+  private writeShaped(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions, x?: number, y?: number): void {
+    const left = x ?? this.doc.x;
+    let top = y ?? this.doc.y;
+    const layout = this.shapedLayout(content, this.lineWidth(options, x), options.align as LayoutAlign | undefined);
+    const drawer = this.shapedDrawer ?? new ShapedTextDrawer(this.doc, (face) => this.useFace(face));
+    this.shapedDrawer = drawer;
+    const lineGap = options.lineGap ?? 0;
+    for (const line of layout.lines) {
+      const height = line.ascent + line.descent + line.gap;
+      if (options.lineBreak !== false && top + height > this.doc.page.maxY()) {
+        this.doc.addPage();
+        top = this.doc.page.margins.top;
+      }
+      drawer.drawLine(line, left, top, { underline: Boolean(options.underline) });
+      top += height + lineGap;
+    }
+    this.doc.x = left;
+    this.doc.y = top;
+  }
+
   /** Runs with long tokens broken to the line width (each run measured in its own font). */
   private layoutRuns(content: string | readonly PdfTextSegment[], lineWidth: number): PdfFontRun[] {
     return this.runs(content).map((run) => {
@@ -627,6 +879,10 @@ export class PdfUnicodeTextWriter {
    * drawn underlined with a link annotation.
    */
   write(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}, x?: number, y?: number): void {
+    if (this.needsShaping(content)) {
+      this.writeShaped(content, options, x, y);
+      return;
+    }
     const runs = this.layoutRuns(content, this.lineWidth(options, x));
     runs.forEach((run, index) => {
       this.useFace(run.face);
@@ -650,6 +906,13 @@ export class PdfUnicodeTextWriter {
    * in the font that will draw it.
    */
   measure(content: string | readonly PdfTextSegment[]): { width: number; lineHeight: number } {
+    if (this.needsShaping(content)) {
+      const { lines } = this.shapedLayout(content, 0);
+      return {
+        width: lines.reduce((widest, line) => Math.max(widest, line.width), 0),
+        lineHeight: lines.reduce((tallest, line) => Math.max(tallest, line.ascent + line.descent + line.gap), 0),
+      };
+    }
     let widest = 0;
     let lineWidth = 0;
     let lineHeight = 0;
@@ -672,6 +935,11 @@ export class PdfUnicodeTextWriter {
    * run is measured on its own lines, which never underestimates.
    */
   heightOf(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}): number {
+    if (this.needsShaping(content)) {
+      const lineGap = options.lineGap ?? 0;
+      const { lines } = this.shapedLayout(content, this.lineWidth(options), options.align as LayoutAlign | undefined);
+      return lines.reduce((sum, line) => sum + line.ascent + line.descent + line.gap + lineGap, 0);
+    }
     let height = 0;
     for (const run of this.layoutRuns(content, this.lineWidth(options))) {
       this.useFace(run.face);

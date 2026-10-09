@@ -22,7 +22,6 @@ import {
 import { CadGeometryError, CorruptStreamError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathCount, xpathString } from './helpers/xml-oracle';
-import { parseToUnicodeCMap, recursiveXyCut } from '../src/lib/conversions/pdf-utils';
 import { parseHwpDocument, hwpEquationToMathML, hwpEquationToLaTeX } from '../src/lib/conversions/hwp';
 import sharp from 'sharp';
 
@@ -476,19 +475,6 @@ describe('Phase 4: Universal Golden Binary Corpus & Visual Regression CI Gate (#
       expect(() => evaluateBSplineCurve({ ...line, knots: [0, 1, 1] }, 0.5)).toThrow(
         /B-spline curve knot vector has 3 knots, 4 needed for 2 control points of degree 1/
       );
-    });
-
-    it('resiliently handles corrupted CMap streams fail-closed', () => {
-      const corruptedCMap = `begincmap
-/CMapType 2 def
-beginbfrange
-<FFFF> <0000> [<0000>]
-endbfrange
-endcmap`;
-
-      const parsed = parseToUnicodeCMap(corruptedCMap);
-      expect(parsed).toBeDefined();
-      expect(parsed.charMap instanceof Map).toBe(true);
     });
 
     it('refuses malformed EqEdit scripts with a typed error and transpiles odd but valid ones to well-formed MathML', () => {
