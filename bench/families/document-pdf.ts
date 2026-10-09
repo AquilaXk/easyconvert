@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
-import { REPO_ROOT } from '../config';
+import { IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
@@ -84,7 +84,8 @@ const runText: FamilyRunner = async (ctx) => {
       () => {
         for (const document of documents) referenceText(document.file);
       },
-      'light'
+      'light',
+      IN_PROCESS_REPEATS
     );
     rows.push(throughputRow('document', TEXT_CASE, documents.reduce((sum, document) => sum + document.pdf.length, 0), timing, TEXT_REFERENCE));
   }
