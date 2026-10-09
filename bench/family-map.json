@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^src/(lib/conversions|lib/workers|worker)/",
+  "scope": "^src/(lib/conversions|lib/workers|worker)/|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -21,6 +21,14 @@
     {
       "families": ["*"],
       "match": "^src/lib/conversions/(dispatch|index|options-guard)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
+    },
+    {
+      "families": ["image"],
+      "match": "^src/lib/security/svg-sanitizer\\.ts$"
     },
     {
       "families": ["compression"],

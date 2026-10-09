@@ -32,7 +32,7 @@ describe('the map', () => {
     expect(MAP.scope.test('src/lib/conversions/image.ts')).toBe(true);
     expect(MAP.scope.test('src/worker/sandbox.ts')).toBe(true);
     expect(MAP.scope.test('src/lib/workers/cpu-pool.ts')).toBe(true);
-    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'src/lib/security/process-sandbox.ts', 'bench/run.ts', 'tests/x.test.ts', 'docs/a.md']) {
+    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'bench/run.ts', 'tests/x.test.ts', 'docs/a.md']) {
       expect(MAP.scope.test(outside), outside).toBe(false);
     }
   });
@@ -128,6 +128,40 @@ describe('classifying changed paths', () => {
     for (const file of ['src/lib/conversions/dispatch.ts', 'src/lib/conversions/index.ts', 'src/worker/engines.ts', 'src/worker/sandbox.ts', 'src/lib/workers/cpu-pool.ts']) {
       expect(classify(file), file).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
     }
+  });
+
+  it('sends the shared tool runner and the manifests every conversion depends on to every benchmarked family', () => {
+    const everything = { benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] };
+    for (const file of [
+      'src/lib/security/process-sandbox.ts',
+      'package.json',
+      'package-lock.json',
+      'Dockerfile.worker',
+      'Dockerfile',
+      '.github/actions/ci-setup/action.yml',
+      '.github/actions/ci-setup/install-tools.sh',
+      'docker/seccomp-worker.json',
+    ]) {
+      expect(classify(file), file).toEqual(everything);
+    }
+  });
+
+  it('sends the SVG sanitizer to the image family that renders through it', () => {
+    expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+  });
+
+  it('puts the new media modules under their families', () => {
+    expect(classify('src/lib/conversions/mp4-layout.ts')).toEqual({ benchmarked: ['video'], unmapped: [], unclassified: [] });
+    expect(classify('src/lib/conversions/media-encoder-threads.ts')).toEqual({ benchmarked: ['video', 'audio'], unmapped: [], unclassified: [] });
+    expect(classify('src/lib/conversions/avif-cli.ts')).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+  });
+
+  it('leaves unrelated files at the repository root and under .github alone', () => {
+    expect(classify('README.md', 'tsconfig.json', 'docker-compose.yml', '.github/workflows/ci.yml', '.github/PULL_REQUEST_TEMPLATE.md', 'docker/AIRGAP.md')).toEqual({
+      benchmarked: [],
+      unmapped: [],
+      unclassified: [],
+    });
   });
 
   it('maps nothing outside the conversion code', () => {
