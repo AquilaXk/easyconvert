@@ -113,25 +113,82 @@ function isExecutableFile(candidate: string): boolean {
   }
 }
 
-/** Values of `AVIFENC_PATH` already reported as unusable, so each is reported once. */
-const reportedUnusableOverrides = new Set<string>();
+/**
+ * Oldest libavif whose `avifenc` reads a PNG from standard input (`--input-format`), the hand-off this module uses
+ * and the version the encoder policy was measured on. Older builds (Debian 12 ships 0.11.1, Ubuntu 24.04 1.0.4)
+ * stop on the first unknown option, which would fail every picture: they count as "not installed".
+ */
+export const AVIFENC_MIN_VERSION: readonly [number, number, number] = [1, 4, 0];
+const AVIFENC_PROBE_TIMEOUT_MS = 10_000;
+const AVIFENC_PROBE_MAX_BYTES = 64 * 1024;
+
+/** Values of `AVIFENC_PATH` and tools already reported as unusable, so each is reported once. */
+const reportedUnusable = new Set<string>();
+
+function reportOnce(key: string, message: string): void {
+  if (reportedUnusable.has(key)) return;
+  reportedUnusable.add(key);
+  console.warn(`[avif] ${message}`);
+}
+
+/** Version a tool reports (`Version: 1.4.2 (...)`), or null when it reports none we can read. */
+export function parseAvifencVersion(output: string): [number, number, number] | null {
+  const match = /Version:\s*(\d+)\.(\d+)\.(\d+)/.exec(output);
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function isAtLeast(version: readonly number[], minimum: readonly number[]): boolean {
+  for (let i = 0; i < minimum.length; i += 1) {
+    if (version[i] !== minimum[i]) return version[i] > minimum[i];
+  }
+  return true;
+}
+
+/** Verdicts by tool path, size and modification time: the tool is asked for its version once, not per picture. */
+const versionVerdicts = new Map<string, Promise<boolean>>();
+
+async function reportsSupportedVersion(avifenc: string): Promise<boolean> {
+  const stat = fs.statSync(avifenc);
+  const key = `${avifenc}|${stat.size}|${stat.mtimeMs}`;
+  let verdict = versionVerdicts.get(key);
+  if (verdict === undefined) {
+    verdict = executeSandboxedBinary(avifenc, ['--version'], { timeoutMs: AVIFENC_PROBE_TIMEOUT_MS, maxBuffer: AVIFENC_PROBE_MAX_BYTES, networkIsolated: true }).then(
+      (result) => {
+        const version = parseAvifencVersion(result.stdout.toString('utf-8'));
+        if (version !== null && isAtLeast(version, AVIFENC_MIN_VERSION)) return true;
+        reportOnce(key, `${avifenc} reports ${version === null ? 'no version' : `libavif ${version.join('.')}`}; libavif ${AVIFENC_MIN_VERSION.join('.')} or newer is needed, so the image library encodes AVIF`);
+        return false;
+      },
+      (err: unknown) => {
+        rethrowSandboxUnavailable(err);
+        reportOnce(key, `${avifenc} could not report its version; the image library encodes AVIF`);
+        return false;
+      }
+    );
+    versionVerdicts.set(key, verdict);
+    // A tool that could not be asked at all (no sandbox) is asked again on the next picture.
+    verdict.catch(() => versionVerdicts.delete(key));
+  }
+  return verdict;
+}
 
 /**
- * Where the encoder is installed, or null. The environment is read on every call and nothing is run. A value of
- * `AVIFENC_PATH` is authoritative and must be the absolute path of an executable regular file; one that is not
- * means the image library encodes, and is logged once because the operator asked for something else.
+ * Where a usable encoder is installed, or null. The environment is read on every call; the tool is run only to ask
+ * for its version, once. A value of `AVIFENC_PATH` is authoritative and must be the absolute path of an executable
+ * regular file; one that is not means the image library encodes, and is logged once because the operator asked
+ * for something else.
  */
-export function findAvifenc(env: NodeJS.ProcessEnv = process.env): string | null {
+export async function findAvifenc(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
   const override = env[AVIFENC_PATH_ENV];
   if (override !== undefined && override !== '') {
-    if (path.isAbsolute(override) && isExecutableFile(override)) return override;
-    if (!reportedUnusableOverrides.has(override)) {
-      reportedUnusableOverrides.add(override);
-      console.warn(`[avif] ${AVIFENC_PATH_ENV} is set but is not the absolute path of an executable file; the image library encodes AVIF`);
-    }
+    if (path.isAbsolute(override) && isExecutableFile(override)) return (await reportsSupportedVersion(override)) ? override : null;
+    reportOnce(override, `${AVIFENC_PATH_ENV} is set but is not the absolute path of an executable file; the image library encodes AVIF`);
     return null;
   }
-  return AVIFENC_CANDIDATES.find((candidate) => isExecutableFile(candidate)) ?? null;
+  for (const candidate of AVIFENC_CANDIDATES) {
+    if (isExecutableFile(candidate) && (await reportsSupportedVersion(candidate))) return candidate;
+  }
+  return null;
 }
 
 /** Threads for one run: the cores this process may use, at most `AVIFENC_MAX_THREADS`; tiles bound what a small picture can use. */

@@ -1761,7 +1761,7 @@ async function encodeAvifFromPipeline(
   const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
   const target = resizedDimensions(upright.width, upright.height, options);
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
-  const avifenc = findAvifenc();
+  const avifenc = await findAvifenc();
   const pixels = target.width * target.height;
   const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
   const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);

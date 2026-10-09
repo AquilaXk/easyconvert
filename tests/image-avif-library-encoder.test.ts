@@ -33,6 +33,8 @@ const OVERSIZED_SIDE = 8200;
 const OVERSIZED_OTHER_SIDE = 8000;
 const FAILURE_EXIT_STATUS = 3;
 const SCRIPT_MODE = 0o755;
+/** What a fake tool answers when asked for its version, so it passes for a supported libavif without running a picture. */
+const VERSION_ANSWER = `[ "$1" = "--version" ] && { echo 'Version: 1.4.2 (fake)'; exit 0; }`;
 
 let workDir: string;
 const savedAvifencPath = process.env.AVIFENC_PATH;
@@ -118,7 +120,7 @@ async function grey8Graphic(): Promise<Buffer> {
 /** A recording wrapper around the real encoder: it logs its arguments, then runs the real binary on them. */
 function recordingWrapper(name: string): { script: string; argsFile: string } {
   const argsFile = path.join(workDir, `${name}.args`);
-  const script = writeIn(name, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\nexec '${requireOracleTool('avifenc')}' "$@"\n`);
+  const script = writeIn(name, `#!/bin/sh\n[ "$1" = "--version" ] && exec '${requireOracleTool('avifenc')}' "$@"\nprintf '%s\\n' "$@" > '${argsFile}'\nexec '${requireOracleTool('avifenc')}' "$@"\n`);
   chmodSync(script, SCRIPT_MODE);
   return { script, argsFile };
 }
@@ -167,7 +169,7 @@ async function isGone(pid: number, graceMs = 5000): Promise<boolean> {
 
 function failingTool(name: string, body: string): { script: string; marker: string } {
   const marker = path.join(workDir, `${name}.ran`);
-  const script = writeIn(name, `#!/bin/sh\ntouch '${marker}'\n${body}\n`);
+  const script = writeIn(name, `#!/bin/sh\n${VERSION_ANSWER}\ntouch '${marker}'\n${body}\n`);
   chmodSync(script, SCRIPT_MODE);
   return { script, marker };
 }
@@ -196,7 +198,7 @@ describe('grey sources', () => {
 
   oracleTest(
     'a grey picture with real transparency stays YUV400 and keeps its alpha plane',
-    ['avifenc', 'avifdec', 'magick'],
+    ['avifenc', 'avifdec'],
     async () => {
       const greyAlpha = runConvert(['-size', `${PHOTO_WIDTH}x${PHOTO_HEIGHT}`, 'gradient:#202020-#e0e0e0', '-alpha', 'set', '-channel', 'A', '-evaluate', 'set', '50%', '+channel', '-depth', '8', '-define', 'png:color-type=4', 'png:-']);
       expect(await sharp(greyAlpha).metadata()).toMatchObject({ channels: 2, hasAlpha: true });
@@ -237,11 +239,11 @@ describe('grey sources', () => {
       expect(b, `${name} blue`).toBeLessThanOrEqual(COLOUR_TOLERANCE * 2);
     };
 
-    oracleTest('written by the library encoder', ['avifenc', 'avifdec', 'magick'], () => expectRedCorner(`bars-cli-${depthName}`), 60_000);
+    oracleTest('written by the library encoder', ['avifenc', 'avifdec'], () => expectRedCorner(`bars-cli-${depthName}`), 60_000);
 
     oracleTest(
       'written by the image library when the tool is missing',
-      ['avifdec', 'magick'],
+      ['avifdec'],
       async () => {
         process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
         await expectRedCorner(`bars-lib-${depthName}`);
@@ -279,7 +281,7 @@ describe('colour sources', () => {
 
   oracleTest(
     'a Display P3 source keeps its colours: the pixels are the sRGB values ImageMagick computes from the embedded profile',
-    ['avifenc', 'avifdec', 'magick'],
+    ['avifenc', 'avifdec'],
     async () => {
       const patches = [[250, 20, 20], [20, 200, 40], [30, 60, 240], [128, 128, 128]];
       const raw = Buffer.alloc(patches.length * PATCH * PATCH * 3);
@@ -362,7 +364,7 @@ describe('HDR output', () => {
 
   oracleTest(
     'a flat PQ graphic goes to the library encoder with BT.2020 / PQ / BT.2020 NCL tags and its sample values survive',
-    ['avifenc', 'avifdec', 'magick'],
+    ['avifenc', 'avifdec'],
     async () => {
       const side = 64;
       const sample = [40000, 24000, 12000];
@@ -389,7 +391,7 @@ describe('HDR output', () => {
 describe('HDR output without the library encoder', () => {
   oracleTest(
     'the image library tags PQ with matrix 6, the matrix its own RGB to YCbCr conversion used, so a decoder returns the samples that went in',
-    ['avifdec', 'magick'],
+    ['avifdec'],
     async () => {
       process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
       const side = 64;
@@ -692,7 +694,14 @@ describe('encoder run lifecycle', () => {
 const envWith = (tool: string): NodeJS.ProcessEnv => ({ ...process.env, AVIFENC_PATH: tool });
 
 describe('finding the encoder', () => {
-  it('accepts only the absolute path of an executable regular file and says once when AVIFENC_PATH is set to anything else', () => {
+  /** A fake tool that answers `--version` with `answer` and, asked anything else, records that it ran. */
+  function versionTool(name: string, answer: string): string {
+    const script = writeIn(name, `#!/bin/sh\n[ "$1" = "--version" ] && { printf '%s\\n' '${answer}'; exit 0; }\nexit ${FAILURE_EXIT_STATUS}\n`);
+    chmodSync(script, SCRIPT_MODE);
+    return script;
+  }
+
+  it('accepts only the absolute path of an executable regular file and says once when AVIFENC_PATH is set to anything else', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const executable = failingTool('find-executable', 'exit 0').script;
@@ -700,11 +709,11 @@ describe('finding the encoder', () => {
       chmodSync(plain, 0o644);
       const directory = path.join(workDir, 'find-directory');
       mkdirSync(directory, { mode: SCRIPT_MODE });
-      expect(findAvifenc(envWith(executable))).toBe(executable);
+      expect(await findAvifenc(envWith(executable))).toBe(executable);
       expect(warn).not.toHaveBeenCalled();
       for (const unusable of ['avifenc', './find-executable', plain, directory, path.join(workDir, 'find-missing')]) {
-        expect(findAvifenc(envWith(unusable)), unusable).toBeNull();
-        expect(findAvifenc(envWith(unusable)), unusable).toBeNull();
+        expect(await findAvifenc(envWith(unusable)), unusable).toBeNull();
+        expect(await findAvifenc(envWith(unusable)), unusable).toBeNull();
       }
       expect(warn).toHaveBeenCalledTimes(5);
       expect(String(warn.mock.calls[0][0])).toMatch(/AVIFENC_PATH is set but is not the absolute path of an executable file/);
@@ -712,4 +721,42 @@ describe('finding the encoder', () => {
       warn.mockRestore();
     }
   });
+
+  it('counts a libavif older than 1.4.0 as not installed, because it stops on the options that hand over a PNG, and says so once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const old = versionTool('find-v1-0-4', 'Version: 1.0.4 (aom [enc/dec]:3.8.2)');
+      expect(await findAvifenc(envWith(old))).toBeNull();
+      expect(await findAvifenc(envWith(old))).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toMatch(/libavif 1\.0\.4.*1\.4\.0 or newer/);
+      const unreadable = versionTool('find-no-version', 'avifenc, a program');
+      expect(await findAvifenc(envWith(unreadable))).toBeNull();
+      for (const supported of ['Version: 1.4.0 (aom)', 'Version: 1.4.2 (aom)', 'Version: 2.0.0 (aom)', 'Version: 1.10.0 (aom)']) {
+        const tool = versionTool(`find-${supported.replace(/\W+/g, '-')}`, supported);
+        expect(await findAvifenc(envWith(tool)), supported).toBe(tool);
+      }
+      const justBelow = versionTool('find-v1-3-9', 'Version: 1.3.9 (aom)');
+      expect(await findAvifenc(envWith(justBelow))).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  oracleTest(
+    'a conversion with an old tool is written by the image library instead of failing, and the tool is never given a picture',
+    ['avifdec'],
+    async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        process.env.AVIFENC_PATH = versionTool('convert-v1-0-4', 'Version: 1.0.4 (aom)');
+        const out = await convertImage(await interface16(), 'avif', { quality: 60 }, 'ui.png', 'png');
+        expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+        expect(avifInfo(writeIn('old-tool.avif', out.buffer))).toMatchObject({ format: 'YUV444', depth: 10 });
+      } finally {
+        warn.mockRestore();
+      }
+    },
+    60_000
+  );
 });
