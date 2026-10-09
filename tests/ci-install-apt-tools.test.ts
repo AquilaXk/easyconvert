@@ -162,10 +162,20 @@ describe('the committed package list and scripts', () => {
 
   it('starts every part of the setup in the background and fails the step when any part failed', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
-    expect(script).toContain('tasks=(apt pip verapdf raw s3)');
+    expect(script).toContain('tasks=(apt pip verapdf epubcheck raw s3)');
     expect(script).toContain('"task_$task" > "$logs/$task.log" 2>&1 &');
     expect(script).toContain('failed+=("$task")');
     expect(script).toMatch(/if \[ "\$\{#failed\[@\]\}" -gt 0 \]; then[\s\S]*exit 1/);
     expect(existsSync(path.join(ROOT, 'scripts', 'install-verapdf.sh'))).toBe(true);
+  });
+
+  it('installs the EPUB validator from a pinned archive over HTTPS only and checks its digest first', () => {
+    const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    expect(script).toMatch(/^EPUBCHECK_VERSION=5\.2\.1$/m);
+    expect(script).toMatch(/^EPUBCHECK_SHA256=[0-9a-f]{64}$/m);
+    expect(script).toContain('curl -fsSL --proto =https --proto-redir =https');
+    const check = script.indexOf('sha256sum -c -');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(script.indexOf('unzip -q "$archive"'));
   });
 });
