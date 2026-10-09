@@ -224,30 +224,30 @@ export function stripXmlForbidden(text: string): string {
   return text.replace(XML_FORBIDDEN, '');
 }
 
-/**
- * The cells of `table` placed on its grid. A merged cell appears once, at its top-left grid position; the positions
- * it covers are null.
- */
-export function expandTableGrid(table: Extract<DocBlock, { kind: 'table' }>): (DocTableCell | null)[][] {
-  const grid: (DocTableCell | null)[][] = [];
-  // Rows still to cover below a cell of an earlier row, by grid column.
-  const covered = new Map<number, number>();
+/** What occupies one grid position of a table: the cell that starts there, or the cell that covers it from the left or from above. */
+export type TableSlot = { readonly cell: DocTableCell; readonly kind: 'origin' | 'colspan' | 'rowspan' } | null;
+
+/** The grid of `table`: every position holds the cell that starts or extends there, or null where the row has no cell. */
+export function tableSlots(table: Extract<DocBlock, { kind: 'table' }>): TableSlot[][] {
+  const grid: TableSlot[][] = [];
+  // The cell covering each column from an earlier row, with the rows it still covers.
+  const covering = new Map<number, { cell: DocTableCell; rows: number }>();
   for (const row of table.rows) {
-    const line: (DocTableCell | null)[] = [];
+    const line: TableSlot[] = [];
     let column = 0;
     const skipCovered = (): void => {
-      while ((covered.get(column) ?? 0) > 0) {
-        line[column] = null;
-        covered.set(column, (covered.get(column) as number) - 1);
+      for (let held = covering.get(column); held !== undefined && held.rows > 0; held = covering.get(column)) {
+        line[column] = { cell: held.cell, kind: 'rowspan' };
+        held.rows -= 1;
         column += 1;
       }
     };
     for (const cell of row.cells) {
       skipCovered();
-      line[column] = cell;
       for (let offset = 0; offset < cell.colSpan; offset += 1) {
-        if (offset > 0) line[column + offset] = null;
-        if (cell.rowSpan > 1) covered.set(column + offset, cell.rowSpan - 1);
+        line[column + offset] = { cell, kind: offset === 0 ? 'origin' : 'colspan' };
+        if (cell.rowSpan > 1) covering.set(column + offset, { cell, rows: cell.rowSpan - 1 });
+        else covering.delete(column + offset);
       }
       column += cell.colSpan;
     }
@@ -256,6 +256,14 @@ export function expandTableGrid(table: Extract<DocBlock, { kind: 'table' }>): (D
     grid.push(line);
   }
   return grid;
+}
+
+/**
+ * The cells of `table` placed on its grid. A merged cell appears once, at its top-left grid position; the positions
+ * it covers are null.
+ */
+export function expandTableGrid(table: Extract<DocBlock, { kind: 'table' }>): (DocTableCell | null)[][] {
+  return tableSlots(table).map((row) => row.map((slot) => (slot && slot.kind === 'origin' ? slot.cell : null)));
 }
 
 /** Plain text of a block: its inlines, and for containers the text of their blocks joined by line breaks. */

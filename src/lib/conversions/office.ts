@@ -28,6 +28,7 @@ import { EncryptedOfficeDocumentError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
 import { readDocxModel } from './docx-model';
 import { renderModelHtml } from './document-html';
+import { renderModelPdf } from './docx-pdf';
 import { renderModelMarkdown, renderModelText } from './document-markdown';
 import type { DocModel } from './document-model';
 
@@ -739,9 +740,13 @@ async function readOdtText(input: Buffer): Promise<string> {
 }
 
 /** Targets written from the structured DOCX model. */
-const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md']);
+const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf']);
 
-function convertDocxFromModel(model: DocModel, tgt: string, baseName: string): ConversionResult {
+async function convertDocxFromModel(model: DocModel, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  if (tgt === 'pdf') {
+    const buffer = await renderModelPdf(model, options, baseName);
+    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+  }
   if (tgt === 'txt') {
     const buffer = Buffer.from(renderModelText(model), 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
@@ -776,7 +781,7 @@ async function convertDocxSource(
   // notes); the targets it serves are written from it. Documents with shapes keep the drawing-aware reader below.
   const read = await readDocxModel(zip);
   if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
-    return convertDocxFromModel(read.model, tgt, baseName);
+    return convertDocxFromModel(read.model, tgt, options, baseName);
   }
 
   // Load chart relationships and parts if present

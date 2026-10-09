@@ -11,17 +11,22 @@ export type PdfBlock =
   | { kind: 'heading'; level: number; content: PdfTextSegment[] }
   | { kind: 'paragraph'; content: PdfTextSegment[] }
   | { kind: 'preformatted'; text: string }
-  | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][] }
+  | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][]; markers?: readonly string[] }
   | { kind: 'table'; rows: PdfTableCell[][] }
   | { kind: 'image'; image: PdfRasterImage }
   | { kind: 'quote'; blocks: PdfBlock[] }
   | { kind: 'rule' }
   | { kind: 'pageBreak' };
 
-/** A table cell and the number of columns it spans. */
+/**
+ * A table cell and the number of columns it spans. A cell that merges downward states `rowSpan`, and each grid position
+ * it covers in the rows below is listed as a `covered` cell (no content, no border of its own).
+ */
 export interface PdfTableCell {
   readonly content: PdfTextSegment[];
   readonly span: number;
+  readonly rowSpan?: number;
+  readonly covered?: boolean;
 }
 
 /** A decoded-and-verified PNG or JPEG image with its pixel size. */
@@ -31,7 +36,19 @@ export interface PdfRasterImage {
   readonly heightPx: number;
 }
 
+/** Page size and margins in points, for documents that state their own (otherwise A4 with 50 pt margins). */
+export interface PdfPageGeometry {
+  readonly widthPt: number;
+  readonly heightPt: number;
+  readonly marginTopPt: number;
+  readonly marginRightPt: number;
+  readonly marginBottomPt: number;
+  readonly marginLeftPt: number;
+}
+
 export interface PdfBlockDocumentOptions {
+  page?: PdfPageGeometry;
+  spacing?: PdfSpacing;
   orientation?: 'portrait' | 'landscape';
   /** Document title stored in the PDF metadata (never drawn on the page). */
   title?: string;
@@ -50,7 +67,23 @@ const LINE_GAP = 2;
 const BLOCK_GAP_LINES = 0.5;
 const LIST_ITEM_GAP_LINES = 0.2;
 const HEADING_TOP_GAP_LINES = 0.4;
+
+/** Vertical gaps between lines and blocks, in points (line gap) and body lines. */
+export interface PdfSpacing {
+  readonly lineGap: number;
+  readonly blockGapLines: number;
+  readonly listItemGapLines: number;
+  readonly headingTopGapLines: number;
+}
+
+const DEFAULT_SPACING: PdfSpacing = { lineGap: LINE_GAP, blockGapLines: BLOCK_GAP_LINES, listItemGapLines: LIST_ITEM_GAP_LINES, headingTopGapLines: HEADING_TOP_GAP_LINES };
+
+/** Tighter gaps that follow a word processor's default of no space between paragraphs. */
+export const PDF_DOCUMENT_SPACING: PdfSpacing = { lineGap: 0.5, blockGapLines: 0.25, listItemGapLines: 0, headingTopGapLines: 0.3 };
 const LIST_MARKER_WIDTH = 22;
+/** Width reserved per character of a list marker wider than the default marker column, and the gap after it. */
+const MARKER_CHARACTER_WIDTH = 6.5;
+const MARKER_GAP = 8;
 const QUOTE_INDENT = 18;
 const BULLET_MARKER = '•';
 const TABLE_CELL_PADDING = 4;
@@ -66,7 +99,8 @@ const PX_TO_PT = 0.75;
 class PdfBlockRenderer {
   constructor(
     private readonly doc: PDFKit.PDFDocument,
-    private readonly writer: PdfUnicodeTextWriter
+    private readonly writer: PdfUnicodeTextWriter,
+    private readonly spacing: PdfSpacing = DEFAULT_SPACING
   ) {}
 
   private get left(): number {
@@ -96,7 +130,7 @@ class PdfBlockRenderer {
     return width;
   }
 
-  render(blocks: readonly PdfBlock[], indent = 0, gapLines = BLOCK_GAP_LINES): void {
+  render(blocks: readonly PdfBlock[], indent = 0, gapLines = this.spacing.blockGapLines): void {
     for (const block of blocks) {
       this.renderBlock(block, indent, gapLines);
     }
@@ -114,7 +148,7 @@ class PdfBlockRenderer {
         this.renderText([{ text: block.text }], PREFORMATTED_FONT_SIZE, indent, gapLines);
         return;
       case 'list':
-        this.renderList(block.ordered, block.start, block.items, indent);
+        this.renderList(block.ordered, block.start, block.items, indent, block.markers);
         return;
       case 'table':
         this.renderTable(block.rows, indent);
@@ -143,35 +177,36 @@ class PdfBlockRenderer {
     if (!this.hasText(content)) return;
     const size = HEADING_FONT_SIZES[Math.min(Math.max(level, 1), HEADING_FONT_SIZES.length) - 1];
     this.doc.fontSize(size);
-    if (this.doc.y > this.top) this.doc.moveDown(HEADING_TOP_GAP_LINES);
-    this.renderText(content, size, indent, BLOCK_GAP_LINES);
+    if (this.doc.y > this.top) this.doc.moveDown(this.spacing.headingTopGapLines);
+    this.renderText(content, size, indent, this.spacing.blockGapLines);
   }
 
   private renderText(content: readonly PdfTextSegment[], size: number, indent: number, gapLines: number): void {
     if (!this.hasText(content)) return;
     this.doc.fontSize(size);
-    this.writer.write(content, { width: this.textWidth(indent), lineGap: LINE_GAP }, this.left + indent, this.doc.y);
+    this.writer.write(content, { width: this.textWidth(indent), lineGap: this.spacing.lineGap }, this.left + indent, this.doc.y);
     this.doc.x = this.left;
     this.doc.moveDown(gapLines);
   }
 
-  private renderList(ordered: boolean, start: number, items: readonly PdfBlock[][], indent: number): void {
-    const itemIndent = indent + LIST_MARKER_WIDTH;
+  private renderList(ordered: boolean, start: number, items: readonly PdfBlock[][], indent: number, markers?: readonly string[]): void {
+    const markerWidth = markers ? Math.max(LIST_MARKER_WIDTH, ...markers.map((marker) => marker.length * MARKER_CHARACTER_WIDTH + MARKER_GAP)) : LIST_MARKER_WIDTH;
+    const itemIndent = indent + markerWidth;
     this.textWidth(itemIndent);
     items.forEach((item, index) => {
       this.doc.fontSize(BODY_FONT_SIZE);
-      const lineHeight = this.doc.currentLineHeight(true) + LINE_GAP;
+      const lineHeight = this.doc.currentLineHeight(true) + this.spacing.lineGap;
       if (this.doc.y + lineHeight > this.bottom) this.doc.addPage();
       const top = this.doc.y;
       const page = this.doc.page;
-      const marker = ordered ? `${start + index}.` : BULLET_MARKER;
+      const marker = markers?.[index] ?? (ordered ? `${start + index}.` : BULLET_MARKER);
       this.writer.write(marker, { lineBreak: false }, this.left + indent, top);
       this.doc.y = top;
-      this.render(item, itemIndent, LIST_ITEM_GAP_LINES);
+      this.render(item, itemIndent, this.spacing.listItemGapLines);
       if (this.doc.page === page) this.doc.y = Math.max(this.doc.y, top + lineHeight);
       this.doc.x = this.left;
     });
-    this.doc.moveDown(BLOCK_GAP_LINES);
+    this.doc.moveDown(this.spacing.blockGapLines);
   }
 
   private renderTable(rows: readonly PdfTableCell[][], indent: number): void {
@@ -189,41 +224,71 @@ class PdfBlockRenderer {
     this.doc.fontSize(TABLE_FONT_SIZE);
     const minRowHeight = this.doc.currentLineHeight(true) + TABLE_CELL_PADDING * 2;
 
-    for (const row of rows) {
-      this.doc.fontSize(TABLE_FONT_SIZE);
-      let column = 0;
-      const placed = row.map((cell) => {
-        const span = Math.min(cell.span, columnCount - column);
-        const place = { cell, x: x0 + column * columnWidth, width: span * columnWidth };
-        column += span;
-        return place;
-      });
-      const textHeights = placed.map(({ cell, width }) =>
-        this.hasText(cell.content) ? this.writer.heightOf(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: LINE_GAP }) : 0
-      );
-      const tallest = textHeights.reduce((max, height) => Math.max(max, height), 0);
-      const rowHeight = Math.max(minRowHeight, tallest + TABLE_CELL_PADDING * 2);
-      if (rowHeight > this.bottom - this.top) {
-        throw new EngineUnavailableError(
-          'soffice',
-          'a table row is taller than a page; the in-process PDF renderer cannot split table cells across pages'
-        );
-      }
-      if (this.doc.y + rowHeight > this.bottom) this.doc.addPage();
-      const y = this.doc.y;
-      for (const { cell, x, width } of placed) {
-        if (!this.hasText(cell.content)) continue;
-        this.doc.fontSize(TABLE_FONT_SIZE);
-        this.writer.write(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: LINE_GAP }, x + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING);
-      }
-      this.doc.lineWidth(TABLE_BORDER_WIDTH);
-      for (const { x, width } of placed) this.doc.rect(x, y, width, rowHeight).stroke();
-      for (let empty = column; empty < columnCount; empty++) this.doc.rect(x0 + empty * columnWidth, y, columnWidth, rowHeight).stroke();
-      this.doc.x = this.left;
-      this.doc.y = y + rowHeight;
+    // Where every cell sits, and how tall its text needs the cell to be.
+    interface PlacedCell {
+      readonly cell: PdfTableCell;
+      readonly x: number;
+      readonly width: number;
+      readonly rowSpan: number;
+      readonly needed: number;
     }
+    const placedRows: PlacedCell[][] = rows.map((row) => {
+      let column = 0;
+      return row.map((cell) => {
+        const span = Math.min(cell.span, columnCount - column);
+        const width = span * columnWidth;
+        const x = x0 + column * columnWidth;
+        column += span;
+        const hasContent = !cell.covered && this.hasText(cell.content);
+        const textHeight = hasContent ? this.writer.heightOf(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: this.spacing.lineGap }) : 0;
+        return { cell, x, width, rowSpan: Math.max(1, cell.rowSpan ?? 1), needed: hasContent ? textHeight + TABLE_CELL_PADDING * 2 : 0 };
+      });
+    });
+    const heights = placedRows.map((row) => row.reduce((tallest, placed) => (placed.rowSpan === 1 ? Math.max(tallest, placed.needed) : tallest), minRowHeight));
+    // A cell that merges downward grows its last row when its text is taller than the rows it spans.
+    placedRows.forEach((row, rowIndex) => {
+      for (const placed of row) {
+        if (placed.rowSpan === 1) continue;
+        const last = Math.min(rowIndex + placed.rowSpan, heights.length) - 1;
+        const spanned = heights.slice(rowIndex, last + 1).reduce((sum, height) => sum + height, 0);
+        if (spanned < placed.needed) heights[last] += placed.needed - spanned;
+      }
+    });
+    const pageHeight = this.bottom - this.top;
+    if (heights.some((height) => height > pageHeight)) {
+      throw new EngineUnavailableError('soffice', 'a table row is taller than a page; the in-process PDF renderer cannot split table cells across pages');
+    }
+
+    placedRows.forEach((row, rowIndex) => {
+      // Rows that a merged cell starting here spans stay on the page with it.
+      const groupHeight = row.reduce((tallest, placed) => {
+        const last = Math.min(rowIndex + placed.rowSpan, heights.length) - 1;
+        return Math.max(tallest, heights.slice(rowIndex, last + 1).reduce((sum, height) => sum + height, 0));
+      }, heights[rowIndex]);
+      if (this.doc.y + groupHeight > this.bottom) this.doc.addPage();
+      const y = this.doc.y;
+      this.doc.fontSize(TABLE_FONT_SIZE);
+      this.doc.lineWidth(TABLE_BORDER_WIDTH);
+      let drawnTo = x0;
+      for (const { cell, x, width, rowSpan } of row) {
+        drawnTo = x + width;
+        if (cell.covered) continue;
+        const last = Math.min(rowIndex + rowSpan, heights.length) - 1;
+        const height = heights.slice(rowIndex, last + 1).reduce((sum, rowHeight) => sum + rowHeight, 0);
+        if (this.hasText(cell.content)) {
+          this.doc.fontSize(TABLE_FONT_SIZE);
+          this.writer.write(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: this.spacing.lineGap }, x + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING);
+        }
+        this.doc.rect(x, y, width, height).stroke();
+      }
+      for (let empty = Math.round((drawnTo - x0) / columnWidth); empty < columnCount; empty++) {
+        this.doc.rect(x0 + empty * columnWidth, y, columnWidth, heights[rowIndex]).stroke();
+      }
+      this.doc.x = this.left;
+      this.doc.y = y + heights[rowIndex];
+    });
     this.doc.fontSize(BODY_FONT_SIZE);
-    this.doc.moveDown(BLOCK_GAP_LINES);
+    this.doc.moveDown(this.spacing.blockGapLines);
   }
 
   private renderImage(image: PdfRasterImage, indent: number): void {
@@ -242,7 +307,7 @@ class PdfBlockRenderer {
     this.doc.x = this.left;
     this.doc.y = y + height;
     this.doc.fontSize(BODY_FONT_SIZE);
-    this.doc.moveDown(BLOCK_GAP_LINES);
+    this.doc.moveDown(this.spacing.blockGapLines);
   }
 
   private renderRule(indent: number): void {
@@ -256,6 +321,23 @@ class PdfBlockRenderer {
   }
 }
 
+/** pdfkit options for the page size and margins: the document's own geometry when it states one, otherwise A4. */
+function documentOptions(options: PdfBlockDocumentOptions): PDFKit.PDFDocumentOptions {
+  const info = options.title ? { Title: options.title } : {};
+  const landscape = options.orientation === 'landscape';
+  const { page } = options;
+  if (!page) {
+    return { size: PAGE_SIZE, layout: landscape ? 'landscape' : 'portrait', margin: PAGE_MARGIN, info };
+  }
+  const swap = landscape && page.widthPt < page.heightPt;
+  const size: [number, number] = swap ? [page.heightPt, page.widthPt] : [page.widthPt, page.heightPt];
+  return {
+    size,
+    margins: { top: page.marginTopPt, right: page.marginRightPt, bottom: page.marginBottomPt, left: page.marginLeftPt },
+    info,
+  };
+}
+
 /**
  * Draws the blocks into an A4 PDF. Fails with EngineUnavailableError when no installed font
  * covers some text, and with ConversionFailedError for content the renderer cannot place.
@@ -263,12 +345,7 @@ class PdfBlockRenderer {
 export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfBlockDocumentOptions = {}): Promise<Buffer> {
   await loadFontCoverageIndex();
   return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: PAGE_SIZE,
-      layout: options.orientation === 'landscape' ? 'landscape' : 'portrait',
-      margin: PAGE_MARGIN,
-      info: options.title ? { Title: options.title } : {},
-    });
+    const doc = new PDFDocument(documentOptions(options));
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -276,7 +353,7 @@ export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfB
 
     try {
       const writer = new PdfUnicodeTextWriter(doc, options.customFontPath);
-      new PdfBlockRenderer(doc, writer).render(blocks);
+      new PdfBlockRenderer(doc, writer, options.spacing).render(blocks);
     } catch (err) {
       reject(err);
       return;
