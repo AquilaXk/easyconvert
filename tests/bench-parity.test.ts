@@ -298,8 +298,8 @@ describe('the known gaps', () => {
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([487, 487, 487]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
-    // The decode row sits at the pass line, so it is tracked under its own issue, apart from compress speed.
-    expect(byId['compression/mixed.zst->tar/throughput']).toBe(651);
+    // The decode row reached parity on the CI runner, so it is no longer a known gap.
+    expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
   });
 });
 
