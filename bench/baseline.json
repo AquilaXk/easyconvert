@@ -49,7 +49,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0019645640022643
+      "ratio": 1.0196844690065845
     },
     "audio/music.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -89,7 +89,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0428373232874837
+      "ratio": 1.0313847704751644
     },
     "audio/music.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -97,8 +97,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0.750442966924636,
-      "delta": 0.750442966924636,
+      "ours": 0.6020296288439031,
+      "delta": 0.6020296288439031,
       "ratio": null
     },
     "audio/music.wav->opus/bitrate": {
@@ -107,8 +107,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 80.15574691126919,
-      "delta": 0.3294646199925211,
+      "ours": 80.1537501559965,
+      "delta": 0.3274678647198357,
       "ratio": null
     },
     "audio/music.wav->opus/loudness_shift": {
@@ -127,8 +127,8 @@
         "abs": 0.5,
         "rel": 0
       },
-      "ours": 27.9176,
-      "delta": 0.09775000000000134,
+      "ours": 27.9056,
+      "delta": 0.05655000000000143,
       "ratio": null
     },
     "audio/music.wav->opus/throughput": {
@@ -139,7 +139,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9914825553987796
+      "ratio": 0.9834332975234221
     },
     "audio/music.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -199,7 +199,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0197901004649668
+      "ratio": 1.0094700205197848
     },
     "audio/speech.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -239,7 +239,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0374003680494555
+      "ratio": 1.0225874167221232
     },
     "audio/speech.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -289,7 +289,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0075532094509985
+      "ratio": 1.020950272808985
     },
     "audio/speech.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -309,7 +309,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8344193678633167
+      "ratio": 0.8525831518466541
     },
     "compression/mixed.tar->7z/compression_ratio": {
       "direction": "lower",
@@ -329,7 +329,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7086894222401946
+      "ratio": 0.9198632398683276
     },
     "compression/mixed.tar->zst/compression_ratio": {
       "direction": "lower",
@@ -338,7 +338,7 @@
         "rel": 0.01
       },
       "ours": 0.37478372816664585,
-      "delta": -0.005914474244971879,
+      "delta": -0.003828966201264772,
       "ratio": null
     },
     "compression/mixed.tar->zst/throughput": {
@@ -349,7 +349,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7001562059090162
+      "ratio": 0.929994860885302
     },
     "compression/mixed.xz->tar/throughput": {
       "direction": "higher",
@@ -359,7 +359,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8456536456553835
+      "ratio": 0.8340145123062829
     },
     "compression/mixed.zst->tar/throughput": {
       "direction": "higher",
@@ -369,7 +369,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.6795752631913499
+      "ratio": 2.2325540294543496
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
@@ -469,7 +469,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 13.11689784138166
+      "ratio": 15.683133260759005
     },
     "document/noori.hwp->html:images/structure_precision": {
       "direction": "higher",
@@ -529,7 +529,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 9.12469985452147
+      "ratio": 9.070209939554335
     },
     "document/pdf-structure->docx/column_accuracy": {
       "direction": "higher",
@@ -599,7 +599,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 21.240556658471686
+      "ratio": 27.028456115922214
     },
     "document/pdf-text->txt/cer": {
       "direction": "lower",
@@ -649,7 +649,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 11.7773476651591
+      "ratio": 14.735440576256535
     },
     "document/report.docx->pdf/word_f1": {
       "direction": "higher",
@@ -779,7 +779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 47.14499425403851
+      "ratio": 45.40237951200398
     },
     "document/rich-structure.docx->html:headings/structure_precision": {
       "direction": "higher",
@@ -889,7 +889,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 93.8250631688485
+      "ratio": 101.7462243117855
     },
     "document/rich-structure.docx->odt:headings/structure_precision": {
       "direction": "higher",
@@ -999,7 +999,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 58.605592140257706
+      "ratio": 69.50452211859222
     },
     "document/rich-structure.docx->pdf:images/structure_precision": {
       "direction": "higher",
@@ -1029,7 +1029,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 9.933453332023177
+      "ratio": 11.878255101186227
     },
     "document/rich-structure.docx->pdf/word_f1": {
       "direction": "higher",
@@ -1047,8 +1047,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -19.466053229872482,
-      "delta": -19.466053229872482,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/bd_rate_ssim": {
@@ -1057,8 +1057,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -38.23208474151576,
-      "delta": -38.23208474151576,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/bytes": {
@@ -1067,8 +1067,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 30404,
-      "delta": -3350,
+      "ours": 34262,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/psnr": {
@@ -1077,8 +1077,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 50.629252,
-      "delta": 1.8099419999999995,
+      "ours": 49.853933,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/ssim": {
@@ -1087,8 +1087,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998749,
-      "delta": 0.0007829999999999782,
+      "ours": 0.998366,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/throughput": {
@@ -1099,7 +1099,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.07225917469982009
+      "ratio": 0.8062202145138975
     },
     "image/lineart.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1107,8 +1107,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 10.284841042892868,
-      "delta": 10.284841042892868,
+      "ours": -22.35646008495834,
+      "delta": -22.35646008495834,
       "ratio": null
     },
     "image/lineart.png->jpg/bd_rate_ssim": {
@@ -1117,8 +1117,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -44.065354309095895,
-      "delta": -44.065354309095895,
+      "ours": -46.45234689834534,
+      "delta": -46.45234689834534,
       "ratio": null
     },
     "image/lineart.png->jpg/bytes": {
@@ -1127,8 +1127,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 41037,
-      "delta": -18279,
+      "ours": 53189,
+      "delta": -6127,
       "ratio": null
     },
     "image/lineart.png->jpg/psnr": {
@@ -1137,8 +1137,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 32.423305,
-      "delta": -5.805236000000001,
+      "ours": 40.583484,
+      "delta": 2.3549429999999987,
       "ratio": null
     },
     "image/lineart.png->jpg/ssim": {
@@ -1147,8 +1147,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.993345,
-      "delta": 0.003631000000000051,
+      "ours": 0.996373,
+      "delta": 0.0066589999999999705,
       "ratio": null
     },
     "image/lineart.png->jpg/throughput": {
@@ -1159,7 +1159,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3550887367697918
+      "ratio": 0.3901749504669334
     },
     "image/lineart.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1219,7 +1219,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.41756105622898143
+      "ratio": 0.50892934979738
     },
     "image/photo-a.jpg->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1279,7 +1279,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8524722404066571
+      "ratio": 0.8098158721101245
     },
     "image/photo-a.jpg->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1339,7 +1339,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6092363461843583
+      "ratio": 0.690290863331442
     },
     "image/photo-a.jpg->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1399,7 +1399,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9920146169909299
+      "ratio": 1.0605974800060136
     },
     "image/photo-b.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1459,7 +1459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7328010380062703
+      "ratio": 0.6828478107426397
     },
     "image/photo-b.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1519,7 +1519,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5346694513127416
+      "ratio": 0.563887221841265
     },
     "image/photo-b.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1579,7 +1579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7747619692540288
+      "ratio": 0.8545067002988396
     },
     "image/screenshot.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1587,8 +1587,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.1329974719326175,
-      "delta": -1.1329974719326175,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/screenshot.png->avif/bd_rate_ssim": {
@@ -1597,8 +1597,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 6.041336587155577,
-      "delta": 6.041336587155577,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/screenshot.png->avif/bytes": {
@@ -1607,8 +1607,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 8993,
-      "delta": 513,
+      "ours": 8633,
+      "delta": 0,
       "ratio": null
     },
     "image/screenshot.png->avif/psnr": {
@@ -1617,8 +1617,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 53.900206,
-      "delta": 0.27209299999999814,
+      "ours": 53.498234,
+      "delta": 0,
       "ratio": null
     },
     "image/screenshot.png->avif/ssim": {
@@ -1627,8 +1627,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998534,
-      "delta": -0.00019399999999991646,
+      "ours": 0.998372,
+      "delta": 0,
       "ratio": null
     },
     "image/screenshot.png->avif/throughput": {
@@ -1639,7 +1639,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.43557957317180984
+      "ratio": 0.9326676713372695
     },
     "image/screenshot.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1647,8 +1647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -36.71903666907158,
-      "delta": -36.71903666907158,
+      "ours": -63.659605226723095,
+      "delta": -63.659605226723095,
       "ratio": null
     },
     "image/screenshot.png->jpg/bd_rate_ssim": {
@@ -1657,8 +1657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.638528711783325,
-      "delta": -11.638528711783325,
+      "ours": -21.461941386992123,
+      "delta": -21.461941386992123,
       "ratio": null
     },
     "image/screenshot.png->jpg/bytes": {
@@ -1667,8 +1667,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 26016,
-      "delta": -1352,
+      "ours": 29854,
+      "delta": 2486,
       "ratio": null
     },
     "image/screenshot.png->jpg/psnr": {
@@ -1677,8 +1677,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 40.856459,
-      "delta": 0.3930440000000033,
+      "ours": 44.894442,
+      "delta": 4.431027,
       "ratio": null
     },
     "image/screenshot.png->jpg/ssim": {
@@ -1687,8 +1687,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.993488,
-      "delta": 0.0013850000000000806,
+      "ours": 0.995204,
+      "delta": 0.0031010000000000204,
       "ratio": null
     },
     "image/screenshot.png->jpg/throughput": {
@@ -1699,7 +1699,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.40425188827430414
+      "ratio": 0.4850581758376678
     },
     "image/screenshot.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1759,7 +1759,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3067845901974708
+      "ratio": 0.3781269360531852
     },
     "ocr/scan.png->pdf/cer": {
       "direction": "lower",
@@ -1779,7 +1779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7933632453589256
+      "ratio": 0.8286505670071586
     },
     "ocr/scan.png->pdf/word_f1": {
       "direction": "higher",
@@ -1797,8 +1797,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": -0.08327161420927931,
+      "delta": -0.08327161420927931,
       "ratio": null
     },
     "video/clip.mp4->h264/bd_rate_ssim": {
@@ -1807,8 +1807,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": -0.03240628577410032,
+      "delta": -0.03240628577410032,
       "ratio": null
     },
     "video/clip.mp4->h264/bitrate": {
@@ -1817,8 +1817,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 568.86,
-      "delta": 0,
+      "ours": 568.964,
+      "delta": 0.10400000000004184,
       "ratio": null
     },
     "video/clip.mp4->h264/psnr": {
@@ -1827,8 +1827,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 37.556645,
-      "delta": 0,
+      "ours": 37.575058,
+      "delta": 0.01841299999999535,
       "ratio": null
     },
     "video/clip.mp4->h264/ssim": {
@@ -1837,8 +1837,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.984665,
-      "delta": 0,
+      "ours": 0.984699,
+      "delta": 0.00003399999999997849,
       "ratio": null
     },
     "video/clip.mp4->h264/throughput": {
@@ -1909,7 +1909,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0056519493944411
+      "ratio": 0.9832956980783363
     },
     "video/clip.mp4->vp9/bd_rate_psnr": {
       "direction": "lower",
