@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { extractStructuredTextFromPdf } from '../src/lib/conversions/pdf-utils';
+import { PdfDocument, PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
 import { expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, settle } from './helpers/timing';
 
@@ -31,6 +30,18 @@ const catalog: CraftObject[] = [
 
 vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
+/** What the structure reader hands to the text extraction: the decoded content of every stream the pages draw. */
+function drawnContent(pdf: Buffer): string {
+  const parts: string[] = [];
+  new PdfDocument(pdf).contentStreams((content) => parts.push(content));
+  return parts.join('\n');
+}
+
+/** The literal strings the content shows with Tj, in order. */
+function shownStrings(content: string): string[] {
+  return [...content.matchAll(/\(([^)]*)\) Tj/g)].map((match) => match[1]);
+}
+
 describe('object stream entries are read in time linear in the stream', () => {
   for (const opener of ['(', '<', '[']) {
     it(`entries that all open an unterminated "${opener}" cost one pass, not one pass each`, async () => {
@@ -49,7 +60,7 @@ describe('object stream entries are read in time linear in the stream', () => {
       };
       const { largeResult } = await expectSizeIndependentOnInputs(
         `unterminated ${opener}`,
-        (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
+        (pdf: Buffer) => settle(() => drawnContent(pdf)),
         { modest: objectStreamPdf(OBJSTM_ENTRIES / SCALING_FACTOR), huge: objectStreamPdf(OBJSTM_ENTRIES) }
       );
       expect(largeResult.ok, 'the object stream is read without error').toBe(true);
@@ -68,7 +79,7 @@ describe('a document defines a bounded number of objects', () => {
   }
 
   it('refuses more objects than the cap in time linear in the file', async () => {
-    const { largeResult } = await expectLinearOnInputs('objects past the cap', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
+    const { largeResult } = await expectLinearOnInputs('objects past the cap', (pdf: Buffer) => settle(() => drawnContent(pdf)), {
       small: tinyObjects(Math.floor(OBJECT_CAP / SCALING_FACTOR)),
       large: tinyObjects(OBJECT_CAP + 1),
     });
@@ -78,11 +89,11 @@ describe('a document defines a bounded number of objects', () => {
   });
 
   it('reads a file with no root and many objects that name no type in linear time', async () => {
-    const { largeResult } = await expectLinearOnInputs('objects without a type', (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
+    const { largeResult } = await expectLinearOnInputs('objects without a type', (pdf: Buffer) => drawnContent(pdf), {
       small: tinyObjects(OBJECT_CAP / SCALING_FACTOR),
       large: tinyObjects(OBJECT_CAP),
     });
-    expect(largeResult.text).toBe('');
+    expect(largeResult).toBe('');
   });
 });
 
@@ -109,10 +120,10 @@ describe('an indirect /Length costs a constant per stream', () => {
     const modest = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS / SCALING_FACTOR);
     const huge = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS);
     expect(modest.length).toBe(huge.length);
-    const { largeResult } = await expectSizeIndependentOnInputs('indirect length target', (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
+    const { largeResult } = await expectSizeIndependentOnInputs('indirect length target', (pdf: Buffer) => drawnContent(pdf), {
       modest,
       huge,
     });
-    expect(largeResult.text).toBe('LENGTH-LIES');
+    expect(shownStrings(largeResult)).toEqual(['LENGTH-LIES']);
   });
 });

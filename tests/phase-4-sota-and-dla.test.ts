@@ -473,7 +473,7 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
   describe('DLA-Structured HTML & Markdown Output in document.ts (Component 4.6)', () => {
     it('produces semantic HTML and Markdown with header, heading, list, paragraph, and footer blocks', async () => {
-      // Build a synthetic PDF containing structured text blocks
+      // PDF user space has its origin at the bottom left (ISO 32000-1, 8.3.2.3): the header is drawn near y = 792.
       const pdfSource = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -485,31 +485,36 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
 endobj
 4 0 obj
-<< /Length 400 >>
+<< /Length 480 >>
 stream
 BT
 /F1 10 Tf
-50 30 Td
+50 762 Td
 (Document Confidential Header) Tj
 ET
 BT
 /F1 24 Tf
-50 120 Td
+50 690 Td
 (Architecture Specification) Tj
 ET
 BT
 /F1 12 Tf
-50 200 Td
+50 640 Td
 (- High throughput transformation engine) Tj
 ET
 BT
 /F1 12 Tf
-50 300 Td
+50 622 Td
+(- Client-side processing) Tj
+ET
+BT
+/F1 12 Tf
+50 590 Td
 (The platform processes media entirely client-side without cloud hops.) Tj
 ET
 BT
 /F1 10 Tf
-50 750 Td
+50 40 Td
 (Page 1 of 12 - EasyConvert) Tj
 ET
 endstream
@@ -533,16 +538,10 @@ startxref
       const htmlText = htmlRes.buffer.toString('utf-8');
 
       expect(htmlRes.mimeType).toBe('text/html');
-      expect(htmlText).toContain('<header');
-      expect(htmlText).toContain('Document Confidential Header');
-      expect(htmlText).toContain('<h2');
-      expect(htmlText).toContain('Architecture Specification');
-      expect(htmlText).toContain('<ul');
-      expect(htmlText).toContain('<li>High throughput transformation engine</li>');
-      expect(htmlText).toContain('<p');
-      expect(htmlText).toContain('client-side without cloud hops');
-      expect(htmlText).toContain('<footer');
-      expect(htmlText).toContain('Page 1 of 12');
+      const body = htmlText.slice(htmlText.indexOf('<body>'));
+      expect(body).toMatch(
+        /^<body><header><p>Document Confidential Header<\/p><\/header>\s*<h1>Architecture Specification<\/h1>\s*<ul><li>High throughput transformation engine<\/li><li>Client-side processing<\/li><\/ul>\s*<p>The platform processes media entirely client-side without cloud hops\.<\/p>\s*<footer><p>Page 1 of 12 - EasyConvert<\/p><\/footer><\/body>/,
+      );
       expect(htmlText).not.toContain('<pre>');
 
       // Convert to Markdown
@@ -550,11 +549,13 @@ startxref
       const mdText = mdRes.buffer.toString('utf-8');
 
       expect(mdRes.mimeType).toBe('text/markdown');
-      expect(mdText).toContain('*Document Confidential Header*');
-      expect(mdText).toContain('## Architecture Specification');
-      expect(mdText).toContain('- High throughput transformation engine');
-      expect(mdText).toContain('The platform processes media entirely client-side');
-      expect(mdText).toContain('*Page 1 of 12 - EasyConvert*');
+      expect(mdText.trimEnd().split('\n\n')).toEqual([
+        '*Document Confidential Header*',
+        '# Architecture Specification',
+        '- High throughput transformation engine\n- Client-side processing',
+        'The platform processes media entirely client-side without cloud hops.',
+        '*Page 1 of 12 - EasyConvert*',
+      ]);
     });
   });
 

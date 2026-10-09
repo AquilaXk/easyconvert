@@ -17,6 +17,7 @@ const HTTP_INTERNAL_ERROR = 500;
 const GENERIC_INTERNAL_DETAIL = 'Internal conversion error';
 const CONVERT_TIMEOUT_MS = 120_000;
 const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const PDF_SIGNATURE = '%PDF-';
 const ARABIC_TEXT = Buffer.from('مرحبا بالعالم', 'utf-8');
 
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
@@ -42,10 +43,10 @@ describe('engine-missing conditions surface as EngineUnavailableError', () => {
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });
 
-  it('maps complex-script rendering that needs a missing LibreOffice', async () => {
-    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(ARABIC_TEXT, 'txt', 'pdf', {}, 'in.txt'));
-    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
-    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  it('shapes complex-script text in-process when LibreOffice is missing instead of failing', async () => {
+    const result = await withMissingBinary('SOFFICE_PATH', () => dispatchConversion(ARABIC_TEXT, 'txt', 'pdf', {}, 'in.txt'));
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.buffer.subarray(0, PDF_SIGNATURE.length).toString('latin1')).toBe(PDF_SIGNATURE);
   });
 
   it('keeps an undecodable OCR image a client error, not a missing engine', async () => {

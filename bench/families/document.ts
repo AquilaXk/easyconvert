@@ -7,6 +7,8 @@ import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from 
 import { interleavedTiming } from '../stats';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
+import { runDocumentPdf } from './document-pdf';
+import { runDocumentShaping } from './document-shaping';
 
 /**
  * Document family: a docx converted to PDF, its text read back with pdftotext and scored against the text the
@@ -17,7 +19,9 @@ const CASE = 'report.docx->pdf';
 const REFERENCE = 'soffice';
 const SPECS: readonly MetricSpec[] = [SPEC.wordF1, SPEC.cer, SPEC.throughput];
 
-export const runDocument: FamilyRunner = async (ctx) => {
+export const runDocument: FamilyRunner = async (ctx) => [...(await runDocxToPdf(ctx)), ...(await runDocumentPdf(ctx)), ...(await runDocumentShaping(ctx))];
+
+const runDocxToPdf: FamilyRunner = async (ctx) => {
   const plan = ctx.plan(['pdftotext', 'soffice'], CASE);
   if (!plan.ok) return skippedGroup('document', CASE, SPECS, REFERENCE, plan);
   ctx.log(`document ${CASE}`);

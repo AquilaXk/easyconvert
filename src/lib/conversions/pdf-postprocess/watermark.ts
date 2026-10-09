@@ -3,19 +3,28 @@ import {
   rgb,
   degrees,
   StandardFonts,
+  type PDFEmbeddedPage,
   type PDFPage,
   type PDFFont,
   type PDFImage,
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { parsePageRanges } from '../page-range';
+import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
 import { attachWinAnsiToUnicode } from '../pdf-winansi-tounicode';
 import {
   PdfWatermarkOptions,
   PdfWatermarkPosition,
   PdfWatermarkLayer,
   PdfPostprocessError,
+  WatermarkFontError,
 } from '../../types';
+import { renderTextStamp, STAMP_PAGE_INDEX } from './watermark-text-stamp';
+
+/** Longest watermark text, in code points; a watermark is a short label, not a paragraph. */
+export const WATERMARK_MAX_CHARS = 256;
+const LINE_BREAK = /[\r\n\u2028\u2029]/;
+const DEFAULT_WATERMARK_TEXT = 'CONFIDENTIAL';
 
 function parseRgbColor(colorStr?: string) {
   if (!colorStr) {
@@ -187,14 +196,17 @@ function renderImageWatermarkOnPage({
   });
 }
 
+/** How one watermark text is measured and drawn: with a standard font, or as an embedded-font stamp. */
+interface TextWatermark {
+  width: number;
+  height: number;
+  draw(page: PDFPage, at: { x: number; y: number }, rotationDegrees: number): void;
+}
+
 interface RenderTextWatermarkParams {
   page: PDFPage;
-  text: string;
-  font: PDFFont;
-  fontSize: number;
-  textColor: ReturnType<typeof rgb>;
+  text: TextWatermark;
   position: PdfWatermarkPosition;
-  opacity: number;
   rotationDegrees: number;
 }
 
@@ -215,19 +227,9 @@ function calculateRotatedTextCoordinates(
   return { x, y };
 }
 
-function renderTextWatermarkOnPage({
-  page,
-  text,
-  font,
-  fontSize,
-  textColor,
-  position,
-  opacity,
-  rotationDegrees,
-}: RenderTextWatermarkParams): void {
+function renderTextWatermarkOnPage({ page, text, position, rotationDegrees }: RenderTextWatermarkParams): void {
   const { width: pageWidth, height: pageHeight } = page.getSize();
-  const textWidth = font.widthOfTextAtSize(text, fontSize);
-  const textHeight = font.heightAtSize(fontSize);
+  const { width: textWidth, height: textHeight } = text;
 
   if (position === 'tile') {
     renderTiled(
@@ -237,39 +239,13 @@ function renderTextWatermarkOnPage({
       Math.max(textHeight + 100, 200),
       40,
       40,
-      (x, y) => {
-        page.drawText(text, {
-          x,
-          y,
-          size: fontSize,
-          font,
-          color: textColor,
-          opacity,
-          rotate: degrees(rotationDegrees),
-        });
-      }
+      (x, y) => text.draw(page, { x, y }, rotationDegrees)
     );
     return;
   }
 
-  const { x, y } = calculateRotatedTextCoordinates(
-    position,
-    pageWidth,
-    pageHeight,
-    textWidth,
-    textHeight,
-    rotationDegrees
-  );
-
-  page.drawText(text, {
-    x,
-    y,
-    size: fontSize,
-    font,
-    color: textColor,
-    opacity,
-    rotate: degrees(rotationDegrees),
-  });
+  const at = calculateRotatedTextCoordinates(position, pageWidth, pageHeight, textWidth, textHeight, rotationDegrees);
+  text.draw(page, at, rotationDegrees);
 }
 
 async function loadAndPrepareDocument(
@@ -296,13 +272,77 @@ async function loadAndPrepareDocument(
 interface PreparedWatermarkAsset {
   isImage: boolean;
   image: PDFImage | null;
-  font: PDFFont | null;
-  text: string;
+  text: TextWatermark | null;
+  /** The standard font the text is drawn with, when it is; it needs its ToUnicode map attached before saving. */
+  standardFont: PDFFont | null;
+}
+
+/** Whether the standard Helvetica-Bold (WinAnsi) can draw every character of the text. */
+async function drawableWithStandardFont(text: string): Promise<boolean> {
+  const probe = await PDFDocument.create();
+  const font = await probe.embedFont(StandardFonts.HelveticaBold);
+  try {
+    font.widthOfTextAtSize(text, 1);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertWatermarkText(text: string): void {
+  if (Array.from(text).length > WATERMARK_MAX_CHARS) {
+    throw new WatermarkFontError(`The watermark text is longer than ${WATERMARK_MAX_CHARS} characters.`);
+  }
+  if (LINE_BREAK.test(text)) {
+    throw new WatermarkFontError('The watermark text must be a single line.');
+  }
+}
+
+/** The face the requested family names; it must be installed and have a glyph for every character of the text. */
+async function requestedFace(family: string, text: string): Promise<PdfFontFace> {
+  const face = await findFaceByFamily(family);
+  if (!face) {
+    throw new WatermarkFontError(`The watermark font family '${family}' is not installed.`);
+  }
+  if (!faceCoversText(face, text)) {
+    throw new WatermarkFontError(`The watermark font family '${family}' has no glyph for every character of the text.`);
+  }
+  return face;
+}
+
+function standardTextWatermark(font: PDFFont, text: string, fontSize: number, color: ReturnType<typeof rgb>, opacity: number): TextWatermark {
+  return {
+    width: font.widthOfTextAtSize(text, fontSize),
+    height: font.heightAtSize(fontSize),
+    draw: (page, { x, y }, rotationDegrees) =>
+      page.drawText(text, { x, y, size: fontSize, font, color, opacity, rotate: degrees(rotationDegrees) }),
+  };
+}
+
+/** The text as a stamp page with an embedded subset font, placed on the pages as a form XObject. */
+async function stampTextWatermark(
+  doc: PDFDocument,
+  text: string,
+  family: string | undefined,
+  fontSize: number,
+  color: ReturnType<typeof rgb>,
+  opacity: number
+): Promise<TextWatermark> {
+  const face = family ? await requestedFace(family, text) : undefined;
+  const stamp = await renderTextStamp({ text, fontSize, color, opacity, face });
+  const [embedded]: PDFEmbeddedPage[] = await doc.embedPdf(await PDFDocument.load(stamp.pdf), [STAMP_PAGE_INDEX]);
+  return {
+    width: stamp.width,
+    height: stamp.height,
+    draw: (page, { x, y }, rotationDegrees) =>
+      page.drawPage(embedded, { x, y, width: stamp.width, height: stamp.height, rotate: degrees(rotationDegrees) }),
+  };
 }
 
 async function prepareWatermarkAsset(
   doc: PDFDocument,
-  options: PdfWatermarkOptions
+  options: PdfWatermarkOptions,
+  style: { fontSize: number; color: ReturnType<typeof rgb>; opacity: number }
 ): Promise<PreparedWatermarkAsset> {
   const isImage = Boolean(options.image || options.type === 'image');
   if (isImage) {
@@ -313,12 +353,19 @@ async function prepareWatermarkAsset(
     // pdf-lib decodes PNG and JPEG itself and leniently: check the declared size first, and refuse a header libvips cannot read.
     await assertEncodedImageWithinLimit(imgBuf);
     const image = format === 'png' ? await doc.embedPng(imgBuf) : await doc.embedJpg(imgBuf);
-    return { isImage: true, image, font: null, text: '' };
+    return { isImage: true, image, text: null, standardFont: null };
   }
 
-  const font = await doc.embedFont(StandardFonts.HelveticaBold);
-  const text = options.text || 'CONFIDENTIAL';
-  return { isImage: false, image: null, font, text };
+  const text = options.text || DEFAULT_WATERMARK_TEXT;
+  const family = options.fontFamily?.trim() || undefined;
+  assertWatermarkText(text);
+  // Text the standard font can draw keeps it; anything else, and any requested family, is an embedded subset.
+  if (!family && (await drawableWithStandardFont(text))) {
+    const font = await doc.embedFont(StandardFonts.HelveticaBold);
+    return { isImage: false, image: null, text: standardTextWatermark(font, text, style.fontSize, style.color, style.opacity), standardFont: font };
+  }
+  const stamped = await stampTextWatermark(doc, text, family, style.fontSize, style.color, style.opacity);
+  return { isImage: false, image: null, text: stamped, standardFont: null };
 }
 
 /**
@@ -341,10 +388,10 @@ export async function applyPdfWatermark(
   const position: PdfWatermarkPosition = options.position ?? 'center';
   const layer: PdfWatermarkLayer = options.layer ?? 'over';
 
-  const asset = await prepareWatermarkAsset(doc, options);
   const textColor = parseRgbColor(options.fontColor);
   const fontSize = options.fontSize ?? 48;
   const scale = options.scale ?? 1.0;
+  const asset = await prepareWatermarkAsset(doc, options, { fontSize, color: textColor, opacity });
 
   for (const [idx, page] of doc.getPages().entries()) {
     if (!targetSet.has(idx + 1)) {
@@ -360,17 +407,8 @@ export async function applyPdfWatermark(
         opacity,
         rotationDegrees,
       });
-    } else if (asset.font && asset.text) {
-      renderTextWatermarkOnPage({
-        page,
-        text: asset.text,
-        font: asset.font,
-        fontSize,
-        textColor,
-        position,
-        opacity,
-        rotationDegrees,
-      });
+    } else if (asset.text) {
+      renderTextWatermarkOnPage({ page, text: asset.text, position, rotationDegrees });
     }
 
     if (layer === 'under') {
@@ -380,7 +418,7 @@ export async function applyPdfWatermark(
 
   // pdf-lib writes the font dictionary again at save because drawing text marks the font as modified, so the CMap is
   // attached last, to the dictionary that is written.
-  if (asset.font) await attachWinAnsiToUnicode(doc, asset.font);
+  if (asset.standardFont) await attachWinAnsiToUnicode(doc, asset.standardFont);
   const modifiedBytes = await doc.save();
   return Buffer.from(modifiedBytes);
 }

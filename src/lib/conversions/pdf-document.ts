@@ -417,9 +417,14 @@ export class PdfDocument {
   private contentStreamCount = 0;
   private formInvocations = 0;
 
+  /**
+   * @param skipUndecodable leave streams alone that use a filter or predictor this reader does not decode, instead of
+   * refusing the document: for callers that only check limits and leave the reading to another reader.
+   */
   constructor(
     private readonly buffer: Buffer,
-    private readonly budget: InflateBudget = new InflateBudget()
+    private readonly budget: InflateBudget = new InflateBudget(),
+    private readonly skipUndecodable = false
   ) {
     this.text = buffer.toString('latin1');
     this.scan();
@@ -640,10 +645,11 @@ export class PdfDocument {
     const stream = entry.stream as StreamSpan;
     const label = `PDF stream of object ${entry.num}`;
     const stages = this.filterChain(stream.dict);
+    const strict = required && !this.skipUndecodable;
 
     for (const stage of stages) {
       if (!DECODABLE_FILTERS.has(stage.name)) {
-        if (!required) return null;
+        if (!strict) return null;
         throw new PdfStructureError(`${label} uses the ${stage.name} filter, which this reader cannot decode.`);
       }
     }
@@ -663,7 +669,7 @@ export class PdfDocument {
         try {
           predictor = this.predictorParams(stage.parms, label);
         } catch (err) {
-          if (required) throw err;
+          if (strict) throw err;
           return null;
         }
         if (predictor) data = undoPredictor(data, predictor, label);

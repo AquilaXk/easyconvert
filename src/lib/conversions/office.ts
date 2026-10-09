@@ -6,14 +6,15 @@ import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
-import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
+import { readPdfForOffice } from './pdf-office';
+import { documentToDocx } from './document-model/docx';
+import { documentToStructuredText } from './document-model/markdown';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
-import { assertNoComplexScript } from './ctl';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
@@ -177,6 +178,16 @@ export async function convertOffice(
   }
 
   // 13. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
+  if (tgt === 'docx' && src === 'pdf') {
+    // A PDF keeps the structure its layout analysis found: columns, headings, lists, tables and images.
+    const docxBuffer = await documentToDocx(await readPdfForOffice(inputBuffer, options, true));
+    return {
+      buffer: docxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      filename: `${baseName}.docx`,
+      size: docxBuffer.length,
+    };
+  }
   if (tgt === 'docx') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const docxBuffer = await generateDocxFromText(textContent, src, options, baseName);
@@ -365,40 +376,7 @@ export async function extractTextContentForOffice(
   baseName: string
 ): Promise<string> {
   if (src === 'pdf') {
-    const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
-    let extracted = structuredPdf.text;
-    if (!extracted || extracted.trim() === '' || options.ocrEnabled) {
-      const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-      if (embeddedImg) {
-        const ocr = await performOcr(embeddedImg, options.ocrLanguage, undefined, options.ocrDetectOrientation);
-        if (ocr.text) extracted = ocr.text;
-      } else {
-        const ocr = await performOcr(inputBuffer, options.ocrLanguage, undefined, options.ocrDetectOrientation);
-        if (ocr.text) extracted = ocr.text;
-      }
-    } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {
-      const dlaBoxes: DlaBoundingBox[] = structuredPdf.blocks.map((b) => ({
-        x: b.x,
-        y: b.y,
-        width: Math.max(1, b.width),
-        height: Math.max(1, b.height),
-        text: b.text,
-        fontSize: b.fontSize,
-      }));
-      const layout = analyzeDocumentLayout(dlaBoxes, 612, 792);
-      if (layout.blocks && layout.blocks.length > 0) {
-        extracted = layout.blocks
-          .map((b) => {
-            if (b.type === 'heading') return `## ${b.text}`;
-            if (b.type === 'list_item') return `- ${b.text.replace(/^[•\-\*]\s*/, '')}`;
-            if (b.type === 'header') return `*${b.text}*\n\n---`;
-            if (b.type === 'footer') return `---\n*${b.text}*`;
-            return b.text;
-          })
-          .join('\n\n');
-      }
-    }
-    return extracted;
+    return documentToStructuredText(await readPdfForOffice(inputBuffer, options));
   }
 
   if (src === 'rtf') {
@@ -3424,7 +3402,6 @@ export function renderSafePdfText(
 ): PDFKit.PDFDocument {
   const stringText = String(text ?? '');
   if (!stringText) return doc;
-  assertNoComplexScript(stringText, 'Pure-TS Office PDF rendering');
 
   if (!hasUnicodeFont && !isNonWinAnsi(stringText)) {
     if (x !== undefined && y !== undefined) {
@@ -3939,31 +3916,6 @@ async function generatePdfFromDocx(
   title: string,
   elements?: DocxBlockElement[]
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS DOCX to PDF');
-  for (const p of paragraphs) {
-    assertNoComplexScript(p.text, 'Pure-TS DOCX to PDF');
-  }
-  for (const tbl of tables) {
-    for (const r of tbl.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-      }
-    }
-  }
-  if (elements) {
-    for (const el of elements) {
-      if (el.type === 'paragraph') {
-        assertNoComplexScript(el.paragraph.text, 'Pure-TS DOCX to PDF');
-      } else if (el.type === 'table') {
-        for (const r of el.table.rows) {
-          for (const cell of r) {
-            assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-          }
-        }
-      }
-    }
-  }
-
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const doc = new PDFDocument({
@@ -5810,16 +5762,6 @@ async function generatePdfFromWorksheets(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Spreadsheet to PDF');
-  for (const s of sheets) {
-    assertNoComplexScript(s.name, 'Pure-TS Spreadsheet to PDF');
-    for (const r of s.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS Spreadsheet to PDF');
-      }
-    }
-  }
-
   const widestRow = sheets.reduce((widest, sheet) => Math.max(widest, ...sheet.rows.map((row) => row.length)), 1);
   const isLandscape = options.orientation === 'landscape' || widestRow > WORKSHEET_LANDSCAPE_COLUMNS;
   return renderPdfTables(
@@ -7166,13 +7108,6 @@ async function generatePdfFromSlides(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Presentation to PDF');
-  for (const s of slides) {
-    for (const t of s.texts) {
-      assertNoComplexScript(t, 'Pure-TS Presentation to PDF');
-    }
-  }
-
   return new Promise<Buffer>((resolve, reject) => {
     const firstSlide = slides[0];
     const width = firstSlide?.width || 960;

@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { extractTextFromPdf } from '../src/lib/conversions/pdf-utils';
+import { PdfTextGeometryError } from '../src/lib/conversions/pdf-text-types';
+import { extractPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import { CorruptStreamError, DecompressionLimitError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -40,11 +40,14 @@ function pdftotext(pdf: Buffer): string {
   return execFileSync(tool, [file, '-'], { encoding: 'utf8' });
 }
 
+/** The text of a PDF through the extraction the conversions use. */
+const extractTextFromPdf = async (pdf: Buffer): Promise<string> => (await extractPdfDocument(pdf)).text;
+
 const words = (text: string): string[] => text.split(/\s+/).filter((w) => w.length > 0);
 
-function caught(run: () => unknown): unknown {
+async function caught(run: () => Promise<unknown>): Promise<unknown> {
   try {
-    run();
+    await run();
   } catch (err) {
     return err;
   }
@@ -146,42 +149,42 @@ describe('FlateDecode predictors', () => {
   const parms = `/Columns ${ROW_BYTES}`;
 
   for (const predictor of [10, 11, 12, 13, 14, 15]) {
-    it(`reads PNG predictor ${predictor} (rows filtered with types 0 to 4)`, () => {
+    it(`reads PNG predictor ${predictor} (rows filtered with types 0 to 4)`, async () => {
       const stream = flate(pngEncode(content, ROW_BYTES, 1));
       const pdf = pdfWithContent(stream, `/Filter /FlateDecode /DecodeParms << /Predictor ${predictor} ${parms} >>`);
-      expect(extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
+      expect(await extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
     });
   }
 
-  it('reads TIFF predictor 2 on 8-bit samples', () => {
+  it('reads TIFF predictor 2 on 8-bit samples', async () => {
     const stream = flate(tiffEncode(content, ROW_BYTES, 1));
     const pdf = pdfWithContent(stream, `/Filter /FlateDecode /DecodeParms << /Predictor 2 ${parms} >>`);
-    expect(extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
+    expect(await extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
   });
 
-  it('reads a predictor over four colour components', () => {
+  it('reads a predictor over four colour components', async () => {
     const colors = 4; // ROW_BYTES / 4 pixels of 4 bytes
     const stream = flate(pngEncode(content, ROW_BYTES, colors));
     const pdf = pdfWithContent(
       stream,
       `/Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors ${colors} ${parms} /Columns ${ROW_BYTES / colors} >>`
     );
-    expect(extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
+    expect(await extractTextFromPdf(pdf)).toBe('PREDICTOR-ROUNDTRIP-TEXT');
   });
 
-  oracleTest('matches pdftotext for a PNG-predicted content stream', ['pdftotext'], () => {
+  oracleTest('matches pdftotext for a PNG-predicted content stream', ['pdftotext'], async () => {
     const pdf = pdfWithContent(
       flate(pngEncode(content, ROW_BYTES, 1)),
       `/Filter /FlateDecode /DecodeParms << /Predictor 15 ${parms} >>`
     );
-    expect(words(extractTextFromPdf(pdf))).toEqual(words(pdftotext(pdf)));
+    expect(words(await extractTextFromPdf(pdf))).toEqual(words(pdftotext(pdf)));
   });
 
-  it('refuses predictor parameters that describe no row layout', () => {
+  it('refuses predictor parameters that describe no row layout', async () => {
     const pdf = pdfWithContent(flate(content), '/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 0 >>');
-    const err = caught(() => extractTextFromPdf(pdf));
-    expect(err).toBeInstanceOf(PdfStructureError);
-    expect((err as Error).message).toMatch(/Columns/);
+    const err = await caught(() => extractTextFromPdf(pdf));
+    expect(err).toBeInstanceOf(PdfTextGeometryError);
+    expect((err as PdfTextGeometryError).status).toBe(HTTP_BAD_REQUEST);
   });
 });
 
@@ -189,79 +192,68 @@ describe('filter chains', () => {
   const text = 'CHAINED-FILTER-TEXT';
   const content = Buffer.from(textContent(text), 'latin1');
 
-  it('reads ASCIIHexDecode then FlateDecode', () => {
+  it('reads ASCIIHexDecode then FlateDecode', async () => {
     const pdf = pdfWithContent(asciiHexEncode(flate(content)), '/Filter [/ASCIIHexDecode /FlateDecode]');
-    expect(extractTextFromPdf(pdf)).toBe(text);
+    expect(await extractTextFromPdf(pdf)).toBe(text);
   });
 
-  it('reads ASCII85Decode then FlateDecode', () => {
+  it('reads ASCII85Decode then FlateDecode', async () => {
     const pdf = pdfWithContent(ascii85Encode(flate(content)), '/Filter [/ASCII85Decode /FlateDecode]');
-    expect(extractTextFromPdf(pdf)).toBe(text);
+    expect(await extractTextFromPdf(pdf)).toBe(text);
   });
 
-  it('reads a lone ASCIIHexDecode and a lone ASCII85Decode content stream', () => {
-    expect(extractTextFromPdf(pdfWithContent(asciiHexEncode(content), '/Filter /ASCIIHexDecode'))).toBe(text);
-    expect(extractTextFromPdf(pdfWithContent(ascii85Encode(content), '/Filter /ASCII85Decode'))).toBe(text);
+  it('reads a lone ASCIIHexDecode and a lone ASCII85Decode content stream', async () => {
+    expect(await extractTextFromPdf(pdfWithContent(asciiHexEncode(content), '/Filter /ASCIIHexDecode'))).toBe(text);
+    expect(await extractTextFromPdf(pdfWithContent(ascii85Encode(content), '/Filter /ASCII85Decode'))).toBe(text);
   });
 
-  it('applies a predictor to the Flate stage of a chain', () => {
+  it('applies a predictor to the Flate stage of a chain', async () => {
     const padded = paddedContent(text);
     const pdf = pdfWithContent(
       asciiHexEncode(flate(pngEncode(padded, ROW_BYTES, 1))),
       `/Filter [/ASCIIHexDecode /FlateDecode] /DecodeParms [null << /Predictor 15 /Columns ${ROW_BYTES} >>]`
     );
-    expect(extractTextFromPdf(pdf)).toBe(text);
+    expect(await extractTextFromPdf(pdf)).toBe(text);
   });
 
-  oracleTest('matches pdftotext for ASCII85 then Flate', ['pdftotext'], () => {
+  oracleTest('matches pdftotext for ASCII85 then Flate', ['pdftotext'], async () => {
     const pdf = pdfWithContent(ascii85Encode(flate(content)), '/Filter [/ASCII85Decode /FlateDecode]');
-    expect(words(extractTextFromPdf(pdf))).toEqual(words(pdftotext(pdf)));
+    expect(words(await extractTextFromPdf(pdf))).toEqual(words(pdftotext(pdf)));
   });
 
-  it('maps malformed ASCII85 and ASCIIHex data to a typed 400', () => {
+  it('maps malformed ASCII85 and ASCIIHex data to a typed 400', async () => {
     for (const [data, filter] of [
       [Buffer.from('!!!\x01!~>', 'latin1'), '/ASCII85Decode'],
       [Buffer.from('4G5Zz>', 'latin1'), '/ASCIIHexDecode'],
     ] as const) {
-      const err = caught(() => extractTextFromPdf(pdfWithContent(data, `/Filter ${filter}`)));
+      const err = await caught(() => extractTextFromPdf(pdfWithContent(data, `/Filter ${filter}`)));
       expect(err).toBeInstanceOf(CorruptStreamError);
       expect((err as CorruptStreamError).status).toBe(HTTP_BAD_REQUEST);
     }
   });
 
-  it('bounds the expansion of ASCII85 zero groups', () => {
+  it('bounds the expansion of ASCII85 zero groups', async () => {
     const zeros = Buffer.alloc(ASCII85_ZERO_RUN, 'z');
-    const err = caught(() => extractTextFromPdf(pdfWithContent(Buffer.concat([zeros, Buffer.from('~>')]), '/Filter /ASCII85Decode')));
+    const err = await caught(() => extractTextFromPdf(pdfWithContent(Buffer.concat([zeros, Buffer.from('~>')]), '/Filter /ASCII85Decode')));
     expect(err).toBeInstanceOf(DecompressionLimitError);
     expect((err as DecompressionLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
   });
 });
 
-describe('streams that must be decoded for text never vanish silently', () => {
-  it('refuses a page content stream with a filter this reader cannot decode', () => {
-    const err = caught(() => extractTextFromPdf(pdfWithContent(Buffer.from('....', 'latin1'), '/Filter /LZWDecode')));
-    expect(err).toBeInstanceOf(PdfStructureError);
-    expect((err as Error).message).toMatch(/LZWDecode/);
-  });
-
-  it('refuses a chain whose last filter cannot be decoded', () => {
-    const pdf = pdfWithContent(asciiHexEncode(Buffer.from('....')), '/Filter [/ASCIIHexDecode /RunLengthDecode]');
-    const err = caught(() => extractTextFromPdf(pdf));
-    expect(err).toBeInstanceOf(PdfStructureError);
-    expect((err as Error).message).toMatch(/RunLengthDecode/);
-  });
-
-  it('leaves undecodable streams alone in a file with no page structure', () => {
+describe('a document pdfjs cannot read is refused, never read as empty', () => {
+  it('refuses a file with no page structure with a typed 400', async () => {
     const objects: CraftObject[] = [
       { id: 1, dict: '/Filter /DCTDecode', stream: Buffer.from('\xff\xd8not an image', 'latin1') },
       { id: 2, dict: '', stream: Buffer.from(textContent('LOOSE-STREAM-TEXT'), 'latin1') },
     ];
     const pdf = buildPdf(objects, 1).buffer.toString('latin1').replace(/trailer[\s\S]*?startxref/, 'startxref');
-    expect(extractTextFromPdf(Buffer.from(pdf, 'latin1'))).toBe('LOOSE-STREAM-TEXT');
+    const err = await caught(() => extractTextFromPdf(Buffer.from(pdf, 'latin1')));
+    expect(err).toBeInstanceOf(PdfTextGeometryError);
+    expect((err as PdfTextGeometryError).status).toBe(HTTP_BAD_REQUEST);
   });
 });
 
-describe('a root with no usable page tree still yields its page objects', () => {
+describe('a root with no usable page tree', () => {
   const page: CraftObject = {
     id: 3,
     dict: '/Type /Page /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>',
@@ -271,20 +263,22 @@ describe('a root with no usable page tree still yields its page objects', () => 
     { id: 5, raw: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>' },
   ];
 
-  it('reads page objects when the catalog has no /Pages', () => {
+  it('refuses a catalog with no /Pages with a typed 400', async () => {
     const pdf = buildPdf([{ id: 1, dict: '/Type /Catalog' }, page, ...rest], 1).buffer;
-    expect(extractTextFromPdf(pdf)).toBe('LOOSE-PAGE-TEXT');
+    const err = await caught(() => extractTextFromPdf(pdf));
+    expect(err).toBeInstanceOf(PdfTextGeometryError);
+    expect((err as PdfTextGeometryError).status).toBe(400);
   });
 
-  it('reads page objects when the page tree lists no kids', () => {
+  it('reads no text from page objects the page tree does not list', async () => {
     const pdf = buildPdf(
       [{ id: 1, dict: '/Type /Catalog /Pages 2 0 R' }, { id: 2, dict: '/Type /Pages /Kids [] /Count 0' }, page, ...rest],
       1
     ).buffer;
-    expect(extractTextFromPdf(pdf)).toBe('LOOSE-PAGE-TEXT');
+    expect(await extractTextFromPdf(pdf)).toBe('');
   });
 
-  it('prefers the page tree when it lists pages', () => {
+  it('prefers the page tree when it lists pages', async () => {
     const pdf = buildPdf(
       [
         { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
@@ -296,10 +290,10 @@ describe('a root with no usable page tree still yields its page objects', () => 
       ],
       1
     ).buffer;
-    expect(extractTextFromPdf(pdf)).toBe('LOOSE-PAGE-TEXT');
+    expect(await extractTextFromPdf(pdf)).toBe('LOOSE-PAGE-TEXT');
   });
 
-  it('returns no text for a catalog with no pages at all', () => {
+  it('returns no text for a catalog with no pages at all', async () => {
     const pdf = buildPdf(
       [
         { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
@@ -308,6 +302,6 @@ describe('a root with no usable page tree still yields its page objects', () => 
       ],
       1
     ).buffer;
-    expect(extractTextFromPdf(pdf)).toBe('');
+    expect(await extractTextFromPdf(pdf)).toBe('');
   });
 });
