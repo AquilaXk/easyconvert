@@ -57,3 +57,27 @@ checks it against published curve pairs and an exact closed-form case.
 `bench/baseline.json` was recorded with the tool versions listed in the report's `tools` block (see the `.md`
 summary). Pixel and sample metrics are deterministic for fixed versions; a different `cwebp`, `avifenc`, ffmpeg or
 libvpx build can move them, so refresh the baseline in the same change that moves the toolchain.
+
+## Real-world corpus
+
+`npm run bench:realworld` runs thousands of real files through the conversions users can request, to find crashes,
+hangs and broken outputs that hand-authored fixtures miss. It runs nightly in ten shards (`.github/workflows/nightly.yml`).
+
+```sh
+npm run bench:realworld -- run --shard 1/10 [--per-file 3] [--workers N] [--deadline-ms 180000] [--limit 50]
+npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json [--update-baseline]
+```
+
+- **Corpus:** `bench/realworld/manifest.json` lists every file's origin, size, SHA-256 and the licence statement of its
+  source. Files are never committed; the runner downloads them (single ZIP entries are read with range requests),
+  checks each digest and caches them in `~/.cache/easyconvert-realworld`. `scripts/realworld-manifest.ts` rebuilds the
+  manifest deterministically.
+- **Jobs:** each file goes through `--per-file` of its format's advertised targets, rotating so that the corpus covers
+  every pair. Jobs run in child processes with a deadline and a heap cap; a job past its deadline kills its process group.
+- **Verdicts:** `ok`; `refused` (a typed error the API answers with 4xx or 503); `crash` (anything the API would answer
+  with 500, or a dead job server); `hang` (deadline passed); `bad-output` (empty, wrong magic bytes, or refused by
+  `pdfinfo` or ImageMagick `identify`).
+- **Gate:** any crash, hang or bad output fails, and so does a pair whose refusal rate grew more than 2 points over
+  `bench/realworld/baseline.json` (pairs with at least 20 jobs).
+- **Triage:** reduce each failing file to a minimal input, commit it under `tests/fixtures/regressions/` with a failing
+  test, then fix the reader.
