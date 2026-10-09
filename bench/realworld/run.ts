@@ -49,19 +49,21 @@ function positiveInt(value: string | undefined, fallback: number, name: string):
   return parsed;
 }
 
+/** Fixed system directories searched for tools; PATH is not trusted, so a writable directory on it cannot supply one. */
+const TOOL_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/bin'] as const;
+
 function toolPath(name: string): string {
-  try {
-    return execFileSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
-  } catch {
-    return '';
-  }
+  const found = TOOL_DIRECTORIES.map((dir) => path.join(dir, name)).find((candidate) => fs.existsSync(candidate));
+  return found ?? '';
 }
 
 function commit(): string {
+  const git = toolPath('git');
+  if (git === '') return process.env.GITHUB_SHA ?? 'unknown';
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    return execFileSync(git, ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   } catch {
-    return 'unknown';
+    return process.env.GITHUB_SHA ?? 'unknown';
   }
 }
 

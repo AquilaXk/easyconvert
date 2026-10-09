@@ -7,7 +7,7 @@ import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDi
 import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
-import { evaluate, mergeShards, pairStats, readKnownFailures, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
+import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { JobPool } from '../bench/realworld/pool';
 import { captureError } from './helpers/capture-error';
 
@@ -176,6 +176,21 @@ describe('verdicts and gate', () => {
     expect(() => readKnownFailures(write([{ pair: '*', verdict: 'crash', detail: 'x' }]))).toThrow(/issue/);
     expect(() => readKnownFailures(write([{ pair: '*', verdict: 'ok', detail: 'x', issue: 1 }]))).toThrow(/not a failure/);
     expect(readKnownFailures().every((k) => k.issue > 0)).toBe(true);
+  });
+
+  it('renders the pair table, the untracked failures with escaped details, and the tracked ones by issue', () => {
+    const jobs: JobRecord[] = [
+      { file: 'a', source: 'pdf', target: 'txt', verdict: 'ok', ms: 10 },
+      { file: 'b', source: 'pdf', target: 'txt', verdict: 'crash', ms: 20, detail: 'TypeError: x | y' },
+      { file: 'c', source: 'ppt', target: 'odp', verdict: 'crash', ms: 30, detail: 'Error: Unsupported conversion from PPT to odp' },
+    ];
+    const gate = evaluate(jobs, null, [{ pair: 'ppt->odp', verdict: 'crash', detail: '^Error: Unsupported', issue: 631 }]);
+    const lines = renderMarkdown(jobs, gate).split('\n');
+    expect(lines).toContain('Gate: **fail**. Jobs: 3. ok 1, refused 0, bad-output 0, crash 2, hang 0.');
+    expect(lines).toContain('| pdf->txt | 2 | 1 | 0 | 0 | 1 | 0 | 20 |');
+    expect(lines).toContain('| b | pdf->txt | crash | TypeError: x \\| y |');
+    expect(lines).toContain('| #631 | 1 |');
+    expect(lines.some((line) => line.startsWith('| c |'))).toBe(false);
   });
 
   it('refuses to merge an incomplete set of shards', () => {

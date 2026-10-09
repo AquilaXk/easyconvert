@@ -82,7 +82,8 @@ export class JobPool {
 
   static async start(options: PoolOptions): Promise<JobPool> {
     const pool = new JobPool(options);
-    for (let i = 0; i < options.workers; i++) pool.slots.push({ child: await spawnChild(options), busy: false });
+    const children = await Promise.all(Array.from({ length: options.workers }, () => spawnChild(options)));
+    for (const child of children) pool.slots.push({ child, busy: false });
     return pool;
   }
 

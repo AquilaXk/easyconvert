@@ -113,23 +113,28 @@ function knownIssue(job: JobRecord, known: readonly KnownFailure[]): number | nu
   return match === undefined ? null : match.issue;
 }
 
-export function evaluate(jobs: readonly JobRecord[], baseline: Baseline | null, knownFailures: readonly KnownFailure[] = []): GateResult {
+function splitFatal(jobs: readonly JobRecord[], knownFailures: readonly KnownFailure[]): Pick<GateResult, 'fatal' | 'known'> {
   const fatal: JobRecord[] = [];
   const known: GateResult['known'] = [];
-  for (const job of jobs) {
-    if (!FATAL_VERDICTS.has(job.verdict)) continue;
+  for (const job of jobs.filter((j) => FATAL_VERDICTS.has(j.verdict))) {
     const issue = knownIssue(job, knownFailures);
     if (issue === null) fatal.push(job);
     else known.push({ job, issue });
   }
-  const refusalRegressions: GateResult['refusalRegressions'] = [];
-  if (baseline !== null) {
-    for (const stats of pairStats(jobs)) {
-      const before = baseline.refusalRate[stats.pair];
-      if (before === undefined || stats.jobs < MIN_JOBS_FOR_RATE_GATE) continue;
-      if (stats.refusalRate > before + REFUSAL_RATE_TOLERANCE) refusalRegressions.push({ pair: stats.pair, baseline: before, now: stats.refusalRate });
-    }
-  }
+  return { fatal, known };
+}
+
+function refusalRegressionsOf(jobs: readonly JobRecord[], baseline: Baseline | null): GateResult['refusalRegressions'] {
+  if (baseline === null) return [];
+  return pairStats(jobs)
+    .filter((stats) => stats.jobs >= MIN_JOBS_FOR_RATE_GATE && baseline.refusalRate[stats.pair] !== undefined)
+    .filter((stats) => stats.refusalRate > baseline.refusalRate[stats.pair] + REFUSAL_RATE_TOLERANCE)
+    .map((stats) => ({ pair: stats.pair, baseline: baseline.refusalRate[stats.pair], now: stats.refusalRate }));
+}
+
+export function evaluate(jobs: readonly JobRecord[], baseline: Baseline | null, knownFailures: readonly KnownFailure[] = []): GateResult {
+  const { fatal, known } = splitFatal(jobs, knownFailures);
+  const refusalRegressions = refusalRegressionsOf(jobs, baseline);
   return { pass: fatal.length === 0 && refusalRegressions.length === 0, fatal, known, refusalRegressions };
 }
 
@@ -145,7 +150,8 @@ export function readKnownFailures(file = KNOWN_FAILURES_PATH): KnownFailure[] {
   for (const entry of list) {
     if (!Number.isInteger(entry.issue) || entry.issue <= 0) throw new Error(`${file}: every known failure needs the issue that tracks it`);
     if (!FATAL_VERDICTS.has(entry.verdict)) throw new Error(`${file}: verdict ${entry.verdict} is not a failure`);
-    new RegExp(entry.detail);
+    // Compiling here refuses a malformed pattern when the list is read, not when the first job is matched.
+    entry.detail = new RegExp(entry.detail).source;
   }
   return list;
 }
@@ -157,31 +163,52 @@ export function readBaseline(file = BASELINE_PATH): Baseline | null {
   return baseline;
 }
 
-const cell = (text: string): string => text.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+const cell = (text: string): string => text.replace(/\|/g, String.raw`\|`).replace(/\n/g, ' ');
+
+function pairRows(jobs: readonly JobRecord[]): string[] {
+  const header = ['| Pair | Jobs | ok | refused | bad-output | crash | hang | p95 ms |', '|---|---|---|---|---|---|---|---|'];
+  const rows = pairStats(jobs).map((s) => {
+    const cells = [s.pair, s.jobs, s.counts.ok, s.counts.refused, s.counts['bad-output'], s.counts.crash, s.counts.hang, Math.round(s.p95Ms)];
+    return `| ${cells.join(' | ')} |`;
+  });
+  return [...header, ...rows];
+}
+
+function fatalRows(fatal: readonly JobRecord[]): string[] {
+  if (fatal.length === 0) return [];
+  const rows = fatal.slice(0, DETAIL_ROWS).map((job) => `| ${job.file} | ${job.source}->${job.target} | ${job.verdict} | ${cell(job.detail ?? '')} |`);
+  const more = fatal.length > DETAIL_ROWS ? ['', `${fatal.length - DETAIL_ROWS} more in the JSON report.`] : [];
+  return ['', '## Crashes, hangs and bad outputs', '', '| File | Pair | Verdict | Detail |', '|---|---|---|---|', ...rows, ...more];
+}
+
+function knownRows(known: GateResult['known']): string[] {
+  if (known.length === 0) return [];
+  const byIssue = new Map<number, number>();
+  for (const { issue } of known) byIssue.set(issue, (byIssue.get(issue) ?? 0) + 1);
+  const rows = [...byIssue.entries()].sort((a, b) => a[0] - b[0]).map(([issue, count]) => `| #${issue} | ${count} |`);
+  return ['', '## Known failures (tracked, not gating)', '', '| Issue | Jobs |', '|---|---|', ...rows];
+}
+
+function regressionRows(regressions: GateResult['refusalRegressions']): string[] {
+  if (regressions.length === 0) return [];
+  const rows = regressions.map((r) => `| ${r.pair} | ${r.baseline.toFixed(3)} | ${r.now.toFixed(3)} |`);
+  return ['', '## Refusal-rate regressions', '', '| Pair | Baseline | Now |', '|---|---|---|', ...rows];
+}
 
 export function renderMarkdown(jobs: readonly JobRecord[], gate: GateResult): string {
-  const lines: string[] = ['# Real-world corpus run', ''];
   const totals = emptyCounts();
   for (const job of jobs) totals[job.verdict]++;
-  lines.push(`Gate: **${gate.pass ? 'pass' : 'fail'}**. Jobs: ${jobs.length}. ${VERDICT_ORDER.map((v) => `${v} ${totals[v]}`).join(', ')}.`, '');
-  lines.push('| Pair | Jobs | ok | refused | bad-output | crash | hang | p95 ms |', '|---|---|---|---|---|---|---|---|');
-  for (const s of pairStats(jobs)) {
-    lines.push(`| ${s.pair} | ${s.jobs} | ${s.counts.ok} | ${s.counts.refused} | ${s.counts['bad-output']} | ${s.counts.crash} | ${s.counts.hang} | ${Math.round(s.p95Ms)} |`);
-  }
-  if (gate.fatal.length > 0) {
-    lines.push('', '## Crashes, hangs and bad outputs', '', '| File | Pair | Verdict | Detail |', '|---|---|---|---|');
-    for (const job of gate.fatal.slice(0, DETAIL_ROWS)) lines.push(`| ${job.file} | ${job.source}->${job.target} | ${job.verdict} | ${cell(job.detail ?? '')} |`);
-    if (gate.fatal.length > DETAIL_ROWS) lines.push('', `${gate.fatal.length - DETAIL_ROWS} more in the JSON report.`);
-  }
-  if (gate.known.length > 0) {
-    const byIssue = new Map<number, number>();
-    for (const { issue } of gate.known) byIssue.set(issue, (byIssue.get(issue) ?? 0) + 1);
-    lines.push('', '## Known failures (tracked, not gating)', '', '| Issue | Jobs |', '|---|---|');
-    for (const [issue, count] of [...byIssue.entries()].sort((a, b) => a[0] - b[0])) lines.push(`| #${issue} | ${count} |`);
-  }
-  if (gate.refusalRegressions.length > 0) {
-    lines.push('', '## Refusal-rate regressions', '', '| Pair | Baseline | Now |', '|---|---|---|');
-    for (const r of gate.refusalRegressions) lines.push(`| ${r.pair} | ${r.baseline.toFixed(3)} | ${r.now.toFixed(3)} |`);
-  }
+  const summary = VERDICT_ORDER.map((v) => `${v} ${totals[v]}`).join(', ');
+  const verdict = gate.pass ? 'pass' : 'fail';
+  const lines = [
+    '# Real-world corpus run',
+    '',
+    `Gate: **${verdict}**. Jobs: ${jobs.length}. ${summary}.`,
+    '',
+    ...pairRows(jobs),
+    ...fatalRows(gate.fatal),
+    ...knownRows(gate.known),
+    ...regressionRows(gate.refusalRegressions),
+  ];
   return `${lines.join('\n')}\n`;
 }
