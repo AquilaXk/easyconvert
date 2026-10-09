@@ -123,20 +123,6 @@ function levelOf(reps: number[], x: number): number {
   return sorted.indexOf(representative(sorted, x));
 }
 
-/** Letter markers that are really roman numerals of the list they sit in ("i.", "ii."). */
-function fixRomanStart(items: MarkedParagraph[]): void {
-  if (items.length < 2) return;
-  const [first, second] = [items[0].marker, items[1].marker];
-  if ((first.kind === 'lowerLetter' || first.kind === 'upperLetter') && (second.kind === 'lowerRoman' || second.kind === 'upperRoman')) {
-    const asRoman: Record<string, number> = { 9: 1, 22: 5, 24: 10 };
-    const value = asRoman[first.value];
-    if (value !== undefined && second.value === value + 1) {
-      first.kind = first.kind === 'lowerLetter' ? 'lowerRoman' : 'upperRoman';
-      first.value = value;
-    }
-  }
-}
-
 export interface ListRun {
   /** Paragraphs [from, to) of the input are this list. */
   from: number;
@@ -160,6 +146,7 @@ export function assembleLists(paragraphs: Paragraph[], eligible: (paragraph: Par
     const items: MarkedParagraph[] = [start];
     const reps: number[] = [start.paragraph.firstLineX];
     const lastAt = new Map<number, ListMarker>([[reps[0], start.marker]]);
+    const countAt = new Map<number, number>([[reps[0], 1]]);
     let end = at + 1;
     for (; end < paragraphs.length; end++) {
       const next = eligible(paragraphs[end]) ? markedOf(paragraphs[end]) : null;
@@ -168,15 +155,20 @@ export function assembleLists(paragraphs: Paragraph[], eligible: (paragraph: Par
       if (rep < Math.min(...reps) - INDENT_TOLERANCE) break;
       const previous = lastAt.get(rep);
       const deeper = rep > Math.max(...reps) + INDENT_TOLERANCE;
+      if (previous !== undefined && !deeper) reconcileLetterAndRoman(previous, next.marker, countAt.get(rep) === 1);
       if (previous !== undefined && !deeper && !continues(previous, next.marker)) break;
       if (!reps.includes(rep)) reps.push(rep);
       // Back at a shallower indent, the deeper levels start over at their next item.
-      for (const key of [...lastAt.keys()]) if (key > rep + INDENT_TOLERANCE) lastAt.delete(key);
+      for (const key of [...lastAt.keys()]) {
+        if (key > rep + INDENT_TOLERANCE) {
+          lastAt.delete(key);
+          countAt.delete(key);
+        }
+      }
       lastAt.set(rep, next.marker);
+      countAt.set(rep, (countAt.get(rep) ?? 0) + 1);
       items.push(next);
     }
-    fixRomanStart(items);
-    reconcileLetterAndRoman(items.map((item) => item.marker));
     const strongSingle = items.length === 1 && start.marker.kind === 'bullet' && STRONG_BULLETS.has(start.marker.glyph);
     if (items.length < MIN_COUNTER_ITEMS && !strongSingle) {
       at++;

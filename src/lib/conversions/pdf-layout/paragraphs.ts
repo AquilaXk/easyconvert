@@ -1,4 +1,4 @@
-import { parseListMarker } from './lists';
+import { continues, parseListMarker, reconcileLetterAndRoman, type ListMarker } from './lists';
 import type { LayoutLine, Paragraph, StyledRun } from './types';
 import { firstChar, isLetter, isLowercase, lastChar, needsSpaceBetween } from './text-chars';
 
@@ -100,8 +100,19 @@ function endedEarly(previous: LayoutLine, next: LayoutLine, free: number, width:
   return (firstWord.length + 1) * advance * WORD_WIDTH_MARGIN <= free;
 }
 
-/** Whether `line` starts a new paragraph after `previous`. */
-function startsParagraph(previous: LayoutLine, line: LayoutLine, flow: FlowMetrics): boolean {
+/**
+ * Whether a letter marker (which prose can also start a line with) starts a list item: it counts on from the marker of
+ * the paragraph it would join ("b." after "a.", or "v." after "iv." read as roman).
+ */
+function continuesOpeningMarker(opening: LayoutLine, marker: ListMarker): boolean {
+  const open = parseListMarker(opening.text);
+  if (open === null) return false;
+  reconcileLetterAndRoman(open, marker, false);
+  return continues(open, marker);
+}
+
+/** Whether `line` starts a new paragraph after `previous`; `opening` is the first line of the paragraph it would join. */
+function startsParagraph(previous: LayoutLine, line: LayoutLine, opening: LayoutLine, flow: FlowMetrics): boolean {
   const step = line.baseline - previous.baseline;
   if (step > GAP_FACTOR * Math.max(flow.pitch, previous.size)) return true;
   if (Math.abs(line.size - previous.size) > SIZE_CHANGE_SHARE * previous.size) return true;
@@ -109,6 +120,7 @@ function startsParagraph(previous: LayoutLine, line: LayoutLine, flow: FlowMetri
   if (line.vertical !== previous.vertical) return true;
   const marker = parseListMarker(line.text);
   if (marker !== null && marker.kind !== 'lowerLetter' && marker.kind !== 'upperLetter') return true;
+  if (marker !== null && continuesOpeningMarker(opening, marker)) return true;
   const width = flow.right - flow.left;
   const indent = line.box.x0 - flow.left;
   if (indent > INDENT_EM * line.size && !previous.rtl) return true;
@@ -217,7 +229,7 @@ export function paragraphsOfFlow(lines: LayoutLine[], flow: number, pageNumber: 
   const paragraphs: Paragraph[] = [];
   let current: LayoutLine[] = [lines[0]];
   for (let i = 1; i < lines.length; i++) {
-    if (startsParagraph(lines[i - 1], lines[i], metrics)) {
+    if (startsParagraph(lines[i - 1], lines[i], current[0], metrics)) {
       paragraphs.push(paragraphOf(current, flow, pageNumber, full));
       current = [lines[i]];
     } else {

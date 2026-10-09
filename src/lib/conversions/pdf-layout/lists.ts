@@ -94,19 +94,39 @@ export function continues(previous: ListMarker, next: ListMarker): boolean {
   return next.value === previous.value + 1;
 }
 
-/** A roman numeral and a letter share spellings ("i", "c"); a letter marker that follows a roman one is read as roman. */
-export function reconcileLetterAndRoman(markers: (ListMarker | null)[]): void {
-  for (let i = 1; i < markers.length; i++) {
-    const previous = markers[i - 1];
-    const marker = markers[i];
-    if (previous === null || marker === null) continue;
-    if ((previous.kind === 'lowerRoman' || previous.kind === 'upperRoman') && (marker.kind === 'lowerLetter' || marker.kind === 'upperLetter')) {
-      const raw = marker.kind === 'lowerLetter' ? String.fromCharCode(CHAR_CODE_LOWER_A + marker.value - 1) : String.fromCharCode(CHAR_CODE_UPPER_A + marker.value - 1);
-      const roman = romanValue(raw);
-      if (roman !== null && roman === previous.value + 1) {
-        marker.kind = marker.kind === 'lowerLetter' ? 'lowerRoman' : 'upperRoman';
-        marker.value = roman;
-      }
-    }
+function isLetter(marker: ListMarker): boolean {
+  return marker.kind === 'lowerLetter' || marker.kind === 'upperLetter';
+}
+
+function isRoman(marker: ListMarker): boolean {
+  return marker.kind === 'lowerRoman' || marker.kind === 'upperRoman';
+}
+
+/** The roman value of a single-letter marker ("i" is 1, "v" 5, "x" 10), or null when its letter is no numeral. */
+function letterAsRoman(marker: ListMarker): number | null {
+  const base = marker.kind === 'lowerLetter' ? CHAR_CODE_LOWER_A : CHAR_CODE_UPPER_A;
+  return romanValue(String.fromCharCode(base + marker.value - 1));
+}
+
+function makeRoman(marker: ListMarker, value: number): void {
+  marker.kind = marker.kind === 'lowerLetter' ? 'lowerRoman' : 'upperRoman';
+  marker.value = value;
+}
+
+/**
+ * A roman numeral and a letter share spellings ("i", "v", "x"), so a marker read alone may have the wrong kind. Before
+ * deciding whether `next` continues `previous`, reread the pair the way a roman list needs it: a letter after a roman
+ * numeral that counts on is roman ("iv." then "v."), and a lone first letter before the roman numeral that follows it
+ * is roman too ("i." then "ii."). `previousStartsLevel` says `previous` is the only item of its level so far.
+ */
+export function reconcileLetterAndRoman(previous: ListMarker, next: ListMarker, previousStartsLevel: boolean): void {
+  if (isRoman(previous) && isLetter(next)) {
+    const roman = letterAsRoman(next);
+    if (roman !== null && roman === previous.value + 1) makeRoman(next, roman);
+    return;
+  }
+  if (previousStartsLevel && isLetter(previous) && isRoman(next)) {
+    const roman = letterAsRoman(previous);
+    if (roman !== null && next.value === roman + 1) makeRoman(previous, roman);
   }
 }
