@@ -109,7 +109,8 @@ for field in CapEff CapPrm CapBnd; do
   fi
 done
 if command -v capsh >/dev/null 2>&1; then
-  if capsh --print | grep -qi "cap_sys_admin"; then
+  # Only the capability-set lines count: the IAB line lists excluded capabilities as `!cap_sys_admin`.
+  if capsh --print | grep -E '^(Current:|Bounding set)' | grep -qi "cap_sys_admin"; then
     fail "capsh --print lists cap_sys_admin"
     cap_failed=1
   fi
