@@ -184,7 +184,7 @@ function describeRenderFailure(err: unknown, pageNumber: number): Error {
 export interface PdfPageRenderer {
   plan: RenderPlan;
   /** Draws page `plan.pageNumbers[index]`; the page is not kept after the call returns. */
-  render(index: number): Promise<RenderedOcrPage>;
+  render(index: number, signal?: AbortSignal): Promise<RenderedOcrPage>;
   close(): Promise<void>;
 }
 
@@ -213,7 +213,7 @@ export async function openPdfPageRenderer(
   }
   return {
     plan,
-    async render(index: number): Promise<RenderedOcrPage> {
+    async render(index: number, signal?: AbortSignal): Promise<RenderedOcrPage> {
       const pageNumber = plan.pageNumbers[index];
       const frame = plan.frames[index];
       const expected = renderedSizePixels(frame, plan.dpi);
@@ -227,8 +227,11 @@ export async function openPdfPageRenderer(
           maxFileSize: expected.width * expected.height * RENDER_MAX_BYTES_PER_PIXEL + RENDER_FILE_OVERHEAD_BYTES,
           memoryLimitMb: OCR_RENDER_MEMORY_LIMIT_MB,
           networkIsolated: true,
+          signal,
         });
       } catch (err) {
+        // A render stopped by the job's signal ends with the job's reason, not as a failed page.
+        if (signal?.aborted) throw signal.reason;
         throw describeRenderFailure(err, pageNumber);
       }
       let file: Buffer;

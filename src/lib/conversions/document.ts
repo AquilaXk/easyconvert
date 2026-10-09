@@ -1,3 +1,4 @@
+import { remainingJobMs } from './job-time';
 import { PdfPageFrameError } from './pdf-page-geometry';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
@@ -227,7 +228,8 @@ export async function convertDocument(
           detectOrientation: options.ocrDetectOrientation,
           engineMarkup: options.ocrEngineMarkup,
           parallelBands: STRUCTURED_OCR_TARGETS.has(tgt) ? false : undefined,
-          jobDeadlineMs: options.timeoutMs,
+          jobDeadlineMs: remainingJobMs(options),
+          signal: options.signal,
         });
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.

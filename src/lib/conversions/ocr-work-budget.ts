@@ -57,11 +57,20 @@ export class OcrWorkBudget {
   private pagesRead = 0;
   private readonly cancellation = new AbortController();
 
+  /**
+   * @param jobSignal the job's own signal (its deadline, a cancel): when it fires the document is over like when a page is
+   * refused, so the pages in flight stop and a page not started never starts.
+   */
   constructor(
     private readonly pagesTotal: number,
-    jobDeadlineMs?: number
+    jobDeadlineMs?: number,
+    jobSignal?: AbortSignal
   ) {
     this.limitMs = ocrDocumentBudgetMs(pagesTotal, jobDeadlineMs);
+    if (jobSignal) {
+      if (jobSignal.aborted) this.cancellation.abort(jobSignal.reason);
+      else jobSignal.addEventListener('abort', () => this.cancellation.abort(jobSignal.reason), { once: true });
+    }
   }
 
   private remainingMs(): number {
@@ -93,14 +102,23 @@ export class OcrWorkBudget {
     signal.throwIfAborted();
     const remaining = this.remainingMs();
     let timer: NodeJS.Timeout | undefined;
+    let onOver: (() => void) | undefined;
     try {
       if (remaining <= 0) throw this.documentError();
       const documentIsNearer = remaining <= this.pageLimitMs;
+      // The page also ends when the document is over (a refused page, or the job's own signal), even when its work
+      // does not look at the signal.
+      const over = new Promise<never>((_, reject) => {
+        onOver = () => reject(signal.reason);
+        signal.addEventListener('abort', onOver, { once: true });
+      });
       const expired = new Promise<never>((_, reject) => {
         const delay = Math.min(MAX_TIMER_MS, Math.ceil(documentIsNearer ? remaining : this.pageLimitMs));
         timer = setTimeout(() => reject(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
       });
-      const result = await Promise.race([work(signal), expired]);
+      const pending = work(signal);
+      pending.catch(() => undefined);
+      const result = await Promise.race([pending, expired, over]);
       this.pagesRead++;
       return result;
     } catch (error) {
@@ -108,6 +126,7 @@ export class OcrWorkBudget {
       throw error;
     } finally {
       clearTimeout(timer);
+      if (onOver) signal.removeEventListener('abort', onOver);
     }
   }
 }
