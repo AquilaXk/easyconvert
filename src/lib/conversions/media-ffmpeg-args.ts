@@ -37,6 +37,7 @@ import {
   VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
+import { readWavPcmInfo } from './wav-header';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
@@ -78,7 +79,7 @@ export interface HardwareAccelerationCapabilities {
   vaapi: boolean;
   qsv: boolean;
   videotoolbox: boolean;
-  supportedEncoders: Set<string>;
+  supportedEncoders: ReadonlySet<string>;
   probedAt: number;
 }
 
@@ -100,6 +101,13 @@ export function escapeFfmpegFilterPath(filePath: string): string {
     .replace(/:/g, '\\:')
     .replace(/'/g, "'\\\\''");
 }
+
+/**
+ * Bytes ffmpeg may read to analyse an input whose header already states its audio format (the smallest value it
+ * accepts). Its default analysis reads and decodes up to 5 s of the file before the encoder starts; for an
+ * uncompressed WAVE that only repeats what the header says, so it is skipped and the encoder sees the same samples.
+ */
+const HEADER_DESCRIBED_PROBE_BYTES = 32;
 
 /** Decimals of the input start offset passed to ffmpeg: microseconds, the precision of its timeline. */
 const CHAPTER_OFFSET_DECIMALS = 6;
@@ -124,6 +132,11 @@ export const AV1_ALLOWED_PROFILES = new Set(['main', '0']);
  * lifetime keeps it off the request path; the worker warms it at startup.
  */
 const hwCapabilityCache = new Map<string, HardwareAccelerationCapabilities>();
+/**
+ * The encoders a binary lists, per binary. A conversion that only needs to know whether an encoder exists (every
+ * audio target, the AV1 check) reads this and never opens a hardware session, which costs a process per device.
+ */
+const encoderListCache = new Map<string, { encoders: ReadonlySet<string>; probedAt: number }>();
 const PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
 /** A child that ignores SIGTERM must not outlive its probe timeout. */
 const PROBE_KILL_SIGNAL = 'SIGKILL';
@@ -196,6 +209,39 @@ export function usesHardwareVideoEncoder(args: readonly string[]): boolean {
 
 export function resetHardwareAccelerationCache(): void {
   hwCapabilityCache.clear();
+  encoderListCache.clear();
+}
+
+/** Names of the encoders `ffmpeg -encoders` lists, cached per binary; empty when the binary cannot be run. */
+export function probeSupportedEncoders(ffmpegPath: string | null | undefined): ReadonlySet<string> {
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
+    // Not cached: a binary installed later must be seen at once, and this check costs one stat.
+    return new Set<string>();
+  }
+  const now = Date.now();
+  const cached = encoderListCache.get(ffmpegPath);
+  if (cached && now - cached.probedAt < PROBE_CACHE_TTL_MS) {
+    return cached.encoders;
+  }
+  const encoders = new Set<string>();
+  try {
+    const output = execFileSync(ffmpegPath, ['-hide_banner', '-encoders'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: ENCODER_LIST_TIMEOUT_MS,
+      killSignal: PROBE_KILL_SIGNAL,
+    });
+    for (const line of output.split('\n')) {
+      const match = line.match(ENCODER_LISTING_LINE);
+      if (match) {
+        encoders.add(match[1]);
+      }
+    }
+  } catch {
+    // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
+  }
+  encoderListCache.set(ffmpegPath, { encoders, probedAt: now });
+  return encoders;
 }
 
 /**
@@ -227,55 +273,36 @@ export function probeHardwareAcceleration(
     return defaultCaps;
   }
 
-  try {
-    const output = execFileSync(ffmpegPath, ['-hide_banner', '-encoders'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: ENCODER_LIST_TIMEOUT_MS,
-      killSignal: PROBE_KILL_SIGNAL,
-    });
+  const supported = probeSupportedEncoders(ffmpegPath);
 
-    const supported = new Set<string>();
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const match = line.match(ENCODER_LISTING_LINE);
-      if (match) {
-        supported.add(match[1]);
-      }
-    }
+  const vaapiDevice = VAAPI_DEVICES.find((device) => fs.existsSync(device));
+  const isDarwin = process.platform === 'darwin';
+  // QSV needs a DRM render node and a session that really opens, not just a compiled-in encoder.
+  const qsvEncoder = QSV_ENCODERS.find((enc) => supported.has(enc));
+  const qsv =
+    qsvEncoder !== undefined &&
+    hasDrmRenderNode(env.drmDir ?? DRM_DEVICE_DIR) &&
+    canOpenEncoderSession(ffmpegPath, qsvEncoder);
+  // NVENC and VAAPI are also only usable when a session really opens (no GPU, no driver, no libcuda).
+  const nvencEncoder = NVENC_ENCODERS.find((enc) => supported.has(enc));
+  const nvenc = nvencEncoder !== undefined && canOpenEncoderSession(ffmpegPath, nvencEncoder);
+  const vaapiEncoder = VAAPI_ENCODERS.find((enc) => supported.has(enc));
+  const vaapi =
+    vaapiEncoder !== undefined &&
+    vaapiDevice !== undefined &&
+    canOpenEncoderSession(ffmpegPath, vaapiEncoder, ['-vaapi_device', vaapiDevice], VAAPI_UPLOAD_FILTER);
 
-    const vaapiDevice = VAAPI_DEVICES.find((device) => fs.existsSync(device));
-    const isDarwin = process.platform === 'darwin';
-    // QSV needs a DRM render node and a session that really opens, not just a compiled-in encoder.
-    const qsvEncoder = QSV_ENCODERS.find((enc) => supported.has(enc));
-    const qsv =
-      qsvEncoder !== undefined &&
-      hasDrmRenderNode(env.drmDir ?? DRM_DEVICE_DIR) &&
-      canOpenEncoderSession(ffmpegPath, qsvEncoder);
-    // NVENC and VAAPI are also only usable when a session really opens (no GPU, no driver, no libcuda).
-    const nvencEncoder = NVENC_ENCODERS.find((enc) => supported.has(enc));
-    const nvenc = nvencEncoder !== undefined && canOpenEncoderSession(ffmpegPath, nvencEncoder);
-    const vaapiEncoder = VAAPI_ENCODERS.find((enc) => supported.has(enc));
-    const vaapi =
-      vaapiEncoder !== undefined &&
-      vaapiDevice !== undefined &&
-      canOpenEncoderSession(ffmpegPath, vaapiEncoder, ['-vaapi_device', vaapiDevice], VAAPI_UPLOAD_FILTER);
+  const caps: HardwareAccelerationCapabilities = {
+    nvenc,
+    vaapi,
+    qsv,
+    videotoolbox: isDarwin && (supported.has('h264_videotoolbox') || supported.has('hevc_videotoolbox')),
+    supportedEncoders: supported,
+    probedAt: now,
+  };
 
-    const caps: HardwareAccelerationCapabilities = {
-      nvenc,
-      vaapi,
-      qsv,
-      videotoolbox: isDarwin && (supported.has('h264_videotoolbox') || supported.has('hevc_videotoolbox')),
-      supportedEncoders: supported,
-      probedAt: now,
-    };
-
-    hwCapabilityCache.set(cacheKey, caps);
-    return caps;
-  } catch {
-    hwCapabilityCache.set(cacheKey, defaultCaps);
-    return defaultCaps;
-  }
+  hwCapabilityCache.set(cacheKey, caps);
+  return caps;
 }
 
 const VIDEO_CODECS: ReadonlySet<string> = new Set(['h264', 'hevc', 'vp9', 'av1', 'prores']);
@@ -465,7 +492,7 @@ function resolveSvtAv1Preset(requested: string | undefined): string {
 /** SVT-AV1 writes every AV1 target; a build without it answers 503 instead of failing mid-encode. */
 function assertSvtAv1Available(ffmpegBin: string | null | undefined): void {
   if (!ffmpegBin) return;
-  const supported = probeHardwareAcceleration(ffmpegBin).supportedEncoders;
+  const supported = probeSupportedEncoders(ffmpegBin);
   if (supported.size > 0 && !supported.has(SVT_AV1_ENCODER)) {
     throw new EngineUnavailableError('ffmpeg', `this build has no '${SVT_AV1_ENCODER}' encoder, so AV1 video cannot be written`);
   }
@@ -795,6 +822,9 @@ export function buildFfmpegArguments(
   }
   if (options.trim?.end) {
     inputArgs.push('-to', options.trim.end);
+  }
+  if (isAudioOnlyTarget(tgt) && readWavPcmInfo(inputPath) !== null) {
+    inputArgs.push('-probesize', String(HEADER_DESCRIBED_PROBE_BYTES));
   }
   inputArgs.push('-i', inputPath);
 
@@ -1341,7 +1371,7 @@ export function buildFfmpegArguments(
   }
 
   if (audioSpec && ffmpegBin) {
-    assertEncoderAvailable(tgt, resolvedAudioCodec, probeHardwareAcceleration(ffmpegBin).supportedEncoders);
+    assertEncoderAvailable(tgt, resolvedAudioCodec, probeSupportedEncoders(ffmpegBin));
   }
 
   outputArgs.push('-c:a', resolvedAudioCodec);
