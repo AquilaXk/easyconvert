@@ -2,22 +2,16 @@
   "schemaVersion": 1,
   "gaps": [
     {
-      "id": "audio/music.wav->aac/throughput",
-      "issue": 642,
-      "ratio": 0.64,
-      "note": "speed ratio 0.64 or below when recorded (baseline 0.64, measured 0.98): ours is slower than the reference tool"
-    },
-    {
       "id": "audio/music.wav->flac/throughput",
       "issue": 642,
-      "ratio": 0.94,
-      "note": "speed ratio 0.94 or below when recorded (baseline 0.95, measured 0.97): ours is slower than the reference tool"
+      "ratio": 0.95,
+      "note": "speed ratio 0.95 or below when recorded on the CI runner (previous record 0.94): ours is slower than the reference tool"
     },
     {
       "id": "audio/music.wav->opus/throughput",
       "issue": 642,
-      "ratio": 0.41,
-      "note": "speed ratio 0.41 or below when recorded (baseline 0.42, measured 0.61): ours is slower than the reference tool"
+      "ratio": 0.6,
+      "note": "speed ratio 0.6 or below when recorded on the CI runner (previous record 0.41): ours is slower than the reference tool"
     },
     {
       "id": "audio/speech.wav->aac/throughput",
@@ -34,44 +28,38 @@
     {
       "id": "audio/speech.wav->opus/throughput",
       "issue": 642,
-      "ratio": 0.57,
-      "note": "speed ratio 0.57 or below when recorded (baseline 0.57, measured 0.77): ours is slower than the reference tool"
+      "ratio": 0.75,
+      "note": "speed ratio 0.75 or below when recorded on the CI runner (previous record 0.57): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.7z->tar/throughput",
       "issue": 487,
-      "ratio": 0.47,
-      "note": "speed ratio 0.47 or below when recorded (baseline 0.58, measured 0.47): ours is slower than the reference tool"
+      "ratio": 0.54,
+      "note": "speed ratio 0.54 or below when recorded on the CI runner (previous record 0.47): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.tar->7z/throughput",
       "issue": 487,
-      "ratio": 0.75,
-      "note": "speed ratio 0.75 or below when recorded (baseline 0.79, measured 0.75): ours is slower than the reference tool"
+      "ratio": 0.79,
+      "note": "speed ratio 0.79 or below when recorded on the CI runner (previous record 0.75): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.tar->zst/throughput",
       "issue": 497,
-      "ratio": 0.46,
-      "note": "speed ratio 0.46 or below when recorded (baseline 0.85, measured 0.46): ours is slower than the reference tool"
-    },
-    {
-      "id": "compression/mixed.zst->tar/throughput",
-      "issue": 651,
-      "ratio": 0.92,
-      "note": "Near parity, still undecidable after batching five calls per sample: speed ratio 0.93 [0.89, 1.02] over 25 pairs when recorded locally (baseline 1.44)"
+      "ratio": 0.5,
+      "note": "speed ratio 0.5 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool"
     },
     {
       "id": "compression/mixed.xz->tar/throughput",
       "issue": 487,
-      "ratio": 0.46,
-      "note": "speed ratio 0.46 or below when recorded (baseline 0.46, measured 0.46): ours is slower than the reference tool"
+      "ratio": 0.49,
+      "note": "speed ratio 0.49 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->avif/throughput",
       "issue": 641,
-      "ratio": 0.06,
-      "note": "speed ratio 0.06 or below when recorded (baseline 0.073, measured 0.067): ours is slower than the reference tool"
+      "ratio": 0.05,
+      "note": "speed ratio 0.05 or below when recorded on the CI runner (previous record 0.06): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->jpg/bd_rate_psnr",
@@ -88,50 +76,44 @@
     {
       "id": "image/lineart.png->jpg/throughput",
       "issue": 641,
-      "ratio": 0.27,
-      "note": "speed ratio 0.27 or below when recorded (baseline 0.29, measured 0.27): ours is slower than the reference tool"
+      "ratio": 0.24,
+      "note": "speed ratio 0.24 or below when recorded on the CI runner (previous record 0.27): ours is slower than the reference tool"
     },
     {
       "id": "image/lineart.png->webp/throughput",
       "issue": 641,
-      "ratio": 0.36,
-      "note": "speed ratio 0.36 or below when recorded (baseline 0.37, measured 0.43): ours is slower than the reference tool"
+      "ratio": 0.39,
+      "note": "speed ratio 0.39 or below when recorded on the CI runner (previous record 0.36): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-a.jpg->avif/throughput",
       "issue": 641,
-      "ratio": 0.83,
-      "note": "speed ratio 0.83 or below when recorded (baseline 0.85, measured 0.83): ours is slower than the reference tool"
+      "ratio": 0.82,
+      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-a.jpg->jpg/throughput",
       "issue": 641,
-      "ratio": 0.54,
-      "note": "speed ratio 0.54 or below when recorded (baseline 0.63, measured 0.54): ours is slower than the reference tool"
-    },
-    {
-      "id": "image/photo-a.jpg->webp/throughput",
-      "issue": 641,
-      "ratio": 0.89,
-      "note": "speed ratio 0.89 or below when recorded (baseline 0.96, measured 0.89): ours is slower than the reference tool"
+      "ratio": 0.57,
+      "note": "speed ratio 0.57 or below when recorded on the CI runner (previous record 0.54): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->avif/throughput",
       "issue": 641,
-      "ratio": 0.64,
-      "note": "speed ratio 0.64 or below when recorded (baseline 0.64, measured 0.72): ours is slower than the reference tool"
+      "ratio": 0.62,
+      "note": "speed ratio 0.62 or below when recorded on the CI runner (previous record 0.64): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->jpg/throughput",
       "issue": 641,
-      "ratio": 0.48,
-      "note": "speed ratio 0.48 or below when recorded (baseline 0.48, measured 0.5): ours is slower than the reference tool"
+      "ratio": 0.44,
+      "note": "speed ratio 0.44 or below when recorded on the CI runner (previous record 0.48): ours is slower than the reference tool"
     },
     {
       "id": "image/photo-b.png->webp/throughput",
       "issue": 641,
-      "ratio": 0.79,
-      "note": "speed ratio 0.79 or below when recorded (baseline 0.83, measured 0.79): ours is slower than the reference tool"
+      "ratio": 0.78,
+      "note": "speed ratio 0.78 or below when recorded on the CI runner (previous record 0.79): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->avif/bd_rate_ssim",
@@ -160,20 +142,20 @@
     {
       "id": "image/screenshot.png->avif/throughput",
       "issue": 641,
-      "ratio": 0.43,
-      "note": "speed ratio 0.43 or below when recorded (baseline 0.44, measured 0.44): ours is slower than the reference tool"
+      "ratio": 0.32,
+      "note": "speed ratio 0.32 or below when recorded on the CI runner (previous record 0.43): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->jpg/throughput",
       "issue": 641,
-      "ratio": 0.25,
-      "note": "speed ratio 0.25 or below when recorded (baseline 0.26, measured 0.27): ours is slower than the reference tool"
+      "ratio": 0.24,
+      "note": "speed ratio 0.24 or below when recorded on the CI runner (previous record 0.25): ours is slower than the reference tool"
     },
     {
       "id": "image/screenshot.png->webp/throughput",
       "issue": 641,
-      "ratio": 0.27,
-      "note": "speed ratio 0.27 or below when recorded (baseline 0.28, measured 0.32): ours is slower than the reference tool"
+      "ratio": 0.29,
+      "note": "speed ratio 0.29 or below when recorded on the CI runner (previous record 0.27): ours is slower than the reference tool"
     },
     {
       "id": "ocr/scan.png->pdf/throughput",
@@ -184,20 +166,20 @@
     {
       "id": "video/clip.mp4->h264/throughput",
       "issue": 643,
-      "ratio": 0.35,
-      "note": "speed ratio 0.35 or below when recorded (baseline 0.36, measured 0.39): ours is slower than the reference tool"
+      "ratio": 0.39,
+      "note": "speed ratio 0.39 or below when recorded on the CI runner (previous record 0.35): ours is slower than the reference tool"
     },
     {
       "id": "video/clip.mp4->hevc/throughput",
       "issue": 643,
-      "ratio": 0.52,
-      "note": "speed ratio 0.52 or below when recorded (baseline 0.53, measured 0.58): ours is slower than the reference tool"
+      "ratio": 0.56,
+      "note": "speed ratio 0.56 or below when recorded on the CI runner (previous record 0.52): ours is slower than the reference tool"
     },
     {
       "id": "video/clip.mp4->vp9/throughput",
       "issue": 643,
-      "ratio": 0.66,
-      "note": "speed ratio 0.66 or below when recorded (baseline 0.67, measured 0.73): ours is slower than the reference tool"
+      "ratio": 0.72,
+      "note": "speed ratio 0.72 or below when recorded on the CI runner (previous record 0.66): ours is slower than the reference tool"
     }
   ]
 }
