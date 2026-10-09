@@ -2929,6 +2929,48 @@ export function getAvailableTargetFormats(sourceFormatId: string): FormatDefinit
     .filter((def): def is FormatDefinition => Boolean(def) && def.available !== false);
 }
 
+/** ISO base media `ftyp` box layout (ISO/IEC 14496-12 section 4.3): size, type, major brand, minor version, compatible brands. */
+const FTYP_MAJOR_BRAND_OFFSET = 8;
+const FTYP_COMPATIBLE_BRANDS_OFFSET = 16;
+const FTYP_BRAND_BYTES = 4;
+/** A box size of 0 extends the box to the end of the file. */
+const BOX_SIZE_TO_END = 0;
+/** AV1 image file format brands: still image and image sequence. */
+const AVIF_BRANDS = new Set(['avif', 'avis']);
+/** HEVC-coded HEIF brands (ISO/IEC 23008-12 Annex B): images, image sequences and their extended-range variants. */
+const HEVC_IMAGE_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
+/** Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item and image sequence. */
+const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'msf1']);
+
+/** Reads the major and compatible brands of the `ftyp` box at the start of the buffer, bounded by the box and the buffer. */
+function readFtypBrands(buf: Buffer): { major: string; compatible: string[] } {
+  const major = buf.toString('ascii', FTYP_MAJOR_BRAND_OFFSET, FTYP_MAJOR_BRAND_OFFSET + FTYP_BRAND_BYTES);
+  const declaredSize = buf.readUInt32BE(0);
+  const boxEnd = declaredSize === BOX_SIZE_TO_END ? buf.length : Math.min(declaredSize, buf.length);
+  const compatible: string[] = [];
+  for (let offset = FTYP_COMPATIBLE_BRANDS_OFFSET; offset + FTYP_BRAND_BYTES <= boxEnd; offset += FTYP_BRAND_BYTES) {
+    compatible.push(buf.toString('ascii', offset, offset + FTYP_BRAND_BYTES));
+  }
+  return { major, compatible };
+}
+
+/**
+ * Classifies an ISO base media file by its brands. The major brand decides first; otherwise an AV1 or HEVC image
+ * brand among the compatible brands decides, then a codec-neutral HEIF brand. Every other brand is audio or video.
+ */
+function sniffIsoBaseMediaBrands(buf: Buffer): string {
+  const { major, compatible } = readFtypBrands(buf);
+  if (major.startsWith('M4A') || major.startsWith('M4B')) return 'audio/mp4';
+  if (AVIF_BRANDS.has(major)) return 'image/avif';
+  if (HEVC_IMAGE_BRANDS.has(major)) return 'image/heic';
+  if (compatible.some((brand) => AVIF_BRANDS.has(brand))) return 'image/avif';
+  if (compatible.some((brand) => HEVC_IMAGE_BRANDS.has(brand))) return 'image/heic';
+  if (HEIF_STRUCTURAL_BRANDS.has(major) || compatible.some((brand) => HEIF_STRUCTURAL_BRANDS.has(brand))) {
+    return 'image/heif';
+  }
+  return 'video/mp4';
+}
+
 /**
  * Authentic initial-byte MIME magic sniffing for common binary formats.
  * Analyzes magic byte signatures to detect format families accurately,
@@ -3160,7 +3202,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'audio/mpeg';
   }
 
-  // 18. MP4 / MOV / M4A (ftyp)
+  // 18. ISO base media (ftyp): AVIF / HEIF images, MP4 / MOV / M4A
   if (
     buf.length >= 12 &&
     buf[4] === 0x66 &&
@@ -3168,9 +3210,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     buf[6] === 0x79 &&
     buf[7] === 0x70
   ) {
-    const brand = buf.toString('ascii', 8, 12);
-    if (brand.startsWith('M4A') || brand.startsWith('M4B')) return 'audio/mp4';
-    return 'video/mp4';
+    return sniffIsoBaseMediaBrands(buf);
   }
 
   // 19. Fonts
@@ -3283,6 +3323,8 @@ export function isFormatCompatibleWithMagicBytes(
   const flacFormats = new Set(['flac']);
   const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
   const mp4Formats = new Set(['mp4', 'm4a', 'm4b', 'm4v', 'mov', '3gp', '3gpp', '3g2', 'f4v', 'cr3']);
+  const avifFormats = new Set(['avif']);
+  const heifFormats = new Set(['heic', 'heif']);
   const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
   const webmFormats = new Set(['webm', 'weba']);
   const aviFormats = new Set(['avi']);
@@ -3402,6 +3444,8 @@ export function isFormatCompatibleWithMagicBytes(
   if (sniffed === 'audio/flac') return flacFormats.has(cleanExt);
   if (sniffed === 'audio/ogg') return oggFormats.has(cleanExt);
   if (sniffed === 'video/mp4' || sniffed === 'audio/mp4') return mp4Formats.has(cleanExt);
+  if (sniffed === 'image/avif') return avifFormats.has(cleanExt);
+  if (sniffed === 'image/heic' || sniffed === 'image/heif') return heifFormats.has(cleanExt);
   if (sniffed === 'video/webm') return webmFormats.has(cleanExt) || cleanExt === 'mkv';
   if (sniffed === 'video/x-matroska') return mkvFormats.has(cleanExt) || cleanExt === 'webm';
   if (sniffed === 'audio/x-matroska') return cleanExt === 'mka' || mkvFormats.has(cleanExt);
