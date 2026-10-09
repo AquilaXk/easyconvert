@@ -2066,6 +2066,9 @@ const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
 const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
 const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
+/** Sources whose load failure LibreOffice reports on stderr (an encrypted or damaged workbook) instead of writing nothing. */
+const LIBREOFFICE_LOAD_FAILURE_SOURCES: ReadonlySet<string> = new Set(['xls']);
+const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded/;
 
 /** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package (files too big to hold in memory go straight to LibreOffice). */
 async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: string): Promise<void> {
@@ -2083,6 +2086,9 @@ async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: strin
 function asUnreadableDocument(err: unknown, src: string): unknown {
   if (LIBREOFFICE_ONLY_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+  }
+  if (LIBREOFFICE_LOAD_FAILURE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
   }
   return err;
 }
