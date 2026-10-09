@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { requireOracleTool } from './differential-oracle';
 
 /**
  * Byte-level tar builder for hostile fixtures that a tar tool would refuse to write: a header whose magic or prefix
@@ -68,12 +69,14 @@ export interface PythonTarEntry {
   type: string;
   size: number;
   mode: number;
+  /** The header's modification time in whole seconds (ustar resolution). */
+  mtime: number;
 }
 
 const PY_LIST = [
   'import sys, json, tarfile, io',
   'with tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read()), ignore_zeros=sys.argv[1] == "1") as t:',
-  '    print(json.dumps([{"name": m.name, "type": m.type.decode(), "size": m.size, "mode": m.mode} for m in t]))',
+  '    print(json.dumps([{"name": m.name, "type": m.type.decode(), "size": m.size, "mode": m.mode, "mtime": int(m.mtime)} for m in t]))',
 ].join('\n');
 
 const PY_MEMBER = [
@@ -87,10 +90,10 @@ const PY_MEMBER = [
  * joins archives does, so data hidden behind the terminator shows up.
  */
 export function pythonTarEntries(tar: Buffer, options: { ignoreZeros?: boolean } = {}): PythonTarEntry[] {
-  const out = execFileSync('python3', ['-c', PY_LIST, options.ignoreZeros ? '1' : '0'], { input: tar, encoding: 'utf8', maxBuffer: READ_BUFFER_BYTES });
+  const out = execFileSync(requireOracleTool('python3'), ['-c', PY_LIST, options.ignoreZeros ? '1' : '0'], { input: tar, encoding: 'utf8', maxBuffer: READ_BUFFER_BYTES });
   return JSON.parse(out) as PythonTarEntry[];
 }
 
 export function pythonTarMember(tar: Buffer, name: string): Buffer {
-  return execFileSync('python3', ['-c', PY_MEMBER, name], { input: tar, maxBuffer: READ_BUFFER_BYTES });
+  return execFileSync(requireOracleTool('python3'), ['-c', PY_MEMBER, name], { input: tar, maxBuffer: READ_BUFFER_BYTES });
 }

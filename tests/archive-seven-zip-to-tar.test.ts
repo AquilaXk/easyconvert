@@ -7,6 +7,7 @@ import { convertWithNative7z } from '../src/worker/engines';
 import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { build7zEncrypted, build7zFromStagedLinks, build7zZeroBomb, createHostileWorkspace, type HostileWorkspace } from './helpers/hostile-archives';
+import { pythonTarEntries } from './helpers/hostile-tar';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
 
@@ -169,12 +170,19 @@ describe('7z to tar keeps names, modes, sizes, times and bytes, from one stream-
         expect(listed.map((entry) => entry.name)).toEqual(expected.map((entry) => entry.path));
         expect(listed.map((entry) => entry.mode)).toEqual(expected.map((entry) => entry.mode));
 
+        // A directory's mtime is read from its tar header, not from the extracted tree: an extractor stamps a directory
+        // when it meets the entry and again once the directory's last member is written, and in this archive order
+        // (7-Zip lists directories ahead of files) GNU tar flushes the stamp too early, so the extracted directory
+        // carries the extraction time. The header holds whole seconds, the resolution of ustar.
+        const headerMtimes = new Map(pythonTarEntries(result.buffer).map((member) => [member.name.replace(/\/$/, ''), member.mtime]));
         const extracted = extractTar(result.buffer, layout.label.replace(/\W+/g, '-'));
         for (const entry of expected) {
           const stat = fs.statSync(path.join(extracted, entry.path));
           expect(stat.isDirectory(), entry.path).toBe(entry.isDirectory);
-          expect(Math.round(stat.mtimeMs), entry.path).toBe(entry.modifiedMs);
-          if (!entry.isDirectory) {
+          if (entry.isDirectory) {
+            expect(headerMtimes.get(entry.path), entry.path).toBe(Math.floor(entry.modifiedMs / 1000));
+          } else {
+            expect(Math.round(stat.mtimeMs), entry.path).toBe(entry.modifiedMs);
             expect(stat.size, entry.path).toBe(entry.size);
           }
         }
