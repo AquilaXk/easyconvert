@@ -468,3 +468,14 @@ describe('malformed and hostile records fail with typed errors', () => {
     expect((failure as Error).message).toBe('Invalid HWP document: a numbering record is cut off inside its level formats.');
   });
 });
+
+describe('HWP field command arguments', () => {
+  it('reads the first argument and turns an escaped semicolon into a semicolon inside it', async () => {
+    const { firstFieldArgument } = await import('../src/lib/conversions/hwp-reader');
+    expect(firstFieldArgument('https://example.org/a;1;0;')).toBe('https://example.org/a');
+    expect(firstFieldArgument('https://example.org/a\\;b=c;1;')).toBe('https://example.org/a;b=c');
+    expect(firstFieldArgument('no-separator')).toBe('no-separator');
+    expect(firstFieldArgument(';empty-first')).toBe('');
+    expect(firstFieldArgument('trailing\\')).toBe('trailing\\');
+  });
+});

@@ -272,6 +272,24 @@ interface TextRun {
 }
 
 /** Stateful reader of the section streams of one document. */
+
+/** The first ";"-separated argument of a field command ("target;type;..."), where "\\;" stands for a ";" in the target. */
+export function firstFieldArgument(command: string): string {
+  let out = '';
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (char === '\\' && command[i + 1] === ';') {
+      out += ';';
+      i++;
+    } else if (char === ';') {
+      break;
+    } else {
+      out += char;
+    }
+  }
+  return out;
+}
+
 class HwpModelReader {
   readonly context = new DocumentContext();
   readonly body = new BlockSink(this.context);
@@ -592,9 +610,7 @@ class HwpModelReader {
     if (payload.length < FIELD_COMMAND_OFFSET) return undefined;
     const command = utf16String(payload, FIELD_COMMAND_OFFSET, payload.readUInt16LE(FIELD_COMMAND_LENGTH_OFFSET));
     if (command === undefined) return undefined;
-    // "target;type;..." with ";" inside the target written as "\;".
-    const target = command.replace(/\\;/g, '\u0000').split(';')[0].replace(/\u0000/g, ';');
-    return safeHref(target);
+    return safeHref(firstFieldArgument(command));
   }
 
   private styled(text: string, shapeId: number, href: string | undefined): Inline {
