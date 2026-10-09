@@ -31,7 +31,7 @@ import { corpusFileHash, harnessHash } from './harness-hash';
 import { evaluateParity, failureLines, type ParityRunFile, type ParityScope, renderParityMarkdown, renderParityText } from './parity';
 import { readGaps } from './parity-gaps';
 import { ReferenceCache, sha256Hex } from './ref-cache';
-import { type BenchReport, type BenchRow, FAMILIES, type Family, renderMarkdown, validateReport } from './report';
+import { type BenchReport, type BenchRow, FAMILIES, type Family, renderMarkdown, reportSource, validateReport } from './report';
 import { rowInScope } from './scope';
 import { defaultResolver, LIBVMAF_PSEUDO_TOOL, toolVersion } from './tools';
 
@@ -236,6 +236,7 @@ async function measureAll(options: CliOptions, strict: boolean): Promise<BenchRe
       host: { platform: os.platform(), arch: os.arch(), node: process.version, cpus: os.cpus().length },
       tools: toolsOf(resolve),
       settings: { runs: options.runs, injectedRegression: options.injection },
+      ...(reportSource(process.env) ? { source: reportSource(process.env) } : {}),
       rows,
     });
   } finally {

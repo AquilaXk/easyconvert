@@ -1,9 +1,9 @@
-import { GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
+import { GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
-import { predictionLowerBound } from './speed-history';
+import { speedGapThreshold } from './speed-history';
 
 /**
  * Reference-parity verdict. Every measured row must be at or above the reference tool; the row's own tolerance is the
@@ -128,7 +128,7 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   const interval =
     row.ratioLow !== undefined && row.ratioHigh !== undefined ? `speed ratio ${show(row.ratioMedian ?? row.ratio ?? NaN)} [${show(row.ratioLow)}, ${show(row.ratioHigh)}] over ${row.runs ?? '?'} pairs` : `speed ratio ${show(row.ratio ?? NaN)}`;
   const none = { worsening: null, allowance: null };
-  const tracked = gap !== null && gap.ratio !== null ? { issue: gap.issue, history: (gap.history ?? []).map((point) => point.ratio) } : null;
+  const tracked = gap !== null && gap.ratio !== null ? { issue: gap.issue, recorded: gap.ratio, history: (gap.history ?? []).map((point) => point.ratio) } : null;
   if (row.speedVerdict === 'pass') {
     if (tracked) {
       return { outcome: 'pass', basis: 'tracked-now-at-parity', detail: `${interval}; now at parity: remove ${row.id} from bench/parity-gaps.json (issue #${tracked.issue})`, ...none };
@@ -136,22 +136,34 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
     return { outcome: 'pass', basis: 'speed-pass', detail: `${interval}; the lower bound is at least ${show(line)}`, ...none };
   }
   if (tracked) {
-    const bound = predictionLowerBound(tracked.history);
+    // The history stores the median of each run, so the median is what is compared; the interval only decides whether the
+    // row passes the normal rule. A run unstable at the cap is judged the same way: its median still counts.
+    const median = row.ratioMedian ?? row.ratio ?? 0;
+    const threshold = speedGapThreshold(tracked.history, tracked.recorded);
+    const share = `${show(SPEED_GAP_FLOOR * 100)}%`;
+    const confidence = `${show(SPEED_HISTORY_CONFIDENCE * 100)}%`;
+    const floor = `${share} of the latest recorded median ${show(threshold.latest)} (${show(threshold.floor)})`;
+    const bound = threshold.bound;
+    let limit: string;
+    if (bound === null) {
+      limit = `${floor}, the only limit while the history has ${tracked.history.length} of the ${SPEED_HISTORY_MIN_POINTS} CI-measured runs a bound needs`;
+    } else if (bound.lower >= threshold.floor) {
+      limit = `the ${confidence} one-sided prediction bound ${show(bound.lower)} over the last ${bound.points} CI runs (geometric mean ${show(bound.centre)})`;
+    } else {
+      limit = `${floor}, which is above the ${confidence} one-sided prediction bound ${show(bound.lower)} over the last ${bound.points} CI runs`;
+    }
+    if (median < threshold.lower) {
+      return { outcome: 'fail', basis: 'tracked-slower-than-gap', detail: `${interval}; tracked (issue #${tracked.issue}), but its median ${show(median)} is below ${limit}: it got slower than its history`, ...none };
+    }
     if (bound === null) {
       return {
         outcome: 'pass',
         basis: 'tracked-short-history',
-        detail: `${interval}; below the reference, tracked (issue #${tracked.issue}) with ${tracked.history.length} of the ${SPEED_HISTORY_MIN_POINTS} CI-measured runs a bound needs: reported, not gated`,
+        detail: `${interval}; below the reference, tracked (issue #${tracked.issue}) with ${tracked.history.length} of the ${SPEED_HISTORY_MIN_POINTS} CI-measured runs a bound needs: judged by ${floor}`,
         ...none,
       };
     }
-    const confidence = `${show(SPEED_HISTORY_CONFIDENCE * 100)}%`;
-    const upper = row.ratioHigh ?? row.ratio ?? 0;
-    const history = `the ${confidence} one-sided prediction bound ${show(bound.lower)} over the last ${bound.points} CI runs (geometric mean ${show(bound.centre)})`;
-    if (upper < bound.lower) {
-      return { outcome: 'fail', basis: 'tracked-slower-than-gap', detail: `${interval}; tracked (issue #${tracked.issue}), but the upper bound is below ${history}: it got slower than its history`, ...none };
-    }
-    return { outcome: 'pass', basis: 'tracked-gap', detail: `${interval}; below the reference, tracked (issue #${tracked.issue}), not below ${history}`, ...none };
+    return { outcome: 'pass', basis: 'tracked-gap', detail: `${interval}; below the reference, tracked (issue #${tracked.issue}), median not below ${limit}`, ...none };
   }
   if (row.unstableAtCap) {
     return { outcome: 'fail', basis: 'speed-unstable-at-cap', detail: `${interval}; the interval still straddled ${show(line)} at the cap on pairs, which counts as a failure`, ...none };

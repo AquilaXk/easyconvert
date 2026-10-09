@@ -67,6 +67,22 @@ export interface BenchRow {
   skipReason?: string;
 }
 
+/** The workflow run a report was measured by; absent from a report measured outside a workflow. */
+export interface ReportSource {
+  commit: string;
+  branch: string;
+  event: string;
+}
+
+/** The commit, branch and event of the workflow run in `env`, or undefined outside one. A pull request run names its head branch. */
+export function reportSource(env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>): ReportSource | undefined {
+  const commit = env.GITHUB_SHA;
+  const branch = env.GITHUB_HEAD_REF || env.GITHUB_REF_NAME;
+  const event = env.GITHUB_EVENT_NAME;
+  if (!commit || !branch || !event) return undefined;
+  return { commit, branch, event };
+}
+
 export interface BenchReport {
   schemaVersion: number;
   generatedAt: string;
@@ -76,6 +92,8 @@ export interface BenchReport {
   /** Version line of each reference tool, or null when it is not installed. */
   tools: Record<string, string | null>;
   settings: { runs: number; injectedRegression: string | null };
+  /** Commit, branch and event of the CI run that measured it. */
+  source?: ReportSource;
   rows: BenchRow[];
 }
 
@@ -165,6 +183,11 @@ function validateRow(value: unknown, index: number): BenchRow {
   return parsed;
 }
 
+function validateSource(value: unknown): ReportSource {
+  const source = record(value, 'source');
+  return { commit: str(source.commit, 'source.commit'), branch: str(source.branch, 'source.branch'), event: str(source.event, 'source.event') };
+}
+
 /** Validates an unknown JSON value as a report; throws ReportSchemaError naming the offending path. */
 export function validateReport(value: unknown): BenchReport {
   const obj = record(value, 'report');
@@ -202,6 +225,7 @@ export function validateReport(value: unknown): BenchReport {
     },
     tools: toolVersions,
     settings: { runs: finiteNumber(settings.runs, 'settings.runs'), injectedRegression: injected as string | null },
+    ...(obj.source === undefined ? {} : { source: validateSource(obj.source) }),
     rows,
   };
 }

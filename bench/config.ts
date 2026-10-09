@@ -92,14 +92,36 @@ export const SPEED_MAX_SAMPLE_REPEATS = 1000;
 
 /**
  * Tracked gaps (bench/parity-gaps.json) keep the speed ratios of the latest CI-measured runs per row. A tracked row
- * fails when its new ratio is below what that history predicts: the upper bound of the new interval under the lower
- * edge of a one-sided Student's t prediction bound (bench/speed-history.ts).
+ * fails when its median speed ratio is below what that history predicts (the lower edge of a one-sided Student's t
+ * prediction bound, bench/speed-history.ts) or below a fixed share of its latest recorded median, whichever is higher.
  */
 export const SPEED_HISTORY_MAX_POINTS = 10;
-/** Fewer points than this and the bound is reported but does not fail the row. */
+/** Fewer points than this and there is no prediction bound; the fixed share of the latest median is the only limit. */
 export const SPEED_HISTORY_MIN_POINTS = 3;
-/** One-sided confidence of the prediction bound. The t quantiles in bench/speed-history.ts are for this level. */
+/** One-sided confidence of the prediction bound. The t quantiles in bench/speed-history.ts are for this level only. */
 export const SPEED_HISTORY_CONFIDENCE = 0.99;
+/**
+ * A tracked row fails when its median falls below this share of its latest recorded median, whatever the spread of its
+ * history. The prediction bound alone admits a large slowdown once a history spans a step or a noisy week; this floor is
+ * the limit of the damage. The spread of CI runs of unchanged code is about 7 percent (standard deviation of the log
+ * ratio of one run, 0.10 between two runs over 32 rows of two nightly runs), and no row of those two runs fell by more
+ * than 6.2 percent, so a drop of 15 percent is outside what the runner does to unchanged code on most nights.
+ */
+export const SPEED_GAP_FLOOR = 0.85;
+/**
+ * Smallest spread (standard deviation of the log ratios) the step test assumes of a history, so a history of near-equal
+ * points does not call every small rise a step. It is the per-run spread measured on the runner (see SPEED_GAP_FLOOR).
+ */
+export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.07;
+/**
+ * A run this many times above the geometric mean of a history is a step: a speed-up that landed on main, after which the
+ * older points describe code that no longer exists. The largest rise between two runs of unchanged code was 1.33 times.
+ */
+export const SPEED_STEP_FACTOR = 1.4;
+/** Branch whose nightly and push runs may extend a speed history. */
+export const DEFAULT_BRANCH = 'main';
+/** Workflow events of the default branch that may extend a speed history. */
+export const SPEED_REFRESH_EVENTS: ReadonlySet<string> = new Set(['schedule', 'workflow_dispatch', 'push']);
 
 /** Reference-side measurements of the quality rows are cached here (git-ignored; CI restores it between runs). */
 export const REF_CACHE_DIR = path.join(REPO_ROOT, '.bench-cache');
@@ -116,13 +138,14 @@ export const MAX_GAP_ENTRIES = 500;
 
 /**
  * Cases `--quick` measures per family, for the per-push quality gate; `null` measures every case of the family. The
- * subsets cover each reference encoder and each source kind once: a photographic JPEG and a lossless photographic PNG
- * (the hardest AVIF input) and a flat line drawing for the image encoders; both audio sources with one lossy and the
- * lossless target; two of the three video codecs (the third differs only in the encoder binary); and every
- * compression case, which are seconds each. OCR and document have a single case. The nightly run measures all of them.
+ * subsets reach every target format and every encoder path once (tests/bench-quick-subset.test.ts keeps it so). Image: a
+ * photographic JPEG to WebP, a lossless photographic PNG to AVIF (4:2:0, the hardest AVIF input), graphics to AVIF at
+ * 4:4:4 and grey line art to AVIF at 4:0:0, and a graphic source to JPEG. Audio: both sources with one lossy and the
+ * lossless target. Video: two of the three codecs (HEVC differs only in the encoder binary). Compression, OCR and
+ * document: every case, which are seconds each. The nightly run measures all of them.
  */
 export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = {
-  image: ['photo-a.jpg->webp', 'photo-b.png->avif', 'lineart.png->webp'],
+  image: ['photo-a.jpg->webp', 'photo-b.png->avif', 'screenshot.png->avif', 'lineart.png->avif', 'lineart.png->jpg', 'lineart.png->webp'],
   video: ['clip.mp4->h264', 'clip.mp4->vp9'],
   audio: ['music.wav->opus', 'speech.wav->aac', 'music.wav->flac'],
   ocr: null,

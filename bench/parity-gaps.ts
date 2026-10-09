@@ -38,6 +38,8 @@ export interface GapFile {
 
 const ROW_ID_PATTERN = /^[a-z]+\/[^/]+\/[a-z0-9_]+$/;
 
+const COMMIT_PATTERN = /^[0-9a-f]{7,40}$/;
+
 const RUN_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 function validateHistory(value: unknown, path: string): SpeedHistoryPoint[] {
@@ -48,7 +50,9 @@ function validateHistory(value: unknown, path: string): SpeedHistoryPoint[] {
     const point = item as Record<string, unknown>;
     if (typeof point.ratio !== 'number' || !Number.isFinite(point.ratio) || point.ratio <= 0) throw new ReportSchemaError(`parity gaps: ${path}[${index}].ratio must be a positive speed ratio`);
     if (typeof point.at !== 'string' || !RUN_TIME_PATTERN.test(point.at)) throw new ReportSchemaError(`parity gaps: ${path}[${index}].at must be the UTC time of the run, like 2026-10-09T02:00:00.000Z`);
-    return { ratio: point.ratio, at: point.at };
+    if (point.commit === undefined) return { ratio: point.ratio, at: point.at };
+    if (typeof point.commit !== 'string' || !COMMIT_PATTERN.test(point.commit)) throw new ReportSchemaError(`parity gaps: ${path}[${index}].commit must be the hexadecimal sha of the commit the run measured`);
+    return { ratio: point.ratio, at: point.at, commit: point.commit };
   });
   for (let index = 1; index < points.length; index++) {
     if (points[index - 1].at >= points[index].at) throw new ReportSchemaError(`parity gaps: ${path} must be ordered by run time, oldest first, one point per run`);

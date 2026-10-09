@@ -116,13 +116,17 @@ never a stale hit; an entry that fails its checksum or schema is reported, measu
 `--print-tool-fingerprint` and the corpus manifest; the nightly run is the only writer.
 
 **`--quick`** measures a representative subset per family, listed as `QUICK_SUBSET` in `bench/config.ts`: the image
-cases `photo-a.jpg->webp`, `photo-b.png->avif` and `lineart.png->webp`; the video cases for H.264 and VP9; the audio
+cases `photo-a.jpg->webp`, `photo-b.png->avif` (photographs, 4:2:0), `screenshot.png->avif` (graphics, 4:4:4),
+`lineart.png->avif` (grey, 4:0:0), `lineart.png->jpg` and `lineart.png->webp`, so every target format and AVIF chroma path
+has a quality row (`tests/bench-quick-subset.test.ts`); the video cases for H.264 and VP9; the audio
 cases `music.wav->opus`, `speech.wav->aac` and `music.wav->flac`; and every case of OCR, office and compression, which
 are one case or seconds each. The per-push quality gate uses it; the nightly run measures everything.
 
 **Which families a pull request runs** is decided by `bench/family-map.json`: each path under `src/lib/conversions/`,
 `src/lib/workers/` and `src/worker/` maps to a family (`scripts/ci-parity-families.mjs`, which the `changes` job of
-`ci.yml` runs). Shared code (the dispatcher, the worker pool, the sandbox) maps to every benchmarked family. A path in
+`ci.yml` runs). Shared code (the dispatcher, the worker pool, the sandbox) maps to every benchmarked family, and so does what every
+conversion runs on: the tool runner `src/lib/security/process-sandbox.ts`, `package.json` and `package-lock.json`, the
+Dockerfiles, the seccomp profiles and `.github/actions/ci-setup/` (the SVG sanitizer maps to image). A path in
 that scope that no rule covers fails the `changes` job, so a new file cannot escape the gate. A path that maps to a
 family with `"bench": null` (cad, font, raw, data, ebook, pdf-ops, vector, hdr-image) fails with "add reference-compared
 bench rows for <family>" until the same change adds a runner in `bench/families/` and sets the family's `bench` to its
@@ -134,8 +138,8 @@ own name.
   never excuses a quality row: an entry only names the issue in the failure message (the image quality rows are tracked
   by #640 and still fail).
 - *A speed row that is not listed* has to pass the sign-test rule outright.
-- *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when it gets
-  slower than its own history predicts (next section). A tracked row that now passes the normal rule is reported as
+- *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when its median gets
+  slower than its own history predicts or falls 15 percent under its latest recorded median (next section). A tracked row that now passes the normal rule is reported as
   "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
   interval lower bound at or above 0.97 in the same job, unchanged.
 - *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
@@ -158,10 +162,22 @@ continuous benchmarking (`bench/speed-history.ts`):
   above `exp(m - t * s * sqrt(1 + 1/n))`, where t is the Student's t quantile with n - 1 degrees of freedom (2.82 at
   ten runs, 3.75 at five, 6.96 at three). This is a one-sided prediction bound for one new observation, not a bound on the
   mean, so it includes the run-to-run variance of the runner.
-- The row fails only when the **upper end of the new interval** (the sign-test interval of the job's own pairs) is below
-  that bound: ours is then slower than the history allows even at the generous end of this job's measurement.
-- With fewer than `SPEED_HISTORY_MIN_POINTS` (3) runs there is no bound. The row is reported as `tracked-short-history`
-  and does not fail; each nightly adds a point. The bound is wide at three points and tightens as the history fills.
+- The row fails when its **median** (the number the history stores, and the one the bound predicts) is below that bound.
+  The interval of the job's own pairs decides only whether the row passes the normal rule; its upper end, which for a
+  heavy row can be a single lucky pair, is not used.
+- **The floor.** The bound alone admits a large slowdown whenever a history is noisy, so a tracked row also fails when
+  its median is below `SPEED_GAP_FLOOR` (0.85) times its latest recorded median, whichever limit is higher. Run-to-run
+  spread of unchanged code on the runner is about 7 percent (a log standard deviation of 0.10 between two runs over 32
+  rows, with no row falling by more than 6.2 percent), so 15 percent leaves room for the runner and none for a slowdown.
+- With fewer than `SPEED_HISTORY_MIN_POINTS` (3) runs there is no bound, and the floor is the only limit: a row with no
+  history is held to 85 percent of its recorded `ratio`. A run that ended undecided at the cap counts the same way, by its
+  median; the pass line of 0.97 is not used for a tracked row.
+- **A history restarts at a step.** A speed-up that lands on main puts the older points on the wrong side of a code
+  change, and their spread then measures the change, not the runner. A run more than `SPEED_STEP_FACTOR` (1.4) times the
+  geometric mean of the history, or above the upper edge of its 99 percent prediction interval (the spread no lower than
+  `SPEED_HISTORY_MIN_LOG_SPREAD`, 0.07), is a step up: the history restarts at that run. A drop never restarts it.
+  `bench:refresh-speed -- --reseed --write` applies this to the histories on file.
+- Each point keeps the commit its report was measured at.
 - A tracked row's `ratio` field is the latest point rounded down, kept for display and for the gap note.
 
 The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
@@ -195,10 +211,12 @@ npm run bench:refresh-speed -- --write speed-results    # rewrites baseline.json
 ```
 
 The command takes only reports measured on Linux under `ORACLE_STRICT_MODE=1` by a `--parity` run, without an injected
-regression; anything else is exit 2. It sets the baseline `ratio` of every measured speed row (informational, see "Gate"), adds the median of each tracked
-gap's interval to its `history` (four decimals, the latest ten runs kept, ordered by the report's time), and sets the
+regression, by a schedule, workflow_dispatch or push run of `main` (the report records its commit, branch and event);
+anything else is exit 2, so a pull request's regressed report cannot lower the bound of later pull requests. A branch that
+refreshes its own numbers before it merges names itself with `--allow-branch <branch>`. It sets the baseline `ratio` of every measured speed row (informational, see "Gate"), adds the median of each tracked
+gap's interval to its `history` (four decimals, the latest ten runs since the last step, ordered by the report's time, with the commit), and sets the
 gap's `ratio` to the latest point rounded down to two decimals (a note it generated is rewritten with it; a note written
-by hand stays). Run it once per report: `bench:refresh-speed -- --write <run 1 artifact>`, then `... <run 2 artifact>`. A row whose interval was still undecided at the cap changes nothing. A tracked row that now
+by hand stays). Run it once per report: `bench:refresh-speed -- --write <run 1 artifact>`, then `... <run 2 artifact>`. A row whose interval was still undecided at the cap keeps its baseline ratio, but its median joins the history. A tracked row that now
 passes is listed, not removed: delete its entry by hand in the same commit. Review the diff before committing.
 
 **Conformance durations.** Each part of the `conformance` job uploads `conformance-durations-<part>` (14 days):

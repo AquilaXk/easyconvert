@@ -79,10 +79,11 @@ describe('appending a run to a history', () => {
 
   it('keeps only the latest ten runs', () => {
     let history: SpeedHistoryPoint[] = [];
-    for (let day = 1; day <= 12; day++) history = appendSpeedHistory(history, day / 10, at(day));
+    // A slow drift, so no run is a step that would restart the history.
+    for (let day = 1; day <= 12; day++) history = appendSpeedHistory(history, 0.5 + day / 100, at(day));
     expect(history).toHaveLength(SPEED_HISTORY_MAX_POINTS);
-    expect(history[0]).toEqual({ ratio: 0.3, at: at(3) });
-    expect(history[SPEED_HISTORY_MAX_POINTS - 1]).toEqual({ ratio: 1.2, at: at(12) });
+    expect(history[0]).toEqual({ ratio: 0.53, at: at(3) });
+    expect(history[SPEED_HISTORY_MAX_POINTS - 1]).toEqual({ ratio: 0.62, at: at(12) });
   });
 
   it('refuses a ratio that rounds to zero', () => {

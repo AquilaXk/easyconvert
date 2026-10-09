@@ -216,7 +216,7 @@ describe('the known gaps', () => {
   });
 
   it('passes a tracked slow row that sits inside its history, and reports it as tracked with its issue', () => {
-    const verdict = judged([speed(XZ, { ratioLow: 0.42, ratioHigh: 0.5, ratioMedian: 0.46, ratio: 0.46 })]);
+    const verdict = judged([speed(XZ, { ratioLow: 0.42, ratioHigh: 0.5, ratioMedian: 0.47, ratio: 0.47 })]);
     expect(verdict.verdict).toBe('pass');
     expect(verdict.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
     expect(verdict.rows[0].detail).toContain('tracked (issue #487)');
@@ -224,19 +224,16 @@ describe('the known gaps', () => {
     expect(verdict.summary).toMatchObject({ fail: 0, tracked: 1, nowAtParity: 0 });
   });
 
-  it('passes a tracked row whose upper bound is only just above the prediction bound, and fails one just below it', () => {
-    // The flat history of the XZ gap puts the bound at 0.46.
-    expect(judged([speed(XZ, { ratioHigh: 0.4601 })]).rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
-    expect(judged([speed(XZ, { ratioHigh: 0.4599 })]).rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-    // A noisy history widens the bound: the ZST gap's lower edge is 0.066875 (worked out above).
-    expect(judged([speed(ZST, { ratioHigh: 0.07 })]).rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
-    expect(judged([speed(ZST, { ratioHigh: 0.066 })]).rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+  it('passes a tracked row whose median is only just above the prediction bound, and fails one just below it, whatever its interval', () => {
+    // The flat history of the XZ gap puts the bound at 0.46; the row is judged by its median, which is what the history stores.
+    expect(judged([speed(XZ, { ratioMedian: 0.4601, ratioHigh: 0.47 })]).rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+    expect(judged([speed(XZ, { ratioMedian: 0.4599, ratioHigh: 0.95 })]).rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
   });
 
   it('does not fail a tracked row for a drop inside the run-to-run noise that a fixed percentage would have caught', () => {
-    // 0.40 is 13 percent under the 0.46 the fixed rule recorded, yet inside the spread of a noisy history.
-    const noisy: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed', history: history(0.38, 0.46, 0.5, 0.42, 0.47) }] };
-    const verdict = evaluateParity(report([speed(XZ, { ratioLow: 0.38, ratioHigh: 0.4, ratioMedian: 0.39 })]), noisy);
+    // 0.41 is 11 percent under the 0.46 the fixed rule recorded, yet inside the spread of a noisy history and above 85 percent of the latest 0.47.
+    const noisy: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.47, note: 'LZMA decode speed', history: history(0.38, 0.46, 0.5, 0.42, 0.47) }] };
+    const verdict = evaluateParity(report([speed(XZ, { ratioLow: 0.38, ratioHigh: 0.5, ratioMedian: 0.41 })]), noisy);
     expect(verdict.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
   });
 
@@ -247,17 +244,20 @@ describe('the known gaps', () => {
     expect(failureLines(verdict)[0]).toMatch(/^BELOW REFERENCE compression\/mixed\.xz->tar\/throughput: .*got slower than its history.*known gap, issue #487/);
   });
 
-  it('only reports a tracked row whose history has fewer than three runs, however slow it measured', () => {
+  it('holds a tracked row whose history has fewer than three runs to 85 percent of its latest median', () => {
     for (const points of [[], [0.46], [0.46, 0.46]]) {
       const short: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed', history: history(...points) }] };
-      const verdict = evaluateParity(report([speed(XZ, { ratioLow: 0.05, ratioHigh: 0.1, ratioMedian: 0.07 })]), short);
-      expect(verdict.verdict).toBe('pass');
-      expect(verdict.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
-      expect(verdict.rows[0].detail).toContain(`with ${points.length} of the 3 CI-measured runs a bound needs: reported, not gated`);
-      expect(verdict.summary).toMatchObject({ fail: 0, tracked: 1 });
+      const slow = evaluateParity(report([speed(XZ, { ratioLow: 0.05, ratioHigh: 0.1, ratioMedian: 0.07 })]), short);
+      expect(slow.verdict).toBe('fail');
+      expect(slow.rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+      const near = evaluateParity(report([speed(XZ, { ratioLow: 0.3, ratioHigh: 0.5, ratioMedian: 0.4 })]), short);
+      expect(near.verdict).toBe('pass');
+      expect(near.rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
+      expect(near.rows[0].detail).toContain(`${points.length} of the 3 CI-measured runs a bound needs: judged by 85% of the latest recorded median 0.46`);
+      expect(near.summary).toMatchObject({ fail: 0, tracked: 1 });
     }
     const noHistory: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed' }] };
-    expect(evaluateParity(report([speed(XZ, { ratioHigh: 0.1 })]), noHistory).rows[0]).toMatchObject({ outcome: 'pass', basis: 'tracked-short-history' });
+    expect(evaluateParity(report([speed(XZ, { ratioMedian: 0.1 })]), noHistory).rows[0]).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
   });
 
   it('keeps a tracked row that is unstable at the cap but not under its prediction bound tracked, not failed', () => {
