@@ -463,10 +463,7 @@ export class LzmaEncoderCore {
   }
 
   private matchLengthAt(a: number, b: number, limit: number): number {
-    const d = this.data;
-    let n = 0;
-    while (n < limit && d[a + n] === d[b + n]) n++;
-    return n;
+    return this.finder.commonLength(a, b, limit);
   }
 
   /** Greedy parse of one move: the best repeat, else the longest match, else a literal. */
@@ -508,18 +505,22 @@ export class LzmaEncoderCore {
   }
 
   private relax(node: number, price: number, len: number, dist: number, previous: number, state: number, r0: number, r1: number, r2: number, r3: number): void {
-    if (price < this.optPrice[node]) {
-      this.optPrice[node] = price;
-      this.optLength[node] = len;
-      this.optDistance[node] = dist;
-      this.optPrevious[node] = previous;
-      this.optState[node] = state;
-      this.optRep0[node] = r0;
-      this.optRep1[node] = r1;
-      this.optRep2[node] = r2;
-      this.optRep3[node] = r3;
-      if (node > this.optEnd) this.optEnd = node;
+    if (node > this.optEnd) {
+      // Prices past the last node reached are set when the window grows to them, not for the whole window up front.
+      for (let i = this.optEnd + 1; i < node; i++) this.optPrice[i] = PRICE_INFINITY;
+      this.optEnd = node;
+    } else if (price >= this.optPrice[node]) {
+      return;
     }
+    this.optPrice[node] = price;
+    this.optLength[node] = len;
+    this.optDistance[node] = dist;
+    this.optPrevious[node] = previous;
+    this.optState[node] = state;
+    this.optRep0[node] = r0;
+    this.optRep1[node] = r1;
+    this.optRep2[node] = r2;
+    this.optRep3[node] = r3;
   }
 
   /**
@@ -562,7 +563,6 @@ export class LzmaEncoderCore {
       return;
     }
 
-    for (let i = 0; i <= window + OPT_NODE_PAD; i++) this.optPrice[i] = PRICE_INFINITY;
     this.optPrice[0] = 0;
     this.optState[0] = this.state;
     this.optRep0[0] = this.rep0;
@@ -678,8 +678,17 @@ export class LzmaEncoderCore {
       for (let k = 0; k < matchCount; k++) {
         const dist = distances[k];
         const maxLen = Math.min(lengths[k], avail);
-        for (let l = lenStart; l <= maxLen; l++) {
+        // The distance price depends on the length only up to the last length state, so it is looked up once for the rest.
+        const shortEnd = Math.min(maxLen, MATCH_LEN_MIN + LEN_TO_POS_STATES - 2);
+        let l = lenStart;
+        for (; l <= shortEnd; l++) {
           this.relax(cur + l, matchBase + this.matchLenPrice(l, posState) + this.distancePrice(dist, l), l, dist, cur, matchState, dist, r0, r1, r2);
+        }
+        if (l <= maxLen) {
+          const longBase = matchBase + this.distancePrice(dist, l);
+          for (; l <= maxLen; l++) {
+            this.relax(cur + l, longBase + this.matchLenPrice(l, posState), l, dist, cur, matchState, dist, r0, r1, r2);
+          }
         }
         if (maxLen >= nice) return maxLen;
         lenStart = Math.max(lenStart, maxLen + 1);

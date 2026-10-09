@@ -1,36 +1,38 @@
 import { CorruptStreamError, DecompressionLimitError } from '../types';
-import {
-  ALIGN,
-  ALIGN_BITS,
-  BIT_MODEL_TOTAL_BITS,
-  END_POS_MODEL_INDEX,
-  IS_MATCH,
-  IS_REP,
-  IS_REP0_LONG,
-  IS_REP_G0,
-  IS_REP_G1,
-  IS_REP_G2,
-  LEN_CHOICE,
-  LEN_CHOICE2,
-  LEN_CODER,
-  LEN_HIGH,
-  LEN_LOW,
-  LEN_LOW_SYMBOLS,
-  LEN_MID,
-  LEN_MID_SYMBOLS,
-  LEN_TO_POS_STATES,
-  LITERAL,
-  LITERAL_CODER_SIZE,
-  MATCH_LEN_MIN,
-  MOVE_BITS,
-  POS_SLOT,
-  POS_SLOT_BITS,
-  POS_SPECIAL,
-  PROB_INIT,
-  REP_LEN_CODER,
-  STATE_AFTER_LITERAL,
-  probabilityCount,
-} from './lzma-model';
+import * as model from './lzma-model';
+
+// Hoisted into module constants: under a CommonJS loader an imported binding is a getter call on every use, which costs
+// the decode loop several times its running time.
+const ALIGN = model.ALIGN;
+const ALIGN_BITS = model.ALIGN_BITS;
+const BIT_MODEL_TOTAL_BITS = model.BIT_MODEL_TOTAL_BITS;
+const END_POS_MODEL_INDEX = model.END_POS_MODEL_INDEX;
+const IS_MATCH = model.IS_MATCH;
+const IS_REP = model.IS_REP;
+const IS_REP0_LONG = model.IS_REP0_LONG;
+const IS_REP_G0 = model.IS_REP_G0;
+const IS_REP_G1 = model.IS_REP_G1;
+const IS_REP_G2 = model.IS_REP_G2;
+const LEN_CHOICE = model.LEN_CHOICE;
+const LEN_CHOICE2 = model.LEN_CHOICE2;
+const LEN_CODER = model.LEN_CODER;
+const LEN_HIGH = model.LEN_HIGH;
+const LEN_LOW = model.LEN_LOW;
+const LEN_LOW_SYMBOLS = model.LEN_LOW_SYMBOLS;
+const LEN_MID = model.LEN_MID;
+const LEN_MID_SYMBOLS = model.LEN_MID_SYMBOLS;
+const LEN_TO_POS_STATES = model.LEN_TO_POS_STATES;
+const LITERAL = model.LITERAL;
+const LITERAL_CODER_SIZE = model.LITERAL_CODER_SIZE;
+const MATCH_LEN_MIN = model.MATCH_LEN_MIN;
+const MOVE_BITS = model.MOVE_BITS;
+const POS_SLOT = model.POS_SLOT;
+const POS_SLOT_BITS = model.POS_SLOT_BITS;
+const POS_SPECIAL = model.POS_SPECIAL;
+const PROB_INIT = model.PROB_INIT;
+const REP_LEN_CODER = model.REP_LEN_CODER;
+const STATE_AFTER_LITERAL = model.STATE_AFTER_LITERAL;
+const probabilityCount = model.probabilityCount;
 
 /**
  * LZMA and LZMA2 decoder (LZMA specification by Igor Pavlov; the .xz file format 1.1 for the LZMA2 chunk layer).
@@ -49,11 +51,21 @@ const LZMA_LC_MAX = 8;
 const LZMA_LP_MAX = 4;
 const LZMA_PB_MAX = 4;
 const LZMA2_LC_LP_MAX = 4;
-const TOP_VALUE = 0x01000000;
+/** The range coder renormalises when the top byte of `range` is empty (range < 2^24). */
+const TOP_BITS = 24;
+/**
+ * `code` is held as int32 with its top bit flipped, so a signed compare orders it like the unsigned code, and every
+ * range coder register stays an int32 in compiled code (a uint32 above 2^31 would be a boxed double).
+ */
+const CODE_BIAS = -0x80000000;
+const RANGE_FULL = -1;
+/** A match this long and not overlapping its source is copied as one block; shorter ones cost less as a byte loop than as a call. */
+const MATCH_BLOCK_COPY_MIN = 16;
 const RC_INIT_BYTES = 5;
 
 const MAX_UINT32 = 0xffffffff;
-const END_MARKER_DISTANCE = MAX_UINT32;
+/** The end marker's distance 0xFFFFFFFF, as the int32 pattern the decoder builds distances in. */
+const END_MARKER_DISTANCE_BITS = -1;
 
 function corrupt(detail: string): CorruptStreamError {
   return new CorruptStreamError(`Corrupt LZMA data: ${detail}`);
@@ -147,9 +159,9 @@ export class LzmaDecoder {
     if (src[start] !== 0) throw corrupt('range coder header must start with a zero byte');
     this.ensure(produce);
     let inPos = start + 1;
-    let code = ((src[inPos] << 24) | (src[inPos + 1] << 16) | (src[inPos + 2] << 8) | src[inPos + 3]) >>> 0;
+    let code = ((src[inPos] << 24) | (src[inPos + 1] << 16) | (src[inPos + 2] << 8) | src[inPos + 3]) ^ CODE_BIAS;
     inPos += 4;
-    let range = MAX_UINT32;
+    let range = RANGE_FULL;
 
     const probs = this.probs;
     const out = this.out;
@@ -172,14 +184,14 @@ export class LzmaDecoder {
       const posState = (outPos - dictStart) & pbMask;
       let index = IS_MATCH + (state << 4) + posState;
       let prob = probs[index];
-      let bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-      if (code < bound) {
+      let bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+      if (code < (bound ^ CODE_BIAS)) {
         range = bound;
         probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
-        if (range < TOP_VALUE) {
+        if (range >>> TOP_BITS === 0) {
           if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-          range = (range << 8) >>> 0;
-          code = ((code << 8) | src[inPos++]) >>> 0;
+          range <<= 8;
+          code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
         }
         // Literal.
         const prevByte = outPos > dictStart ? out[outPos - 1] : 0;
@@ -193,44 +205,44 @@ export class LzmaDecoder {
             const matchBit = matchByte & offs;
             index = litBase + offs + matchBit + symbol;
             prob = probs[index];
-            bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-            if (code < bound) {
+            bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+            if (code < (bound ^ CODE_BIAS)) {
               range = bound;
               probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
               symbol <<= 1;
               offs &= ~matchBit;
             } else {
-              range -= bound;
-              code -= bound;
+              range = (range - bound) | 0;
+              code = (code - bound) | 0;
               probs[index] = prob - (prob >>> MOVE_BITS);
               symbol = (symbol << 1) | 1;
               offs &= matchBit;
             }
-            if (range < TOP_VALUE) {
+            if (range >>> TOP_BITS === 0) {
               if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-              range = (range << 8) >>> 0;
-              code = ((code << 8) | src[inPos++]) >>> 0;
+              range <<= 8;
+              code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
             }
           }
         } else {
           while (symbol < 0x100) {
             index = litBase + symbol;
             prob = probs[index];
-            bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-            if (code < bound) {
+            bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+            if (code < (bound ^ CODE_BIAS)) {
               range = bound;
               probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
               symbol <<= 1;
             } else {
-              range -= bound;
-              code -= bound;
+              range = (range - bound) | 0;
+              code = (code - bound) | 0;
               probs[index] = prob - (prob >>> MOVE_BITS);
               symbol = (symbol << 1) | 1;
             }
-            if (range < TOP_VALUE) {
+            if (range >>> TOP_BITS === 0) {
               if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-              range = (range << 8) >>> 0;
-              code = ((code << 8) | src[inPos++]) >>> 0;
+              range <<= 8;
+              code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
             }
           }
         }
@@ -238,27 +250,27 @@ export class LzmaDecoder {
         state = STATE_AFTER_LITERAL[state];
         continue;
       }
-      range -= bound;
-      code -= bound;
+      range = (range - bound) | 0;
+      code = (code - bound) | 0;
       probs[index] = prob - (prob >>> MOVE_BITS);
-      if (range < TOP_VALUE) {
+      if (range >>> TOP_BITS === 0) {
         if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-        range = (range << 8) >>> 0;
-        code = ((code << 8) | src[inPos++]) >>> 0;
+        range <<= 8;
+        code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
       }
 
       let lenBase: number;
       // isRep
       index = IS_REP + state;
       prob = probs[index];
-      bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-      if (code < bound) {
+      bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+      if (code < (bound ^ CODE_BIAS)) {
         range = bound;
         probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
-        if (range < TOP_VALUE) {
+        if (range >>> TOP_BITS === 0) {
           if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-          range = (range << 8) >>> 0;
-          code = ((code << 8) | src[inPos++]) >>> 0;
+          range <<= 8;
+          code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
         }
         // Simple match: the length comes first, then the distance.
         rep3 = rep2;
@@ -267,38 +279,38 @@ export class LzmaDecoder {
         state = state < 7 ? 7 : 10;
         lenBase = LEN_CODER;
       } else {
-        range -= bound;
-        code -= bound;
+        range = (range - bound) | 0;
+        code = (code - bound) | 0;
         probs[index] = prob - (prob >>> MOVE_BITS);
-        if (range < TOP_VALUE) {
+        if (range >>> TOP_BITS === 0) {
           if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-          range = (range << 8) >>> 0;
-          code = ((code << 8) | src[inPos++]) >>> 0;
+          range <<= 8;
+          code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
         }
         if (outPos === dictStart) throw corrupt('a repeated match before any data');
         // isRepG0
         index = IS_REP_G0 + state;
         prob = probs[index];
-        bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-        if (code < bound) {
+        bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+        if (code < (bound ^ CODE_BIAS)) {
           range = bound;
           probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
-          if (range < TOP_VALUE) {
+          if (range >>> TOP_BITS === 0) {
             if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-            range = (range << 8) >>> 0;
-            code = ((code << 8) | src[inPos++]) >>> 0;
+            range <<= 8;
+            code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
           }
           // isRep0Long
           index = IS_REP0_LONG + (state << 4) + posState;
           prob = probs[index];
-          bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-          if (code < bound) {
+          bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+          if (code < (bound ^ CODE_BIAS)) {
             range = bound;
             probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
-            if (range < TOP_VALUE) {
+            if (range >>> TOP_BITS === 0) {
               if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-              range = (range << 8) >>> 0;
-              code = ((code << 8) | src[inPos++]) >>> 0;
+              range <<= 8;
+              code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
             }
             // Short repeat: one byte from the last distance.
             if (rep0 >= outPos - dictStart) throw corrupt('a repeat distance reaches before the dictionary');
@@ -307,62 +319,62 @@ export class LzmaDecoder {
             state = state < 7 ? 9 : 11;
             continue;
           }
-          range -= bound;
-          code -= bound;
+          range = (range - bound) | 0;
+          code = (code - bound) | 0;
           probs[index] = prob - (prob >>> MOVE_BITS);
-          if (range < TOP_VALUE) {
+          if (range >>> TOP_BITS === 0) {
             if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-            range = (range << 8) >>> 0;
-            code = ((code << 8) | src[inPos++]) >>> 0;
+            range <<= 8;
+            code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
           }
         } else {
-          range -= bound;
-          code -= bound;
+          range = (range - bound) | 0;
+          code = (code - bound) | 0;
           probs[index] = prob - (prob >>> MOVE_BITS);
-          if (range < TOP_VALUE) {
+          if (range >>> TOP_BITS === 0) {
             if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-            range = (range << 8) >>> 0;
-            code = ((code << 8) | src[inPos++]) >>> 0;
+            range <<= 8;
+            code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
           }
           let distance: number;
           // isRepG1
           index = IS_REP_G1 + state;
           prob = probs[index];
-          bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-          if (code < bound) {
+          bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+          if (code < (bound ^ CODE_BIAS)) {
             range = bound;
             probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
             distance = rep1;
           } else {
-            range -= bound;
-            code -= bound;
+            range = (range - bound) | 0;
+            code = (code - bound) | 0;
             probs[index] = prob - (prob >>> MOVE_BITS);
-            if (range < TOP_VALUE) {
+            if (range >>> TOP_BITS === 0) {
               if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-              range = (range << 8) >>> 0;
-              code = ((code << 8) | src[inPos++]) >>> 0;
+              range <<= 8;
+              code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
             }
             // isRepG2
             index = IS_REP_G2 + state;
             prob = probs[index];
-            bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-            if (code < bound) {
+            bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+            if (code < (bound ^ CODE_BIAS)) {
               range = bound;
               probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
               distance = rep2;
             } else {
-              range -= bound;
-              code -= bound;
+              range = (range - bound) | 0;
+              code = (code - bound) | 0;
               probs[index] = prob - (prob >>> MOVE_BITS);
               distance = rep3;
               rep3 = rep2;
             }
             rep2 = rep1;
           }
-          if (range < TOP_VALUE) {
+          if (range >>> TOP_BITS === 0) {
             if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-            range = (range << 8) >>> 0;
-            code = ((code << 8) | src[inPos++]) >>> 0;
+            range <<= 8;
+            code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
           }
           rep1 = rep0;
           rep0 = distance;
@@ -377,64 +389,64 @@ export class LzmaDecoder {
       let treeBits: number;
       index = lenBase + LEN_CHOICE;
       prob = probs[index];
-      bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-      if (code < bound) {
+      bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+      if (code < (bound ^ CODE_BIAS)) {
         range = bound;
         probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
         treeBase = lenBase + LEN_LOW + (posState << 3);
         treeBits = 3;
         len = 0;
       } else {
-        range -= bound;
-        code -= bound;
+        range = (range - bound) | 0;
+        code = (code - bound) | 0;
         probs[index] = prob - (prob >>> MOVE_BITS);
-        if (range < TOP_VALUE) {
+        if (range >>> TOP_BITS === 0) {
           if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-          range = (range << 8) >>> 0;
-          code = ((code << 8) | src[inPos++]) >>> 0;
+          range <<= 8;
+          code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
         }
         index = lenBase + LEN_CHOICE2;
         prob = probs[index];
-        bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-        if (code < bound) {
+        bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+        if (code < (bound ^ CODE_BIAS)) {
           range = bound;
           probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
           treeBase = lenBase + LEN_MID + (posState << 3);
           treeBits = 3;
           len = LEN_LOW_SYMBOLS;
         } else {
-          range -= bound;
-          code -= bound;
+          range = (range - bound) | 0;
+          code = (code - bound) | 0;
           probs[index] = prob - (prob >>> MOVE_BITS);
           treeBase = lenBase + LEN_HIGH;
           treeBits = 8;
           len = LEN_LOW_SYMBOLS + LEN_MID_SYMBOLS;
         }
       }
-      if (range < TOP_VALUE) {
+      if (range >>> TOP_BITS === 0) {
         if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-        range = (range << 8) >>> 0;
-        code = ((code << 8) | src[inPos++]) >>> 0;
+        range <<= 8;
+        code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
       }
       let m = 1;
       for (let i = 0; i < treeBits; i++) {
         index = treeBase + m;
         prob = probs[index];
-        bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-        if (code < bound) {
+        bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+        if (code < (bound ^ CODE_BIAS)) {
           range = bound;
           probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
           m <<= 1;
         } else {
-          range -= bound;
-          code -= bound;
+          range = (range - bound) | 0;
+          code = (code - bound) | 0;
           probs[index] = prob - (prob >>> MOVE_BITS);
           m = (m << 1) | 1;
         }
-        if (range < TOP_VALUE) {
+        if (range >>> TOP_BITS === 0) {
           if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-          range = (range << 8) >>> 0;
-          code = ((code << 8) | src[inPos++]) >>> 0;
+          range <<= 8;
+          code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
         }
       }
       len += m - (1 << treeBits) + MATCH_LEN_MIN;
@@ -447,21 +459,21 @@ export class LzmaDecoder {
         for (let i = 0; i < POS_SLOT_BITS; i++) {
           index = slotBase + slot;
           prob = probs[index];
-          bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-          if (code < bound) {
+          bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+          if (code < (bound ^ CODE_BIAS)) {
             range = bound;
             probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
             slot <<= 1;
           } else {
-            range -= bound;
-            code -= bound;
+            range = (range - bound) | 0;
+            code = (code - bound) | 0;
             probs[index] = prob - (prob >>> MOVE_BITS);
             slot = (slot << 1) | 1;
           }
-          if (range < TOP_VALUE) {
+          if (range >>> TOP_BITS === 0) {
             if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-            range = (range << 8) >>> 0;
-            code = ((code << 8) | src[inPos++]) >>> 0;
+            range <<= 8;
+            code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
           }
         }
         slot -= 1 << POS_SLOT_BITS;
@@ -469,7 +481,8 @@ export class LzmaDecoder {
           rep0 = slot;
         } else {
           const footerBits = (slot >>> 1) - 1;
-          let distance = ((2 | (slot & 1)) << footerBits) >>> 0;
+          // Held as the int32 pattern of the uint32 distance, so building it stays in integer arithmetic.
+          let distance = (2 | (slot & 1)) << footerBits;
           if (slot < END_POS_MODEL_INDEX) {
             // Reverse bit tree of footerBits bits over the special-position probabilities.
             const specialBase = POS_SPECIAL + distance - slot - 1;
@@ -477,66 +490,66 @@ export class LzmaDecoder {
             for (let i = 0; i < footerBits; i++) {
               index = specialBase + mm;
               prob = probs[index];
-              bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-              if (code < bound) {
+              bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+              if (code < (bound ^ CODE_BIAS)) {
                 range = bound;
                 probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
                 mm <<= 1;
               } else {
-                range -= bound;
-                code -= bound;
+                range = (range - bound) | 0;
+                code = (code - bound) | 0;
                 probs[index] = prob - (prob >>> MOVE_BITS);
                 mm = (mm << 1) | 1;
-                distance += 1 << i;
+                distance |= 1 << i;
               }
-              if (range < TOP_VALUE) {
+              if (range >>> TOP_BITS === 0) {
                 if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-                range = (range << 8) >>> 0;
-                code = ((code << 8) | src[inPos++]) >>> 0;
+                range <<= 8;
+                code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
               }
             }
           } else {
             // Direct bits (no probabilities), then a 4-bit reverse tree for the low bits.
             for (let i = footerBits - ALIGN_BITS; i > 0; i--) {
               range >>>= 1;
-              if (code >= range) {
-                code -= range;
-                distance += 2 ** (i - 1 + ALIGN_BITS);
+              if (code >= (range ^ CODE_BIAS)) {
+                code = (code - range) | 0;
+                distance |= 1 << (i - 1 + ALIGN_BITS);
               }
-              if (range < TOP_VALUE) {
+              if (range >>> TOP_BITS === 0) {
                 if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-                range = (range << 8) >>> 0;
-                code = ((code << 8) | src[inPos++]) >>> 0;
+                range <<= 8;
+                code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
               }
             }
             let mm = 1;
             for (let i = 0; i < ALIGN_BITS; i++) {
               index = ALIGN + mm;
               prob = probs[index];
-              bound = (range >>> BIT_MODEL_TOTAL_BITS) * prob;
-              if (code < bound) {
+              bound = Math.imul(range >>> BIT_MODEL_TOTAL_BITS, prob);
+              if (code < (bound ^ CODE_BIAS)) {
                 range = bound;
                 probs[index] = prob + (((1 << BIT_MODEL_TOTAL_BITS) - prob) >>> MOVE_BITS);
                 mm <<= 1;
               } else {
-                range -= bound;
-                code -= bound;
+                range = (range - bound) | 0;
+                code = (code - bound) | 0;
                 probs[index] = prob - (prob >>> MOVE_BITS);
                 mm = (mm << 1) | 1;
-                distance += 1 << i;
+                distance |= 1 << i;
               }
-              if (range < TOP_VALUE) {
+              if (range >>> TOP_BITS === 0) {
                 if (inPos >= end) throw corrupt('input ends inside a range coder symbol');
-                range = (range << 8) >>> 0;
-                code = ((code << 8) | src[inPos++]) >>> 0;
+                range <<= 8;
+                code = ((code << 8) | src[inPos++]) ^ CODE_BIAS;
               }
             }
-            if (distance === END_MARKER_DISTANCE) {
+            if (distance === END_MARKER_DISTANCE_BITS) {
               if (!allowEndMarker) throw corrupt('unexpected end marker');
               break;
             }
           }
-          rep0 = distance;
+          rep0 = distance >>> 0;
         }
       }
 
@@ -544,7 +557,7 @@ export class LzmaDecoder {
       const remaining = target - outPos;
       if (len > remaining) throw corrupt('a match runs past the end of the chunk');
       const from = outPos - rep0 - 1;
-      if (rep0 + 1 >= len) {
+      if (len >= MATCH_BLOCK_COPY_MIN && rep0 + 1 >= len) {
         out.copyWithin(outPos, from, from + len);
         outPos += len;
       } else {
