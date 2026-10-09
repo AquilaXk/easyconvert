@@ -107,8 +107,14 @@ function sourceBytes(source: ArchiveSource): number {
 function loadSource(source: ArchiveSource): Buffer | null {
   if (source.buffer !== undefined) return source.buffer;
   if (source.filePath === undefined) return null;
-  if (fs.statSync(source.filePath).size > getMaxInMemoryBytes()) return null;
-  return fs.readFileSync(source.filePath);
+  // One descriptor for the size check and the read, so a file replaced in between cannot be read past the bound.
+  const fd = fs.openSync(source.filePath, 'r');
+  try {
+    if (fs.fstatSync(fd).size > getMaxInMemoryBytes()) return null;
+    return fs.readFileSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function blockPadding(length: number): number {
@@ -292,13 +298,14 @@ function unixModeOf(attributes: number | undefined): number | undefined {
 }
 
 /**
- * Gives 7-Zip a file to read for the formats it cannot read from a pipe: the archive is written to a new file with an
- * unpredictable name (created exclusively, owner-only) and removed afterwards.
+ * Gives 7-Zip a file to read for the formats it cannot read from a pipe. The archive is written to a new file with an
+ * unpredictable name (created exclusively, owner-only) and removed afterwards. It is always the bytes that were parsed
+ * and vetted, also when they came from a caller's file: that file is read once, so it cannot change between the
+ * vetting and 7-Zip opening it.
  */
-async function withArchiveFile<T>(source: ArchiveSource, extension: string, operation: (archivePath: string) => Promise<T>): Promise<T> {
-  if (source.filePath !== undefined) return operation(source.filePath);
+async function withArchiveFile<T>(archive: Buffer, extension: string, operation: (archivePath: string) => Promise<T>): Promise<T> {
   const archivePath = path.join(os.tmpdir(), `easyconvert-${crypto.randomUUID()}.${extension}`);
-  fs.writeFileSync(archivePath, source.buffer as Buffer, { mode: OWNER_READ_WRITE, flag: 'wx' });
+  fs.writeFileSync(archivePath, archive, { mode: OWNER_READ_WRITE, flag: 'wx' });
   try {
     return await operation(archivePath);
   } finally {
@@ -340,7 +347,7 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
   const unpacked =
     streamBytes === 0
       ? Buffer.alloc(0)
-      : await withArchiveFile(request.source, '7z', (archivePath) =>
+      : await withArchiveFile(archive, '7z', (archivePath) =>
           runSevenZip(request.p7zBin, ['x', '-so', '-y', archivePath], {
             maxBuffer: Math.min(streamBytes, cap) + STDERR_ALLOWANCE_BYTES,
             timeoutMs: request.timeoutMs,

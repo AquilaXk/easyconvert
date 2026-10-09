@@ -177,3 +177,52 @@ describe('a member with mode bits beyond rwx', () => {
     TEST_TIMEOUT_MS
   );
 });
+
+describe('a 7z archive read from a file', () => {
+  /** Two stored archives that list identically (same names, sizes, layout) but hold different bytes. */
+  function twinArchives(): { original: string; swapped: string } {
+    const stage = path.join(workDir, 'twin-stage');
+    fs.mkdirSync(stage, { recursive: true });
+    const bin = getOracleToolPath('7z') as string;
+    const build = (label: string, fill: string): string => {
+      fs.writeFileSync(path.join(stage, 'a.txt'), fill.repeat(4096));
+      const archive = path.join(workDir, `twin-${label}.7z`);
+      fs.rmSync(archive, { force: true });
+      execFileSync(bin, ['a', '-t7z', '-mx=0', '-mhc=off', '-y', archive, 'a.txt'], { cwd: stage, stdio: 'ignore' });
+      return archive;
+    };
+    return { original: build('original', 'A'), swapped: build('swapped', 'B') };
+  }
+
+  oracleTest(
+    'is read once: the tar holds the bytes that were vetted, even when the file changes before 7-Zip starts',
+    [...TOOLS],
+    async () => {
+      const { original, swapped } = twinArchives();
+      const input = path.join(workDir, 'input.7z');
+      fs.copyFileSync(original, input);
+      // The moment before 7-Zip opens its input, the file is replaced by another archive with the same table.
+      spy.beforeRealRun(`cp '${swapped}' '${input}'`);
+
+      const result = await convertWithNative7z({ inputPath: input }, '7z', 'tar', {}, 'input.7z');
+      if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
+
+      expect(pythonTarMember(result.buffer, 'a.txt').toString()).toBe('A'.repeat(4096));
+      const [call] = spy.calls();
+      expect(call).not.toContain(input);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'leaves no copy of the archive behind',
+    [...TOOLS],
+    async () => {
+      const { original } = twinArchives();
+      const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-') && name.endsWith('.7z'));
+      await convertWithNative7z({ inputPath: original }, '7z', 'tar', {}, 'input.7z');
+      expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-') && name.endsWith('.7z'))).toEqual(before);
+    },
+    TEST_TIMEOUT_MS
+  );
+});

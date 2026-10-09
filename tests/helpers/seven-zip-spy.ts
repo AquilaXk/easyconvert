@@ -13,6 +13,11 @@ export interface SevenZipSpy {
   calls(): string[][];
   /** Calls whose real 7-Zip process ran to its end (exit status written). */
   completedCalls(): number;
+  /**
+   * Shell commands the wrapper runs just before the real 7-Zip starts, on every call until `reset`. A test uses them
+   * to change a file between the moment the code under test read it and the moment 7-Zip opens it.
+   */
+  beforeRealRun(shellCommands: string): void;
   reset(): void;
   /** Points the worker engines at the wrapper until `restore`. */
   install(): void;
@@ -27,11 +32,13 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
   const callLog = path.join(workDir, 'spy-calls.log');
   const doneLog = path.join(workDir, 'spy-done.log');
   const script = path.join(workDir, 'spy-7z.sh');
+  const hookFile = path.join(workDir, 'spy-before-run.sh');
   fs.writeFileSync(
     script,
     [
       '#!/bin/sh',
       `{ for a in "$@"; do printf '%s\\n' "$a"; done; echo '${ARGUMENT_SEPARATOR}'; } >> '${callLog}'`,
+      `[ -f '${hookFile}' ] && sh '${hookFile}'`,
       `'${real}' "$@"`,
       'status=$?',
       `echo "$status" >> '${doneLog}'`,
@@ -60,7 +67,11 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
     completedCalls() {
       return fs.existsSync(doneLog) ? fs.readFileSync(doneLog, 'utf8').split('\n').filter((line) => line !== '').length : 0;
     },
+    beforeRealRun(shellCommands) {
+      fs.writeFileSync(hookFile, `${shellCommands}\n`);
+    },
     reset() {
+      fs.rmSync(hookFile, { force: true });
       fs.rmSync(callLog, { force: true });
       fs.rmSync(doneLog, { force: true });
     },
