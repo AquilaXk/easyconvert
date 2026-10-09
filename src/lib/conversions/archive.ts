@@ -32,7 +32,6 @@ import {
   assertListingResourceCaps,
   extractArchiveContained,
   extractArchiveContainedSync,
-  findEntryCollision,
   hasTarMagic,
   inspectedKindOf,
   listingBufferLimit,
@@ -3863,29 +3862,6 @@ async function inspectArchiveEntries(
   throw new ConversionFailedError('Unsupported or unrecognized archive format for inspection.');
 }
 
-/**
- * The unpacked tar of a compressed tarball, when converting to tar can return it as it is: no entries were selected, and
- * every member is a plain file or directory under a name the reader would keep as written, with no path stored twice.
- * Anything else (links, devices, names the reader normalizes, duplicates) is rebuilt from the members by the caller,
- * which applies the link, rename and collision rules. A tar this reader cannot list is left to the caller to report.
- */
-function tarForPassthrough(tar: Buffer, targetFormat: string, options: ConversionOptions): Buffer | null {
-  if (targetFormat !== 'tar' || (options.entries && options.entries.length > 0)) return null;
-  let listing: ListedArchiveEntry[];
-  try {
-    listing = listTarEntries(tar);
-  } catch {
-    return null;
-  }
-  if (listing.length === 0) return null;
-  const keptAsWritten = listing.every((entry) => {
-    if (entry.linkKind !== null || entry.isSpecial) return false;
-    const stored = trimTrailingSlashes(entry.path);
-    return sanitizeArchivePath(stored) === stored;
-  });
-  return keptAsWritten && findEntryCollision(listing) === null ? tar : null;
-}
-
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -3952,12 +3928,6 @@ export async function convertArchive(
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   let skippedLinks: string[] = [];
-  /** The unpacked tar of a compressed tarball, when it is returned as it is rather than rebuilt from its members. */
-  let passthroughTar: Buffer | null = null;
-  const unpackTar = (tar: Buffer): void => {
-    passthroughTar = tarForPassthrough(tar, tgt, options);
-    if (passthroughTar === null) files = extractTarArchive(tar, options);
-  };
   if (src === 'zip' || ZIP_PACKAGE_SOURCES.has(src)) {
     const hasZipMagic =
       effectiveBuffer.length >= 4 &&
@@ -3989,7 +3959,7 @@ export async function convertArchive(
     try {
       const uncompressed = await gunzipStreamingWithLimits(effectiveBuffer);
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        unpackTar(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -4012,7 +3982,7 @@ export async function convertArchive(
         );
       }
       if (BZIP2_TAR_SOURCES.has(src) || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        unpackTar(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -4064,7 +4034,7 @@ export async function convertArchive(
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-      unpackTar(uncompressed);
+      files = extractTarArchive(uncompressed, options);
     } else {
       files = [{ filename: baseName, buffer: uncompressed }];
     }
@@ -4082,7 +4052,7 @@ export async function convertArchive(
         );
       }
       if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        unpackTar(uncompressed);
+        files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -4125,7 +4095,7 @@ export async function convertArchive(
     return false;
   }
 
-  if (files.length === 0 && passthroughTar === null) {
+  if (files.length === 0) {
     if (isValidEmptyArchive(src, effectiveBuffer)) {
       // Valid empty archive: retain files = [] so empty target archive is generated
     } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
@@ -4186,10 +4156,7 @@ export async function convertArchive(
     );
   } else if (tgt === 'tar') {
     // 6. Target TAR
-    result =
-      passthroughTar === null
-        ? createTarArchive(files, options, `${baseName}.tar`)
-        : { buffer: passthroughTar, mimeType: 'application/x-tar', filename: `${baseName}.tar`, size: (passthroughTar as Buffer).length };
+    result = createTarArchive(files, options, `${baseName}.tar`);
   } else if (tgt === 'gz') {
     // 7. Target GZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;

@@ -4,8 +4,9 @@ import { hasTarMagicBlock, isTarHeaderBlock } from './archive-extraction-safety'
  * The one place that decides how an archive-to-archive pair is served without extracting to disk.
  *
  * Three pairs have a cheaper shape than "extract everything, then pack everything again":
- *  - a single-stream compressor (xz, gzip, bzip2) to tar is plain stream decompression; the unpacked bytes already
- *    are the tar when the payload is one, and a one-member tar is written around them when it is not;
+ *  - a single-stream compressor (xz, gzip, bzip2) to tar is stream decompression; the unpacked tar is read and vetted
+ *    entry by entry and written again from those entries (never passed through), and a one-member tar is written
+ *    around the bytes when the payload is not a tar;
  *  - 7z to tar streams the members out of 7-Zip in file-table order and writes them into the tar as they arrive;
  *  - tar to 7z reads the tar in process and hands 7-Zip a staging tree it can compress at once.
  *
@@ -71,11 +72,12 @@ export function planNativeArchiveRoute(src: string, tgt: string, request: Archiv
 
 /**
  * What unpacked bytes look like from their first block alone:
- *  - `tar`: the `ustar` magic (POSIX, GNU, pax). A tar that then fails to read is damaged, not something else.
- *  - `maybe-tar`: no magic but a valid header checksum (a v7 tar). The test 7-Zip applies before it opens a file as a
- *    tar; data that fails to read as one after passing it is treated as a plain payload.
- *  - `plain`: neither. The checksum is eight octal digits that must equal the sum of the block, so nothing that is
+ *  - `tar`: the `ustar` magic (POSIX, GNU, pax).
+ *  - `maybe-tar`: no magic but a valid header checksum (a v7 tar). This is the test 7-Zip applies before it opens a
+ *    file as a tar, and the checksum is eight octal digits that must equal the sum of the block, so nothing that is
  *    not a tar header passes it by accident.
+ *  - `plain`: neither.
+ * Both tar kinds are read as tars; one that then fails to read is damaged, never an ordinary payload.
  */
 export type UnpackedKind = 'tar' | 'maybe-tar' | 'plain';
 

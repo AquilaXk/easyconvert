@@ -140,7 +140,7 @@ describe('conversion of a compressed payload to tar', () => {
   );
 
   oracleTest(
-    'vets a payload that is a tar in process and returns it unchanged, in every tar format',
+    'vets a payload that is a tar in process and writes it again with the same members, in every tar format',
     [...TOOLS],
     async () => {
       for (const format of TAR_FORMATS) {
@@ -148,7 +148,10 @@ describe('conversion of a compressed payload to tar', () => {
         const xz = execFileSync('xz', ['-6', '-c'], { input: tar });
         const { calls, output } = await countSpawns(xz, `wrapped-${format}.tar.xz`);
         expect(calls, format).toBe(SPAWNS_FOR_ANY_PAYLOAD);
-        expect(output.equals(tar), format).toBe(true);
+        const file = path.join(workDir, `out-${format}.tar`);
+        fs.writeFileSync(file, output);
+        expect(execFileSync('tar', ['-tf', file], { encoding: 'utf8' }), format).toBe('a.txt\n');
+        expect(execFileSync('tar', ['-xOf', file, 'a.txt'], { encoding: 'utf8' }), format).toBe('alpha');
       }
     },
     TEST_TIMEOUT_MS

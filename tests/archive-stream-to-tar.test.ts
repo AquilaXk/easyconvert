@@ -13,10 +13,10 @@ import { buildTarWithEntries } from './helpers/hostile-archives';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
 
 /**
- * Converting a compressed tar (or a compressed single file) to tar is stream decompression. The tar a payload already
- * is comes back unchanged, and a payload that is not a tar is written into a one-member tar. Nothing is extracted to a
- * directory: the number and shape of the 7-Zip calls is read from a recording wrapper, and the tar is read back with
- * the system tar, an independent reader.
+ * Converting a compressed tar (or a compressed single file) to tar is stream decompression. A payload that is a tar is
+ * read, vetted and written again with the same members, and a payload that is not a tar is written into a one-member
+ * tar. Nothing is extracted to a directory: the number and shape of the 7-Zip calls is read from a recording wrapper,
+ * and the tar is read back with the system tar, an independent reader.
  */
 const TOOLS = ['7z', 'tar', 'xz', 'gzip', 'bzip2', 'zstd'] as const;
 const TEST_TIMEOUT_MS = 120_000;
@@ -65,10 +65,17 @@ function buildTarFixture(): { tar: Buffer; files: Map<string, Buffer> } {
   return { tar: fs.readFileSync(tarPath), files };
 }
 
-function tarListing(tar: Buffer, label: string): string {
+/** Mode string and name of every member, as the system tar prints them (owner and date columns differ between a tar and its rewrite). */
+function tarModesAndNames(tar: Buffer, label: string): string[] {
   const file = path.join(workDir, `${label}.tar`);
   fs.writeFileSync(file, tar);
-  return execFileSync('tar', ['-tvf', file], { encoding: 'utf8' });
+  return execFileSync('tar', ['-tvf', file], { encoding: 'utf8' })
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const columns = line.trim().split(/\s+/);
+      return `${columns[0]} ${columns.at(-1)}`;
+    });
 }
 
 function tarMember(tar: Buffer, member: string): Buffer {
@@ -101,11 +108,11 @@ afterEach(() => {
   spy.restore();
 });
 
-describe('native route: a compressed tar comes back as the same tar', () => {
+describe('native route: a compressed tar comes back as a tar with the same members', () => {
   for (const compressor of COMPRESSORS) {
     for (const source of compressor.sources) {
       oracleTest(
-        `${source} to tar returns the payload tar byte for byte, from one stream-only 7-Zip call`,
+        `${source} to tar returns a tar with the payload's members, modes and bytes, from one stream-only 7-Zip call`,
         [...TOOLS],
         async () => {
           tarFixture ??= buildTarFixture();
@@ -113,8 +120,7 @@ describe('native route: a compressed tar comes back as the same tar', () => {
           const result = await convertWithNative7z(compressor.compress(tar), source, 'tar', {}, `fixture.${source}`);
           if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
 
-          expect(result.buffer.equals(tar)).toBe(true);
-          expect(tarListing(result.buffer, `native-${source}`)).toBe(tarListing(tar, `original-${source}`));
+          expect(tarModesAndNames(result.buffer, `native-${source}`)).toEqual(tarModesAndNames(tar, `original-${source}`));
           for (const [name, data] of files) {
             expect(tarMember(result.buffer, name).equals(data)).toBe(true);
           }
@@ -142,7 +148,10 @@ describe('native route: a compressed tar comes back as the same tar', () => {
       fs.writeFileSync(archive, COMPRESSORS[0].compress(tarFixture.tar));
       const result = await convertWithNative7z({ inputPath: archive }, 'tar.xz', 'tar', {}, 'on-disk.tar.xz');
       if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
-      expect(result.buffer.equals(tarFixture.tar)).toBe(true);
+      expect(tarModesAndNames(result.buffer, 'on-disk')).toEqual(tarModesAndNames(tarFixture.tar, 'on-disk-original'));
+      for (const [name, data] of tarFixture.files) {
+        expect(tarMember(result.buffer, name).equals(data), name).toBe(true);
+      }
       const [call] = spy.calls();
       expect(call).toContain(archive);
     },
@@ -249,13 +258,15 @@ describe('native route: limits apply to the stream while it flows', () => {
 describe('in-process route: the same results without any 7-Zip call', () => {
   for (const compressor of COMPRESSORS) {
     oracleTest(
-      `${compressor.sources[0]} to tar returns the payload tar byte for byte`,
+      `${compressor.sources[0]} to tar returns the payload's files with their bytes`,
       [...TOOLS],
       async () => {
         tarFixture ??= buildTarFixture();
         const result = await convertFile(compressor.compress(tarFixture.tar), compressor.sources[0], 'tar', {}, `fixture.${compressor.sources[0]}`);
-        expect(result.buffer.equals(tarFixture.tar)).toBe(true);
-        expect(tarListing(result.buffer, `inproc-${compressor.sources[0]}`)).toBe(tarListing(tarFixture.tar, `original-inproc-${compressor.sources[0]}`));
+        for (const [name, data] of tarFixture.files) {
+          expect(tarMember(result.buffer, name).equals(data), name).toBe(true);
+        }
+        expect(tarNames(result.buffer, `inproc-${compressor.sources[0]}`).filter((name) => !name.endsWith('/')).sort()).toEqual([...tarFixture.files.keys()].sort());
         expect(spy.calls()).toHaveLength(0);
       },
       TEST_TIMEOUT_MS
@@ -263,13 +274,15 @@ describe('in-process route: the same results without any 7-Zip call', () => {
   }
 
   oracleTest(
-    'zst to tar returns the payload tar byte for byte through the dispatcher, with no 7-Zip call',
+    'zst to tar returns the payload files with their bytes through the dispatcher, with no 7-Zip call',
     [...TOOLS],
     async () => {
       tarFixture ??= buildTarFixture();
       const zst = execFileSync('zstd', ['-3', '-q', '-c'], { input: tarFixture.tar });
       const result = await dispatchConversion(zst, 'zst', 'tar', {}, 'fixture.tar.zst');
-      expect(result.buffer.equals(tarFixture.tar)).toBe(true);
+      for (const [name, data] of tarFixture.files) {
+        expect(tarMember(result.buffer, name).equals(data), name).toBe(true);
+      }
       expect(spy.calls()).toHaveLength(0);
     },
     TEST_TIMEOUT_MS

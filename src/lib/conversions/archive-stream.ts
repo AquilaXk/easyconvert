@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import type { ArchiveCollisionPolicy } from '../types';
+import { ConversionFailedError, type ArchiveCollisionPolicy } from '../types';
 import { SandboxedBufferLimitError, executeSandboxedBinary } from '../security/process-sandbox';
 import { getMaxInMemoryBytes } from '../storage/errors';
 import {
@@ -12,6 +12,7 @@ import {
   listSevenZipEntries,
   listTarEntries,
   readTarEntries,
+  type TarEntry,
 } from './archive';
 import {
   type ListedArchiveEntry,
@@ -31,7 +32,8 @@ import { classifyUnpacked, type StreamSource } from './archive-stream-route';
  * Archive-to-archive conversions that never extract to a directory (routing: archive-stream-route.ts).
  *
  *  - streamToTar: `7z x -so` writes the unpacked stream to a pipe; the byte count is bounded while it flows, so a bomb
- *    is cut off after the cap, not after it has been written out.
+ *    is cut off after the cap, not after it has been written out. A payload tar is read with this module's reader,
+ *    vetted, and written again from its entries; the bytes of an untrusted archive are never handed on as they are.
  *  - sevenZipToTar: the file table is read in process (header only), vetted by the extraction policy, and the members
  *    come out of one `7z x -so` call in table order, to be cut up by their stated sizes and checked by their CRC-32.
  *  - stageTarForSevenZip: the tar is read and vetted in process and written once into a staging tree for `7z a`.
@@ -48,7 +50,13 @@ const TAR_END_OF_ARCHIVE = Buffer.alloc(2 * TAR_BLOCK_BYTES);
 const STDERR_ALLOWANCE_BYTES = 64 * 1024;
 const DEFAULT_FILE_MODE = 0o644;
 const DEFAULT_DIRECTORY_MODE = 0o755;
-const PERMISSION_BITS = 0o7777;
+/** Only the rwx bits of an untrusted mode are carried over: setuid, setgid and sticky never reach a tar or a 7z. */
+const PERMISSION_BITS = 0o777;
+const TAR_SIZE_FIELD_OFFSET = 124;
+const TAR_SIZE_FIELD_BYTES = 12;
+const TAR_OCTAL_RADIX = 8;
+const MILLISECONDS_PER_SECOND = 1000;
+const ARCHIVE_BOMB_MARKER = 'Archive bomb detected';
 const OWNER_READ_WRITE = 0o600;
 const OWNER_ALL = 0o700;
 
@@ -115,31 +123,92 @@ function memberNameFor(originalFilename: string): string {
 
 /** A tar around one member: its header, the bytes, block padding and the end-of-archive marker. */
 function wrapAsMember(name: string, data: Buffer): Uint8Array[] {
-  const segments: Uint8Array[] = [buildTarEntryHeaders({ filename: name, size: data.length }), data];
-  pushPadding(segments, data.length);
+  const segments: Uint8Array[] = [];
+  pushFileMember(segments, name, data, DEFAULT_FILE_MODE, undefined);
   segments.push(TAR_END_OF_ARCHIVE);
   return segments;
 }
 
+/** The header of a file entry must state exactly the number of bytes the caller is about to write after it. */
+function assertHeaderDeclaresSize(header: Buffer, size: number): void {
+  const field = header.subarray(header.length - TAR_BLOCK_BYTES + TAR_SIZE_FIELD_OFFSET, header.length - TAR_BLOCK_BYTES + TAR_SIZE_FIELD_OFFSET + TAR_SIZE_FIELD_BYTES);
+  const declared = Number.parseInt(field.toString('ascii'), TAR_OCTAL_RADIX);
+  if (declared !== size) {
+    throw new ConversionFailedError(`Cannot write TAR archive: the header of a member declares ${declared} bytes where ${size} follow.`);
+  }
+}
+
+/** A regular file as a header, its bytes and block padding. */
+function pushFileMember(segments: Uint8Array[], name: string, data: Uint8Array, mode: number, mtime: Date | undefined): void {
+  const header = buildTarEntryHeaders({ filename: name, size: data.length, directory: false, mode, mtime });
+  assertHeaderDeclaresSize(header, data.length);
+  segments.push(header, data);
+  pushPadding(segments, data.length);
+}
+
+/** The entry that stays when a path is stored twice: the last one, which is what an extraction leaves on disk. */
+function lastEntryPerPath(entries: TarEntry[]): TarEntry[] {
+  const lastIndex = new Map<string, number>();
+  entries.forEach((entry, index) => lastIndex.set(entry.filename, index));
+  return entries.filter((entry, index) => lastIndex.get(entry.filename) === index);
+}
+
+/** A new tar written from vetted entries: canonical headers, no trailing data, no mode bits beyond rwx. */
+function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
+  const segments: Uint8Array[] = [];
+  for (const entry of lastEntryPerPath(entries)) {
+    if (entry.type === 'symlink' || entry.type === 'hardlink') continue; // vetted: only reached when links are being skipped
+    const mode = entry.mode & PERMISSION_BITS;
+    const mtime = new Date(entry.mtime * MILLISECONDS_PER_SECOND);
+    if (entry.type === 'directory') {
+      segments.push(buildTarEntryHeaders({ filename: entry.filename, size: 0, directory: true, mode, mtime }));
+    } else if (entry.type === 'file') {
+      pushFileMember(segments, entry.filename, entry.buffer, mode, mtime);
+    } else {
+      throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
+    }
+  }
+  segments.push(TAR_END_OF_ARCHIVE);
+  return segments;
+}
+
+interface TarPolicyRequest {
+  skipLinks?: boolean;
+  collisionPolicy?: ArchiveCollisionPolicy;
+}
+
+/** A tar that cannot be read is unreadable; one that trips the reader's size or count guard stays the bomb it is. */
+function unreadableTarError(err: unknown): Error {
+  if (err instanceof Error && err.message.includes(ARCHIVE_BOMB_MARKER)) return err;
+  return new UnreadableArchiveError(
+    `Could not read the archive: the tar inside it is malformed (${err instanceof Error ? err.message : String(err)}).`
+  );
+}
+
 /**
- * Whether the unpacked bytes are a tar the caller may be handed as it is. A tar is listed with the same policy an
- * extraction applies (traversal, links, devices, entry and size caps); a payload that merely looks like one by its
- * header checksum, and cannot be read as one, is an ordinary file.
+ * Reads a tar payload with this module's own reader and vets its entries with the full extraction policy (names,
+ * links under `skipLinks`, devices, entry and size caps, collisions). What the reader did not read (data after the
+ * end-of-archive blocks, bytes a different reader would interpret differently) is not in the result.
  */
-function isVettedTar(unpacked: Buffer, archiveBytes: number): boolean {
-  const kind = classifyUnpacked(unpacked);
-  if (kind === 'plain') return false;
+function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPolicyRequest): { entries: TarEntry[]; skippedLinks: string[] } {
   let listing: ListedArchiveEntry[];
   try {
-    listing = listTarEntries(unpacked);
+    listing = listTarEntries(tar);
   } catch (err) {
-    if (kind === 'maybe-tar') return false;
-    throw new UnreadableArchiveError(
-      `Could not read the archive: the tar inside it is malformed (${err instanceof Error ? err.message : String(err)}).`
-    );
+    throw unreadableTarError(err);
   }
-  assertSafeArchiveListing(listing, archiveBytes, LIMITS);
-  return true;
+  let skippedLinks: string[];
+  try {
+    skippedLinks = assertSafeArchiveListing(listing, archiveBytes, LIMITS, { skipLinks: request.skipLinks }).skippedLinks;
+    assertCollisionPolicy(listing, request.collisionPolicy);
+  } catch (err) {
+    throw toArchiveFailure(err, 'archive', 'list', LIMITS, false);
+  }
+  try {
+    return { entries: readTarEntries(tar, { ignoreLinks: true }), skippedLinks };
+  } catch (err) {
+    throw unreadableTarError(err);
+  }
 }
 
 async function runSevenZip(
@@ -163,8 +232,9 @@ async function runSevenZip(
 }
 
 /**
- * A single-stream compressor (xz, gzip, bzip2) to tar. The unpacked bytes are the tar when the payload is one;
- * otherwise a one-member tar is written around them, named after the source file.
+ * A single-stream compressor (xz, gzip, bzip2) to tar. A payload that is a tar is read, vetted with the request's
+ * policy and written again from its entries; otherwise a one-member tar is written around the bytes, named after the
+ * source file.
  */
 export async function streamToTar(request: StreamRunOptions & { compressor: StreamSource['compressor'] }): Promise<StreamedArchive> {
   const archiveBytes = sourceBytes(request.source);
@@ -178,8 +248,12 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
     onLimit: () => unpackedBytesCapError(archiveBytes, LIMITS),
   });
   if (unpacked.length > cap) throw unpackedBytesCapError(archiveBytes, LIMITS);
-  if (isVettedTar(unpacked, archiveBytes)) return { segments: [unpacked], skippedLinks: [] };
-  return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
+  // A first block that passes the tar header test makes the payload a tar, and one that then fails to read is damaged.
+  if (classifyUnpacked(unpacked) === 'plain') {
+    return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
+  }
+  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
+  return { segments: tarFromEntries(entries), skippedLinks };
 }
 
 function toListedEntry(file: ReturnType<typeof listSevenZipEntries>['files'][number]): ListedArchiveEntry {
