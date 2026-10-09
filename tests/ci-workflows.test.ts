@@ -371,3 +371,46 @@ describe('the verify gate of ci.yml', () => {
     expect(gate('false', { ...skippedHeavy, changes: 'failure' })).toBe(1);
   });
 });
+
+describe('the automerge workflow', () => {
+  const automerge = parse(read(path.join(WORKFLOWS, 'automerge.yml'))) as Workflow;
+  const step = automerge.jobs.enable.steps.find((s) => s.name === 'Enable squash auto-merge');
+
+  it('passes the title and body through the environment, not into the script', () => {
+    expect(step?.env?.PR_TITLE).toBe('${{ github.event.pull_request.title }}');
+    expect(step?.env?.PR_BODY).toBe('${{ github.event.pull_request.body }}');
+    expect(step?.run ?? '').not.toContain('github.event.pull_request');
+  });
+
+  it.skipIf(skipUnless('bash', spawnSync('bash', ['--version']).status === 0))(
+    'squashes with the PR title and a body without tool attribution lines',
+    () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'automerge-'));
+      const bin = path.join(dir, 'bin');
+      mkdirSync(bin);
+      // A stand-in gh records its arguments and the body file it was given.
+      writeFileSync(path.join(bin, 'gh'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/args"\nwhile [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$RUNNER_TEMP/body"; shift; done\n', { mode: 0o755 });
+      const body = [
+        '## Summary',
+        '',
+        '- Fix the reader.',
+        'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>',
+        'Claude-Session: https://claude.ai/code/session_x',
+        '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+        'https://claude.ai/code/session_x',
+        'Co-authored-by: Jane Doe <jane@example.org>',
+      ].join('\n');
+      const result = spawnSync('bash', ['-e', '-c', step?.run ?? ''], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, PR_NUMBER: '42', PR_TITLE: 'Fix the reader', PR_BODY: body, GITHUB_REPOSITORY: 'o/r' },
+        encoding: 'utf-8',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const args = readFileSync(path.join(dir, 'args'), 'utf-8').split('\n');
+      expect(args.slice(0, 6)).toEqual(['pr', 'merge', '42', '--repo', 'o/r', '--auto']);
+      expect(args).toContain('--squash');
+      expect(args[args.indexOf('--subject') + 1]).toBe('Fix the reader (#42)');
+      expect(readFileSync(path.join(dir, 'body'), 'utf-8')).toBe('## Summary\n\n- Fix the reader.\nCo-authored-by: Jane Doe <jane@example.org>\n');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  );
+});
