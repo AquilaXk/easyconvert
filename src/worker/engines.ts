@@ -107,6 +107,7 @@ import {
   sevenZipReadPasswordInput,
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
+import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import {
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
@@ -823,6 +824,8 @@ interface Package7zArchiveParams {
   timeout: number;
   maxBuffer: number;
   options?: WorkerEngineOptions;
+  /** Validated level, passed to 7-Zip as `-mx`. */
+  compressionLevel: number;
 }
 
 /**
@@ -855,7 +858,8 @@ async function assertCreatedArchiveEncrypted(
 }
 
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
-  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
+  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options, compressionLevel } = params;
+  const levelArgs = [`-mx=${compressionLevel}`];
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
@@ -878,7 +882,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     } else if (isTarBz2) {
       subType = '-tbzip2';
     }
-    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, tempOutputPath, tarPath], {
+    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, ...levelArgs, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
@@ -907,7 +911,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
       ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
-  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...(tgt === 'tar' ? [] : levelArgs), ...pwArgs, tempOutputPath, '.'], {
     cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
@@ -1073,6 +1077,8 @@ export async function convertWithNative7z(
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   assertArchivePasswordSafe(options.password);
+  // Refused before any tool runs; the pack steps read the same validated value.
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
 
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
@@ -1186,6 +1192,7 @@ export async function convertWithNative7z(
         timeout,
         maxBuffer,
         options,
+        compressionLevel,
       });
     } catch (err) {
       throw toPackagingFailure(err, tgt);
