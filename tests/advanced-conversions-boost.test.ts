@@ -206,6 +206,8 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
 
     /** Character error rate allowed for clean, large, machine-rendered text. */
     const MAX_CLEAN_TEXT_CER_PERCENT = 5;
+    /** Real recognition runs here; under a loaded test shard it can take well over the default 5 s. */
+    const OCR_TEST_TIMEOUT_MS = 60_000;
 
     oracleTest('generates a searchable PDF whose invisible text layer holds the page text, as pdftotext reads it', ['tesseract', 'pdftotext'], async () => {
       const expected = 'SEARCHABLE PDF ZERO RETENTION';
@@ -221,7 +223,7 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       const searchablePdf = await generateSearchablePdf(scannedImage, ocrResult, {}, 'Test Document');
       expect(searchablePdf.toString('ascii', 0, 4)).toBe('%PDF');
       expect(characterErrorRatePercent(expected, popplerText(searchablePdf))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
-    });
+    }, OCR_TEST_TIMEOUT_MS);
 
     oracleTest('converts an image directly to a searchable PDF when ocrEnabled is true', ['tesseract', 'pdftotext'], async () => {
       const img = await renderPage(900, 200, [{ text: 'OCR SEARCH', y: 130, size: 72 }]);
@@ -231,7 +233,7 @@ describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
       expect(characterErrorRatePercent('OCR SEARCH', result.ocrExtractedText ?? '')).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
       expect(result.ocrConfidence).toBeGreaterThan(0.7);
       expect(characterErrorRatePercent('OCR SEARCH', popplerText(result.buffer))).toBeLessThanOrEqual(MAX_CLEAN_TEXT_CER_PERCENT);
-    });
+    }, OCR_TEST_TIMEOUT_MS);
   });
 
   describe('Domain: Document & Ebook Semantic Enhancements', () => {
