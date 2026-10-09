@@ -307,21 +307,24 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
   if (files.length === 0) return null;
 
   const listed = files.map(toListedEntry);
+  // 7-Zip streams the data of every member, a skipped link's included, so every size counts toward the caps.
   let skippedLinks: string[];
+  let streamBytes: number;
   try {
-    skippedLinks = assertSafeArchiveListing(listed, archive.length, LIMITS, { skipLinks: request.skipLinks }).skippedLinks;
+    const verdict = assertSafeArchiveListing(listed, archive.length, LIMITS, { skipLinks: request.skipLinks, countLinkBytes: true });
+    skippedLinks = verdict.skippedLinks;
+    streamBytes = verdict.totalBytes;
     assertCollisionPolicy(listed, request.collisionPolicy);
   } catch (err) {
     throw toArchiveFailure(err, 'archive', 'list', LIMITS, false);
   }
-
-  const streamBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const cap = unpackedBytesCap(archive.length, LIMITS);
   const unpacked =
     streamBytes === 0
       ? Buffer.alloc(0)
       : await withArchiveFile(request.source, '7z', (archivePath) =>
           runSevenZip(request.p7zBin, ['x', '-so', '-y', archivePath], {
-            maxBuffer: streamBytes + STDERR_ALLOWANCE_BYTES,
+            maxBuffer: Math.min(streamBytes, cap) + STDERR_ALLOWANCE_BYTES,
             timeoutMs: request.timeoutMs,
             signal: request.signal,
             onLimit: () => new UnreadableArchiveError('Could not read the archive: 7-Zip produced more data than the archive header declares.'),

@@ -436,9 +436,24 @@ function assertSafeEntryPath(rawPath: string): void {
   }
 }
 
+/** The running total with one entry's declared size added; a size that is not a safe integer, or a total over the cap, is refused. */
+function addDeclaredBytes(total: number, entry: ListedArchiveEntry, limits: ArchiveExtractionLimits): number {
+  if (entry.sizeBytes === null || !Number.isSafeInteger(entry.sizeBytes) || entry.sizeBytes < 0) {
+    throw new UnsafeArchiveError('malformed-listing', 'Archive listing is missing a valid size for a file entry.');
+  }
+  const sum = total + entry.sizeBytes;
+  if (sum > limits.MAX_UNCOMPRESSED_SIZE) throw sizeError(limits);
+  return sum;
+}
+
 export interface ListingPolicyOptions {
   /** Let link entries pass (reported in `skippedLinks`) instead of rejecting the archive. */
   skipLinks?: boolean;
+  /**
+   * Count the declared size of a skipped link toward the size cap and the ratio. For a caller whose reader still
+   * streams a link's data (`7z x -so` writes it out like any file's) even though the link itself is left out.
+   */
+  countLinkBytes?: boolean;
 }
 
 /**
@@ -470,6 +485,7 @@ export function assertSafeArchiveListing(
         throw new UnsafeArchiveError('link-entry', 'A link entry name contains a wildcard and cannot be skipped safely.');
       }
       skippedLinks.push(entry.path);
+      if (policy.countLinkBytes) totalBytes = addDeclaredBytes(totalBytes, entry, limits);
       continue;
     }
     if (entry.isSpecial) {
@@ -487,14 +503,8 @@ export function assertSafeArchiveListing(
       if (entry.isDirectory || entry.wrapperPayload) continue;
       throw new UnsafeArchiveError('malformed-listing', 'Archive listing is missing a valid size for a file entry.');
     }
-    if (!Number.isSafeInteger(entry.sizeBytes)) {
-      throw new UnsafeArchiveError('malformed-listing', 'Archive listing is missing a valid size for a file entry.');
-    }
     // Every non-link entry counts, directories included: a patched header can make a "directory" carry data.
-    totalBytes += entry.sizeBytes;
-    if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
-      throw sizeError(limits);
-    }
+    totalBytes = addDeclaredBytes(totalBytes, entry, limits);
     if (entry.isDirectory && entry.sizeBytes > 0) {
       throw new UnsafeArchiveError('malformed-listing', 'Archive directory entry declares file data.');
     }

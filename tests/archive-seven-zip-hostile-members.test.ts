@@ -8,7 +8,7 @@ import { convertWithNative7z } from '../src/worker/engines';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { hostileTarMember, pythonTarEntries, pythonTarMember } from './helpers/hostile-tar';
 import { oracleTest } from './helpers/oracle-test';
-import { craftSevenZip } from './helpers/seven-zip-craft';
+import { craftSevenZip, S_IFLNK, unixAttributes } from './helpers/seven-zip-craft';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
 
 /**
@@ -19,6 +19,9 @@ import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
  */
 const TOOLS = ['7z', 'python3'] as const;
 const TEST_TIMEOUT_MS = 120_000;
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
+const SYMLINK_ATTRIBUTES = unixAttributes(S_IFLNK | 0o777, 0x20);
 
 let workDir = '';
 let spy: SevenZipSpy;
@@ -98,4 +101,51 @@ describe('a file member whose name ends in a path separator', () => {
     expect(() => buildTarEntryHeaders({ filename: 'x/', size: 5, directory: false })).toThrow(/ends with a slash/);
     expect(buildTarEntryHeaders({ filename: 'x/', size: 0 }).subarray(156, 157).toString()).toBe('5');
   });
+});
+
+describe('a link member that declares data', () => {
+  /** 7-Zip stores a symlink as a member whose data is the target, and `7z x -so` writes that data to the pipe like any file's. */
+  function archiveWithLink(declaredSize: number): Buffer {
+    return craftSevenZip([
+      { name: 'ok.txt', data: Buffer.from('fine') },
+      { name: 'link', data: Buffer.from('target'), declaredSize, attributes: SYMLINK_ATTRIBUTES },
+    ]);
+  }
+
+  oracleTest(
+    'counts toward the compression-ratio cap even when links are skipped, before 7-Zip is asked to stream anything',
+    [...TOOLS],
+    async () => {
+      const archive = archiveWithLink(400 * MIB);
+      expect(sevenZipFields(archive, 'link-ratio').map((fields) => [fields.get('Path'), fields.get('Size')])).toEqual([
+        ['ok.txt', '4'],
+        ['link', String(400 * MIB)],
+      ]);
+      await expect(convertWithNative7z(archive, '7z', 'tar', { skipLinks: true }, 'link-ratio.7z')).rejects.toMatchObject({
+        name: 'UnsafeArchiveError',
+        reason: 'compression-ratio',
+      });
+      expect(spy.calls().filter((call) => call[0] === 'x')).toHaveLength(0);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  for (const gibibytes of [2, 3]) {
+    oracleTest(
+      `counts toward the size cap when it declares ${gibibytes} GiB: a typed error, not a RangeError from a buffer that large`,
+      [...TOOLS],
+      async () => {
+        const archive = archiveWithLink(gibibytes * GIB);
+        const outcome = await convertWithNative7z(archive, '7z', 'tar', { skipLinks: true }, 'link-size.7z').then(
+          () => null,
+          (error: unknown) => error
+        );
+        expect(outcome).toBeInstanceOf(Error);
+        expect(outcome).not.toBeInstanceOf(RangeError);
+        expect(outcome).toMatchObject({ name: 'UnsafeArchiveError', reason: 'uncompressed-size' });
+        expect(spy.calls().filter((call) => call[0] === 'x')).toHaveLength(0);
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
 });
