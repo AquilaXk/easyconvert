@@ -1,3 +1,6 @@
+// First import on purpose: modules evaluate in import order, so a bad production configuration stops the worker
+// (non-zero exit, ConfigurationError on stderr) before any later import connects to a queue, a store or a bucket.
+import { workerConfig } from '../lib/config/worker-startup';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -28,12 +31,12 @@ export interface WorkerLifecycleConfig {
 
 export function getWorkerLifecycleConfig(): WorkerLifecycleConfig {
   return {
-    concurrency: Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10),
-    maxJobsBeforeRecycle: Number.parseInt(process.env.WORKER_MAX_JOBS || '1000', 10),
-    maxRssMbBeforeRecycle: Number.parseInt(process.env.WORKER_MAX_RSS_MB || '4096', 10),
-    drainTimeoutMs: Number.parseInt(process.env.WORKER_DRAIN_TIMEOUT_MS || '60000', 10),
-    heartbeatIntervalMs: Number.parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS || '5000', 10),
-    heartbeatFilePath: process.env.WORKER_HEARTBEAT_FILE || path.join(os.tmpdir(), 'worker-heartbeat.json'),
+    concurrency: workerConfig.WORKER_CONCURRENCY,
+    maxJobsBeforeRecycle: workerConfig.WORKER_MAX_JOBS,
+    maxRssMbBeforeRecycle: workerConfig.WORKER_MAX_RSS_MB,
+    drainTimeoutMs: workerConfig.WORKER_DRAIN_TIMEOUT_MS,
+    heartbeatIntervalMs: workerConfig.WORKER_HEARTBEAT_INTERVAL_MS,
+    heartbeatFilePath: workerConfig.WORKER_HEARTBEAT_FILE ?? path.join(os.tmpdir(), 'worker-heartbeat.json'),
   };
 }
 

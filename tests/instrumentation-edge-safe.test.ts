@@ -13,14 +13,24 @@ import path from 'node:path';
 const source = fs.readFileSync(path.join(__dirname, '../src/instrumentation.ts'), 'utf-8');
 const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
+const GUARD = /if \(process\.env\.NEXT_RUNTIME === 'nodejs'\) \{([\s\S]*?)\n  \}/;
+const NODE_ONLY_IMPORTS = ["import('./lib/config/web-startup')", "import('./lib/storage/selected-storage')"];
+
 describe('src/instrumentation.ts', () => {
-  it('loads the storage selection only inside a positive Node runtime check', () => {
-    const guarded = /if \(process\.env\.NEXT_RUNTIME === 'nodejs'\) \{\s*await import\('\.\/lib\/storage\/selected-storage'\);\s*\}/;
-    expect(code.match(guarded)?.length).toBe(1);
+  it('loads the configuration check and the storage selection only inside a positive Node runtime check', () => {
+    const guarded = GUARD.exec(code);
+    expect(guarded?.[1].match(/import\('[^']+'\)/g)).toEqual(NODE_ONLY_IMPORTS);
+    expect(code.replace(GUARD, '').match(/import\(/g)).toBeNull();
   });
 
-  it('does not guard the import with an early return that the Edge bundler cannot remove', () => {
+  it('does not guard the imports with an early return that the Edge bundler cannot remove', () => {
     expect(code.includes("NEXT_RUNTIME !== 'nodejs'")).toBe(false);
-    expect(code.match(/import\('\.\/lib\/storage\/selected-storage'\)/g)?.length).toBe(1);
+    for (const nodeOnlyImport of NODE_ONLY_IMPORTS) {
+      expect(code.split(nodeOnlyImport).length - 1, nodeOnlyImport).toBe(1);
+    }
+  });
+
+  it('validates the configuration before the storage selection loads', () => {
+    expect(code.indexOf("import('./lib/config/web-startup')")).toBeLessThan(code.indexOf("import('./lib/storage/selected-storage')"));
   });
 });
