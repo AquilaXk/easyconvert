@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 97 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 106 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -196,6 +196,15 @@ Generate a secret with `openssl rand -hex 32`.
 | `GRAPH_URL_IMPORT_MAX_BYTES` | integer, at least 1 | `5368709120` | no | web, worker |
 | `EASYCONVERT_MAX_INPUT_PIXELS` | integer, at least 1 | `100000000` | no | web, worker |
 | `EASYCONVERT_PDF_TEXT_DEADLINE_MS` | integer, 1 to 2147483647 | `60000` | no | web, worker |
+| `JOB_DEADLINE_BASE_MS_FREE` | integer, 1 to 2147483647 | `60000` | no | web, worker |
+| `JOB_DEADLINE_BASE_MS_PRO` | integer, 1 to 2147483647 | `120000` | no | web, worker |
+| `JOB_DEADLINE_BASE_MS_ENTERPRISE` | integer, 1 to 2147483647 | `180000` | no | web, worker |
+| `JOB_DEADLINE_MAX_MS_FREE` | integer, 1 to 2147483647 | `600000` | no | web, worker |
+| `JOB_DEADLINE_MAX_MS_PRO` | integer, 1 to 2147483647 | `1800000` | no | web, worker |
+| `JOB_DEADLINE_MAX_MS_ENTERPRISE` | integer, 1 to 2147483647 | `3600000` | no | web, worker |
+| `JOB_DEADLINE_PER_PAGE_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
+| `JOB_DEADLINE_PER_MIB_MS` | integer, 1 to 2147483647 | `2000` | no | web, worker |
+| `JOB_DEADLINE_PER_MEDIA_SECOND_MS` | integer, 1 to 2147483647 | `3000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_GRID_CELLS` | integer, at least 1 | `4194304` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS` | integer, at least 1 | `500000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
@@ -210,6 +219,15 @@ Generate a secret with `openssl rand -hex 32`.
 - `GRAPH_URL_IMPORT_MAX_BYTES`: Largest body, in bytes, that an `import.url` graph node downloads.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
+- `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
+- `JOB_DEADLINE_BASE_MS_PRO`: Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.
+- `JOB_DEADLINE_BASE_MS_ENTERPRISE`: Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.
+- `JOB_DEADLINE_MAX_MS_FREE`: Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.
+- `JOB_DEADLINE_MAX_MS_PRO`: Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.
+- `JOB_DEADLINE_MAX_MS_ENTERPRISE`: Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.
+- `JOB_DEADLINE_PER_PAGE_MS`: Milliseconds added to a job deadline for each page of a document (the page limit of the tier when the count is unknown). The default is the OCR page budget.
+- `JOB_DEADLINE_PER_MIB_MS`: Milliseconds added to a job deadline for each started MiB of input.
+- `JOB_DEADLINE_PER_MEDIA_SECOND_MS`: Milliseconds added to a job deadline for each second of audio or video, when the length is known.
 - `EASYCONVERT_XLS_MAX_GRID_CELLS`: Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.
 - `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS`: Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.
 - `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).

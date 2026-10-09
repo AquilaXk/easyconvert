@@ -29,6 +29,8 @@ export type { Config, ConfigName, ProcessRole, VariableSpec } from './schema';
  */
 
 const PRODUCTION = 'production';
+/** Tiers whose job deadline base must not exceed their maximum (src/lib/queue/job-deadline.ts). */
+const JOB_DEADLINE_TIERS = ['FREE', 'PRO', 'ENTERPRISE'] as const;
 const PRODUCTION_BUILD_PHASE = 'phase-production-build';
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -136,6 +138,14 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
     for (const group of PRODUCTION_ANY_OF_GROUPS) {
       if (!appliesTo(group.roles, options.role) || group.names.some((name) => isSet.has(name))) continue;
       failures.push({ variable: group.names[0], rule: `one of ${group.names.join(', ')} is required in production` });
+    }
+  }
+
+  for (const tier of JOB_DEADLINE_TIERS) {
+    const base = values.get(`JOB_DEADLINE_BASE_MS_${tier}`);
+    const max = values.get(`JOB_DEADLINE_MAX_MS_${tier}`);
+    if (typeof base === 'number' && typeof max === 'number' && base > max) {
+      failures.push({ variable: `JOB_DEADLINE_BASE_MS_${tier}`, rule: `must not exceed JOB_DEADLINE_MAX_MS_${tier}` });
     }
   }
 
