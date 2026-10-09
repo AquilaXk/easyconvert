@@ -35,8 +35,8 @@ The document family reads its inputs from `tests/fixtures/document` and `tests/f
 | compression | tar to zst and 7z; zst, xz and 7z back to tar | size ratio, compress and decompress MB/s; every output is decoded by the reference tool and compared with the original bytes | `zstd`, `7z`, `xz` |
 
 Throughput rows time ours and the reference alternately in one window (the order flips every run) and report the
-median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. A conversion of milliseconds is timed over five back-to-back calls per sample (the mean per call), so scheduler jitter does not decide it. Only the ratio is gated,
-so the result does not depend on the machine. Our side is called in-process and the reference is spawned, so small
+median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. A conversion of milliseconds is timed over five back-to-back calls per sample (the mean per call), so scheduler jitter does not decide it. Only the ratio is
+compared, never the absolute speed, so the result does not depend on the machine. Our side is called in-process and the reference is spawned, so small
 inputs favour the reference by the process start-up cost; the ratio is for tracking, not for ranking.
 
 The video rows use the same ffmpeg encoder arguments on both sides, so their BD-rate is 0 until the project's
@@ -46,9 +46,16 @@ encoder settings change; they exist to catch that change.
 
 Each baseline entry has a direction (`higher` or `lower` is better) and a tolerance (`abs`, `rel`; the larger
 applies). A measured row fails when our value is worse than the baseline value by more than the tolerance, when our
-delta to the reference is worse than the baseline delta by more than the tolerance, or (throughput) when the speed
-ratio is. Every failing metric is printed as `REGRESSION <row id>: ...`. Tolerances are edited by hand in
-`bench/baseline.json`; `--update-baseline` keeps them and only rewrites the numbers.
+delta to the reference is worse than the baseline delta by more than the tolerance. Every failing metric is printed as
+`REGRESSION <row id>: ...`. Tolerances are edited by hand in `bench/baseline.json`; `--update-baseline` keeps them and
+only rewrites the numbers.
+
+**Throughput rows never fail this gate.** On a shared runner the wall-clock time of a run moves by 10 to 20 percent
+between jobs, and a speed ratio against a spawned reference tool moves with it, so a stored number compared with a fixed
+tolerance fails on noise (the same code measured the office conversions 40 percent apart on two nights). A throughput
+row's ratio worse than its baseline entry by more than the tolerance is printed as `note <row id>: ...` and nothing
+else. Speed is judged only by the parity speed jobs, from ratios measured interleaved in one job and compared with the
+reference tool and, for tracked rows, with their own history (below). Quality rows are gated exactly as before.
 
 ## BD-rate
 
@@ -90,10 +97,16 @@ numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound i
 more pairs are added, up to 25 for light rows and 12 for video, OCR and office. An interval that still straddles 0.97 at
 the cap is a failure. The interval of a median is as wide as the noise of a single pair, so a row whose true ratio
 sits at the pass line ends UNSTABLE: ours has to be clearly at or above the reference, not merely not behind it.
-A side that finishes in milliseconds (the in-process document conversions, the Zstandard decode) is timed over
-`IN_PROCESS_REPEATS` back-to-back calls per sample, and the sample is the mean per call, so scheduler jitter does not
-decide a pair (`ctx.time(..., oursRepeats)`). Batching cuts noise; it cannot decide a row whose true ratio sits at the pass
-line, and such a row is tracked in `bench/parity-gaps.json`.
+**Minimum sample duration.** A timed sample of either side lasts at least `SPEED_MIN_SAMPLE_MS` (50 ms). Before the
+timed pairs, the warm-up rounds of a row are timed; the fastest single call of each side sets the number of back-to-back
+calls per sample, `ceil(50 / fastest call)` with at least 1 and at most `SPEED_MAX_SAMPLE_REPEATS` (1000), and each sample is
+the mean per call (`calibrateRepeats` in `bench/speed-parity.ts`). The fastest call is taken because it is the one least
+disturbed by the machine, which makes the count the safest. A row whose calls already last 50 ms, such as video, OCR and
+office conversions, runs one call per sample; a row of a millisecond, such as `document/pdf-text->txt`, runs 50 calls, so
+timer resolution and scheduler jitter are a small share of every sample instead of deciding the pair. The least calls
+of ours a family asks for (`ctx.time(..., oursRepeats)`, `IN_PROCESS_REPEATS`) still apply. The log of a parity run
+says which rows were batched. Batching cuts noise; it cannot decide a row whose true ratio sits at the pass line, and
+such a row is tracked in `bench/parity-gaps.json`.
 
 **Quality** of the reference side is deterministic for fixed tool versions, so it is cached in `.bench-cache/`
 (ignored by version control), keyed on the reference tool names and versions, the content hash of every corpus file, the
@@ -121,14 +134,35 @@ own name.
   never excuses a quality row: an entry only names the issue in the failure message (the image quality rows are tracked
   by #640 and still fail).
 - *A speed row that is not listed* has to pass the sign-test rule outright.
-- *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when it gets slower
-  than the `ratio` recorded for it: the upper bound of its speed-ratio interval below `ratio * (1 - SPEED_PARITY_TOLERANCE)`.
-  The baseline gate still applies to it. A tracked row that now passes the normal rule is reported as "now at parity:
-  remove it from bench/parity-gaps.json".
+- *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when it gets
+  slower than its own history predicts (next section). A tracked row that now passes the normal rule is reported as
+  "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
+  interval lower bound at or above 0.97 in the same job, unchanged.
 - *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
   #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497 (and the near-parity zstd decode row, `compression/mixed.zst->tar/throughput`, until it has an issue of its own; its note says so). Speed entries carry
-  the `ratio` they had when recorded, the lower of the baseline ratio and a local measurement; lower the entry only with
-  a reviewed reason, and remove it when the row reaches parity.
+  the latest CI-measured `ratio` for display and a `history` of the ratios of the latest runs; remove the entry when
+  the row reaches parity.
+
+**The boundary of a tracked row.** A tracked row used to fail when its ratio fell 3 percent under one recorded number;
+on a shared runner the same code moves a ratio by 5 to 10 percent between nights, so that rule failed on noise. The
+boundary is now taken from the row's history, the way a regression is separated from run-to-run variation in
+continuous benchmarking (`bench/speed-history.ts`):
+
+- `bench/parity-gaps.json` keeps, per tracked row, the median speed ratios of the latest `SPEED_HISTORY_MAX_POINTS` (10)
+  CI runs as `history: [{ ratio, at }]`, oldest first, with `at` the run's report time. Only `bench:refresh-speed --write`
+  writes it, and only from reports measured on the runner (the nightly `bench-speed-results` artifact or the
+  `parity-speed-results` artifact of a pull request); a laptop measurement cannot enter it, and refreshing the same
+  report twice adds nothing.
+- With the n historical ratios r_i, take x_i = ln r_i (ratios combine multiplicatively), their mean m and sample standard
+  deviation s. A new measurement is predicted, with 99 percent one-sided confidence (`SPEED_HISTORY_CONFIDENCE`), to be
+  above `exp(m - t * s * sqrt(1 + 1/n))`, where t is the Student's t quantile with n - 1 degrees of freedom (2.82 at
+  ten runs, 3.75 at five, 6.96 at three). This is a one-sided prediction bound for one new observation, not a bound on the
+  mean, so it includes the run-to-run variance of the runner.
+- The row fails only when the **upper end of the new interval** (the sign-test interval of the job's own pairs) is below
+  that bound: ours is then slower than the history allows even at the generous end of this job's measurement.
+- With fewer than `SPEED_HISTORY_MIN_POINTS` (3) runs there is no bound. The row is reported as `tracked-short-history`
+  and does not fail; each nightly adds a point. The bound is wide at three points and tightens as the history fills.
+- A tracked row's `ratio` field is the latest point rounded down, kept for display and for the gap note.
 
 The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
 the rows at or above the reference and the rows not evaluated.
@@ -161,9 +195,10 @@ npm run bench:refresh-speed -- --write speed-results    # rewrites baseline.json
 ```
 
 The command takes only reports measured on Linux under `ORACLE_STRICT_MODE=1` by a `--parity` run, without an injected
-regression; anything else is exit 2. It sets the baseline `ratio` of every measured speed row, and sets the `ratio` of a
-tracked gap to the median of its interval rounded down to two decimals (a note it generated is rewritten with it; a note
-written by hand stays). A row whose interval was still undecided at the cap changes nothing. A tracked row that now
+regression; anything else is exit 2. It sets the baseline `ratio` of every measured speed row (informational, see "Gate"), adds the median of each tracked
+gap's interval to its `history` (four decimals, the latest ten runs kept, ordered by the report's time), and sets the
+gap's `ratio` to the latest point rounded down to two decimals (a note it generated is rewritten with it; a note written
+by hand stays). Run it once per report: `bench:refresh-speed -- --write <run 1 artifact>`, then `... <run 2 artifact>`. A row whose interval was still undecided at the cap changes nothing. A tracked row that now
 passes is listed, not removed: delete its entry by hand in the same commit. Review the diff before committing.
 
 **Conformance durations.** Each part of the `conformance` job uploads `conformance-durations-<part>` (14 days):

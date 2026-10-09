@@ -1,6 +1,7 @@
 import fs from 'node:fs';
-import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION } from './config';
+import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './config';
 import { ReportSchemaError } from './errors';
+import type { SpeedHistoryPoint } from './speed-history';
 
 /**
  * Rows that are below the reference tool today, each with the issue that tracks it.
@@ -9,9 +10,10 @@ import { ReportSchemaError } from './errors';
  * comment, and the row still fails.
  *
  * A speed (throughput) row listed here is "tracked": being below the reference does not fail it, but getting slower
- * than the recorded `ratio` does (the upper bound of its speed-ratio interval below ratio * (1 - tolerance)), and a
- * tracked row that reaches parity is reported so its entry can be removed. A speed row that is not listed has to pass
- * the parity rule outright.
+ * than its history does (the upper bound of its speed-ratio interval below the lower edge of the one-sided prediction
+ * bound over the `history` of CI-measured ratios, bench/speed-history.ts; with too few points it is only reported),
+ * and a tracked row that reaches parity is reported so its entry can be removed. A speed row that is not listed has to
+ * pass the parity rule outright.
  */
 
 export interface GapEntry {
@@ -19,9 +21,11 @@ export interface GapEntry {
   id: string;
   /** The issue that tracks the gap; every entry has one. */
   issue: number;
-  /** Speed rows: the speed ratio (reference time / our time) the row had when the gap was recorded. Quality rows: null. */
+  /** Speed rows: the latest recorded speed ratio (reference time / our time), for display. Quality rows: null. */
   ratio: number | null;
   note: string;
+  /** Speed rows: the median ratios of the latest CI runs, oldest first, written by `bench:refresh-speed` only. */
+  history?: SpeedHistoryPoint[];
 }
 
 const THROUGHPUT_SUFFIX = '/throughput';
@@ -33,6 +37,24 @@ export interface GapFile {
 }
 
 const ROW_ID_PATTERN = /^[a-z]+\/[^/]+\/[a-z0-9_]+$/;
+
+const RUN_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+function validateHistory(value: unknown, path: string): SpeedHistoryPoint[] {
+  if (!Array.isArray(value)) throw new ReportSchemaError(`parity gaps: ${path} must be an array`);
+  if (value.length > SPEED_HISTORY_MAX_POINTS) throw new ReportSchemaError(`parity gaps: ${path} holds at most ${SPEED_HISTORY_MAX_POINTS} points`);
+  const points = (value as unknown[]).map((item, index): SpeedHistoryPoint => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) throw new ReportSchemaError(`parity gaps: ${path}[${index}] must be an object`);
+    const point = item as Record<string, unknown>;
+    if (typeof point.ratio !== 'number' || !Number.isFinite(point.ratio) || point.ratio <= 0) throw new ReportSchemaError(`parity gaps: ${path}[${index}].ratio must be a positive speed ratio`);
+    if (typeof point.at !== 'string' || !RUN_TIME_PATTERN.test(point.at)) throw new ReportSchemaError(`parity gaps: ${path}[${index}].at must be the UTC time of the run, like 2026-10-09T02:00:00.000Z`);
+    return { ratio: point.ratio, at: point.at };
+  });
+  for (let index = 1; index < points.length; index++) {
+    if (points[index - 1].at >= points[index].at) throw new ReportSchemaError(`parity gaps: ${path} must be ordered by run time, oldest first, one point per run`);
+  }
+  return points;
+}
 
 export function validateGaps(value: unknown): GapFile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ReportSchemaError('parity gaps: must be an object');
@@ -59,7 +81,12 @@ export function validateGaps(value: unknown): GapFile {
       throw new ReportSchemaError(`parity gaps: ${path}.ratio must be null for the quality row ${entry.id}, which a gap never excuses`);
     }
     if (typeof entry.note !== 'string' || entry.note === '') throw new ReportSchemaError(`parity gaps: ${path}.note must be a non-empty string`);
-    return { id: entry.id, issue, ratio: ratio as number | null, note: entry.note };
+    const parsed: GapEntry = { id: entry.id, issue, ratio: ratio as number | null, note: entry.note };
+    if (entry.history !== undefined) {
+      if (!isSpeedRowId(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.history is only for speed rows, and ${entry.id} is a quality row`);
+      parsed.history = validateHistory(entry.history, `${path}.history`);
+    }
+    return parsed;
   });
   return { schemaVersion: PARITY_SCHEMA_VERSION, gaps };
 }

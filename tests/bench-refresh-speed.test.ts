@@ -20,6 +20,8 @@ const FAST = 'document/report.docx->pdf/throughput';
 const NEAR = 'compression/mixed.zst->tar/throughput';
 const NEW_ROW = 'compression/mixed.7z->tar/throughput';
 const SSIM = 'image/photo-a.jpg->webp/ssim';
+const RUN_1 = '2026-01-01T00:00:00.000Z';
+const RUN_2 = '2026-01-02T00:00:00.000Z';
 
 function speedRow(id: string, over: Partial<BenchRow>): BenchRow {
   const [family, caseName, metric] = id.split('/');
@@ -98,14 +100,60 @@ describe('planning a speed refresh', () => {
   it('records a tracked gap as the interval median rounded down, and rewrites only a note it generated', () => {
     const plan = planSpeedRefresh([{ label: 'speed.json', report: report([speedRow(SLOW, { ratioMedian: 0.5278 }), speedRow(NEAR, { ratio: 0.8, ratioMedian: 0.8049 })]) }], baseline(), gaps());
     expect(plan.gaps.gaps).toEqual([
-      { id: SLOW, issue: 487, ratio: 0.52, note: 'speed ratio 0.52 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool' },
-      { id: NEAR, issue: 497, ratio: 0.8, note: 'TODO(lead): file a dedicated issue' },
+      {
+        id: SLOW,
+        issue: 487,
+        ratio: 0.52,
+        note: 'speed ratio 0.52 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool',
+        history: [{ ratio: 0.5278, at: RUN_1 }],
+      },
+      { id: NEAR, issue: 497, ratio: 0.8, note: 'TODO(lead): file a dedicated issue', history: [{ ratio: 0.8049, at: RUN_1 }] },
       gaps().gaps[2],
     ]);
     expect(plan.gapChanges).toEqual([
       { id: SLOW, before: 0.46, after: 0.52 },
       { id: NEAR, before: 0.92, after: 0.8 },
     ]);
+  });
+
+  it('appends the median ratio of each report to the history of a tracked row, oldest first, and sets the recorded ratio from the latest', () => {
+    const later = report([speedRow(SLOW, { ratioMedian: 0.4012 })], { generatedAt: RUN_2 });
+    const earlier = report([speedRow(SLOW, { ratioMedian: 0.5278 })]);
+    const first = planSpeedRefresh([{ label: 'run-2.json', report: later }], baseline(), gaps());
+    expect(first.gaps.gaps[0].history).toEqual([{ ratio: 0.4012, at: RUN_2 }]);
+    // Refreshing the earlier run afterwards slots it before: the latest run still sets the recorded ratio.
+    const second = planSpeedRefresh([{ label: 'run-1.json', report: earlier }], baseline(), first.gaps);
+    expect(second.gaps.gaps[0].history).toEqual([
+      { ratio: 0.5278, at: RUN_1 },
+      { ratio: 0.4012, at: RUN_2 },
+    ]);
+    expect(second.gaps.gaps[0].ratio).toBe(0.4);
+    expect(second.historyChanges).toEqual([{ id: SLOW, points: 2 }]);
+  });
+
+  it('adds nothing when the same run is refreshed again, and keeps only the latest ten runs', () => {
+    const once = planSpeedRefresh([{ label: 'run-1.json', report: report([speedRow(SLOW, { ratioMedian: 0.5278 })]) }], baseline(), gaps());
+    const again = planSpeedRefresh([{ label: 'run-1.json', report: report([speedRow(SLOW, { ratioMedian: 0.5278 })]) }], baseline(), once.gaps);
+    expect(again.gaps.gaps[0].history).toHaveLength(1);
+    expect(again.historyChanges).toEqual([]);
+    let current = gaps();
+    for (let day = 1; day <= 12; day++) {
+      const at = `2026-02-${String(day).padStart(2, '0')}T00:00:00.000Z`;
+      current = planSpeedRefresh([{ label: `run-${day}.json`, report: report([speedRow(SLOW, { ratioMedian: 0.4 + day / 100 })], { generatedAt: at }) }], baseline(), current).gaps;
+    }
+    const kept = current.gaps[0].history ?? [];
+    expect(kept).toHaveLength(10);
+    expect(kept[0]).toEqual({ ratio: 0.43, at: '2026-02-03T00:00:00.000Z' });
+    expect(kept[9]).toEqual({ ratio: 0.52, at: '2026-02-12T00:00:00.000Z' });
+  });
+
+  it('leaves the history of a tracked row alone when it now passes or was undecided at the cap', () => {
+    const history = [{ ratio: 0.46, at: RUN_1 }];
+    const withHistory: GapFile = { schemaVersion: 1, gaps: [{ ...gaps().gaps[0], history }, gaps().gaps[1], gaps().gaps[2]] };
+    const passing = planSpeedRefresh([{ label: 'a.json', report: report([speedRow(SLOW, { speedVerdict: 'pass', ratioMedian: 1.2 })], { generatedAt: RUN_2 }) }], baseline(), withHistory);
+    expect(passing.gaps.gaps[0].history).toEqual(history);
+    const unstable = planSpeedRefresh([{ label: 'b.json', report: report([speedRow(SLOW, { unstableAtCap: true })], { generatedAt: RUN_2 }) }], baseline(), withHistory);
+    expect(unstable.gaps.gaps[0].history).toEqual(history);
   });
 
   it('lists a tracked row that now passes instead of editing or removing its entry', () => {
@@ -184,6 +232,8 @@ describe('the command', () => {
     expect(lines).toContain('baseline speed ratios changed: 1');
     expect(lines).toContain(`  ${SLOW}: 0.46 -> 0.5`);
     expect(lines).toContain(`  ${SLOW}: 0.46 -> 0.52`);
+    expect(lines).toContain('tracked-gap histories extended: 1');
+    expect(lines).toContain(`  ${SLOW}: 1 of 10 runs kept`);
     expect(lines).toContain(`left unchanged, not in the reports: ${NEAR}`);
     expect([fs.readFileSync(f.baseline, 'utf8'), fs.readFileSync(f.gaps, 'utf8')]).toEqual(before);
   });
@@ -194,7 +244,7 @@ describe('the command', () => {
     const writtenBaseline = JSON.parse(fs.readFileSync(f.baseline, 'utf8')) as Baseline;
     const writtenGaps = JSON.parse(fs.readFileSync(f.gaps, 'utf8')) as GapFile;
     expect(writtenBaseline.entries[SLOW].ratio).toBe(0.5);
-    expect(writtenGaps.gaps[0]).toMatchObject({ id: SLOW, ratio: 0.52 });
+    expect(writtenGaps.gaps[0]).toMatchObject({ id: SLOW, ratio: 0.52, history: [{ ratio: 0.5278, at: RUN_1 }] });
     expect(fs.readFileSync(f.baseline, 'utf8').endsWith('}\n')).toBe(true);
   });
 

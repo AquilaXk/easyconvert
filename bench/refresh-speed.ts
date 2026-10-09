@@ -1,6 +1,6 @@
 /**
- * Refreshes the recorded speed ratios (`bench/baseline.json` throughput entries and `bench/parity-gaps.json` ratios)
- * from the benchmark reports a CI speed-parity run uploads. Speed depends on the machine, so a ratio recorded from
+ * Refreshes the recorded speed ratios (`bench/baseline.json` throughput entries and `bench/parity-gaps.json` ratios and
+ * run histories) from the benchmark reports a CI speed-parity run uploads. Speed depends on the machine, so a ratio recorded from
  * a laptop is wrong for the runner that enforces it: this command accepts only reports measured under
  * ORACLE_STRICT_MODE=1 on Linux (the runner), with no injected regression, by a `--parity` run.
  *
@@ -14,11 +14,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { BASELINE_PATH, MAX_JSON_BYTES, PARITY_GAPS_PATH, PARITY_VERDICT_FILE } from './config';
+import { BASELINE_PATH, MAX_JSON_BYTES, PARITY_GAPS_PATH, PARITY_VERDICT_FILE, SPEED_HISTORY_MAX_POINTS } from './config';
 import { BenchArgumentError, BenchError, ReportSchemaError } from './errors';
 import { type Baseline, buildBaseline, readBaseline } from './gate';
 import { type GapFile, isSpeedRowId, readGaps } from './parity-gaps';
 import { type BenchReport, type BenchRow, validateReport } from './report';
+import { appendSpeedHistory } from './speed-history';
 
 const EXIT_DONE = 0;
 const EXIT_UNUSABLE = 2;
@@ -35,11 +36,19 @@ export interface RatioChange {
   after: number;
 }
 
+export interface HistoryChange {
+  id: string;
+  /** Runs the row's history holds afterwards. */
+  points: number;
+}
+
 export interface SpeedRefresh {
   baseline: Baseline;
   gaps: GapFile;
   baselineChanges: RatioChange[];
   gapChanges: RatioChange[];
+  /** Tracked rows whose history gained a run. */
+  historyChanges: HistoryChange[];
   /** Tracked rows that now pass the parity rule: remove their entries from bench/parity-gaps.json. */
   nowAtParity: string[];
   /** Tracked rows whose interval was still undecided at the cap: their ratio is not trustworthy, so it is left alone. */
@@ -74,18 +83,22 @@ const showRatio = (value: number): string => Number(value.toFixed(2)).toString()
  * New baseline and gap files from CI speed reports.
  *
  * - Every measured speed row sets its baseline ratio (a row without an entry gets one). Quality entries are untouched.
- * - A tracked row below the reference gets the median of its interval, rounded down to two decimals, as its recorded
- *   ratio. A tracked row that now passes keeps its entry and is listed, so the removal is a reviewed edit.
+ * - A tracked row below the reference gets the median of its interval added to its history (the latest
+ *   SPEED_HISTORY_MAX_POINTS runs, one point per report, ordered by the report's time), and the latest point rounded
+ *   down to two decimals as its recorded ratio. A tracked row that now passes keeps its entry and is listed, so the
+ *   removal is a reviewed edit.
  * - A row that was still undecided at the cap changes nothing: its median is noise.
  */
 export function planSpeedRefresh(reports: ReadonlyArray<{ label: string; report: BenchReport }>, baseline: Baseline, gaps: GapFile): SpeedRefresh {
   if (reports.length === 0) throw new SpeedRefreshError('no report to refresh from');
   const measured = new Map<string, BenchRow>();
+  const measuredAt = new Map<string, string>();
   for (const { label, report } of reports) {
     checkMeasuredOnRunner(report, label);
     for (const row of speedRows(report, label)) {
       if (measured.has(row.id)) throw new SpeedRefreshError(`${label}: ${row.id} is also in an earlier report; refresh from one run per row`);
       measured.set(row.id, row);
+      measuredAt.set(row.id, report.generatedAt);
     }
   }
   if (measured.size === 0) throw new SpeedRefreshError('the reports hold no measured speed row');
@@ -100,6 +113,7 @@ export function planSpeedRefresh(reports: ReadonlyArray<{ label: string; report:
   }
 
   const gapChanges: RatioChange[] = [];
+  const historyChanges: HistoryChange[] = [];
   const nowAtParity: string[] = [];
   const leftUnstable: string[] = [];
   const notInReports: string[] = [];
@@ -118,16 +132,19 @@ export function planSpeedRefresh(reports: ReadonlyArray<{ label: string; report:
       nowAtParity.push(gap.id);
       return gap;
     }
-    const after = floorRatio(row.ratioMedian as number);
+    const runAt = measuredAt.get(gap.id) as string;
+    const history = appendSpeedHistory(gap.history ?? [], row.ratioMedian as number, runAt);
+    if (!(gap.history ?? []).some((point) => point.at === runAt)) historyChanges.push({ id: gap.id, points: history.length });
+    const after = floorRatio(history[history.length - 1].ratio);
     if (!(after > 0)) throw new SpeedRefreshError(`${gap.id}: the measured ratio ${row.ratioMedian} rounds to zero`);
-    if (after === gap.ratio) return gap;
-    gapChanges.push({ id: gap.id, before: gap.ratio, after });
-    const note = GENERATED_NOTE.test(gap.note)
-      ? `speed ratio ${showRatio(after)} or below when recorded on the CI runner (previous record ${gap.ratio === null ? 'none' : showRatio(gap.ratio)}): ours is slower than the reference tool`
-      : gap.note;
-    return { ...gap, ratio: after, note };
+    if (after !== gap.ratio) gapChanges.push({ id: gap.id, before: gap.ratio, after });
+    const note =
+      after !== gap.ratio && GENERATED_NOTE.test(gap.note)
+        ? `speed ratio ${showRatio(after)} or below when recorded on the CI runner (previous record ${gap.ratio === null ? 'none' : showRatio(gap.ratio)}): ours is slower than the reference tool`
+        : gap.note;
+    return { ...gap, ratio: after, note, history };
   });
-  return { baseline: next, gaps: { schemaVersion: gaps.schemaVersion, gaps: nextGaps }, baselineChanges, gapChanges, nowAtParity, leftUnstable, notInReports };
+  return { baseline: next, gaps: { schemaVersion: gaps.schemaVersion, gaps: nextGaps }, baselineChanges, gapChanges, historyChanges, nowAtParity, leftUnstable, notInReports };
 }
 
 /** `<file>` for a report, or every `*.json` in a directory except the verdict file a parity run leaves beside it. */
@@ -185,6 +202,8 @@ export function main(args: string[], out: (line: string) => void = (line) => pro
   const plan = planSpeedRefresh(reports, readBaseline(options.baselinePath), readGaps(options.gapsPath));
   describeChanges('baseline speed ratios changed', plan.baselineChanges, out);
   describeChanges('known-gap ratios changed', plan.gapChanges, out);
+  out(`tracked-gap histories extended: ${plan.historyChanges.length}`);
+  for (const change of plan.historyChanges) out(`  ${change.id}: ${change.points} of ${SPEED_HISTORY_MAX_POINTS} runs kept`);
   for (const id of plan.nowAtParity) out(`now at parity, remove from bench/parity-gaps.json: ${id}`);
   for (const id of plan.leftUnstable) out(`left unchanged, undecided at the cap: ${id}`);
   for (const id of plan.notInReports) out(`left unchanged, not in the reports: ${id}`);
