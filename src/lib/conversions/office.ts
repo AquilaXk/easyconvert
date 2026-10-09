@@ -6,6 +6,7 @@ import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
 import { documentToStructuredText } from './document-model/markdown';
@@ -5987,7 +5988,7 @@ async function convertXlsxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from XLSX to ${tgt}`);
+  throw unconvertibleOfficeTarget('xlsx', tgt);
 }
 
 /**
@@ -6728,7 +6729,7 @@ async function convertPptxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from PPTX to ${tgt}`);
+  throw unconvertibleOfficeTarget('pptx', tgt);
 }
 
 /**
@@ -6805,7 +6806,7 @@ async function convertOdpSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from ODP to ${tgt}`);
+  throw unconvertibleOfficeTarget('odp', tgt);
 }
 
 /**
@@ -6854,7 +6855,7 @@ async function convertPptSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from PPT to ${tgt}`);
+  throw unconvertibleOfficeTarget('ppt', tgt);
 }
 
 const POTX_TEMPLATE_MAIN_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml';
@@ -8620,7 +8621,7 @@ export async function convertOdsSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from ODS to ${tgt}`);
+  throw unconvertibleOfficeTarget('ods', tgt);
 }
 
 /**
@@ -8997,7 +8998,7 @@ export async function convertXlsSource(
     return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
   }
 
-  throw new Error(`Unsupported conversion from XLS to ${tgt}`);
+  throw unconvertibleOfficeTarget('xls', tgt);
 }
 
 /**
@@ -9060,7 +9061,7 @@ export async function convertOdtSource(
     return { buffer: inputBuffer, mimeType: 'application/vnd.oasis.opendocument.text', filename: `${baseName}.odt`, size: inputBuffer.length };
   }
 
-  throw new Error(`Unsupported conversion from ODT to ${tgt}`);
+  throw unconvertibleOfficeTarget('odt', tgt);
 }
 
 /**
