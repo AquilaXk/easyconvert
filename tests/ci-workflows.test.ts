@@ -291,6 +291,12 @@ describe('the documentation filter of ci.yml', () => {
     }
   });
 
+  it.skipIf(skipUnless('git and bash', available))('treats generated documents that drift tests check as code', () => {
+    for (const file of ['THIRD_PARTY_NOTICES.md', 'docs/configuration.md', 'docs/configuration.example.env', 'docs/licensing.md']) {
+      expect(verdict([file]), file).toBe('code=true');
+    }
+  });
+
   it.skipIf(skipUnless('git and bash', available))('fails open: an empty diff and any event but a pull request run everything', () => {
     expect(verdict([])).toBe('code=true');
     expect(verdict(['docs/guide.md'], 'push')).toBe('code=true');
