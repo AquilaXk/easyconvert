@@ -78,6 +78,8 @@ function describeKind(kind: ValueKind): string {
       return `one of ${kind.values.map(code).join(', ')}${kind.caseInsensitive ? ' (any case)' : ''}`;
     case 'executable':
       return 'path or command name of an executable (existence is not checked at start-up)';
+    case 'absoluteExecutable':
+      return 'absolute path of an executable (existence is not checked at start-up)';
     case 'path':
       return 'file or directory path';
     case 'boolean':

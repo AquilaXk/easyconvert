@@ -367,6 +367,15 @@ describe('executable path and string parsers', () => {
     expect(rule(executable, `/${'a'.repeat(4097)}`)).toBe('must be at most 4096 characters');
   });
 
+  it('requires an absolute path where the tool is never looked up by name', () => {
+    const absolute: ValueKind = { type: 'absoluteExecutable' };
+    expect(parseKind(absolute, '/opt/does-not-exist/avifenc', PRODUCTION)).toBe('/opt/does-not-exist/avifenc');
+    expect(rule(absolute, 'avifenc')).toBe('must be an absolute path');
+    expect(rule(absolute, './bin/avifenc')).toBe('must be an absolute path');
+    expect(rule(absolute, '/usr/bin/avif\0enc')).toBe('must not contain a NUL byte');
+    expect(rule(absolute, `/${'a'.repeat(4097)}`)).toBe('must be at most 4096 characters');
+  });
+
   it('bounds a free-form string', () => {
     const text: ValueKind = { type: 'string', maxLength: 8 };
     expect(parseKind(text, '12345678', PRODUCTION)).toBe('12345678');
@@ -697,6 +706,15 @@ describe('loadConfig', () => {
         expect(serialised).toContain(name);
       }
     }
+  });
+
+  it('rejects an AVIFENC_PATH that is not absolute at start-up, without echoing the value, and accepts an absolute one', () => {
+    const list = failures({ NODE_ENV: 'development', AVIFENC_PATH: 'canary-avifenc' });
+    expect(list.map((f) => [f.variable, f.rule])).toEqual([['AVIFENC_PATH', 'must be an absolute path']]);
+    expect(JSON.stringify(list)).not.toContain('canary');
+    expect(failures({ NODE_ENV: 'development', AVIFENC_PATH: '/usr/bin/avifenc' })).toEqual([]);
+    // The other tool paths still take a command name.
+    expect(failures({ NODE_ENV: 'development', FFMPEG_PATH: 'ffmpeg' })).toEqual([]);
   });
 
   it('requires the production secrets and lists each missing one', () => {
