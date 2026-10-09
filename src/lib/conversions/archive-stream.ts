@@ -433,7 +433,7 @@ export function stageTarForSevenZip(options: StageTarOptions): StagedTar | null 
   const stagingDir = path.join(options.workDir, `staged-${crypto.randomBytes(6).toString('hex')}`);
   fs.mkdirSync(stagingDir, { mode: OWNER_ALL });
   const directories: { dir: string; mode: number; mtime: number }[] = [];
-  for (const entry of readTarEntries(tar, { ignoreLinks: true })) {
+  for (const entry of lastEntryPerPath(readTarEntries(tar, { ignoreLinks: true }))) {
     if (entry.type === 'symlink' || entry.type === 'hardlink') continue; // vetted above: only reached when links are being skipped
     const target = path.join(stagingDir, ...entry.filename.split('/'));
     assertInside(stagingDir, target);

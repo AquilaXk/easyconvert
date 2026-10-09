@@ -172,3 +172,41 @@ describe('the modes of the members', () => {
     TEST_TIMEOUT_MS
   );
 });
+
+describe('a path stored twice under collisionPolicy overwrite', () => {
+  function extractedBytes(archive: Buffer, label: string, member: string): string {
+    const file = path.join(workDir, `${label}.7z`);
+    fs.writeFileSync(file, archive);
+    return execFileSync(getOracleToolPath('7z') as string, ['x', '-so', '-y', file, member], { encoding: 'utf8' });
+  }
+
+  oracleTest(
+    'keeps only the last copy of a name, even when the first copy is read-only',
+    [...TOOLS],
+    async () => {
+      const tar = tarOf(
+        hostileTarMember({ name: 'a.txt', mode: 0o444 }, Buffer.from('first copy')),
+        hostileTarMember({ name: 'a.txt', mode: 0o644 }, Buffer.from('last'))
+      );
+      const archive = await toSevenZip(tar, { collisionPolicy: 'overwrite' });
+      expect(Object.fromEntries(storedAttributes(archive, 'dup-name'))).toEqual({ 'a.txt': 'F -rw-r--r--' });
+      expect(extractedBytes(archive, 'dup-name', 'a.txt')).toBe('last');
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'keeps only the last copy of two spellings of one path (a and ./a)',
+    [...TOOLS],
+    async () => {
+      const tar = tarOf(
+        hostileTarMember({ name: 'a', mode: 0o444 }, Buffer.from('first copy')),
+        hostileTarMember({ name: './a', mode: 0o644 }, Buffer.from('last'))
+      );
+      const archive = await toSevenZip(tar, { collisionPolicy: 'overwrite' });
+      expect(Object.fromEntries(storedAttributes(archive, 'dup-dot'))).toEqual({ a: 'F -rw-r--r--' });
+      expect(extractedBytes(archive, 'dup-dot', 'a')).toBe('last');
+    },
+    TEST_TIMEOUT_MS
+  );
+});
