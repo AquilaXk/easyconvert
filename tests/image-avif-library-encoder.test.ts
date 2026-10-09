@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
+import { AVIFENC_MAX_THREADS, avifencArguments, encodeAvifWithCli, findAvifenc, type AvifCliRequest } from '../src/lib/conversions/avif-cli';
 import { avifEffortFor, avifSpeedFor } from '../src/lib/conversions/image-encoder-defaults';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -26,6 +27,8 @@ const BYTE_MAX = 255;
 const NOISE_MULTIPLIER = 2654435761;
 const PATCH = 16;
 const COLOUR_TOLERANCE = 2;
+/** Four 10-bit steps in 16-bit units: the quantisation of the stored AVIF, plus the rounding of the matrix. */
+const PQ_TOLERANCE_16BIT = 4 * 64;
 const OVERSIZED_SIDE = 8200;
 const OVERSIZED_OTHER_SIDE = 8000;
 const FAILURE_EXIT_STATUS = 3;
@@ -78,6 +81,14 @@ function avifInfo(file: string): AvifInfo {
   };
 }
 
+/** Top-left pixel of an AVIF as 8-bit R, G, B: decoded by `avifdec` (16-bit PNG) and read by ImageMagick. */
+function cornerPixel(avif: string, name: string): [number, number, number] {
+  const decoded = path.join(workDir, `${name}-corner.png`);
+  execFileSync(requireOracleTool('avifdec'), ['-d', '16', avif, decoded]);
+  const rgb = runConvert([decoded, '-crop', '1x1+0+0', '+repage', '-depth', '8', 'rgb:-']);
+  return [rgb[0], rgb[1], rgb[2]];
+}
+
 function noise(index: number): number {
   return (Math.imul(index + 1, NOISE_MULTIPLIER) >>> 12) & 0x1f;
 }
@@ -110,6 +121,48 @@ function recordingWrapper(name: string): { script: string; argsFile: string } {
   const script = writeIn(name, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\nexec '${requireOracleTool('avifenc')}' "$@"\n`);
   chmodSync(script, SCRIPT_MODE);
   return { script, argsFile };
+}
+
+/** Runs `body` with `TMPDIR` pointing to a directory of its own, so other test files cannot add or remove entries it looks at. */
+async function withPrivateTmpdir(body: (tmp: string) => Promise<void>): Promise<void> {
+  const saved = process.env.TMPDIR;
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'avif-private-tmp-'));
+  process.env.TMPDIR = tmp;
+  try {
+    await body(tmp);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('condition not met in time');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function isRunning(pid: number): boolean {
+  let running = true;
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    running = (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+  return running;
+}
+
+/** True once no process has `pid` (polled for up to `graceMs`). */
+async function isGone(pid: number, graceMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    if (!isRunning(pid)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 function failingTool(name: string, body: string): { script: string; marker: string } {
@@ -167,6 +220,35 @@ describe('grey sources', () => {
     },
     60_000
   );
+
+  describe.each([
+    { name: '8-bit', source: grey8Graphic },
+    { name: '16-bit', source: lineArt16 },
+  ])('a $name grey picture on a red letterbox keeps the red bars', ({ name: depthName, source }) => {
+    // The picture is half the output width, so its left and right quarters are background.
+    const resize = { width: PHOTO_WIDTH * 2, height: PHOTO_HEIGHT, fit: 'contain' as const, background: '#ff0000' };
+    const expectRedCorner = async (name: string): Promise<void> => {
+      const out = await convertImage(await source(), 'avif', resize, 'g.png', 'png');
+      const file = writeIn(`${name}.avif`, out.buffer);
+      expect(avifInfo(file).format).not.toBe('YUV400');
+      const [r, g, b] = cornerPixel(file, name);
+      expect(Math.abs(r - 255), `${name} red`).toBeLessThanOrEqual(COLOUR_TOLERANCE * 2);
+      expect(g, `${name} green`).toBeLessThanOrEqual(COLOUR_TOLERANCE * 2);
+      expect(b, `${name} blue`).toBeLessThanOrEqual(COLOUR_TOLERANCE * 2);
+    };
+
+    oracleTest('written by the library encoder', ['avifenc', 'avifdec', 'magick'], () => expectRedCorner(`bars-cli-${depthName}`), 60_000);
+
+    oracleTest(
+      'written by the image library when the tool is missing',
+      ['avifdec', 'magick'],
+      async () => {
+        process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
+        await expectRedCorner(`bars-lib-${depthName}`);
+      },
+      60_000
+    );
+  });
 });
 
 describe('colour sources', () => {
@@ -270,8 +352,63 @@ describe('HDR output', () => {
       const { writePngCicp } = await import('../src/lib/conversions/cicp');
       const tagged = writePngCicp(png16, { primaries: 9, transfer: 16, matrix: 0, fullRange: true });
       const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 90 }, 'pq.png', 'png');
-      expect(avifInfo(writeIn('pq.avif', out.buffer))).toMatchObject({ depth: 10, primaries: 9, transfer: 16 });
+      const info = avifInfo(writeIn('pq.avif', out.buffer));
+      console.info(`library-path PQ photograph tags: ${JSON.stringify(info)}`);
+      expect(info).toMatchObject({ depth: 10, primaries: 9, transfer: 16 });
       expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+    },
+    60_000
+  );
+
+  oracleTest(
+    'a flat PQ graphic goes to the library encoder with BT.2020 / PQ / BT.2020 NCL tags and its sample values survive',
+    ['avifenc', 'avifdec', 'magick'],
+    async () => {
+      const side = 64;
+      const sample = [40000, 24000, 12000];
+      const samples = new Uint16Array(side * side * 3);
+      for (let i = 0; i < samples.length; i += 1) samples[i] = sample[i % 3];
+      const png16 = await sharp(samples, { raw: { width: side, height: side, channels: 3 } }).toColourspace('rgb16').png().toBuffer();
+      const { writePngCicp } = await import('../src/lib/conversions/cicp');
+      const tagged = writePngCicp(png16, { primaries: 9, transfer: 16, matrix: 0, fullRange: true });
+      const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 100 }, 'pq-flat.png', 'png');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+      const file = writeIn('pq-flat.avif', out.buffer);
+      expect(avifInfo(file)).toMatchObject({ depth: 10, primaries: 9, transfer: 16, matrix: 9 });
+      const decoded = path.join(workDir, 'pq-flat-decoded.png');
+      execFileSync(requireOracleTool('avifdec'), ['-d', '16', file, decoded]);
+      const read = runConvert([decoded, '-crop', '1x1+32+32', '+repage', '-depth', '16', '-format', '%[fx:int(65535*r)] %[fx:int(65535*g)] %[fx:int(65535*b)]', 'info:']).toString('utf-8');
+      const decodedSample = read.trim().split(/\s+/).map(Number);
+      console.info(`flat PQ graphic decoded at 16 bits: ${decodedSample.join(',')}`);
+      for (let c = 0; c < 3; c += 1) expect(Math.abs(decodedSample[c] - sample[c]), `channel ${c}`).toBeLessThanOrEqual(PQ_TOLERANCE_16BIT);
+    },
+    60_000
+  );
+});
+
+describe('HDR output without the library encoder', () => {
+  oracleTest(
+    'the image library tags PQ with matrix 6, the matrix its own RGB to YCbCr conversion used, so a decoder returns the samples that went in',
+    ['avifdec', 'magick'],
+    async () => {
+      process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
+      const side = 64;
+      const sample = [40000, 24000, 12000];
+      const samples = new Uint16Array(side * side * 3);
+      for (let i = 0; i < samples.length; i += 1) samples[i] = sample[i % 3];
+      const png16 = await sharp(samples, { raw: { width: side, height: side, channels: 3 } }).toColourspace('rgb16').png().toBuffer();
+      const { writePngCicp } = await import('../src/lib/conversions/cicp');
+      const tagged = writePngCicp(png16, { primaries: 9, transfer: 16, matrix: 0, fullRange: true });
+      const out = await convertImage(tagged, 'avif', { toneMap: 'none', quality: 100 }, 'pq-flat.png', 'png');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+      const file = writeIn('pq-flat-library.avif', out.buffer);
+      // Retagging the file as matrix 9 would make a decoder apply BT.2020 coefficients to BT.601 samples; the tag has to stay 6.
+      expect(avifInfo(file)).toMatchObject({ depth: 10, primaries: 9, transfer: 16, matrix: 6 });
+      const decoded = path.join(workDir, 'pq-flat-library-decoded.png');
+      execFileSync(requireOracleTool('avifdec'), ['-d', '16', file, decoded]);
+      const read = runConvert([decoded, '-crop', '1x1+32+32', '+repage', '-depth', '16', '-format', '%[fx:int(65535*r)] %[fx:int(65535*g)] %[fx:int(65535*b)]', 'info:']).toString('utf-8');
+      const decodedSample = read.trim().split(/\s+/).map(Number);
+      for (let c = 0; c < 3; c += 1) expect(Math.abs(decodedSample[c] - sample[c]), `channel ${c}`).toBeLessThanOrEqual(PQ_TOLERANCE_16BIT);
     },
     60_000
   );
@@ -383,13 +520,196 @@ describe('sandbox and limits', () => {
   oracleTest(
     'the private working directory of the encoder is removed after a conversion',
     ['avifenc', 'avifdec'],
-    async () => {
-      const leftovers = (): string[] => readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-avif-'));
-      const before = new Set(leftovers());
-      await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png');
-      const after = leftovers();
-      expect(after.filter((name) => !before.has(name))).toEqual([]);
-    },
+    () =>
+      withPrivateTmpdir(async (tmp) => {
+        await convertImage(await grey8Graphic(), 'avif', {}, 'g.png', 'png');
+        expect(readdirSync(tmp)).toEqual([]);
+      }),
     60_000
   );
+});
+
+/** Sandbox-level properties of the encoder run, driven by fake tools; they need no AVIF encoder. */
+describe('encoder run lifecycle', () => {
+  async function request(): Promise<AvifCliRequest> {
+    return { png: await grey8Graphic(), width: PHOTO_WIDTH, height: PHOTO_HEIGHT, quality: 60, effort: 3, bitdepth: 8, layout: '4:0:0' };
+  }
+  const rejection = (run: () => Promise<unknown>): Promise<unknown> =>
+    run().then(
+      () => null,
+      (err: unknown) => err
+    );
+  const jobDirs = (tmp: string): string[] => readdirSync(tmp).filter((name) => name.startsWith('easyconvert-avif-'));
+  const validAvif = (): Promise<Buffer> => sharp({ create: { width: 8, height: 8, channels: 3, background: { r: 9, g: 9, b: 9 } } }).avif().toBuffer();
+
+  it('removes the working directory when the tool fails, writes nothing or writes something that is not an AVIF', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const cases = [
+        { tool: failingTool('lifecycle-exit', `exit ${FAILURE_EXIT_STATUS}`), expected: /the AVIF encoder failed on the picture/ },
+        { tool: failingTool('lifecycle-nothing', 'exit 0'), expected: /produced no output/ },
+        { tool: failingTool('lifecycle-junk', `for last; do :; done\nprintf 'not an avif' > "$last"`), expected: /produced no AVIF file/ },
+      ];
+      for (const { tool, expected } of cases) {
+        const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request()));
+        expect(failure, tool.script).toBeInstanceOf(ConversionFailedError);
+        expect((failure as Error).message).toMatch(expected);
+        expect(existsSync(tool.marker)).toBe(true);
+        expect(jobDirs(tmp)).toEqual([]);
+      }
+    });
+  }, 60_000);
+
+  it('kills a tool that outlives the timeout and removes the working directory', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const pidFile = path.join(workDir, 'timeout.pid');
+      const tool = failingTool('lifecycle-sleeps', `echo $$ > '${pidFile}'\nexec sleep 60`);
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request(), { timeoutMs: 400 }));
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/did not finish within 400 ms/);
+      expect(await isGone(Number(readFileSync(pidFile, 'utf-8')))).toBe(true);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
+  it('stops the tool and removes the working directory when the conversion is aborted', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const pidFile = path.join(workDir, 'abort.pid');
+      const tool = failingTool('abort-sleeps', `echo $$ > '${pidFile}'\nexec sleep 60`);
+      process.env.AVIFENC_PATH = tool.script;
+      const controller = new AbortController();
+      const source = await grey8Graphic();
+      const running = rejection(() => convertImage(source, 'avif', { signal: controller.signal }, 'g.png', 'png'));
+      await waitFor(() => existsSync(pidFile));
+      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      expect(await isGone(pid, 0)).toBe(false);
+      controller.abort(new Error('stopped by the test'));
+      expect(await running).toBeInstanceOf(Error);
+      expect(await isGone(pid)).toBe(true);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
+  it('does not start the tool when the signal is already aborted', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const tool = failingTool('abort-before', 'exit 0');
+      const controller = new AbortController();
+      controller.abort(new Error('stopped before the start'));
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, { ...(await request()), signal: controller.signal }));
+      expect(failure).toBeInstanceOf(Error);
+      expect(existsSync(tool.marker)).toBe(false);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
+  it('answers with a fixed-text typed error when the working directory cannot be created', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const missing = path.join(tmp, 'secret-missing-dir');
+      process.env.TMPDIR = missing;
+      const tool = failingTool('never-started', 'exit 0');
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request()));
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toBe('Cannot encode the image as .avif (the encoder working directory could not be created)');
+      expect(existsSync(tool.marker)).toBe(false);
+    });
+  });
+
+  // skip-ok: root ignores directory permissions, so the directory cannot be made unremovable; the case needs a non-root user.
+  it.skipIf(process.getuid?.() === 0)('keeps the typed error and logs a warning when the working directory cannot be removed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await withPrivateTmpdir(async (tmp) => {
+        let locked: string | undefined;
+        try {
+          // The tool leaves a read-only directory with a file in it: the directory cannot be emptied, so removing it fails.
+          const tool = failingTool('leaves-locked-dir', `mkdir sub\ntouch sub/file\nchmod 555 sub\nexit ${FAILURE_EXIT_STATUS}`);
+          const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request()));
+          expect(failure).toBeInstanceOf(ConversionFailedError);
+          expect((failure as Error).message).toMatch(/the AVIF encoder failed on the picture/);
+          const left = jobDirs(tmp);
+          expect(left).toHaveLength(1);
+          locked = path.join(tmp, left[0], 'sub');
+          expect(warn.mock.calls.map((call) => String(call[0])).some((line) => /could not remove the encoder working directory/.test(line))).toBe(true);
+        } finally {
+          if (locked !== undefined) chmodSync(locked, SCRIPT_MODE);
+        }
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  }, 60_000);
+
+  it('refuses an output that is a symbolic link instead of reading what it points to', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const target = writeIn('link-target.avif', await validAvif());
+      const tool = failingTool('writes-symlink', `for last; do :; done\nln -s '${target}' "$last"`);
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request()));
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/produced no regular file/);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
+  it('refuses an output larger than the picture can need', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const valid = writeIn('padded-source.avif', await validAvif());
+      // A valid AVIF followed by zeros up to well over width x height x 8 bytes plus the header allowance.
+      const tool = failingTool('writes-too-much', `for last; do :; done\n{ cat '${valid}'; head -c 400000 /dev/zero; } > "$last"`);
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, await request()));
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/Cannot encode the image as \.avif/);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
+  it('passes the arguments through only for a whole-number quality from 0 to 100', async () => {
+    const base = await request();
+    const argsFor = (quality: number): string[] => avifencArguments({ ...base, quality }, '/out.avif');
+    for (const bad of [Number.NaN, 55.5, -1, 101, Number.POSITIVE_INFINITY]) {
+      expect(() => argsFor(bad), `quality ${bad}`).toThrow(ConversionFailedError);
+    }
+    const valid = argsFor(55);
+    expect(valid[valid.indexOf('-q') + 1]).toBe('55');
+  });
+
+  it('never gives the encoder more than the thread cap, however many cores the host has', async () => {
+    const base = await request();
+    const threadsOn = (cores: number): number => {
+      const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
+      try {
+        const args = avifencArguments(base, '/out.avif');
+        return Number(args[args.indexOf('-j') + 1]);
+      } finally {
+        cpus.mockRestore();
+      }
+    };
+    expect(threadsOn(1)).toBe(1);
+    expect(threadsOn(4)).toBe(4);
+    expect(threadsOn(AVIFENC_MAX_THREADS)).toBe(AVIFENC_MAX_THREADS);
+    expect(threadsOn(96)).toBe(AVIFENC_MAX_THREADS);
+  });
+});
+
+const envWith = (tool: string): NodeJS.ProcessEnv => ({ ...process.env, AVIFENC_PATH: tool });
+
+describe('finding the encoder', () => {
+  it('accepts only the absolute path of an executable regular file and says once when AVIFENC_PATH is set to anything else', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const executable = failingTool('find-executable', 'exit 0').script;
+      const plain = writeIn('find-plain', '#!/bin/sh\nexit 0\n');
+      chmodSync(plain, 0o644);
+      const directory = path.join(workDir, 'find-directory');
+      mkdirSync(directory, { mode: SCRIPT_MODE });
+      expect(findAvifenc(envWith(executable))).toBe(executable);
+      expect(warn).not.toHaveBeenCalled();
+      for (const unusable of ['avifenc', './find-executable', plain, directory, path.join(workDir, 'find-missing')]) {
+        expect(findAvifenc(envWith(unusable)), unusable).toBeNull();
+        expect(findAvifenc(envWith(unusable)), unusable).toBeNull();
+      }
+      expect(warn).toHaveBeenCalledTimes(5);
+      expect(String(warn.mock.calls[0][0])).toMatch(/AVIFENC_PATH is set but is not the absolute path of an executable file/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

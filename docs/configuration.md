@@ -240,7 +240,7 @@ Generate a secret with `openssl rand -hex 32`.
 
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
-- `AVIFENC_PATH`: Path of the libavif `avifenc` executable that encodes AVIF; the image library encodes when it is not installed.
+- `AVIFENC_PATH`: Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed or the value is not an absolute path to an executable file.
 - `P7ZIP_PATH`: Path of the 7-Zip executable (`7zz`, `7z` or `7za`).
 - `P7Z_PATH`: Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.
 - `ZIP_PATH`: Path of the Info-ZIP `zip` executable.

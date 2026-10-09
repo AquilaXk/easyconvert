@@ -1778,10 +1778,11 @@ async function encodeAvifFromPipeline(
       layout: policy.layout,
       tune: policy.tune,
       cicp,
+      signal: options.signal,
     });
     return { buffer, encoder };
   }
-  const prepared = deep ? opaque.toColourspace(source.space === 'b-w' || source.space === 'grey16' ? 'grey16' : 'rgb16') : opaque;
+  const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
   return { buffer: await prepared.avif(avifLibraryOptionsOf(policy)).toBuffer(), encoder };
 }
 
@@ -2251,7 +2252,9 @@ export async function convertImage(
 
       case 'avif': {
         const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined);
-        // The library encoder writes the tags itself; the image library cannot, so they are set on its file.
+        // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
+        // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
+        // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
         outputBuffer = tagsPq && avif.encoder === AVIF_ENCODER_IMAGE_LIBRARY ? setAvifColour(avif.buffer, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ) : avif.buffer;
         avifEncoder = avif.encoder;
         mimeType = 'image/avif';
