@@ -51,7 +51,7 @@ task_epubcheck() {
   local archive dir
   archive="$(mktemp --suffix=.zip)"
   dir=/opt/epubcheck
-  curl -fsSL --retry 3 -o "$archive" "https://github.com/w3c/epubcheck/releases/download/v$EPUBCHECK_VERSION/epubcheck-$EPUBCHECK_VERSION.zip" || return 1
+  curl -fsSL --proto =https --proto-redir =https --retry 3 -o "$archive" "https://github.com/w3c/epubcheck/releases/download/v$EPUBCHECK_VERSION/epubcheck-$EPUBCHECK_VERSION.zip" || return 1
   echo "$EPUBCHECK_SHA256  $archive" | sha256sum -c - || return 1
   sudo rm -rf "$dir" && sudo mkdir -p "$dir" && sudo unzip -q "$archive" -d "$dir" || return 1
   printf '#!/bin/sh\nexec java -Djava.awt.headless=true -jar %s/epubcheck-%s/epubcheck.jar "$@"\n' "$dir" "$EPUBCHECK_VERSION" | sudo tee /usr/local/bin/epubcheck > /dev/null
