@@ -1029,6 +1029,50 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
+    area: 'limits',
+    description:
+      'Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 4 * 1024 * 1024,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
+    area: 'limits',
+    description:
+      'Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 500_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
+    area: 'limits',
+    description:
+      'Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 64 * 1024 * 1024,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
+    area: 'limits',
+    description:
+      'Most characters the cells of an XLSX workbook may expand to, shared strings counted once per cell that uses them; a workbook over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 64 * 1024 * 1024,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'ANONYMOUS_DAILY_LIMIT',
     area: 'limits',
     description: 'Conversions per day for an anonymous caller.',
