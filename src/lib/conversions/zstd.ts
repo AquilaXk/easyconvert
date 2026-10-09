@@ -8,6 +8,8 @@ import {
   type ZstdParsedDictionary,
 } from './zstd-decoder';
 import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
+import { getCpuPool, shareBytes } from '../workers/cpu-pool';
+import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
 import {
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_DECODER_WINDOW_SIZE_MAX,
@@ -106,6 +108,7 @@ export interface ZstdBlockHeader {
 // XXH64 Content Checksum Engine (RFC 8878)
 // ==========================================
 const PRIME64_1 = 11400714785074694791n;
+const LOW_32_BITS = 0xffffffffn;
 const PRIME64_2 = 14029467366897019727n;
 const PRIME64_3 = 1609587929392839161n;
 const PRIME64_4 = 9650029242287828579n;
@@ -132,6 +135,7 @@ export class FastStreamingXxHash64 {
   private v4_hi: number; private v4_lo: number;
   private totalLen = 0;
   private rem = Buffer.alloc(32);
+  private readonly remView = new DataView(this.rem.buffer, this.rem.byteOffset, this.rem.byteLength);
   private remLen = 0;
   private seeded = false;
 
@@ -149,6 +153,7 @@ export class FastStreamingXxHash64 {
     if (chunk.length === 0) return;
     this.totalLen += chunk.length;
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     let offset = 0;
 
     if (this.remLen > 0) {
@@ -157,14 +162,14 @@ export class FastStreamingXxHash64 {
       this.remLen += take;
       offset += take;
       if (this.remLen === 32) {
-        this.process32(this.rem, 0);
+        this.process32(this.remView, 0);
         this.remLen = 0;
       }
     }
 
     const limit = buf.length - 32;
     while (offset <= limit) {
-      this.process32(buf, offset);
+      this.process32(view, offset);
       offset += 32;
     }
 
@@ -174,11 +179,11 @@ export class FastStreamingXxHash64 {
     }
   }
 
-  private process32(buf: Buffer, offset: number): void {
+  private process32(view: DataView, offset: number): void {
     this.seeded = true;
     {
-      const n_lo = buf.readInt32LE(offset);
-      const n_hi = buf.readInt32LE(offset + 4);
+      const n_lo = view.getInt32(offset, true);
+      const n_hi = view.getInt32(offset + 4, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -202,8 +207,8 @@ export class FastStreamingXxHash64 {
       this.v1_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 8);
-      const n_hi = buf.readInt32LE(offset + 12);
+      const n_lo = view.getInt32(offset + 8, true);
+      const n_hi = view.getInt32(offset + 12, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -227,8 +232,8 @@ export class FastStreamingXxHash64 {
       this.v2_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 16);
-      const n_hi = buf.readInt32LE(offset + 20);
+      const n_lo = view.getInt32(offset + 16, true);
+      const n_hi = view.getInt32(offset + 20, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -252,8 +257,8 @@ export class FastStreamingXxHash64 {
       this.v3_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 24);
-      const n_hi = buf.readInt32LE(offset + 28);
+      const n_lo = view.getInt32(offset + 24, true);
+      const n_hi = view.getInt32(offset + 28, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -347,15 +352,18 @@ export class FastStreamingXxHash64 {
 }
 
 export function xxh64(buf: Uint8Array): bigint {
+  if (buf.length >= XXH64_WASM_MIN_BYTES) {
+    const hashed = xxh64Wasm(buf);
+    if (hashed !== null) return hashed;
+  }
   const hasher = new FastStreamingXxHash64();
   hasher.update(buf);
   return hasher.digest64();
 }
 
+/** The low 32 bits of XXH64 (seed 0) of `data`: the content checksum of a Zstandard frame. */
 export function computeZstdChecksum(data: Uint8Array): number {
-  const hasher = new FastStreamingXxHash64();
-  hasher.update(data);
-  return hasher.digest();
+  return Number(xxh64(data) & LOW_32_BITS);
 }
 
 // ==========================================
@@ -755,17 +763,22 @@ export function encodeZstdFrameHeader(
   return header;
 }
 
-/**
- * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
- * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
- */
-export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+function resolveZstdLevel(options: ZstdCompressOptions): number {
   const level = options.level ?? ZSTD_LEVEL_DEFAULT;
   if (!Number.isInteger(level) || level < ZSTD_LEVEL_MIN || level > ZSTD_LEVEL_MAX) {
     throw new ConversionFailedError(
       `Unsupported zstd compression level ${String(level)}: expected an integer from ${ZSTD_LEVEL_MIN} to ${ZSTD_LEVEL_MAX}.`
     );
   }
+  return level;
+}
+
+/**
+ * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
+ * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
+ */
+export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+  const level = resolveZstdLevel(options);
   const checksum = options.checksum ?? true;
   const inputLen = inputBuffer.length;
   if (inputLen > ZSTD_ENCODER_INPUT_MAX) {
@@ -797,4 +810,25 @@ export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions =
   const spare = encoded.data.length - end;
   if (spare * OUTPUT_SPARE_DENOMINATOR > end) return Buffer.from(encoded.data.subarray(0, end));
   return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
+}
+
+/** Levels from here on use the lazy and optimal parsers, slow enough to hold the event loop for tens of milliseconds per slice. */
+export const ZSTD_POOL_MIN_LEVEL = 10;
+/** Smallest input worth a pool thread at those levels (the optimal parser runs at about 1 MB/s). */
+export const ZSTD_POOL_MIN_BYTES = 32 * 1024;
+
+/**
+ * `compressZstd` for callers that must keep the event loop free: levels of ZSTD_POOL_MIN_LEVEL and above run on a pool
+ * thread (the frame is the same bytes), faster levels and small inputs run inline.
+ */
+export async function compressZstdAsync(
+  inputBuffer: Buffer,
+  options: ZstdCompressOptions & { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const { signal, ...encoderOptions } = options;
+  const level = resolveZstdLevel(encoderOptions);
+  if (level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return compressZstd(inputBuffer, encoderOptions);
+  const data = await shareBytes(inputBuffer);
+  const reply = await getCpuPool().submit<Uint8Array>('zstd', { data, options: encoderOptions }, { signal });
+  return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
 }

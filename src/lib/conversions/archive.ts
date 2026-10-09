@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,6 +22,7 @@ import {
   EngineUnavailableError,
   CorruptStreamError,
   DecompressionLimitError,
+  PayloadLimitError,
 } from '../types';
 import {
   NativeRenameUnsupportedError,
@@ -38,15 +40,22 @@ import {
   sanitizeLeafFilename,
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
-import { compressBzip2, decompressBzip2 } from './bzip2';
+import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { crc32 } from './crc32';
+import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
+import { decodeLzma, decodeLzma2 } from './lzma-decoder';
+import { packXzStream, unpackXzStream } from './xz-format';
 import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
-import { compressZstd, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
+  compressLzma2Async,
+  compressLzmaAsync,
   type LzmaCompressOptions,
   type LzmaCompressResult,
 } from './lzma-encoder';
+import { CPU_POOL_MAX, CPU_POOL_MIN_BYTES, CPU_POOL_TASK_TIMEOUT_MS, getCpuPool } from '../workers/cpu-pool';
 import {
   isSplitArchive,
   parseSplitArchivePart,
@@ -139,23 +148,7 @@ export {
   type ZstdDictionaryStreamOptions,
 };
 
-// Standard CRC32 table
-const CRC32_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
-  let c = i;
-  for (let j = 0; j < 8; j++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  CRC32_TABLE[i] = c >>> 0;
-}
-
-export function crc32(buf: Buffer | Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
+export { crc32 };
 
 const PATH_SLASH_CHAR_CODE = 0x2f;
 
@@ -386,23 +379,14 @@ export async function createZipArchive(
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
-  const zip = new JSZip();
-
-  for (const f of resolvedFiles) {
-    zip.file(f.filename, f.buffer);
+  if (resolvedFiles.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+    // The extractor refuses archives past this count, so the writer does not produce one.
+    throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
-
   const compressionLevel = options.compressionLevel
     ? Math.max(1, Math.min(9, options.compressionLevel))
     : 6;
-
-  const content = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: {
-      level: compressionLevel,
-    },
-  });
+  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
 
   return {
     buffer: content,
@@ -410,6 +394,37 @@ export async function createZipArchive(
     filename: archiveName,
     size: content.length,
   };
+}
+
+/**
+ * Entries for the ZIP writer: every file, preceded the first time a folder is met by an entry for that folder, so that
+ * extractors list the directory structure the way they did when the archive was assembled by JSZip.
+ */
+function* zipEntriesWithFolders(
+  files: readonly { filename: string; buffer: Buffer }[],
+  level: number
+): Generator<ZipEntryInput> {
+  const mtime = new Date();
+  const emittedFolders = new Set<string>();
+  for (const f of files) {
+    const parts = f.filename.split('/');
+    let folder = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      folder += `${parts[i]}/`;
+      if (parts[i] !== '' && !emittedFolders.has(folder)) {
+        emittedFolders.add(folder);
+        yield { name: folder, mtime };
+      }
+    }
+    if (f.filename.endsWith('/')) {
+      if (!emittedFolders.has(f.filename)) {
+        emittedFolders.add(f.filename);
+        yield { name: f.filename, mtime };
+      }
+    } else {
+      yield { name: f.filename, data: f.buffer, level, mtime };
+    }
+  }
 }
 
 /**
@@ -1988,7 +2003,7 @@ export function extractRarArchive(
 }
 
 // ============================================================================
-// Pure TypeScript LZMA & LZMA2 Decompression Engine
+// Pure TypeScript LZMA & LZMA2 Decompression Engine (see lzma-decoder.ts)
 // ============================================================================
 
 export function decompressLzma(
@@ -1999,305 +2014,18 @@ export function decompressLzma(
   if (unpackSize === 0) {
     return Buffer.alloc(0);
   }
-
-  if (props.length < 5) {
-    throw new CorruptStreamError('Invalid LZMA properties header: expected at least 5 bytes');
-  }
-
-  const d = props[0];
-  const lc = d % 9;
-  const remainder = Math.floor(d / 9);
-  const lp = remainder % 5;
-  const pb = Math.floor(remainder / 5);
-
-  let dictSize =
-    ((props[1] |
-      (props[2] << 8) |
-      (props[3] << 16) |
-      (props[4] << 24)) >>>
-      0);
-  if (dictSize < 4096) dictSize = 4096;
-
-  if (unpackSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-    throw new DecompressionLimitError(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
-  }
-
-  const outBuf = Buffer.alloc(unpackSize);
-  let outPos = 0;
-  let inPos = 0;
-
-  function readByte(): number {
-    return inPos < input.length ? input[inPos++] : 0;
-  }
-
-  // LZMA range decoder header: first byte is 0 (or ignored), then 4 bytes of initial code
-  readByte();
-  let code =
-    (((readByte() << 24) |
-      (readByte() << 16) |
-      (readByte() << 8) |
-      readByte()) >>>
-      0);
-  let range = 0xffffffff;
-
-  function decodeBit(probs: Uint16Array, index: number): number {
-    const prob = probs[index];
-    const bound = (range >>> 11) * prob;
-    if ((code >>> 0) < (bound >>> 0)) {
-      range = bound >>> 0;
-      probs[index] = (prob + ((2048 - prob) >>> 5)) & 0xffff;
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      return 0;
-    } else {
-      range = ((range - bound) >>> 0);
-      code = ((code - bound) >>> 0);
-      probs[index] = (prob - (prob >>> 5)) & 0xffff;
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      return 1;
-    }
-  }
-
-  function decodeDirectBits(numBits: number): number {
-    let res = 0;
-    for (let i = 0; i < numBits; i++) {
-      range >>>= 1;
-      code = ((code - range) >>> 0);
-      const t = (code >> 31) & 1;
-      if (t !== 0) {
-        code = ((code + range) >>> 0);
-      }
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      res = (res << 1) | (1 - t);
-    }
-    return res >>> 0;
-  }
-
-  function decodeBitTree(probs: Uint16Array, offset: number, numBits: number): number {
-    let m = 1;
-    for (let i = 0; i < numBits; i++) {
-      m = (m << 1) | decodeBit(probs, offset + m);
-    }
-    return m - (1 << numBits);
-  }
-
-  function decodeReverseBitTree(probs: Uint16Array, offset: number, numBits: number): number {
-    let m = 1;
-    let symbol = 0;
-    for (let i = 0; i < numBits; i++) {
-      const bit = decodeBit(probs, offset + m);
-      m = (m << 1) | bit;
-      symbol |= (bit << i);
-    }
-    return symbol;
-  }
-
-  // Model arrays
-  const isMatch = new Uint16Array(12 * 16).fill(1024);
-  const isRep = new Uint16Array(12).fill(1024);
-  const isRepG0 = new Uint16Array(12).fill(1024);
-  const isRepG1 = new Uint16Array(12).fill(1024);
-  const isRepG2 = new Uint16Array(12).fill(1024);
-  const isRep0Long = new Uint16Array(12 * 16).fill(1024);
-  const posSlot = new Uint16Array(4 * 64).fill(1024);
-  const specPos = new Uint16Array(128).fill(1024);
-  const align = new Uint16Array(16).fill(1024);
-
-  class LenDecoder {
-    choice1 = new Uint16Array(1).fill(1024);
-    choice2 = new Uint16Array(1).fill(1024);
-    low = new Uint16Array(16 * 8).fill(1024);
-    mid = new Uint16Array(16 * 8).fill(1024);
-    high = new Uint16Array(256).fill(1024);
-
-    decode(posState: number): number {
-      if (decodeBit(this.choice1, 0) === 0) {
-        return decodeBitTree(this.low, posState * 8, 3);
-      }
-      if (decodeBit(this.choice2, 0) === 0) {
-        return 8 + decodeBitTree(this.mid, posState * 8, 3);
-      }
-      return 16 + decodeBitTree(this.high, 0, 8);
-    }
-  }
-
-  const lenDecoder = new LenDecoder();
-  const repLenDecoder = new LenDecoder();
-
-  const numLitContexts = 1 << (lc + lp);
-  const litProbs = new Uint16Array(numLitContexts * 0x300).fill(1024);
-
-  let state = 0;
-  let rep0 = 0;
-  let rep1 = 0;
-  let rep2 = 0;
-  let rep3 = 0;
-
-  const posStateMask = (1 << pb) - 1;
-
-  while (outPos < unpackSize) {
-    const posState = outPos & posStateMask;
-    const isMatchIdx = (state << 4) + posState;
-
-    if (decodeBit(isMatch, isMatchIdx) === 0) {
-      // Literal
-      const prevByte = outPos > 0 ? outBuf[outPos - 1] : 0;
-      const litContext = (((outPos & ((1 << lp) - 1)) << lc) | (prevByte >> (8 - lc)));
-      const baseIdx = litContext * 0x300;
-
-      let symbol = 1;
-      if (state >= 7) {
-        let matchByte = outPos > rep0 ? outBuf[outPos - rep0 - 1] : 0;
-        let matchMode = true;
-        while (symbol < 0x100) {
-          matchByte <<= 1;
-          const matchBit = (matchByte >> 8) & 1;
-          const probIdx = matchMode
-            ? baseIdx + 0x100 + (matchBit << 8) + symbol
-            : baseIdx + symbol;
-          const bit = decodeBit(litProbs, probIdx);
-          symbol = (symbol << 1) | bit;
-          if (matchMode && bit !== matchBit) {
-            matchMode = false;
-          }
-        }
-      } else {
-        while (symbol < 0x100) {
-          symbol = (symbol << 1) | decodeBit(litProbs, baseIdx + symbol);
-        }
-      }
-
-      outBuf[outPos++] = (symbol - 0x100) & 0xff;
-      if (state < 4) {
-        state = 0;
-      } else if (state < 10) {
-        state -= 3;
-      } else {
-        state -= 6;
-      }
-    } else {
-      // Match or Rep
-      let len = 0;
-      if (decodeBit(isRep, state) === 1) {
-        if (decodeBit(isRepG0, state) === 0) {
-          if (decodeBit(isRep0Long, (state << 4) + posState) === 0) {
-            // Short Rep
-            state = state < 7 ? 9 : 11;
-            outBuf[outPos] = outBuf[outPos - rep0 - 1];
-            outPos++;
-            continue;
-          }
-        } else {
-          let dist = 0;
-          if (decodeBit(isRepG1, state) === 0) {
-            dist = rep1;
-          } else {
-            if (decodeBit(isRepG2, state) === 0) {
-              dist = rep2;
-            } else {
-              dist = rep3;
-              rep3 = rep2;
-            }
-            rep2 = rep1;
-          }
-          rep1 = rep0;
-          rep0 = dist;
-        }
-        len = repLenDecoder.decode(posState) + 2;
-        state = state < 7 ? 8 : 11;
-      } else {
-        // Simple match
-        rep3 = rep2;
-        rep2 = rep1;
-        rep1 = rep0;
-        len = lenDecoder.decode(posState) + 2;
-        state = state < 7 ? 7 : 10;
-
-        const lenToPosState = Math.min(len - 2, 3);
-        const slot = decodeBitTree(posSlot, lenToPosState * 64, 6);
-        if (slot >= 4) {
-          const numDirectBits = (slot >> 1) - 1;
-          rep0 = ((2 | (slot & 1)) << numDirectBits);
-          if (slot < 14) {
-            rep0 += decodeReverseBitTree(specPos, rep0 - slot - 1, numDirectBits);
-          } else {
-            rep0 += (decodeDirectBits(numDirectBits - 4) << 4);
-            rep0 += decodeReverseBitTree(align, 0, 4);
-          }
-        } else {
-          rep0 = slot;
-        }
-        if (rep0 === 0xffffffff) {
-          break;
-        }
-      }
-
-      if (rep0 >= outPos) {
-        throw new CorruptStreamError(`Corrupted LZMA stream: rep distance ${rep0} exceeds available decoded data (${outPos})`);
-      }
-
-      const copyLen = Math.min(len, unpackSize - outPos);
-      for (let i = 0; i < copyLen; i++) {
-        outBuf[outPos] = outBuf[outPos - rep0 - 1];
-        outPos++;
-      }
-    }
-  }
-
-  return outBuf.subarray(0, outPos);
+  const out = decodeLzma(input, props, unpackSize, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
+/** Decodes an LZMA2 stream; `unpackSize` is the size the container states, which the stream must produce. */
 export function decompressLzma2(
   input: Buffer | Uint8Array,
-  props: Buffer | Uint8Array,
+  _props: Buffer | Uint8Array,
   unpackSize: number
 ): Buffer {
-  const outBuf = Buffer.alloc(unpackSize);
-  let outPos = 0;
-  let inPos = 0;
-  let curProps = Buffer.from([0x5d, 0, 0, 0, 0]);
-
-  while (inPos < input.length && outPos < unpackSize) {
-    const control = input[inPos++];
-    if (control === 0) break; // EOS
-
-    if (control === 1 || control === 2) {
-      // Uncompressed chunk
-      const chunkSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
-      for (let i = 0; i < chunkSize && inPos < input.length && outPos < unpackSize; i++) {
-        outBuf[outPos++] = input[inPos++];
-      }
-    } else if (control >= 0x80) {
-      // LZMA chunk
-      const chunkUnpackSize = (((control & 0x1f) << 16) | (input[inPos++] << 8) | input[inPos++]) + 1;
-      const chunkPackSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
-
-      const mode = (control >> 5) & 3;
-      if (mode === 2 || mode === 3) {
-        const propByte = input[inPos++];
-        curProps = Buffer.from([propByte, 0, 0, 0, 0]);
-      }
-
-      const chunkData = input.subarray(inPos, inPos + chunkPackSize);
-      inPos += chunkPackSize;
-
-      const decoded = decompressLzma(chunkData, curProps, chunkUnpackSize);
-      decoded.copy(outBuf, outPos);
-      outPos += decoded.length;
-    } else {
-      break;
-    }
-  }
-
-  return outBuf.subarray(0, outPos);
+  const out = decodeLzma2(input, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, unpackSize);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
 // ==========================================
@@ -2385,143 +2113,27 @@ export function get7zBinaryPath(): string | null {
   return null;
 }
 
-function encodeXzVarint(val: number): Buffer {
-  const bytes: number[] = [];
-  let v = val;
-  while (v >= 0x80) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v & 0x7f);
-  return Buffer.from(bytes);
-}
-
 /**
- * Pure TypeScript Authentic XZ Container Packager (The .xz File Format 1.1.0)
+ * Pure TypeScript .xz packager (The .xz File Format 1.1.0; see xz-format.ts).
  */
-export function packXz(uncompressed: Buffer): Buffer {
-  const chunks: Buffer[] = [];
-  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  const streamFlags = Buffer.from([0x00, 0x01]); // CRC32 check
-  const flagsCrc = Buffer.alloc(4);
-  flagsCrc.writeUInt32LE(crc32(streamFlags), 0);
-  chunks.push(magic, streamFlags, flagsCrc);
+export function packXz(uncompressed: Buffer, options: ConversionOptions = {}): Buffer {
+  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: options.compressionLevel }));
+}
 
-  const bhNoCrc = Buffer.from([0x02, 0x00, 0x21, 0x01, 0x14, 0x00, 0x00, 0x00]);
-  const bhCrc = Buffer.alloc(4);
-  bhCrc.writeUInt32LE(crc32(bhNoCrc), 0);
-  const blockHeader = Buffer.concat([bhNoCrc, bhCrc]);
-  chunks.push(blockHeader);
-
-  const lzma2 = compressLzma2(uncompressed);
-  chunks.push(lzma2.buffer);
-
-  const padLen = (4 - (lzma2.buffer.length % 4)) % 4;
-  if (padLen > 0) chunks.push(Buffer.alloc(padLen, 0));
-
-  const checkBuf = Buffer.alloc(4);
-  checkBuf.writeUInt32LE(crc32(uncompressed), 0);
-  chunks.push(checkBuf);
-
-  const unpaddedSize = blockHeader.length + lzma2.buffer.length + 4;
-  const idxIndicator = Buffer.from([0x00]);
-  const numRecords = encodeXzVarint(1);
-  const unpaddedVarint = encodeXzVarint(unpaddedSize);
-  const uncompressedVarint = encodeXzVarint(uncompressed.length);
-  const idxBody = Buffer.concat([idxIndicator, numRecords, unpaddedVarint, uncompressedVarint]);
-  const idxPadLen = (4 - (idxBody.length % 4)) % 4;
-  const idxPad = Buffer.alloc(idxPadLen, 0);
-  const idxNoCrc = Buffer.concat([idxBody, idxPad]);
-  const idxCrc = Buffer.alloc(4);
-  idxCrc.writeUInt32LE(crc32(idxNoCrc), 0);
-  const indexTotal = Buffer.concat([idxNoCrc, idxCrc]);
-  chunks.push(indexTotal);
-
-  const backwardSize = (indexTotal.length / 4) - 1;
-  const footerBeforeCrc = Buffer.alloc(6);
-  footerBeforeCrc.writeUInt32LE(backwardSize, 0);
-  footerBeforeCrc[4] = streamFlags[0];
-  footerBeforeCrc[5] = streamFlags[1];
-  const footerCrc = Buffer.alloc(4);
-  footerCrc.writeUInt32LE(crc32(footerBeforeCrc), 0);
-  const footerMagic = Buffer.from([0x59, 0x5a]);
-  chunks.push(footerCrc, footerBeforeCrc, footerMagic);
-
-  return Buffer.concat(chunks);
+/** `packXz` with the LZMA2 stream built on a pool thread, so a large input does not hold the event loop. */
+export async function packXzAsync(
+  uncompressed: Buffer,
+  options: ConversionOptions = {},
+  runtime: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  return packXzStream(uncompressed, await compressLzma2Async(uncompressed, { level: options.compressionLevel, signal: runtime.signal }));
 }
 
 /**
- * Pure TypeScript Authentic XZ Container Unpacker
+ * Pure TypeScript .xz unpacker: any number of blocks and streams, LZMA2 only, every check verified.
  */
 export function unpackXz(buf: Buffer): Buffer {
-  if (buf.length < 32) throw new CorruptStreamError('Invalid XZ archive: buffer too small');
-  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  if (!buf.subarray(0, 6).equals(magic)) throw new CorruptStreamError('Invalid XZ archive: magic number mismatch');
-
-  const streamFlags = buf.subarray(6, 8);
-  const expectedFlagsCrc = buf.readUInt32LE(8);
-  if (crc32(streamFlags) !== expectedFlagsCrc) throw new CorruptStreamError('Invalid XZ archive: header CRC mismatch');
-
-  const offset = 12;
-  if (offset >= buf.length) throw new CorruptStreamError('Invalid XZ archive: truncated block header');
-  const bhSizeEncoded = buf[offset];
-  const bhSize = (bhSizeEncoded + 1) * 4;
-  if (offset + bhSize > buf.length) throw new CorruptStreamError('Invalid XZ archive: truncated block header');
-  const bhNoCrc = buf.subarray(offset, offset + bhSize - 4);
-  const expectedBhCrc = buf.readUInt32LE(offset + bhSize - 4);
-  if (crc32(bhNoCrc) !== expectedBhCrc) throw new CorruptStreamError('Invalid XZ archive: block header CRC mismatch');
-
-  const lzma2Payload = buf.subarray(offset + bhSize);
-
-  const footerMagic = buf.subarray(buf.length - 2);
-  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new CorruptStreamError('Invalid XZ archive: footer magic mismatch');
-
-  const footerBeforeCrc = buf.subarray(buf.length - 8, buf.length - 2);
-  const expectedFooterCrc = buf.readUInt32LE(buf.length - 12);
-  if (crc32(footerBeforeCrc) !== expectedFooterCrc) {
-    throw new CorruptStreamError('Invalid XZ archive: footer CRC mismatch');
-  }
-  if (footerBeforeCrc[4] !== streamFlags[0] || footerBeforeCrc[5] !== streamFlags[1]) {
-    throw new CorruptStreamError('Invalid XZ archive: stream flags mismatch between header and footer');
-  }
-
-  const backwardSize = buf.readUInt32LE(buf.length - 8);
-  const indexSize = (backwardSize + 1) * 4;
-  if (buf.length < 12 + indexSize + 12) throw new CorruptStreamError('Invalid XZ archive: invalid index size');
-  const indexOffset = buf.length - 12 - indexSize;
-  const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
-
-  const expectedIndexCrc = indexBuf.readUInt32LE(indexBuf.length - 4);
-  const indexBodyNoCrc = indexBuf.subarray(0, indexBuf.length - 4);
-  if (crc32(indexBodyNoCrc) !== expectedIndexCrc) {
-    throw new CorruptStreamError('Invalid XZ archive: index CRC mismatch');
-  }
-
-  let idxCur = 1;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  let uncompressedSize = 0;
-  let shift = 0;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    uncompressedSize |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) break;
-    shift += 7;
-  }
-
-  const checkCrc = buf.readUInt32LE(indexOffset - 4);
-  const props = Buffer.from([0x14]);
-  const uncompressed = decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
-  if (crc32(uncompressed) !== checkCrc) {
-    throw new CorruptStreamError('Invalid XZ archive: payload CRC32 mismatch');
-  }
-  return uncompressed;
+  return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
@@ -2535,7 +2147,36 @@ export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {})
       });
     } catch {}
   }
-  return packXz(inputBuffer);
+  return packXz(inputBuffer, options);
+}
+
+/**
+ * `compressXz` that keeps the event loop free: the native `xz` runs as a sandboxed child process, the pure encoder on a
+ * pool thread. A native run that fails falls back to the pure encoder, which writes a stream of its own; it never
+ * returns a placeholder.
+ */
+export async function compressXzAsync(
+  inputBuffer: Buffer,
+  options: ConversionOptions = {},
+  runtime: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const xzBin = getXzBinaryPath();
+  if (xzBin) {
+    const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
+    try {
+      const run = await executeSandboxedBinary(xzBin, [`-${level}`, '-c', '-q'], {
+        stdin: inputBuffer,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
+        networkIsolated: true,
+        signal: runtime.signal,
+      });
+      return run.stdout;
+    } catch (err) {
+      if (runtime.signal?.aborted) throw err;
+    }
+  }
+  return packXzAsync(inputBuffer, options, runtime);
 }
 
 export function decompressXz(inputBuffer: Buffer): Buffer {
@@ -2887,11 +2528,34 @@ export function read7zVarint(
 // 7z Archive Creation with Authentic Compression
 // ============================================================================
 
-export function create7zArchive(
+type SevenZipCoderType = 'lzma' | 'lzma2' | 'deflate' | 'copy';
+
+/** What the archive writer needs to know before any stream is compressed: the streams, their sizes and checksums. */
+interface SevenZipPlan {
+  files: { filename: string; buffer: Buffer }[];
+  coderType: SevenZipCoderType;
+  compressionLevel: number;
+  isSolid: boolean;
+  /** One buffer per pack stream: the concatenation of all files when solid, otherwise one per file. */
+  inputs: Buffer[];
+  unpackSizes: number[];
+  crcs: number[];
+  solidCrc: number;
+  totalUnpackSize: number;
+  totalInputBytes: number;
+}
+
+interface SevenZipPackedStream {
+  buffer: Buffer;
+  props: Buffer;
+}
+
+/** The checks and the plan shared by the synchronous and the pool-backed writers; the encrypted path is complete here. */
+function prepare7zArchive(
   files: { filename: string; buffer: Buffer }[],
-  options: ConversionOptions = {},
-  archiveName = 'converted_files.7z'
-): ConversionResult {
+  options: ConversionOptions,
+  archiveName: string
+): { encrypted: ConversionResult } | { plan: SevenZipPlan } {
   assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   files = resolvedFiles;
@@ -2910,14 +2574,14 @@ export function create7zArchive(
       options.password,
       options.collisionPolicy
     );
-    if (encRes) return encRes;
+    if (encRes) return { encrypted: encRes };
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
 
   const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
   const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
 
-  let coderType: 'lzma' | 'lzma2' | 'deflate' | 'copy';
+  let coderType: SevenZipCoderType;
   if (options.archiveCoder) {
     coderType = options.archiveCoder;
   } else if (!isCompressed) {
@@ -2927,72 +2591,180 @@ export function create7zArchive(
   }
 
   const isSolid = Boolean(options.solid && files.length > 1);
-
-  const packBuffers: Buffer[] = [];
-  const packSizes: number[] = [];
   const unpackSizes: number[] = [];
   const crcs: number[] = [];
-  const fileProps: Buffer[] = [];
+  let totalInputBytes = 0;
+  for (const f of files) {
+    unpackSizes.push(f.buffer.length);
+    crcs.push(crc32(f.buffer));
+    totalInputBytes += f.buffer.length;
+  }
 
+  let inputs: Buffer[];
   let solidCrc = 0;
   let totalUnpackSize = 0;
-
   if (isSolid) {
-    for (const f of files) {
-      unpackSizes.push(f.buffer.length);
-      crcs.push(crc32(f.buffer));
-    }
     const solidBuffer = Buffer.concat(files.map(f => f.buffer));
     totalUnpackSize = solidBuffer.length;
     solidCrc = crc32(solidBuffer);
-
-    if (coderType === 'lzma2') {
-      const res = compressLzma2(solidBuffer, { level: compressionLevel });
-      packBuffers.push(res.buffer);
-      packSizes.push(res.buffer.length);
-      fileProps.push(res.props);
-    } else if (coderType === 'lzma') {
-      const res = compressLzma(solidBuffer, { level: compressionLevel });
-      packBuffers.push(res.buffer);
-      packSizes.push(res.buffer.length);
-      fileProps.push(res.props);
-    } else if (coderType === 'deflate') {
-      const deflated = zlib.deflateRawSync(solidBuffer, { level: compressionLevel });
-      packBuffers.push(deflated);
-      packSizes.push(deflated.length);
-      fileProps.push(Buffer.alloc(0));
-    } else {
-      packBuffers.push(solidBuffer);
-      packSizes.push(solidBuffer.length);
-      fileProps.push(Buffer.alloc(0));
-    }
+    inputs = [solidBuffer];
   } else {
-    for (const f of files) {
-      unpackSizes.push(f.buffer.length);
-      crcs.push(crc32(f.buffer));
+    inputs = files.map(f => f.buffer);
+  }
+  return {
+    plan: { files, coderType, compressionLevel, isSolid, inputs, unpackSizes, crcs, solidCrc, totalUnpackSize, totalInputBytes },
+  };
+}
 
-      if (coderType === 'lzma2') {
-        const res = compressLzma2(f.buffer, { level: compressionLevel });
-        packBuffers.push(res.buffer);
-        packSizes.push(res.buffer.length);
-        fileProps.push(res.props);
-      } else if (coderType === 'lzma') {
-        const res = compressLzma(f.buffer, { level: compressionLevel });
-        packBuffers.push(res.buffer);
-        packSizes.push(res.buffer.length);
-        fileProps.push(res.props);
-      } else if (coderType === 'deflate') {
-        const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
-        packBuffers.push(deflated);
-        packSizes.push(deflated.length);
-        fileProps.push(Buffer.alloc(0));
-      } else {
-        packBuffers.push(f.buffer);
-        packSizes.push(f.buffer.length);
-        fileProps.push(Buffer.alloc(0));
-      }
+function pack7zStream(plan: SevenZipPlan, input: Buffer): SevenZipPackedStream {
+  if (plan.coderType === 'lzma2') {
+    const res = compressLzma2(input, { level: plan.compressionLevel });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'lzma') {
+    const res = compressLzma(input, { level: plan.compressionLevel });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'deflate') {
+    return { buffer: zlib.deflateRawSync(input, { level: plan.compressionLevel }), props: Buffer.alloc(0) };
+  }
+  return { buffer: input, props: Buffer.alloc(0) };
+}
+
+const deflateRawAsync = promisify(zlib.deflateRaw);
+
+async function pack7zStreamAsync(plan: SevenZipPlan, input: Buffer, signal: AbortSignal | undefined): Promise<SevenZipPackedStream> {
+  if (plan.coderType === 'lzma2') {
+    const res = await compressLzma2Async(input, { level: plan.compressionLevel, signal });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'lzma') {
+    const res = await compressLzmaAsync(input, { level: plan.compressionLevel, signal });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'deflate') {
+    return { buffer: await deflateRawAsync(input, { level: plan.compressionLevel }), props: Buffer.alloc(0) };
+  }
+  return { buffer: input, props: Buffer.alloc(0) };
+}
+
+export function create7zArchive(
+  files: { filename: string; buffer: Buffer }[],
+  options: ConversionOptions = {},
+  archiveName = 'converted_files.7z'
+): ConversionResult {
+  const prepared = prepare7zArchive(files, options, archiveName);
+  if ('encrypted' in prepared) return prepared.encrypted;
+  const { plan } = prepared;
+  return assemble7zArchive(plan, plan.inputs.map((input) => pack7zStream(plan, input)), archiveName);
+}
+
+/** Input at or above this size goes to 7-Zip itself when it is installed: its encoder is faster than the pure one. */
+const SEVEN_ZIP_NATIVE_MIN_BYTES = CPU_POOL_MIN_BYTES;
+
+/**
+ * Runs `7z a -t7z -m0=lzma2` over the staged files and returns the archive, or null when 7-Zip could not be run (the
+ * caller then uses the pure writer). What 7-Zip wrote is checked before it is returned: `7z t` must pass and the
+ * listing must name exactly the requested entries with their sizes; a mismatch throws.
+ */
+async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: AbortSignal | undefined): Promise<Buffer | null> {
+  const stagedNames = plan.files.map((f) => sanitizeArchivePath(f.filename));
+  // A name the staging area would rewrite cannot be reproduced by 7-Zip; the pure writer stores names as given.
+  if (stagedNames.some((name, i) => name !== plan.files[i].filename)) return null;
+  const workDir = path.join(os.tmpdir(), `easyconvert_7z_native_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
+  const stagingDir = path.join(workDir, 'staging');
+  await fs.promises.mkdir(stagingDir, { recursive: true });
+  try {
+    for (const [i, f] of plan.files.entries()) {
+      const dest = path.join(stagingDir, stagedNames[i]!);
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, f.buffer);
+    }
+    const outPath = path.join(workDir, 'native.7z');
+    const run = (args: string[], cwd: string) =>
+      executeSandboxedBinary(p7z, args, {
+        cwd,
+        timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
+        maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+        networkIsolated: true,
+        signal,
+      });
+    try {
+      await run(
+        [
+          'a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`,
+          plan.isSolid ? '-ms=on' : '-ms=off', `-mmt=${CPU_POOL_MAX}`,
+          // Timestamps would record when the staging files were written.
+          '-mtm=off', '-mtc=off', '-mta=off',
+          outPath, '.',
+        ],
+        stagingDir
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      return null;
+    }
+    await run(['t', '-y', outPath], workDir);
+    const listing = parse7zTechnicalListing(
+      stripSevenZipPasswordPrompt((await run(['l', '-slt', '-ba', outPath], workDir)).stdout.toString('utf-8'))
+    );
+    const expected = new Map(plan.files.map((f) => [f.filename, f.buffer.length]));
+    // 7-Zip also stores the directories that hold the files; any other entry is a surprise.
+    const parents = new Set(plan.files.flatMap((f) => f.filename.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))));
+    const fileEntries = listing.filter((e) => !e.isDirectory);
+    const matches =
+      fileEntries.length === expected.size &&
+      fileEntries.every((e) => expected.get(e.path) === e.sizeBytes) &&
+      listing.every((e) => !e.isDirectory || parents.has(e.path));
+    if (!matches) {
+      throw new ConversionFailedError('Native 7z archive creation produced an archive whose entries differ from the requested files.');
+    }
+    return await fs.promises.readFile(outPath);
+  } finally {
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * `create7zArchive` that keeps the event loop free. With 7-Zip installed, input of SEVEN_ZIP_NATIVE_MIN_BYTES or more
+ * with an LZMA2 coder is compressed by `7z a -t7z -m0=lzma2` in the sandbox (the result is tested with `7z t` and its
+ * listing checked); otherwise the pure LZMA, LZMA2 and Deflate streams are built on pool threads. Both give an archive
+ * the reference extractor reads. Encrypted archives take the same path as `create7zArchive`.
+ */
+export async function create7zArchiveAsync(
+  files: { filename: string; buffer: Buffer }[],
+  options: ConversionOptions = {},
+  archiveName = 'converted_files.7z',
+  runtime: { signal?: AbortSignal } = {}
+): Promise<ConversionResult> {
+  const prepared = prepare7zArchive(files, options, archiveName);
+  if ('encrypted' in prepared) return prepared.encrypted;
+  const { plan } = prepared;
+  const p7z = plan.coderType === 'lzma2' ? get7zBinaryPath() : null;
+  if (p7z && plan.totalInputBytes >= SEVEN_ZIP_NATIVE_MIN_BYTES) {
+    const native = await createNative7zArchive(plan, p7z, runtime.signal);
+    if (native) {
+      return { buffer: native, mimeType: 'application/x-7z-compressed', filename: archiveName, size: native.length };
     }
   }
+  const lanes = Math.max(2, getCpuPool().threadLimit * 2);
+  const packed: SevenZipPackedStream[] = new Array(plan.inputs.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < plan.inputs.length) {
+      const at = next++;
+      packed[at] = await pack7zStreamAsync(plan, plan.inputs[at], runtime.signal);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(lanes, plan.inputs.length) }, () => lane()));
+  return assemble7zArchive(plan, packed, archiveName);
+}
+
+function assemble7zArchive(plan: SevenZipPlan, packed: SevenZipPackedStream[], archiveName: string): ConversionResult {
+  const { files, coderType, isSolid, unpackSizes, crcs, solidCrc, totalUnpackSize } = plan;
+  const packBuffers = packed.map((p) => p.buffer);
+  const packSizes = packed.map((p) => p.buffer.length);
+  const fileProps = packed.map((p) => p.props);
 
   const packData = Buffer.concat(packBuffers);
 
@@ -3427,11 +3199,7 @@ export async function repairZipArchive(
     throw new ConversionFailedError('ZIP archive repair failed: no recoverable file records found in buffer.');
   }
 
-  const zip = new JSZip();
-  for (const f of salvagedFiles) {
-    zip.file(f.filename, f.buffer);
-  }
-  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  return await createZipBuffer(zipEntriesWithFolders(salvagedFiles, ZIP_DEFAULT_LEVEL));
 }
 
 /** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
@@ -4307,7 +4075,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
     // 3. Target TAR.BZ2 or TBZ2 or TBZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const bz2Buffer = compressBzip2(tarResult.buffer);
+    const bz2Buffer = await compressBzip2Async(tarResult.buffer);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip-compressed-tar',
@@ -4317,7 +4085,7 @@ export async function convertArchive(
   } else if (tgt === 'bz2' || tgt === 'bz') {
     // 3.1 Target BZ2
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
-    const bz2Buffer = compressBzip2(rawToCompress);
+    const bz2Buffer = await compressBzip2Async(rawToCompress);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip2',
@@ -4326,7 +4094,7 @@ export async function convertArchive(
     };
   } else if (tgt === '7z' || tgt === 'tar.7z') {
     // 4. Target 7Z
-    result = create7zArchive(files, options, `${baseName}.${tgt}`);
+    result = await create7zArchiveAsync(files, options, `${baseName}.${tgt}`);
   } else if (tgt === 'rar') {
     // 5. Target RAR
     throw new ConversionFailedError(
@@ -4358,7 +4126,7 @@ export async function convertArchive(
           : DATA_DICTIONARY_JSON_CSV;
       zstdBuffer = compressWithZstdDict(tarResult.buffer, dict);
     } else {
-      zstdBuffer = compressZstd(tarResult.buffer);
+      zstdBuffer = await compressZstdAsync(tarResult.buffer);
     }
     result = {
       buffer: zstdBuffer,
@@ -4377,7 +4145,7 @@ export async function convertArchive(
           : DATA_DICTIONARY_JSON_CSV;
       zstdBuffer = compressWithZstdDict(rawToCompress, dict);
     } else {
-      zstdBuffer = compressZstd(rawToCompress);
+      zstdBuffer = await compressZstdAsync(rawToCompress);
     }
     result = {
       buffer: zstdBuffer,
@@ -4388,7 +4156,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.xz' || tgt === 'txz') {
     // 7.3 Target TAR.XZ / TXZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const xzBuffer = compressXz(tarResult.buffer, options);
+    const xzBuffer = await compressXzAsync(tarResult.buffer, options);
     result = {
       buffer: xzBuffer,
       mimeType: 'application/x-xz-compressed-tar',
@@ -4398,7 +4166,7 @@ export async function convertArchive(
   } else if (tgt === 'xz') {
     // 7.4 Target XZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
-    const xzBuffer = compressXz(rawToCompress, options);
+    const xzBuffer = await compressXzAsync(rawToCompress, options);
     result = {
       buffer: xzBuffer,
       mimeType: 'application/x-xz',
