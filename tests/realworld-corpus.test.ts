@@ -10,6 +10,8 @@ import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
 import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { JobPool } from '../bench/realworld/pool';
 import { captureError } from './helpers/capture-error';
+import { oracleTest } from './helpers/oracle-test';
+import { authorWithReferenceSuite } from './helpers/office-pair-fixtures';
 
 /**
  * The real-world corpus runner (bench/realworld): range reads out of ZIP archives, manifest validation, the job plan
@@ -234,6 +236,31 @@ describe('isolated job pool', () => {
       hanging.stop();
     }
   }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('production conversion path', () => {
+  // ppt -> odp is converted only by the LibreOffice pool behind the dispatcher; the in-process converter refuses it.
+  oracleTest(
+    'a job server converts ppt to odp, a pair only the dispatcher can answer',
+    ['soffice'],
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-prod-'));
+      const file = path.join(dir, 'slides.ppt');
+      fs.writeFileSync(file, authorWithReferenceSuite('ppt'));
+      const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+      const pool = await JobPool.start({ workers: 1, deadlineMs: JOB_DEADLINE_MS, heapMb: HEAP_MB, env });
+      try {
+        const [outcome] = await pool.runAll([{ path: file, name: 'slides.ppt', format: 'ppt', target: 'odp' }]);
+        expect(outcome.detail).toBeUndefined();
+        expect(outcome.verdict).toBe('ok');
+        expect(outcome.bytes).toBeGreaterThan(0);
+      } finally {
+        pool.stop();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    POOL_TEST_TIMEOUT_MS
+  );
 });
 
 describe('manifest file', () => {

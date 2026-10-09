@@ -1,3 +1,5 @@
+import { findOcrLanguage } from './ocr-languages';
+
 /**
  * Tesseract recognition parameters shared by the WebAssembly worker and the native CLI.
  * Values are the numeric constants from the Tesseract API (PageSegMode / OcrEngineMode).
@@ -115,3 +117,17 @@ export const OCR_ALTERNATIVE_TRIGGER_QUALITY = 0.9;
  * any larger loss (binarizing blurred text, enlarging noise) shows as a drop well beyond that.
  */
 export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1;
+
+const LATIN_SCRIPT = 'Latn';
+
+/**
+ * Whether a page in this language set may be cut into bands and read in parts (see ocr-bands.ts): every language is
+ * a left-to-right Latin-script one. The layout analysis of other scripts depends on the page as a whole (a Korean
+ * page cut between two lines is read as characters scattered over several lines), so they are read whole.
+ */
+export function ocrBandsAllowedFor(tesseractLang: string): boolean {
+  return tesseractLang.split(LANGUAGE_SEPARATOR).every((name) => {
+    const language = findOcrLanguage(name);
+    return language !== undefined && language.script === LATIN_SCRIPT && language.direction === 'ltr';
+  });
+}

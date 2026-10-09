@@ -25,6 +25,7 @@ import {
   PayloadLimitError,
 } from '../types';
 import {
+  type ListedArchiveEntry,
   NativeRenameUnsupportedError,
   UnreadableArchiveError,
   UnsafeArchiveError,
@@ -41,11 +42,12 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
-import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
+import { listSevenZipArchive, readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder, type SevenZipListing } from './sevenzip-reader';
 import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
@@ -383,9 +385,7 @@ export async function createZipArchive(
     // The extractor refuses archives past this count, so the writer does not produce one.
     throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
-  const compressionLevel = options.compressionLevel
-    ? Math.max(1, Math.min(9, options.compressionLevel))
-    : 6;
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
   const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
 
   return {
@@ -891,6 +891,7 @@ export interface TarEntryHeaderSpec {
   size: number | bigint;
   mtime?: Date;
   mode?: number;
+  /** Whether the entry is a directory; when absent, a trailing slash in `filename` decides. A file never ends with a slash. */
   directory?: boolean;
 }
 
@@ -1015,7 +1016,10 @@ function normalizeTarWriteName(filename: string, directory: boolean): string {
  * @internal exported so oversized (>= 8 GiB) entries can be verified without allocating their body.
  */
 export function buildTarEntryHeaders(spec: TarEntryHeaderSpec): Buffer {
-  const directory = spec.directory === true || spec.filename.endsWith('/');
+  if (spec.directory === false && spec.filename.endsWith('/')) {
+    throw tarWriteError(`file entry '${spec.filename}' ends with a slash, which names a directory`);
+  }
+  const directory = spec.directory ?? spec.filename.endsWith('/');
   const fullPath = normalizeTarWriteName(spec.filename, directory);
   const size = directory ? 0 : spec.size;
   if (typeof size === 'number' ? !Number.isSafeInteger(size) || size < 0 : size < 0n) {
@@ -1468,7 +1472,15 @@ class TarReader {
   /** 32-bit view for the checksum fast path; null when the buffer start is not word-aligned. */
   private readonly words: Uint32Array | null;
 
-  constructor(private readonly tarBuffer: Buffer) {
+  /** In listing mode every entry is recorded as stored (raw name, declared size) and nothing is sanitized or resolved. */
+  private readonly listing: ListedArchiveEntry[] | null;
+
+  /** Link entries are reported as entries but their targets are neither resolved nor tracked (the caller leaves links out). */
+  private readonly ignoreLinks: boolean;
+
+  constructor(private readonly tarBuffer: Buffer, listing: ListedArchiveEntry[] | null = null, ignoreLinks = false) {
+    this.listing = listing;
+    this.ignoreLinks = ignoreLinks;
     const aligned = tarBuffer.byteOffset % TAR_WORD_BYTES === 0;
     this.words = aligned
       ? new Uint32Array(tarBuffer.buffer, tarBuffer.byteOffset, Math.floor(tarBuffer.length / TAR_WORD_BYTES))
@@ -1479,6 +1491,8 @@ class TarReader {
     while (this.offset < this.tarBuffer.length) {
       if (!this.nextHeader()) break;
       this.processHeader();
+      // A listing past the entry cap is already refused by the policy; reading on would only grow it.
+      if (this.listing !== null && this.listing.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) break;
     }
     if (this.localPax.size > 0 || this.longName !== null || this.longLink !== null) {
       throw tarReadError('extension header is not followed by an entry');
@@ -1679,12 +1693,16 @@ class TarReader {
     }
     let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
 
+    if (this.listing !== null) {
+      this.listing.push(listedTarEntry(rawName, type, bodySize));
+      return;
+    }
     const filename = sanitizeArchivePath(rawName);
     if (!filename) return;
 
     if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
     const isLink = type === 'symlink' || type === 'hardlink';
-    if (isLink) body = this.registerLink(filename, linkName, type) ?? body;
+    if (isLink && !this.ignoreLinks) body = this.registerLink(filename, linkName, type) ?? body;
     if (type === 'file' || type === 'hardlink') this.contentByName.set(filename, body);
 
     this.entries.push({
@@ -1700,6 +1718,31 @@ class TarReader {
   }
 }
 
+const TAR_SPECIAL_ENTRY_TYPES: ReadonlySet<TarEntryType> = new Set(['character-device', 'block-device', 'fifo']);
+
+function listedTarEntry(rawName: string, type: TarEntryType, bodySize: number): ListedArchiveEntry {
+  let linkKind: ListedArchiveEntry['linkKind'] = null;
+  if (type === 'symlink' || type === 'hardlink') linkKind = type;
+  return {
+    path: rawName,
+    isDirectory: type === 'directory',
+    sizeBytes: bodySize,
+    linkKind,
+    isSpecial: TAR_SPECIAL_ENTRY_TYPES.has(type),
+  };
+}
+
+/**
+ * Lists every entry of a TAR archive as stored, for the extraction policy: the names are the raw header names (a
+ * traversing or absolute name is reported, not repaired), sizes are the declared sizes, and links and device entries
+ * are flagged. Header checksums, truncation and the size cap are checked exactly as `readTarEntries` checks them.
+ */
+export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
+  const listing: ListedArchiveEntry[] = [];
+  new TarReader(tarBuffer, listing).read();
+  return listing;
+}
+
 /**
  * Reads every entry of a POSIX ustar/pax (and GNU long-name) TAR archive.
  *
@@ -1711,10 +1754,11 @@ class TarReader {
  *
  * Entry buffers are views into `tarBuffer` (no copy); a hardlink entry shares the buffer of the
  * earlier file it points to. Hardlink content counts against the same uncompressed-size budget as
- * regular files. Entries that would be written through an earlier symlink are rejected.
+ * regular files. Entries that would be written through an earlier symlink are rejected. With `ignoreLinks`, link
+ * entries are returned without their targets being resolved or tracked, for a caller that leaves every link out.
  */
-export function readTarEntries(tarBuffer: Buffer): TarEntry[] {
-  return new TarReader(tarBuffer).read();
+export function readTarEntries(tarBuffer: Buffer, options: { ignoreLinks?: boolean } = {}): TarEntry[] {
+  return new TarReader(tarBuffer, null, options.ignoreLinks === true).read();
 }
 
 /**
@@ -2117,7 +2161,7 @@ export function get7zBinaryPath(): string | null {
  * Pure TypeScript .xz packager (The .xz File Format 1.1.0; see xz-format.ts).
  */
 export function packXz(uncompressed: Buffer, options: ConversionOptions = {}): Buffer {
-  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: options.compressionLevel }));
+  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel) }));
 }
 
 /** `packXz` with the LZMA2 stream built on a pool thread, so a large input does not hold the event loop. */
@@ -2126,7 +2170,10 @@ export async function packXzAsync(
   options: ConversionOptions = {},
   runtime: { signal?: AbortSignal } = {}
 ): Promise<Buffer> {
-  return packXzStream(uncompressed, await compressLzma2Async(uncompressed, { level: options.compressionLevel, signal: runtime.signal }));
+  return packXzStream(
+    uncompressed,
+    await compressLzma2Async(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel), signal: runtime.signal })
+  );
 }
 
 /**
@@ -2137,10 +2184,10 @@ export function unpackXz(buf: Buffer): Buffer {
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
   const xzBin = getXzBinaryPath();
   if (xzBin) {
     try {
-      const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
       return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
@@ -2160,9 +2207,9 @@ export async function compressXzAsync(
   options: ConversionOptions = {},
   runtime: { signal?: AbortSignal } = {}
 ): Promise<Buffer> {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
   const xzBin = getXzBinaryPath();
   if (xzBin) {
-    const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
     try {
       const run = await executeSandboxedBinary(xzBin, [`-${level}`, '-c', '-q'], {
         stdin: inputBuffer,
@@ -2578,8 +2625,8 @@ function prepare7zArchive(
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
 
-  const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
-  const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
+  const isCompressed = compressionLevel > 0;
 
   let coderType: SevenZipCoderType;
   if (options.archiveCoder) {
@@ -2958,6 +3005,19 @@ function decompress7zFolder(
 /** Decodes one 7z folder: a single coder from the codecs this engine carries. */
 const decodeSevenZipFolder: SevenZipFolderDecoder = (folder, packed) =>
   decompress7zFolder(packed, folder.coders[0], folder.unpackSize);
+
+/**
+ * The file table of a 7z archive (names, sizes, checksums, times, attributes) read in process. Only the header is
+ * decoded, so the cost does not grow with the archive; a header this engine cannot decode (an encrypted or filtered
+ * header) throws, and the caller then lists the archive with 7-Zip itself.
+ */
+export function listSevenZipEntries(sevenZipBuffer: Buffer): SevenZipListing {
+  return listSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
+    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+  });
+}
 
 /**
  * Extracts the files of a 7z archive in process. A damaged, truncated or mislabelled archive throws a
@@ -4064,7 +4124,7 @@ export async function convertArchive(
   if (tgt === 'tar.gz' || tgt === 'tgz') {
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
     const gzipped = zlib.gzipSync(tarResult.buffer, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,
@@ -4107,7 +4167,7 @@ export async function convertArchive(
     // 7. Target GZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     const gzipped = zlib.gzipSync(rawToCompress, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,

@@ -47,6 +47,7 @@ export type ExternalOracleTool =
   | 'zipinfo'
   | 'unshare'
   | 'magick'
+  | 'convert'
   | 'identify'
   | 'unrar'
   | 'qpdf'

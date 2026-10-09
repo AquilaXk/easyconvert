@@ -2,6 +2,7 @@ import { PdfPageFrameError } from './pdf-page-geometry';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import {
   convertOffice,
   extractTextFromRtf,
@@ -25,6 +26,7 @@ import {
   parseAlto,
   evaluatePageOcrDecisions,
   assembleCombinedOcrResult,
+  STRUCTURED_OCR_TARGETS,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { PdfTextGeometryError } from './pdf-text-types';
@@ -224,6 +226,7 @@ export async function convertDocument(
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
           engineMarkup: options.ocrEngineMarkup,
+          parallelBands: STRUCTURED_OCR_TARGETS.has(tgt) ? false : undefined,
         });
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
@@ -657,7 +660,7 @@ export async function convertDocument(
     };
   }
 
-  throw new Error(`Unsupported document conversion from ${sourceFormat} to ${targetFormat}`);
+  throw unconvertibleOfficeTarget(src, tgt);
 }
 
 // Defense in depth for the generated page: no script execution or network access beyond images,

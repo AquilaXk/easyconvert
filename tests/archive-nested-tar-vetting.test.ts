@@ -17,10 +17,11 @@ import { oracleTest } from './helpers/oracle-test';
  */
 const TOOLS = ['7z', 'tar', 'xz', 'unshare'] as const;
 const TEST_TIMEOUT_MS = 120_000;
-/** List the archive, extract it, package the result. */
-const SPAWNS_FOR_A_PLAIN_PAYLOAD = 3;
-/** The same, plus the listing of the tar the payload turned out to be. */
-const SPAWNS_FOR_A_TAR_PAYLOAD = 4;
+/**
+ * One `7z x -so` call unpacks the stream. A payload that is a tar is listed in process, and one that is not is
+ * wrapped in process, so neither starts a second 7-Zip.
+ */
+const SPAWNS_FOR_ANY_PAYLOAD = 1;
 /** Text that compresses about four to one, well under the archive ratio guard. */
 const PAYLOAD_BYTES = 200_000;
 const TAR_FORMATS = ['v7', 'ustar', 'gnu', 'pax'] as const;
@@ -122,13 +123,13 @@ describe('conversion of a compressed payload to tar', () => {
   }
 
   oracleTest(
-    'starts three 7-Zip processes for a payload that is not a tar, and the tar it writes holds the payload',
+    'starts one 7-Zip process for a payload that is not a tar, and the tar it writes holds the payload',
     [...TOOLS],
     async () => {
       const payload = zipfText(PAYLOAD_BYTES, 31);
       const xz = execFileSync('xz', ['-6', '-c'], { input: payload });
       const { calls, output } = await countSpawns(xz, 'payload.xz');
-      expect(calls).toBe(SPAWNS_FOR_A_PLAIN_PAYLOAD);
+      expect(calls).toBe(SPAWNS_FOR_ANY_PAYLOAD);
       const file = path.join(workDir, 'out-plain.tar');
       fs.writeFileSync(file, output);
       const listed = execFileSync('tar', ['-tf', file], { encoding: 'utf8' }).trim().split('\n');
@@ -139,14 +140,18 @@ describe('conversion of a compressed payload to tar', () => {
   );
 
   oracleTest(
-    'still lists a payload that is a tar, in every tar format',
+    'vets a payload that is a tar in process and writes it again with the same members, in every tar format',
     [...TOOLS],
     async () => {
       for (const format of TAR_FORMATS) {
         const tar = fs.readFileSync(tarFile(`wrapped-${format}.tar`, format, [{ name: 'a.txt', data: 'alpha' }]));
         const xz = execFileSync('xz', ['-6', '-c'], { input: tar });
-        const { calls } = await countSpawns(xz, `wrapped-${format}.tar.xz`);
-        expect(calls, format).toBe(SPAWNS_FOR_A_TAR_PAYLOAD);
+        const { calls, output } = await countSpawns(xz, `wrapped-${format}.tar.xz`);
+        expect(calls, format).toBe(SPAWNS_FOR_ANY_PAYLOAD);
+        const file = path.join(workDir, `out-${format}.tar`);
+        fs.writeFileSync(file, output);
+        expect(execFileSync('tar', ['-tf', file], { encoding: 'utf8' }), format).toBe('a.txt\n');
+        expect(execFileSync('tar', ['-xOf', file, 'a.txt'], { encoding: 'utf8' }), format).toBe('alpha');
       }
     },
     TEST_TIMEOUT_MS

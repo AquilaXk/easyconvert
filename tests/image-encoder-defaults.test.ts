@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent } from '../src/lib/conversions/image-content';
-import { avifEffortFor, avifChromaFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
+import { avifBitdepthFor, avifEffortFor, avifChromaFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -179,7 +179,7 @@ describe.skipIf(skipWithoutTools('exiftool'))('metadata on lossy outputs', () =>
 });
 
 describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
-  it('encodes a source with more than 8 bits per sample at 10 bits and keeps more than 256 levels', async () => {
+  it('encodes a source with more than 8 bits per sample at 10 bits when it is grey and keeps more than 256 levels', async () => {
     // A 16-bit grey ramp: 1024 columns, 64 apart in 16-bit value, so 8 bits cannot hold it.
     const columns = 1024;
     const rows = 8;
@@ -195,6 +195,14 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     const levels = Number(runIdentify(['-format', '%k', decoded]).trim().split('\n')[0]);
     expect(levels).toBeGreaterThan(256);
   }, 60_000);
+
+  it('encodes a 16-bit RGB source at 10 bits, within the AV1 Main profile, and keeps HDR output at 10 bits', async () => {
+    expect([avifBitdepthFor(false), avifBitdepthFor(true)]).toEqual([8, 10]);
+    const rgb16 = runConvert(['-size', '64x64', 'gradient:#102030-#f0e0d0', '-depth', '16', 'png:-']);
+    expect(await sharp(rgb16).metadata()).toMatchObject({ depth: 'ushort', channels: 3 });
+    const out = (await convertImage(rgb16, 'avif', { quality: 90 }, 'rgb16.png', 'png')).buffer;
+    expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(10);
+  });
 
   it('keeps an 8-bit source at 8 bits', async () => {
     const out = (await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png')).buffer;

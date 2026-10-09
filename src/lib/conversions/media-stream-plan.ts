@@ -1,5 +1,6 @@
 import { InvalidMediaOptionError, type DroppedStream } from '../types';
-import { firstVideoStream, type InputStream } from './media-ffprobe';
+import { firstVideoStream } from './media-ffprobe';
+import type { LayoutStream } from './mp4-layout';
 
 /**
  * Which streams of the input a video-container conversion keeps. The plan is a pure function of the
@@ -59,7 +60,7 @@ export interface StreamMapPlan {
 }
 
 export interface StreamPlanInput {
-  streams: readonly InputStream[];
+  streams: readonly LayoutStream[];
   container: VideoContainer;
   /** Index among the audio streams, or all of them (the default). */
   audioTrack?: number | 'all';
@@ -69,7 +70,7 @@ export interface StreamPlanInput {
   hasChapters?: boolean;
 }
 
-function selectAudio(audio: readonly InputStream[], track: number | 'all' | undefined): InputStream[] {
+function selectAudio(audio: readonly LayoutStream[], track: number | 'all' | undefined): LayoutStream[] {
   if (track === undefined || track === 'all') return [...audio];
   if (!Number.isInteger(track) || track < 0) {
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
@@ -80,7 +81,7 @@ function selectAudio(audio: readonly InputStream[], track: number | 'all' | unde
   return [audio[track]];
 }
 
-function carriableSubtitles(subtitles: readonly InputStream[], container: VideoContainer): InputStream[] {
+function carriableSubtitles(subtitles: readonly LayoutStream[], container: VideoContainer): LayoutStream[] {
   const codecs = Object.hasOwn(SUBTITLE_CODEC_BY_CONTAINER, container) ? SUBTITLE_CODEC_BY_CONTAINER[container] : undefined;
   if (!codecs) return [];
   for (const stream of subtitles) {
@@ -94,7 +95,7 @@ function carriableSubtitles(subtitles: readonly InputStream[], container: VideoC
   return [...subtitles];
 }
 
-function droppedEntry(stream: InputStream, kind: DroppedStream['kind'], reason: DroppedStream['reason']): DroppedStream {
+function droppedEntry(stream: LayoutStream, kind: DroppedStream['kind'], reason: DroppedStream['reason']): DroppedStream {
   const entry: DroppedStream = { index: stream.index, kind, reason };
   if (stream.codecName !== 'unknown') entry.codec = stream.codecName;
   if (stream.language) entry.language = stream.language;
@@ -104,9 +105,9 @@ function droppedEntry(stream: InputStream, kind: DroppedStream['kind'], reason: 
 
 /** The streams no mapping of this target carries, in input order, with the reason each is left out. */
 function droppedStreams(
-  streams: readonly InputStream[],
+  streams: readonly LayoutStream[],
   container: VideoContainer,
-  video: InputStream | undefined,
+  video: LayoutStream | undefined,
   hasSubtitleCodecs: boolean,
   burnSubtitles: boolean,
   hasChapters: boolean
