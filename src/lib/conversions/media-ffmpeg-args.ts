@@ -997,7 +997,6 @@ export function buildFfmpegArguments(
   }
 
   if (isVideo) {
-    const hw = probeHardwareAcceleration(ffmpegBin);
     const disableHw = Boolean(options.disableHwaccel);
     const driDev = fs.existsSync('/dev/dri/renderD128')
       ? '/dev/dri/renderD128'
@@ -1099,6 +1098,8 @@ export function buildFfmpegArguments(
 
     // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
     if (!disableHw && !tenBit && !twoPass && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+      // Only a request that may pick a hardware encoder asks which sessions open; each answer costs a process.
+      const hw = probeHardwareAcceleration(ffmpegBin);
       if (codec === 'h264') {
         if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
         else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;

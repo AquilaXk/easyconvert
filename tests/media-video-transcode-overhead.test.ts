@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildFfmpegArguments } from '../src/lib/conversions/media-ffmpeg-args';
+import { buildFfmpegArguments, resetHardwareAccelerationCache } from '../src/lib/conversions/media-ffmpeg-args';
 import { probeMediaDuration } from '../src/lib/conversions/media';
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { convertWithNativeFfmpeg } from '../src/worker/engines';
@@ -345,4 +345,59 @@ describe('the arguments of a plain MP4 to H.264 conversion', () => {
     expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-i', absent]);
     expect(args.filter((arg) => arg === '-map')).toEqual([]);
   });
+});
+
+describe('the hardware encoder probe of a video conversion', () => {
+  /**
+   * A sibling pair whose ffmpeg lists NVENC on top of the real encoder list and logs every call, as the Ubuntu build
+   * does. A host with no GPU still has to start a process to learn that no session opens, so the count is the point.
+   */
+  function nvencListingBinaries(label: string): { ffmpeg: string; sessionProbes: () => number; encoderLists: () => number } {
+    const dir = path.join(workDir, `nvenc-listing-${label}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(log, '');
+    const real = tool('ffmpeg');
+    const script = `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase " $* " in\n  *" -encoders "*) '${real}' "$@"; printf ' V....D h264_nvenc NVIDIA NVENC H.264 encoder\\n'; exit 0;;\nesac\nexec '${real}' "$@"\n`;
+    fs.writeFileSync(path.join(dir, 'ffmpeg'), script, { mode: 0o755 });
+    fs.symlinkSync(tool('ffprobe'), path.join(dir, 'ffprobe'));
+    const lines = () => fs.readFileSync(log, 'utf-8').split('\n').filter((line) => line !== '');
+    return {
+      ffmpeg: path.join(dir, 'ffmpeg'),
+      sessionProbes: () => lines().filter((line) => line.includes('lavfi') && line.includes('h264_nvenc')).length,
+      encoderLists: () => lines().filter((line) => line.includes('-encoders')).length,
+    };
+  }
+
+  oracleTest(
+    'a request that disables hardware encoders opens no hardware session',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      resetHardwareAccelerationCache();
+      const source = plainMp4();
+      const binaries = nvencListingBinaries('disabled');
+      const args = buildFfmpegArguments(source, path.join(workDir, 'hw-off.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, binaries.ffmpeg);
+      expect(args).toContain('libx264');
+      expect(binaries.sessionProbes()).toBe(0);
+      resetHardwareAccelerationCache();
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'opens each hardware session once per binary, however many conversions follow',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      resetHardwareAccelerationCache();
+      const source = plainMp4();
+      const binaries = nvencListingBinaries('enabled');
+      for (let conversion = 0; conversion < 3; conversion++) {
+        buildFfmpegArguments(source, path.join(workDir, `hw-on-${conversion}.mp4`), 'mp4', 'mp4', {}, binaries.ffmpeg);
+      }
+      expect(binaries.sessionProbes()).toBe(1);
+      expect(binaries.encoderLists()).toBe(1);
+      resetHardwareAccelerationCache();
+    },
+    TEST_TIMEOUT_MS
+  );
 });
