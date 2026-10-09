@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -658,7 +659,7 @@ export class LibreOfficePoolManager {
 
     await this.waitUnlessAborted(this.ensureReady(), options.signal);
 
-    const worker = await this.acquireWorker(options.timeoutMs, options.signal);
+    const worker = await this.acquireWorker(stageTimeoutMs(options, this.acquireTimeoutMs), options.signal);
     let hasError = false;
     const startTime = Date.now();
     const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
@@ -668,7 +669,7 @@ export class LibreOfficePoolManager {
       fs.mkdirSync(jobSubdir, { recursive: true, mode: 0o700 });
       const inputPath = this.prepareInputPath(jobSubdir, src, input);
 
-      const timeout = Math.min(options.timeoutMs || 45000, 120000);
+      const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
       const convertArgs = [

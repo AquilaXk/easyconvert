@@ -1,5 +1,5 @@
 import { tierMaxPages } from '../conversions/page-range';
-import { DEFAULT_MEDIA_TIER_MAX_MS } from '../conversions/media';
+import { bindJobLimits } from '../conversions/job-time';
 import { getFormatByExtension } from '../registry';
 import type { ConversionOptions } from '../types';
 import type { ConversionEnginePort } from './engine-port';
@@ -36,6 +36,8 @@ export interface JobDeadlineSettings {
   perPageMs: number;
   perMibMs: number;
   perMediaSecondMs: number;
+  /** Most a synchronous request may run; longer conversions belong on the asynchronous API. */
+  syncMaxMs: number;
 }
 
 /** Environment variable of each setting. */
@@ -49,6 +51,7 @@ export const JOB_DEADLINE_ENV = {
   PER_PAGE: 'JOB_DEADLINE_PER_PAGE_MS',
   PER_MIB: 'JOB_DEADLINE_PER_MIB_MS',
   PER_MEDIA_SECOND: 'JOB_DEADLINE_PER_MEDIA_SECOND_MS',
+  SYNC_MAX: 'SYNC_DEADLINE_MAX_MS',
 } as const;
 
 /**
@@ -67,6 +70,7 @@ export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number
   PER_PAGE: 10_000,
   PER_MIB: 2_000,
   PER_MEDIA_SECOND: 3_000,
+  SYNC_MAX: 120_000,
 };
 
 const TIERS = ['free', 'pro', 'enterprise'] as const;
@@ -78,6 +82,17 @@ const SETTING_PATTERN = new RegExp(`^\\d{1,${MAX_SETTING_DIGITS}}$`);
 
 type Env = Readonly<Record<string, string | undefined>>;
 
+/**
+ * A deadline setting or input is invalid. It is a server-side fault, so the routes answer a generic 500 and log
+ * the detail: the message names a setting, which a client has no business reading.
+ */
+export class JobDeadlineError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JobDeadlineError';
+  }
+}
+
 function readSetting(env: Env, key: keyof typeof JOB_DEADLINE_ENV): number {
   const name = JOB_DEADLINE_ENV[key];
   const raw = env[name];
@@ -85,7 +100,7 @@ function readSetting(env: Env, key: keyof typeof JOB_DEADLINE_ENV): number {
   const text = raw.trim();
   const value = SETTING_PATTERN.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(value) || value < 1 || value > INT32_MAX) {
-    throw new RangeError(`${name} must be an integer from 1 to ${INT32_MAX} (milliseconds)`);
+    throw new JobDeadlineError(`${name} must be an integer from 1 to ${INT32_MAX} (milliseconds)`);
   }
   return value;
 }
@@ -102,7 +117,7 @@ export function jobDeadlineSettings(env: Env = process.env): JobDeadlineSettings
     baseMs[tier] = readSetting(env, `BASE_${suffix}`);
     maxMs[tier] = readSetting(env, `MAX_${suffix}`);
     if (baseMs[tier] > maxMs[tier]) {
-      throw new RangeError(
+      throw new JobDeadlineError(
         `${JOB_DEADLINE_ENV[`BASE_${suffix}`]} (${baseMs[tier]}) must not exceed ${JOB_DEADLINE_ENV[`MAX_${suffix}`]} (${maxMs[tier]})`
       );
     }
@@ -113,7 +128,22 @@ export function jobDeadlineSettings(env: Env = process.env): JobDeadlineSettings
     perPageMs: readSetting(env, 'PER_PAGE'),
     perMibMs: readSetting(env, 'PER_MIB'),
     perMediaSecondMs: readSetting(env, 'PER_MEDIA_SECOND'),
+    syncMaxMs: readSetting(env, 'SYNC_MAX'),
   };
+}
+
+let cachedSettings: { key: string; settings: JobDeadlineSettings } | undefined;
+
+/**
+ * The deadline settings of the process environment, resolved once: the result is reused until one of the
+ * variables changes (which a running process never does outside tests), so no request re-parses them.
+ */
+export function currentJobDeadlineSettings(): JobDeadlineSettings {
+  const key = Object.values(JOB_DEADLINE_ENV)
+    .map((name) => process.env[name] ?? '')
+    .join('\u0000');
+  if (cachedSettings?.key !== key) cachedSettings = { key, settings: jobDeadlineSettings(process.env) };
+  return cachedSettings.settings;
 }
 
 function knownTier(tier: string | undefined): string {
@@ -123,18 +153,18 @@ function knownTier(tier: string | undefined): string {
 
 function requireNonNegativeNumber(value: number, label: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${label} must be a finite number of at least 0, got ${String(value)}`);
+    throw new JobDeadlineError(`${label} must be a finite number of at least 0, got ${String(value)}`);
   }
 }
 
 function requirePageCount(value: number): void {
   if (!Number.isInteger(value) || value < 1) {
-    throw new RangeError(`pages must be an integer of at least 1, got ${String(value)}`);
+    throw new JobDeadlineError(`pages must be an integer of at least 1, got ${String(value)}`);
   }
 }
 
 /** The maximum deadline of a tier in milliseconds. */
-export function tierMaxDeadlineMs(tier: string | undefined, settings: JobDeadlineSettings = jobDeadlineSettings()): number {
+export function tierMaxDeadlineMs(tier: string | undefined, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
   return settings.maxMs[knownTier(tier)];
 }
 
@@ -144,7 +174,7 @@ export function tierMaxDeadlineMs(tier: string | undefined, settings: JobDeadlin
  * per second of media, and `perMibMs` per started MiB of input, never above the tier's maximum. Work of unknown
  * size gets the maximum. Invalid quantities throw a RangeError.
  */
-export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSettings = jobDeadlineSettings()): number {
+export function jobDeadlineMs(input: JobDeadlineInput, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
   const tier = knownTier(input.tier);
   const max = settings.maxMs[tier];
   if (input.inputBytes !== undefined) requireNonNegativeNumber(input.inputBytes, 'inputBytes');
@@ -192,7 +222,7 @@ export interface ConversionDeadlineInput {
 /** `jobDeadlineMs` for a conversion between two formats. */
 export function conversionDeadlineMs(
   input: ConversionDeadlineInput,
-  settings: JobDeadlineSettings = jobDeadlineSettings()
+  settings: JobDeadlineSettings = currentJobDeadlineSettings()
 ): number {
   return jobDeadlineMs(
     {
@@ -206,39 +236,32 @@ export function conversionDeadlineMs(
   );
 }
 
-/**
- * The ceiling a converter receives as `timeoutMs`. The media engines read it as the most a transcode may run, so a
- * media conversion keeps the media maximum (`DEFAULT_MEDIA_TIER_MAX_MS`, 180 s) when the job deadline is longer: the
- * deadline bounds the job, it never loosens the engine's own limit. Every other conversion gets the deadline.
- */
-export function converterTimeoutMs(sourceFormat: string, targetFormat: string, deadlineMs: number): number {
-  return jobDeadlineFamily(sourceFormat, targetFormat) === 'media' ? Math.min(deadlineMs, DEFAULT_MEDIA_TIER_MAX_MS) : deadlineMs;
+/** A synchronous request's deadline: the job deadline held to the synchronous cap (`SYNC_DEADLINE_MAX_MS`). */
+export function syncDeadlineMs(deadlineMs: number, settings: JobDeadlineSettings = currentJobDeadlineSettings()): number {
+  return Math.min(deadlineMs, settings.syncMaxMs);
 }
 
-/** What an engine wrapper needs of a queue job: its attempt signal and its options. */
+/** What an engine wrapper needs of a queue job: its attempt signal and its time limits. */
 export interface DeadlinedJob {
   signal: AbortSignal;
-  opts?: { timeout?: number };
+  opts?: { timeout?: number; deadlineAt?: number };
 }
 
 /**
- * An engine that runs every conversion of `job` under the job's deadline: `timeoutMs` is the job's timeout (a
- * `timeoutMs` in the request options is replaced, since job data comes from request bodies) and `signal` is the
- * attempt's signal, so the sandbox kills child process groups when the deadline fires. A signal the call already
- * carries is kept. A job without a timeout (queued before deadlines existed) leaves the options as they are.
+ * An engine that runs every conversion of `job` under the job's deadline. The conversion gets the attempt's
+ * signal (it fires at the deadline, so the sandbox kills child process groups) and the job's absolute deadline;
+ * the engines keep their own stage limits, each clamped to the time the job has left. The deadline is never
+ * passed as a `timeoutMs`, which the engines read as a per-stage override. `signal`, `timeoutMs` and `deadline*`
+ * in the request options are dropped (job data comes from request bodies); only a genuine `AbortSignal` that
+ * server code passed in is combined with the job's.
  */
 export function deadlineBoundEngine(engine: ConversionEnginePort, job: DeadlinedJob): ConversionEnginePort {
-  const timeoutMs = job.opts?.timeout;
-  if (timeoutMs === undefined) return engine;
   return {
     name: engine.name,
-    convert: (input, sourceFormat, targetFormat, options, originalFilename) =>
-      engine.convert(
-        input,
-        sourceFormat,
-        targetFormat,
-        { ...options, timeoutMs: converterTimeoutMs(sourceFormat, targetFormat, timeoutMs), signal: options.signal ?? job.signal },
-        originalFilename
-      ),
+    convert: (input, sourceFormat, targetFormat, options, originalFilename) => {
+      const timeoutMs = job.opts?.timeout;
+      const deadlineAt = job.opts?.deadlineAt ?? (timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
+      return engine.convert(input, sourceFormat, targetFormat, bindJobLimits(options, { signal: job.signal, deadlineAt }), originalFilename);
+    },
   };
 }

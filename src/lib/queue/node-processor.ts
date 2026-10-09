@@ -58,6 +58,8 @@ export const tsEngine: ConversionEnginePort = {
       throw new Error('Invalid input payload: neither Buffer nor inputPath available.');
     }
 
+    // The in-process engine cannot be interrupted once it runs: it must not start for an aborted job.
+    options.signal?.throwIfAborted();
     const res: ConversionResult = await convertFile(
       buf,
       sourceFormat,

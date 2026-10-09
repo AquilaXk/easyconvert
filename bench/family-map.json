@@ -20,7 +20,7 @@
   "rules": [
     {
       "families": ["*"],
-      "match": "^src/lib/conversions/(dispatch|index|options-guard)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
     },
     {
       "families": ["*"],

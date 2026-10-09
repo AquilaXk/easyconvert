@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -388,7 +389,7 @@ async function executeFfmpegTranscode(
   try {
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
     const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
-    const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
+    const timeoutMs = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
     const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
         timeoutMs: limitMs,
@@ -557,7 +558,7 @@ export async function packageHlsDashMedia(
     const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: outputDir,
-      timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), options.timeoutMs),
+      timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)),
       maxBuffer: 100 * 1024 * 1024,
       networkIsolated: true,
       signal: options.signal,

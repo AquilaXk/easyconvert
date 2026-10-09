@@ -3,6 +3,8 @@ import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   JOB_DEADLINE_DEFAULTS,
+  JobDeadlineError,
+  syncDeadlineMs,
   JOB_DEADLINE_ENV,
   conversionDeadlineMs,
   jobDeadlineFamily,
@@ -122,6 +124,40 @@ describe('jobDeadlineMs input checks', () => {
   });
 });
 
+describe('syncDeadlineMs', () => {
+  it('holds a synchronous request to the synchronous cap and leaves a shorter deadline alone', () => {
+    const settings = jobDeadlineSettings({});
+    expect(syncDeadlineMs(600_000, settings)).toBe(120_000);
+    expect(syncDeadlineMs(120_001, settings)).toBe(120_000);
+    expect(syncDeadlineMs(120_000, settings)).toBe(120_000);
+    expect(syncDeadlineMs(62_000, settings)).toBe(62_000);
+    expect(syncDeadlineMs(600_000, jobDeadlineSettings({ SYNC_DEADLINE_MAX_MS: '5000' }))).toBe(5_000);
+  });
+
+  it('refuses a malformed synchronous cap', () => {
+    expect(() => jobDeadlineSettings({ SYNC_DEADLINE_MAX_MS: '2m' })).toThrow(/SYNC_DEADLINE_MAX_MS/);
+  });
+});
+
+describe('deadline errors', () => {
+  it('are a JobDeadlineError (a RangeError), so a route can answer them without internals', () => {
+    for (const make of [
+      () => jobDeadlineSettings({ JOB_DEADLINE_PER_PAGE_MS: 'x' }),
+      () => jobDeadlineMs({ tier: 'free', family: 'bytes', inputBytes: -1 }),
+    ]) {
+      try {
+        make();
+        throw new Error('no error');
+      } catch (error) {
+        expect(error).toBeInstanceOf(JobDeadlineError);
+        expect(error).toBeInstanceOf(RangeError);
+        expect((error as Error).name).toBe('JobDeadlineError');
+        expect((error as Error).message).toMatch(/^(JOB_DEADLINE_PER_PAGE_MS must be an integer from 1 to 2147483647|inputBytes must be a finite number of at least 0, got -1)/);
+      }
+    }
+  });
+});
+
 describe('jobDeadlineFamily', () => {
   it('counts documents, presentations, spreadsheets and ebooks by page', () => {
     for (const source of ['pdf', 'docx', 'pptx', 'xlsx', 'epub']) {
@@ -167,6 +203,7 @@ describe('jobDeadlineSettings', () => {
       perPageMs: 10_000,
       perMibMs: 2_000,
       perMediaSecondMs: 3_000,
+      syncMaxMs: 120_000,
     });
   });
 
@@ -207,7 +244,7 @@ describe('the settings are documented configuration', () => {
   const configDoc = readFileSync(path.resolve(__dirname, '..', 'docs', 'configuration.md'), 'utf8');
 
   it('declares every deadline variable in the configuration schema with the default the code uses', () => {
-    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(9);
+    expect(Object.values(JOB_DEADLINE_ENV).length).toBe(10);
     for (const [key, name] of Object.entries(JOB_DEADLINE_ENV)) {
       const spec = byName.get(name);
       expect(spec, name).toBeDefined();

@@ -6,8 +6,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Queue, Worker, JobTimeoutError, type Job } from '../src/lib/queue/bullmq-engine';
 import { processNodeJob } from '../src/lib/queue/node-processor';
 import { classifyJobFailure, isFinalFailure } from '../src/lib/queue/job-failure';
-import { converterTimeoutMs, deadlineBoundEngine } from '../src/lib/queue/job-deadline';
-import { DEFAULT_MEDIA_TIER_MAX_MS } from '../src/lib/conversions/media';
+import { deadlineBoundEngine } from '../src/lib/queue/job-deadline';
+import { JOB_DEADLINE_AT, stageTimeoutMs } from '../src/lib/conversions/job-time';
 import type { ConversionEnginePort, EngineResult } from '../src/lib/queue/engine-port';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { s3Storage } from '../src/lib/storage/s3-storage';
@@ -199,13 +199,18 @@ describe('a job that never ends', () => {
     expect((await queue.getJob(next.id))?.returnvalue?.status).toBe('completed');
   }, 15_000);
 
-  it('fails at the deadline even when the engine ignores the abort signal, and the next job runs', async () => {
+  it('fails at the deadline even when the engine ignores the abort signal; its slot is held until it settles, then the next job runs', async () => {
     const calls: string[] = [];
+    const gate: { release?: () => void } = {};
     const engine: ConversionEnginePort = {
       name: 'deaf-engine',
       async convert(_input, _src, _tgt, _options, originalFilename) {
         calls.push(originalFilename);
-        if (originalFilename.startsWith('hang-')) return new Promise<EngineResult>(() => undefined);
+        if (originalFilename.startsWith('hang-')) {
+          await new Promise<void>((resolve) => {
+            gate.release = resolve;
+          });
+        }
         return OK_RESULT;
       },
     };
@@ -218,15 +223,19 @@ describe('a job that never ends', () => {
     const [failedJob, err] = (await failed) as [{ id: string }, unknown];
     expect(failedJob.id).toBe(hung.id);
     expect(err).toBeInstanceOf(JobTimeoutError);
+    expect((await queue.getJob(hung.id))?.attemptsMade).toBe(1);
+    await pause(300);
+    expect(calls).toEqual(['hang-3.csv']);
+
+    gate.release?.();
     const [completedJob] = (await completed) as [{ id: string }];
     expect(completedJob.id).toBe(next.id);
     expect(calls).toEqual(['hang-3.csv', 'after-3.csv']);
-    expect((await queue.getJob(hung.id))?.attemptsMade).toBe(1);
   }, 15_000);
 });
 
 describe('what the converter receives', () => {
-  it('gets the job deadline as timeoutMs and the attempt signal, replacing a client-supplied timeoutMs', async () => {
+  it('gets the job deadline and the attempt signal, never a timeoutMs: a client-supplied one is dropped', async () => {
     const fake = createFakeEngine();
     const { queue, worker } = startWorker('deadline-options', fake.engine);
     const completed = nextEvent(worker, 'completed');
@@ -234,7 +243,8 @@ describe('what the converter receives', () => {
     await completed;
 
     expect(fake.seen).toHaveLength(1);
-    expect(fake.seen[0].options.timeoutMs).toBe(7_000);
+    expect(fake.seen[0].options.timeoutMs).toBeUndefined();
+    expect(fake.seen[0].options[JOB_DEADLINE_AT as unknown as string]).toBeGreaterThan(Date.now());
     expect(fake.seen[0].options.signal).toBeInstanceOf(AbortSignal);
   });
 
@@ -254,22 +264,25 @@ describe('what the converter receives', () => {
     );
     await completed;
 
-    expect(fake.seen.map((call) => call.options.timeoutMs)).toEqual([9_000, 9_000]);
+    expect(fake.seen.map((call) => call.options.timeoutMs)).toEqual([undefined, undefined]);
+    const deadlines = fake.seen.map((call) => call.options[JOB_DEADLINE_AT as unknown as string]);
+    expect(deadlines[0]).toBe(deadlines[1]);
     for (const call of fake.seen) expect(call.options.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('leaves a job that carries no timeout without a timeoutMs of its own', async () => {
+  it('leaves a job that carries no timeout without a job deadline', async () => {
     const fake = createFakeEngine();
     const { queue, worker } = startWorker('deadline-legacy', fake.engine);
     const completed = nextEvent(worker, 'completed');
     await queue.add('convert', jobData('legacy'), { attempts: 1 });
     await completed;
     expect(fake.seen[0].options.timeoutMs).toBeUndefined();
+    expect(fake.seen[0].options[JOB_DEADLINE_AT as unknown as string]).toBeUndefined();
   });
 });
 
 describe('deadlineBoundEngine', () => {
-  it('sets the timeout and the signal on every call and keeps a signal the caller already set', async () => {
+  const capture = () => {
     const received: Array<Record<string, unknown>> = [];
     const inner: ConversionEnginePort = {
       name: 'inner',
@@ -278,30 +291,57 @@ describe('deadlineBoundEngine', () => {
         return OK_RESULT;
       },
     };
+    return { received, inner };
+  };
+
+  it('installs the job signal and deadline on every call, drops request controls and keeps a genuine caller signal', async () => {
+    const { received, inner } = capture();
     const jobSignal = new AbortController().signal;
-    const own = new AbortController().signal;
-    const bound = deadlineBoundEngine(inner, { signal: jobSignal, opts: { timeout: 1234 } });
+    const own = new AbortController();
+    const bound = deadlineBoundEngine(inner, { signal: jobSignal, opts: { timeout: 1234, deadlineAt: 99_000 } });
     expect(bound.name).toBe('inner');
     await bound.convert(Buffer.alloc(1), 'csv', 'json', { timeoutMs: 5 }, 'a.csv');
-    await bound.convert(Buffer.alloc(1), 'csv', 'json', { signal: own }, 'b.csv');
-    expect(received[0].timeoutMs).toBe(1234);
+    await bound.convert(Buffer.alloc(1), 'csv', 'json', { signal: own.signal }, 'b.csv');
+    await bound.convert(Buffer.alloc(1), 'csv', 'json', { signal: {} as AbortSignal }, 'c.csv');
+    expect(received[0].timeoutMs).toBeUndefined();
     expect(received[0].signal).toBe(jobSignal);
-    expect(received[1].timeoutMs).toBe(1234);
-    expect(received[1].signal).toBe(own);
+    expect(received[0][JOB_DEADLINE_AT as unknown as string]).toBe(99_000);
+    expect(received[1].signal).not.toBe(own.signal);
+    expect((received[1].signal as AbortSignal).aborted).toBe(false);
+    own.abort(new Error('caller'));
+    expect((received[1].signal as AbortSignal).aborted).toBe(true);
+    expect(received[2].signal).toBe(jobSignal);
   });
 
-  it('passes the options through unchanged for a job without a timeout', async () => {
-    const received: Array<Record<string, unknown>> = [];
-    const inner: ConversionEnginePort = {
-      name: 'inner',
-      async convert(_input, _src, _tgt, options) {
-        received.push(options as Record<string, unknown>);
-        return OK_RESULT;
-      },
-    };
-    const bound = deadlineBoundEngine(inner, { signal: new AbortController().signal, opts: {} });
-    await bound.convert(Buffer.alloc(1), 'csv', 'json', { timeoutMs: 5 }, 'a.csv');
-    expect(received[0].timeoutMs).toBe(5);
+  it('derives the deadline from the timeout when the job carries no absolute one', async () => {
+    const { received, inner } = capture();
+    const bound = deadlineBoundEngine(inner, { signal: new AbortController().signal, opts: { timeout: 5_000 } });
+    const before = Date.now();
+    await bound.convert(Buffer.alloc(1), 'csv', 'json', {}, 'a.csv');
+    const at = received[0][JOB_DEADLINE_AT as unknown as string] as number;
+    expect(at).toBeGreaterThanOrEqual(before + 5_000);
+    expect(at).toBeLessThanOrEqual(Date.now() + 5_000);
+  });
+
+  it('still binds the job signal and drops request controls for a job without any deadline', async () => {
+    const { received, inner } = capture();
+    const jobSignal = new AbortController().signal;
+    const bound = deadlineBoundEngine(inner, { signal: jobSignal, opts: {} });
+    await bound.convert(Buffer.alloc(1), 'csv', 'json', { timeoutMs: 5, signal: {} as AbortSignal }, 'a.csv');
+    expect(received[0].timeoutMs).toBeUndefined();
+    expect(received[0].signal).toBe(jobSignal);
+    expect(received[0][JOB_DEADLINE_AT as unknown as string]).toBeUndefined();
+  });
+});
+
+describe('media keeps its own 180 s stage ceiling, clamped to the time the job has left', () => {
+  it('is not raised by a longer job deadline, and never exceeds the time left', () => {
+    const now = Date.now();
+    const MEDIA_STAGE_MS = 180_000;
+    // A free media job (deadline 600 s) and an enterprise one (3600 s) both keep the 180 s media ceiling.
+    expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 600_000 }, MEDIA_STAGE_MS, now)).toBe(MEDIA_STAGE_MS);
+    expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 3_600_000 }, MEDIA_STAGE_MS, now)).toBe(MEDIA_STAGE_MS);
+    expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 62_000 }, MEDIA_STAGE_MS, now)).toBe(62_000);
   });
 });
 
@@ -314,57 +354,5 @@ describe('a deadline is a verdict on the job, not a transient fault', () => {
     expect(err.message).toBe('Job timed out after 1500ms');
     expect(classifyJobFailure(err)).toEqual({ code: 'JobTimeoutError', status: HTTP_GATEWAY_TIMEOUT, retryable: false });
     expect(isFinalFailure({ attemptsMade: 1, opts: { attempts: 3 } }, err)).toBe(true);
-  });
-});
-
-describe('the ceiling a media engine receives is never above the media maximum', () => {
-  const MEDIA_MAX_MS = 180_000;
-  const FREE_MAX_MS = 600_000;
-  const ENTERPRISE_MAX_MS = 3_600_000;
-
-  it('is the existing media maximum of 180 s', () => {
-    expect(DEFAULT_MEDIA_TIER_MAX_MS).toBe(MEDIA_MAX_MS);
-  });
-
-  it.each([
-    ['a free media job at the free maximum', 'wav', 'mp3', FREE_MAX_MS, MEDIA_MAX_MS],
-    ['an enterprise media job at the enterprise maximum', 'mp4', 'webm', ENTERPRISE_MAX_MS, MEDIA_MAX_MS],
-    ['a media job with a deadline below the maximum', 'wav', 'mp3', 62_000, 62_000],
-    ['a media job whose deadline equals the maximum', 'wav', 'mp3', MEDIA_MAX_MS, MEDIA_MAX_MS],
-    ['a media source converted to a still image', 'mp4', 'jpg', FREE_MAX_MS, MEDIA_MAX_MS],
-    ['a document job, which is not media', 'pdf', 'txt', FREE_MAX_MS, FREE_MAX_MS],
-    ['an image job, which is not media', 'png', 'webp', ENTERPRISE_MAX_MS, ENTERPRISE_MAX_MS],
-  ])('gives %s the right ceiling', (_label, source, target, deadline, expected) => {
-    expect(converterTimeoutMs(source as string, target as string, deadline as number)).toBe(expected);
-  });
-
-  it('reaches the media engine of a queued free job as at most 180 000 ms, and leaves other jobs the full deadline', async () => {
-    const fake = createFakeEngine();
-    const { queue, worker } = startWorker('deadline-media-cap', fake.engine);
-    const done = nextEvent(worker, 'completed');
-    await queue.add('convert', jobData('clip', { sourceFormat: 'wav', targetFormat: 'mp3', originalFilename: 'clip.wav' }), {
-      attempts: 1,
-      timeout: 600_000,
-    });
-    await done;
-    const done2 = nextEvent(worker, 'completed');
-    await queue.add('convert', jobData('plain'), { attempts: 1, timeout: 600_000 });
-    await done2;
-    expect(fake.seen.map((call) => call.options.timeoutMs)).toEqual([180_000, 600_000]);
-  });
-
-  it('keeps the 180 s ceiling for media conversions between the pair of a pipeline stage', async () => {
-    const received: number[] = [];
-    const inner: ConversionEnginePort = {
-      name: 'inner',
-      async convert(_input, _src, _tgt, options) {
-        received.push(options.timeoutMs as number);
-        return OK_RESULT;
-      },
-    };
-    const bound = deadlineBoundEngine(inner, { signal: new AbortController().signal, opts: { timeout: ENTERPRISE_MAX_MS } });
-    await bound.convert(Buffer.alloc(1), 'mp4', 'webm', {}, 'a.mp4');
-    await bound.convert(Buffer.alloc(1), 'csv', 'json', {}, 'a.csv');
-    expect(received).toEqual([MEDIA_MAX_MS, ENTERPRISE_MAX_MS]);
   });
 });
