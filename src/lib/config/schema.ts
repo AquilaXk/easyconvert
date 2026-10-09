@@ -1054,6 +1054,17 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'EASYCONVERT_OCR_DEADLINE_MS',
+    area: 'limits',
+    description:
+      'Milliseconds the text recognition (OCR) of one document may run, rendering and reading all its pages, before it is refused with HTTP 413. A scanned page costs about the same however long the document is, so this bounds the work of a long scan; the pages in flight finish their step first.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 150_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
     area: 'limits',
     description:
