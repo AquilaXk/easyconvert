@@ -347,6 +347,11 @@ describe('a minimal input probe leaves the encoded audio as the reference encode
     execFileSync(tool('ffmpeg'), ['-hide_banner', '-nostdin', '-v', 'error', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
   }
 
+  /** Whether this ffmpeg build was configured with libsoxr (Debian and Ubuntu builds are; Homebrew's is not). */
+  function hasSoxr(): boolean {
+    return execFileSync(tool('ffmpeg'), ['-hide_banner', '-buildconf'], { encoding: 'utf-8' }).includes('--enable-libsoxr');
+  }
+
   /** MD5 of the decoded 16-bit samples, which is what a listener hears. */
   function decodedMd5(file: string): string {
     const out = execFileSync(tool('ffmpeg'), ['-hide_banner', '-nostdin', '-v', 'error', '-i', file, '-f', 's16le', '-c:a', 'pcm_s16le', '-f', 'md5', '-'], {
@@ -379,7 +384,10 @@ describe('a minimal input probe leaves the encoded audio as the reference encode
           run(minimal);
 
           const reference = path.join(workDir, `same-ref-${rate}.${target}`);
-          const referenceRate = target === 'opus' && rate === 44_100 ? ['-ar', '48000'] : [];
+          // libopus codes 48 kHz, so a 44.1 kHz source is resampled. The reference resamples with what the build
+          // offers at its best, as the quality default documents: soxr at 28 bits of precision, else swresample.
+          const resampleTo48k = hasSoxr() ? ['-ar', '48000', '-filter:a', 'aresample=48000:resampler=soxr:precision=28'] : ['-ar', '48000'];
+          const referenceRate = target === 'opus' && rate === 44_100 ? resampleTo48k : [];
           run(['-y', '-i', input, '-vn', '-map_metadata', '-1', ...referenceArgs, ...referenceRate, reference]);
 
           expect(decodedMd5(ours)).toBe(decodedMd5(reference));
