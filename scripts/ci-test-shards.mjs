@@ -66,15 +66,22 @@ function median(values) {
   return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-/** Packs `files` into `count` shards: longest file first, always into the shard with the least load. */
-export function planShards(files, durations, count) {
+/**
+ * Packs `files` into `count` shards: longest file first, always into the shard with the least load. `baseLoads`
+ * gives shard i work it carries whatever the files are (the conformance gate's part 1 also runs the registry-wide
+ * checks), so the packing leaves room for it; a missing entry is 0.
+ */
+export function planShards(files, durations, count, baseLoads = []) {
   if (!Number.isInteger(count) || count < 1 || count > MAX_SHARDS) {
     throw new ShardPlanError(`the shard count must be an integer from 1 to ${MAX_SHARDS}, got ${count}`);
+  }
+  if (baseLoads.length > count || baseLoads.some((load) => typeof load !== 'number' || !Number.isFinite(load) || load < 0)) {
+    throw new ShardPlanError(`the base loads must be at most ${count} non-negative numbers`);
   }
   const fallback = median(files.filter((file) => file in durations).map((file) => durations[file]));
   const weighted = files.map((file) => ({ file, seconds: file in durations ? durations[file] : fallback }));
   weighted.sort((a, b) => b.seconds - a.seconds || (a.file < b.file ? -1 : 1));
-  const shards = Array.from({ length: count }, () => ({ load: 0, files: [] }));
+  const shards = Array.from({ length: count }, (_, index) => ({ load: baseLoads[index] ?? 0, files: [] }));
   for (const item of weighted) {
     let lightest = shards[0];
     for (const shard of shards) if (shard.load < lightest.load) lightest = shard;
