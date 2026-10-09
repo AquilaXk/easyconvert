@@ -114,9 +114,10 @@ export async function performOcr(
   imageBuffer: Buffer,
   language: string = 'auto',
   steps: OcrPreprocessSteps = OCR_PREPROCESS_STEPS,
-  detectOrientation?: boolean
+  detectOrientation?: boolean,
+  parallelBands?: boolean
 ): Promise<OcrResult> {
-  const recognized = await recognizePage(imageBuffer, language, { steps, detectOrientation });
+  const recognized = await recognizePage(imageBuffer, language, { steps, detectOrientation, parallelBands });
   return calibrateOcrResult(recognized.result, recognized.enginePath);
 }
 
