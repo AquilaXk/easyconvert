@@ -92,6 +92,11 @@ function checkOne(
 export interface GateOptions {
   /** Only baseline entries of these families are required to be present (a partial run checks what it ran). */
   families?: ReadonlySet<Family>;
+  /**
+   * Only baseline entries this accepts are compared and required to be present: a run that measured only the quality
+   * rows, only the speed rows, or a quick subset of the cases checks exactly what it ran.
+   */
+  include?: (id: string, entry: BaselineEntry) => boolean;
 }
 
 export function evaluateGate(report: BenchReport, baseline: Baseline, options: GateOptions = {}): GateResult {
@@ -108,6 +113,7 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
       unbaselined.push(row.id);
       continue;
     }
+    if (options.include && !options.include(row.id, entry)) continue;
     compared++;
     if (entry.ratio !== null) {
       checkOne(regressions, row, entry, 'speed-ratio', 'speed ratio to the reference tool', entry.ratio, row.ratio);
@@ -124,6 +130,7 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
     const row = byId.get(id);
     const family = id.split('/')[0] as Family;
     if (options.families && !options.families.has(family)) continue;
+    if (options.include && !options.include(id, entry)) continue;
     if (!row) {
       regressions.push({ id, check: 'missing', baseline: entry.ours ?? entry.ratio, current: null, allowedWorsening: 0, message: `${id}: baseline metric is missing from the report` });
     } else if (row.status === 'skipped') {

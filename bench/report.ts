@@ -18,6 +18,10 @@ export const ROW_KINDS = ['quality', 'size', 'bdrate', 'throughput', 'exact'] as
 export type RowKind = (typeof ROW_KINDS)[number];
 const ROW_KIND_SET: ReadonlySet<string> = new Set(ROW_KINDS);
 
+/** The decision a parity run took on a throughput row; `unstable` never reaches a report, it becomes `fail` at the cap. */
+export type RowSpeedVerdict = 'pass' | 'fail';
+const SPEED_VERDICT_SET: ReadonlySet<string> = new Set(['pass', 'fail']);
+
 export const SKIP_KINDS = ['missing-tool', 'optional-tool', 'unsupported'] as const;
 export type SkipKind = (typeof SKIP_KINDS)[number];
 const SKIP_KIND_SET: ReadonlySet<string> = new Set(SKIP_KINDS);
@@ -52,6 +56,13 @@ export interface BenchRow {
   oursCv?: number;
   referenceCv?: number;
   runs?: number;
+  /** Parity runs: confidence interval of the speed ratio (reference time / our time) and the decision taken on it. */
+  ratioLow?: number;
+  ratioHigh?: number;
+  ratioMedian?: number;
+  speedVerdict?: RowSpeedVerdict;
+  /** The interval still straddled the pass line at the cap on pairs, which counts as a failure. */
+  unstableAtCap?: boolean;
   skipKind?: SkipKind;
   skipReason?: string;
 }
@@ -143,8 +154,13 @@ function validateRow(value: unknown, index: number): BenchRow {
     parsed.skipKind = member<SkipKind>(row.skipKind, SKIP_KIND_SET, `${path}.skipKind`);
     parsed.skipReason = str(row.skipReason, `${path}.skipReason`);
   }
-  for (const key of ['oursCv', 'referenceCv', 'runs'] as const) {
+  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian'] as const) {
     if (row[key] !== undefined) parsed[key] = finiteNumber(row[key], `${path}.${key}`);
+  }
+  if (row.speedVerdict !== undefined) parsed.speedVerdict = member<RowSpeedVerdict>(row.speedVerdict, SPEED_VERDICT_SET, `${path}.speedVerdict`);
+  if (row.unstableAtCap !== undefined) {
+    if (typeof row.unstableAtCap !== 'boolean') fail(`${path}.unstableAtCap`, 'a boolean');
+    parsed.unstableAtCap = row.unstableAtCap;
   }
   return parsed;
 }

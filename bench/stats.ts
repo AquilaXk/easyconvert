@@ -33,10 +33,11 @@ export interface InterleavedTiming {
   referenceCv: number;
 }
 
-async function timed(action: () => Promise<void> | void): Promise<number> {
-  const start = performance.now();
+/** Milliseconds elapsed while `action` runs, by `now` (the wall clock unless a test supplies its own). */
+export async function timed(action: () => Promise<void> | void, now: () => number = () => performance.now()): Promise<number> {
+  const start = now();
   await action();
-  return performance.now() - start;
+  return now() - start;
 }
 
 /**

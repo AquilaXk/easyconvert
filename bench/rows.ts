@@ -1,5 +1,6 @@
 import { BYTES_PER_MB, PSNR_CAP_DB, SSIM_DISTANCE_FLOOR } from './config';
 import type { BenchRow, Direction, Family, RowKind, SkipKind, Tolerance } from './report';
+import type { AdaptiveTiming } from './speed-parity';
 import { megabytesPerSecond, type InterleavedTiming } from './stats';
 import type { ToolPlanSkipped } from './tools';
 
@@ -43,7 +44,7 @@ export function measuredRow(
   ours: number,
   reference: number,
   referenceTool: string,
-  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs'>> = {}
+  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap'>> = {}
 ): BenchRow {
   return {
     id: `${family}/${caseName}/${spec.metric}`,
@@ -63,6 +64,11 @@ export function measuredRow(
     ...(extra.oursCv === undefined ? {} : { oursCv: extra.oursCv }),
     ...(extra.referenceCv === undefined ? {} : { referenceCv: extra.referenceCv }),
     ...(extra.runs === undefined ? {} : { runs: extra.runs }),
+    ...(extra.ratioLow === undefined ? {} : { ratioLow: extra.ratioLow }),
+    ...(extra.ratioHigh === undefined ? {} : { ratioHigh: extra.ratioHigh }),
+    ...(extra.ratioMedian === undefined ? {} : { ratioMedian: extra.ratioMedian }),
+    ...(extra.speedVerdict === undefined ? {} : { speedVerdict: extra.speedVerdict }),
+    ...(extra.unstableAtCap === undefined ? {} : { unstableAtCap: extra.unstableAtCap }),
   };
 }
 
@@ -121,15 +127,21 @@ export function throughputRow(
   family: Family,
   caseName: string,
   inputBytes: number,
-  timing: InterleavedTiming,
+  timing: InterleavedTiming | AdaptiveTiming,
   referenceTool: string
 ): BenchRow {
   const ours = megabytesPerSecond(inputBytes, timing.oursMedianMs, BYTES_PER_MB);
   const reference = megabytesPerSecond(inputBytes, timing.referenceMedianMs, BYTES_PER_MB);
+  const decided = 'decision' in timing ? timing : null;
+  const interval = decided && decided.decision.lower !== null && decided.decision.upper !== null ? { ratioLow: decided.decision.lower, ratioHigh: decided.decision.upper } : {};
   return measuredRow(family, caseName, SPEC.throughput, ours, reference, referenceTool, {
     ratio: ours / reference,
     oursCv: timing.oursCv,
     referenceCv: timing.referenceCv,
     runs: timing.runs,
+    ...interval,
+    ...(decided
+      ? { ratioMedian: decided.decision.median, speedVerdict: decided.decision.verdict === 'pass' ? ('pass' as const) : ('fail' as const), unstableAtCap: decided.unstableAtCap }
+      : {}),
   });
 }

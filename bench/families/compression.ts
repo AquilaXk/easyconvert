@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { convertWithProject } from '../convert';
-import type { FamilyRunner } from '../context';
+import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError } from '../errors';
+import { numberRecord } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow } from '../rows';
-import { interleavedTiming } from '../stats';
 import { runTool } from '../tools';
 
 /**
@@ -18,26 +18,10 @@ const ZSTD_LEVEL = '3';
 const SEVEN_ZIP_LEVEL = '6';
 const XZ_LEVEL = '6';
 const MIXED_NAME = 'mixed.bin';
+const MIXED_INPUT_FILES = ['data/records.jsonl', 'speech.wav'];
 const COMPRESS_SPECS: readonly MetricSpec[] = [SPEC.ratio, SPEC.throughput];
 const DECOMPRESS_SPECS: readonly MetricSpec[] = [SPEC.throughput];
-
-/** Interleaved timing of two actions whose results are not needed. */
-function timeBoth(
-  ours: () => Promise<unknown>,
-  reference: () => unknown,
-  ctx: { runs: number; warmup: number }
-): ReturnType<typeof interleavedTiming> {
-  return interleavedTiming(
-    async () => {
-      await ours();
-    },
-    () => {
-      reference();
-    },
-    ctx.runs,
-    ctx.warmup
-  );
-}
+const parseSize = numberRecord(['bytes']);
 
 /** The single member of a tar, read with the system tar. */
 function tarMember(tar: Buffer, tarBin: string): Buffer {
@@ -50,11 +34,15 @@ function assertSame(label: string, actual: Buffer, expected: Buffer): void {
 
 export const runCompression: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
+  const compressCases = ['zst', '7z', 'xz'].map((name) => `mixed.tar->${name}`);
+  const decompressCases = ['zst', 'xz', '7z'].map((name) => `mixed.${name}->tar`);
+  const wanted = (caseName: string): boolean => ctx.inScope('compression', caseName);
+  if (![...compressCases, ...decompressCases].some(wanted)) return rows;
   const plan = ctx.plan(['zstd', 'xz', '7z', 'tar'], 'compression');
   if (!plan.ok) {
     for (const [name, ref] of [['zst', 'zstd'], ['7z', '7z'], ['xz', 'xz']] as const) {
-      rows.push(...skippedGroup('compression', `mixed.tar->${name}`, COMPRESS_SPECS, ref, plan));
-      rows.push(...skippedGroup('compression', `mixed.${name}->tar`, DECOMPRESS_SPECS, ref, plan));
+      if (wanted(`mixed.tar->${name}`)) rows.push(...skippedGroup('compression', `mixed.tar->${name}`, COMPRESS_SPECS, ref, plan));
+      if (wanted(`mixed.${name}->tar`)) rows.push(...skippedGroup('compression', `mixed.${name}->tar`, DECOMPRESS_SPECS, ref, plan));
     }
     return rows;
   }
@@ -65,21 +53,33 @@ export const runCompression: FamilyRunner = async (ctx) => {
   const mixedDir = ctx.scratch('mixed');
   fs.mkdirSync(mixedDir);
   const mixedPath = path.join(mixedDir, MIXED_NAME);
-  const original = Buffer.concat([ctx.corpusBuffer('data/records.jsonl'), ctx.corpusBuffer('speech.wav')]);
+  const original = Buffer.concat(MIXED_INPUT_FILES.map((file) => ctx.corpusBuffer(file)));
   fs.writeFileSync(mixedPath, original);
   const tarFile = ctx.scratch('mixed.tar');
   runTool(tarBin, ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-cf', tarFile, '-C', mixedDir, MIXED_NAME]);
   const tar = fs.readFileSync(tarFile);
 
+  /** Size of the reference tool's output for the mixed input, cached: a function of the tool, its level and the input files. */
+  const referenceSize = (tool: string, level: string, compute: () => number): Promise<number> =>
+    ctx.refCache
+      .value('compression', { kind: `${tool}-size`, tools: [tool], files: MIXED_INPUT_FILES, settings: { level, member: MIXED_NAME } }, parseSize, () => ({ bytes: compute() }))
+      .then((entry) => entry.bytes);
+
   // Zstandard compress: ours against zstd, both decoded by the zstd tool.
-  const zstdOurs = async (): Promise<Buffer> => (await convertWithProject(tar, 'tar', 'zst', {}, 'mixed.tar')).buffer;
-  const zstdRef = (): Buffer => runTool(zstd, [`-${ZSTD_LEVEL}`, '-q', '-c', mixedPath]).stdout;
-  const zstdOursBytes = await zstdOurs();
-  assertSame('our zst output', runTool(zstd, ['-d', '-q', '-c'], { input: zstdOursBytes }).stdout, original);
-  rows.push(measuredRow('compression', 'mixed.tar->zst', SPEC.ratio, zstdOursBytes.length / original.length, zstdRef().length / original.length, `zstd -${ZSTD_LEVEL}`));
-  rows.push(
-    throughputRow('compression', 'mixed.tar->zst', original.length, await timeBoth(zstdOurs, zstdRef, ctx), `zstd -${ZSTD_LEVEL}`)
-  );
+  const zstdCase = 'mixed.tar->zst';
+  if (wanted(zstdCase)) {
+    const zstdOurs = async (): Promise<Buffer> => (await convertWithProject(tar, 'tar', 'zst', {}, 'mixed.tar')).buffer;
+    const zstdRef = (): Buffer => runTool(zstd, [`-${ZSTD_LEVEL}`, '-q', '-c', mixedPath]).stdout;
+    const zstdOursBytes = await zstdOurs();
+    assertSame('our zst output', runTool(zstd, ['-d', '-q', '-c'], { input: zstdOursBytes }).stdout, original);
+    if (ctx.quality) {
+      const refBytes = await referenceSize('zstd', ZSTD_LEVEL, () => zstdRef().length);
+      rows.push(measuredRow('compression', zstdCase, SPEC.ratio, zstdOursBytes.length / original.length, refBytes / original.length, `zstd -${ZSTD_LEVEL}`));
+    }
+    if (ctx.speed) {
+      rows.push(throughputRow('compression', zstdCase, original.length, await timeBoth(ctx, zstdOurs, zstdRef), `zstd -${ZSTD_LEVEL}`));
+    }
+  }
 
   // 7z compress: ours against 7z at the same level, both extracted by the 7z tool.
   const sevenOurs = async (): Promise<Buffer> => (await convertWithProject(tar, 'tar', '7z', { compressionLevel: Number(SEVEN_ZIP_LEVEL) }, 'mixed.tar')).buffer;
@@ -89,50 +89,77 @@ export const runCompression: FamilyRunner = async (ctx) => {
     runTool(sevenZip, ['a', '-t7z', `-mx=${SEVEN_ZIP_LEVEL}`, '-y', sevenRefFile, MIXED_NAME], { cwd: mixedDir });
     return fs.readFileSync(sevenRefFile);
   };
-  const sevenOursBytes = await sevenOurs();
-  const sevenOursFile = ctx.scratch('ours.7z');
-  fs.writeFileSync(sevenOursFile, sevenOursBytes);
-  assertSame('our 7z output', runTool(sevenZip, ['x', '-so', '-y', sevenOursFile]).stdout, original);
-  const sevenRefBytes = sevenRef();
-  rows.push(measuredRow('compression', 'mixed.tar->7z', SPEC.ratio, sevenOursBytes.length / original.length, sevenRefBytes.length / original.length, `7z -mx=${SEVEN_ZIP_LEVEL}`));
-  rows.push(
-    throughputRow('compression', 'mixed.tar->7z', original.length, await timeBoth(sevenOurs, sevenRef, ctx), `7z -mx=${SEVEN_ZIP_LEVEL}`)
-  );
+  const sevenCase = 'mixed.tar->7z';
+  if (wanted(sevenCase)) {
+    const sevenOursBytes = await sevenOurs();
+    const sevenOursFile = ctx.scratch('ours.7z');
+    fs.writeFileSync(sevenOursFile, sevenOursBytes);
+    assertSame('our 7z output', runTool(sevenZip, ['x', '-so', '-y', sevenOursFile]).stdout, original);
+    if (ctx.quality) {
+      const refBytes = await referenceSize('7z', SEVEN_ZIP_LEVEL, () => sevenRef().length);
+      rows.push(measuredRow('compression', sevenCase, SPEC.ratio, sevenOursBytes.length / original.length, refBytes / original.length, `7z -mx=${SEVEN_ZIP_LEVEL}`));
+    }
+    if (ctx.speed) {
+      rows.push(throughputRow('compression', sevenCase, original.length, await timeBoth(ctx, sevenOurs, sevenRef), `7z -mx=${SEVEN_ZIP_LEVEL}`));
+    }
+  }
 
   // xz compress: the registry offers no xz output target, so only the reference exists for this row.
-  const unsupported = 'the format registry offers no xz output target; the reference xz tool is the only producer';
-  for (const spec of COMPRESS_SPECS) rows.push(skippedRow('compression', 'mixed.tar->xz', spec, `xz -${XZ_LEVEL}`, 'unsupported', unsupported));
+  if (wanted('mixed.tar->xz')) {
+    const unsupported = 'the format registry offers no xz output target; the reference xz tool is the only producer';
+    for (const spec of COMPRESS_SPECS) {
+      if ((spec.kind === 'throughput' && ctx.speed) || (spec.kind !== 'throughput' && ctx.quality)) {
+        rows.push(skippedRow('compression', 'mixed.tar->xz', spec, `xz -${XZ_LEVEL}`, 'unsupported', unsupported));
+      }
+    }
+  }
 
   // Decompress: both sides read the reference tool's stream and the output is checked against the original.
-  const decompressCases = [
+  const decompress = [
     {
       name: 'zst',
       tool: `zstd -${ZSTD_LEVEL}`,
-      stream: runTool(zstd, [`-${ZSTD_LEVEL}`, '-q', '-c', mixedPath]).stdout,
+      stream: (): Buffer => runTool(zstd, [`-${ZSTD_LEVEL}`, '-q', '-c', mixedPath]).stdout,
       reference: (stream: string): Buffer => runTool(zstd, ['-d', '-q', '-c', stream]).stdout,
     },
     {
       name: 'xz',
       tool: `xz -${XZ_LEVEL}`,
-      stream: runTool(xz, [`-${XZ_LEVEL}`, '-c', mixedPath]).stdout,
+      stream: (): Buffer => runTool(xz, [`-${XZ_LEVEL}`, '-c', mixedPath]).stdout,
       reference: (stream: string): Buffer => runTool(xz, ['-d', '-c', stream]).stdout,
     },
     {
       name: '7z',
       tool: `7z -mx=${SEVEN_ZIP_LEVEL}`,
-      stream: sevenRefBytes,
+      stream: sevenRef,
       reference: (stream: string): Buffer => runTool(sevenZip, ['x', '-so', '-y', stream]).stdout,
     },
   ];
-  for (const item of decompressCases) {
+  for (const item of decompress) {
     const caseName = `mixed.${item.name}->tar`;
+    if (!wanted(caseName)) continue;
+    const stream = item.stream();
     const streamFile = ctx.scratch(`stream.${item.name}`);
-    fs.writeFileSync(streamFile, item.stream);
-    const ours = async (): Promise<Buffer> => (await convertWithProject(item.stream, item.name, 'tar', {}, `mixed.${item.name}`)).buffer;
+    fs.writeFileSync(streamFile, stream);
+    const ours = async (): Promise<Buffer> => (await convertWithProject(stream, item.name, 'tar', {}, `mixed.${item.name}`)).buffer;
     assertSame(`our ${item.name} decode`, tarMember(await ours(), tarBin), original);
     assertSame(`the ${item.tool} decode`, item.reference(streamFile), original);
-    const timing = await timeBoth(ours, () => item.reference(streamFile), ctx);
-    rows.push(throughputRow('compression', caseName, original.length, timing, item.tool));
+    if (ctx.speed) {
+      rows.push(throughputRow('compression', caseName, original.length, await timeBoth(ctx, ours, () => item.reference(streamFile)), item.tool));
+    }
   }
   return rows;
 };
+
+/** Interleaved timing of two actions whose results are not needed. */
+function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: () => unknown): ReturnType<FamilyContext['time']> {
+  return ctx.time(
+    async () => {
+      await ours();
+    },
+    () => {
+      reference();
+    },
+    'light'
+  );
+}

@@ -134,6 +134,25 @@ describe('regression gate', () => {
   });
 });
 
+describe('a run that measured only part of the rows', () => {
+  it('requires and compares only the baseline entries the predicate accepts', () => {
+    const qualityOnly = (_id: string, entry: { ratio: number | null }): boolean => entry.ratio === null;
+    const rows = baselineRows().filter((r) => r.kind !== 'throughput');
+    const without = evaluateGate(report(rows), BASELINE);
+    expect(without.regressions.map((r) => [r.id, r.check])).toEqual([[SPEED_ID, 'missing']]);
+    const scoped = evaluateGate(report(rows), BASELINE, { include: qualityOnly });
+    expect(scoped.regressions).toEqual([]);
+    expect(scoped.compared).toBe(2);
+  });
+
+  it('still fails a worse value among the accepted entries, and ignores a worse value among the others', () => {
+    const onlySpeed = (_id: string, entry: { ratio: number | null }): boolean => entry.ratio !== null;
+    const worseQuality = withRow(SSIM_ID, { ours: 0.8, delta: 0.8 - 0.96 });
+    expect(evaluateGate(worseQuality, BASELINE, { include: onlySpeed }).regressions).toEqual([]);
+    expect(evaluateGate(worseQuality, BASELINE, { include: (id) => id === SSIM_ID }).regressions.map((r) => r.id)).toContain(SSIM_ID);
+  });
+});
+
 describe('baseline file', () => {
   it('keeps hand-tuned tolerances and entries of rows not measured this time when updating', () => {
     const tuned: Baseline = { schemaVersion: SCHEMA_VERSION, entries: { ...BASELINE.entries, [SSIM_ID]: { ...BASELINE.entries[SSIM_ID], tolerance: { abs: 0.5, rel: 0 } } } };
