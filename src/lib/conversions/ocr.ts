@@ -133,7 +133,8 @@ export function recognizePdfPages(
   detectOrientation?: boolean
 ): Promise<OcrResult[]> {
   return mapWithConcurrency(pages, concurrency, (page) =>
-    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation)
+    // Several pages are read side by side, one engine run each, so a page is not also cut into bands.
+    performOcr(page.buffer, language, OCR_PREPROCESS_STEPS, detectOrientation, pages.length < 2)
   );
 }
 
@@ -169,9 +170,11 @@ export async function recognizeRenderedPdfPages(
   const renderer = await openPdfPageRenderer(pdf, pages, options.dpi);
   try {
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
+    // With several pages the pages run side by side and each is read whole; bands are for a lone page.
+    const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
     const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), async (index) => {
       const rendered = await renderer.render(index);
-      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, options.parallelBands);
+      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed);
       const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
       return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
     });

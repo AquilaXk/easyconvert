@@ -134,4 +134,59 @@ describe('the OCR exports of an image page that could be read in bands', () => {
       TEST_TIMEOUT_MS
     );
   }
+
+  function pdfOfPages(count: number): Buffer {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-band-pdf-'));
+    try {
+      const pdfPath = path.join(dir, 'scan.pdf');
+      const png = path.join(__dirname, '..', 'bench', 'corpus', 'scan.png');
+      execFileSync(requireMagick(), [...Array<string>(count).fill(png), '-density', '150', pdfPath]);
+      return fs.readFileSync(pdfPath);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  oracleTest(
+    'reads the pages of a 3-page PDF whole and side by side for the searchable PDF',
+    ['tesseract', 'pdftoppm', 'magick'],
+    async (ctx) => {
+      if (needsSeveralCpus(ctx)) return;
+      engineSpec();
+      expect(idle).toBeGreaterThanOrEqual(2);
+      const pdf = pdfOfPages(3);
+      const pool = getSharedOcrWorkerPool();
+      const original = pool.run.bind(pool);
+      let inFlight = 0;
+      let peak = 0;
+      const run = vi.spyOn(pool, 'run').mockImplementation(async (...args: Parameters<typeof pool.run>) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        try {
+          return await original(...args);
+        } finally {
+          inFlight -= 1;
+        }
+      });
+      const result = await convertDocument(pdf, 'pdf', 'pdf', { ocrEnabled: true }, 'scan.pdf');
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(peak).toBeGreaterThanOrEqual(2);
+      expect(result.buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'still reads a 1-page PDF in bands for the searchable PDF',
+    ['tesseract', 'pdftoppm', 'magick'],
+    async (ctx) => {
+      if (needsSeveralCpus(ctx)) return;
+      engineSpec();
+      expect(idle).toBeGreaterThanOrEqual(2);
+      const run = vi.spyOn(getSharedOcrWorkerPool(), 'run');
+      await convertDocument(pdfOfPages(1), 'pdf', 'pdf', { ocrEnabled: true }, 'scan.pdf');
+      expect(run).toHaveBeenCalledTimes(Math.min(idle, OCR_BAND_MAX_BANDS, 9 / 3));
+    },
+    TEST_TIMEOUT_MS
+  );
 });
