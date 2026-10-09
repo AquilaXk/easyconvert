@@ -30,14 +30,14 @@ import { renderPdfTables } from './pdf-table-layout';
 import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
 import { readDocxModel } from './docx-model';
-import { renderModelHtml } from './document-html';
-import { writeEpub } from './epub-writer';
+import { documentToEpub } from './document-model/epub';
+import { documentToOdt } from './document-model/odt';
+import { documentToText } from './document-model/text';
+import { plainTextModel } from './document-model/plain';
+import type { DocumentModel } from './document-model/model';
 import { renderModelTarget } from './document-targets';
-import { writeDocx } from './docx-writer';
-import { writeOdt } from './odt-writer';
-import { markdownToDocModel, plainTextToDocModel, readEpubModel, htmlSourceToDocModel } from './source-model';
-import { renderModelMarkdown, renderModelText } from './document-markdown';
-import type { DocModel } from './document-model';
+import { htmlToDocumentModel } from './html-model';
+import { markdownToDocumentModel, readEpubModel } from './source-model';
 
 export { buildOpenXpsPackage };
 
@@ -377,10 +377,10 @@ export async function convertOffice(
 
 /** An ODT from any other source: PDF text keeps the text writer; every other source is written from the block model. */
 async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
-  if (src === 'epub') return writeOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  if (src === 'epub') return documentToOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
   const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
   if (src === 'pdf') return generateOdtFromText(textContent, baseName);
-  return writeOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
+  return documentToOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
 }
 
 /**
@@ -388,7 +388,7 @@ async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: 
  * model first (EPUB through its package reader, the rest through the text extractor) and written by the DOCX writer.
  */
 async function generateDocxFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
-  if (src === 'epub') return writeDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  if (src === 'epub') return documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
   const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
   if (src === 'pdf') return generateDocxFromText(textContent, src, options, baseName);
   return generateDocxFromExtractedText(textContent, src, options, baseName);
@@ -424,7 +424,7 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'hwp') {
-    return renderModelText(parseHwpDocument(inputBuffer).model);
+    return documentToText(parseHwpDocument(inputBuffer).model);
   }
 
   const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([
@@ -7180,7 +7180,7 @@ async function convertEpubSource(
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await writeDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+    const docxBuffer = await documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -8316,11 +8316,11 @@ export async function generateXlsxFromData(
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
 const MARKDOWN_TEXT_SOURCES: ReadonlySet<string> = new Set(['md', 'markdown', 'pdf', 'fb2']);
 
-/** The block model of text extracted from a source: Markdown or HTML where the source produces it, else plain paragraphs. */
-async function modelFromExtractedText(text: string, sourceType: string): Promise<DocModel> {
-  if (MARKDOWN_TEXT_SOURCES.has(sourceType)) return markdownToDocModel(text);
-  if (sourceType === 'html' || sourceType === 'htm') return htmlSourceToDocModel(text);
-  return plainTextToDocModel(text);
+/** The document model of text extracted from a source: Markdown or HTML where the source produces it, else plain paragraphs. */
+async function modelFromExtractedText(text: string, sourceType: string): Promise<DocumentModel> {
+  if (MARKDOWN_TEXT_SOURCES.has(sourceType)) return markdownToDocumentModel(text);
+  if (sourceType === 'html' || sourceType === 'htm') return htmlToDocumentModel(text);
+  return plainTextModel(text, { lines: 'keep' });
 }
 
 /** Writes an EPUB from text extracted from a source, through the block model. */
@@ -8330,7 +8330,7 @@ async function generateEpubFromText(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  return writeEpub(await modelFromExtractedText(text, sourceType), { title, language: options.language });
+  return documentToEpub(await modelFromExtractedText(text, sourceType), { title, language: options.language });
 }
 
 /** Writes a DOCX from text extracted from a source, through the block model (real styles, numbering and tables). */
@@ -8340,7 +8340,7 @@ async function generateDocxFromExtractedText(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  return writeDocx(await modelFromExtractedText(text, sourceType), { title, language: options.language });
+  return documentToDocx(await modelFromExtractedText(text, sourceType), { title, language: options.language });
 }
 
 /**

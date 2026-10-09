@@ -1,21 +1,12 @@
 import { CorruptStreamError, PayloadLimitError } from '../types';
 import { formatListNumber } from './docx-numbering';
-import {
-  emptyDocModel,
-  safeHref,
-  sniffImageMime,
-  type DocAlign,
-  type DocBlock,
-  type DocInline,
-  type DocModel,
-  type DocTableCell,
-  type DocTableRow,
-  type DocTextInline,
-} from './document-model';
+import { BlockSink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
+import type { DocumentModel, Inline, NoteDefinition, ParagraphBlock } from './document-model/model';
+import { imageRun, isTextRun, noteRun, safeHref, sniffImageFormat, textRun } from './document-model/support';
 import { HWP_FIELD_BEGIN, HWP_FIELD_END, HWP_TAGS, HWP_UTF16_UNIT_BYTES, decodeHwpParagraph, type HwpParagraphText, type HwpRecord, type HwpTextControl } from './hwp-records';
 
 /**
- * Reads the records of an HWP 5.0 document (Hancom "Hangul Document File Format 5.0") into the shared block model.
+ * Reads the records of an HWP 5.0 document (Hancom "Hangul Document File Format 5.0") into the shared document model.
  *
  * DocInfo supplies the character shapes (bold, italic, underline, size, colour), paragraph shapes (alignment, outline
  * level, numbering or bullet), styles, numbering and bullet definitions, and the BinData entries. The section streams
@@ -95,6 +86,8 @@ const CONTROL_EQUATION = 'eqed';
 const CONTROL_FOOTNOTE = 'fn  ';
 const CONTROL_ENDNOTE = 'en  ';
 const CONTROL_HYPERLINK = '%hlk';
+
+type DocAlign = ParagraphBlock['align'];
 
 interface HwpCharShape {
   sizePt: number;
@@ -280,7 +273,10 @@ interface TextRun {
 
 /** Stateful reader of the section streams of one document. */
 class HwpModelReader {
-  readonly model: DocModel = emptyDocModel();
+  readonly context = new DocumentContext();
+  readonly body = new BlockSink(this.context);
+  readonly footnotes: NoteDefinition[] = [];
+  readonly endnotes: NoteDefinition[] = [];
   private recordsSeen = 0;
   private imageCount = 0;
   private imageBytes = 0;
@@ -301,7 +297,7 @@ class HwpModelReader {
     while (index < records.length) {
       const record = records[index];
       if (record.tagId === HWP_TAGS.PARA_HEADER && record.level === 0) {
-        index = this.paragraphs(records, index, 0, 'body', 0, this.model.blocks);
+        index = this.paragraphs(records, index, 0, 'body', 0, this.body);
       } else {
         index += 1;
       }
@@ -309,7 +305,7 @@ class HwpModelReader {
   }
 
   /** Reads the paragraphs at `level` starting at `start` into `out`; returns the index of the first record after them. */
-  private paragraphs(records: readonly HwpRecord[], start: number, level: number, kind: Container, depth: number, out: DocBlock[]): number {
+  private paragraphs(records: readonly HwpRecord[], start: number, level: number, kind: Container, depth: number, out: BlockSink): number {
     if (depth > HWP_MAX_LIST_DEPTH) throw corrupt(`paragraph lists nest deeper than ${HWP_MAX_LIST_DEPTH} levels.`);
     let index = start;
     while (index < records.length && records[index].tagId === HWP_TAGS.PARA_HEADER && records[index].level === level) {
@@ -320,7 +316,7 @@ class HwpModelReader {
     return index;
   }
 
-  private paragraph(records: readonly HwpRecord[], headerIndex: number, end: number, kind: Container, depth: number, out: DocBlock[]): void {
+  private paragraph(records: readonly HwpRecord[], headerIndex: number, end: number, kind: Container, depth: number, out: BlockSink): void {
     const header = records[headerIndex];
     const level = header.level;
     if (header.payload.length < PARA_HEADER_MIN_BYTES) throw corrupt('a paragraph header is shorter than its fixed fields.');
@@ -358,9 +354,9 @@ class HwpModelReader {
     const unplaced = controls.filter((_control, position) => !used.has(position));
 
     const role = this.roleOf(shapeId, styleId);
-    const inlines: DocInline[] = [];
+    const inlines: Inline[] = [];
     // Floating objects (text boxes) anchored in the paragraph follow its text.
-    const deferred: DocBlock[] = [];
+    const deferred = out.nested();
     let roleSpent = false;
     let href: string | undefined;
 
@@ -369,13 +365,13 @@ class HwpModelReader {
       if (trimmed.length === 0) return;
       if (!roleSpent) {
         roleSpent = true;
-        out.push(this.blockFor(role, trimmed));
+        this.emit(role, trimmed, out);
       } else {
-        out.push({ kind: 'paragraph', inlines: trimmed });
+        out.paragraph(trimmed);
       }
     };
 
-    if ((breakFlags & PARA_BREAK_PAGE) !== 0 && out.length > 0 && kind === 'body') out.push({ kind: 'pageBreak' });
+    if ((breakFlags & PARA_BREAK_PAGE) !== 0 && out.blocks.length > 0 && kind === 'body') out.pageBreak();
 
     const pushText = (from: number, to: number): void => {
       if (to <= from) return;
@@ -404,7 +400,7 @@ class HwpModelReader {
     pushText(cursor, text.text.length);
     for (const record of unplaced) this.control(records, record, kind, depth, inlines, flush, out, deferred);
     flush();
-    out.push(...deferred);
+    out.appendAll(deferred.blocks);
   }
 
   private control(
@@ -412,10 +408,10 @@ class HwpModelReader {
     control: { index: number; id: string; end: number },
     kind: Container,
     depth: number,
-    inlines: DocInline[],
+    inlines: Inline[],
     flush: () => void,
-    out: DocBlock[],
-    deferred: DocBlock[]
+    out: BlockSink,
+    deferred: BlockSink
   ): void {
     switch (control.id) {
       case CONTROL_TABLE:
@@ -427,7 +423,7 @@ class HwpModelReader {
         break;
       case CONTROL_EQUATION:
         // Equations are a script language the block model has no element for; they are reported, not drawn.
-        this.model.warnings.push('An equation was left out of the converted document.');
+        this.context.warnings.push('An equation was left out of the converted document.');
         break;
       case CONTROL_FOOTNOTE:
       case CONTROL_ENDNOTE:
@@ -438,20 +434,20 @@ class HwpModelReader {
     }
   }
 
-  private note(records: readonly HwpRecord[], control: { index: number; id: string; end: number }, depth: number, inlines: DocInline[]): void {
+  private note(records: readonly HwpRecord[], control: { index: number; id: string; end: number }, depth: number, inlines: Inline[]): void {
     this.noteCount += 1;
     if (this.noteCount > HWP_MAX_NOTES) throw new PayloadLimitError(`The HWP document holds more than ${HWP_MAX_NOTES} notes.`);
-    const noteKind = control.id === CONTROL_FOOTNOTE ? 'footnote' : 'endnote';
-    const list = noteKind === 'footnote' ? this.model.footnotes : this.model.endnotes;
+    const kind = control.id === CONTROL_FOOTNOTE ? 'footnote' : 'endnote';
+    const list = kind === 'footnote' ? this.footnotes : this.endnotes;
     const id = list.length + 1;
-    const blocks: DocBlock[] = [];
-    this.listsOf(records, control, noteKind, depth, blocks);
-    list.push({ id, label: String(id), blocks });
-    inlines.push({ kind: 'noteRef', noteKind, id, label: String(id) });
+    const content = this.body.nested();
+    this.listsOf(records, control, kind, depth, content);
+    list.push({ id, label: String(id), blocks: content.blocks });
+    inlines.push(noteRun({ kind, id, label: String(id) }));
   }
 
   /** Reads every paragraph list (LIST_HEADER and its paragraphs) in the subtree of `control`. */
-  private listsOf(records: readonly HwpRecord[], control: { index: number; end: number }, kind: Container, depth: number, out: DocBlock[]): void {
+  private listsOf(records: readonly HwpRecord[], control: { index: number; end: number }, kind: Container, depth: number, out: BlockSink): void {
     let index = control.index + 1;
     while (index < control.end) {
       const record = records[index];
@@ -468,8 +464,8 @@ class HwpModelReader {
     control: { index: number; end: number },
     kind: Container,
     depth: number,
-    inlines: DocInline[],
-    deferred: DocBlock[]
+    inlines: Inline[],
+    deferred: BlockSink
   ): void {
     const common = records[control.index].payload;
     let index = control.index + 1;
@@ -488,12 +484,12 @@ class HwpModelReader {
     }
   }
 
-  private picture(payload: Buffer, common: Buffer): DocInline | undefined {
+  private picture(payload: Buffer, common: Buffer): Inline | undefined {
     if (payload.length < PICTURE_BIN_ITEM_OFFSET + 2) throw corrupt('a picture record is shorter than its fixed fields.');
     const item = payload.readUInt16LE(PICTURE_BIN_ITEM_OFFSET);
     const entry = this.info.binData[item - 1];
     if (!entry || entry.streamName === '') {
-      this.model.warnings.push(`A picture refers to the missing or linked picture ${item} and was left out.`);
+      this.context.warnings.push(`A picture refers to the missing or linked picture ${item} and was left out.`);
       return undefined;
     }
     let data = this.pictureCache.get(item);
@@ -507,25 +503,21 @@ class HwpModelReader {
       }
       this.pictureCache.set(item, data);
     }
-    const mime = data ? sniffImageMime(data) : null;
-    if (!data || mime === null) {
-      this.model.warnings.push(`The picture ${entry.streamName} is not a PNG, JPEG, GIF, BMP, TIFF or SVG image and was left out.`);
+    const format = data ? sniffImageFormat(data) : null;
+    if (!data || format === null) {
+      this.context.warnings.push(`The picture ${entry.streamName} is not a PNG, JPEG, GIF, BMP, TIFF or SVG image and was left out.`);
       return undefined;
     }
     const sized = common.length >= OBJECT_MIN_BYTES;
-    return {
-      kind: 'image',
-      image: {
-        data,
-        mime,
-        alt: '',
-        widthPt: sized ? common.readUInt32LE(OBJECT_WIDTH_OFFSET) / HWP_UNITS_PER_POINT : undefined,
-        heightPt: sized ? common.readUInt32LE(OBJECT_HEIGHT_OFFSET) / HWP_UNITS_PER_POINT : undefined,
-      },
-    };
+    return imageRun({
+      imageId: this.context.addImage(data, format),
+      alt: '',
+      widthPt: sized ? common.readUInt32LE(OBJECT_WIDTH_OFFSET) / HWP_UNITS_PER_POINT : undefined,
+      heightPt: sized ? common.readUInt32LE(OBJECT_HEIGHT_OFFSET) / HWP_UNITS_PER_POINT : undefined,
+    });
   }
 
-  private table(records: readonly HwpRecord[], control: { index: number; end: number }, depth: number, out: DocBlock[]): void {
+  private table(records: readonly HwpRecord[], control: { index: number; end: number }, depth: number, out: BlockSink): void {
     const tableLevel = records[control.index].level + 1;
     let rowCount = 0;
     let columnCount = 0;
@@ -533,10 +525,10 @@ class HwpModelReader {
     interface PendingCell {
       row: number;
       column: number;
-      cell: { blocks: DocBlock[]; colSpan: number; rowSpan: number; header: boolean };
+      cell: TableDraftCell;
     }
     const cells: PendingCell[] = [];
-    const captions: DocBlock[] = [];
+    const captions = out.nested();
     let index = control.index + 1;
     while (index < control.end) {
       const record = records[index];
@@ -565,13 +557,13 @@ class HwpModelReader {
         if (row >= rowCount || column >= columnCount) {
           throw corrupt(`a table cell at row ${row}, column ${column} lies outside its ${rowCount} x ${columnCount} table.`);
         }
-        const blocks: DocBlock[] = [];
-        index = this.paragraphs(records, index + 1, record.level, 'cell', depth + 1, blocks);
+        const content = out.nested();
+        index = this.paragraphs(records, index + 1, record.level, 'cell', depth + 1, content);
         cells.push({
           row,
           column,
           cell: {
-            blocks,
+            blocks: content.blocks,
             colSpan: Math.max(1, Math.min(record.payload.readUInt16LE(CELL_COLUMN_SPAN_OFFSET), columnCount - column)),
             rowSpan: Math.max(1, Math.min(record.payload.readUInt16LE(CELL_ROW_SPAN_OFFSET), rowCount - row)),
             header: false,
@@ -581,9 +573,9 @@ class HwpModelReader {
         index += 1;
       }
     }
-    out.push(...captions);
+    out.appendAll(captions.blocks);
     if (rowCount === 0 || columnCount === 0 || cells.length === 0) return;
-    const rows: DocTableRow[] = [];
+    const rows: TableDraftCell[][] = [];
     for (let row = 0; row < rowCount; row += 1) {
       const inRow = cells.filter((entry) => entry.row === row).sort((a, b) => a.column - b.column);
       // Two cells at one address cannot both be drawn; the first stays.
@@ -591,9 +583,9 @@ class HwpModelReader {
       const unique = inRow.filter((entry) => !seen.has(entry.column) && seen.add(entry.column));
       const header = repeatHeader && row === 0;
       for (const entry of unique) entry.cell.header = header;
-      rows.push({ cells: unique.map((entry) => entry.cell as DocTableCell), header });
+      rows.push(unique.map((entry) => entry.cell));
     }
-    out.push({ kind: 'table', rows, columnCount });
+    out.table({ rows, columnCount });
   }
 
   private hyperlinkTarget(payload: Buffer): string | undefined {
@@ -605,20 +597,18 @@ class HwpModelReader {
     return safeHref(target);
   }
 
-  private styled(text: string, shapeId: number, href: string | undefined): DocTextInline {
+  private styled(text: string, shapeId: number, href: string | undefined): Inline {
     const shape = this.info.charShapes[shapeId];
-    const inline: { -readonly [K in keyof DocTextInline]: DocTextInline[K] } = { kind: 'text', text };
+    const run = textRun(text, { bold: shape?.bold === true, italic: shape?.italic === true });
     if (shape) {
-      if (shape.bold) inline.bold = true;
-      if (shape.italic) inline.italic = true;
-      if (shape.underline && href === undefined) inline.underline = true;
-      if (shape.strike) inline.strike = true;
-      if (shape.superscript) inline.superscript = true;
-      if (shape.subscript) inline.subscript = true;
-      if (shape.color && href === undefined) inline.color = shape.color;
+      if (shape.underline && href === undefined) run.underline = true;
+      if (shape.strike) run.strike = true;
+      if (shape.superscript) run.superscript = true;
+      if (shape.subscript) run.subscript = true;
+      if (shape.color && href === undefined) run.color = shape.color;
     }
-    if (href !== undefined) inline.href = href;
-    return inline;
+    if (href !== undefined) run.href = href;
+    return run;
   }
 
   /** Splits `text[from, to)` at the character shape boundaries. */
@@ -649,19 +639,32 @@ class HwpModelReader {
     return { kind: shape.headType === HEAD_NUMBER ? 'number' : 'bullet', shape, align: shape.align };
   }
 
-  private blockFor(role: ParagraphRole, inlines: DocInline[]): DocBlock {
-    if (role.kind === 'heading') return { kind: 'heading', level: role.level, inlines };
+  /** Adds the paragraph's first block in the role its shape and style give it. */
+  private emit(role: ParagraphRole, runs: Inline[], out: BlockSink): void {
+    if (role.kind === 'heading') {
+      out.heading(role.level, runs);
+      return;
+    }
     if (role.kind === 'number') {
       const marker = this.numberMarker(role.shape);
       if (marker) {
-        return { kind: 'listItem', level: role.shape.level, ordered: true, marker: marker.text, number: marker.number, format: marker.format, listId: this.listIdFor(role.shape.numberingId), inlines };
+        out.listItem({
+          sourceId: this.listIdFor(role.shape.numberingId),
+          level: role.shape.level,
+          ...listFormatOf(true, marker.format, marker.text),
+          value: marker.number,
+          marker: marker.text,
+          runs,
+        });
+        return;
       }
     }
     if (role.kind === 'bullet') {
       const bullet = this.info.bullets[role.shape.numberingId - 1] ?? BULLET_FALLBACK;
-      return { kind: 'listItem', level: role.shape.level, ordered: false, marker: bullet, number: 1, format: 'bullet', listId: this.listIdFor(role.shape.numberingId + 1000), inlines };
+      out.listItem({ sourceId: this.listIdFor(role.shape.numberingId + 1000), level: role.shape.level, ...listFormatOf(false, 'bullet', bullet), value: 1, marker: bullet, runs });
+      return;
     }
-    return { kind: 'paragraph', inlines, align: role.align };
+    out.paragraph(runs, { align: role.align });
   }
 
   private lastListKey = -1;
@@ -723,11 +726,11 @@ function numberFormatOf(shape: number): string {
   }
 }
 
-function trimInlines(inlines: DocInline[]): DocInline[] {
-  const result = inlines.slice();
+function trimInlines(runs: Inline[]): Inline[] {
+  const result = runs.slice();
   while (result.length > 0) {
     const head = result[0];
-    if (head.kind !== 'text') break;
+    if (!isTextRun(head)) break;
     const trimmed = head.text.replace(/^[ \t\r\n]+/, '');
     if (trimmed === '') result.shift();
     else {
@@ -737,7 +740,7 @@ function trimInlines(inlines: DocInline[]): DocInline[] {
   }
   while (result.length > 0) {
     const tail = result[result.length - 1];
-    if (tail.kind !== 'text') break;
+    if (!isTextRun(tail)) break;
     const trimmed = tail.text.replace(/[ \t\r\n]+$/, '');
     if (trimmed === '') result.pop();
     else {
@@ -749,11 +752,12 @@ function trimInlines(inlines: DocInline[]): DocInline[] {
 }
 
 /**
- * Reads the section streams (already inflated) into the block model. `docInfo` is the decoded DocInfo stream's records,
- * `loadBin` supplies the picture streams. Malformed records throw a CorruptStreamError; limits throw a PayloadLimitError.
+ * Reads the section streams (already inflated) into the document model. `docInfo` is the decoded DocInfo stream's
+ * records, `loadBin` supplies the picture streams. Malformed records throw a CorruptStreamError; limits throw a
+ * PayloadLimitError.
  */
-export function readHwpSections(docInfo: readonly HwpRecord[], sections: readonly (readonly HwpRecord[])[], loadBin: HwpBinLoader): DocModel {
+export function readHwpSections(docInfo: readonly HwpRecord[], sections: readonly (readonly HwpRecord[])[], loadBin: HwpBinLoader): DocumentModel {
   const reader = new HwpModelReader(readHwpDocInfo(docInfo), loadBin);
   for (const section of sections) reader.readSection(section);
-  return reader.model;
+  return assembleDocument({ sections: [{ columns: 1, blocks: reader.body.blocks }], context: reader.context, footnotes: reader.footnotes, endnotes: reader.endnotes });
 }

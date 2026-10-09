@@ -17,6 +17,8 @@ export const DEFAULT_RUNS = 5;
 export const MAX_RUNS = 25;
 /** Slow encoders (video, office) use at most this many timing runs so the whole benchmark stays short. */
 export const HEAVY_RUNS_CAP = 3;
+/** Calls of an in-process conversion timed back to back per sample, so a conversion of milliseconds is not decided by scheduler jitter. */
+export const IN_PROCESS_REPEATS = 5;
 /** Untimed runs before the measured ones, so module loading and worker start-up are not in the first sample. */
 export const WARMUP_RUNS = 1;
 

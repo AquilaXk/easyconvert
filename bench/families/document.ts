@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DOCUMENT_FIXTURES_DIR, HWP_FIXTURES_DIR, REPO_ROOT } from '../config';
+import { DOCUMENT_FIXTURES_DIR, HWP_FIXTURES_DIR, IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import { convertInProcess } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
 import type { BenchRow } from '../report';
@@ -176,7 +176,8 @@ async function runStructureDocx(ctx: FamilyContext): Promise<BenchRow[]> {
         reference(ctx.scratch(`timing-${target}`));
       },
       ctx.heavyRuns,
-      ctx.warmup
+      ctx.warmup,
+      IN_PROCESS_REPEATS
     );
     rows.push(throughputRow('document', caseName, docx.length, timing, REFERENCE));
   }
@@ -245,7 +246,8 @@ async function runHwp(ctx: FamilyContext): Promise<BenchRow[]> {
       reference();
     },
     ctx.heavyRuns,
-    ctx.warmup
+    ctx.warmup,
+    IN_PROCESS_REPEATS
   );
   rows.push(throughputRow('document', txtCase, hwp.length, timing, HWP_REFERENCE));
   return rows;
@@ -283,7 +285,8 @@ async function runReport(ctx: FamilyContext): Promise<BenchRow[]> {
       referencePdf(ctx.scratch('timing-out'));
     },
     ctx.heavyRuns,
-    ctx.warmup
+    ctx.warmup,
+    IN_PROCESS_REPEATS
   );
   rows.push(throughputRow('document', REPORT_CASE, docx.length, timing, REFERENCE));
   return rows;

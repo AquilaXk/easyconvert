@@ -173,7 +173,7 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     const html = result.buffer.toString('utf-8');
     expect(html).toContain('<p>웹 보고서</p>');
     expect(html).toContain('<p>HTML 변환 테스트 단락입니다.</p>');
-    expect(html).toContain('<table>');
+    expect(html).toContain('<table border="1">');
     expect(html).toContain('<th>번호</th>');
     expect(html).toContain('<td>김철수</td>');
   });

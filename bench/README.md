@@ -33,7 +33,7 @@ The document family reads its inputs from `tests/fixtures/document` and `tests/f
 | compression | tar to zst and 7z; zst, xz and 7z back to tar | size ratio, compress and decompress MB/s; every output is decoded by the reference tool and compared with the original bytes | `zstd`, `7z`, `xz` |
 
 Throughput rows time ours and the reference alternately in one window (the order flips every run) and report the
-median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. Only the ratio is gated,
+median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. A conversion of milliseconds is timed over five back-to-back calls per sample (the mean per call), so scheduler jitter does not decide it. Only the ratio is gated,
 so the result does not depend on the machine. Our side is called in-process and the reference is spawned, so small
 inputs favour the reference by the process start-up cost; the ratio is for tracking, not for ranking.
 

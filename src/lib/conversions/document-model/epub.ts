@@ -1,25 +1,16 @@
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
-import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
-import { resolveLanguage } from './document-language';
-import { redrawAsPng } from './image-to-png';
-import { renderBlocksHtml, renderNotesHtml, type HtmlRenderOptions } from './document-html';
-import {
-  IMAGE_FILE_EXTENSION,
-  collectImages,
-  escapeXmlAttribute,
-  escapeXmlText,
-  inlinesToText,
-  stripXmlForbidden,
-  walkBlocks,
-  type DocBlock,
-  type DocImage,
-  type DocModel,
-  type DocNote,
-} from './document-model';
+import { ConversionFailedError, PayloadLimitError } from '../../types';
+import { resolveLanguage } from '../document-language';
+import { redrawAsPng } from '../image-to-png';
+import { HtmlWriter, type HtmlRenderOptions } from './html';
+import type { Block, DocumentImage, DocumentModel, HeadingBlock, ImageFormat, NoteDefinition } from './model';
+import { IMAGE_EXTENSION, IMAGE_MIME, bodyBlocks, imagesById, notesOf, walkBlocks, walkRuns } from './support';
+import { inlineText } from './text';
+import { escapeXmlText } from './xml-text';
 
 /**
- * Writes the block model as an EPUB 3.3 publication: one content document per top-level section (a new document
+ * Writes the document model as an EPUB 3.3 publication: one content document per top-level section (a new document
  * starts at each h1 and h2), a navigation document and an NCX built from the same heading list, nested by level,
  * language metadata on the package and on every content document, EPUB Accessibility 1.1 metadata that states only
  * what the content supports, and images packaged with their original bytes where the EPUB core media types allow.
@@ -36,7 +27,8 @@ const IMAGE_DIRECTORY = 'images/';
 const SPLIT_LEVEL = 2;
 const XHTML_MEDIA_TYPE = 'application/xhtml+xml';
 /** Image types EPUB 3.3 lists as core media types; anything else is redrawn as PNG. */
-const EPUB_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/svg+xml']);
+const EPUB_IMAGE_FORMATS: ReadonlySet<ImageFormat> = new Set(['png', 'jpeg', 'gif', 'svg']);
+const escapeXmlAttribute = escapeXmlText;
 
 const STYLESHEET = `body { font-family: serif; line-height: 1.5; margin: 1em; }
 h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
@@ -55,7 +47,7 @@ export interface EpubWriteOptions {
 }
 
 interface Chapter {
-  blocks: DocBlock[];
+  blocks: Block[];
   /** Index of the first heading of this chapter in the document-wide heading order. */
   headingOffset: number;
 }
@@ -74,10 +66,10 @@ interface PackagedImage {
   readonly id: string;
 }
 
-function blockHeadingText(block: Extract<DocBlock, { kind: 'heading' }>): string {
-  const text = inlinesToText(block.inlines).replace(/\s+/g, ' ').trim();
+function blockHeadingText(block: HeadingBlock): string {
+  const text = inlineText(block.runs).replace(/\s+/g, ' ').trim();
   if (text !== '') return text;
-  for (const inline of block.inlines) if (inline.kind === 'image' && inline.image.alt.trim() !== '') return inline.image.alt.trim();
+  for (const run of block.runs) if (run.image && run.image.alt.trim() !== '') return run.image.alt.trim();
   return '';
 }
 
@@ -86,22 +78,22 @@ function assertChapterCount(count: number): void {
 }
 
 /** Splits the top-level blocks into content documents: a new one starts at each h1 and h2 that follows content. */
-function splitChapters(blocks: readonly DocBlock[]): Chapter[] {
+function splitChapters(blocks: readonly Block[]): Chapter[] {
   const chapters: Chapter[] = [];
   let current: Chapter = { blocks: [], headingOffset: 0 };
   let headings = 0;
   for (const block of blocks) {
-    if (block.kind === 'pageBreak' || block.kind === 'sectionBreak') continue;
-    if (block.kind === 'heading' && block.level <= SPLIT_LEVEL) {
+    if (block.type === 'pageBreak') continue;
+    if (block.type === 'heading' && block.level <= SPLIT_LEVEL) {
       // A heading that directly follows another heading of the same document stays with it.
-      const onlyHeadings = current.blocks.every((entry) => entry.kind === 'heading' && entry.level < block.level);
+      const onlyHeadings = current.blocks.every((entry) => entry.type === 'heading' && entry.level < block.level);
       if (current.blocks.length > 0 && !onlyHeadings) {
         chapters.push(current);
         assertChapterCount(chapters.length + 1);
         current = { blocks: [], headingOffset: headings };
       }
     }
-    if (block.kind === 'heading') headings += 1;
+    if (block.type === 'heading') headings += 1;
     current.blocks.push(block);
   }
   if (current.blocks.length > 0) chapters.push(current);
@@ -113,38 +105,44 @@ function chapterFile(index: number): string {
   return `chapter${index + 1}.xhtml`;
 }
 
-async function packageImages(model: DocModel): Promise<{ byData: Map<Buffer, PackagedImage>; list: PackagedImage[] }> {
-  const byData = new Map<Buffer, PackagedImage>();
-  const byHash = new Map<string, PackagedImage>();
+/** Pictures the book embeds, once per distinct file, by the id the model gives them. */
+async function packageImages(model: DocumentModel): Promise<{ byId: Map<number, PackagedImage>; list: PackagedImage[] }> {
+  const used = new Set<number>();
+  const collect = (blocks: readonly Block[]): void => {
+    walkBlocks(blocks, (block) => {
+      if (block.type === 'image') used.add(block.imageId);
+    });
+    walkRuns(blocks, (run) => {
+      if (run.image) used.add(run.image.imageId);
+    });
+  };
+  collect(bodyBlocks(model));
+  for (const note of [...(model.footnotes ?? []), ...(model.endnotes ?? [])]) collect(note.blocks);
+  const images = imagesById(model);
+  const byId = new Map<number, PackagedImage>();
   const list: PackagedImage[] = [];
-  for (const image of collectImages(model)) {
-    if (byData.has(image.data)) continue;
-    const hash = crypto.createHash('sha256').update(image.data).digest('hex');
-    let packaged = byHash.get(hash);
-    if (!packaged) {
-      if (list.length >= EPUB_WRITER_MAX_IMAGES) throw new PayloadLimitError(`The book would embed more than ${EPUB_WRITER_MAX_IMAGES} images.`);
-      let data = image.data;
-      let mime: string = image.mime;
-      if (!EPUB_IMAGE_TYPES.has(mime)) {
-        data = await redrawAsPng(image.data, mime);
-        mime = 'image/png';
-      }
-      const extension = IMAGE_FILE_EXTENSION[mime as DocImage['mime']];
-      const id = `image${list.length + 1}`;
-      packaged = { path: `${IMAGE_DIRECTORY}${id}.${extension}`, mediaType: mime, data, id };
-      list.push(packaged);
-      byHash.set(hash, packaged);
+  for (const id of used) {
+    const image = images.get(id);
+    if (!image) continue;
+    if (list.length >= EPUB_WRITER_MAX_IMAGES) throw new PayloadLimitError(`The book would embed more than ${EPUB_WRITER_MAX_IMAGES} images.`);
+    let data: Buffer = Buffer.from(image.data);
+    let format: ImageFormat = image.format;
+    if (!EPUB_IMAGE_FORMATS.has(format)) {
+      data = await redrawAsPng(data, IMAGE_MIME[format]);
+      format = 'png';
     }
-    byData.set(image.data, packaged);
+    const packagedId = `image${list.length + 1}`;
+    const packaged: PackagedImage = { path: `${IMAGE_DIRECTORY}${packagedId}.${IMAGE_EXTENSION[format]}`, mediaType: IMAGE_MIME[format], data, id: packagedId };
+    list.push(packaged);
+    byId.set(id, packaged);
   }
-  return { byData, list };
+  return { byId, list };
 }
 
-function notesFor(blocks: readonly DocBlock[], kind: 'footnote' | 'endnote', notes: readonly DocNote[]): DocNote[] {
+function notesFor(blocks: readonly Block[], kind: 'footnote' | 'endnote', notes: readonly NoteDefinition[]): NoteDefinition[] {
   const cited = new Set<number>();
-  walkBlocks(blocks, (block) => {
-    if (block.kind !== 'heading' && block.kind !== 'paragraph' && block.kind !== 'listItem') return;
-    for (const inline of block.inlines) if (inline.kind === 'noteRef' && inline.noteKind === kind) cited.add(inline.id);
+  walkRuns(blocks, (run) => {
+    if (run.note && run.note.kind === kind) cited.add(run.note.id);
   });
   return notes.filter((note) => cited.has(note.id));
 }
@@ -201,10 +199,20 @@ function renderNcxPoints(nodes: readonly NavNode[], hrefOf: (entry: NavEntry) =>
     .join('\n');
 }
 
-function accessibilityMetadata(model: DocModel, hasHeadings: boolean): string[] {
-  const images = collectImages(model);
-  const imageCount = images.length;
-  const everyImageDescribed = images.every((image) => image.alt.trim() !== '');
+function accessibilityMetadata(model: DocumentModel, hasHeadings: boolean): string[] {
+  const alternatives: string[] = [];
+  const collect = (blocks: readonly Block[]): void => {
+    walkBlocks(blocks, (block) => {
+      if (block.type === 'image') alternatives.push(block.alt ?? '');
+    });
+    walkRuns(blocks, (run) => {
+      if (run.image) alternatives.push(run.image.alt);
+    });
+  };
+  collect(bodyBlocks(model));
+  for (const note of [...(model.footnotes ?? []), ...(model.endnotes ?? [])]) collect(note.blocks);
+  const imageCount = alternatives.length;
+  const everyImageDescribed = alternatives.every((alt) => alt.trim() !== '');
   const features = ['tableOfContents', 'readingOrder'];
   if (hasHeadings) features.push('structuralNavigation');
   if (imageCount > 0 && everyImageDescribed) features.push('alternativeText');
@@ -223,20 +231,21 @@ function accessibilityMetadata(model: DocModel, hasHeadings: boolean): string[] 
 }
 
 /** Writes the book. A document with no content, or an unusable `language`, is refused with a typed error. */
-export async function writeEpub(model: DocModel, options: EpubWriteOptions): Promise<Buffer> {
-  const chapters = splitChapters(model.blocks);
+export async function documentToEpub(model: DocumentModel, options: EpubWriteOptions): Promise<Buffer> {
+  const chapters = splitChapters(bodyBlocks(model));
   if (chapters.length === 0) throw new ConversionFailedError('The document has no content to put in an EPUB.');
   const language = resolveLanguage(model, options.language) ?? UNDETERMINED_LANGUAGE;
-  const title = stripXmlForbidden((model.title ?? options.title).trim() || options.title);
+  const title = (model.title ?? options.title).trim() || options.title;
   const bookId = `urn:uuid:${crypto.randomUUID()}`;
-  const { byData, list: images } = await packageImages(model);
+  const { byId, list: images } = await packageImages(model);
+  const imageIndex = imagesById(model);
 
   // Headings in document order, each with the content document that holds it.
   const entries: NavEntry[] = [];
   chapters.forEach((chapter, chapterIndex) => {
     let local = 0;
     for (const block of chapter.blocks) {
-      if (block.kind !== 'heading') continue;
+      if (block.type !== 'heading') continue;
       local += 1;
       const text = blockHeadingText(block);
       if (text !== '') entries.push({ level: block.level, text, chapter: chapterIndex, id: `h-${chapter.headingOffset + local}` });
@@ -249,9 +258,8 @@ export async function writeEpub(model: DocModel, options: EpubWriteOptions): Pro
   // Which content document each bookmark is in, so links across documents resolve.
   const anchorChapter = new Map<string, number>();
   chapters.forEach((chapter, index) => {
-    walkBlocks(chapter.blocks, (block) => {
-      if (block.kind !== 'heading' && block.kind !== 'paragraph' && block.kind !== 'listItem') return;
-      for (const inline of block.inlines) if (inline.kind === 'anchor' && !anchorChapter.has(inline.name)) anchorChapter.set(inline.name, index);
+    walkRuns(chapter.blocks, (run) => {
+      if (run.anchor !== undefined && !anchorChapter.has(run.anchor)) anchorChapter.set(run.anchor, index);
     });
   });
 
@@ -270,7 +278,7 @@ export async function writeEpub(model: DocModel, options: EpubWriteOptions): Pro
 
   chapters.forEach((chapter, index) => {
     const render: HtmlRenderOptions = {
-      imageSource: (image) => (byData.get(image.data) as PackagedImage).path,
+      imageSource: (image: DocumentImage) => (byId.get(image.id) as PackagedImage).path,
       anchorHref: (name) => {
         const target = anchorChapter.get(name);
         if (target === undefined) return undefined;
@@ -278,15 +286,17 @@ export async function writeEpub(model: DocModel, options: EpubWriteOptions): Pro
       },
       headingIdPrefix: 'h-',
     };
+    const writer = new HtmlWriter(imageIndex, render);
+    writer.headingCount = chapter.headingOffset;
     const body =
-      renderBlocksHtml(chapter.blocks, render, chapter.headingOffset) +
-      renderNotesHtml('footnote', notesFor(chapter.blocks, 'footnote', model.footnotes), render) +
-      renderNotesHtml('endnote', notesFor(chapter.blocks, 'endnote', model.endnotes), render);
-    const firstHeading = chapter.blocks.find((block): block is Extract<DocBlock, { kind: 'heading' }> => block.kind === 'heading');
+      writer.blocks(chapter.blocks) +
+      new HtmlWriter(imageIndex, render).notes('footnote', notesFor(chapter.blocks, 'footnote', notesOf(model, 'footnote'))) +
+      new HtmlWriter(imageIndex, render).notes('endnote', notesFor(chapter.blocks, 'endnote', notesOf(model, 'endnote')));
+    const firstHeading = chapter.blocks.find((block): block is HeadingBlock => block.type === 'heading');
     const chapterTitle = (firstHeading ? blockHeadingText(firstHeading) : '') || title;
     add(
       `OEBPS/${chapterFile(index)}`,
-      `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" ${xmlLanguageAttributes(language)}>\n<head>\n<meta charset="utf-8"/>\n<title>${escapeXmlText(stripXmlForbidden(chapterTitle))}</title>\n<link rel="stylesheet" type="text/css" href="${STYLESHEET_PATH}"/>\n</head>\n<body>\n<section>\n${body}\n</section>\n</body>\n</html>\n`
+      `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" ${xmlLanguageAttributes(language)}>\n<head>\n<meta charset="utf-8"/>\n<title>${escapeXmlText(chapterTitle)}</title>\n<link rel="stylesheet" type="text/css" href="${STYLESHEET_PATH}"/>\n</head>\n<body>\n<section>\n${body}\n</section>\n</body>\n</html>\n`
     );
   });
 
@@ -311,7 +321,7 @@ export async function writeEpub(model: DocModel, options: EpubWriteOptions): Pro
     `<dc:identifier id="BookId">${bookId}</dc:identifier>`,
     `<dc:title>${escapeXmlText(title)}</dc:title>`,
     `<dc:language>${escapeXmlText(language)}</dc:language>`,
-    ...(model.author ? [`<dc:creator>${escapeXmlText(stripXmlForbidden(model.author))}</dc:creator>`] : []),
+    ...(model.author ? [`<dc:creator>${escapeXmlText(model.author)}</dc:creator>`] : []),
     `<meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>`,
     ...accessibilityMetadata(model, hasHeadings),
   ];

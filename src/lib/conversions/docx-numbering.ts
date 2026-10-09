@@ -1,4 +1,4 @@
-import { DocumentFormatError, MAX_LIST_LEVELS } from './document-model';
+import { DocumentFormatError, MAX_LIST_LEVELS } from './document-model/model';
 import { childElements, firstChild, type XmlElement } from './xml-tree';
 
 /**

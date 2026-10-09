@@ -1,4 +1,6 @@
-import { DocumentFormatError, MAX_HEADING_LEVEL, type DocAlign } from './document-model';
+import { DocumentFormatError, MAX_HEADING_LEVEL, type ParagraphBlock } from './document-model/model';
+
+type DocAlign = ParagraphBlock['align'];
 import { childElements, firstChild, type XmlElement } from './xml-tree';
 
 /**
@@ -33,6 +35,8 @@ export interface ParagraphProps {
   outlineLevel?: number;
   align?: DocAlign;
   pageBreakBefore?: boolean;
+  /** The paragraph runs right to left (w:bidi). */
+  rtl?: boolean;
 }
 
 export interface ResolvedParagraphStyle {
@@ -117,6 +121,8 @@ export function readParagraphProps(pPr: XmlElement | undefined): ParagraphProps 
   if (align) props.align = align;
   const pageBreakBefore = onOff(firstChild(pPr, 'pageBreakBefore'));
   if (pageBreakBefore !== undefined) props.pageBreakBefore = pageBreakBefore;
+  const bidi = onOff(firstChild(pPr, 'bidi'));
+  if (bidi !== undefined) props.rtl = bidi;
   return props;
 }
 

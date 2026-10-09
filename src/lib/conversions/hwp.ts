@@ -9,7 +9,9 @@ import { renderHwpToSvg } from './hwp-render';
 import { buildCfbfContainer } from './cfbf-writer';
 import { readHwpSections } from './hwp-reader';
 import { renderModelTarget } from './document-targets';
-import { emptyDocModel, type DocInline, type DocModel } from './document-model';
+import { BlockSink, DocumentContext, assembleDocument, type TableDraftCell } from './document-model/build';
+import type { DocumentModel } from './document-model/model';
+import { textRun } from './document-model/support';
 import { HWP_TAGS, HWP_UTF16_UNIT_BYTES, buildHwpRecord, decodeHwpText, parseHwpRecords, type HwpRecord } from './hwp-records';
 import { HWP_EQ_GREEK, HWP_EQ_SYMBOLS, hwpEquationToLaTeX, hwpEquationToMathML } from './hwp-equation';
 
@@ -33,6 +35,9 @@ export interface HwpTable {
   rows: string[][];
 }
 
+/** Heading level the flat paragraph list gives a heading paragraph. */
+const LEGACY_HEADING_LEVEL = 2;
+
 export interface HwpDocument {
   version: string;
   isCompressed: boolean;
@@ -42,7 +47,7 @@ export interface HwpDocument {
   tables: HwpTable[];
   equations?: HwpEquation[];
   /** The document in reading order with headings, lists, tables with merged cells, pictures, links and notes. */
-  model: DocModel;
+  model: DocumentModel;
   metadata: {
     title?: string;
     author?: string;
@@ -51,21 +56,25 @@ export interface HwpDocument {
   };
 }
 
-/** A flat paragraph and table list as a block model: paragraphs first, then the tables (no position is known). */
-export function legacyHwpModel(paragraphs: readonly HwpParagraph[], tables: readonly HwpTable[]): DocModel {
-  const model = emptyDocModel();
+/** A flat paragraph and table list as a document model: paragraphs first, then the tables (no position is known). */
+export function legacyHwpModel(paragraphs: readonly HwpParagraph[], tables: readonly HwpTable[]): DocumentModel {
+  const context = new DocumentContext();
+  const sink = new BlockSink(context);
   for (const paragraph of paragraphs) {
-    const inlines: DocInline[] = [{ kind: 'text', text: paragraph.text }];
-    model.blocks.push(paragraph.isHeading ? { kind: 'heading', level: 2, inlines } : { kind: 'paragraph', inlines });
+    if (paragraph.isHeading) sink.heading(LEGACY_HEADING_LEVEL, [textRun(paragraph.text)]);
+    else sink.paragraph([textRun(paragraph.text)]);
   }
   for (const table of tables) {
-    const rows = table.rows.map((row) => ({
-      header: false,
-      cells: row.map((text) => ({ blocks: text === '' ? [] : [{ kind: 'paragraph' as const, inlines: [{ kind: 'text' as const, text }] }], colSpan: 1, rowSpan: 1, header: false })),
-    }));
-    model.blocks.push({ kind: 'table', rows, columnCount: table.colCount });
+    const rows: TableDraftCell[][] = table.rows.map((row) =>
+      row.map((text) => {
+        const blocks = new BlockSink(context);
+        if (text !== '') blocks.paragraph([textRun(text)]);
+        return { blocks: blocks.blocks, colSpan: 1, rowSpan: 1, header: false };
+      })
+    );
+    sink.table({ rows, columnCount: table.colCount });
   }
-  return model;
+  return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context });
 }
 
 export interface CfbfDirectoryEntry {

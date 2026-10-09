@@ -42,13 +42,15 @@ async function timed(action: () => Promise<void> | void): Promise<number> {
 /**
  * Times two actions in one window: each run executes both, and the order alternates between runs so a drifting
  * machine load or a warming cache favours neither side. The result is the median of `runs` samples per side
- * with the coefficient of variation, after `warmup` untimed rounds.
+ * with the coefficient of variation, after `warmup` untimed rounds. A side that finishes in milliseconds is timed over
+ * `oursRepeats` back-to-back calls per sample (the sample is the mean per call), so scheduler jitter does not decide it.
  */
 export async function interleavedTiming(
   ours: () => Promise<void> | void,
   reference: () => Promise<void> | void,
   runs: number,
-  warmup: number
+  warmup: number,
+  oursRepeats = 1
 ): Promise<InterleavedTiming> {
   if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) {
     throw new BenchArgumentError(`runs must be an integer from 1 to ${MAX_RUNS}, got ${runs}`);
@@ -59,13 +61,17 @@ export async function interleavedTiming(
   }
   const oursMs: number[] = [];
   const referenceMs: number[] = [];
+  const oursSample = async (): Promise<number> =>
+    (await timed(async () => {
+      for (let repeat = 0; repeat < oursRepeats; repeat++) await ours();
+    })) / oursRepeats;
   for (let run = 0; run < runs; run++) {
     if (run % 2 === 0) {
-      oursMs.push(await timed(ours));
+      oursMs.push(await oursSample());
       referenceMs.push(await timed(reference));
     } else {
       referenceMs.push(await timed(reference));
-      oursMs.push(await timed(ours));
+      oursMs.push(await oursSample());
     }
   }
   return {

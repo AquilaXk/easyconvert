@@ -1,43 +1,23 @@
 import { ConversionFailedError, EncryptedOfficeDocumentError, PayloadLimitError } from '../types';
-import { collectImages, emptyDocModel, safeHref, type DocInline, type DocModel } from './document-model';
+import { DocumentContext, assembleDocument } from './document-model/build';
+import type { Block, DocumentModel } from './document-model/model';
+import { safeHref } from './document-model/support';
 import { EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
-import { HTML_MODEL_MAX_IMAGES, HTML_MODEL_MAX_IMAGE_BYTES, htmlToDocModel } from './html-model';
+import { HTML_MODEL_MAX_IMAGES, HTML_MODEL_MAX_IMAGE_BYTES, htmlToDocumentModel } from './html-model';
 import { renderMarkdownFragment } from './markdown';
 import { decodeXmlBytes, resolvePackagePath } from './package-access';
 
 /**
- * Readers that turn sources other than DOCX into the block model: Markdown and HTML (through the HTML reader), plain
- * text (one paragraph per blank-line-separated chunk, single line breaks kept) and EPUB packages (every content
- * document of the spine, with the pictures it references).
+ * Readers that turn sources other than DOCX into the document model: Markdown and HTML (through the HTML reader) and
+ * EPUB packages (every content document of the spine, with the pictures it references).
  */
 
-const PARAGRAPH_SEPARATOR = /\r?\n[ \t]*\r?\n/;
 const IMAGE_SOURCE = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const MAX_IMAGE_REFERENCES_PER_DOCUMENT = 20_000;
 const EXTERNAL_LINK = /^(?:https?|mailto|ftp):/i;
 
-export async function markdownToDocModel(markdown: string): Promise<DocModel> {
-  return htmlToDocModel(renderMarkdownFragment(markdown));
-}
-
-export async function htmlSourceToDocModel(html: string): Promise<DocModel> {
-  return htmlToDocModel(html);
-}
-
-/** Plain text as paragraphs: chunks separated by blank lines, lines inside a chunk joined by line breaks. */
-export function plainTextToDocModel(text: string): DocModel {
-  const model = emptyDocModel();
-  for (const chunk of text.split(PARAGRAPH_SEPARATOR)) {
-    const lines = chunk.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-    if (lines.length === 0) continue;
-    const inlines: DocInline[] = [];
-    lines.forEach((line, index) => {
-      if (index > 0) inlines.push({ kind: 'break' });
-      inlines.push({ kind: 'text', text: line });
-    });
-    model.blocks.push({ kind: 'paragraph', inlines });
-  }
-  return model;
+export async function markdownToDocumentModel(markdown: string): Promise<DocumentModel> {
+  return htmlToDocumentModel(renderMarkdownFragment(markdown));
 }
 
 function directoryOf(path: string): string {
@@ -56,15 +36,12 @@ function mapEpubLink(href: string): string | undefined {
  * Reads an EPUB into the model, chapters in spine order. A DRM-protected book, a package that is not well formed
  * and a book without text are refused with typed errors; pictures a content document names are carried.
  */
-export async function readEpubModel(input: Buffer): Promise<DocModel> {
+export async function readEpubModel(input: Buffer): Promise<DocumentModel> {
   const book = await openEpubPackage(input);
-  const model = emptyDocModel();
-  model.title = book.title;
-  if (book.creators.length > 0) model.author = book.creators.join(', ');
-  model.language = book.language;
+  const context = new DocumentContext();
+  const blocks: Block[] = [];
+  let language = book.language;
   let totalChars = 0;
-  let imageCount = 0;
-  let imageBytes = 0;
   for (const item of book.spine) {
     if (!EPUB_TEXT_MEDIA_TYPES.has(item.mediaType) || item.properties.includes('nav')) continue;
     if (item.encrypted) throw new EncryptedOfficeDocumentError('The EPUB content is protected by DRM, so its text cannot be read.');
@@ -88,19 +65,21 @@ export async function readEpubModel(input: Buffer): Promise<DocModel> {
       if (entry && entry.mediaType.startsWith('image/')) pictures.set(source, await book.read(path, 'EPUB image'));
     }
 
-    const chapter = await htmlToDocModel(html, { resolveImage: (src) => pictures.get(src), mapLink: mapEpubLink });
-    for (const image of collectImages(chapter)) {
-      imageCount += 1;
-      imageBytes += image.data.length;
-    }
-    if (imageCount > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
+    const chapter = await htmlToDocumentModel(html, { resolveImage: (src) => pictures.get(src), mapLink: mapEpubLink, context });
+    if (context.images.length > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
+    const imageBytes = context.images.reduce((sum, image) => sum + image.data.length, 0);
     if (imageBytes > HTML_MODEL_MAX_IMAGE_BYTES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
     totalChars += html.length;
     if (totalChars > EPUB_MAX_TEXT_CHARS) throw new PayloadLimitError(`The EPUB text is longer than ${EPUB_MAX_TEXT_CHARS} characters.`);
-    if (model.language === undefined && chapter.language !== undefined) model.language = chapter.language;
-    model.blocks.push(...chapter.blocks);
-    model.warnings.push(...chapter.warnings);
+    if (language === undefined && chapter.language !== undefined) language = chapter.language;
+    blocks.push(...chapter.sections.flatMap((section) => section.blocks));
   }
-  if (model.blocks.length === 0) throw new ConversionFailedError('The EPUB holds no text.');
-  return model;
+  if (blocks.length === 0) throw new ConversionFailedError('The EPUB holds no text.');
+  return assembleDocument({
+    sections: [{ columns: 1, blocks }],
+    context,
+    title: book.title,
+    author: book.creators.length > 0 ? book.creators.join(', ') : undefined,
+    language,
+  });
 }

@@ -6,7 +6,9 @@ import { convertFile } from '../src/lib/conversions';
 import { parseHwpDocument } from '../src/lib/conversions/hwp';
 import { HWP_MAX_LIST_DEPTH, HWP_MAX_RECORDS, readHwpSections } from '../src/lib/conversions/hwp-reader';
 import { decodeHwpParagraph } from '../src/lib/conversions/hwp-records';
-import { blockText, collectImages, expandTableGrid, inlinesToText, type DocBlock, type DocInline, type DocModel } from '../src/lib/conversions/document-model';
+import type { Block, DocumentModel, Inline, ListBlock, TableBlock } from '../src/lib/conversions/document-model/model';
+import { blockRuns, bodyBlocks, cellBlocks } from '../src/lib/conversions/document-model/support';
+import { blockText, inlineText, listMarkers } from '../src/lib/conversions/document-model/text';
 import { CorruptStreamError, PayloadLimitError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -63,16 +65,18 @@ const readReference = (name: string): Reference => JSON.parse(fs.readFileSync(pa
 const squash = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
 /** The reading order of a model as the reference lists it: paragraph texts and table positions. */
-function modelOrder(model: DocModel): ({ kind: 'paragraph'; text: string } | { kind: 'table'; index: number })[] {
+function modelOrder(model: DocumentModel): ({ kind: 'paragraph'; text: string } | { kind: 'table'; index: number })[] {
   const order: ({ kind: 'paragraph'; text: string } | { kind: 'table'; index: number })[] = [];
   let tables = 0;
-  for (const block of model.blocks) {
-    if (block.kind === 'table') {
+  for (const block of bodyBlocks(model)) {
+    if (block.type === 'table') {
       order.push({ kind: 'table', index: tables });
       tables += 1;
-    } else if (block.kind === 'paragraph' || block.kind === 'heading' || block.kind === 'listItem') {
-      const text = squash(inlinesToText(block.inlines));
-      if (text !== '') order.push({ kind: 'paragraph', text });
+    } else {
+      for (const runs of blockRuns(block)) {
+        const text = squash(inlineText(runs));
+        if (text !== '') order.push({ kind: 'paragraph', text });
+      }
     }
   }
   return order;
@@ -94,8 +98,9 @@ describe('real HWP documents keep their reading order', () => {
 
   it('noori: the first table (the press release header) comes before the first paragraph that follows it', () => {
     const model = parseHwpDocument(readFixture('noori')).model;
-    const firstTable = model.blocks.findIndex((block) => block.kind === 'table');
-    const firstBody = model.blocks.findIndex((block) => block.kind === 'paragraph' && inlinesToText(block.inlines).startsWith('□ 과학기술정보통신부'));
+    const blocks = bodyBlocks(model);
+    const firstTable = blocks.findIndex((block) => block.type === 'table');
+    const firstBody = blocks.findIndex((block) => block.type === 'paragraph' && inlineText(block.runs).startsWith('□ 과학기술정보통신부'));
     expect(firstTable).toBeGreaterThanOrEqual(0);
     expect(firstTable).toBeLessThan(firstBody);
   });
@@ -109,9 +114,9 @@ describe('real HWP documents keep their reading order', () => {
 
   it('noori: a cell that spans three columns keeps its span', () => {
     const model = parseHwpDocument(readFixture('noori')).model;
-    const first = model.blocks.find((block) => block.kind === 'table') as Extract<DocBlock, { kind: 'table' }>;
-    expect(first.rows.map((row) => row.cells.map((c) => c.colSpan))).toEqual([[1, 3], [1, 1, 1, 1], [1, 1, 1, 1]]);
-    expect(expandTableGrid(first).map((row) => row.map((c) => (c ? 'x' : '.')).join(''))).toEqual(['xx..', 'xxxx', 'xxxx']);
+    const first = bodyBlocks(model).find((block): block is TableBlock => block.type === 'table') as TableBlock;
+    expect(first.rows.map((row) => row.filter((c) => !c.continuation).map((c) => c.colSpan))).toEqual([[1, 3], [1, 1, 1, 1], [1, 1, 1, 1]]);
+    expect(first.rows.map((row) => row.map((c) => (c.continuation ? '.'.repeat(c.colSpan) : `x${'.'.repeat(c.colSpan - 1)}`)).join(''))).toEqual(['xx..', 'xxxx', 'xxxx']);
     const reference = readReference('noori').tables[0];
     expect(reference.spans.filter((span) => span.colSpan > 1)).toEqual([{ row: 0, col: 1, colSpan: 3, rowSpan: 1 }]);
   });
@@ -136,8 +141,8 @@ describe('real HWP documents keep their reading order', () => {
 describe('pictures of real HWP documents', () => {
   it.each(['noori', 'basics-report'])('%s: every picture is carried with the bytes of its BinData stream', async (name) => {
     const reference = readReference(name);
-    const images = collectImages(parseHwpDocument(readFixture(name)).model);
-    expect(images.map((image) => sha256(image.data))).toEqual(reference.pictures.map((entry) => entry.sha256));
+    const { images } = parseHwpDocument(readFixture(name)).model;
+    expect(images.map((image) => sha256(Buffer.from(image.data)))).toEqual(reference.pictures.map((entry) => entry.sha256));
   });
 
   it('noori: the pictures appear unchanged in word/media of the DOCX', async () => {
@@ -236,14 +241,15 @@ describe('control characters of paragraph text (HWP 5.0 file format, character c
 });
 
 /** Reads records built by hwp-craft into the model. */
-function read(docInfo: RawRecord[], section: RawRecord[], bins: Record<string, Buffer> = {}): DocModel {
+function read(docInfo: RawRecord[], section: RawRecord[], bins: Record<string, Buffer> = {}): DocumentModel {
   const reread = (records: RawRecord[]) => parseHwpRecords(pack(records));
   return readHwpSections(reread(docInfo), [reread(section)], (name) => bins[name]);
 }
 
-const first = (model: DocModel): DocBlock => model.blocks[0];
-const textOfBlock = (block: DocBlock): string => blockText(block);
-const inlinesOf = (block: DocBlock): DocInline[] => (block.kind === 'paragraph' || block.kind === 'heading' || block.kind === 'listItem' ? block.inlines : []);
+const first = (model: DocumentModel): Block => bodyBlocks(model)[0];
+const textOfBlock = (block: Block): string => blockText(block);
+const runsOf = (block: Block): Inline[] => blockRuns(block)[0] ?? [];
+const listsOf = (model: DocumentModel): ListBlock[] => bodyBlocks(model).filter((block): block is ListBlock => block.type === 'list');
 
 describe('record-level reading', () => {
   it('outline styles and outline paragraph shapes are headings', () => {
@@ -251,7 +257,7 @@ describe('record-level reading', () => {
       [style('Normal'), style('Outline 1'), style('Outline 2'), paraShape(), paraShape({ headType: 1, level: 2 })],
       [...para(0, { text: 'Chapter', style: 1 }), ...para(0, { text: 'Section', style: 2 }), ...para(0, { text: 'Deep', style: 0, shape: 1 }), ...para(0, { text: 'Body text' })]
     );
-    expect(model.blocks.map((block) => (block.kind === 'heading' ? `h${block.level} ${textOfBlock(block)}` : `${block.kind} ${textOfBlock(block)}`))).toEqual(['h1 Chapter', 'h2 Section', 'h3 Deep', 'paragraph Body text']);
+    expect(bodyBlocks(model).map((block) => (block.type === 'heading' ? `h${block.level} ${textOfBlock(block)}` : `${block.type} ${textOfBlock(block)}`))).toEqual(['h1 Chapter', 'h2 Section', 'h3 Deep', 'paragraph Body text']);
   });
 
   it('numbered paragraphs get their markers from the numbering definition, with levels and resets', () => {
@@ -273,15 +279,15 @@ describe('record-level reading', () => {
       ...para(0, { text: 'two', shape: 0 }),
       ...para(0, { text: 'sub again', shape: 1 }),
     ];
-    const items = read(docInfo, section).blocks.filter((block): block is Extract<DocBlock, { kind: 'listItem' }> => block.kind === 'listItem');
-    expect(items.map((item) => `${item.level} ${item.marker} ${textOfBlock(item)}`)).toEqual(['0 1. one', '1 가. sub a', '1 나. sub b', '2 1) deep', '0 2. two', '1 가. sub again']);
-    expect(new Set(items.map((item) => item.listId)).size).toBe(1);
+    const lists = listsOf(read(docInfo, section));
+    expect(lists.flatMap((list) => list.items.map((item, index) => `${item.level} ${listMarkers(list)[index]} ${inlineText(item.runs)}`))).toEqual(['0 1. one', '1 가. sub a', '1 나. sub b', '2 1) deep', '0 2. two', '1 가. sub again']);
+    expect(lists).toHaveLength(1);
   });
 
   it('bullet paragraphs use the bullet character of their definition', () => {
     const model = read([bullet('-'), paraShape({ headType: 3, level: 0, numberingId: 1 })], [...para(0, { text: 'item', shape: 0 })]);
-    const item = first(model);
-    expect(item.kind === 'listItem' && [item.ordered, item.marker]).toEqual([false, '-']);
+    const [list] = listsOf(model);
+    expect([list.levels[0].kind !== 'bullet', listMarkers(list)[0]]).toEqual([false, '-']);
   });
 
   it('character shapes split a paragraph into bold, italic and underlined runs', () => {
@@ -289,22 +295,22 @@ describe('record-level reading', () => {
       [charShape(), charShape({ bold: true }), charShape({ italic: true, underline: true })],
       [...para(0, { text: 'plain BOLD ital end', charShapes: [[0, 0], [6, 1], [11, 2], [15, 0]] })]
     );
-    const runs = inlinesOf(first(model)).map((inline) => (inline.kind === 'text' ? `${inline.text}|${inline.bold ? 'b' : ''}${inline.italic ? 'i' : ''}${inline.underline ? 'u' : ''}` : inline.kind));
+    const runs = runsOf(first(model)).map((run) => `${run.text}|${run.bold ? 'b' : ''}${run.italic ? 'i' : ''}${run.underline ? 'u' : ''}`);
     expect(runs).toEqual(['plain |', 'BOLD |b', 'ital|iu', ' end|']);
   });
 
   it('a hyperlink field gives the text between its begin and end the target', () => {
     const units = Buffer.concat([Buffer.from('see ', 'utf16le'), controlUnits(3, '%hlk'), Buffer.from('portal', 'utf16le'), controlUnits(4, '%hlk'), Buffer.from(' now', 'utf16le')]);
     const model = read([], [...para(0, { units }), fieldControl(1, '%hlk', 'https://example.org/x;1;0;0;')]);
-    expect(inlinesOf(first(model)).map((inline) => (inline.kind === 'text' ? [inline.text, inline.href] : []))).toEqual([['see '.trimStart(), undefined], ['portal', 'https://example.org/x'], [' now', undefined]]);
+    expect(runsOf(first(model)).map((run) => [run.text, run.href])).toEqual([['see '.trimStart(), undefined], ['portal', 'https://example.org/x'], [' now', undefined]]);
   });
 
   it('a footnote leaves a reference in its paragraph and its paragraphs in the notes', () => {
     const units = Buffer.concat([Buffer.from('Body', 'utf16le'), controlUnits(17, 'fn  '), Buffer.from('.', 'utf16le')]);
     const model = read([], [...para(0, { units }), ctrl(1, 'fn  ', Buffer.alloc(8)), listHeader(2), ...para(2, { text: 'Note text' })]);
-    expect(inlinesOf(first(model)).map((inline) => (inline.kind === 'text' ? inline.text : `${inline.kind}:${inline.kind === 'noteRef' ? inline.label : ''}`))).toEqual(['Body', 'noteRef:1', '.']);
-    expect(model.footnotes.map((note) => note.blocks.map(textOfBlock))).toEqual([['Note text']]);
-    expect(model.endnotes).toHaveLength(0);
+    expect(runsOf(first(model)).map((run) => (run.note ? `note:${run.note.label}` : run.text))).toEqual(['Body', 'note:1', '.']);
+    expect((model.footnotes ?? []).map((note) => note.blocks.map(textOfBlock))).toEqual([['Note text']]);
+    expect(model.endnotes ?? []).toHaveLength(0);
   });
 
   it('a text box contributes its paragraphs in place, between the paragraphs around it', () => {
@@ -313,17 +319,17 @@ describe('record-level reading', () => {
       [],
       [...para(0, { text: 'before' }), ...para(0, { units: box }), ctrl(1, 'gso ', objectProperties(7200, 3600)), rec(TAG.SHAPE_COMPONENT, 2), listHeader(3), ...para(3, { text: 'boxed' }), ...para(0, { text: 'after' })]
     );
-    expect(model.blocks.map(textOfBlock)).toEqual(['before', 'boxed', 'after']);
+    expect(bodyBlocks(model).map(textOfBlock)).toEqual(['before', 'boxed', 'after']);
   });
 
   it('headers and footers are left out of the body', () => {
     const model = read([], [...para(0, { text: 'body' }), ...para(0, { units: controlUnits(16, 'head') }), ctrl(1, 'head', Buffer.alloc(8)), listHeader(2), ...para(2, { text: 'running header' })]);
-    expect(model.blocks.map(textOfBlock)).toEqual(['body']);
+    expect(bodyBlocks(model).map(textOfBlock)).toEqual(['body']);
   });
 
   it('a page-break paragraph starts a new page', () => {
     const model = read([], [...para(0, { text: 'one' }), ...para(0, { text: 'two', breakFlags: 0x04 })]);
-    expect(model.blocks.map((block) => block.kind)).toEqual(['paragraph', 'pageBreak', 'paragraph']);
+    expect(bodyBlocks(model).map((block) => block.type)).toEqual(['paragraph', 'pageBreak', 'paragraph']);
   });
 
   it('a picture is carried with its BinData bytes and displayed size', () => {
@@ -333,14 +339,15 @@ describe('record-level reading', () => {
       [...para(0, { units: controlUnits(11, 'gso ') }), ctrl(1, 'gso ', objectProperties(7200, 3600)), rec(TAG.SHAPE_COMPONENT, 2), picture(3, 1)],
       { 'BinData/BIN0007.png': png }
     );
-    const [image] = collectImages(model);
-    expect(image.data.equals(png)).toBe(true);
-    expect([image.mime, image.widthPt, image.heightPt]).toEqual(['image/png', 72, 36]);
+    const [image] = model.images;
+    const placed = runsOf(first(model))[0].image;
+    expect(Buffer.from(image.data).equals(png)).toBe(true);
+    expect([image.format, placed?.widthPt, placed?.heightPt]).toEqual(['png', 72, 36]);
   });
 
   it('a picture that is not an image the model carries is left out with a warning', () => {
     const model = read([binData(1, 'wmf')], [...para(0, { units: controlUnits(11, 'gso ') }), ctrl(1, 'gso ', objectProperties(100, 100)), rec(TAG.SHAPE_COMPONENT, 2), picture(3, 1)], { 'BinData/BIN0001.wmf': Buffer.from('not an image') });
-    expect(collectImages(model)).toHaveLength(0);
+    expect(model.images).toHaveLength(0);
     expect(model.warnings).toEqual(['The picture BinData/BIN0001.wmf is not a PNG, JPEG, GIF, BMP, TIFF or SVG image and was left out.']);
   });
 
@@ -364,13 +371,14 @@ describe('record-level reading', () => {
         ...para(2, { text: 'b' }),
       ]
     );
-    expect(model.blocks.map((block) => block.kind)).toEqual(['paragraph', 'table']);
-    const grid = model.blocks[1] as Extract<DocBlock, { kind: 'table' }>;
-    expect(grid.rows.map((row) => [row.header, row.cells.map((c) => `${c.blocks.map(textOfBlock).join('')}:${c.colSpan}x${c.rowSpan}`)])).toEqual([
+    const blocks = bodyBlocks(model);
+    expect(blocks.map((block) => block.type)).toEqual(['paragraph', 'table']);
+    const grid = blocks[1] as TableBlock;
+    expect(grid.rows.map((row) => [row.some((c) => c.header), row.filter((c) => !c.continuation).map((c) => `${cellBlocks(c).map(textOfBlock).join('')}:${c.colSpan}x${c.rowSpan}`)])).toEqual([
       [true, ['wide head:2x1', 'tall:1x2']],
       [false, ['a:1x1', 'b:1x1']],
     ]);
-    expect(textOfBlock(model.blocks[0])).toBe('Caption');
+    expect(textOfBlock(blocks[0])).toBe('Caption');
   });
 });
 

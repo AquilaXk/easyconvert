@@ -1,21 +1,9 @@
 import type JSZip from 'jszip';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
-import {
-  DocumentFormatError,
-  emptyDocModel,
-  normalizeBodySize,
-  safeHref,
-  sniffImageMime,
-  type DocBlock,
-  type DocImage,
-  type DocInline,
-  type DocModel,
-  type DocNote,
-  type DocTableCell,
-  type DocTableRow,
-  type DocTextInline,
-} from './document-model';
+import { BlockSink, BodySink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
+import { DocumentFormatError, type Block, type DocumentModel, type ImageFormat, type Inline, type NoteDefinition, type SectionBreakType } from './document-model/model';
+import { anchorRun, imageRun, noteRun, normalizeBodySize, safeHref, sameRunFormat, sniffImageFormat, textRun } from './document-model/support';
 import { NumberingDefinitions } from './docx-numbering';
 import { mergeRunProps, readParagraphProps, readRunProps, sizePoints, StyleSheet, type RunProps } from './docx-styles';
 import { childElements, firstChild, ownText, parseXmlTree, type XmlElement } from './xml-tree';
@@ -51,19 +39,21 @@ export const DOCX_MAX_INLINES = 20_000_000;
 export const DOCX_MAX_TABLE_DEPTH = 16;
 /** Most columns one table may span, as in HTML. */
 export const DOCX_MAX_TABLE_COLUMNS = 1000;
+/** Most text columns one section may declare. */
+export const DOCX_MAX_SECTION_COLUMNS = 45;
 /** Most notes one document may reference. */
 export const DOCX_MAX_NOTES = 100_000;
 
 const EMU_PER_POINT = 12700;
 const TWIPS_PER_POINT = 20;
-const DEFAULT_SECTION_TYPE = 'nextPage';
+const DEFAULT_SECTION_TYPE: SectionBreakType = 'nextPage';
 const SECTION_TYPES: ReadonlySet<string> = new Set(['nextPage', 'continuous', 'evenPage', 'oddPage', 'nextColumn']);
 const FIELD_HYPERLINK = /^\s*HYPERLINK\s+(?:"([^"]*)"|(\S+))(.*)$/is;
 const FIELD_ANCHOR_SWITCH = /\\l\s+"([^"]*)"/i;
 const SYMBOL_PRIVATE_USE = /^[0-9a-f]{4}$/i;
 
 export interface DocxReadResult {
-  model: DocModel;
+  model: DocumentModel;
   /** The body holds charts or drawing shapes, which the model does not carry. */
   drawsShapes: boolean;
 }
@@ -79,33 +69,6 @@ interface PartContext {
   readonly relationships: ReadonlyMap<string, Relationship>;
 }
 
-interface MutableTextInline {
-  kind: 'text';
-  text: string;
-  bold?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-  strike?: boolean;
-  code?: boolean;
-  superscript?: boolean;
-  subscript?: boolean;
-  href?: string;
-  sizePt?: number;
-  color?: string;
-}
-
-interface MutableCell {
-  blocks: DocBlock[];
-  colSpan: number;
-  rowSpan: number;
-  header: boolean;
-  shading?: string;
-}
-
-interface MutableSectionBreak {
-  kind: 'sectionBreak';
-  sectionType: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn';
-}
 
 interface FieldState {
   instruction: string;
@@ -114,12 +77,13 @@ interface FieldState {
 }
 
 interface ParagraphState {
-  inlines: DocInline[];
+  inlines: Inline[];
   /** Indexes into `inlines` at which a page break ends a segment. */
   pageBreaks: number[];
   fields: FieldState[];
   hrefs: string[];
-  sidecar: DocBlock[];
+  /** Blocks of text boxes drawn in the paragraph; they follow it. */
+  sidecar: BlockSink;
   baseRun: RunProps;
   heading: boolean;
 }
@@ -229,22 +193,31 @@ function relationshipOfType(relationships: ReadonlyMap<string, Relationship>, su
   return undefined;
 }
 
+interface LoadedImage {
+  readonly data: Buffer;
+  readonly format: ImageFormat;
+}
+
 class DocxReader {
   private blockCount = 0;
   private inlineCount = 0;
-  private readonly sectionBreaks: MutableSectionBreak[] = [];
-  private readonly sectionProperties: XmlElement[] = [];
+  /** The section properties of each section in order: those of paragraph-level breaks, then the body's own. */
+  readonly sectionProperties: XmlElement[] = [];
   readonly noteOrder: { footnote: number[]; endnote: number[] } = { footnote: [], endnote: [] };
   drawsShapes = false;
   private currentListNumId: number | undefined;
   private listId = 0;
-  readonly warnings: string[] = [];
 
   constructor(
+    private readonly context: DocumentContext,
     private readonly styles: StyleSheet,
     private readonly numbering: NumberingDefinitions,
-    private readonly images: ReadonlyMap<string, { data: Buffer; mime: NonNullable<ReturnType<typeof sniffImageMime>> }>
+    private readonly images: ReadonlyMap<string, LoadedImage>
   ) {}
+
+  private get warnings(): string[] {
+    return this.context.warnings;
+  }
 
   private countBlock(): void {
     this.blockCount += 1;
@@ -256,18 +229,8 @@ class DocxReader {
     if (this.inlineCount > DOCX_MAX_INLINES) throw new PayloadLimitError(`The document holds more than ${DOCX_MAX_INLINES} text runs.`);
   }
 
-  /** Section type of the section that follows each paragraph-level section break (17.6.22: the type belongs to the section it starts). */
-  finishSections(bodySectPr: XmlElement | undefined): void {
-    if (bodySectPr) this.sectionProperties.push(bodySectPr);
-    this.sectionBreaks.forEach((block, index) => {
-      const next = this.sectionProperties[index + 1];
-      const type = next ? firstChild(next, 'type')?.attrs.get('val') : undefined;
-      block.sectionType = (type !== undefined && SECTION_TYPES.has(type) ? type : DEFAULT_SECTION_TYPE) as MutableSectionBreak['sectionType'];
-    });
-  }
-
   /** Reads the block-level children of a body, table cell, note or text box into `out`. */
-  readBlocks(container: XmlElement, part: PartContext, out: DocBlock[], tableDepth: number): void {
+  readBlocks(container: XmlElement, part: PartContext, out: BlockSink, tableDepth: number): void {
     for (const child of container.children) {
       if (typeof child === 'string') continue;
       switch (child.local) {
@@ -279,10 +242,10 @@ class DocxReader {
           break;
         case 'drawing': {
           // Not valid at block level, but written by some generators: a picture becomes its own paragraph.
-          const state = this.newState(this.styles.defaultRun, false);
+          const state = this.newState(this.styles.defaultRun, false, out);
           this.readDrawing(child, part, state);
-          if (state.inlines.length > 0) out.push({ kind: 'paragraph', inlines: state.inlines });
-          out.push(...state.sidecar);
+          if (state.inlines.length > 0) out.paragraph(state.inlines);
+          out.appendAll(state.sidecar.blocks);
           break;
         }
         case 'sdt': {
@@ -307,7 +270,7 @@ class DocxReader {
     }
   }
 
-  private readTable(tbl: XmlElement, part: PartContext, out: DocBlock[], depth: number): void {
+  private readTable(tbl: XmlElement, part: PartContext, out: BlockSink, depth: number): void {
     if (depth >= DOCX_MAX_TABLE_DEPTH) {
       // Deeper tables keep their text, one paragraph per cell paragraph, but no table structure.
       this.warnings.push(`Tables nested deeper than ${DOCX_MAX_TABLE_DEPTH} levels were flattened to text.`);
@@ -315,21 +278,22 @@ class DocxReader {
         const text = findDescendants(paragraphElement, 't').map((t) => ownText(t)).join('');
         if (text.trim() !== '') {
           this.countBlock();
-          out.push({ kind: 'paragraph', inlines: [{ kind: 'text', text: text.trim() }] });
+          out.paragraph([textRun(text.trim())]);
         }
       }
       return;
     }
     this.countBlock();
     this.currentListNumId = undefined;
-    const rows: DocTableRow[] = [];
+    const rows: TableDraftCell[][] = [];
     // Cell that a vertical merge continues, by grid column.
-    const openByColumn = new Map<number, MutableCell>();
-    let columnCount = childElements(firstChild(tbl, 'tblGrid') ?? tbl, 'gridCol').length;
+    const openByColumn = new Map<number, TableDraftCell>();
+    const gridColumns = childElements(firstChild(tbl, 'tblGrid') ?? tbl, 'gridCol');
+    let columnCount = gridColumns.length;
 
     const readRow = (tr: XmlElement): void => {
       const trPr = firstChild(tr, 'trPr');
-      const cells: MutableCell[] = [];
+      const cells: TableDraftCell[] = [];
       let column = readInt(trPr ? firstChild(trPr, 'gridBefore') : undefined, 'val') ?? 0;
       const cellElements: XmlElement[] = [];
       for (const child of tr.children) {
@@ -358,11 +322,11 @@ class DocxReader {
           column += span;
           continue;
         }
-        const blocks: DocBlock[] = [];
-        this.readBlocks(tc, part, blocks, depth + 1);
+        const content = out.nested();
+        this.readBlocks(tc, part, content, depth + 1);
         const fill = tcPr ? firstChild(tcPr, 'shd')?.attrs.get('fill') : undefined;
-        const cell: MutableCell = {
-          blocks,
+        const cell: TableDraftCell = {
+          blocks: content.blocks,
           colSpan: span,
           rowSpan: 1,
           header: false,
@@ -375,17 +339,19 @@ class DocxReader {
       columnCount = Math.max(columnCount, column);
       const header = trPr !== undefined && firstChild(trPr, 'tblHeader') !== undefined;
       for (const cell of cells) cell.header = header;
-      rows.push({ cells: cells as DocTableCell[], header });
+      rows.push(cells);
     };
 
     for (const child of tbl.children) {
       if (typeof child !== 'string' && child.local === 'tr') readRow(child);
     }
-    // A merge continues only into the row directly below, so a column's open cell is dropped when a row skips it.
-    out.push({ kind: 'table', rows, columnCount });
+    // Column widths are the grid's when it covers every column; otherwise the table spreads over the text width.
+    const widths = gridColumns.map((gridCol) => (readInt(gridCol, 'w') ?? 0) / TWIPS_PER_POINT);
+    const columnWidthsPt = widths.length === columnCount && widths.every((width) => width > 0) ? widths : undefined;
+    out.table({ rows, columnCount, columnWidthsPt });
   }
 
-  private readParagraph(p: XmlElement, part: PartContext, out: DocBlock[]): void {
+  private readParagraph(p: XmlElement, part: PartContext, out: BlockSink): void {
     const pPr = firstChild(p, 'pPr');
     const styleId = pPr ? firstChild(pPr, 'pStyle')?.attrs.get('val') : undefined;
     const style = this.styles.paragraphStyle(styleId);
@@ -397,12 +363,12 @@ class DocxReader {
       marker = this.numbering.next(props.numId, props.ilvl ?? 0);
     }
 
-    const state = this.newState(mergeRunProps(this.styles.defaultRun, style.run), headingLevel !== undefined);
+    const state = this.newState(mergeRunProps(this.styles.defaultRun, style.run), headingLevel !== undefined, out);
     this.readInlineChildren(p, part, state);
 
     if (marker === undefined) this.currentListNumId = undefined;
 
-    const segments: DocInline[][] = [];
+    const segments: Inline[][] = [];
     let from = 0;
     for (const at of state.pageBreaks) {
       segments.push(state.inlines.slice(from, at));
@@ -410,53 +376,51 @@ class DocxReader {
     }
     segments.push(state.inlines.slice(from));
 
-    if (props.pageBreakBefore) out.push({ kind: 'pageBreak' });
+    const rtl = props.rtl === true;
+    if (props.pageBreakBefore) out.pageBreak();
     segments.forEach((segment, index) => {
       const inlines = trimEdges(segment);
-      if (index > 0) out.push({ kind: 'pageBreak' });
+      if (index > 0) out.pageBreak();
       if (inlines.length === 0) return;
       this.countBlock();
       const first = index === 0;
       if (first && headingLevel !== undefined) {
-        out.push({ kind: 'heading', level: headingLevel, inlines, label: marker && marker.marker !== '' ? marker.marker : undefined });
+        out.heading(headingLevel, inlines, { label: marker && marker.marker !== '' ? marker.marker : undefined, rtl });
       } else if (first && marker !== undefined) {
         const numId = props.numId as number;
         if (this.currentListNumId !== numId) {
           this.currentListNumId = numId;
           this.listId += 1;
         }
-        out.push({
-          kind: 'listItem',
+        out.listItem({
+          sourceId: this.listId,
           level: props.ilvl ?? 0,
-          ordered: marker.ordered,
+          ...listFormatOf(marker.ordered, marker.format, marker.marker),
+          value: marker.number,
           marker: marker.marker,
-          number: marker.number,
-          format: marker.format,
-          listId: this.listId,
-          inlines,
+          runs: inlines,
+          rtl,
         });
       } else {
-        out.push({ kind: 'paragraph', inlines, align: props.align });
+        out.paragraph(inlines, { align: props.align, rtl });
       }
     });
-    for (const block of state.sidecar) out.push(block);
+    out.appendAll(state.sidecar.blocks);
 
     const sectPr = pPr ? firstChild(pPr, 'sectPr') : undefined;
-    if (sectPr) {
+    if (sectPr && out instanceof BodySink) {
       this.sectionProperties.push(sectPr);
-      const block: MutableSectionBreak = { kind: 'sectionBreak', sectionType: DEFAULT_SECTION_TYPE };
-      this.sectionBreaks.push(block);
-      out.push(block);
+      out.endSection(columnsOf(sectPr));
     }
   }
 
-  private newState(baseRun: RunProps, heading: boolean): ParagraphState {
+  private newState(baseRun: RunProps, heading: boolean, out: BlockSink): ParagraphState {
     return {
       inlines: [],
       pageBreaks: [],
       fields: [],
       hrefs: [],
-      sidecar: [],
+      sidecar: out.nested(),
       baseRun: heading ? { ...baseRun, bold: undefined } : baseRun,
       heading,
     };
@@ -518,7 +482,7 @@ class DocxReader {
           const name = child.attrs.get('name');
           if (name !== undefined && !name.startsWith('_GoBack')) {
             this.countInline();
-            state.inlines.push({ kind: 'anchor', name });
+            state.inlines.push(anchorRun(name));
           }
           break;
         }
@@ -528,29 +492,30 @@ class DocxReader {
     }
   }
 
+  /** Adds `run`, joining it to the run before when the two have one format. */
+  private pushRun(state: ParagraphState, run: Inline): void {
+    const last = state.inlines[state.inlines.length - 1];
+    if (last && sameRunFormat(last, run) && run.text !== '') {
+      state.inlines[state.inlines.length - 1] = { ...last, text: last.text + run.text };
+      return;
+    }
+    this.countInline();
+    state.inlines.push(run);
+  }
+
   private pushText(state: ParagraphState, text: string, props: RunProps, href: string | undefined): void {
     if (text === '') return;
     const sizePt = sizePoints(props.sizeHalfPoints);
     const baseSize = sizePoints(state.baseRun.sizeHalfPoints);
-    const inline: MutableTextInline = { kind: 'text', text };
-    if (props.bold) inline.bold = true;
-    if (props.italic) inline.italic = true;
-    if (props.underline && href === undefined) inline.underline = true;
-    if (props.strike) inline.strike = true;
-    if (props.monospace) inline.code = true;
-    if (props.vertAlign === 'superscript') inline.superscript = true;
-    if (props.vertAlign === 'subscript') inline.subscript = true;
-    if (sizePt !== undefined && sizePt !== baseSize && !state.heading) inline.sizePt = sizePt;
-    if (props.color !== undefined && href === undefined && props.color !== '000000') inline.color = props.color;
-    if (href !== undefined && href !== '') inline.href = href;
-
-    const last = state.inlines[state.inlines.length - 1];
-    if (last && last.kind === 'text' && sameFormat(last, inline)) {
-      state.inlines[state.inlines.length - 1] = { ...last, text: last.text + text };
-      return;
-    }
-    this.countInline();
-    state.inlines.push(inline as DocTextInline);
+    const run = textRun(text, { bold: props.bold === true, italic: props.italic === true, monospace: props.monospace === true });
+    if (props.underline && href === undefined) run.underline = true;
+    if (props.strike) run.strike = true;
+    if (props.vertAlign === 'superscript') run.superscript = true;
+    if (props.vertAlign === 'subscript') run.subscript = true;
+    if (sizePt !== undefined && sizePt !== baseSize && !state.heading) run.sizePt = sizePt;
+    if (props.color !== undefined && href === undefined && props.color !== '000000') run.color = props.color;
+    if (href !== undefined && href !== '') run.href = href;
+    this.pushRun(state, run);
   }
 
   private readRun(r: XmlElement, part: PartContext, state: ParagraphState): void {
@@ -586,15 +551,11 @@ class DocxReader {
         case 'br': {
           const type = child.attrs.get('type');
           if (type === 'page') state.pageBreaks.push(state.inlines.length);
-          else if (type !== 'column') {
-            this.countInline();
-            state.inlines.push({ kind: 'break' });
-          }
+          else if (type !== 'column') this.pushRun(state, textRun('\n'));
           break;
         }
         case 'cr':
-          this.countInline();
-          state.inlines.push({ kind: 'break' });
+          this.pushRun(state, textRun('\n'));
           break;
         case 'drawing':
           this.readDrawing(child, part, state);
@@ -638,12 +599,12 @@ class DocxReader {
   private readNoteReference(reference: XmlElement, state: ParagraphState): void {
     const id = readInt(reference, 'id');
     if (id === undefined) return;
-    const noteKind = reference.local === 'footnoteReference' ? 'footnote' : 'endnote';
-    const order = this.noteOrder[noteKind];
-    if (order.length >= DOCX_MAX_NOTES) throw new PayloadLimitError(`The document references more than ${DOCX_MAX_NOTES} ${noteKind}s.`);
+    const kind = reference.local === 'footnoteReference' ? 'footnote' : 'endnote';
+    const order = this.noteOrder[kind];
+    if (order.length >= DOCX_MAX_NOTES) throw new PayloadLimitError(`The document references more than ${DOCX_MAX_NOTES} ${kind}s.`);
     order.push(id);
     this.countInline();
-    state.inlines.push({ kind: 'noteRef', noteKind, id, label: String(order.length) });
+    state.inlines.push(noteRun({ kind, id, label: String(order.length) }));
   }
 
   private pushImage(state: ParagraphState, part: PartContext, relationshipId: string | undefined, alt: string, extentEmu: [number, number] | undefined): void {
@@ -658,15 +619,15 @@ class DocxReader {
       this.warnings.push(`The image ${relationship.target} is in a format the converter does not carry and was left out.`);
       return;
     }
-    const image: DocImage = {
-      data: loaded.data,
-      mime: loaded.mime,
-      alt,
-      widthPt: extentEmu ? extentEmu[0] / EMU_PER_POINT : undefined,
-      heightPt: extentEmu ? extentEmu[1] / EMU_PER_POINT : undefined,
-    };
     this.countInline();
-    state.inlines.push({ kind: 'image', image });
+    state.inlines.push(
+      imageRun({
+        imageId: this.context.addImage(loaded.data, loaded.format),
+        alt,
+        widthPt: extentEmu ? extentEmu[0] / EMU_PER_POINT : undefined,
+        heightPt: extentEmu ? extentEmu[1] / EMU_PER_POINT : undefined,
+      })
+    );
   }
 
   private readDrawing(drawing: XmlElement, part: PartContext, state: ParagraphState): void {
@@ -719,34 +680,13 @@ function hrefOfInstruction(instruction: string): string | undefined {
   return safeHref(match[1] ?? match[2]);
 }
 
-function sameFormat(a: MutableTextInline | DocTextInline, b: MutableTextInline): boolean {
-  return (
-    a.bold === b.bold &&
-    a.italic === b.italic &&
-    a.underline === b.underline &&
-    a.strike === b.strike &&
-    a.code === b.code &&
-    a.superscript === b.superscript &&
-    a.subscript === b.subscript &&
-    a.href === b.href &&
-    a.sizePt === b.sizePt &&
-    a.color === b.color
-  );
-}
-
-/** Drops whitespace at both ends of a paragraph's inline content and empty text runs left by it. */
-function trimEdges(inlines: DocInline[]): DocInline[] {
-  const result = inlines.slice();
+/** Drops whitespace at both ends of a paragraph's content and the empty text runs left by it. */
+function trimEdges(runs: Inline[]): Inline[] {
+  const isText = (run: Inline): boolean => run.image === undefined && run.note === undefined && run.anchor === undefined;
+  const result = runs.slice();
   while (result.length > 0) {
     const head = result[0];
-    if (head.kind === 'break' || head.kind === 'anchor') {
-      if (head.kind === 'break') {
-        result.shift();
-        continue;
-      }
-      break;
-    }
-    if (head.kind !== 'text') break;
+    if (!isText(head)) break;
     const trimmed = head.text.replace(/^\s+/, '');
     if (trimmed === '') result.shift();
     else {
@@ -756,11 +696,7 @@ function trimEdges(inlines: DocInline[]): DocInline[] {
   }
   while (result.length > 0) {
     const tail = result[result.length - 1];
-    if (tail.kind === 'break') {
-      result.pop();
-      continue;
-    }
-    if (tail.kind !== 'text') break;
+    if (!isText(tail)) break;
     const trimmed = tail.text.replace(/\s+$/, '');
     if (trimmed === '') result.pop();
     else {
@@ -769,15 +705,15 @@ function trimEdges(inlines: DocInline[]): DocInline[] {
     }
   }
   // A paragraph holding only anchors has no content.
-  return result.every((inline) => inline.kind === 'anchor') ? [] : result;
+  return result.every((run) => run.anchor !== undefined) ? [] : result;
 }
 
 async function loadImages(
   zip: JSZip,
   relationshipSets: readonly ReadonlyMap<string, Relationship>[],
   warnings: string[]
-): Promise<Map<string, { data: Buffer; mime: NonNullable<ReturnType<typeof sniffImageMime>> }>> {
-  const images = new Map<string, { data: Buffer; mime: NonNullable<ReturnType<typeof sniffImageMime>> }>();
+): Promise<Map<string, LoadedImage>> {
+  const images = new Map<string, LoadedImage>();
   let total = 0;
   for (const relationships of relationshipSets) {
     for (const rel of relationships.values()) {
@@ -791,19 +727,25 @@ async function loadImages(
       if (total > DOCX_MAX_TOTAL_IMAGE_BYTES) {
         throw new PayloadLimitError(`The document embeds more than ${DOCX_MAX_TOTAL_IMAGE_BYTES} bytes of images.`);
       }
-      const mime = sniffImageMime(data);
-      if (mime === null) {
+      const format = sniffImageFormat(data);
+      if (format === null) {
         warnings.push(`The image ${rel.target} is not PNG, JPEG, GIF, BMP, TIFF or SVG and was left out.`);
         continue;
       }
       await assertEmbeddableImageWithinLimit(data);
-      images.set(rel.target, { data, mime });
+      images.set(rel.target, { data, format });
     }
   }
   return images;
 }
 
-function pageSetupOf(sectPr: XmlElement | undefined): DocModel['page'] {
+interface PageGeometry {
+  pageWidthPt: number;
+  pageHeightPt: number;
+  margins: { top: number; right: number; bottom: number; left: number };
+}
+
+function pageSetupOf(sectPr: XmlElement | undefined): PageGeometry | undefined {
   if (!sectPr) return undefined;
   const size = firstChild(sectPr, 'pgSz');
   const margins = firstChild(sectPr, 'pgMar');
@@ -812,27 +754,33 @@ function pageSetupOf(sectPr: XmlElement | undefined): DocModel['page'] {
   if (width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
   const margin = (name: string): number => (readInt(margins, name) ?? 0) / TWIPS_PER_POINT;
   return {
-    widthPt: width / TWIPS_PER_POINT,
-    heightPt: height / TWIPS_PER_POINT,
-    marginTopPt: margin('top'),
-    marginRightPt: margin('right'),
-    marginBottomPt: margin('bottom'),
-    marginLeftPt: margin('left'),
+    pageWidthPt: width / TWIPS_PER_POINT,
+    pageHeightPt: height / TWIPS_PER_POINT,
+    margins: { top: margin('top'), right: margin('right'), bottom: margin('bottom'), left: margin('left') },
   };
 }
 
-async function readCoreProperties(zip: JSZip, model: DocModel): Promise<void> {
+/** Number of text columns a section declares (`w:cols`); one when it declares none. */
+function columnsOf(sectPr: XmlElement | undefined): number {
+  const count = readInt(sectPr ? firstChild(sectPr, 'cols') : undefined, 'num');
+  return count !== undefined && count > 1 ? Math.min(count, DOCX_MAX_SECTION_COLUMNS) : 1;
+}
+
+/** How a section starts, from its own section properties (17.6.22); next page when it states nothing. */
+function breakTypeOf(sectPr: XmlElement | undefined): SectionBreakType {
+  const type = sectPr ? firstChild(sectPr, 'type')?.attrs.get('val') : undefined;
+  return (type !== undefined && SECTION_TYPES.has(type) ? type : DEFAULT_SECTION_TYPE) as SectionBreakType;
+}
+
+async function readCoreProperties(zip: JSZip): Promise<{ title?: string; author?: string; language?: string }> {
   const root = await readXmlPart(zip, CORE_PROPERTIES_PART);
-  if (!root) return;
+  if (!root) return {};
   const text = (name: string): string | undefined => {
     const value = firstChild(root, name);
     const content = value ? ownText(value).trim() : '';
     return content === '' ? undefined : content;
   };
-  model.title = text('title');
-  model.author = text('creator');
-  const language = text('language');
-  if (language !== undefined) model.language = language;
+  return { title: text('title'), author: text('creator'), language: text('language') };
 }
 
 /** Resolves the main document part of the package: the target of the office-document relationship of `_rels/.rels`. */
@@ -850,7 +798,7 @@ async function mainPartPath(zip: JSZip): Promise<string> {
 }
 
 /**
- * Reads the DOCX package in `zip` into the block model. A package without a main document part, a part that is not
+ * Reads the DOCX package in `zip` into the document model. A package without a main document part, a part that is not
  * well-formed XML, a style or numbering definition that contradicts itself, or content beyond the named limits is
  * refused with a typed error.
  */
@@ -874,50 +822,61 @@ export async function readDocxModel(zip: JSZip): Promise<DocxReadResult> {
   const footnoteRelationships = zip.file(footnotesPath) ? await readRelationships(zip, footnotesPath) : new Map<string, Relationship>();
   const endnoteRelationships = zip.file(endnotesPath) ? await readRelationships(zip, endnotesPath) : new Map<string, Relationship>();
 
-  const model = emptyDocModel();
-  const images = await loadImages(zip, [documentRelationships, footnoteRelationships, endnoteRelationships], model.warnings);
-  const reader = new DocxReader(styles, numbering, images);
+  const context = new DocumentContext();
+  const images = await loadImages(zip, [documentRelationships, footnoteRelationships, endnoteRelationships], context.warnings);
+  const reader = new DocxReader(context, styles, numbering, images);
 
   const body = firstChild(documentRoot, 'body');
   if (!body) throw new DocumentFormatError(`Invalid DOCX package: ${mainPath} has no w:body element.`);
-  reader.readBlocks(body, { relationships: documentRelationships }, model.blocks, 0);
+  const sink = new BodySink(context);
+  reader.readBlocks(body, { relationships: documentRelationships }, sink, 0);
   const bodySectPr = firstChild(body, 'sectPr');
-  reader.finishSections(bodySectPr);
-  model.page = pageSetupOf(bodySectPr);
+  if (bodySectPr) reader.sectionProperties.push(bodySectPr);
+  const sections = sink.sections(columnsOf(bodySectPr));
+  sections.forEach((section, index) => {
+    if (index > 0) section.breakType = breakTypeOf(reader.sectionProperties[index]);
+  });
+  const page = pageSetupOf(bodySectPr);
 
-  const readNotes = async (
-    partPath: string,
-    relationships: ReadonlyMap<string, Relationship>,
-    order: readonly number[],
-    elementName: string
-  ): Promise<DocNote[]> => {
+  const readNotes = async (partPath: string, relationships: ReadonlyMap<string, Relationship>, order: readonly number[], elementName: string): Promise<NoteDefinition[]> => {
     if (order.length === 0) return [];
     const root = await readXmlPart(zip, partPath);
     const byId = new Map<number, XmlElement>();
-    if (root) for (const note of childElements(root, elementName)) {
-      const id = readInt(note, 'id');
-      if (id !== undefined && note.attrs.get('type') === undefined) byId.set(id, note);
+    if (root) {
+      for (const note of childElements(root, elementName)) {
+        const id = readInt(note, 'id');
+        if (id !== undefined && note.attrs.get('type') === undefined) byId.set(id, note);
+      }
     }
-    const notes: DocNote[] = [];
+    const notes: NoteDefinition[] = [];
     order.forEach((id, index) => {
       const element = byId.get(id);
       if (!element) {
-        reader.warnings.push(`A ${elementName} reference points at the missing note ${id}.`);
+        context.warnings.push(`A ${elementName} reference points at the missing note ${id}.`);
         return;
       }
-      const blocks: DocBlock[] = [];
-      reader.readBlocks(element, { relationships }, blocks, 0);
+      const noteSink = new BlockSink(context);
+      reader.readBlocks(element, { relationships }, noteSink, 0);
+      const blocks: Block[] = noteSink.blocks;
       notes.push({ id, label: String(index + 1), blocks });
     });
     return notes;
   };
-  model.footnotes = await readNotes(footnotesPath, footnoteRelationships, reader.noteOrder.footnote, 'footnote');
-  model.endnotes = await readNotes(endnotesPath, endnoteRelationships, reader.noteOrder.endnote, 'endnote');
+  const footnotes = await readNotes(footnotesPath, footnoteRelationships, reader.noteOrder.footnote, 'footnote');
+  const endnotes = await readNotes(endnotesPath, endnoteRelationships, reader.noteOrder.endnote, 'endnote');
 
-  await readCoreProperties(zip, model);
-  if (stylesRoot && styles.language !== undefined && model.language === undefined) model.language = styles.language;
-  model.warnings.push(...reader.warnings);
+  const core = await readCoreProperties(zip);
+  const model = assembleDocument({
+    sections,
+    context,
+    ...(page ?? {}),
+    bodySize: sizePoints(styles.defaultRun.sizeHalfPoints),
+    footnotes,
+    endnotes,
+    title: core.title,
+    author: core.author,
+    language: core.language ?? (stylesRoot ? styles.language : undefined),
+  });
   normalizeBodySize(model);
-  if (model.bodySizePt === undefined) model.bodySizePt = sizePoints(styles.defaultRun.sizeHalfPoints);
   return { model, drawsShapes: reader.drawsShapes };
 }

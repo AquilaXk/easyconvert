@@ -273,7 +273,8 @@ describe('writers on models written by hand', () => {
       [
         '## Title',
         'Plain **bold** and \\*stars\\* \\<tag\\> \\| pipe',
-        '1. one\n  - nested a\n  - nested b\n2. two',
+        // CommonMark nests a list inside an item only when it is indented by the item's marker and space ("1. " is three).
+        '1. one\n   - nested a\n   - nested b\n2. two',
         '| H |  |\n| --- | --- |\n| a\\|b | c |',
       ].join('\n\n')
     );

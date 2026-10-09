@@ -51,8 +51,8 @@ describe('docx to html keeps the document structure', () => {
     // Second list restarts at 1 (no start attribute), the roman list starts at III, nested levels use letters and roman numerals.
     expect(html).toMatch(/<ol type="a"><li>Isolate line/);
     expect(html).toMatch(/<ol type="i"><li>Record level/);
-    expect(html).toMatch(/<ol start="3" type="I"><li>Roman list from three/);
-    expect(html.match(/<ol>/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(html).toMatch(/<ol type="I" start="3"><li>Roman list from three/);
+    expect(html.match(/<ol type="1">/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it('embeds the source JPEG byte for byte', async () => {
@@ -96,7 +96,8 @@ describe('docx to md keeps the document structure', () => {
     const listItems = tokens.filter((token) => token.type === 'list_item_open');
     expect(listItems).toHaveLength(RICH_LIST_ITEMS.length);
     const nesting = tokens.filter((token) => token.type === 'ordered_list_open' || token.type === 'bullet_list_open');
-    expect(nesting.map((token) => token.type).filter((type) => type === 'ordered_list_open')).toHaveLength(5);
+    // CommonMark counts only decimal lists as ordered: the lettered and roman lists are bullets that show their marker as text.
+    expect(nesting.map((token) => token.type).filter((type) => type === 'ordered_list_open')).toHaveLength(2);
 
     expect(tokens.filter((token) => token.type === 'table_open')).toHaveLength(1);
     const cells = tokens.filter((token) => token.type === 'th_open' || token.type === 'td_open');

@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import { writeEpub, EPUB_WRITER_MAX_CHAPTERS } from '../src/lib/conversions/epub-writer';
+import { documentToEpub, EPUB_WRITER_MAX_CHAPTERS } from '../src/lib/conversions/document-model/epub';
 import { readEpubModel } from '../src/lib/conversions/source-model';
-import type { DocModel } from '../src/lib/conversions/document-model';
+import { blankDocument } from '../src/lib/conversions/document-model/build';
+import type { Block, DocumentModel } from '../src/lib/conversions/document-model/model';
+import { textRun } from '../src/lib/conversions/document-model/support';
 import { ConversionFailedError, EncryptedOfficeDocumentError, PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { runEpubcheck } from './helpers/epubcheck';
@@ -180,34 +182,35 @@ describe('Markdown to EPUB', () => {
 });
 
 describe('writer limits and degenerate documents', () => {
-  const heading = (level: number, text: string): DocModel['blocks'][number] => ({ kind: 'heading', level, inlines: [{ kind: 'text', text }] });
-  const paragraph = (text: string): DocModel['blocks'][number] => ({ kind: 'paragraph', inlines: [{ kind: 'text', text }] });
+  const heading = (level: number, text: string): Block => ({ type: 'heading', level, runs: [textRun(text)], rtl: false });
+  const paragraph = (text: string): Block => ({ type: 'paragraph', runs: [textRun(text)], rtl: false, align: 'left' });
+  const documentOf = (blocks: Block[], title?: string): DocumentModel => ({ ...blankDocument([{ columns: 1, blocks }]), title });
 
   it('refuses a document without content', async () => {
-    const failure = await writeEpub({ blocks: [], footnotes: [], endnotes: [], warnings: [] }, { title: 'x' }).then(() => undefined, (err: unknown) => err);
+    const failure = await documentToEpub(documentOf([]), { title: 'x' }).then(() => undefined, (err: unknown) => err);
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect((failure as Error).message).toBe('The document has no content to put in an EPUB.');
   });
 
   it('refuses a book that would hold more content documents than the limit, without hanging', async () => {
-    const blocks: DocModel['blocks'] = [];
+    const blocks: Block[] = [];
     for (let index = 0; index <= EPUB_WRITER_MAX_CHAPTERS; index += 1) blocks.push(heading(1, `h${index}`), paragraph('p'));
-    const failure = await expectNoHang('chapter limit', () => writeEpub({ blocks, footnotes: [], endnotes: [], warnings: [] }, { title: 'x' }).then(() => undefined, (err: unknown) => err));
+    const failure = await expectNoHang('chapter limit', () => documentToEpub(documentOf(blocks), { title: 'x' }).then(() => undefined, (err: unknown) => err));
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toBe(`The book would have more than ${EPUB_WRITER_MAX_CHAPTERS} content documents.`);
   });
 
   it('a heading that directly follows its parent heading stays in the same content document', async () => {
-    const model: DocModel = { blocks: [heading(1, 'Part'), heading(2, 'Chapter'), paragraph('text')], footnotes: [], endnotes: [], warnings: [] };
-    const zip = await JSZip.loadAsync(await writeEpub(model, { title: 'x', language: 'en' }));
+    const model = documentOf([heading(1, 'Part'), heading(2, 'Chapter'), paragraph('text')]);
+    const zip = await JSZip.loadAsync(await documentToEpub(model, { title: 'x', language: 'en' }));
     expect(Object.keys(zip.files).filter((name) => /chapter\d+\.xhtml$/.test(name))).toEqual(['OEBPS/chapter1.xhtml']);
     const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
     expect(xpathCount(nav, "//*[local-name()='a']")).toBe(2);
   });
 
   it('a document with no headings has one navigation entry named after the title', async () => {
-    const model: DocModel = { blocks: [paragraph('only text')], footnotes: [], endnotes: [], warnings: [], title: 'Plain Title' };
-    const zip = await JSZip.loadAsync(await writeEpub(model, { title: 'x' }));
+    const model = documentOf([paragraph('only text')], 'Plain Title');
+    const zip = await JSZip.loadAsync(await documentToEpub(model, { title: 'x' }));
     const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
     expect(xpathString(nav, "string(//*[local-name()='a'])")).toBe('Plain Title');
   });
@@ -250,7 +253,7 @@ describe('EPUB input is read with its structure', () => {
     it('writes the model read from an EPUB back as an EPUB with the same navigation and author', async () => {
       const book = (await authoredBook()) as Buffer;
       const model = await readEpubModel(book);
-      const rewritten = await writeEpub(model, { title: 'Authored Handbook' });
+      const rewritten = await documentToEpub(model, { title: 'Authored Handbook' });
       const zip = await JSZip.loadAsync(rewritten);
       const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
       const toc = "//*[local-name()='nav' and @*[local-name()='type']='toc']";

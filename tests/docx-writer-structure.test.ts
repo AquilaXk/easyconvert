@@ -5,8 +5,11 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { readDocxModel } from '../src/lib/conversions/docx-model';
-import { writeDocx } from '../src/lib/conversions/docx-writer';
-import { writeEpub } from '../src/lib/conversions/epub-writer';
+import { documentToDocx } from '../src/lib/conversions/document-model/docx';
+import { documentToEpub } from '../src/lib/conversions/document-model/epub';
+import { DocumentContext, assembleDocument } from '../src/lib/conversions/document-model/build';
+import { plainTextModel } from '../src/lib/conversions/document-model/plain';
+import { imageRun } from '../src/lib/conversions/document-model/support';
 import { PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { xmlWellFormed, xpathCount, xpathString } from './helpers/xml-oracle';
@@ -65,7 +68,7 @@ interface DocxFacts {
 describe('Markdown to DOCX', () => {
   it('writes styles, a numbered list, a table, a hyperlink relationship and the picture bytes', async () => {
     const zip = await JSZip.loadAsync(await markdownDocx());
-    for (const name of ['[Content_Types].xml', '_rels/.rels', 'word/document.xml', 'word/styles.xml', 'word/numbering.xml', 'word/settings.xml', 'word/_rels/document.xml.rels', 'docProps/core.xml']) {
+    for (const name of ['[Content_Types].xml', '_rels/.rels', 'word/document.xml', 'word/styles.xml', 'word/numbering.xml', 'word/_rels/document.xml.rels', 'docProps/core.xml']) {
       expect(xmlWellFormed(await partXml(zip, name)).ok, name).toBe(true);
     }
     const document = await partXml(zip, 'word/document.xml');
@@ -85,8 +88,9 @@ describe('Markdown to DOCX', () => {
     expect(xpathString(contentTypes, "string(//*[local-name()='Default'][@Extension='png']/@ContentType)")).toBe('image/png');
 
     const numbering = await partXml(zip, 'word/numbering.xml');
-    // One numbering instance per list: the numbered list and the nested bullet list.
-    expect(xpathCount(numbering, `//${w('num')}`)).toBe(2);
+    // One numbering instance for the list, whose second level is the nested bullet list.
+    expect(xpathCount(numbering, `//${w('num')}`)).toBe(1);
+    expect(xpathString(numbering, `string(//${w('abstractNum')}[1]/${w('lvl')}[@${w('ilvl')}='1']/${w('numFmt')}/@${w('val')})`)).toBe('bullet');
     expect(xpathString(numbering, `string(//${w('abstractNum')}[1]/${w('lvl')}[@${w('ilvl')}='0']/${w('numFmt')}/@${w('val')})`)).toBe('decimal');
   });
 
@@ -139,7 +143,7 @@ describe('EPUB to DOCX', () => {
 describe('DOCX round trip through the model', () => {
   it('rich-structure.docx read and written again keeps the structure LibreOffice finds', async () => {
     const { model } = await readDocxModel(await JSZip.loadAsync(fixtureBytes('rich-structure.docx')));
-    const written = await writeDocx(model, { title: 'rich-structure' });
+    const written = await documentToDocx(model, { title: 'rich-structure' });
     const zip = await JSZip.loadAsync(written);
     const document = await partXml(zip, 'word/document.xml');
     expect(xpathCount(document, `//${w('tbl')}`)).toBe(1);
@@ -149,12 +153,12 @@ describe('DOCX round trip through the model', () => {
     expect(xpathCount(document, `//${w('endnoteReference')}`)).toBe(1);
     expect(xpathCount(await partXml(zip, 'word/footnotes.xml'), `//${w('footnote')}[not(@${w('type')})]`)).toBe(1);
     const hashes = await richStructureImageHashes();
-    expect([sha256(await zipEntryBytes(zip, 'word/media/image1.jpg')), sha256(await zipEntryBytes(zip, 'word/media/image2.png'))]).toEqual([hashes.jpeg, hashes.png]);
+    expect([sha256(await zipEntryBytes(zip, 'word/media/image1.jpeg')), sha256(await zipEntryBytes(zip, 'word/media/image2.png'))]).toEqual([hashes.jpeg, hashes.png]);
   });
 
   oracleTest('LibreOffice reads the written rich-structure document with every heading, list item, table cell, picture and note', ['soffice'], async () => {
     const { model } = await readDocxModel(await JSZip.loadAsync(fixtureBytes('rich-structure.docx')));
-    const written = await writeDocx(model, { title: 'rich-structure' });
+    const written = await documentToDocx(model, { title: 'rich-structure' });
     const truth = await richStructureTruth();
     const structure = sofficeConvert(written, 'written.docx', 'html', (output) =>
       structureOfHtml(output.read().toString('utf-8'), (src) => output.sibling(src))
@@ -172,7 +176,7 @@ describe('DOCX round trip through the model', () => {
 
 describe('limits', () => {
   it('refuses a language that is not a BCP 47 tag', async () => {
-    const failure = await writeDocx({ blocks: [{ kind: 'paragraph', inlines: [{ kind: 'text', text: 'x' }] }], footnotes: [], endnotes: [], warnings: [] }, { title: 'x', language: 'blue-ish' }).then(
+    const failure = await documentToDocx(plainTextModel('x'), { title: 'x', language: 'blue-ish' }).then(
       () => undefined,
       (err: unknown) => err
     );
@@ -181,10 +185,12 @@ describe('limits', () => {
   });
 
   it('refuses more pictures than the limit', async () => {
-    const image = { kind: 'image' as const, image: { data: Buffer.from(PNG_1X1, 'base64'), mime: 'image/png' as const, alt: '' } };
-    // Distinct bytes per picture: the writer merges identical ones.
-    const inlines = Array.from({ length: 5001 }, (_unused, index) => ({ ...image, image: { ...image.image, data: Buffer.concat([image.image.data, Buffer.from(String(index))]) } }));
-    const failure = await writeDocx({ blocks: [{ kind: 'paragraph', inlines }], footnotes: [], endnotes: [], warnings: [] }, { title: 'x' }).then(
+    // Distinct bytes per picture: the model merges identical ones.
+    const context = new DocumentContext();
+    const png = Buffer.from(PNG_1X1, 'base64');
+    const runs = Array.from({ length: 5001 }, (_unused, index) => imageRun({ imageId: context.addImage(Buffer.concat([png, Buffer.from(String(index))]), 'png'), alt: '' }));
+    const model = assembleDocument({ sections: [{ columns: 1, blocks: [{ type: 'paragraph', runs, rtl: false, align: 'left' }] }], context });
+    const failure = await documentToDocx(model, { title: 'x' }).then(
       () => undefined,
       (err: unknown) => err
     );
@@ -194,7 +200,7 @@ describe('limits', () => {
 
   it('EPUB written from a DOCX model keeps the same heading count', async () => {
     const { model } = await readDocxModel(await JSZip.loadAsync(fixtureBytes('rich-structure.docx')));
-    const zip = await JSZip.loadAsync(await writeEpub(model, { title: 'x' }));
+    const zip = await JSZip.loadAsync(await documentToEpub(model, { title: 'x' }));
     const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
     expect(xpathCount(nav, "//*[local-name()='a']")).toBe(6);
   });
@@ -206,7 +212,7 @@ describe.skipIf(skipUnless('python-docx', pythonModuleAvailable('docx')))('pytho
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-roundtrip-'));
     try {
       const file = path.join(dir, 'written.docx');
-      fs.writeFileSync(file, await writeDocx(model, { title: 'rich-structure' }));
+      fs.writeFileSync(file, await documentToDocx(model, { title: 'rich-structure' }));
       const facts = runPythonHelper<DocxFacts>('docx_facts.py', [file]);
       expect(facts.headings.map((heading) => heading.text)).toEqual(['Pump Station Handbook', '1 Overview', 'Scope', 'Readings', '2 Images', 'Sub heading by inheritance']);
       expect(facts.inlineShapes).toBe(2);

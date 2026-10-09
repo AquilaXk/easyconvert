@@ -2,21 +2,12 @@ import { PayloadLimitError } from '../types';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
 import { parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
 import { formatListNumber } from './docx-numbering';
-import {
-  MAX_LIST_LEVELS,
-  emptyDocModel,
-  safeHref,
-  sniffImageMime,
-  type DocBlock,
-  type DocInline,
-  type DocModel,
-  type DocTableCell,
-  type DocTableRow,
-  type DocTextInline,
-} from './document-model';
+import { BlockSink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
+import { MAX_LIST_LEVELS, type DocumentModel, type Inline } from './document-model/model';
+import { anchorRun, imageRun, isTextRun, safeHref, sameRunFormat, sniffImageFormat, textRun } from './document-model/support';
 
 /**
- * Reads HTML and XHTML (an HTML file, rendered Markdown, an EPUB content document) into the block model: headings,
+ * Reads HTML and XHTML (an HTML file, rendered Markdown, an EPUB content document) into the document model: headings,
  * paragraphs, nested lists with numbering and start values, tables with merged cells, preformatted text, quotes,
  * links, images (data: URIs and package resources the caller resolves) and character formatting.
  */
@@ -65,6 +56,8 @@ export interface HtmlModelOptions {
   resolveImage?: (src: string) => Buffer | undefined;
   /** Maps a link target to the target the model keeps; undefined drops the link. Defaults to `safeHref`. */
   mapLink?: (href: string) => string | undefined;
+  /** Registers pictures and warnings in this context, so several documents (the chapters of a book) share one set. */
+  context?: DocumentContext;
 }
 
 interface Format {
@@ -80,8 +73,23 @@ interface Format {
 }
 
 interface OpenCell {
-  cell: { blocks: DocBlock[]; colSpan: number; rowSpan: number; header: boolean; shading?: string };
+  cell: TableDraftCell;
   rowsLeft: number;
+}
+
+/** The run style a format stands for. */
+function runStyle(format: Format): Partial<Omit<Inline, 'text'>> {
+  const style: Partial<Omit<Inline, 'text'>> = {};
+  if (format.bold) style.bold = true;
+  if (format.italic) style.italic = true;
+  if (format.code) style.monospace = true;
+  if (format.underline) style.underline = true;
+  if (format.strike) style.strike = true;
+  if (format.superscript) style.superscript = true;
+  if (format.subscript) style.subscript = true;
+  if (format.href !== undefined) style.href = format.href;
+  if (format.color !== undefined) style.color = format.color;
+  return style;
 }
 
 function parseColor(value: string): string | undefined {
@@ -105,10 +113,8 @@ function styleProperties(style: string | undefined): Map<string, string> {
   return properties;
 }
 
-function preformattedText(inline: DocInline): string {
-  if (inline.kind === 'text') return inline.text;
-  if (inline.kind === 'break') return '\n';
-  return '';
+function preformattedText(run: Inline): string {
+  return isTextRun(run) ? run.text : '';
 }
 
 function positiveInt(value: string | undefined, max: number): number {
@@ -117,48 +123,37 @@ function positiveInt(value: string | undefined, max: number): number {
   return Math.min(parsed, max);
 }
 
-function sameFormat(a: DocTextInline, b: DocTextInline): boolean {
-  return (
-    a.bold === b.bold && a.italic === b.italic && a.underline === b.underline && a.strike === b.strike && a.code === b.code &&
-    a.superscript === b.superscript && a.subscript === b.subscript && a.href === b.href && a.color === b.color && a.sizePt === b.sizePt
-  );
-}
-
 /** Merges adjacent runs of one format, collapses spaces across run boundaries and trims the ends of the paragraph. */
-function finishInlines(inlines: DocInline[]): DocInline[] {
-  const merged: DocInline[] = [];
-  for (const inline of inlines) {
+function finishInlines(runs: Inline[]): Inline[] {
+  const merged: Inline[] = [];
+  for (const run of runs) {
     const last = merged[merged.length - 1];
-    if (inline.kind === 'text') {
-      let text = inline.text;
-      const previousText = last && last.kind === 'text' ? last.text : last && last.kind === 'break' ? '\n' : '';
-      if ((previousText === '' || /\s$/.test(previousText)) && !inline.code) text = text.replace(/^ +/, '');
+    if (isTextRun(run)) {
+      let text = run.text;
+      const previousText = last && isTextRun(last) ? last.text : '';
+      if ((previousText === '' || /\s$/.test(previousText)) && !run.monospace) text = text.replace(/^ +/, '');
       if (text === '') continue;
-      if (last && last.kind === 'text' && sameFormat(last, inline)) {
+      if (last && sameRunFormat(last, run)) {
         merged[merged.length - 1] = { ...last, text: last.text + text };
         continue;
       }
-      merged.push({ ...inline, text });
+      merged.push({ ...run, text });
     } else {
-      merged.push(inline);
+      merged.push(run);
     }
   }
   while (merged.length > 0) {
     const tail = merged[merged.length - 1];
-    if (tail.kind === 'break') {
+    if (!isTextRun(tail)) break;
+    const trimmed = tail.text.replace(/\s+$/, '');
+    if (trimmed === '') {
       merged.pop();
-    } else if (tail.kind === 'text') {
-      const trimmed = tail.text.replace(/\s+$/, '');
-      if (trimmed === '') merged.pop();
-      else {
-        merged[merged.length - 1] = { ...tail, text: trimmed };
-        break;
-      }
     } else {
+      merged[merged.length - 1] = { ...tail, text: trimmed };
       break;
     }
   }
-  return merged.every((inline) => inline.kind === 'anchor') ? [] : merged;
+  return merged.every((run) => run.anchor !== undefined) ? [] : merged;
 }
 
 class HtmlModelBuilder {
@@ -166,17 +161,23 @@ class HtmlModelBuilder {
   private imageCount = 0;
   private imageBytes = 0;
   private listId = 0;
-  readonly warnings: string[] = [];
   readonly checks: Buffer[] = [];
 
-  constructor(private readonly options: HtmlModelOptions) {}
+  constructor(
+    private readonly options: HtmlModelOptions,
+    readonly context: DocumentContext
+  ) {}
+
+  private get warnings(): string[] {
+    return this.context.warnings;
+  }
 
   private countBlock(): void {
     this.blockCount += 1;
     if (this.blockCount > HTML_MODEL_MAX_BLOCKS) throw new PayloadLimitError(`The document holds more than ${HTML_MODEL_MAX_BLOCKS} blocks.`);
   }
 
-  private image(element: HtmlElement): DocInline | undefined {
+  private image(element: HtmlElement): Inline | undefined {
     const src = (element.attrs.get('src') ?? '').trim();
     let data: Buffer | undefined;
     const uri = DATA_URI.exec(src);
@@ -193,8 +194,8 @@ class HtmlModelBuilder {
       this.warnings.push(`The image "${src.slice(0, 80)}" could not be loaded and was left out.`);
       return undefined;
     }
-    const mime = sniffImageMime(data);
-    if (mime === null) {
+    const format = sniffImageFormat(data);
+    if (format === null) {
       this.warnings.push(`The image "${src.slice(0, 80)}" is not PNG, JPEG, GIF, BMP, TIFF or SVG and was left out.`);
       return undefined;
     }
@@ -206,10 +207,12 @@ class HtmlModelBuilder {
     const width = Number.parseFloat(element.attrs.get('width') ?? '');
     const height = Number.parseFloat(element.attrs.get('height') ?? '');
     const sized = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
-    return {
-      kind: 'image',
-      image: { data, mime, alt: element.attrs.get('alt') ?? '', widthPt: sized ? width * PT_PER_PX : undefined, heightPt: sized ? height * PT_PER_PX : undefined },
-    };
+    return imageRun({
+      imageId: this.context.addImage(data, format),
+      alt: element.attrs.get('alt') ?? '',
+      widthPt: sized ? width * PT_PER_PX : undefined,
+      heightPt: sized ? height * PT_PER_PX : undefined,
+    });
   }
 
   private formatOf(element: HtmlElement, format: Format): Format {
@@ -245,12 +248,12 @@ class HtmlModelBuilder {
   }
 
   /** Inline content of `nodes` with `format` applied. */
-  inlines(nodes: readonly HtmlNode[], format: Format, out: DocInline[], preformatted = false): void {
+  inlines(nodes: readonly HtmlNode[], format: Format, out: Inline[], preformatted = false): void {
     for (const node of nodes) {
       if (typeof node === 'string') {
         const text = preformatted ? node : node.replace(/[ \t\n\f\r]+/g, ' ');
         if (text === '') continue;
-        out.push({ kind: 'text', text, ...format });
+        out.push(textRun(text, runStyle(format)));
         continue;
       }
       if (SKIPPED.has(node.tag)) continue;
@@ -259,7 +262,7 @@ class HtmlModelBuilder {
         continue;
       }
       if (node.tag === 'br') {
-        out.push({ kind: 'break' });
+        out.push(textRun('\n'));
         continue;
       }
       if (node.tag === 'img') {
@@ -268,23 +271,23 @@ class HtmlModelBuilder {
         continue;
       }
       const id = node.attrs.get('id') ?? (node.tag === 'a' ? node.attrs.get('name') : undefined);
-      if (id) out.push({ kind: 'anchor', name: id });
+      if (id) out.push(anchorRun(id));
       this.inlines(node.children, this.formatOf(node, format), out, preformatted);
     }
   }
 
-  private paragraphFrom(nodes: readonly HtmlNode[], out: DocBlock[], anchorId?: string): void {
-    const inlines: DocInline[] = [];
-    if (anchorId) inlines.push({ kind: 'anchor', name: anchorId });
-    this.inlines(nodes, {}, inlines);
-    const finished = finishInlines(inlines);
+  private paragraphFrom(nodes: readonly HtmlNode[], out: BlockSink, anchorId?: string): void {
+    const runs: Inline[] = [];
+    if (anchorId) runs.push(anchorRun(anchorId));
+    this.inlines(nodes, {}, runs);
+    const finished = finishInlines(runs);
     if (finished.length === 0) return;
     this.countBlock();
-    out.push({ kind: 'paragraph', inlines: finished });
+    out.paragraph(finished);
   }
 
   /** Reads the block-level content of `nodes`; loose inline content becomes paragraphs. */
-  blocks(nodes: readonly HtmlNode[], out: DocBlock[], listDepth: number, tableDepth: number): void {
+  blocks(nodes: readonly HtmlNode[], out: BlockSink, listDepth: number, tableDepth: number): void {
     let run: HtmlNode[] = [];
     const flush = (): void => {
       if (run.length > 0) this.paragraphFrom(run, out);
@@ -301,7 +304,7 @@ class HtmlModelBuilder {
     flush();
   }
 
-  private block(element: HtmlElement, out: DocBlock[], listDepth: number, tableDepth: number): void {
+  private block(element: HtmlElement, out: BlockSink, listDepth: number, tableDepth: number): void {
     const tag = element.tag;
     if (SKIPPED.has(tag)) return;
     if (DROPPED_WITH_WARNING.has(tag)) {
@@ -310,14 +313,14 @@ class HtmlModelBuilder {
     }
     const level = HEADING_LEVELS.get(tag);
     if (level !== undefined) {
-      const inlines: DocInline[] = [];
+      const runs: Inline[] = [];
       const id = element.attrs.get('id');
-      if (id) inlines.push({ kind: 'anchor', name: id });
-      this.inlines(element.children, {}, inlines);
-      const finished = finishInlines(inlines);
+      if (id) runs.push(anchorRun(id));
+      this.inlines(element.children, {}, runs);
+      const finished = finishInlines(runs);
       if (finished.length > 0) {
         this.countBlock();
-        out.push({ kind: 'heading', level, inlines: finished });
+        out.heading(level, finished);
       }
       return;
     }
@@ -334,27 +337,27 @@ class HtmlModelBuilder {
         this.table(element, out, listDepth, tableDepth);
         return;
       case 'pre': {
-        const inlines: DocInline[] = [];
-        this.inlines(element.children, {}, inlines, true);
-        const text = inlines.map(preformattedText).join('').replace(/^\n/, '');
+        const runs: Inline[] = [];
+        this.inlines(element.children, {}, runs, true);
+        const text = runs.map(preformattedText).join('').replace(/^\n/, '');
         if (text.trim() !== '') {
           this.countBlock();
-          out.push({ kind: 'code', text: text.replace(/\n$/, '') });
+          out.code(text.replace(/\n$/, ''));
         }
         return;
       }
       case 'blockquote': {
-        const inner: DocBlock[] = [];
+        const inner = out.nested();
         this.blocks(element.children, inner, listDepth, tableDepth);
-        if (inner.length > 0) {
+        if (inner.blocks.length > 0) {
           this.countBlock();
-          out.push({ kind: 'quote', blocks: inner });
+          out.quote(inner.blocks);
         }
         return;
       }
       case 'hr':
         this.countBlock();
-        out.push({ kind: 'rule' });
+        out.rule();
         return;
       default:
         break;
@@ -370,7 +373,7 @@ class HtmlModelBuilder {
     this.blocks(element.children, out, listDepth, tableDepth);
   }
 
-  private list(element: HtmlElement, out: DocBlock[], listDepth: number, tableDepth: number): void {
+  private list(element: HtmlElement, out: BlockSink, listDepth: number, tableDepth: number): void {
     const ordered = element.tag === 'ol';
     this.listId += 1;
     const listId = this.listId;
@@ -380,42 +383,40 @@ class HtmlModelBuilder {
     let number = start;
     for (const child of element.children) {
       if (typeof child === 'string' || child.tag !== 'li') continue;
-      const content: DocBlock[] = [];
+      const content = out.nested();
       this.blocks(child.children, content, listDepth + 1, tableDepth);
-      const first = content[0];
+      const first = content.blocks[0];
       const id = child.attrs.get('id');
-      if (first && first.kind === 'paragraph') {
-        const inlines = id ? [{ kind: 'anchor', name: id } as DocInline, ...first.inlines] : first.inlines;
-        out.push({
-          kind: 'listItem',
+      if (first && first.type === 'paragraph') {
+        const marker = ordered ? `${formatListNumber(number, format)}.` : BULLETS[level % BULLETS.length];
+        out.listItem({
+          sourceId: listId,
           level,
-          ordered,
-          marker: ordered ? `${formatListNumber(number, format)}.` : BULLETS[level % BULLETS.length],
-          number,
-          format: ordered ? format : 'bullet',
-          listId,
-          inlines,
+          ...listFormatOf(ordered, ordered ? format : 'bullet', marker),
+          value: number,
+          marker,
+          runs: id ? [anchorRun(id), ...first.runs] : first.runs,
         });
-        out.push(...content.slice(1));
+        out.appendAll(content.blocks.slice(1));
       } else {
-        out.push(...content);
+        out.appendAll(content.blocks);
       }
       number += 1;
     }
   }
 
-  private flatten(element: HtmlElement, out: DocBlock[]): void {
+  private flatten(element: HtmlElement, out: BlockSink): void {
     this.warnings.push(`Tables nested deeper than ${HTML_MODEL_MAX_TABLE_DEPTH} levels were flattened to text.`);
-    const inlines: DocInline[] = [];
-    this.inlines(element.children, {}, inlines);
-    const finished = finishInlines(inlines);
+    const runs: Inline[] = [];
+    this.inlines(element.children, {}, runs);
+    const finished = finishInlines(runs);
     if (finished.length > 0) {
       this.countBlock();
-      out.push({ kind: 'paragraph', inlines: finished });
+      out.paragraph(finished);
     }
   }
 
-  private table(element: HtmlElement, out: DocBlock[], listDepth: number, tableDepth: number): void {
+  private table(element: HtmlElement, out: BlockSink, listDepth: number, tableDepth: number): void {
     if (tableDepth >= HTML_MODEL_MAX_TABLE_DEPTH) {
       this.flatten(element, out);
       return;
@@ -439,11 +440,11 @@ class HtmlModelBuilder {
     collect(element, false);
     if (caption.length > 0) this.paragraphFrom(caption, out);
 
-    const modelRows: DocTableRow[] = [];
+    const draftRows: TableDraftCell[][] = [];
     const covering = new Map<number, OpenCell>();
     let columnCount = 0;
     for (const tr of rows) {
-      const cells: DocTableCell[] = [];
+      const cells: TableDraftCell[] = [];
       let column = 0;
       const skipCovered = (): void => {
         for (let held = covering.get(column); held && held.rowsLeft > 0; held = covering.get(column)) {
@@ -458,10 +459,10 @@ class HtmlModelBuilder {
         skipCovered();
         const colSpan = positiveInt(td.attrs.get('colspan'), MAX_COLUMN_SPAN);
         const rowSpan = positiveInt(td.attrs.get('rowspan'), MAX_ROW_SPAN);
-        const blocks: DocBlock[] = [];
-        this.blocks(td.children, blocks, listDepth, tableDepth + 1);
+        const content = out.nested();
+        this.blocks(td.children, content, listDepth, tableDepth + 1);
         const background = styleProperties(td.attrs.get('style')).get('background-color');
-        const cell = { blocks, colSpan, rowSpan, header: td.tag === 'th', shading: background ? parseColor(background) : undefined };
+        const cell: TableDraftCell = { blocks: content.blocks, colSpan, rowSpan, header: td.tag === 'th', shading: background ? parseColor(background) : undefined };
         cells.push(cell);
         any = true;
         if (td.tag !== 'th') allHeaders = false;
@@ -473,30 +474,32 @@ class HtmlModelBuilder {
       }
       skipCovered();
       columnCount = Math.max(columnCount, column);
-      if (any || cells.length > 0) modelRows.push({ cells, header: inHead.has(tr) || (any && allHeaders) });
+      if (any || cells.length > 0) {
+        const header = inHead.has(tr) || (any && allHeaders);
+        for (const cell of cells) cell.header = header;
+        draftRows.push(cells);
+      }
     }
-    if (modelRows.length === 0) return;
+    if (draftRows.length === 0) return;
     this.countBlock();
-    out.push({ kind: 'table', rows: modelRows, columnCount });
+    out.table({ rows: draftRows, columnCount });
   }
 }
 
 /**
- * Reads `html` into the block model. The language comes from the `lang` attribute of the root element and the
+ * Reads `html` into the document model. The language comes from the `lang` attribute of the root element and the
  * title from `<title>`. Images over the pixel limit are refused with a typed error.
  */
-export async function htmlToDocModel(html: string, options: HtmlModelOptions = {}): Promise<DocModel> {
+export async function htmlToDocumentModel(html: string, options: HtmlModelOptions = {}): Promise<DocumentModel> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
-  const builder = new HtmlModelBuilder(options);
-  const model = emptyDocModel();
-  builder.blocks(tree.root.children, model.blocks, 0, 0);
+  const context = options.context ?? new DocumentContext();
+  const builder = new HtmlModelBuilder(options, context);
+  const sink = new BlockSink(context);
+  builder.blocks(tree.root.children, sink, 0, 0);
   for (const bytes of builder.checks) await assertEmbeddableImageWithinLimit(bytes);
-  model.warnings.push(...builder.warnings);
   const root = findRoot(tree.root);
   const language = root?.attrs.get('lang') ?? root?.attrs.get('xml:lang');
-  if (language) model.language = language;
-  if (tree.title) model.title = tree.title;
-  return model;
+  return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context, language: language || undefined, title: tree.title || undefined });
 }
 
 function findRoot(node: HtmlElement): HtmlElement | undefined {
