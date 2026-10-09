@@ -8,7 +8,8 @@ on:
 
 jobs:
   # The unit and integration suites and the registry conformance gate run in parallel shards. `verify`,
-  # the required check, passes only when every shard, every conformance part and the checks job pass.
+  # the required check, passes only when every shard, every conformance part, the checks job and the
+  # container job pass.
   tests:
     name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -195,18 +196,135 @@ jobs:
       - name: Build application
         run: npm run build
 
+  # Builds the worker image and proves the container hardening from inside a container started with the
+  # compose security settings (scripts/verify-worker-container.sh). It runs in parallel with the other
+  # jobs and does the work only when a file that affects the image, its compose settings or the sandbox
+  # changed; otherwise it succeeds at once, so `verify` can always require it.
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Files whose change can alter the worker container or its sandbox.
+      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|scripts/verify-worker-container\.sh$|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
+      WORKER_IMAGE: easyconvert-worker:ci
+      REDIS_PORT: '6379'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Decide whether the container changed
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # Fail open: when the base commit cannot be compared, run the checks.
+          zero_sha=0000000000000000000000000000000000000000
+          relevant=true
+          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            changed="$(git diff --name-only "$base" HEAD)"
+            printf 'changed files:\n%s\n' "$changed"
+            if printf '%s\n' "$changed" | grep -Eq "$CONTAINER_PATHS"; then
+              echo "container paths changed: running the container checks"
+            else
+              relevant=false
+              echo "skipped: no container changes"
+            fi
+          else
+            echo "no comparable base commit: running the container checks"
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
+      # The in-container `unshare -r -n` needs unprivileged user namespaces; recent runner images restrict
+      # them for AppArmor-confined programs by default.
+      - name: Allow unprivileged user namespaces
+        if: steps.changes.outputs.relevant == 'true'
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the worker image
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          load: true
+          tags: ${{ env.WORKER_IMAGE }}
+          cache-from: type=gha,scope=worker-container
+          cache-to: type=gha,mode=max,scope=worker-container
+
+      # Redis runs as the compose service so the worker container can reach it over the project network.
+      - name: Start Redis
+        if: steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          docker compose up -d redis
+          for attempt in $(seq 1 30); do
+            if [ "$(docker compose exec -T redis redis-cli ping 2>/dev/null)" = PONG ]; then exit 0; fi
+            sleep 1
+          done
+          echo "Redis did not answer PING after 30 attempts" >&2
+          docker compose logs redis >&2
+          exit 1
+
+      # The worker service from docker-compose.yml (read_only, cap_drop ALL, no-new-privileges, the seccomp
+      # profile, nodev/noexec tmpfs), run against the image built above.
+      - name: Verify the hardened worker container
+        if: steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          override="$RUNNER_TEMP/compose.ci-image.yml"
+          printf 'services:\n  worker:\n    image: %s\n    pull_policy: never\n' "$WORKER_IMAGE" > "$override"
+          redis_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' easyconvert-redis)"
+          echo "Redis container address: $redis_ip"
+          docker compose -f docker-compose.yml -f "$override" run --rm --no-deps -T \
+            -e VERIFY_REDIS_HOST="$redis_ip" -e VERIFY_REDIS_PORT="$REDIS_PORT" \
+            -v "$PWD/scripts/verify-worker-container.sh:/verify.sh:ro" \
+            --entrypoint /bin/bash worker /verify.sh | tee "$RUNNER_TEMP/verify-worker-container.log"
+
+      - name: Publish the verification output
+        if: always() && steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/verify-worker-container.log" ]; then
+            { echo '### Worker container verification'; echo '```'; cat "$RUNNER_TEMP/verify-worker-container.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Show container state after a failure
+        if: failure() && steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color redis
+
+      - name: Stop Redis
+        if: always() && steps.changes.outputs.relevant == 'true'
+        run: docker compose down --volumes
+
   verify:
     if: always()
-    needs: [tests, conformance, checks]
+    needs: [tests, conformance, checks, container]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every shard and the checks job to pass
+      - name: Require every shard, the checks job and the container job to pass
         env:
           TESTS_RESULT: ${{ needs.tests.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
         run: |
-          echo "tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, checks: $CHECKS_RESULT"
-          if [ "$TESTS_RESULT" != success ] || [ "$CONFORMANCE_RESULT" != success ] || [ "$CHECKS_RESULT" != success ]; then
+          echo "tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, checks: $CHECKS_RESULT, container: $CONTAINER_RESULT"
+          if [ "$TESTS_RESULT" != success ] || [ "$CONFORMANCE_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then
             exit 1
           fi
