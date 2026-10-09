@@ -60,7 +60,7 @@
     },
     {
       "families": ["document"],
-      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|source-model|text-input|text-wrap|css-references|ctl|hwp[^/]*|cfbf-writer|xml-tree)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/libreoffice-pool\\.ts$"
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|source-model|text-input|text-wrap|css-references|ctl|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/libreoffice-pool\\.ts$"
     },
     {
       "families": ["document"],
