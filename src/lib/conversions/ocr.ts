@@ -154,6 +154,8 @@ export interface RenderedPdfOcrOptions {
   engineMarkup?: OcrEngineMarkupFormat;
   /** Passed to the page reading (see OcrRecognitionOptions.parallelBands); `false` reads each page whole. */
   parallelBands?: boolean;
+  /** The job's own deadline in milliseconds, when it has one: the OCR stops before it (see ocr-work-budget.ts). */
+  jobDeadlineMs?: number;
 }
 
 /**
@@ -162,8 +164,9 @@ export interface RenderedPdfOcrOptions {
  * in flight are held. The result of a page is in the pixels of its render, and records how they relate to the PDF
  * page (`pageRender`) so a text layer can be placed on it. Without Poppler the request fails with an
  * OcrEngineUnavailableError (503); pages are never read from the image objects they contain instead.
- * @throws OcrWorkLimitError (413) when rendering and reading the pages takes longer than the document's work budget
- * (ocr-work-budget.ts); no page is returned then, since a partial document would read as a complete one.
+ * @throws OcrWorkLimitError (413) when rendering and reading the pages takes longer than the document's work budget,
+ * which grows with the number of pages, or one page takes longer than its own limit (ocr-work-budget.ts); no page is
+ * returned then, since a partial document would read as a complete one.
  */
 export async function recognizeRenderedPdfPages(
   pdf: Buffer,
@@ -175,16 +178,15 @@ export async function recognizeRenderedPdfPages(
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
     // With several pages the pages run side by side and each is read whole; bands are for a lone page.
     const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
-    const budget = new OcrWorkBudget(indices.length);
-    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), async (index) => {
-      budget.assertWithinBudget();
-      const rendered = await renderer.render(index);
-      budget.assertWithinBudget();
-      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed);
-      const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
-      budget.pageRead();
-      return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
-    });
+    const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs);
+    const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), (index) =>
+      budget.guardPage(renderer.plan.pageNumbers[index], async () => {
+        const rendered = await renderer.render(index);
+        const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed);
+        const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
+        return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
+      })
+    );
     return new Map(recognized.map((entry) => [entry.pageNumber, entry.result]));
   } finally {
     await renderer.close();
@@ -807,6 +809,7 @@ export async function performSmartMultiPagePdfOcr(
           dpi: options.dpi,
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
+          jobDeadlineMs: options.timeoutMs,
         })
       : new Map<number, OcrResult>();
 

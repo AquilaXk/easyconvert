@@ -196,7 +196,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `GRAPH_URL_IMPORT_MAX_BYTES` | integer, at least 1 | `5368709120` | no | web, worker |
 | `EASYCONVERT_MAX_INPUT_PIXELS` | integer, at least 1 | `100000000` | no | web, worker |
 | `EASYCONVERT_PDF_TEXT_DEADLINE_MS` | integer, 1 to 2147483647 | `60000` | no | web, worker |
-| `EASYCONVERT_OCR_DEADLINE_MS` | integer, 1 to 2147483647 | `150000` | no | web, worker |
+| `EASYCONVERT_OCR_PAGE_BUDGET_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_GRID_CELLS` | integer, at least 1 | `4194304` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS` | integer, at least 1 | `500000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
@@ -211,7 +211,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `GRAPH_URL_IMPORT_MAX_BYTES`: Largest body, in bytes, that an `import.url` graph node downloads.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
-- `EASYCONVERT_OCR_DEADLINE_MS`: Milliseconds the text recognition (OCR) of one document may run, rendering and reading all its pages, before it is refused with HTTP 413. A scanned page costs about the same however long the document is, so this bounds the work of a long scan; the pages in flight finish their step first.
+- `EASYCONVERT_OCR_PAGE_BUDGET_MS`: Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job's own deadline when it has one; a single page that takes six page budgets is refused too. A document or page over its limit is refused with HTTP 413.
 - `EASYCONVERT_XLS_MAX_GRID_CELLS`: Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.
 - `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS`: Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.
 - `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).

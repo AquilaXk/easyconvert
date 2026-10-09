@@ -1,7 +1,16 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
-import { OCR_DOCUMENT_DEADLINE_ENV, OCR_DOCUMENT_DEADLINE_MS, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
+import {
+  OCR_ALLOWANCE_PAGES,
+  OCR_JOB_DEADLINE_SHARE,
+  OCR_PAGE_BUDGET_ENV,
+  OCR_PAGE_BUDGET_MS,
+  OCR_PAGE_GUARD_PAGES,
+  ocrDocumentBudgetMs,
+  ocrPageBudgetMs,
+  OcrWorkLimitError,
+} from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PayloadLimitError } from '../src/lib/types';
 import { requireTessdata } from './helpers/ocr-fixtures';
@@ -9,15 +18,15 @@ import { oracleTest } from './helpers/oracle-test';
 import { expectNoHangOnInput } from './helpers/timing';
 
 /**
- * Scanned documents cost the same per page however long they are (render, read, sometimes a second read), so a long
- * one is bounded by a work budget for the whole document instead of by whoever kills the job. The budget is a
- * wall-clock figure; these cases shrink it with the environment override so that the outcome does not depend on how
- * fast the machine is: a document of this many pages cannot be read in the shortened budget on any machine.
+ * A scanned page costs the same however long the document is, so the OCR budget of a document grows with its pages
+ * (a start-up allowance plus one page budget for each) and each page has a limit of its own. These cases shrink the
+ * page budget with the environment override so that the outcome does not depend on how fast the machine is: 40 pages
+ * of text cannot be read in that time on any machine.
  */
 
 const TEST_TIMEOUT_MS = 120_000;
-const SHORT_BUDGET_MS = 1_500;
-/** The budget plus the time to finish the pages in flight and to remove the render directory. */
+const TINY_PAGE_BUDGET_MS = 100;
+/** The page limit plus the time to start the engine and to remove the render directory. */
 const BUDGET_SLACK_MS = 12_000;
 const LONG_DOCUMENT_PAGES = 40;
 const LINES_PER_PAGE = 28;
@@ -41,35 +50,59 @@ async function textPages(pageCount: number): Promise<Buffer> {
 }
 
 describe('the OCR work budget of one document', () => {
-  it('is far above what a normal scanned document needs, and is a named setting', () => {
-    expect(OCR_DOCUMENT_DEADLINE_ENV).toBe('EASYCONVERT_OCR_DEADLINE_MS');
-    // Below the 180 s a caller waits for a conversion, above the roughly 40 s a 70-page scan takes on a 12-core machine.
-    expect(OCR_DOCUMENT_DEADLINE_MS).toBeGreaterThanOrEqual(120_000);
-    expect(OCR_DOCUMENT_DEADLINE_MS).toBeLessThan(180_000);
+  it('is a named setting, with the budget of a page well above what a page of the real-world scans costs', () => {
+    expect(OCR_PAGE_BUDGET_ENV).toBe('EASYCONVERT_OCR_PAGE_BUDGET_MS');
+    // Measured on the 300 dpi CCITT scans of the real-world corpus, one page at a time: 1.0 to 1.5 s at the median and
+    // 4.4 s at most on a 12-core machine. Twice the worst page, so that a slower, shared runner stays inside.
+    expect(OCR_PAGE_BUDGET_MS).toBe(10_000);
+    expect(OCR_PAGE_BUDGET_MS).toBeGreaterThanOrEqual(2 * 4_400);
+    expect(OCR_PAGE_GUARD_PAGES * OCR_PAGE_BUDGET_MS).toBeLessThanOrEqual(60_000);
+  });
+
+  it('grows with the pages of the document, by an allowance and one page budget for each', () => {
+    expect(ocrDocumentBudgetMs(1)).toBe((OCR_ALLOWANCE_PAGES + 1) * OCR_PAGE_BUDGET_MS);
+    expect(ocrDocumentBudgetMs(70)).toBe(730_000);
+    expect(ocrDocumentBudgetMs(500)).toBe(5_030_000);
+    expect(ocrDocumentBudgetMs(500)).toBeGreaterThan(ocrDocumentBudgetMs(70));
+  });
+
+  it('never goes past the job deadline, and leaves the output a tenth of it', () => {
+    expect(ocrDocumentBudgetMs(500, 180_000)).toBe(Math.floor(180_000 * OCR_JOB_DEADLINE_SHARE));
+    expect(ocrDocumentBudgetMs(1, 3_600_000)).toBe((OCR_ALLOWANCE_PAGES + 1) * OCR_PAGE_BUDGET_MS);
+    expect(ocrDocumentBudgetMs(500, 0)).toBe(ocrDocumentBudgetMs(500));
+  });
+
+  it('takes a non-positive or unreadable override as unset, so a mistyped value never lifts the limit', () => {
+    for (const value of ['0', '-5', 'abc', '', '1.5']) {
+      vi.stubEnv(OCR_PAGE_BUDGET_ENV, value);
+      expect(ocrPageBudgetMs(), JSON.stringify(value)).toBe(OCR_PAGE_BUDGET_MS);
+    }
+    vi.stubEnv(OCR_PAGE_BUDGET_ENV, '4500');
+    expect(ocrPageBudgetMs()).toBe(4_500);
+    expect(ocrDocumentBudgetMs(10)).toBe((OCR_ALLOWANCE_PAGES + 10) * 4_500);
   });
 
   oracleTest(
-    'refuses a long document with a typed 413 inside the budget, not after every page has been read',
+    'refuses a long document whose pages are slow with a typed 413 inside the page limit, not after every page has been read',
     ['tesseract', 'pdftoppm'],
     async () => {
       requireTessdata('eng');
       const pdf = await textPages(LONG_DOCUMENT_PAGES);
-      vi.stubEnv(OCR_DOCUMENT_DEADLINE_ENV, String(SHORT_BUDGET_MS));
+      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(TINY_PAGE_BUDGET_MS));
       const outcome = await expectNoHangOnInput(
-        `${LONG_DOCUMENT_PAGES} pages with a ${SHORT_BUDGET_MS} ms budget`,
+        `${LONG_DOCUMENT_PAGES} pages with a ${TINY_PAGE_BUDGET_MS} ms page budget`,
         (input: Buffer) => recognizeRenderedPdfPages(input, undefined, {}).then(
           () => null,
           (error: unknown) => error
         ),
         pdf,
-        SHORT_BUDGET_MS + BUDGET_SLACK_MS
+        ocrDocumentBudgetMs(LONG_DOCUMENT_PAGES) + BUDGET_SLACK_MS
       );
       const error = outcome.largeResult;
       expect(error).toBeInstanceOf(OcrWorkLimitError);
       expect(error).toBeInstanceOf(PayloadLimitError);
       expect(error).toMatchObject({ name: 'OcrWorkLimitError', status: 413 });
-      expect((error as Error).message).toContain(OCR_DOCUMENT_DEADLINE_ENV);
-      expect((error as Error).message).toContain(String(SHORT_BUDGET_MS));
+      expect((error as Error).message).toContain(OCR_PAGE_BUDGET_ENV);
     },
     TEST_TIMEOUT_MS
   );
@@ -79,15 +112,15 @@ describe('the OCR work budget of one document', () => {
   it.each(['txt', 'docx', 'pdf'])('reaches the caller of a %s conversion as the typed 413', async (target) => {
     requireTessdata('eng');
     const pdf = await textPages(LONG_DOCUMENT_PAGES);
-    vi.stubEnv(OCR_DOCUMENT_DEADLINE_ENV, String(SHORT_BUDGET_MS));
+    vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(TINY_PAGE_BUDGET_MS));
     const outcome = await expectNoHangOnInput(
-      `${LONG_DOCUMENT_PAGES} pages to ${target} with a ${SHORT_BUDGET_MS} ms budget`,
+      `${LONG_DOCUMENT_PAGES} pages to ${target} with a ${TINY_PAGE_BUDGET_MS} ms page budget`,
       (input: Buffer) => dispatchConversion(input, 'pdf', target, { ocrEnabled: true, ocrMode: 'force' }, 'long.pdf').then(
         () => null,
         (error: unknown) => error
       ),
       pdf,
-      SHORT_BUDGET_MS + BUDGET_SLACK_MS
+      ocrDocumentBudgetMs(LONG_DOCUMENT_PAGES) + BUDGET_SLACK_MS
     );
     expect(outcome.largeResult).toBeInstanceOf(OcrWorkLimitError);
     expect(outcome.largeResult).toMatchObject({ status: 413 });
@@ -109,14 +142,4 @@ describe('the OCR work budget of one document', () => {
     },
     TEST_TIMEOUT_MS
   );
-
-  it('takes a non-positive or unreadable override as unset, so a mistyped value never lifts the limit', async () => {
-    const { ocrDocumentDeadlineMs } = await import('../src/lib/conversions/ocr-work-budget');
-    for (const value of ['0', '-5', 'abc', '', '1.5']) {
-      vi.stubEnv(OCR_DOCUMENT_DEADLINE_ENV, value);
-      expect(ocrDocumentDeadlineMs(), JSON.stringify(value)).toBe(OCR_DOCUMENT_DEADLINE_MS);
-    }
-    vi.stubEnv(OCR_DOCUMENT_DEADLINE_ENV, '45000');
-    expect(ocrDocumentDeadlineMs()).toBe(45_000);
-  });
 });

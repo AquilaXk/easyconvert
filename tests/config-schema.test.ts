@@ -13,7 +13,7 @@ import {
 import { ConfigurationError, loadConfig, parseConfig, resetConfigCache } from '../src/lib/config';
 import { MAX_TRUSTED_RANGES, parseClientIpConfig } from '../src/lib/security/client-ip';
 import { DEFAULT_MAX_INPUT_PIXELS } from '../src/lib/conversions/image-input-limit-config';
-import { OCR_DOCUMENT_DEADLINE_MS } from '../src/lib/conversions/ocr-work-budget';
+import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { PDF_TEXT_DEADLINE_MS } from '../src/lib/conversions/pdf-text-types';
 import { DEFAULT_MAX_IN_MEMORY_BYTES } from '../src/lib/storage/errors';
 import {
@@ -475,7 +475,7 @@ describe('schema', () => {
     // Constants exported by the consuming modules.
     expect(defaults.get('EASYCONVERT_MAX_INPUT_PIXELS')).toBe(DEFAULT_MAX_INPUT_PIXELS);
     expect(defaults.get('EASYCONVERT_PDF_TEXT_DEADLINE_MS')).toBe(PDF_TEXT_DEADLINE_MS);
-    expect(defaults.get('EASYCONVERT_OCR_DEADLINE_MS')).toBe(OCR_DOCUMENT_DEADLINE_MS);
+    expect(defaults.get('EASYCONVERT_OCR_PAGE_BUDGET_MS')).toBe(OCR_PAGE_BUDGET_MS);
     expect(defaults.get('MAX_IN_MEMORY_BYTES')).toBe(DEFAULT_MAX_IN_MEMORY_BYTES);
     expect(defaults.get(XLS_MAX_GRID_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_GRID_CELLS);
     expect(defaults.get(XLS_MAX_PDF_TEXT_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_PDF_TEXT_CELLS);
@@ -535,7 +535,7 @@ describe('schema', () => {
       'EASYCONVERT_MAX_INPUT_PIXELS',
       'EASYCONVERT_PDF_TEXT_DEADLINE_MS',
       // ocr-work-budget.ts
-      'EASYCONVERT_OCR_DEADLINE_MS',
+      'EASYCONVERT_OCR_PAGE_BUDGET_MS',
       // spreadsheet-limits.ts
       'EASYCONVERT_XLS_MAX_GRID_CELLS',
       'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',

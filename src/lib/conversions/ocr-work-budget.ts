@@ -1,16 +1,28 @@
 import { PayloadLimitError } from '../types';
 
 /**
- * Wall-clock work one document may cost the OCR pipeline. A scanned page costs about the same however many pages
- * follow it (render, one to three readings), so the cost of a document grows with its page count and a long scan
- * would otherwise run until whoever waits for it gives up. The default stays under the 180 s a caller waits for a
- * conversion and well above what a 70-page scan needs (about 40 s on 12 cores).
+ * Wall-clock work the OCR of one document may cost. A scanned page costs about the same however many pages follow
+ * it, so the budget grows with the pages to read: a long, legitimate scan is never cut at a fixed time, while a page
+ * that never ends or costs far more than a page should is stopped.
+ *
+ * The default page budget is measured. Read one at a time, a page of the real-world scans (300 dpi CCITT, 56 to 73
+ * pages each) costs 1.0 to 1.5 s at the median and 4.4 s at most on a fast 12-core machine; about 1.2 to 1.6 CPU
+ * seconds a page across all work. 10 s a page is more than twice the worst page measured there and leaves room for a
+ * runner several times slower and shared by other jobs.
  */
-export const OCR_DOCUMENT_DEADLINE_MS = 150_000;
-/** Environment variable that overrides the budget (milliseconds); tests use it to keep CI fast. */
-export const OCR_DOCUMENT_DEADLINE_ENV = 'EASYCONVERT_OCR_DEADLINE_MS';
+export const OCR_PAGE_BUDGET_MS = 10_000;
+/** Environment variable that overrides the page budget (milliseconds); tests use it to keep CI fast. */
+export const OCR_PAGE_BUDGET_ENV = 'EASYCONVERT_OCR_PAGE_BUDGET_MS';
+/** Start-up allowance of a document, in page budgets: opening the PDF, starting the engine and loading language data. */
+export const OCR_ALLOWANCE_PAGES = 3;
+/** One page may take this many page budgets (render, and every reading of it) before it is refused as pathological. */
+export const OCR_PAGE_GUARD_PAGES = 6;
+/** Share of a job's own deadline the OCR may use, so that the refusal arrives before the deadline and the output can still be written. */
+export const OCR_JOB_DEADLINE_SHARE = 0.9;
+/** Longest delay a timer takes. */
+const MAX_TIMER_MS = 2_147_483_647;
 
-/** A document whose OCR would cost more than the budget; HTTP 413, like the other limits on the size of the work. */
+/** A document or page whose OCR would cost more than its budget; HTTP 413, like the other limits on the size of the work. */
 export class OcrWorkLimitError extends PayloadLimitError {
   constructor(message: string) {
     super(message);
@@ -18,34 +30,76 @@ export class OcrWorkLimitError extends PayloadLimitError {
   }
 }
 
-/** The budget in milliseconds: the environment override when it is a positive integer, otherwise the default. */
-export function ocrDocumentDeadlineMs(): number {
-  const override = Number(process.env[OCR_DOCUMENT_DEADLINE_ENV]);
-  return Number.isInteger(override) && override > 0 ? override : OCR_DOCUMENT_DEADLINE_MS;
+/** The page budget in milliseconds: the environment override when it is a positive integer, otherwise the default. */
+export function ocrPageBudgetMs(): number {
+  const override = Number(process.env[OCR_PAGE_BUDGET_ENV]);
+  return Number.isInteger(override) && override > 0 ? override : OCR_PAGE_BUDGET_MS;
+}
+
+/** Milliseconds `pages` pages may take: the start-up allowance plus one page budget for each, and never past the job's own deadline. */
+export function ocrDocumentBudgetMs(pages: number, jobDeadlineMs?: number): number {
+  const pageBudget = ocrPageBudgetMs();
+  const total = (OCR_ALLOWANCE_PAGES + pages) * pageBudget;
+  if (jobDeadlineMs === undefined || !(jobDeadlineMs > 0)) return total;
+  return Math.max(1, Math.min(total, Math.floor(jobDeadlineMs * OCR_JOB_DEADLINE_SHARE)));
 }
 
 /**
- * The time one document's OCR has left. Pages check it before each step that costs a page's worth of work (render,
- * reading), so a document past the budget stops at the next boundary; the pages in flight finish their step.
+ * The time one document's OCR has left, and the guard of each page. A page is checked before it starts and raced
+ * against the time left and against its own limit, so a page that never ends does not hold the document to the
+ * engine's own timeouts (60 s to render, 120 s per reading); its work is left to those timeouts and its result is
+ * dropped.
  */
 export class OcrWorkBudget {
   private readonly startedAt = performance.now();
-  private readonly limitMs = ocrDocumentDeadlineMs();
+  private readonly limitMs: number;
+  private readonly pageLimitMs = ocrPageBudgetMs() * OCR_PAGE_GUARD_PAGES;
   private pagesRead = 0;
 
-  constructor(private readonly pagesTotal: number) {}
-
-  /** Records that one more page has been read. */
-  pageRead(): void {
-    this.pagesRead++;
+  constructor(
+    private readonly pagesTotal: number,
+    jobDeadlineMs?: number
+  ) {
+    this.limitMs = ocrDocumentBudgetMs(pagesTotal, jobDeadlineMs);
   }
 
-  /** @throws OcrWorkLimitError (413) when the document has used up its budget. */
-  assertWithinBudget(): void {
-    if (performance.now() - this.startedAt <= this.limitMs) return;
-    throw new OcrWorkLimitError(
-      `Recognizing this document needs more than the ${this.limitMs} ms allowed for one document (${OCR_DOCUMENT_DEADLINE_ENV}); ` +
+  private remainingMs(): number {
+    return this.limitMs - (performance.now() - this.startedAt);
+  }
+
+  private documentError(): OcrWorkLimitError {
+    return new OcrWorkLimitError(
+      `Recognizing this document needs more than the ${this.limitMs} ms allowed for ${this.pagesTotal} pages (${OCR_PAGE_BUDGET_ENV} sets the time for one page); ` +
         `${this.pagesRead} of ${this.pagesTotal} pages were read. Select a page range or split the document.`
     );
+  }
+
+  private pageError(pageNumber: number): OcrWorkLimitError {
+    return new OcrWorkLimitError(
+      `Page ${pageNumber} needs more than ${this.pageLimitMs} ms to recognize, ${OCR_PAGE_GUARD_PAGES} times the ${ocrPageBudgetMs()} ms budget of a page (${OCR_PAGE_BUDGET_ENV}). ` +
+        `${this.pagesRead} of ${this.pagesTotal} pages were read. Select a page range without it.`
+    );
+  }
+
+  /**
+   * Runs the work of one page.
+   * @throws OcrWorkLimitError (413) when the document has used up its budget, or the page takes more than its own limit.
+   */
+  async guardPage<T>(pageNumber: number, work: () => Promise<T>): Promise<T> {
+    const remaining = this.remainingMs();
+    if (remaining <= 0) throw this.documentError();
+    const documentIsNearer = remaining <= this.pageLimitMs;
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      const delay = Math.min(MAX_TIMER_MS, Math.ceil(documentIsNearer ? remaining : this.pageLimitMs));
+      timer = setTimeout(() => reject(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
+    });
+    try {
+      const result = await Promise.race([work(), expired]);
+      this.pagesRead++;
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
