@@ -14,13 +14,15 @@ import { runTool } from '../tools';
 interface ImageCase {
   file: string;
   format: 'jpg' | 'png';
+  /** Bits per sample of the source (checked with ffprobe and identify). */
+  bitDepth: 8 | 16;
 }
 
 const CASES: readonly ImageCase[] = [
-  { file: 'photo-a.jpg', format: 'jpg' },
-  { file: 'photo-b.png', format: 'png' },
-  { file: 'screenshot.png', format: 'png' },
-  { file: 'lineart.png', format: 'png' },
+  { file: 'photo-a.jpg', format: 'jpg', bitDepth: 8 },
+  { file: 'photo-b.png', format: 'png', bitDepth: 8 },
+  { file: 'screenshot.png', format: 'png', bitDepth: 16 },
+  { file: 'lineart.png', format: 'png', bitDepth: 16 },
 ];
 const TARGETS = ['webp', 'avif', 'jpg'] as const;
 type Target = (typeof TARGETS)[number];
@@ -31,6 +33,12 @@ const HEADLINE_QUALITY = 70;
 /** cwebp -m 4 is the encoder effort the project's WebP path uses; avifenc -s 6 is its AVIF speed. */
 const CWEBP_METHOD = '4';
 const AVIFENC_SPEED = '6';
+/**
+ * Product policy keeps AVIF output within AV1 Main profile bit depths (10 bits at most). Left alone, the reference AVIF encoder
+ * writes sources deeper than 8 bits at 12 bits, which is a different output constraint than ours. Deep sources are therefore
+ * encoded by the reference at 10 bits so both encoders are compared under the same output constraint.
+ */
+const AVIFENC_DEEP_DEPTH = '10';
 
 const REFERENCE_TOOL: Record<Target, string> = { webp: 'cwebp', avif: 'avifenc', jpg: 'magick' };
 const REFERENCE_NAME: Record<Target, string> = { webp: 'cwebp', avif: 'avifenc', jpg: 'ImageMagick' };
@@ -47,12 +55,13 @@ interface Encoded {
 const parseEncoded = numberRecord(['bytes', 'ssim', 'psnr']);
 const parseScore = numberRecord(['score']);
 
-function referenceEncode(target: Target, binary: string, sourcePng: string, quality: number, output: string): void {
+function referenceEncode(target: Target, binary: string, sourcePng: string, quality: number, output: string, bitDepth: ImageCase['bitDepth']): void {
   const q = String(quality);
   if (target === 'webp') {
     runTool(binary, ['-quiet', '-q', q, '-m', CWEBP_METHOD, sourcePng, '-o', output]);
   } else if (target === 'avif') {
-    runTool(binary, ['-q', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
+    const depthArgs = bitDepth > 8 ? ['-d', AVIFENC_DEEP_DEPTH] : [];
+    runTool(binary, [...depthArgs, '-q', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
   } else {
     runTool(binary, [sourcePng, '-quality', q, output]);
   }
@@ -104,7 +113,7 @@ export const runImage: FamilyRunner = async (ctx) => {
         kind,
         tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target]],
         files: [sample.file],
-        settings: { case: caseName, quality, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED },
+        settings: { case: caseName, quality, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source' },
       });
       const tool = REFERENCE_NAME[target];
 
@@ -118,7 +127,7 @@ export const runImage: FamilyRunner = async (ctx) => {
             quality,
             await ctx.refCache.value('image', referenceSpec('encode-measure', quality), parseEncoded, () => {
               const refFile = ctx.scratch(`ref-q${quality}.${target}`);
-              referenceEncode(target, plan.paths[refTool], sourcePng, quality, refFile);
+              referenceEncode(target, plan.paths[refTool], sourcePng, quality, refFile, sample.bitDepth);
               return measure(null, refFile);
             })
           );
@@ -145,7 +154,7 @@ export const runImage: FamilyRunner = async (ctx) => {
             parseScore,
             () => {
               const refFile = ctx.scratch(`ref-ss2.${target}`);
-              referenceEncode(target, plan.paths[refTool], sourcePng, HEADLINE_QUALITY, refFile);
+              referenceEncode(target, plan.paths[refTool], sourcePng, HEADLINE_QUALITY, refFile, sample.bitDepth);
               measure(null, refFile);
               return { score: score(refFile) };
             }
@@ -160,7 +169,7 @@ export const runImage: FamilyRunner = async (ctx) => {
           async () => {
             await oursEncode(HEADLINE_QUALITY);
           },
-          () => referenceEncode(target, plan.paths[refTool], sourcePng, HEADLINE_QUALITY, timingOut),
+          () => referenceEncode(target, plan.paths[refTool], sourcePng, HEADLINE_QUALITY, timingOut, sample.bitDepth),
           'light'
         );
         rows.push(throughputRow('image', caseName, input.length, timing, tool));
