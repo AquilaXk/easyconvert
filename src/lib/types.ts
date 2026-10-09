@@ -812,6 +812,38 @@ export class CpuTaskTimeoutError extends ConversionFailedError {
   }
 }
 
+/** HTTP status of a job that ran past its deadline: the server's wall-clock limit, not a fault in the request. */
+export const JOB_TIMEOUT_STATUS = 504;
+
+/**
+ * A conversion job ran past its wall-clock deadline (`jobDeadlineMs`) and was stopped. The attempt's signal fires
+ * with this error as its reason, sandboxed child processes are killed and the worker slot is freed. It is a typed
+ * `ConversionFailedError`, so the queue does not retry it (another attempt would run into the same deadline) and
+ * the job records `failedCode` "JobTimeoutError" and `failedStatus` 504; the synchronous routes answer 504 with the
+ * problem type `https://api.easyconvert.io/problems/job-timeout`.
+ */
+export class JobTimeoutError extends ConversionFailedError {
+  readonly status = JOB_TIMEOUT_STATUS;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Job timed out after ${timeoutMs}ms`);
+    this.name = 'JobTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * The client of a synchronous conversion closed the connection before the answer was ready. The conversion is
+ * aborted with this error as the signal's reason; no answer is delivered and no quota is charged.
+ */
+export class RequestAbortedError extends Error {
+  constructor() {
+    super('The client closed the connection before the conversion finished');
+    this.name = 'RequestAbortedError';
+  }
+}
+
 /** A task on the CPU worker pool was cancelled by its caller. */
 export class CpuTaskAbortedError extends ConversionFailedError {
   constructor(kind: string) {

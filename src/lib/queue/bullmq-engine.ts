@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redactForOutput, redactText, scrubError } from '../security/redact';
 import { classifyJobFailure } from './job-failure';
-import { QueueUnavailableError } from '../types';
+import { JobTimeoutError, QueueUnavailableError } from '../types';
 
 export interface JobOptions {
   jobId?: string;
@@ -54,16 +54,8 @@ export class JobCancelledError extends Error {
   }
 }
 
-/** Abort reason for an attempt that exceeded `JobOptions.timeout`. The attempt fails and may retry. */
-export class JobTimeoutError extends Error {
-  readonly timeoutMs: number;
-
-  constructor(timeoutMs: number) {
-    super(`Job timed out after ${timeoutMs}ms`);
-    this.name = 'TimeoutError';
-    this.timeoutMs = timeoutMs;
-  }
-}
+/** Abort reason for an attempt that exceeded `JobOptions.timeout`. A typed 504 failure that is not retried. */
+export { JobTimeoutError };
 
 /** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
 export class JobOwnershipLostError extends Error {
@@ -780,6 +772,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     });
     try {
       return await Promise.race([this.processor(job), timedOut]);
+    } catch (err) {
+      // A processor that wraps the abort into another error must not turn the deadline into a different failure.
+      if (job.signal.reason instanceof JobTimeoutError) throw job.signal.reason;
+      throw err;
     } finally {
       clearTimeout(timer);
     }

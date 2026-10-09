@@ -46,6 +46,7 @@ import {
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+import { deadlineBoundEngine } from '../job-deadline';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
@@ -177,7 +178,10 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const node = job.data.graphNode as any;
   const effectiveStorage: IStorageBackend = scope.storage;
-  const effectiveEngine: ConversionEnginePort = pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId));
+  const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
+    pageCappedEngine(engine || dispatchEngine, await pageLimitForOwner(job.data.userId)),
+    job
+  );
 
   await job.log(`Executing graph node "${nodeId}" (op: ${node.op}) in graph ${graphId}`);
   await job.updateProgress(10);
