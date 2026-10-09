@@ -49,7 +49,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9839096058536577
+      "ratio": 0.9860251370759769
     },
     "audio/music.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -89,7 +89,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9441093135896769
+      "ratio": 0.9585256642691548
     },
     "audio/music.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -139,7 +139,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6053886288317912
+      "ratio": 0.5993656504513074
     },
     "audio/music.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -199,7 +199,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.4810205211537417
+      "ratio": 0.9627267545155316
     },
     "audio/speech.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -289,7 +289,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7618615686489885
+      "ratio": 0.7340168415391464
     },
     "audio/speech.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -309,7 +309,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5533472265294518
+      "ratio": 0.44891088622346764
     },
     "compression/mixed.tar->7z/compression_ratio": {
       "direction": "lower",
@@ -329,7 +329,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8177727675068236
+      "ratio": 0.7086894222401946
     },
     "compression/mixed.tar->zst/compression_ratio": {
       "direction": "lower",
@@ -349,7 +349,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5052174500467526
+      "ratio": 0.6025238937226808
     },
     "compression/mixed.xz->tar/throughput": {
       "direction": "higher",
@@ -359,7 +359,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.49860135044313075
+      "ratio": 0.4471191469646644
     },
     "compression/mixed.zst->tar/throughput": {
       "direction": "higher",
@@ -369,7 +369,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.202150194130024
+      "ratio": 1.7671240213307926
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
@@ -469,7 +469,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 16.58209075499082
+      "ratio": 12.627635577179285
     },
     "document/noori.hwp->html:images/structure_precision": {
       "direction": "higher",
@@ -529,7 +529,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 7.602138524611623
+      "ratio": 8.711406169871339
     },
     "document/pdf-structure->docx/column_accuracy": {
       "direction": "higher",
@@ -599,7 +599,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 24.004293441782664
+      "ratio": 18.436149180577278
     },
     "document/pdf-text->txt/cer": {
       "direction": "lower",
@@ -649,7 +649,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 15.092928804907766
+      "ratio": 11.627039344930356
     },
     "document/report.docx->pdf/word_f1": {
       "direction": "higher",
@@ -779,7 +779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 52.53442891873729
+      "ratio": 48.82685023820777
     },
     "document/rich-structure.docx->html:headings/structure_precision": {
       "direction": "higher",
@@ -889,7 +889,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 103.35368291710336
+      "ratio": 79.26402570210531
     },
     "document/rich-structure.docx->odt:headings/structure_precision": {
       "direction": "higher",
@@ -999,7 +999,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 93.94760376356645
+      "ratio": 78.42458547042939
     },
     "document/rich-structure.docx->pdf:images/structure_precision": {
       "direction": "higher",
@@ -1029,7 +1029,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 12.541701701138313
+      "ratio": 8.92636565982624
     },
     "document/rich-structure.docx->pdf/word_f1": {
       "direction": "higher",
@@ -1099,7 +1099,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.05128313828672289
+      "ratio": 0.05522416330084249
     },
     "image/lineart.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1159,7 +1159,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.2446066909019322
+      "ratio": 0.25903202481585813
     },
     "image/lineart.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1219,7 +1219,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3937793481043773
+      "ratio": 0.4076979175734441
     },
     "image/photo-a.jpg->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1279,7 +1279,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8048401449666588
+      "ratio": 0.8445005785576906
     },
     "image/photo-a.jpg->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1339,7 +1339,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.577157538393221
+      "ratio": 0.5826080746865138
     },
     "image/photo-a.jpg->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1399,7 +1399,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9976920975735547
+      "ratio": 0.9976105490302817
     },
     "image/photo-b.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1459,7 +1459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6198649621358345
+      "ratio": 0.7011730977148535
     },
     "image/photo-b.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1519,7 +1519,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.43996444553648173
+      "ratio": 0.5149892700854983
     },
     "image/photo-b.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1579,7 +1579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7657303082246291
+      "ratio": 0.7919315973911331
     },
     "image/screenshot.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1639,7 +1639,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3237197506301314
+      "ratio": 0.3620569912746733
     },
     "image/screenshot.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1699,7 +1699,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.24623116402121722
+      "ratio": 0.2569869917682468
     },
     "image/screenshot.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1759,7 +1759,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.28955221162375894
+      "ratio": 0.29453379208508346
     },
     "ocr/scan.png->pdf/cer": {
       "direction": "lower",
@@ -1779,7 +1779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.42872833770288454
+      "ratio": 0.47856174643487126
     },
     "ocr/scan.png->pdf/word_f1": {
       "direction": "higher",
@@ -1849,7 +1849,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.38830529901593325
+      "ratio": 0.3767361596472141
     },
     "video/clip.mp4->hevc/bd_rate_psnr": {
       "direction": "lower",
@@ -1909,7 +1909,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.5696833408026185
+      "ratio": 0.5563950188485538
     },
     "video/clip.mp4->vp9/bd_rate_psnr": {
       "direction": "lower",
@@ -1969,7 +1969,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7201143630881449
+      "ratio": 0.7397025288187277
     }
   }
 }
