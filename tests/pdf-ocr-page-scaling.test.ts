@@ -2,7 +2,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { getSharedOcrWorkerPool } from '../src/lib/conversions/ocr-worker-pool';
-import { OCR_PAGE_BUDGET_ENV, OCR_PAGE_GUARD_PAGES, ocrDocumentBudgetMs, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
+import { OCR_JOB_DEADLINE_SHARE, OCR_PAGE_BUDGET_ENV, OCR_PAGE_GUARD_PAGES, ocrDocumentBudgetMs, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
 import type { PdfPageRenderer, RenderedOcrPage } from '../src/lib/conversions/pdf-page-render';
 import { requireTessdata } from './helpers/ocr-fixtures';
 import { oracleTest } from './helpers/oracle-test';
@@ -41,6 +41,8 @@ const SLOW_PAGE_BUDGET_MS = 500;
 const SLOW_PAGE_RENDER_MS = 2_200;
 const MIXED_PAGE_BUDGET_MS = 500;
 const SLACK_MS = 12_000;
+/** A timer may fire a few milliseconds before the clock this test reads reaches the delay. */
+const TIMER_EARLY_MS = 50;
 const NEVER_MS = 600_000;
 const ABANDON_PAGE_BUDGET_MS = 300;
 /** How long after the refusal the other pages finish drawing, and how long the test then waits to see whether one reads. */
@@ -194,17 +196,25 @@ describe('the OCR budget scales with the pages', () => {
       requireTessdata('eng');
       vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(CHEAP_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, () => 400);
-      const jobDeadlineMs = 6_000;
+      const jobDeadlineMs = 10_000;
       const reserve = ocrDocumentBudgetMs(CHEAP_PAGES, jobDeadlineMs);
-      expect(reserve).toBeLessThan(jobDeadlineMs);
+      expect(reserve).toBe(Math.floor(jobDeadlineMs * OCR_JOB_DEADLINE_SHARE));
+      // The bound is the reserve plus the slack the other cases use: measured against the guard switched off, which
+      // reads all pages in 33.5 s, it still tells the two apart. The refusal is checked against the reserve itself.
+      const started = performance.now();
       const { largeResult } = await expectNoHangOnInput(
         `${CHEAP_PAGES} pages under a ${jobDeadlineMs} ms job deadline`,
         (input: Buffer) => outcomeOf(recognizeRenderedPdfPages(input, undefined, { jobDeadlineMs })),
         Buffer.alloc(CHEAP_PAGES),
-        jobDeadlineMs
+        reserve + SLACK_MS
       );
+      const refusedAfterMs = performance.now() - started;
       expect(largeResult).toBeInstanceOf(OcrWorkLimitError);
       expect(largeResult).toMatchObject({ status: 413 });
+      // Not refused early (the pages were read for the whole reserve) and before the deadline. The timers measured 2 to
+      // 7 ms late with ten copies of this case sharing 12 cores; the tenth of the deadline left over is 140 times that.
+      expect(refusedAfterMs).toBeGreaterThanOrEqual(reserve - TIMER_EARLY_MS);
+      expect(refusedAfterMs).toBeLessThan(jobDeadlineMs);
     },
     TEST_TIMEOUT_MS
   );
