@@ -165,7 +165,12 @@ describe('rendering a scanned page for OCR', () => {
 
         if (MAGICK_BINARY) {
           // libpng reports a repeated chunk as a warning on stderr.
-          const identified = spawnSync(MAGICK_BINARY, ['identify', '-units', 'PixelsPerInch', '-format', '%x %y', file], { encoding: 'utf8', timeout: REFERENCE_TIMEOUT_MS });
+          // ImageMagick 7 has `magick identify`; version 6 has the separate `identify` command.
+          const identifyArgs = ['-units', 'PixelsPerInch', '-format', '%x %y', file];
+          const identified =
+            MAGICK_BINARY === 'magick'
+              ? spawnSync('magick', ['identify', ...identifyArgs], { encoding: 'utf8', timeout: REFERENCE_TIMEOUT_MS })
+              : spawnSync('identify', identifyArgs, { encoding: 'utf8', timeout: REFERENCE_TIMEOUT_MS });
           expect(identified.stderr).toBe('');
           const [x, y] = identified.stdout.trim().split(' ').map(Number);
           expect(Math.round(x)).toBe(DPI);

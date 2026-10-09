@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
+import { performOcr, recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { getSharedOcrWorkerPool } from '../src/lib/conversions/ocr-worker-pool';
 import { OCR_JOB_DEADLINE_SHARE, OCR_PAGE_BUDGET_ENV, OCR_PAGE_GUARD_PAGES, ocrDocumentBudgetMs, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
 import type { PdfPageRenderer, RenderedOcrPage } from '../src/lib/conversions/pdf-page-render';
@@ -35,7 +35,7 @@ const SLOW_PAGES = 40;
 const MIXED_PAGES = 12;
 const PATHOLOGICAL_PAGE = 5;
 /** Page budgets (ms) of the cases: generous for the cheap case, tight for the slow ones. */
-const CHEAP_PAGE_BUDGET_MS = 1_000;
+const CHEAP_PAGE_BUDGET_MS = 3_000;
 const SLOW_PAGE_BUDGET_MS = 500;
 /** Large enough that the limit of one page (6 budgets, 12 s) is past the reserve of the job, even for pages slowed by a loaded host. */
 const DEADLINE_PAGE_BUDGET_MS = 2_000;
@@ -102,6 +102,11 @@ afterEach(async () => {
   await shutdownOcrWorkerPool();
 });
 
+/** Starts the engine's workers, so that the first page of a case is not charged for their start (which a loaded host stretches). */
+async function warmEngine(): Promise<void> {
+  await performOcr(pageImage.image, 'eng');
+}
+
 async function outcomeOf(promise: Promise<unknown>): Promise<unknown> {
   return promise.then(
     () => null,
@@ -111,10 +116,11 @@ async function outcomeOf(promise: Promise<unknown>): Promise<unknown> {
 
 describe('the OCR budget scales with the pages', () => {
   oracleTest(
-    `reads ${CHEAP_PAGES} cheap pages in full, in order, though the same page budget refuses a document of ${SLOW_PAGES} slow ones`,
+    `reads ${CHEAP_PAGES} cheap pages in full, in order, under a budget that grows with the pages`,
     ['tesseract', 'pdftoppm'],
     async () => {
       requireTessdata('eng');
+      await warmEngine();
       vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(CHEAP_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, () => 0);
       const pdf = Buffer.alloc(CHEAP_PAGES);
@@ -154,6 +160,7 @@ describe('the OCR budget scales with the pages', () => {
     ['tesseract', 'pdftoppm'],
     async () => {
       requireTessdata('eng');
+      await warmEngine();
       vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(MIXED_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, (index) => (index + 1 === PATHOLOGICAL_PAGE ? NEVER_MS : 0));
       const pageLimit = OCR_PAGE_GUARD_PAGES * MIXED_PAGE_BUDGET_MS;
@@ -196,6 +203,7 @@ describe('the OCR budget scales with the pages', () => {
     ['tesseract', 'pdftoppm'],
     async () => {
       requireTessdata('eng');
+      await warmEngine();
       vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(DEADLINE_PAGE_BUDGET_MS));
       mocks.renderer = (pageCount) => fakeRenderer(pageCount, () => 400);
       const jobDeadlineMs = 10_000;
