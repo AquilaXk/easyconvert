@@ -5,7 +5,7 @@ import {
   OcrResult,
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { shownWords } from './helpers/pdf-shown-text';
-import { expectLinearScaling, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput, SCALING_FACTOR } from './helpers/timing';
 import {
   sniffMimeTypeFromMagicBytes,
   isFormatCompatibleWithMagicBytes,
@@ -271,13 +271,13 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
       expect(textEl?.content).toBe('Deeply Nested Secret');
     });
 
-    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines', async () => {
+    it('neutralizes hostile ReDoS payloads designed to freeze backtracking regex engines (hang guard; growth ratio in the perf suite)', async () => {
       // Classic ReDoS trigger for /<p:grpSp[\s\S]*?<\/p:grpSp>/:
       // A huge repeating sequence of opening tags with no closing tag
-      const { largeResult } = await expectLinearScaling(
+      const { largeResult } = await expectNoHangOnInput(
         'unclosed group shapes',
         (openings: number) => safeExtractXmlElements('<p:grpSp>'.repeat(openings) + 'A'.repeat(openings * UNCLOSED_FILLER_PER_OPENING), 'p:grpSp'),
-        { baseSize: UNCLOSED_OPENINGS }
+        UNCLOSED_OPENINGS * SCALING_FACTOR
       );
 
       // Because there are no matching closing tags, it must abort gracefully, and in time linear in the input

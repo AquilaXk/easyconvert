@@ -9,19 +9,16 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { redactText } from '../src/lib/security/redact';
-import { expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * Redaction runs on every log row, response and webhook, on text an attacker partly controls, so
- * its cost must grow in step with the input. Shapes below made earlier scanners re-read the rest
+ * its cost must grow in step with the input (checked in secret-redaction-linear.perf.test.ts). Shapes below made earlier scanners re-read the rest
  * of the text once per occurrence.
  */
 const MIB = 1024 * 1024;
 /** Sixteen times the input: linear work (with allocator and GC growth) measured 17-24x, quadratic work 256x. */
 const GROWTH_FACTOR = 16;
-const SMALL = MIB / GROWTH_FACTOR;
-/** Twice the growth factor, as the shared linear bound allows, and far below the 256x of a rescanning scanner. */
-const MAX_GROWTH_RATIO = GROWTH_FACTOR * 2;
 
 function repeatTo(unit: string, size: number): string {
   return unit.repeat(Math.ceil(size / unit.length));
@@ -40,25 +37,21 @@ const SHAPES: Record<string, string> = {
   'keys without values': 'password \n',
 };
 
-describe('redaction scales linearly', () => {
-  // 16x the input may cost at most 32x the time, interleaved and best of N (tests/helpers/timing.ts); a scanner
-  // that re-reads the rest of the text once per occurrence costs 256x. No wall-clock budget is involved.
+describe('redaction terminates on adversarial shapes', () => {
+  // A scanner that re-reads the rest of the text once per occurrence takes minutes on a megabyte, which the hang guard
+  // of tests/helpers/timing.ts catches; secret-redaction-linear.perf.test.ts measures that 16x the input costs under 32x.
   for (const [name, unit] of Object.entries(SHAPES)) {
-    it(`${name}: ${GROWTH_FACTOR}x the input costs under ${MAX_GROWTH_RATIO}x`, async () => {
-      await expectLinearOnInputs(name, (text: string) => redactText(text), {
-        small: repeatTo(unit, SMALL),
-        large: repeatTo(unit, MIB),
-        factor: GROWTH_FACTOR,
-      });
+    it(`${name}: ${GROWTH_FACTOR}x the input is redacted without hanging`, async () => {
+      await expectNoHangOnInput(name, (text: string) => redactText(text), repeatTo(unit, MIB));
     }, SCALING_TEST_TIMEOUT_MS);
   }
 
   it('one line of repeated pairs', async () => {
-    const { largeResult } = await expectLinearOnInputs('repeated pairs', (text: string) => redactText(text), {
-      small: repeatTo('password=a token:b ', SMALL),
-      large: repeatTo('password=a token:b ', MIB),
-      factor: GROWTH_FACTOR,
-    });
+    const { largeResult } = await expectNoHangOnInput(
+      'repeated pairs',
+      (text: string) => redactText(text),
+      repeatTo('password=a token:b ', MIB)
+    );
     // An unquoted value runs to the end of the line, and the whole input is one line.
     expect(largeResult).toBe('password=***');
   }, SCALING_TEST_TIMEOUT_MS);
@@ -67,7 +60,7 @@ describe('redaction scales linearly', () => {
 describe('a large free-text option does not stall the API', () => {
   const NOTE_BYTES = 220 * 1024;
 
-  it('answers POST and GET for a convert option full of unclosed groups as fast as for a plain option of the same size', async () => {
+  it('answers POST and GET for a convert option full of unclosed groups without hanging', async () => {
     vi.spyOn(dns.promises, 'lookup').mockImplementation((async () => [{ address: '93.184.215.14', family: 4 }]) as never);
     const email = `linear_${Date.now()}_${Math.random().toString(36).slice(2)}@linear.test`;
     const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'linear', tier: 'pro' }));
@@ -104,14 +97,10 @@ describe('a large free-text option does not stall the API', () => {
       return { post: post.status, get: got.status };
     };
 
-    // The same request with a plain note of the same length is the in-process reference (tests/helpers/timing.ts):
-    // the adversarial note may not make the request slower than a small multiple of it.
+    // The request with the adversarial note must finish under the hang guard (tests/helpers/timing.ts); that it costs no
+    // more than a small multiple of the same request with a plain note is measured by secret-redaction-linear.perf.test.ts.
     try {
-      const { largeResult } = await expectNoSlowerThanReference(
-        'POST and GET with unclosed groups',
-        () => roundTrip('a'.repeat(NOTE_BYTES)),
-        () => roundTrip(repeatTo('password={\n', NOTE_BYTES))
-      );
+      const { largeResult } = await expectNoHangOnInput('POST and GET with unclosed groups', roundTrip, repeatTo('password={\n', NOTE_BYTES));
       expect(largeResult).toEqual({ post: 202, get: 200 });
     } finally {
       vi.restoreAllMocks();

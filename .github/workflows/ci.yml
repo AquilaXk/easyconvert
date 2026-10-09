@@ -1,158 +1,94 @@
 name: CI
 
+# A pull request runs once per commit: a newer push to the same pull request cancels the run in progress, and the
+# pushes to `main` queue instead (a merge must not be cancelled by the one after it). `push` is limited to `main`,
+# so a pull request commit is never built twice.
+#
+# Wall time is set by the slowest job, so the work is split into jobs of about the same length:
+#   - the unit/integration files by recorded duration (scripts/ci-test-shards.mjs, .github/ci/test-durations.json),
+#   - the registry conformance pairs by a stable hash, in as many parts as keep each part near the tests.
+# Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
-  # The unit and integration suites and the registry conformance gate run in parallel shards. `verify`,
-  # the required check, passes only when every shard, every conformance part, the checks job and the
-  # container job pass.
-  tests:
-    name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
+  # Decides whether the pull request changes anything but documentation. The heavy jobs wait for it and run only
+  # when `code` is true; `verify` accepts their being skipped only when this job said so.
+  changes:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
 
-    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
-    # and stall recovery (an in-process mock cannot execute Lua).
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
     env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+      # A file is documentation when it is under docs/ or is a Markdown file outside the directories whose
+      # Markdown the tests, benchmarks and scripts read as input.
+      DOCS_ONLY_DIRECTORY: '^docs/'
+      DOCS_ONLY_MARKDOWN: '\.md$'
+      MARKDOWN_INPUT_DIRECTORIES: '^(tests|src|bench|scripts|docker|public)/'
+      # Generated files that drift tests compare with their generators: changing one alone is a code change.
+      GENERATED_DOCS: '^(THIRD_PARTY_NOTICES\.md|docs/configuration\.md|docs/configuration\.example\.env|docs/licensing\.md)$'
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Install tools and start test services
-        uses: ./.github/actions/ci-setup
-
-      - name: Run unit and integration tests
+      - name: Decide whether code changed
+        id: filter
+        shell: bash
         env:
-          ORACLE_STRICT_MODE: "1"
-        # The registry conformance gate runs in its own parallel job below.
-        run: npx --no-install vitest run --shard=${{ matrix.shard }}/${{ strategy.job-total }} --exclude tests/registry-engine-conformance.test.ts --exclude 'tests/**/*.perf.test.ts'
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Fail open: anything but a comparable pull request runs the full suite.
+          code=true
+          if [ "$EVENT_NAME" = pull_request ] && [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+            changed="$(git diff --name-only "$PR_BASE_SHA" HEAD)"
+            printf 'changed files:\n%s\n' "$changed"
+            if [ -n "$changed" ]; then
+              code=false
+              while IFS= read -r file; do
+                if printf '%s\n' "$file" | grep -Eq "$GENERATED_DOCS"; then code=true; break; fi
+                if printf '%s\n' "$file" | grep -Eq "$DOCS_ONLY_DIRECTORY"; then continue; fi
+                if printf '%s\n' "$file" | grep -Eq "$DOCS_ONLY_MARKDOWN" && ! printf '%s\n' "$file" | grep -Eq "$MARKDOWN_INPUT_DIRECTORIES"; then continue; fi
+                code=true
+                break
+              done <<< "$changed"
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code changed: $code"
 
-  conformance:
-    name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [1, 2, 3, 4]
-
-    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
-    # and stall recovery (an in-process mock cannot execute Lua).
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-
-      - name: Install tools and start test services
-        uses: ./.github/actions/ci-setup
-
-      # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
-      # pairs (CONFORMANCE_PART), and part 1 also runs the registry-wide checks.
-      - name: Run the registry conformance gate
-        env:
-          ORACLE_STRICT_MODE: "1"
-          CONFORMANCE_PART: ${{ matrix.part }}/${{ strategy.job-total }}
-        run: npx --no-install vitest run tests/registry-engine-conformance.test.ts
-
+  # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
+  # type-checks). They run in their own job so the tool install does not delay them.
   checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-
-    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
-    # and stall recovery (an in-process mock cannot execute Lua).
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
-    # start it and by the storage tests that read STORAGE_TEST_S3_*.
-    env:
-      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
-      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
-      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
-      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
-
-      - name: Install tools and start test services
-        uses: ./.github/actions/ci-setup
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
@@ -187,12 +123,168 @@ jobs:
       - name: Run linter
         run: npm run lint
 
-      # Performance suites saturate the CPUs (parallel engine workers, speedup ratios); they run here one
-      # file at a time so they neither starve the timing-sensitive tests in the shards nor get starved.
-      - name: Run performance suites
+      - name: Build application
+        run: npm run build
+
+  # The unit and integration suites, in shards of about equal recorded duration.
+  tests:
+    name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
+    # start it and by the storage tests that read STORAGE_TEST_S3_*.
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly).
+      - name: Run unit and integration tests
         env:
           ORACLE_STRICT_MODE: "1"
-        run: npx --no-install vitest run --no-file-parallelism .perf.test.ts
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ strategy.job-total }}
+        run: |
+          mapfile -t files < <(node scripts/ci-test-shards.mjs "$SHARD" "$SHARD_COUNT")
+          echo "shard $SHARD/$SHARD_COUNT: ${#files[@]} files"
+          npx --no-install vitest run "${files[@]}"
+
+  conformance:
+    name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
+    # start it and by the storage tests that read STORAGE_TEST_S3_*.
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
+      # pairs (CONFORMANCE_PART), and part 1 also runs the registry-wide checks.
+      - name: Run the registry conformance gate
+        env:
+          ORACLE_STRICT_MODE: "1"
+          CONFORMANCE_PART: ${{ matrix.part }}/${{ strategy.job-total }}
+        run: npx --no-install vitest run tests/registry-engine-conformance.test.ts
+
+  # The checks that need both the tools and Redis and are not part of the shards.
+  integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Dummy credentials of the throwaway S3 test server started below, shared by the steps that
+    # start it and by the storage tests that read STORAGE_TEST_S3_*.
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
 
       # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
       # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
@@ -220,9 +312,6 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: npm run test:redis
 
-      - name: Build application
-        run: npm run build
-
   # Builds the worker image and proves the container hardening from inside a container started with the
   # compose security settings (scripts/verify-worker-container.sh). It runs in parallel with the other
   # jobs and does the work only when a file that affects the image, its compose settings or the sandbox
@@ -239,7 +328,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Decide whether the container changed
         id: changes
@@ -339,19 +428,38 @@ jobs:
         if: always() && steps.changes.outputs.relevant == 'true'
         run: docker compose down --volumes
 
+  # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
+  # other skipped, cancelled or failed job fails the gate.
   verify:
     if: always()
-    needs: [tests, conformance, checks, container]
+    needs: [changes, checks, tests, conformance, integration, container]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Require every shard, the checks job and the container job to pass
+      - name: Require every job to pass, or to be skipped for a documentation-only change
         env:
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
           TESTS_RESULT: ${{ needs.tests.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
-          CHECKS_RESULT: ${{ needs.checks.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
           CONTAINER_RESULT: ${{ needs.container.result }}
         run: |
-          echo "tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, checks: $CHECKS_RESULT, container: $CONTAINER_RESULT"
-          if [ "$TESTS_RESULT" != success ] || [ "$CONFORMANCE_RESULT" != success ] || [ "$CHECKS_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then
+          echo "code changed: $CODE_CHANGED"
+          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT"
+          failed=0
+          if [ "$CHANGES_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
+          # The expected result of the heavy jobs follows from the filter's verdict alone.
+          case "$CODE_CHANGED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) expected=none; failed=1 ;;
+          esac
+          for result in "$CHECKS_RESULT" "$TESTS_RESULT" "$CONFORMANCE_RESULT" "$INTEGRATION_RESULT"; do
+            if [ "$result" != "$expected" ]; then failed=1; fi
+          done
+          if [ "$failed" != 0 ]; then
+            echo "::error::a required job did not finish as expected"
             exit 1
           fi

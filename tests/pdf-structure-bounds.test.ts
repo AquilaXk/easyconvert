@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { extractStructuredTextFromPdf } from '../src/lib/conversions/pdf-utils';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
-import { expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, settle } from './helpers/timing';
+import { SCALING_FACTOR, settle, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * Linear-time structure reading: object streams, indirect stream lengths and page-tree fallbacks
@@ -43,7 +43,7 @@ function timed<T>(run: () => T): { value?: T; err?: unknown; ms: number } {
 
 describe('object stream entries are read in time linear in the stream', () => {
   for (const opener of ['(', '<', '[']) {
-    it(`entries that all open an unterminated "${opener}" cost one pass, not one pass each`, async () => {
+    it(`entries that all open an unterminated "${opener}" cost one pass, not one pass each (hang guard; growth ratio in the perf suite)`, async () => {
       // One pass over the body whatever the number of entries: 4x the entries must cost about the same, where a
       // pass per entry would cost 4x.
       const objectStreamPdf = (entries: number): Buffer => {
@@ -57,10 +57,10 @@ describe('object stream entries are read in time linear in the stream', () => {
         };
         return buildPdf([...catalog, objectStream], 1).buffer;
       };
-      const { largeResult } = await expectSizeIndependentOnInputs(
+      const { largeResult } = await expectNoHangOnInput(
         `unterminated ${opener}`,
         (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
-        { modest: objectStreamPdf(OBJSTM_ENTRIES / SCALING_FACTOR), huge: objectStreamPdf(OBJSTM_ENTRIES) }
+        objectStreamPdf(OBJSTM_ENTRIES)
       );
       expect(largeResult.ok, 'the object stream is read without error').toBe(true);
     });
@@ -122,27 +122,29 @@ describe('a document defines a bounded number of objects', () => {
     return Buffer.from(parts.join(''), 'latin1');
   }
 
-  it('refuses more objects than the cap in time linear in the file', async () => {
-    const { largeResult } = await expectLinearOnInputs('objects past the cap', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
-      small: tinyObjects(Math.floor(OBJECT_CAP / SCALING_FACTOR)),
-      large: tinyObjects(OBJECT_CAP + 1),
-    });
+  it('refuses more objects than the cap in time linear in the file (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
+      'objects past the cap',
+      (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
+      tinyObjects(OBJECT_CAP + 1)
+    );
     if (largeResult.ok) throw new Error('a file with more objects than the cap was accepted');
     expect(largeResult.error).toBeInstanceOf(PdfStructureError);
     expect((largeResult.error as Error).message).toMatch(/more than 500000 objects/);
   });
 
-  it('reads a file with no root and many objects that name no type in linear time', async () => {
-    const { largeResult } = await expectLinearOnInputs('objects without a type', (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
-      small: tinyObjects(OBJECT_CAP / SCALING_FACTOR),
-      large: tinyObjects(OBJECT_CAP),
-    });
+  it('reads a file with no root and many objects that name no type in linear time (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
+      'objects without a type',
+      (pdf: Buffer) => extractStructuredTextFromPdf(pdf),
+      tinyObjects(OBJECT_CAP)
+    );
     expect(largeResult.text).toBe('');
   });
 });
 
 describe('an indirect /Length costs a constant per stream', () => {
-  it('reads only the leading integer of the length object', async () => {
+  it('reads only the leading integer of the length object (hang guard; growth ratio in the perf suite)', async () => {
     // The /Length target is an array read by 400 streams. A reader that parses the whole target per stream costs 4x
     // as much for a 4x longer array; reading only the leading integer costs the same for both. The file is indexed
     // in one pass whatever the target holds, so both files have the same size: the elements the shorter target
@@ -164,10 +166,11 @@ describe('an indirect /Length costs a constant per stream', () => {
     const modest = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS / SCALING_FACTOR);
     const huge = pdfWithLengthTarget(LENGTH_TARGET_ELEMENTS);
     expect(modest.length).toBe(huge.length);
-    const { largeResult } = await expectSizeIndependentOnInputs('indirect length target', (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
-      modest,
-      huge,
-    });
+    const { largeResult } = await expectNoHangOnInput(
+      'indirect length target',
+      (pdf: Buffer) => extractStructuredTextFromPdf(pdf),
+      huge
+    );
     expect(largeResult.text).toBe('LENGTH-LIES');
   });
 

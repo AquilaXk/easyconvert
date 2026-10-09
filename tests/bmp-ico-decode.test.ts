@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
-import { expectSizeIndependentOnInputs, settle } from './helpers/timing';
+import { settle, expectNoHangOnInput } from './helpers/timing';
 import { convertImage } from '../src/lib/conversions/image';
 import { BmpDecodeError, decodeBmp } from '../src/lib/conversions/bmp';
 import { IcnsDecodeError, IcoDecodeError, decodeIco, decodeIcns } from '../src/lib/conversions/ico';
@@ -23,8 +23,6 @@ const HEIGHT = 9;
 const BYTE_MAX = 255;
 const NOISE_MULTIPLIER = 2654435761;
 const MIB = 1024 * 1024;
-/** Sides of the two canvases an RLE stream of four bytes claims. */
-const RLE_MODEST_SIDE = 1000;
 const RLE_HUGE_SIDE = 10000;
 /** Two lcms builds may round a colour transform one level apart. */
 const PROFILE_CONVERSION_TOLERANCE = 2;
@@ -247,15 +245,16 @@ describe('BMP validation rejects bad files with a typed error before allocating'
     expect(grown).toBeLessThan(bytes.length + MIB);
   });
 
-  it('refuses an RLE stream in the same time whatever canvas it declares', async () => {
+  it('refuses an RLE stream in the same time whatever canvas it declares (hang guard; growth ratio in the perf suite)', async () => {
     // A reader that walked the declared canvas before checking the stream would take a hundred times as long for the
     // 10000 x 10000 claim as for the 1000 x 1000 one (tests/helpers/timing.ts); the check reads only the stream.
     const rleClaiming = (side: number) =>
       craftBmp({ width: side, height: side, bitCount: 8, compression: 1, palette: palette256, pixels: Uint8Array.from([0, 1]) });
-    const { largeResult } = await expectSizeIndependentOnInputs('RLE canvas claim', (bytes: Buffer) => settle(() => decodeBmp(bytes)), {
-      modest: rleClaiming(RLE_MODEST_SIDE),
-      huge: rleClaiming(RLE_HUGE_SIDE),
-    });
+    const { largeResult } = await expectNoHangOnInput(
+      'RLE canvas claim',
+      (bytes: Buffer) => settle(() => decodeBmp(bytes)),
+      rleClaiming(RLE_HUGE_SIDE)
+    );
     if (largeResult.ok) throw new Error('the 10000 x 10000 claim was decoded instead of refused');
     expect(largeResult.error).toBeInstanceOf(BmpDecodeError);
     expect((largeResult.error as Error).message).toMatch(/cannot describe/);

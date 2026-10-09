@@ -7,7 +7,7 @@ import { MAGICK_BINARY } from './helpers/imagemagick';
 /**
  * Every external tool and language pack a suite uses as an oracle or as an engine. Under ORACLE_STRICT_MODE=1 (CI)
  * a missing one fails here by name, instead of a suite silently skipping or failing later with an unrelated error.
- * The CI image installs them in .github/actions/ci-setup/action.yml; a tool added to a suite is added there and here.
+ * The CI image installs them from .github/actions/ci-setup/apt-packages.txt; a tool added to a suite is added there and here.
  */
 
 interface RequiredTool {

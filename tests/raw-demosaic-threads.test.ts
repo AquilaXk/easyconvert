@@ -17,7 +17,6 @@ import { ConversionFailedError, InvalidRawSensorError } from '../src/lib/types';
 import { SYNTHETIC_CASES, buildSensor, type DemosaicName } from './raw-demosaic/inputs';
 import { GOLDEN_PATH, digestOutput, sha256Of, type GoldenEntry } from './raw-demosaic/golden';
 import { skipUnless } from './helpers/strict-skip';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
 /**
  * AHD and AMaZE computed on several threads. The tiles of a frame are independent, so the thread count must not change

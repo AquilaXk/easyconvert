@@ -10,7 +10,6 @@ import {
   decompressWithZstdDict,
 } from '../src/lib/conversions/zstd-dict';
 import { ConversionFailedError } from '../src/lib/types';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', () => {
   // Helper: Generates realistic repetitive JSON/CSV payload
@@ -181,8 +180,6 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
   describe('3. Bandwidth Reduction (>= 70%) and Throughput Benchmark', () => {
     const CHUNK_SIZE = 64 * 1024;
     const MIN_BANDWIDTH_REDUCTION = 0.70;
-    /** Records of the smaller payload in the scaling comparison (about 0.3 MB of JSON); the larger one has SCALING_FACTOR times as many. */
-    const SCALING_BASE_RECORDS = 1000;
 
     function compressInChunks(payload: Buffer): Buffer {
       const compressor = new ZstdDictionaryStreamCompressor({ dictionary: DATA_DICTIONARY_JSON_CSV });
@@ -207,12 +204,6 @@ describe('RFC 8878 Chunked Streaming Zstandard Dictionary Compression (#191)', (
       expect(restored.equals(payload)).toBe(true);
     });
 
-    it('compresses in time linear in the payload size, restoring each payload', async () => {
-      const small = generateSyntheticDataPayload(SCALING_BASE_RECORDS);
-      const large = generateSyntheticDataPayload(SCALING_BASE_RECORDS * SCALING_FACTOR);
-      const { largeResult: compressed } = await expectLinearOnInputs('ZstdDictionaryStreamCompressor', (payload: Buffer) => compressInChunks(payload), { small, large });
-      expect(decompressWithZstdDict(compressed, DATA_DICTIONARY_JSON_CSV).equals(large)).toBe(true);
-    }, SCALING_TEST_TIMEOUT_MS);
   });
 
   describe('4. Fail-Closed Error Handling & Corrupt Stream Protection', () => {

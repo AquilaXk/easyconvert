@@ -54,6 +54,7 @@ CLAUDE.local.md
 .claude/
 implementation_plan.md
 walkthrough.md
+docs/EXECUTION_PLAN*.md
 
 # Git worktrees (manual and Claude Code managed)
 .worktrees/

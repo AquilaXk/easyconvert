@@ -297,3 +297,17 @@ export async function expectNoHang<R>(label: string, run: () => R | Promise<R>, 
   expect(ms, `${label}: took ${ms.toFixed(0)} ms; the hang guard is ${guardMs} ms`).toBeLessThan(guardMs);
   return value;
 }
+
+/**
+ * The PR-gate form of a scaling check on a hostile input: runs `run(input)` once under the hang guard and returns
+ * the result as `largeResult`, the name the scaling helpers use, so the assertions on the output stay as they are.
+ * The growth ratio itself is measured by the nightly performance suites.
+ */
+export async function expectNoHangOnInput<T, R>(
+  label: string,
+  run: (input: T) => R | Promise<R>,
+  input: T,
+  guardMs: number = DEFAULT_HANG_GUARD_MS
+): Promise<{ largeResult: R }> {
+  return { largeResult: await expectNoHang(label, () => run(input), guardMs) };
+}
