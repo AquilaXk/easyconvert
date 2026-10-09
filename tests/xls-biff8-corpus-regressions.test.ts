@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { afterEach, describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile, decodeRk, parseBiff8Workbook } from '../src/lib/conversions';
-import { XLSX_MAX_CELL_TEXT_CHARS, XLS_MAX_GRID_CELLS } from '../src/lib/conversions/office';
+import {
+  DEFAULT_XLSX_MAX_CELL_TEXT_CHARS,
+  XLSX_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_GRID_CELLS_ENV,
+  XLS_MAX_PDF_TEXT_CELLS_ENV,
+} from '../src/lib/conversions/office/spreadsheet-limits';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { ConversionFailedError, EncryptedOfficeDocumentError, PayloadLimitError } from '../src/lib/types';
+import { EncryptedOfficeDocumentError, PayloadLimitError } from '../src/lib/types';
 import { buildCompoundFile } from './helpers/cfb-craft';
 import { oracleTest } from './helpers/oracle-test';
 import { parseCsvWithPython } from './helpers/sheet-rows';
@@ -144,22 +150,118 @@ describe('encrypted workbooks (issue 668: the job server aborted)', () => {
   });
 });
 
+/** Reads an XLS-converted text file with Python (csv / json modules) and reports its shape without holding it in this process. */
+const PYTHON_GRID_SUMMARY = [
+  'import csv, io, json, sys',
+  'kind = sys.argv[1]',
+  'if kind == "json":',
+  '    rows = json.load(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"))',
+  'else:',
+  '    delimiter = "," if kind == "csv" else "\\t"',
+  '    rows = list(csv.reader(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", newline=""), delimiter=delimiter))',
+  'widths = sorted({len(r) for r in rows})',
+  'non_empty = [[i, j, c] for i, r in enumerate(rows) for j, c in enumerate(r) if c != ""]',
+  'print(json.dumps({"rows": len(rows), "widths": widths, "nonEmpty": non_empty}))',
+].join('\n');
+
+function summarizeGridWithPython(kind: 'csv' | 'tsv' | 'json', text: Buffer): { rows: number; widths: number[]; nonEmpty: Array<[number, number, string]> } {
+  return JSON.parse(execFileSync('python3', ['-c', PYTHON_GRID_SUMMARY, kind], { input: text, encoding: 'utf-8', maxBuffer: 1 << 26 }));
+}
+
 describe('oversized sheets and expansions (issue 668)', () => {
-  it('refuses a sheet whose used range would need a 65536 by 256 grid for one cell', () => {
-    expect(() => parseBiff8Workbook(workbookStream(numberCell(65535, 255, 1)))).toThrow(
-      `The XLS sheet spans 65536 rows by 256 columns (16777216 cells); at most ${XLS_MAX_GRID_CELLS} are supported.`
+  afterEach(() => {
+    delete process.env[XLS_MAX_GRID_CELLS_ENV];
+    delete process.env[XLS_MAX_PDF_TEXT_CELLS_ENV];
+    delete process.env[XLSX_MAX_CELL_TEXT_CHARS_ENV];
+  });
+
+  // The used range of a BIFF8 sheet reaches 65536 rows by 256 columns; a cell at the last corner is how the corpus file 51535.xls looks.
+  const cornerWorkbook = workbookStream(numberCell(65535, 255, 1));
+
+  describe.each([
+    ['csv', 'text/csv'],
+    ['tsv', 'text/tab-separated-values'],
+    ['json', 'application/json'],
+  ] as const)('a single cell in the corner of the 65536 by 256 grid, converted to .%s', (target, mimeType) => {
+    it('keeps every row and column of the grid and the value of the corner cell', async () => {
+      const converted = await convertFile(cornerWorkbook, 'xls', target, {}, '51535.xls');
+      expect(converted.mimeType).toBe(mimeType);
+      const summary = summarizeGridWithPython(target, converted.buffer);
+      expect(summary.rows).toBe(65536);
+      expect(summary.widths).toEqual([256]);
+      expect(summary.nonEmpty).toEqual([[65535, 255, '1']]);
+    }, 120_000);
+  });
+
+  it('writes the same bytes for a small sheet as the standard serializers do for its rows', async () => {
+    const workbook = workbookStream(numberCell(0, 0, 1), numberCell(1, 1, 2), numberCell(2, 0, 3));
+    const rows = [
+      ['1', ''],
+      ['', '2'],
+      ['3', ''],
+    ];
+    const json = await convertFile(workbook, 'xls', 'json', {}, 'small.xls');
+    expect(json.buffer.toString('utf-8')).toBe(JSON.stringify(rows, null, 2));
+    const csv = await convertFile(workbook, 'xls', 'csv', { delimiter: ';' }, 'small.xls');
+    expect(csv.buffer.toString('utf-8')).toBe('1;\n;2\n3;');
+    const tsv = await convertFile(workbook, 'xls', 'tsv', {}, 'small.xls');
+    expect(tsv.buffer.toString('utf-8')).toBe('1\t\n\t2\n3\t');
+  });
+
+  it('refuses a text conversion whose output would pass the in-memory limit instead of building it', async () => {
+    process.env.MAX_IN_MEMORY_BYTES = String(1024 * 1024);
+    try {
+      const failure = await convertFile(cornerWorkbook, 'xls', 'json', {}, '51535.xls').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(PayloadLimitError);
+      expect((failure as PayloadLimitError).status).toBe(413);
+      expect((failure as Error).message).toBe('The XLS sheet converts to more than 1048576 bytes of .json output.');
+    } finally {
+      delete process.env.MAX_IN_MEMORY_BYTES;
+    }
+  });
+
+  it.each(['html', 'ods', 'xlsx'])('refuses the corner sheet for the .%s target, which needs the whole grid in memory', async (target) => {
+    process.env[XLS_MAX_GRID_CELLS_ENV] = '1000000';
+    const failure = await convertFile(cornerWorkbook, 'xls', target, {}, '51535.xls').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect((failure as Error).message).toBe(
+      `The XLS sheet spans 65536 rows by 256 columns (16777216 cells); at most 1000000 are supported (${XLS_MAX_GRID_CELLS_ENV}).`
     );
   });
 
-  it('still reads a wide sheet that stays inside the cell limit', () => {
-    const rows = parseBiff8Workbook(workbookStream(numberCell(1023, 255, 7)));
-    expect(rows).toHaveLength(1024);
-    expect(rows[1023][255]).toBe('7');
+  it('writes the corner sheet to PDF, since blank cells cost the PDF writer almost nothing', async () => {
+    const converted = await convertFile(cornerWorkbook, 'xls', 'pdf', {}, '51535.xls');
+    expect(converted.buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(converted.buffer.length).toBeGreaterThan(1000);
+  }, 120_000);
+
+  it('refuses a PDF of a sheet with more cells holding text than the limit', async () => {
+    process.env[XLS_MAX_PDF_TEXT_CELLS_ENV] = '3';
+    const cells = [0, 1, 2, 3].map((column) => numberCell(0, column, column + 1));
+    const failure = await convertFile(workbookStream(...cells), 'xls', 'pdf', {}, 'busy.xls').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect((failure as Error).message).toBe(`The XLS sheet holds 4 cells with text; at most 3 are supported (${XLS_MAX_PDF_TEXT_CELLS_ENV}).`);
+    process.env[XLS_MAX_PDF_TEXT_CELLS_ENV] = '4';
+    const converted = await convertFile(workbookStream(...cells), 'xls', 'pdf', {}, 'busy.xls');
+    expect(converted.buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
   });
 
-  it('refuses a workbook whose shared string is repeated into more cell text than the limit', async () => {
+  it('accepts a grid of exactly the configured size and refuses one more row', () => {
+    process.env[XLS_MAX_GRID_CELLS_ENV] = String(1024 * 8);
+    expect(parseBiff8Workbook(workbookStream(numberCell(1023, 7, 5)))).toHaveLength(1024);
+    expect(() => parseBiff8Workbook(workbookStream(numberCell(1024, 7, 5)))).toThrow(/1025 rows by 8 columns \(8200 cells\); at most 8192/);
+  });
+
+  it('rejects a grid limit that is not a positive whole number rather than ignoring it', () => {
+    process.env[XLS_MAX_GRID_CELLS_ENV] = '12.5';
+    expect(() => parseBiff8Workbook(workbookStream(numberCell(0, 0, 5)))).toThrow(new RegExp(`${XLS_MAX_GRID_CELLS_ENV} must be a positive whole number`));
+  });
+
+  const amplifiedWorkbook = async (copies: number): Promise<Buffer> => {
     const hugeString = 'x'.repeat(1024 * 1024);
-    const cells = Array.from({ length: 100 }, (_, i) => `<c r="A${i + 1}" t="s"><v>0</v></c>`);
+    const cells = Array.from({ length: copies }, (_, i) => `<c r="A${i + 1}" t="s"><v>0</v></c>`);
     const sheet = `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${cells
       .map((cell, i) => `<row r="${i + 1}">${cell}</row>`)
       .join('')}</sheetData></worksheet>`;
@@ -168,14 +270,30 @@ describe('oversized sheets and expansions (issue 668)', () => {
     zip.file('_rels/.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
     zip.file('xl/workbook.xml', '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>');
     zip.file('xl/_rels/workbook.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>');
-    zip.file('xl/sharedStrings.xml', `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="100" uniqueCount="1"><si><t>${hugeString}</t></si></sst>`);
+    zip.file('xl/sharedStrings.xml', `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${copies}" uniqueCount="1"><si><t>${hugeString}</t></si></sst>`);
     zip.file('xl/worksheets/sheet1.xml', sheet);
-    const workbook = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  };
 
-    const failure = await convertFile(workbook, 'xlsx', 'csv', {}, 'amplified.xlsx').catch((err: unknown) => err);
+  it('refuses a workbook whose shared string is repeated into more cell text than the default limit', async () => {
+    const failure = await convertFile(await amplifiedWorkbook(100), 'xlsx', 'csv', {}, 'amplified.xlsx').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as PayloadLimitError).status).toBe(413);
-    expect((failure as Error).message).toBe(`The XLSX cells expand to more than ${XLSX_MAX_CELL_TEXT_CHARS} characters.`);
+    expect((failure as Error).message).toBe(
+      `The XLSX cells expand to more than ${DEFAULT_XLSX_MAX_CELL_TEXT_CHARS} characters (${XLSX_MAX_CELL_TEXT_CHARS_ENV}).`
+    );
+  });
+
+  it('applies the configured limit to the expansion of shared strings', async () => {
+    const workbook = await amplifiedWorkbook(4);
+    process.env[XLSX_MAX_CELL_TEXT_CHARS_ENV] = String(3 * 1024 * 1024);
+    const failure = await convertFile(workbook, 'xlsx', 'csv', {}, 'amplified.xlsx').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toBe(`The XLSX cells expand to more than ${3 * 1024 * 1024} characters (${XLSX_MAX_CELL_TEXT_CHARS_ENV}).`);
+
+    process.env[XLSX_MAX_CELL_TEXT_CHARS_ENV] = String(4 * 1024 * 1024);
+    const converted = await convertFile(workbook, 'xlsx', 'csv', {}, 'amplified.xlsx');
+    expect(converted.buffer.length).toBeGreaterThanOrEqual(4 * 1024 * 1024);
   });
 });
 
@@ -274,13 +392,34 @@ describe('BIFF5 workbooks and files that hold both streams (issue 668: first let
   });
 });
 
-describe('an encrypted workbook handed to the office suite (issue 668)', () => {
-  oracleTest('is a typed error for a target the suite writes, not an untyped process failure', ['soffice'], async () => {
-    const workbook = buildCompoundFile([{ name: 'Workbook', data: encryptedWorkbook(CRYPTOAPI_FILEPASS) }]);
-    for (const target of ['ods', 'xlsx', 'png']) {
-      const failure = await dispatchConversion(workbook, 'xls', target, {}, 'locked.xls').catch((err: unknown) => err);
-      expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect((failure as Error).message).toBe('LibreOffice could not read the .xls file: it is damaged, encrypted or not a valid XLS document.');
-    }
+describe('an encrypted workbook that the office suite would read (issue 668)', () => {
+  // The in-process targets answer 422 above; the targets LibreOffice writes must answer the same way, from the same typed error.
+  const variants: Array<[string, Buffer]> = [
+    ['XOR obfuscation', XOR_FILEPASS],
+    ['RC4 encryption', RC4_FILEPASS],
+    ['RC4 CryptoAPI encryption', CRYPTOAPI_FILEPASS],
+  ];
+
+  describe.each(variants)('%s', (_name, filePass) => {
+    const compound = buildCompoundFile([{ name: 'Workbook', data: encryptedWorkbook(filePass) }]);
+
+    it.each(['ods', 'xlsx', 'pdf', 'png'])('is refused with status 422 for the .%s target before LibreOffice starts', async (target) => {
+      const failure = await dispatchConversion(compound, 'xls', target, {}, 'locked.xls').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
+      expect((failure as EncryptedOfficeDocumentError).status).toBe(422);
+      expect((failure as Error).message).toMatch(/encrypted/i);
+    }, 120_000);
+  });
+
+  it('is refused the same way when the workbook is a bare BIFF stream', async () => {
+    const failure = await dispatchConversion(encryptedWorkbook(RC4_FILEPASS), 'xls', 'ods', {}, 'locked.xls').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
+    expect((failure as EncryptedOfficeDocumentError).status).toBe(422);
+  }, 120_000);
+
+  oracleTest('an ordinary workbook of the same layout is not mistaken for an encrypted one', ['soffice'], async () => {
+    const workbook = buildCompoundFile([{ name: 'Workbook', data: workbookStream(numberCell(0, 0, 4)) }]);
+    const converted = await dispatchConversion(workbook, 'xls', 'ods', {}, 'plain.xls');
+    expect(converted.buffer.subarray(0, 2).toString('latin1')).toBe('PK');
   }, 120_000);
 });
