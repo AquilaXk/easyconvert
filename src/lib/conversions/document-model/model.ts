@@ -122,4 +122,8 @@ export interface DocumentModel {
   /** Mean size in points of the headings of each level, index 0 for level 1; absent levels are not used. */
   headingSizes: (number | undefined)[];
   pageCount: number;
+  /** Running header lines repeated at the top of the pages (as on the first page that has them). */
+  pageHeader?: Inline[][];
+  /** Running footer lines repeated at the bottom of the pages (as on the first page that has them). */
+  pageFooter?: Inline[][];
 }

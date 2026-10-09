@@ -272,6 +272,82 @@ function marginsOf(layouts: PageLayout[]): DocumentMargins {
  * Lays out the pages of a document.
  * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
  */
+/** Share of the page height at the top and at the bottom where running headers and footers sit. */
+const PAGE_FURNITURE_BAND = 0.08;
+/** Pages a running header or footer must recur on in a document of several pages. */
+const PAGE_FURNITURE_MIN_PAGES = 2;
+/** Tolerance in points when comparing a header's size with the body size. */
+const PAGE_FURNITURE_SIZE_TOLERANCE = 0.5;
+const PAGE_NUMBER = /\d+/g;
+
+type ParagraphEntry = Extract<PageBlock, { kind: 'paragraph' }>;
+type FurnitureBand = 'header' | 'footer';
+
+/** The band of the page a one-line paragraph sits in, or undefined when it is in the body. */
+function furnitureBand(entry: ParagraphEntry, pageHeights: Map<number, number>): FurnitureBand | undefined {
+  const { paragraph } = entry;
+  const height = pageHeights.get(paragraph.pageNumber);
+  if (!height || paragraph.lines.length !== 1) return undefined;
+  if (paragraph.box.y1 <= height * PAGE_FURNITURE_BAND) return 'header';
+  if (paragraph.box.y0 >= height * (1 - PAGE_FURNITURE_BAND)) return 'footer';
+  return undefined;
+}
+
+/** Text with page numbers masked, so "Page 3" and "Page 4" count as the same running line. */
+function furnitureKey(text: string): string {
+  return text.replace(PAGE_NUMBER, '#').trim();
+}
+
+/**
+ * Running headers and footers: one-line paragraphs in the top or bottom band of their page that recur on several
+ * pages (page numbers masked) or, in a one-page document, are no larger than the body text. They leave the body flow
+ * and become the document's page header and footer.
+ */
+function splitPageFurniture(
+  blocks: PageBlock[],
+  pages: PdfPageContent[]
+): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[] } {
+  const pageHeights = new Map(pages.map((page) => [page.pageNumber, page.height]));
+  const candidates = new Map<PageBlock, FurnitureBand>();
+  for (const block of blocks) {
+    if (block.kind !== 'paragraph') continue;
+    const band = furnitureBand(block, pageHeights);
+    if (band) candidates.set(block, band);
+  }
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [] };
+  const accepted = new Set<PageBlock>();
+  if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
+    const pagesByKey = new Map<string, Set<number>>();
+    for (const [block, band] of candidates) {
+      const entry = block as ParagraphEntry;
+      const key = `${band}:${furnitureKey(entry.paragraph.text)}`;
+      const seen = pagesByKey.get(key) ?? new Set<number>();
+      seen.add(entry.paragraph.pageNumber);
+      pagesByKey.set(key, seen);
+    }
+    for (const [block, band] of candidates) {
+      const entry = block as ParagraphEntry;
+      if ((pagesByKey.get(`${band}:${furnitureKey(entry.paragraph.text)}`)?.size ?? 0) >= PAGE_FURNITURE_MIN_PAGES) accepted.add(block);
+    }
+  } else {
+    const rest = blocks.flatMap((block) => (block.kind === 'paragraph' && !candidates.has(block) ? [block.paragraph] : []));
+    if (rest.length > 0) {
+      const body = bodySizeOf(rest);
+      for (const block of candidates.keys()) {
+        if ((block as ParagraphEntry).paragraph.size <= body + PAGE_FURNITURE_SIZE_TOLERANCE) accepted.add(block);
+      }
+    }
+  }
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [] };
+  const firstPageOf = (band: FurnitureBand): Paragraph[] => {
+    const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
+    if (lines.length === 0) return [];
+    const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
+    return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
+  };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer') };
+}
+
 export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont[]): DocumentModel {
   const flows = new Counter();
   const imageIds = new Counter();
@@ -287,7 +363,8 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
     });
     placeImages(layout, decoded);
   });
-  const blocks = joinContinuations(layouts.flatMap((layout) => layout.blocks));
+  const furniture = splitPageFurniture(joinContinuations(layouts.flatMap((layout) => layout.blocks)), pages);
+  const blocks = furniture.body;
 
   const paragraphs = blocks.flatMap((block) => (block.kind === 'paragraph' && !block.full ? [block.paragraph] : []));
   const bodySize = bodySizeOf(paragraphs.length > 0 ? paragraphs : blocks.flatMap((block) => (block.kind === 'paragraph' ? [block.paragraph] : [])));
@@ -361,6 +438,8 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
     bodyFont: dominantFont(paragraphs, fonts),
     headingSizes: headingSizesOf(levels),
     pageCount: pages.length,
+    ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
+    ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
 }
 

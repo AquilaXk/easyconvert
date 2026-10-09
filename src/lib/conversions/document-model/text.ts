@@ -54,12 +54,14 @@ export function blockText(block: Block): string {
 }
 
 export function documentToText(model: DocumentModel): string {
-  const parts: string[] = [];
+  const furniture = (lines: Inline[][] | undefined): string[] => (lines ?? []).map((runs) => inlineText(runs)).filter((text) => text.trim() !== '');
+  const parts: string[] = [...furniture(model.pageHeader)];
   for (const section of model.sections) {
     for (const block of section.blocks) {
       const text = blockText(block);
       if (text.trim() !== '') parts.push(text);
     }
   }
+  parts.push(...furniture(model.pageFooter));
   return parts.join('\n\n');
 }

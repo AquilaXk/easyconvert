@@ -244,6 +244,21 @@ function imageXml(part: ImagePart, widthPt: number, heightPt: number, drawingId:
 // Document
 // ---------------------------------------------------------------------------------------------
 
+const HEADER_RELATIONSHIP_ID = 'rIdHeader1';
+const FOOTER_RELATIONSHIP_ID = 'rIdFooter1';
+
+/** References to the running header and footer parts; they come first in a section's properties. */
+function furnitureReferences(model: DocumentModel): string {
+  const header = model.pageHeader && model.pageHeader.length > 0 ? `<w:headerReference w:type="default" r:id="${HEADER_RELATIONSHIP_ID}"/>` : '';
+  const footer = model.pageFooter && model.pageFooter.length > 0 ? `<w:footerReference w:type="default" r:id="${FOOTER_RELATIONSHIP_ID}"/>` : '';
+  return header + footer;
+}
+
+/** A header (`w:hdr`) or footer (`w:ftr`) part holding one paragraph per running line. */
+function furniturePartXml(tag: 'hdr' | 'ftr', lines: Inline[][]): string {
+  return `${XML_HEADER}<w:${tag} xmlns:w="${NS_W}" xmlns:r="${NS_R}">${lines.map((runs) => paragraphXml(runs, {})).join('')}</w:${tag}>`;
+}
+
 function sectionProperties(model: DocumentModel, section: Section, first: boolean): string {
   const width = twips(model.pageWidthPt);
   const height = twips(model.pageHeightPt);
@@ -251,7 +266,7 @@ function sectionProperties(model: DocumentModel, section: Section, first: boolea
   const orient = width > height ? ' w:orient="landscape"' : '';
   const columns = section.columns > 1 ? `<w:cols w:num="${section.columns}" w:space="${DEFAULT_COLUMN_GAP_TWIPS}"/>` : '<w:cols w:space="720"/>';
   return (
-    `<w:sectPr>${first ? '' : '<w:type w:val="continuous"/>'}<w:pgSz w:w="${width}" w:h="${height}"${orient}/>` +
+    `<w:sectPr>${furnitureReferences(model)}${first ? '' : '<w:type w:val="continuous"/>'}<w:pgSz w:w="${width}" w:h="${height}"${orient}/>` +
     `<w:pgMar w:top="${twips(margins.top)}" w:right="${twips(margins.right)}" w:bottom="${twips(margins.bottom)}" w:left="${twips(margins.left)}" w:header="720" w:footer="720" w:gutter="0"/>` +
     `${columns}</w:sectPr>`
   );
@@ -327,7 +342,7 @@ function stylesXml(model: DocumentModel): string {
   );
 }
 
-function contentTypesXml(hasNumbering: boolean, formats: Set<string>): string {
+function contentTypesXml(hasNumbering: boolean, formats: Set<string>, hasHeader = false, hasFooter = false): string {
   const defaults = [
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
     '<Default Extension="xml" ContentType="application/xml"/>',
@@ -338,6 +353,8 @@ function contentTypesXml(hasNumbering: boolean, formats: Set<string>): string {
     '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>',
     '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>',
     ...(hasNumbering ? ['<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'] : []),
+    ...(hasHeader ? ['<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'] : []),
+    ...(hasFooter ? ['<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'] : []),
   ];
   return `${XML_HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${defaults.join('')}${overrides.join('')}</Types>`;
 }
@@ -383,14 +400,18 @@ export async function documentToDocx(model: DocumentModel): Promise<Buffer> {
     `${XML_HEADER}<w:document xmlns:w="${NS_W}" xmlns:r="${NS_R}" xmlns:wp="${NS_WP}" xmlns:a="${NS_A}" xmlns:pic="${NS_PIC}">` +
     `<w:body>${bodyParts.join('')}${sectionProperties(model, finalSection, model.sections.length <= 1)}</w:body></w:document>`;
 
+  const hasHeader = Boolean(model.pageHeader && model.pageHeader.length > 0);
+  const hasFooter = Boolean(model.pageFooter && model.pageFooter.length > 0);
   const relationships = [
     `<Relationship Id="rIdStyles" Type="${REL_BASE}/styles" Target="styles.xml"/>`,
     ...(lists.length > 0 ? [`<Relationship Id="rIdNumbering" Type="${REL_BASE}/numbering" Target="numbering.xml"/>`] : []),
     ...[...imageParts.values()].map((part) => `<Relationship Id="${part.relationshipId}" Type="${REL_BASE}/image" Target="${part.path}"/>`),
+    ...(hasHeader ? [`<Relationship Id="${HEADER_RELATIONSHIP_ID}" Type="${REL_BASE}/header" Target="header1.xml"/>`] : []),
+    ...(hasFooter ? [`<Relationship Id="${FOOTER_RELATIONSHIP_ID}" Type="${REL_BASE}/footer" Target="footer1.xml"/>`] : []),
   ];
 
   const zip = new JSZip();
-  zip.file('[Content_Types].xml', contentTypesXml(lists.length > 0, formats));
+  zip.file('[Content_Types].xml', contentTypesXml(lists.length > 0, formats, hasHeader, hasFooter));
   zip.file(
     '_rels/.rels',
     `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL_BASE}/officeDocument" Target="word/document.xml"/></Relationships>`
@@ -398,6 +419,8 @@ export async function documentToDocx(model: DocumentModel): Promise<Buffer> {
   zip.file('word/document.xml', document);
   zip.file('word/styles.xml', stylesXml(model));
   if (lists.length > 0) zip.file('word/numbering.xml', numberingXml(lists));
+  if (hasHeader && model.pageHeader) zip.file('word/header1.xml', furniturePartXml('hdr', model.pageHeader));
+  if (hasFooter && model.pageFooter) zip.file('word/footer1.xml', furniturePartXml('ftr', model.pageFooter));
   zip.file('word/_rels/document.xml.rels', `${XML_HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.join('')}</Relationships>`);
   for (const part of imageParts.values()) zip.file(`word/${part.path}`, part.image.data);
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });

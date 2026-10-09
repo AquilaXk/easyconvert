@@ -102,5 +102,9 @@ const STYLE =
 /** A complete HTML page. `title` is escaped. */
 export function documentToHtml(model: DocumentModel, title: string): string {
   const body = model.sections.flatMap((section) => section.blocks.map((block) => blockHtml(model, block))).filter((html) => html !== '');
+  const furniture = (tag: 'header' | 'footer', lines: Inline[][] | undefined): string[] =>
+    lines && lines.length > 0 ? [`<${tag}>${lines.map((runs) => `<p>${inlineHtml(runs)}</p>`).join('')}</${tag}>`] : [];
+  body.unshift(...furniture('header', model.pageHeader));
+  body.push(...furniture('footer', model.pageFooter));
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXmlText(title)}</title><style>${STYLE}</style></head><body>${body.join('\n')}</body></html>`;
 }

@@ -96,14 +96,23 @@ function blockMarkdown(block: Block, markdown: boolean): string {
   }
 }
 
+/** Running header or footer lines: italic in Markdown, plain in the structured text. */
+function furnitureMarkdown(lines: Inline[][] | undefined, markdown: boolean): string[] {
+  if (!lines) return [];
+  return lines
+    .map((runs) => (markdown ? inlineMarkdown(runs.map((run) => ({ ...run, italic: true }))) : runs.map((run) => run.text).join('')))
+    .filter((text) => text.trim() !== '');
+}
+
 function render(model: DocumentModel, markdown: boolean): string {
-  const parts: string[] = [];
+  const parts: string[] = [...furnitureMarkdown(model.pageHeader, markdown)];
   for (const section of model.sections) {
     for (const block of section.blocks) {
       const text = blockMarkdown(block, markdown);
       if (text.trim() !== '') parts.push(text);
     }
   }
+  parts.push(...furnitureMarkdown(model.pageFooter, markdown));
   return parts.join('\n\n');
 }
 
