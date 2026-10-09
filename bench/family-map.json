@@ -60,7 +60,7 @@
     },
     {
       "families": ["ocr"],
-      "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts)$"
+      "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts|pdf-page-render\\.ts)$"
     },
     {
       "families": ["ebook"],
