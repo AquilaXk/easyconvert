@@ -1,4 +1,4 @@
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import {
   FORMAT_REGISTRY,
   assertNotSpoofedFile,
@@ -429,7 +429,7 @@ export async function convertFile(
 
   // Verify that the requested conversion is allowed in registry
   if (!srcDef.targetFormats.includes(tgt)) {
-    throw new Error(
+    throw new UnsupportedTargetError(
       `Cannot convert from ${srcDef.name} (.${src}) to target format .${tgt}. Available targets: ${srcDef.targetFormats.join(
         ', '
       )}`
