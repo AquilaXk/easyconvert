@@ -345,6 +345,58 @@ describe('colour sources', () => {
   );
 });
 
+/** Flat coloured bands with hard edges, 192 x 128 (wider than tall): graphic content in colour. */
+async function colourGraphic(): Promise<Buffer> {
+  const raw = Buffer.alloc(PHOTO_WIDTH * PHOTO_HEIGHT * 3);
+  const bands = [[220, 40, 40], [40, 160, 70], [40, 70, 220], [240, 240, 240]];
+  for (let y = 0; y < PHOTO_HEIGHT; y += 1) for (let x = 0; x < PHOTO_WIDTH; x += 1) raw.set(bands[Math.floor(x / (PHOTO_WIDTH / 4))], (y * PHOTO_WIDTH + x) * 3);
+  return sharp(raw, { raw: { width: PHOTO_WIDTH, height: PHOTO_HEIGHT, channels: 3 } }).png().toBuffer();
+}
+
+/** The sources the tool route takes (grey, and colour graphic content), each also as a JPEG for the EXIF cases. */
+const TOOL_ROUTE_SOURCES = [
+  { name: 'grey', format: 'YUV400', space: 'b-w' as const, png: grey8Graphic },
+  { name: 'colour graphic', format: 'YUV444', space: 'srgb' as const, png: colourGraphic },
+];
+
+describe.each(TOOL_ROUTE_SOURCES)('$name source through the library encoder', ({ format, space, png }) => {
+  oracleTest(
+    'the EXIF orientation is applied to the pixels, no orientation tag is left, and the library encoder wrote the file',
+    ['avifenc', 'avifdec', 'exiftool'],
+    async () => {
+      const jpeg = await sharp(await png()).toColourspace(space).jpeg({ quality: 95, chromaSubsampling: '4:4:4' }).toBuffer();
+      const out = await convertImage(injectExifOrientation(jpeg, 6), 'avif', {}, 'o.jpg', 'jpg');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+      const file = writeIn(`oriented-${format}.avif`, out.buffer);
+      expect(avifInfo(file).format).toBe(format);
+      const tags = execFileSync(requireOracleTool('exiftool'), ['-a', '-G1', '-s', file], { encoding: 'utf-8' });
+      expect(/Orientation\s*:\s*(.*)/.exec(tags)?.[1].trim() ?? 'Horizontal (normal)').toBe('Horizontal (normal)');
+      const decoded = path.join(workDir, `oriented-${format}.png`);
+      execFileSync(requireOracleTool('avifdec'), [file, decoded]);
+      expect(await sharp(decoded).metadata()).toMatchObject({ width: PHOTO_HEIGHT, height: PHOTO_WIDTH });
+    },
+    60_000
+  );
+
+  oracleTest(
+    'alpha that is fully opaque is dropped and alpha that is not is kept, by the library encoder',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const opaque = await sharp(await png()).ensureAlpha().toColourspace(space).png().toBuffer();
+      const opaqueOut = await convertImage(opaque, 'avif', {}, 'o.png', 'png');
+      expect(opaqueOut.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+      expect(avifInfo(writeIn(`opaque-${format}.avif`, opaqueOut.buffer))).toMatchObject({ format, alpha: expect.stringMatching(/Absent/) });
+      const { data, info } = await sharp(opaque).raw().toBuffer({ resolveWithObject: true });
+      data[info.channels - 1] = 100;
+      const translucent = await sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } }).toColourspace(space).png().toBuffer();
+      const translucentOut = await convertImage(translucent, 'avif', {}, 't.png', 'png');
+      expect(translucentOut.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+      expect(avifInfo(writeIn(`translucent-${format}.avif`, translucentOut.buffer)).alpha).toMatch(/Present|premultiplied/i);
+    },
+    60_000
+  );
+});
+
 describe('HDR output', () => {
   oracleTest(
     'a PQ photograph is written at 10 bits with BT.2020 / PQ colour tags by the image library',
