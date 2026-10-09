@@ -57,9 +57,9 @@
     },
     {
       "id": "compression/mixed.zst->tar/throughput",
-      "issue": 497,
+      "issue": 651,
       "ratio": 0.92,
-      "note": "TODO(lead): file a dedicated issue for the Zstandard decode row and replace #497, which tracks compress speed. Near parity, still undecidable after batching five calls per sample: speed ratio 0.93 [0.89, 1.02] over 25 pairs when recorded locally (baseline 1.44)"
+      "note": "Near parity, still undecidable after batching five calls per sample: speed ratio 0.93 [0.89, 1.02] over 25 pairs when recorded locally (baseline 1.44)"
     },
     {
       "id": "compression/mixed.xz->tar/throughput",
