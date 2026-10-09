@@ -570,7 +570,7 @@ export async function convertWithNativeFfmpeg(
       const { inputPath } = resolveInputContext(input, src, tempDir);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const durationSeconds = probeMediaDuration(inputPath, options);
+      const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
       const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS);
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
