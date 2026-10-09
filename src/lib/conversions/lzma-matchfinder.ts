@@ -45,6 +45,8 @@ export class LzmaMatchFinder {
   /** position mod cyclic, kept incrementally so the tree search never divides. */
   private cyclicPosition = 0;
   private readonly data: Uint8Array;
+  /** The same bytes read four at a time, so a long common prefix costs a quarter of the compares. */
+  private readonly view: DataView;
   private readonly size: number;
   private readonly dictSize: number;
   private readonly depth: number;
@@ -58,6 +60,7 @@ export class LzmaMatchFinder {
 
   constructor(data: Uint8Array, dictSize: number, niceLength: number, depth: number) {
     this.data = data;
+    this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     this.size = data.length;
     this.dictSize = dictSize;
     this.depth = depth;
@@ -69,10 +72,18 @@ export class LzmaMatchFinder {
     this.son = new Int32Array(this.cyclic * 2);
   }
 
-  /** Longest common prefix of the data at a and b, at most `limit` bytes. */
-  private commonLength(a: number, b: number, limit: number): number {
-    const d = this.data;
+  /** Longest common prefix of the data at a and b, at most `limit` bytes (both ranges must lie inside the data). */
+  commonLength(a: number, b: number, limit: number): number {
+    const view = this.view;
+    const wordLimit = limit - 3;
     let n = 0;
+    while (n < wordLimit) {
+      const diff = view.getInt32(a + n, true) ^ view.getInt32(b + n, true);
+      // The lowest set bit of the difference is in the first byte that differs (little-endian reads).
+      if (diff !== 0) return n + ((31 - Math.clz32(diff & -diff)) >> 3);
+      n += 4;
+    }
+    const d = this.data;
     while (n < limit && d[a + n] === d[b + n]) n++;
     return n;
   }

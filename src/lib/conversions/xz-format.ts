@@ -65,9 +65,14 @@ function encodeVarint(value: number): number[] {
 
 const CRC64_POLY_LOW = 0xd7870f42;
 const CRC64_POLY_HIGH = 0xc96c5795;
-const crc64Low = new Uint32Array(256);
-const crc64High = new Uint32Array(256);
-for (let n = 0; n < 256; n++) {
+/** Bytes a slicing step consumes: one table per byte of the 64-bit word. */
+const CRC64_SLICES = 8;
+const CRC64_TABLE_SIZE = 256;
+// Table k holds the CRC-64 of a byte followed by k zero bytes; table 0 is the plain byte-at-a-time table. Halves are kept
+// apart so the arithmetic stays in 32-bit integers.
+const crc64Low = new Uint32Array(CRC64_SLICES * CRC64_TABLE_SIZE);
+const crc64High = new Uint32Array(CRC64_SLICES * CRC64_TABLE_SIZE);
+for (let n = 0; n < CRC64_TABLE_SIZE; n++) {
   let low = n;
   let high = 0;
   for (let k = 0; k < 8; k++) {
@@ -82,15 +87,49 @@ for (let n = 0; n < 256; n++) {
   crc64Low[n] = low;
   crc64High[n] = high;
 }
+for (let slice = 1; slice < CRC64_SLICES; slice++) {
+  for (let n = 0; n < CRC64_TABLE_SIZE; n++) {
+    const previousLow = crc64Low[(slice - 1) * CRC64_TABLE_SIZE + n];
+    const previousHigh = crc64High[(slice - 1) * CRC64_TABLE_SIZE + n];
+    const index = previousLow & 0xff;
+    crc64Low[slice * CRC64_TABLE_SIZE + n] = (((previousLow >>> 8) | (previousHigh << 24)) ^ crc64Low[index]) >>> 0;
+    crc64High[slice * CRC64_TABLE_SIZE + n] = ((previousHigh >>> 8) ^ crc64High[index]) >>> 0;
+  }
+}
 
-/** CRC-64 of `data` as [low, high] 32-bit halves. */
+/** CRC-64 of `data` as [low, high] 32-bit halves, eight bytes per step. */
 function crc64(data: Uint8Array): [number, number] {
   let low = 0xffffffff;
   let high = 0xffffffff;
-  for (let i = 0; i < data.length; i++) {
+  let i = 0;
+  const wordEnd = data.length - (CRC64_SLICES - 1);
+  for (; i < wordEnd; i += CRC64_SLICES) {
+    const a = low ^ (data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24));
+    const b = high ^ (data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24));
+    low =
+      crc64Low[7 * CRC64_TABLE_SIZE + (a & 0xff)] ^
+      crc64Low[6 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
+      crc64Low[5 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
+      crc64Low[4 * CRC64_TABLE_SIZE + (a >>> 24)] ^
+      crc64Low[3 * CRC64_TABLE_SIZE + (b & 0xff)] ^
+      crc64Low[2 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
+      crc64Low[CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
+      crc64Low[b >>> 24];
+    high =
+      crc64High[7 * CRC64_TABLE_SIZE + (a & 0xff)] ^
+      crc64High[6 * CRC64_TABLE_SIZE + ((a >>> 8) & 0xff)] ^
+      crc64High[5 * CRC64_TABLE_SIZE + ((a >>> 16) & 0xff)] ^
+      crc64High[4 * CRC64_TABLE_SIZE + (a >>> 24)] ^
+      crc64High[3 * CRC64_TABLE_SIZE + (b & 0xff)] ^
+      crc64High[2 * CRC64_TABLE_SIZE + ((b >>> 8) & 0xff)] ^
+      crc64High[CRC64_TABLE_SIZE + ((b >>> 16) & 0xff)] ^
+      crc64High[b >>> 24];
+  }
+  for (; i < data.length; i++) {
     const index = (low ^ data[i]) & 0xff;
-    low = (((low >>> 8) | (high << 24)) ^ crc64Low[index]) >>> 0;
-    high = ((high >>> 8) ^ crc64High[index]) >>> 0;
+    const nextLow = ((low >>> 8) | (high << 24)) ^ crc64Low[index];
+    high = (high >>> 8) ^ crc64High[index];
+    low = nextLow;
   }
   return [(low ^ 0xffffffff) >>> 0, (high ^ 0xffffffff) >>> 0];
 }

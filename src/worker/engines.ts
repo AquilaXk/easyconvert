@@ -83,6 +83,15 @@ import {
   extractArchiveContained,
   sanitizeLeafFilename,
 } from '../lib/conversions/archive-extraction-safety';
+import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
+import {
+  sevenZipToTar,
+  stageTarForSevenZip,
+  streamToTar,
+  type ArchiveSource,
+  type StagedTar,
+  type StreamedArchive,
+} from '../lib/conversions/archive-stream';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
@@ -98,6 +107,7 @@ import {
   sevenZipReadPasswordInput,
   walkArchiveTreePaths,
 } from '../lib/conversions/archive-password';
+import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import {
   LibreOfficePoolManager,
   LibreOfficePoolTimeoutError,
@@ -381,24 +391,48 @@ export function assertNotSpoofedFileVfs(
 /**
  * Persists an output file to target VFS destination outside ephemeral sandbox before cleanup.
  */
+function resolveOutputPath(targetFormat: string, options?: WorkerEngineOptions, vfsPayload?: WorkerVfsPayload): string {
+  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
+  if (desiredOutput) return desiredOutput;
+  const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+  if (!fs.existsSync(vfsDir)) {
+    try {
+      fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+    } catch {}
+  }
+  return path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+}
+
 export function preserveOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
   vfsPayload?: WorkerVfsPayload
 ): string {
-  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
-  let finalPath = desiredOutput;
-  if (!finalPath) {
-    const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
-    if (!fs.existsSync(vfsDir)) {
-      try {
-        fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
-      } catch {}
-    }
-    finalPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
-  }
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   fs.copyFileSync(tempOutputPath, finalPath);
+  return finalPath;
+}
+
+/** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
+function writeOutputSegments(
+  segments: readonly Uint8Array[],
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  const fd = fs.openSync(finalPath, 'w');
+  try {
+    for (const segment of segments) {
+      let written = 0;
+      while (written < segment.length) {
+        written += fs.writeSync(fd, segment, written, segment.length - written);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   return finalPath;
 }
 
@@ -790,6 +824,8 @@ interface Package7zArchiveParams {
   timeout: number;
   maxBuffer: number;
   options?: WorkerEngineOptions;
+  /** Validated level, passed to 7-Zip as `-mx`. */
+  compressionLevel: number;
 }
 
 /**
@@ -822,7 +858,8 @@ async function assertCreatedArchiveEncrypted(
 }
 
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
-  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
+  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options, compressionLevel } = params;
+  const levelArgs = [`-mx=${compressionLevel}`];
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
@@ -845,7 +882,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     } else if (isTarBz2) {
       subType = '-tbzip2';
     }
-    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, tempOutputPath, tarPath], {
+    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, ...levelArgs, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
@@ -874,7 +911,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
       ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
-  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...(tgt === 'tar' ? [] : levelArgs), ...pwArgs, tempOutputPath, '.'], {
     cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
@@ -970,6 +1007,64 @@ async function extractSourceArchive(params: ExtractArchiveParams, src: string): 
 }
 
 /**
+ * The result of a streamed conversion. The dispatcher keeps an output on disk only for a payload that already lives on
+ * disk, a zero-heap request or a requested output path; any other caller gets the bytes back in memory, so a Buffer
+ * conversion writes no output file only to read it back and delete it.
+ */
+function streamedArchiveResult(
+  streamed: StreamedArchive,
+  context: { tgt: string; baseName: string; options: WorkerEngineOptions; vfsPayload?: WorkerVfsPayload; startTime: number }
+): WorkerConversionResult {
+  const { tgt, baseName, options, vfsPayload, startTime } = context;
+  const wantsFile = vfsPayload !== undefined || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
+  if (wantsFile) {
+    const persistedPath = writeOutputSegments(streamed.segments, tgt, options, vfsPayload);
+    return createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
+  }
+  const buffer = streamed.segments.length === 1 ? Buffer.from(streamed.segments[0].buffer, streamed.segments[0].byteOffset, streamed.segments[0].byteLength) : Buffer.concat(streamed.segments);
+  return {
+    mimeType: getMimeType(tgt),
+    filename: `${baseName}.${tgt}`,
+    size: buffer.length,
+    buffer,
+    engineUsed: 'native-7z',
+    executionTimeMs: Date.now() - startTime,
+  };
+}
+
+/** The archive a conversion reads, as the streaming routes take it: in memory, or a file left where it is. */
+function archiveSourceOf(input: Buffer | WorkerVfsPayload): ArchiveSource {
+  if (Buffer.isBuffer(input)) return { buffer: input };
+  if (input.inputBuffer) return { buffer: input.inputBuffer };
+  if (input.inputPath && fs.existsSync(input.inputPath)) return { filePath: input.inputPath };
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+}
+
+/** Runs a streaming route; null hands the request to the general pipeline (see archive-stream.ts). */
+async function runStreamingRoute(
+  route: Extract<NativeArchiveRoute, { kind: 'stream-to-tar' | 'seven-zip-to-tar' }>,
+  params: {
+    p7zBin: string;
+    input: Buffer | WorkerVfsPayload;
+    originalFilename: string;
+    timeout: number;
+    options: WorkerEngineOptions;
+  }
+): Promise<StreamedArchive | null> {
+  const common = {
+    p7zBin: params.p7zBin,
+    source: archiveSourceOf(params.input),
+    originalFilename: params.originalFilename,
+    timeoutMs: params.timeout,
+    skipLinks: params.options.skipLinks,
+    collisionPolicy: params.options.collisionPolicy,
+    signal: params.options.signal,
+  };
+  if (route.kind === 'stream-to-tar') return streamToTar({ ...common, compressor: route.source.compressor });
+  return sevenZipToTar(common);
+}
+
+/**
  * Converts or extracts archives using the native 7-Zip CLI engine.
  */
 export async function convertWithNative7z(
@@ -982,6 +1077,8 @@ export async function convertWithNative7z(
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   assertArchivePasswordSafe(options.password);
+  // Refused before any tool runs; the pack steps read the same validated value.
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
 
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
@@ -1012,41 +1109,71 @@ export async function convertWithNative7z(
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
+  const timeout = Math.min(options.timeoutMs || 60000, 180000);
+  const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+
+  // The routing decision lives in planNativeArchiveRoute; a null plan is the general extract-then-pack pipeline.
+  const route = planNativeArchiveRoute(src, tgt, options);
+  if (route?.kind === 'stream-to-tar' || route?.kind === 'seven-zip-to-tar') {
+    const streamed = await runStreamingRoute(route, { p7zBin, input, originalFilename, timeout, options });
+    if (streamed) {
+      const result = streamedArchiveResult(streamed, { tgt, baseName, options, vfsPayload, startTime });
+      if (streamed.skippedLinks.length > 0) {
+        result.skippedLinks = streamed.skippedLinks;
+      }
+      return result;
+    }
+  }
 
   // Failures are typed errors that propagate: a bad archive must never become a null that lets a
   // caller drop to another engine.
   return withSandboxDir('easyconvert-7z-', async (tempDir) => {
-    const inputExt = SEVEN_ZIP_INPUT_EXTENSION.get(src) ?? (src.includes('.') ? src.split('.').pop()! : src);
-    const { inputPath } = resolveInputContext(input, inputExt, tempDir);
+    // A tar headed for 7z is read and vetted in process and written once into the tree 7-Zip packs.
+    const staged: StagedTar | null =
+      route?.kind === 'tar-to-seven-zip'
+        ? stageTarForSevenZip({
+            source: archiveSourceOf(input),
+            workDir: tempDir,
+            skipLinks: options.skipLinks,
+            collisionPolicy: options.collisionPolicy,
+          })
+        : null;
 
-    const timeout = Math.min(options.timeoutMs || 60000, 180000);
-    const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-    const extractDir = path.join(tempDir, 'extracted');
-    fs.mkdirSync(extractDir, { recursive: true });
-
-    // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
+    let extractDir = path.join(tempDir, 'extracted');
     let entryCount: number;
     let skippedLinks: string[] = [];
-    if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-      const extraction = await extractSourceArchive(
-        {
-          p7zBin,
-          inputPath,
-          extractDir,
-          tempDir,
-          timeout,
-          maxBuffer,
-          options,
-        },
-        src
-      );
-      entryCount = extraction.entryCount;
-      skippedLinks = extraction.skippedLinks;
+    if (staged) {
+      extractDir = staged.stagingDir;
+      entryCount = staged.entryCount;
+      skippedLinks = staged.skippedLinks;
     } else {
-      // The caller-supplied name becomes a single path component inside the extraction root.
-      const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
-      fs.copyFileSync(inputPath, destPath);
-      entryCount = 1;
+      const inputExt = SEVEN_ZIP_INPUT_EXTENSION.get(src) ?? (src.includes('.') ? src.split('.').pop()! : src);
+      const { inputPath } = resolveInputContext(input, inputExt, tempDir);
+      fs.mkdirSync(extractDir, { recursive: true });
+
+      // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
+      if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
+        const extraction = await extractSourceArchive(
+          {
+            p7zBin,
+            inputPath,
+            extractDir,
+            tempDir,
+            timeout,
+            maxBuffer,
+            options,
+          },
+          src
+        );
+        entryCount = extraction.entryCount;
+        skippedLinks = extraction.skippedLinks;
+      } else {
+        // The caller-supplied name becomes a single path component inside the extraction root.
+        const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
+        fs.copyFileSync(inputPath, destPath);
+        entryCount = 1;
+      }
     }
 
     if (entryCount === 0) {
@@ -1065,15 +1192,18 @@ export async function convertWithNative7z(
         timeout,
         maxBuffer,
         options,
+        compressionLevel,
       });
     } catch (err) {
       throw toPackagingFailure(err, tgt);
+    } finally {
+      // The staged directories keep the tar's modes while 7-Zip packs them; the sandbox removes them afterwards.
+      staged?.release();
     }
     if (!packaged || !fs.existsSync(tempOutputPath)) {
       throw new ConversionFailedError('7-Zip packaging failed to produce output archive');
     }
 
-    const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
     const result = createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
