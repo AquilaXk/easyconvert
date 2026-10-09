@@ -1,6 +1,6 @@
 /**
  * Job server for the corpus runner, run as a child process (`node --import tsx bench/realworld/child.ts`). It takes one
- * job at a time over IPC, converts through the public entry point, checks the output and answers with the facts the
+ * job at a time over IPC, converts through the dispatcher the worker runs, checks the output and answers with the facts the
  * parent turns into a verdict. A crash of this process or a job past its deadline is handled by the parent.
  */
 import { execFileSync } from 'node:child_process';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { convertFile } from '../../src/lib/conversions/index';
+import { dispatchConversion } from '../../src/lib/conversions/dispatch';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 import { ConversionFailedError } from '../../src/lib/types';
 import type { ErrorFacts } from './verdict';
@@ -71,7 +71,7 @@ async function runJob(job: JobRequest): Promise<JobReply> {
   const started = performance.now();
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-'));
   try {
-    const result = await convertFile(fs.readFileSync(job.path), job.format, job.target, {}, job.name);
+    const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, {}, job.name);
     const ms = performance.now() - started;
     const problem = await outputProblem(result.buffer, job.target, workDir);
     if (problem !== null) return { id: job.id, kind: 'bad-output', bytes: result.buffer.length, ms, reason: problem };
