@@ -27,6 +27,7 @@ import {
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { describeDroppedStreams } from './media-dropped-streams';
+import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
 import {
@@ -34,6 +35,7 @@ import {
   resamplePlanarFloat,
   type ResampleOptions,
 } from './audio-resampler';
+import { readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 import {
   decodeAudioBuffer,
@@ -124,44 +126,29 @@ export function getFfprobePath(): string | null {
 }
 
 /**
- * Probes the duration of an audio/video file in seconds using ffprobe CLI.
- * Returns 0 if ffprobe is unavailable or if parsing fails.
+ * Duration of an audio/video file in seconds, which bounds how long a job may run: from the header of a WAVE file
+ * or a plain MP4 when it states one, otherwise from the ffprobe that belongs to `ffmpegBin` (or the one found on
+ * the host). That probe is remembered for the file, so the stream planner of the same conversion reads it again at
+ * no cost. Returns 0 if ffprobe is unavailable or if parsing fails.
  */
-export function probeMediaDuration(filePath: string, options?: ConversionOptions): number {
+export function probeMediaDuration(filePath: string, options?: ConversionOptions, ffmpegBin?: string | null): number {
   if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
     return options.duration;
   }
   // The duration of a WAVE file with uncompressed samples is in its header; no prober process is needed.
   const wav = readWavPcmInfo(filePath);
   if (wav !== null) return wav.durationSeconds;
-  const ffprobe = getFfprobePath();
-  if (ffprobe && fs.existsSync(filePath)) {
-    try {
-      const out = execFileSync(
-        ffprobe,
-        [
-          '-v',
-          'error',
-          '-show_entries',
-          'format=duration',
-          '-of',
-          'default=noprint_wrappers=1:nokey=1',
-          filePath,
-        ],
-        {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 3000,
-        }
-      )
-        .toString('utf-8')
-        .trim();
-      const parsed = Number.parseFloat(out);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    } catch {}
+  // So is the length of a plain MP4, in its movie header.
+  const header = readMp4Layout(filePath);
+  if (header?.durationSec !== undefined) return header.durationSec;
+  if (!fs.existsSync(filePath)) return 0;
+  try {
+    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
+    if (!ffprobe) return 0;
+    return probeInput(filePath, ffprobe as FfprobePath).durationSec ?? 0;
+  } catch {
+    return 0;
   }
-  return 0;
 }
 
 /** Longest a media job may run when the caller names no tier ceiling. */
@@ -400,7 +387,7 @@ async function executeFfmpegTranscode(
 
   try {
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    const durationSeconds = probeMediaDuration(inputPath, options);
+    const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
     const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       executeSandboxedBinary(ffmpegBin, ffmpegArgs, {

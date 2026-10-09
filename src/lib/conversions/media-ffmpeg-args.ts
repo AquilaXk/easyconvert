@@ -24,9 +24,9 @@ import {
 } from './media-audio-targets';
 import {
   FfprobePath,
-  InputStream,
-  probeInputStreams,
-  probeInputTimeline,
+  firstVideoStream,
+  layoutColorTransfer,
+  probeStreamLayout,
   probeAudioChannels,
   probeAudioSampleRate,
   probeAudioStreamCount,
@@ -37,6 +37,8 @@ import {
   VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
+import { softwareEncoderThreads } from './media-encoder-threads';
+import type { LayoutStream } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
@@ -899,13 +901,14 @@ export function buildFfmpegArguments(
   // The input is probed so every audio track, every subtitle the container can carry and (for mkv) the
   // attachments are mapped explicitly, instead of ffmpeg's one-audio, one-subtitle default selection.
   // A missing input file (argument-only callers) keeps the earlier selection rules.
-  const inputStreams: InputStream[] | undefined =
+  const inputLayout =
     !audioSpec && isVideo && fs.existsSync(inputPath)
-      ? probeInputStreams(inputPath, resolveFfprobeBinary(ffmpegBin))
+      ? probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin))
       : undefined;
+  const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
   const embeddedBurn = burnRequested && !options.subtitles?.input;
-  let burnSubtitleStream: InputStream | undefined;
+  let burnSubtitleStream: LayoutStream | undefined;
   if (embeddedBurn && !inputStreams) {
     throw new InvalidMediaOptionError("Subtitle 'burn' mode requires an input subtitle file path.");
   }
@@ -927,13 +930,13 @@ export function buildFfmpegArguments(
     audioOnlyMapArgs = audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin);
     outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
-    const timeline = probeInputTimeline(inputPath, resolveFfprobeBinary(ffmpegBin));
+    const chapters = inputLayout?.chapters;
     streamPlan = planStreamMapping({
       streams: inputStreams,
       container: tgt as VideoContainer,
       audioTrack: options.audio?.track,
       burnSubtitles: burnRequested,
-      hasChapters: timeline.chapterCount > 0,
+      hasChapters: chapters !== undefined,
     });
     // The analysing pass of a two-pass encode reads the picture only.
     const analysisOnly = passStage?.pass === 1;
@@ -948,12 +951,12 @@ export function buildFfmpegArguments(
     }
     if (CHAPTER_CONTAINERS.has(tgt) && !analysisOnly) {
       let chapterInput = 0;
-      if (timeline.chapterCount > 0 && timeline.startTimeSec < 0) {
+      if (chapters !== undefined && chapters.startTimeSec < 0) {
         // A track that starts before zero (AAC encoder delay) makes ffmpeg move the chapters later by that
         // amount, while the picture keeps its place. The chapters are read through a second open of the input
         // that is offset back by the start, which leaves each chapter on the frame it marked.
         chapterInput = inputArgs.filter((arg) => arg === '-i').length;
-        inputArgs.push('-itsoffset', timeline.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
+        inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
         if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
         inputArgs.push('-i', inputPath);
       }
@@ -1005,7 +1008,6 @@ export function buildFfmpegArguments(
   }
 
   if (isVideo) {
-    const hw = probeHardwareAcceleration(ffmpegBin);
     const disableHw = Boolean(options.disableHwaccel);
     const driDev = fs.existsSync('/dev/dri/renderD128')
       ? '/dev/dri/renderD128'
@@ -1084,11 +1086,10 @@ export function buildFfmpegArguments(
       throw new InvalidMediaOptionError(`toneMap "${String(toneMapMode)}" is not supported; use one of ${TONE_MAP_MODES.join(', ')}.`);
     }
     let hdrToSdr: VideoToneMapPlan | undefined;
-    if (!tenBit && codec !== 'prores' && fs.existsSync(inputPath)) {
+    if (!tenBit && codec !== 'prores' && inputLayout !== undefined) {
       // PQ/HLG samples squeezed into 8 bits unchanged would corrupt the picture: they are tone mapped to SDR, or
       // refused when the request asks to keep HDR.
-      const ffprobeBin = resolveFfprobeBinary(ffmpegBin);
-      const transfer = probeVideoColorTransfer(inputPath, ffprobeBin);
+      const transfer = layoutColorTransfer(inputLayout);
       if (HDR_TRANSFERS.has(transfer)) {
         if (toneMapMode === 'none') {
           throw new InvalidMediaOptionError(
@@ -1096,7 +1097,7 @@ export function buildFfmpegArguments(
           );
         }
         assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, ffprobeBin));
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, resolveFfprobeBinary(ffmpegBin)));
       }
     }
 
@@ -1108,6 +1109,8 @@ export function buildFfmpegArguments(
 
     // Two-pass needs the software encoders' pass logs, so it never selects a hardware encoder.
     if (!disableHw && !tenBit && !twoPass && (tgt === 'mp4' || tgt === 'mov' || tgt === 'mkv')) {
+      // Only a request that may pick a hardware encoder asks which sessions open; each answer costs a process.
+      const hw = probeHardwareAcceleration(ffmpegBin);
       if (codec === 'h264') {
         if (hw.nvenc && hw.supportedEncoders.has('h264_nvenc')) isNvenc = true;
         else if (hw.vaapi && driDev && hw.supportedEncoders.has('h264_vaapi')) isVaapi = true;
@@ -1123,6 +1126,14 @@ export function buildFfmpegArguments(
     if (twoPass) {
       assertTwoPassSupported(options, tgt, codec);
     }
+
+    // The picture the encoder receives when no filter below changes its size; undefined when one may.
+    const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !burnBitmapStream;
+    const sourcePicture = inputLayout ? firstVideoStream(inputLayout.streams) : undefined;
+    const unscaledPicture =
+      sizeUntouched && sourcePicture?.width !== undefined && sourcePicture.height !== undefined
+        ? { width: sourcePicture.width, height: sourcePicture.height }
+        : undefined;
 
     // 6. Strict Filter Graph Construction
     // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
@@ -1282,6 +1293,13 @@ export function buildFfmpegArguments(
           }
           if (isH264 && videoOpts?.level) {
             outputArgs.push('-level', videoOpts.level);
+          }
+          // Both passes of a two-pass encode must agree, and an encode held to a bitrate estimates its rate worse
+          // with more threads; neither is given a count.
+          const unconstrained = bitrateControlArgs(rateControl, options, codec).length === 0;
+          const threads = passStage || !unconstrained ? undefined : softwareEncoderThreads(codec, unscaledPicture);
+          if (threads !== undefined) {
+            outputArgs.push('-threads', String(threads));
           }
         }
       } else if (codec === 'vp9') {
