@@ -7,7 +7,9 @@ import {
   SPEED_LIGHT_INITIAL_PAIRS,
   SPEED_LIGHT_MAX_PAIRS,
   SPEED_LIGHT_WARMUP_ROUNDS,
+  SPEED_MAX_SAMPLE_REPEATS,
   SPEED_MIN_PAIRS,
+  SPEED_MIN_SAMPLE_MS,
   SPEED_PAIRS_STEP,
   SPEED_PARITY_TOLERANCE,
 } from './config';
@@ -24,6 +26,10 @@ import { coefficientOfVariation, median, type InterleavedTiming, timed } from '.
  * PASS: the lower bound is at or above 1 - tolerance. FAIL: the upper bound is below it. UNSTABLE: the interval
  * straddles it (or fewer than SPEED_MIN_PAIRS pairs exist), so more pairs are collected, up to a cap; an interval that
  * still straddles the line at the cap counts as a failure.
+ *
+ * Every timed sample of either side lasts at least SPEED_MIN_SAMPLE_MS: the number of back-to-back calls per sample is
+ * calibrated once per row from its warm-up rounds, as benchmark harnesses calibrate their iteration counts, so a
+ * side that finishes in milliseconds is not decided by timer resolution and scheduler jitter.
  */
 
 export class SpeedSampleError extends BenchArgumentError {}
@@ -122,16 +128,49 @@ export interface SpeedPlan {
   maxPairs: number;
   step: number;
   warmup: number;
-  /** Back-to-back calls of our side timed per sample (the sample is the mean per call); 1 when omitted. */
+  /** Fewest back-to-back calls of our side timed per sample (the sample is the mean per call); 1 when omitted. */
   oursRepeats?: number;
+  /**
+   * Shortest a timed sample of either side may last. The warm-up rounds are timed, and the fastest call of each side
+   * sets how many calls make a sample. Omitted or 0: no calibration (a plan without warm-up rounds cannot calibrate).
+   */
+  minSampleMs?: number;
+  /** Most calls per calibrated sample; SPEED_MAX_SAMPLE_REPEATS when omitted. */
+  maxRepeats?: number;
   tolerance?: number;
   confidence?: number;
 }
 
-export const LIGHT_SPEED_PLAN: SpeedPlan = { initialPairs: SPEED_LIGHT_INITIAL_PAIRS, maxPairs: SPEED_LIGHT_MAX_PAIRS, step: SPEED_PAIRS_STEP, warmup: SPEED_LIGHT_WARMUP_ROUNDS };
-export const HEAVY_SPEED_PLAN: SpeedPlan = { initialPairs: SPEED_HEAVY_INITIAL_PAIRS, maxPairs: SPEED_HEAVY_MAX_PAIRS, step: SPEED_PAIRS_STEP, warmup: SPEED_HEAVY_WARMUP_ROUNDS };
+export const LIGHT_SPEED_PLAN: SpeedPlan = {
+  initialPairs: SPEED_LIGHT_INITIAL_PAIRS,
+  maxPairs: SPEED_LIGHT_MAX_PAIRS,
+  step: SPEED_PAIRS_STEP,
+  warmup: SPEED_LIGHT_WARMUP_ROUNDS,
+  minSampleMs: SPEED_MIN_SAMPLE_MS,
+};
+export const HEAVY_SPEED_PLAN: SpeedPlan = {
+  initialPairs: SPEED_HEAVY_INITIAL_PAIRS,
+  maxPairs: SPEED_HEAVY_MAX_PAIRS,
+  step: SPEED_PAIRS_STEP,
+  warmup: SPEED_HEAVY_WARMUP_ROUNDS,
+  minSampleMs: SPEED_MIN_SAMPLE_MS,
+};
+
+/**
+ * Back-to-back calls that make a sample last at least `minSampleMs` when one call takes `callMs`: the smallest count
+ * whose total reaches it, at least 1 and at most `maxRepeats` (a call too short to reach it within the cap gets the cap).
+ */
+export function calibrateRepeats(callMs: number, minSampleMs: number, maxRepeats: number): number {
+  if (!(minSampleMs >= 0) || !Number.isFinite(minSampleMs)) throw new SpeedSampleError(`the minimum sample duration must be a non-negative number, got ${minSampleMs}`);
+  if (!Number.isInteger(maxRepeats) || maxRepeats < 1) throw new SpeedSampleError(`the repeat cap must be a positive integer, got ${maxRepeats}`);
+  if (!Number.isFinite(callMs) || callMs < 0) throw new SpeedSampleError(`a call time must be a non-negative number, got ${callMs}`);
+  if (callMs === 0) return minSampleMs === 0 ? 1 : maxRepeats;
+  return Math.min(maxRepeats, Math.max(1, Math.ceil(minSampleMs / callMs)));
+}
 
 export interface AdaptiveTiming extends InterleavedTiming {
+  /** Back-to-back calls per timed sample on each side, as calibrated; each sample in `oursMs` and `referenceMs` is the mean per call. */
+  repeats: { ours: number; reference: number };
   decision: SpeedDecision;
   /** True when the interval still straddled the pass line at the cap, which counts as a failure. */
   unstableAtCap: boolean;
@@ -155,24 +194,35 @@ export async function adaptiveSpeedTiming(
   if (!Number.isInteger(plan.step) || plan.step < 1) throw new SpeedSampleError(`the step must be a positive integer, got ${plan.step}`);
   const repeats = plan.oursRepeats ?? 1;
   if (!Number.isInteger(repeats) || repeats < 1) throw new SpeedSampleError(`oursRepeats must be a positive integer, got ${repeats}`);
+  const minSampleMs = plan.minSampleMs ?? 0;
+  const maxRepeats = plan.maxRepeats ?? SPEED_MAX_SAMPLE_REPEATS;
+  // The warm-up rounds are timed: the fastest single call of a side is the one least disturbed by the machine, and
+  // gives the largest, so safest, repeat count.
+  let fastestOurs = Number.POSITIVE_INFINITY;
+  let fastestReference = Number.POSITIVE_INFINITY;
   for (let i = 0; i < plan.warmup; i++) {
-    await ours();
-    await reference();
+    fastestOurs = Math.min(fastestOurs, await timed(ours, now));
+    fastestReference = Math.min(fastestReference, await timed(reference, now));
   }
+  const calibrated = (fastest: number): number => (Number.isFinite(fastest) ? calibrateRepeats(fastest, minSampleMs, maxRepeats) : 1);
+  const oursCalls = Math.max(repeats, calibrated(fastestOurs));
+  const referenceCalls = calibrated(fastestReference);
   const oursMs: number[] = [];
   const referenceMs: number[] = [];
   // A side that finishes in milliseconds is timed over several calls so scheduler jitter does not decide the pair.
-  const oursSample = async (): Promise<number> =>
+  const batched = (side: () => Promise<void> | void, calls: number) => async (): Promise<number> =>
     (await timed(async () => {
-      for (let repeat = 0; repeat < repeats; repeat++) await ours();
-    }, now)) / repeats;
+      for (let call = 0; call < calls; call++) await side();
+    }, now)) / calls;
+  const oursSample = batched(ours, oursCalls);
+  const referenceSample = batched(reference, referenceCalls);
   const collect = async (count: number): Promise<void> => {
     for (let i = 0; i < count; i++) {
       if (oursMs.length % 2 === 0) {
         oursMs.push(await oursSample());
-        referenceMs.push(await timed(reference, now));
+        referenceMs.push(await referenceSample());
       } else {
-        referenceMs.push(await timed(reference, now));
+        referenceMs.push(await referenceSample());
         oursMs.push(await oursSample());
       }
     }
@@ -186,6 +236,7 @@ export async function adaptiveSpeedTiming(
   const unstableAtCap = decision.verdict === 'unstable';
   return {
     runs: oursMs.length,
+    repeats: { ours: oursCalls, reference: referenceCalls },
     oursMs,
     referenceMs,
     oursMedianMs: median(oursMs),

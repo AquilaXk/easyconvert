@@ -80,6 +80,27 @@ export const SPEED_PAIRS_STEP = 4;
 export const SPEED_LIGHT_WARMUP_ROUNDS = 5;
 export const SPEED_HEAVY_WARMUP_ROUNDS = 1;
 
+/**
+ * Shortest time one timed sample of either side may take. A side whose single call is shorter is timed over enough
+ * back-to-back calls that the sample lasts at least this long (the sample is the mean per call), so timer resolution
+ * and scheduler jitter of a few milliseconds are a small share of every sample. Calibrated once per row, before the
+ * timed pairs.
+ */
+export const SPEED_MIN_SAMPLE_MS = 50;
+/** Most back-to-back calls a calibrated sample holds, so a near-instant call cannot make a sample run away. */
+export const SPEED_MAX_SAMPLE_REPEATS = 1000;
+
+/**
+ * Tracked gaps (bench/parity-gaps.json) keep the speed ratios of the latest CI-measured runs per row. A tracked row
+ * fails when its new ratio is below what that history predicts: the upper bound of the new interval under the lower
+ * edge of a one-sided Student's t prediction bound (bench/speed-history.ts).
+ */
+export const SPEED_HISTORY_MAX_POINTS = 10;
+/** Fewer points than this and the bound is reported but does not fail the row. */
+export const SPEED_HISTORY_MIN_POINTS = 3;
+/** One-sided confidence of the prediction bound. The t quantiles in bench/speed-history.ts are for this level. */
+export const SPEED_HISTORY_CONFIDENCE = 0.99;
+
 /** Reference-side measurements of the quality rows are cached here (git-ignored; CI restores it between runs). */
 export const REF_CACHE_DIR = path.join(REPO_ROOT, '.bench-cache');
 export const REF_CACHE_SCHEMA_VERSION = 1;

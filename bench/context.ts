@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { CORPUS_DIR } from './config';
+import { CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
 import type { BenchRow, Family } from './report';
@@ -54,7 +54,8 @@ export interface FamilyContext {
   inScope: (family: Family, caseName: string) => boolean;
   /**
    * Interleaved timing of `ours` against `reference`: fixed runs, or adaptive paired runs in a parity run. A side that
-   * finishes in milliseconds passes `oursRepeats` > 1 to time that many back-to-back calls per sample.
+   * finishes in milliseconds passes `oursRepeats` > 1 to time that many back-to-back calls per sample. A parity run also
+   * calibrates, per row, how many back-to-back calls make a sample of either side last SPEED_MIN_SAMPLE_MS.
    */
   time: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats?: number) => Promise<InterleavedTiming | AdaptiveTiming>;
   /** Scratch directory of this run; removed by the runner. */
@@ -104,10 +105,14 @@ export function createContext(init: ContextInit): FamilyContext {
   return {
     ...rest,
     inScope: (family, caseName) => caseInScope(quick, family, caseName),
-    time: (rawOurs, reference, weight, oursRepeats = 1) => {
+    time: async (rawOurs, reference, weight, oursRepeats = 1) => {
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
       if (init.parity) {
-        return adaptiveSpeedTiming(ours, reference, { ...(weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN), oursRepeats });
+        const timing = await adaptiveSpeedTiming(ours, reference, { ...(weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN), oursRepeats });
+        if (timing.repeats.ours > 1 || timing.repeats.reference > 1) {
+          init.log(`samples of at least ${SPEED_MIN_SAMPLE_MS} ms: ours ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) each`);
+        }
+        return timing;
       }
       return interleavedTiming(ours, reference, weight === 'heavy' ? init.heavyRuns : init.runs, init.warmup, oursRepeats);
     },

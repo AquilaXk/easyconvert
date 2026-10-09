@@ -5,13 +5,15 @@ import {
   SPEED_HEAVY_MAX_PAIRS,
   SPEED_LIGHT_INITIAL_PAIRS,
   SPEED_LIGHT_MAX_PAIRS,
+  SPEED_MAX_SAMPLE_REPEATS,
   SPEED_MIN_PAIRS,
+  SPEED_MIN_SAMPLE_MS,
   SPEED_PARITY_TOLERANCE,
 } from '../bench/config';
 import { createContext } from '../bench/context';
 import { BenchArgumentError } from '../bench/errors';
 import { ReferenceCache } from '../bench/ref-cache';
-import { adaptiveSpeedTiming, decideSpeed, HEAVY_SPEED_PLAN, LIGHT_SPEED_PLAN, signTestRank, SpeedSampleError, speedRatios } from '../bench/speed-parity';
+import { type AdaptiveTiming, adaptiveSpeedTiming, calibrateRepeats, decideSpeed, HEAVY_SPEED_PLAN, LIGHT_SPEED_PLAN, signTestRank, SpeedSampleError, speedRatios } from '../bench/speed-parity';
 
 /**
  * The speed-parity decision on hand-written paired samples. Every time below is typed in; the confidence of the
@@ -295,6 +297,117 @@ describe('collecting paired runs until the decision is stable', () => {
   });
 });
 
+describe('calibrating the calls per sample so every sample lasts long enough', () => {
+  it('names a minimum of 50 ms and a cap of 1000 calls', () => {
+    expect(SPEED_MIN_SAMPLE_MS).toBe(50);
+    expect(SPEED_MAX_SAMPLE_REPEATS).toBe(1000);
+    expect(LIGHT_SPEED_PLAN.minSampleMs).toBe(SPEED_MIN_SAMPLE_MS);
+    expect(HEAVY_SPEED_PLAN.minSampleMs).toBe(SPEED_MIN_SAMPLE_MS);
+  });
+
+  it.each([
+    // [call ms, min ms, expected calls]: the smallest count whose total reaches the minimum.
+    [2, 50, 25],
+    [0.5, 50, 100],
+    [3, 50, 17],
+    [50, 50, 1],
+    [80, 50, 1],
+    [4000, 50, 1],
+    [0.01, 50, 1000],
+    [0, 50, 1000],
+    [2, 0, 1],
+  ])('takes %f ms per call and a %f ms minimum to %i calls', (callMs, minMs, expected) => {
+    expect(calibrateRepeats(callMs, minMs, SPEED_MAX_SAMPLE_REPEATS)).toBe(expected);
+  });
+
+  it('caps the calls at the requested maximum and rejects malformed inputs', () => {
+    expect(calibrateRepeats(0.01, 50, 10)).toBe(10);
+    expect(() => calibrateRepeats(1, -1, 10)).toThrow(SpeedSampleError);
+    expect(() => calibrateRepeats(1, Number.NaN, 10)).toThrow(SpeedSampleError);
+    expect(() => calibrateRepeats(1, 50, 0)).toThrow(SpeedSampleError);
+    expect(() => calibrateRepeats(1, 50, 2.5)).toThrow(SpeedSampleError);
+    expect(() => calibrateRepeats(-1, 50, 10)).toThrow(SpeedSampleError);
+    expect(() => calibrateRepeats(Number.NaN, 50, 10)).toThrow(SpeedSampleError);
+  });
+
+  /** A virtual clock where each side advances time by its own per-call duration (a call can be scripted per call index). */
+  function clocked(oursCallMs: (call: number) => number, referenceCallMs: (call: number) => number) {
+    let clock = 0;
+    const calls = { ours: 0, reference: 0 };
+    return {
+      now: () => clock,
+      calls,
+      ours: (): void => {
+        clock += oursCallMs(calls.ours++);
+      },
+      reference: (): void => {
+        clock += referenceCallMs(calls.reference++);
+      },
+    };
+  }
+
+  it('batches each side from its fastest warm-up call, so every timed sample lasts at least the minimum', async () => {
+    // Ours takes 2 ms a call, the reference 0.5 ms: 25 and 100 calls make 50 ms.
+    const run = clocked(() => 2, () => 0.5);
+    const plan = { ...LIGHT_SPEED_PLAN, warmup: 3, minSampleMs: 50 };
+    const timing = await adaptiveSpeedTiming(run.ours, run.reference, plan, run.now);
+    expect(timing.repeats).toEqual({ ours: 25, reference: 100 });
+    expect(run.calls.ours).toBe(3 + timing.runs * 25);
+    expect(run.calls.reference).toBe(3 + timing.runs * 100);
+    // The sample is the mean per call, and the whole sample lasted repeats * per-call time = 50 ms on both sides.
+    expect(timing.oursMs).toEqual(Array(timing.runs).fill(2));
+    expect(timing.referenceMs).toEqual(Array(timing.runs).fill(0.5));
+    expect(timing.oursMs.every((ms) => ms * timing.repeats.ours >= 50)).toBe(true);
+    expect(timing.referenceMs.every((ms) => ms * timing.repeats.reference >= 50)).toBe(true);
+    expect(timing.decision).toMatchObject({ verdict: 'fail', median: 0.25 });
+  });
+
+  it('takes the fastest warm-up call, not the first, which is slowed by a cold start', async () => {
+    // The first call of ours takes 30 ms, then 2 ms: calibrating on the first would give 2 calls, not 25.
+    const run = clocked((call) => (call === 0 ? 30 : 2), () => 5);
+    const timing = await adaptiveSpeedTiming(run.ours, run.reference, { ...LIGHT_SPEED_PLAN, warmup: 3, minSampleMs: 50 }, run.now);
+    expect(timing.repeats).toEqual({ ours: 25, reference: 10 });
+  });
+
+  it('keeps one call per sample for a side that already lasts the minimum, and does not calibrate without warm-up rounds', async () => {
+    const slow = clocked(() => 80, () => 60);
+    const long = await adaptiveSpeedTiming(slow.ours, slow.reference, { ...HEAVY_SPEED_PLAN, warmup: 1, minSampleMs: 50 }, slow.now);
+    expect(long.repeats).toEqual({ ours: 1, reference: 1 });
+    expect(slow.calls.ours).toBe(1 + long.runs);
+
+    const quick = clocked(() => 2, () => 2);
+    const uncalibrated = await adaptiveSpeedTiming(quick.ours, quick.reference, { ...LIGHT_SPEED_PLAN, warmup: 0, minSampleMs: 50 }, quick.now);
+    expect(uncalibrated.repeats).toEqual({ ours: 1, reference: 1 });
+  });
+
+  it('never goes below the calls a family asked of ours, and never above the cap', async () => {
+    const run = clocked(() => 2, () => 0.01);
+    const timing = await adaptiveSpeedTiming(run.ours, run.reference, { ...LIGHT_SPEED_PLAN, warmup: 2, minSampleMs: 50, oursRepeats: 40, maxRepeats: 60 }, run.now);
+    expect(timing.repeats).toEqual({ ours: 40, reference: 60 });
+  });
+
+  it('still alternates which side runs first', async () => {
+    const order: string[] = [];
+    let clock = 0;
+    await adaptiveSpeedTiming(
+      () => {
+        order.push('ours');
+        clock += 25;
+      },
+      () => {
+        order.push('reference');
+        clock += 25;
+      },
+      { initialPairs: 6, maxPairs: 6, step: 1, warmup: 1, minSampleMs: 50 },
+      () => clock
+    );
+    // One warm-up round, then 6 pairs of 2 calls per side: ours first in pair 0, the reference first in pair 1.
+    expect(order.slice(0, 2)).toEqual(['ours', 'reference']);
+    expect(order.slice(2, 6)).toEqual(['ours', 'ours', 'reference', 'reference']);
+    expect(order.slice(6, 10)).toEqual(['reference', 'reference', 'ours', 'ours']);
+  });
+});
+
 describe('the timing a family asks of its context', () => {
   const context = (parity: boolean) =>
     createContext({
@@ -313,14 +426,10 @@ describe('the timing a family asks of its context', () => {
       log: () => undefined,
     });
 
-  // A parity run warms up with the plan's own rounds (one call of ours each); the fixed-run context here has none.
-  it.each([
-    ['a fixed-run benchmark', false, 0],
-    ['a parity run', true, LIGHT_SPEED_PLAN.warmup],
-  ])('calls ours the requested number of times per sample in %s', async (_name, parity, warmupCalls) => {
+  it('calls ours the requested number of times per sample in a fixed-run benchmark', async () => {
     let oursCalls = 0;
     let referenceCalls = 0;
-    const timing = await context(parity).time(
+    const timing = await context(false).time(
       async () => {
         oursCalls++;
         await new Promise((resolve) => setTimeout(resolve, 1));
@@ -331,8 +440,44 @@ describe('the timing a family asks of its context', () => {
       'light',
       3
     );
-    expect(oursCalls).toBe(warmupCalls + timing.runs * 3);
-    expect(referenceCalls).toBe(warmupCalls + timing.runs);
+    expect(oursCalls).toBe(timing.runs * 3);
+    expect(referenceCalls).toBe(timing.runs);
+  });
+
+  it('calibrates the calls per sample in a parity run, with the requested number as the least for ours', async () => {
+    let oursCalls = 0;
+    let referenceCalls = 0;
+    const logged: string[] = [];
+    const parityContext = createContext({
+      resolve: () => null,
+      strict: true,
+      runs: 6,
+      heavyRuns: 3,
+      warmup: 0,
+      injection: null,
+      parity: true,
+      quality: true,
+      speed: true,
+      quick: false,
+      refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
+      work: '/nonexistent',
+      log: (message) => logged.push(message),
+    });
+    const timing = (await parityContext.time(
+      () => {
+        oursCalls++;
+      },
+      () => {
+        referenceCalls++;
+      },
+      'light',
+      3
+    )) as AdaptiveTiming;
+    expect(timing.repeats.ours).toBeGreaterThanOrEqual(3);
+    expect(oursCalls).toBe(LIGHT_SPEED_PLAN.warmup + timing.runs * timing.repeats.ours);
+    expect(referenceCalls).toBe(LIGHT_SPEED_PLAN.warmup + timing.runs * timing.repeats.reference);
+    // Both sides return at once, so each sample is batched up to the cap, and the log says so.
+    expect(logged.some((line) => line.startsWith(`samples of at least ${SPEED_MIN_SAMPLE_MS} ms`))).toBe(true);
   });
 
   it('calls ours once per sample unless asked for more', async () => {
