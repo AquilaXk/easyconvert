@@ -32,6 +32,12 @@ export const SPEC = {
   losslessExact: { metric: 'lossless_exact', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   cer: { metric: 'cer', unit: '%', direction: 'lower', kind: 'quality', tolerance: tol(0.75, 0) },
   wordF1: { metric: 'word_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  headingF1: { metric: 'heading_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  listF1: { metric: 'list_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  tableTeds: { metric: 'table_teds', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.03, 0) },
+  columnAccuracy: { metric: 'column_accuracy', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.05, 0) },
+  paragraphCountError: { metric: 'paragraph_count_error', unit: 'ratio', direction: 'lower', kind: 'quality', tolerance: tol(0.03, 0) },
+  readingOrderTau: { metric: 'reading_order_tau', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
   throughput: { metric: 'throughput', unit: 'MB/s', direction: 'higher', kind: 'throughput', tolerance: tol(0, 0.35) },
 } as const satisfies Record<string, MetricSpec>;

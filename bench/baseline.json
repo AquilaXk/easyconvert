@@ -371,6 +371,106 @@
       "delta": null,
       "ratio": 1.4423391726630617
     },
+    "document/pdf-structure->docx/column_accuracy": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.05,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.25,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/heading_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/list_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/paragraph_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -15.061111111111112,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/reading_order_tau": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9983359133126936,
+      "delta": 0.0965811965811968,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/table_teds": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 44.06206113514081
+    },
+    "document/pdf-text->txt/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -24.38101963028649,
+      "ratio": null
+    },
+    "document/pdf-text->txt/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.2625067961416203
+    },
+    "document/pdf-text->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "document/report.docx->pdf/cer": {
       "direction": "lower",
       "tolerance": {
