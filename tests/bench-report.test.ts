@@ -91,6 +91,39 @@ describe('report schema', () => {
     expect(attempt).toThrow(message);
   });
 
+  it('keeps the speed decision of a parity run on a throughput row', () => {
+    const parsed = validateReport(
+      mutate((r) => {
+        Object.assign(firstRow(r), {
+          id: 'image/photo-a.jpg->webp/throughput',
+          metric: 'throughput',
+          kind: 'throughput',
+          ratio: 0.5,
+          ours: 1,
+          reference: 2,
+          delta: -1,
+          ratioLow: 0.4,
+          ratioHigh: 0.6,
+          ratioMedian: 0.5,
+          runs: 9,
+          speedVerdict: 'fail',
+          unstableAtCap: true,
+        });
+      })
+    );
+    expect(parsed.rows[0]).toMatchObject({ ratioLow: 0.4, ratioHigh: 0.6, ratioMedian: 0.5, runs: 9, speedVerdict: 'fail', unstableAtCap: true });
+  });
+
+  it.each([
+    ['a speed verdict that is not pass or fail', (r: Record<string, unknown>) => { firstRow(r).speedVerdict = 'unstable'; }, /speedVerdict/],
+    ['an interval bound that is not a number', (r: Record<string, unknown>) => { firstRow(r).ratioLow = '0.4'; }, /ratioLow/],
+    ['an unstable-at-cap flag that is not a boolean', (r: Record<string, unknown>) => { firstRow(r).unstableAtCap = 1; }, /unstableAtCap/],
+  ])('rejects %s', (_name, change, message) => {
+    const attempt = (): unknown => validateReport(mutate(change));
+    expect(attempt).toThrow(ReportSchemaError);
+    expect(attempt).toThrow(message);
+  });
+
   it('rejects a report that is not an object', () => {
     expect(() => validateReport(null)).toThrow(ReportSchemaError);
     expect(() => validateReport([])).toThrow(ReportSchemaError);

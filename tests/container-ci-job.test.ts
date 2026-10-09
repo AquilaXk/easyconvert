@@ -66,7 +66,7 @@ describe('container job in .github/workflows/ci.yml', () => {
   it('runs in parallel with the other jobs and is required by the verify aggregate', () => {
     expect(container.needs).toBeUndefined();
     expect(container['timeout-minutes']).toBeLessThanOrEqual(CONTAINER_JOB_MAX_MINUTES);
-    expect(workflow.jobs.verify.needs).toEqual(['changes', 'checks', 'tests', 'conformance', 'integration', 'container']);
+    expect(workflow.jobs.verify.needs).toEqual(['changes', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed']);
     const verifyScript = workflow.jobs.verify.steps.map((step) => step.run ?? '').join('\n');
     expect(verifyScript).toContain('"$CONTAINER_RESULT" != success');
   });

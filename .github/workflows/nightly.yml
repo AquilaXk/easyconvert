@@ -104,6 +104,137 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # Reference parity on every family and every case: quality against the reference tools (the reference side is
+  # measured here and cached for the pull request jobs) and speed by a confidence interval of the speed ratio. Also
+  # gated on bench/baseline.json. The quality and the speed half run in separate jobs, so each fits one runner and
+  # the timing job has the machine to itself. The plain baseline run above stays as it was.
+  bench-parity-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Fingerprint the reference tools
+        id: tools
+        run: echo "fingerprint=$(npx --no-install tsx bench/run.ts --print-tool-fingerprint)" >> "$GITHUB_OUTPUT"
+
+      # This run is the writer of the cache the pull request jobs read: the reference side of every quality row.
+      - name: Restore the reference measurements
+        id: ref-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .bench-cache
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}
+          restore-keys: |
+            bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
+
+      - name: Run the quality parity benchmark
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run bench:quality -- --parity --quality-only
+
+      # Saved even when the benchmark fails, since a failing night is exactly when the pull requests need the cache.
+      # The key carries the run id: a cache entry is immutable, and entries are keyed inside the cache anyway.
+      - name: Save the reference measurements
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .bench-cache
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}-${{ github.run_id }}
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-quality-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  bench-parity-speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Run the speed parity benchmark
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run bench:quality -- --parity --speed-only
+
+      # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This
+      # step lists what refreshing them from this run would change; the refresh itself is a reviewed commit:
+      #   gh run download <run id> -n bench-speed-results -D speed-results && npm run bench:refresh-speed -- --write speed-results
+      - name: Show what refreshing the recorded speed ratios would change
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            echo '### Recorded speed ratios: dry run of the refresh'
+            echo '```'
+            npx --no-install tsx bench/refresh-speed.ts bench-results
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-speed-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
   # The dependency licence gate arrives with its own script; until the script exists the job says so and passes.
   licenses:
     runs-on: ubuntu-latest
@@ -217,7 +348,7 @@ jobs:
 
   # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place.
   report:
-    needs: [perf, bench, licenses, realworld, realworld-gate]
+    needs: [perf, bench, bench-parity-quality, bench-parity-speed, licenses, realworld, realworld-gate]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10

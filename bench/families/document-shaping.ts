@@ -4,7 +4,6 @@ import type { FamilyRunner } from '../context';
 import { REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
-import { interleavedTiming } from '../stats';
 import { characterErrorRatePercent } from '../text-metrics';
 import { runTool } from '../tools';
 
@@ -42,6 +41,7 @@ function referenceHtml(sample: Sample): string {
 }
 
 export const runDocumentShaping: FamilyRunner = async (ctx) => {
+  if (!ctx.inScope('document', CASE)) return [];
   const plan = ctx.plan(['pdftotext', 'soffice'], CASE);
   if (!plan.ok) return skippedGroup('document', CASE, SPECS, REFERENCE, plan);
   ctx.log(`document ${CASE}`);
@@ -66,27 +66,31 @@ export const runDocumentShaping: FamilyRunner = async (ctx) => {
   };
   const textOf = (pdf: string): string => runTool(pdftotext, ['-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
 
-  const oursScores: number[] = [];
-  const referenceScores: number[] = [];
-  for (const [index, sample] of samples.entries()) {
-    const oursFile = ctx.scratch(`${sample.name}-ours.pdf`);
-    fs.writeFileSync(oursFile, await oursPdf(sample));
-    oursScores.push(characterErrorRatePercent(comparable(sample.text), comparable(textOf(oursFile))));
-    referenceScores.push(characterErrorRatePercent(comparable(sample.text), comparable(textOf(referencePdf(index, ctx.scratch('shaping-reference'))))));
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const oursScores: number[] = [];
+    const referenceScores: number[] = [];
+    for (const [index, sample] of samples.entries()) {
+      const oursFile = ctx.scratch(`${sample.name}-ours.pdf`);
+      fs.writeFileSync(oursFile, await oursPdf(sample));
+      oursScores.push(characterErrorRatePercent(comparable(sample.text), comparable(textOf(oursFile))));
+      referenceScores.push(characterErrorRatePercent(comparable(sample.text), comparable(textOf(referencePdf(index, ctx.scratch('shaping-reference'))))));
+    }
+    rows.push(measuredRow('document', CASE, SPEC.cer, mean(oursScores), mean(referenceScores), REFERENCE));
   }
-  const rows: BenchRow[] = [measuredRow('document', CASE, SPEC.cer, mean(oursScores), mean(referenceScores), REFERENCE)];
 
-  const timing = await interleavedTiming(
-    async () => {
-      for (const sample of samples) await oursPdf(sample);
-    },
-    () => {
-      // One office process per document, as a user converting one file runs it.
-      for (const index of samples.keys()) referencePdf(index, ctx.scratch('shaping-timing'));
-    },
-    ctx.heavyRuns,
-    ctx.warmup
-  );
-  rows.push(throughputRow('document', CASE, samples.reduce((sum, sample) => sum + Buffer.byteLength(sample.text), 0), timing, REFERENCE));
+  if (ctx.speed) {
+    const timing = await ctx.time(
+      async () => {
+        for (const sample of samples) await oursPdf(sample);
+      },
+      () => {
+        // One office process per document, as a user converting one file runs it.
+        for (const index of samples.keys()) referencePdf(index, ctx.scratch('shaping-timing'));
+      },
+      'heavy'
+    );
+    rows.push(throughputRow('document', CASE, samples.reduce((sum, sample) => sum + Buffer.byteLength(sample.text), 0), timing, REFERENCE));
+  }
   return rows;
 };

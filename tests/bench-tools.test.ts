@@ -89,6 +89,20 @@ describe('runner against a toolchain with no reference tools', () => {
     expect(fs.existsSync(out)).toBe(false);
   }, CHILD_TIMEOUT_MS);
 
+  it.each([
+    ['image', 'ORACLE_STRICT_MODE=1 requires ffmpeg, cwebp, dwebp for photo-a.jpg->webp'],
+    ['document', 'ORACLE_STRICT_MODE=1 requires pdftotext, soffice for report.docx->pdf'],
+    ['ocr', 'ORACLE_STRICT_MODE=1 requires pdftotext, tesseract, tessdata-eng for scan.png->pdf'],
+  ])('fails a %s parity run under ORACLE_STRICT_MODE=1 with exit code 2 and no verdict, so a missing reference tool is never a pass', (family, message) => {
+    for (const mode of [['--quality-only', '--quick'], ['--speed-only']]) {
+      const out = path.join(work, `parity-strict-${family}-${mode[0]}`);
+      const run = runRunner(['--parity', ...mode, '--family', family, '--out', out], childEnv(true));
+      expect(run.status, `${family} ${mode.join(' ')}`).toBe(2);
+      expect(run.stderr).toContain(message);
+      expect(fs.existsSync(path.join(out, 'parity-verdict.json'))).toBe(false);
+    }
+  }, CHILD_TIMEOUT_MS);
+
   it('rejects unknown arguments and an unknown family with exit code 2', () => {
     const env = childEnv(false);
     expect(runRunner(['--family', 'sound'], env)).toMatchObject({ status: 2 });

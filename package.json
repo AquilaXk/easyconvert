@@ -21,6 +21,7 @@
     "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --packages=external && npm run build:raw-worker && npm run build:pdf-text-worker && npm run build:cpu-worker",
     "bench:quality": "tsx bench/run.ts",
     "bench:quality:update-baseline": "tsx bench/run.ts --update-baseline",
+    "bench:refresh-speed": "tsx bench/refresh-speed.ts",
     "bench:realworld": "tsx bench/realworld/run.ts",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
     "generate:sdk": "tsx scripts/generate-sdk.ts",
