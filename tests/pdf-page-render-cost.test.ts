@@ -1,10 +1,11 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MAGICK_BINARY } from './helpers/imagemagick';
 import { openPdfPageRenderer } from '../src/lib/conversions/pdf-page-render';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -27,6 +28,20 @@ const REFERENCE_TIMEOUT_MS = 60_000;
 const MAX_COST_RATIO = 0.5;
 const TEST_TIMEOUT_MS = 120_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PIXELS_PER_METRE_AT_300_DPI = 11_811;
+const PNG_CHUNK_OVERHEAD = 12;
+
+/** The chunks of a PNG in file order, read here from the bytes so that no image library decides which one counts. */
+function pngChunks(png: Buffer): Array<{ type: string; data: Buffer }> {
+  const chunks: Array<{ type: string; data: Buffer }> = [];
+  let offset = PNG_SIGNATURE.length;
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    chunks.push({ type: png.toString('latin1', offset + 4, offset + 8), data: png.subarray(offset + 8, offset + 8 + length) });
+    offset += PNG_CHUNK_OVERHEAD + length;
+  }
+  return chunks;
+}
 
 let workDir: string;
 let scanPdf: string;
@@ -120,4 +135,46 @@ describe('rendering a scanned page for OCR', () => {
       await renderer.close();
     }
   });
+
+  oracleTest(
+    'records the resolution in exactly one pHYs chunk that the other readers (Pillow, libpng through ImageMagick) read as 300 dpi without a warning',
+    ['python3'],
+    async () => {
+      const renderer = await openPdfPageRenderer(fs.readFileSync(scanPdf), undefined, DPI);
+      try {
+        const { image } = await renderer.render(0);
+        const chunks = pngChunks(image);
+        const physical = chunks.filter((chunk) => chunk.type === 'pHYs');
+        expect(chunks.map((chunk) => chunk.type).filter((type) => type !== 'IDAT')).toEqual(['IHDR', 'pHYs', 'IEND']);
+        expect(physical).toHaveLength(1);
+        expect(physical[0].data.readUInt32BE(0)).toBe(PIXELS_PER_METRE_AT_300_DPI);
+        expect(physical[0].data.readUInt32BE(4)).toBe(PIXELS_PER_METRE_AT_300_DPI);
+        expect(physical[0].data[8]).toBe(1);
+
+        const file = path.join(workDir, 'rendered.png');
+        fs.writeFileSync(file, image);
+        const pillow = execFileSync(
+          getOracleToolPath('python3') as string,
+          ['-c', 'import sys; from PIL import Image; i = Image.open(sys.argv[1]); i.load(); print(i.info["dpi"][0], i.info["dpi"][1], i.mode)', file],
+          { encoding: 'utf8', timeout: REFERENCE_TIMEOUT_MS }
+        ).trim();
+        const [dpiX, dpiY, mode] = pillow.split(' ');
+        expect(Math.round(Number(dpiX))).toBe(DPI);
+        expect(Math.round(Number(dpiY))).toBe(DPI);
+        expect(mode).toBe('L');
+
+        if (MAGICK_BINARY) {
+          // libpng reports a repeated chunk as a warning on stderr.
+          const identified = spawnSync(MAGICK_BINARY, ['identify', '-units', 'PixelsPerInch', '-format', '%x %y', file], { encoding: 'utf8', timeout: REFERENCE_TIMEOUT_MS });
+          expect(identified.stderr).toBe('');
+          const [x, y] = identified.stdout.trim().split(' ').map(Number);
+          expect(Math.round(x)).toBe(DPI);
+          expect(Math.round(y)).toBe(DPI);
+        }
+      } finally {
+        await renderer.close();
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
 });

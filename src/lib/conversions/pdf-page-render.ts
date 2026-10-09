@@ -66,8 +66,10 @@ interface GrayPage {
 }
 
 /**
- * The PNG with a `pHYs` chunk (ISO/IEC 15948 section 11.3.5.3) that records `dpi` on both axes, placed right after
- * IHDR. The image library writes a density only together with a colour profile, which turns a gray page into RGB.
+ * The PNG with a single `pHYs` chunk (ISO/IEC 15948 section 11.3.5.3) that records `dpi` on both axes, placed right
+ * after IHDR. The image library writes a density of its own (1000 pixels per metre, 25.4 dpi) and writes a density
+ * of the caller's only together with a colour profile, which turns a gray page into RGB; so its chunk is dropped and
+ * ours put in its place, and a reader that takes the first or the last chunk sees the same resolution.
  */
 function withPngDensity(png: Buffer, dpi: number): Buffer {
   const chunk = Buffer.alloc(PNG_CHUNK_OVERHEAD_BYTES + PHYS_DATA_BYTES);
@@ -79,7 +81,14 @@ function withPngDensity(png: Buffer, dpi: number): Buffer {
   chunk[16] = PHYS_UNIT_METRE;
   chunk.writeUInt32BE(crc32(chunk.subarray(4, 17)), 17);
   const afterHeader = PNG_SIGNATURE_BYTES + PNG_IHDR_CHUNK_BYTES;
-  return Buffer.concat([png.subarray(0, afterHeader), chunk, png.subarray(afterHeader)]);
+  const parts: Buffer[] = [png.subarray(0, afterHeader), chunk];
+  let offset = afterHeader;
+  while (offset + PNG_CHUNK_OVERHEAD_BYTES <= png.length) {
+    const end = offset + PNG_CHUNK_OVERHEAD_BYTES + png.readUInt32BE(offset);
+    if (png.toString('latin1', offset + 4, offset + 8) !== 'pHYs') parts.push(png.subarray(offset, end));
+    offset = end;
+  }
+  return Buffer.concat(parts);
 }
 
 /** The page of a binary 8-bit PGM file, or null when the file is not one or its pixels are not as many as its header says. */
