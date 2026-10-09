@@ -89,10 +89,10 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         fonts-noto-core \
         fonts-noto-ui-core \
         fonts-noto-color-emoji \
-        libreoffice-calc \
-        libreoffice-impress \
+        libreoffice-calc-nogui \
+        libreoffice-impress-nogui \
         libreoffice-core-nogui \
-        libreoffice-writer \
+        libreoffice-writer-nogui \
         libraw-bin \
         poppler-utils \
         tesseract-ocr \
