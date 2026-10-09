@@ -49,7 +49,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0196844690065845
+      "ratio": 1.0136314256839276
     },
     "audio/music.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -89,7 +89,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0313847704751644
+      "ratio": 1.0336994559068817
     },
     "audio/music.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -139,7 +139,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9834332975234221
+      "ratio": 0.9859835057000745
     },
     "audio/music.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -199,7 +199,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0094700205197848
+      "ratio": 1.0140981663992863
     },
     "audio/speech.wav->aac/true_peak_shift": {
       "direction": "lower",
@@ -239,7 +239,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0225874167221232
+      "ratio": 1.0449787313843681
     },
     "audio/speech.wav->opus/bd_rate_snr": {
       "direction": "lower",
@@ -289,7 +289,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.020950272808985
+      "ratio": 0.9892602685037503
     },
     "audio/speech.wav->opus/true_peak_shift": {
       "direction": "lower",
@@ -309,7 +309,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8525831518466541
+      "ratio": 0.896879849041572
     },
     "compression/mixed.tar->7z/compression_ratio": {
       "direction": "lower",
@@ -349,7 +349,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.929994860885302
+      "ratio": 0.5988114036597459
     },
     "compression/mixed.xz->tar/throughput": {
       "direction": "higher",
@@ -359,7 +359,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8340145123062829
+      "ratio": 0.884414807476612
     },
     "compression/mixed.zst->tar/throughput": {
       "direction": "higher",
@@ -369,7 +369,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 2.2325540294543496
+      "ratio": 1.855239621266776
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
@@ -469,7 +469,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 15.683133260759005
+      "ratio": 12.214197389464976
     },
     "document/noori.hwp->html:images/structure_precision": {
       "direction": "higher",
@@ -529,7 +529,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 9.070209939554335
+      "ratio": 8.708652116018651
     },
     "document/pdf-structure->docx/column_accuracy": {
       "direction": "higher",
@@ -599,7 +599,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 27.028456115922214
+      "ratio": 19.67563284759026
     },
     "document/pdf-text->txt/cer": {
       "direction": "lower",
@@ -649,7 +649,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 14.735440576256535
+      "ratio": 11.657898964791004
     },
     "document/report.docx->pdf/word_f1": {
       "direction": "higher",
@@ -779,7 +779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 45.40237951200398
+      "ratio": 59.722609329986014
     },
     "document/rich-structure.docx->html:headings/structure_precision": {
       "direction": "higher",
@@ -889,7 +889,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 101.7462243117855
+      "ratio": 87.63240935157799
     },
     "document/rich-structure.docx->odt:headings/structure_precision": {
       "direction": "higher",
@@ -999,7 +999,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 69.50452211859222
+      "ratio": 73.91271587711651
     },
     "document/rich-structure.docx->pdf:images/structure_precision": {
       "direction": "higher",
@@ -1029,7 +1029,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 11.878255101186227
+      "ratio": 9.341222099751679
     },
     "document/rich-structure.docx->pdf/word_f1": {
       "direction": "higher",
@@ -1099,7 +1099,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8062202145138975
+      "ratio": 0.8045762188904677
     },
     "image/lineart.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1159,7 +1159,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3901749504669334
+      "ratio": 0.30046079474008897
     },
     "image/lineart.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1219,7 +1219,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.50892934979738
+      "ratio": 0.41637344781822255
     },
     "image/photo-a.jpg->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1279,7 +1279,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8098158721101245
+      "ratio": 0.8450182167321806
     },
     "image/photo-a.jpg->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1339,7 +1339,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.690290863331442
+      "ratio": 0.551393855532912
     },
     "image/photo-a.jpg->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1399,7 +1399,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.0605974800060136
+      "ratio": 0.9919481853766741
     },
     "image/photo-b.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1459,7 +1459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6828478107426397
+      "ratio": 0.7064265884657055
     },
     "image/photo-b.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1519,7 +1519,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.563887221841265
+      "ratio": 0.49220604322519584
     },
     "image/photo-b.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1579,7 +1579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8545067002988396
+      "ratio": 0.7979705519190888
     },
     "image/screenshot.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1639,7 +1639,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9326676713372695
+      "ratio": 0.9086680468737
     },
     "image/screenshot.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1699,7 +1699,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.4850581758376678
+      "ratio": 0.34565198803847136
     },
     "image/screenshot.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1759,7 +1759,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3781269360531852
+      "ratio": 0.3048619648204828
     },
     "ocr/scan.png->pdf/cer": {
       "direction": "lower",
@@ -1779,7 +1779,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8286505670071586
+      "ratio": 0.8173564799888119
     },
     "ocr/scan.png->pdf/word_f1": {
       "direction": "higher",
@@ -1909,7 +1909,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9832956980783363
+      "ratio": 0.993076027212218
     },
     "video/clip.mp4->vp9/bd_rate_psnr": {
       "direction": "lower",
@@ -1969,7 +1969,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7397025288187277
+      "ratio": 0.9911625497831871
     }
   }
 }
