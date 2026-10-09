@@ -110,14 +110,20 @@ export interface OcrPreprocessResult {
   applied: { rescale: boolean; deskew: boolean; binarize: boolean };
 }
 
-/** The ink of a gray page for cutting it into bands, or nothing when the page cannot be cut into two. */
+/**
+ * The ink of a gray page for cutting it into bands, or nothing when the page cannot be cut into two or its text lines
+ * are below OCR_MIN_LINE_HEIGHT_PX. Such a page is one the recognizer reads poorly to begin with (the pipeline enlarges
+ * it, or reads it as submitted because enlarging made it worse), and a band of a few small noisy lines reads worse than
+ * the page does: measured, a cut page as submitted lost up to 2 points of character error to the whole page, while the
+ * page is so small that reading it whole is cheap.
+ */
 function bandInk(
   gray: Uint8Array,
   width: number,
   height: number,
   lineHeightPx: number | null
 ): OcrPreprocessResult['ink'] {
-  if (lineHeightPx === null || height < 2 * OCR_BAND_MIN_LINES * lineHeightPx) return undefined;
+  if (lineHeightPx === null || lineHeightPx < OCR_MIN_LINE_HEIGHT_PX || height < 2 * OCR_BAND_MIN_LINES * lineHeightPx) return undefined;
   return { profile: measureInk(gray, width, height), lineHeightPx };
 }
 

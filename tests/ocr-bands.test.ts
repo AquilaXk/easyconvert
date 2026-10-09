@@ -11,7 +11,7 @@ import {
   type OcrBand,
 } from '../src/lib/conversions/ocr-bands';
 import { ocrBandsAllowedFor } from '../src/lib/conversions/ocr-config';
-import { preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
+import { OCR_MIN_LINE_HEIGHT_PX, preprocessOcrImage } from '../src/lib/conversions/ocr-preprocess';
 import { encodePbm, encodePgm } from '../src/lib/conversions/pnm';
 import { decodePnm, pnmGray } from './helpers/pnm-decode';
 import { OcrPreprocessError } from '../src/lib/types';
@@ -271,6 +271,17 @@ describe('the ink profile of a prepared page', () => {
     for (const band of (bands ?? []).slice(1)) {
       expect(prepared.ink?.profile.rows[band.top]).toBe(0);
     }
+  });
+
+  it('is left out for a page whose text lines are below the height the recognizer works at, which is cheap to read whole', async () => {
+    // Deskew stays on so that the line height is measured; the page is not turned (it is level) or enlarged.
+    const asSubmitted = await preprocessOcrImage(scan, { rescale: false, deskew: true, binarize: false });
+    expect(asSubmitted.lineHeightPx).toBeLessThan(OCR_MIN_LINE_HEIGHT_PX);
+    expect(asSubmitted.ink).toBeUndefined();
+    const enlarged = await sharp(scan).resize({ width: 3 * 840, kernel: 'lanczos3' }).png().toBuffer();
+    const tall = await preprocessOcrImage(enlarged, { rescale: false, deskew: true, binarize: false });
+    expect(tall.lineHeightPx).toBeGreaterThanOrEqual(OCR_MIN_LINE_HEIGHT_PX);
+    expect(tall.ink).toBeDefined();
   });
 
   it('is left out for a colour page, which has no single gray level to measure', async () => {
