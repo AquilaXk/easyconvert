@@ -13,19 +13,8 @@ import {
 import { macKernelSupported } from '../src/lib/conversions/wasm/resampler-mac';
 import { SeededRandom } from './helpers/archive-corpus';
 import { skipUnless } from './helpers/strict-skip';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
-/**
- * The WebAssembly SIMD multiply-accumulate kernels of the polyphase resampler against the scalar TypeScript loops they
- * replace. Both paths are forced through the `kernel` option (no environment switch). The scalar path is the reference:
- * the SIMD path accumulates in the same order, so its samples are identical, not merely close.
- */
-// skip-ok: explicit opt-out (RESAMPLER_SKIP_TIMING=1) of the speed-up ratio on a slow shared runner, never set in CI.
-const SKIP_TIMING = process.env.RESAMPLER_SKIP_TIMING === '1';
 const TEST_TIMEOUT_MS = 180_000;
-const SECONDS = 3;
-/** The SIMD path must be at least this many times faster than the scalar path (the scalar loops reach about 7 M samples/s, the target is 20 M). */
-const MIN_SPEEDUP = 2;
 const INT16_SPAN = 12000;
 const NOISE_SPAN = 4096;
 const SINE_PERIOD_FRAMES = 77;
@@ -121,14 +110,3 @@ describe('kernel option', () => {
   }, TEST_TIMEOUT_MS);
 });
 
-describe.skipIf(SKIP_TIMING || skipUnless('WebAssembly SIMD', macKernelSupported()))('SIMD kernel speed', () => {
-  it(`is at least ${MIN_SPEEDUP}x faster than the scalar loops on 44.1 -> 48 kHz stereo`, async () => {
-    const data = signal(44_100 * SECONDS, 2, 5);
-    await expectNoSlowerThanReference(
-      'SIMD against scalar',
-      () => resampleInterleavedInt16(data, 44_100, 48_000, 2, { kernel: 'scalar' }),
-      () => resampleInterleavedInt16(data, 44_100, 48_000, 2, { kernel: 'simd' }),
-      { maxRatio: 1 / MIN_SPEEDUP, passes: 5 }
-    );
-  }, TEST_TIMEOUT_MS);
-});

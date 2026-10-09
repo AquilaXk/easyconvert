@@ -32,7 +32,7 @@ import {
   list7zEntryPaths,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -314,12 +314,12 @@ describe('PR #499 review blockers', () => {
   });
 
   describe('5. renaming duplicates is linear', () => {
-    it('renames 50,000 identical names in linear time with the same numbering as before', async () => {
+    it('renames 50,000 identical names in linear time with the same numbering as before (hang guard; growth ratio in the perf suite)', async () => {
       const duplicates = (count: number) => Array.from({ length: count }, () => ({ filename: 'a.txt', buffer: Buffer.alloc(0) }));
-      const { largeResult: renamed } = await expectLinearOnInputs(
+      const { largeResult: renamed } = await expectNoHangOnInput(
         'resolveArchiveEntryCollisions',
         (files: Array<{ filename: string; buffer: Buffer }>) => resolveArchiveEntryCollisions(files, 'rename'),
-        { small: duplicates(DUPLICATE_COUNT / SCALING_FACTOR), large: duplicates(DUPLICATE_COUNT) }
+        duplicates(DUPLICATE_COUNT)
       );
 
       expect(renamed.map((f) => f.filename).slice(0, 4)).toEqual(['a.txt', 'a-1.txt', 'a-2.txt', 'a-3.txt']);

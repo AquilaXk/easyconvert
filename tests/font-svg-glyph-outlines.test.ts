@@ -36,7 +36,7 @@ import {
 } from './helpers/font-oracles';
 import { readWoff2Reference } from './helpers/woff2-reference';
 import { buildGlyfFont } from './helpers/glyf-font-builder';
-import { expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { expectNoHangOnInput, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * SVG font glyph outlines: the d attribute of every glyph becomes a real outline in TTF, OTF,
@@ -553,9 +553,10 @@ describe('SVG font: output point counts are bounded while paths are converted', 
   }
 
   /**
-   * "Without converting them all": a font with four times as many hostile glyphs must be refused after about the same
-   * work as the small one, because the conversion stops at the first glyph or shared budget that is exceeded
-   * (tests/helpers/timing.ts). Converting every glyph would make the larger font take about 4x.
+   * "Without converting them all": a font with four times as many hostile glyphs must be refused within the hang
+   * guard (tests/helpers/timing.ts); font-svg-glyph-outlines.perf.test.ts checks that it takes about as long as the
+   * small one, because the conversion stops at the first glyph or shared budget that is exceeded. Converting every
+   * glyph would make the larger font take about 4x.
    *
    * The reader scans the whole document before it converts a glyph, so the two fonts have the same length: the glyphs
    * the smaller font lacks follow its hostile ones as inert glyphs, with the same path text under an attribute
@@ -570,10 +571,7 @@ describe('SVG font: output point counts are bounded while paths are converted', 
     expect(modest.length).toBe(huge.length);
     // The smaller font must be refused too: one that is converted whole would be slower, not faster, and pass.
     expect(await failureOf(convertSvg('ttf', modest))).toBeInstanceOf(ConversionFailedError);
-    const { largeResult } = await expectSizeIndependentOnInputs(label, (svg: string) => failureOf(convertSvg('ttf', svg)), {
-      modest,
-      huge,
-    });
+    const { largeResult } = await expectNoHangOnInput(label, (svg: string) => failureOf(convertSvg('ttf', svg)), huge);
     return largeResult;
   }
 

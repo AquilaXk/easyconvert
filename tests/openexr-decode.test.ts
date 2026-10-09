@@ -20,7 +20,7 @@ import { decodeExrWithFfmpeg } from './helpers/ffmpeg-exr';
 import { oracleTest } from './helpers/oracle-test';
 import { buildUniformLongCodePizPayload, pizFirstBlockStats } from './helpers/exr-piz-tools';
 import { halfBitsToFloat, floatToHalfBits } from './helpers/openexr-writer';
-import { expectLinearOnInputs, expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
+import { expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 import {
   assembleExr,
   COMPRESSION_CODES,
@@ -405,14 +405,11 @@ describe('OpenEXR fail-closed behaviour', () => {
       expect([decoded.width, decoded.height]).toEqual([1, 1]);
     }, SCALING_TEST_TIMEOUT_MS);
 
-    it('still recognises a deep type padded with a long NUL run', async () => {
-      const { largeResult } = await expectLinearOnInputs(
+    it('still recognises a deep type padded with a long NUL run (hang guard; growth ratio in the perf suite)', async () => {
+      const { largeResult } = await expectNoHangOnInput(
         'deep type with NUL padding',
         (file: Buffer) => settle(() => decodeOpenExr(file)),
-        {
-          small: typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH)}`),
-          large: typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH * SCALING_FACTOR)}`),
-        }
+        typeFile(`deepscanline${'\0'.repeat(NUL_RUN_LENGTH * SCALING_FACTOR)}`)
       );
       if (largeResult.ok) throw new Error('the deep image was decoded instead of refused');
       expectDecodeError(() => {
@@ -527,7 +524,7 @@ describe('OpenEXR fail-closed behaviour', () => {
     expectDecodeError(() => decodeOpenExr(file), 'malformed', /negative data size/);
   });
 
-  it('decodes a block of 65537 long Huffman codes in linear time, not by scanning every symbol per code', async () => {
+  it('decodes a block of 65537 long Huffman codes in linear time, not by scanning every symbol per code (hang guard; growth ratio in the perf suite)', async () => {
     // All 65537 symbols share one 30-bit length, so canonical codes equal the symbol numbers and the
     // stream (symbol 65535 plus repeat markers) hits the last entry of the only long-code bucket.
     // Scanning every symbol per code would make 4x the codes cost 16x (tests/helpers/timing.ts).
@@ -542,10 +539,11 @@ describe('OpenEXR fail-closed behaviour', () => {
         chunks: [scanlineChunk(0, payload)],
       });
     };
-    const { largeResult: decoded } = await expectLinearOnInputs('long Huffman codes', (file: Buffer) => decodeOpenExr(file), {
-      small: longCodeFile(LONG_CODE_WIDTH / SCALING_FACTOR),
-      large: longCodeFile(LONG_CODE_WIDTH),
-    });
+    const { largeResult: decoded } = await expectNoHangOnInput(
+      'long Huffman codes',
+      (file: Buffer) => decodeOpenExr(file),
+      longCodeFile(LONG_CODE_WIDTH)
+    );
     // The block has an empty value bitmap, so every decoded word maps to the implicit zero value.
     expect(decoded.width).toBe(LONG_CODE_WIDTH);
     expect(decoded.rgb).toHaveLength(LONG_CODE_WIDTH * RGB_COMPONENTS);

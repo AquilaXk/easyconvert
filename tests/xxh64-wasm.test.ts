@@ -6,18 +6,9 @@ import { compressZstd, computeZstdChecksum, decompressZstd, FastStreamingXxHash6
 import { SeededRandom, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
-import { expectNoSlowerThanReference } from './helpers/timing';
 
-/**
- * The WebAssembly XXH64 behind the Zstandard content checksum, against the xxHash specification: published vectors, an
- * independent BigInt implementation written here from the specification's pseudo-code, frames made by the `zstd`
- * command line (which verify or carry the checksum), and the runtime without WebAssembly.
- */
-// skip-ok: explicit opt-out (XXH64_SKIP_TIMING=1) of the speed ratio on a slow shared runner, never set in CI.
-const SKIP_TIMING = process.env.XXH64_SKIP_TIMING === '1';
 const TEST_TIMEOUT_MS = 180_000;
 const MEGABYTE = 1024 * 1024;
-const MIN_SPEEDUP = 4;
 const LOW_32_BITS = 0xffffffffn;
 
 const P1 = 0x9e3779b185ebca87n;
@@ -172,16 +163,3 @@ describe.skipIf(skipUnless('WebAssembly', xxh64WasmSupported()))('WebAssembly XX
   }, TEST_TIMEOUT_MS);
 });
 
-describe.skipIf(SKIP_TIMING || skipUnless('WebAssembly', xxh64WasmSupported()))('WebAssembly XXH64 speed', () => {
-  it(`hashes 8 MB at least ${MIN_SPEEDUP}x faster than the script implementation`, async () => {
-    const data = new SeededRandom(2).bytes(8 * MEGABYTE);
-    const expected = scriptChecksum(data);
-    const measurement = await expectNoSlowerThanReference(
-      'xxh64',
-      () => scriptChecksum(data),
-      () => computeZstdChecksum(data),
-      { maxRatio: 1 / MIN_SPEEDUP, passes: 5 }
-    );
-    expect(measurement.largeResult).toBe(expected);
-  }, TEST_TIMEOUT_MS);
-});

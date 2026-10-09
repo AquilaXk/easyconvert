@@ -9,7 +9,7 @@ import {
   redactUrl,
   scrubError,
 } from '../src/lib/security/redact';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /** Characters in the smaller of the two sizes each shape is built at. */
 const SHAPE_LENGTH = 300_000;
@@ -241,7 +241,7 @@ describe('redactForOutput never throws', () => {
 });
 
 describe('linear-time scanning of the new rules', () => {
-  it('handles long runs of backslashes, quotes and unterminated values', async () => {
+  it('handles long runs of backslashes, quotes and unterminated values (hang guard; growth ratio in the perf suite)', async () => {
     // 4x the input may cost at most 8x the time, interleaved and best of N (tests/helpers/timing.ts).
     const shapes: Array<[string, (length: number) => string]> = [
       ['backslashes', (length) => '\\'.repeat(length)],
@@ -254,10 +254,11 @@ describe('linear-time scanning of the new rules', () => {
       ['hyphenated key', (length) => `x${'-a'.repeat(length / 2)}: 1`],
     ];
     for (const [label, build] of shapes) {
-      const { largeResult } = await expectLinearOnInputs(label, (text: string) => redactText(text), {
-        small: build(SHAPE_LENGTH),
-        large: build(SHAPE_LENGTH * SCALING_FACTOR),
-      });
+      const { largeResult } = await expectNoHangOnInput(
+        label,
+        (text: string) => redactText(text),
+        build(SHAPE_LENGTH * SCALING_FACTOR)
+      );
       expect(typeof largeResult).toBe('string');
     }
   }, SCALING_TEST_TIMEOUT_MS);

@@ -17,7 +17,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
 } from '../src/lib/types';
-import { measureInterleaved } from './helpers/timing';
+import { expectNoHang } from './helpers/timing';
 import { oracleTest } from './helpers/oracle-test';
 import {
   extractFontsWithExternalPdffonts,
@@ -216,15 +216,12 @@ const A4_LANDSCAPE = /Page size:\s+841\.89 x 595\.(?:28|3\d*) pts/;
 const A4_PORTRAIT = /Page size:\s+595\.(?:28|3\d*) x 841\.89 pts/;
 
 /**
- * Times `run` on a small and a large input, interleaved and best of GROWTH_PASSES (tests/helpers/timing.ts), so
- * load on the runner hits both sizes. Growth well under the square of the size ratio shows the work is linear
- * (a quadratic step would grow by the square); a generous ceiling catches hangs. Used instead of wall-clock
- * budgets, which trip under parallel test load.
+ * Runs `run(large)` once under the hang guard (tests/helpers/timing.ts) and returns its result. A quadratic step takes
+ * minutes on these inputs; that the work is linear, by comparison with a smaller input, is measured by
+ * pdf-unicode-text-writers.perf.test.ts.
  */
-const GROWTH_PASSES = 2;
-async function measureGrowth<T>(run: (size: number) => Promise<T>, small: number, large: number): Promise<{ growth: number; largeMs: number; result: T }> {
-  const measurement = await measureInterleaved(() => run(small), () => run(large), GROWTH_PASSES);
-  return { growth: measurement.ratio, largeMs: measurement.largeMs, result: measurement.largeResult };
+async function runUnderHangGuard<T>(label: string, run: (size: number) => Promise<T>, large: number): Promise<T> {
+  return expectNoHang(label, () => run(large), GROWTH_CEILING_MS);
 }
 
 /** Hang guard only: a healthy conversion in these tests takes well under a second. */
@@ -559,48 +556,29 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
 });
 
 describe('In-process PDF layout limits', () => {
-  oracleTest('wraps a 1 MB unbroken token in linear time without losing characters', ['pdftotext'], async () => {
-    // Growth, not wall-clock: 4x the input must cost well under the 16x a quadratic wrap would.
-    const SMALL_BYTES = 256 * 1024;
-    const TOKEN_BYTES = 4 * SMALL_BYTES;
-    const MAX_GROWTH = 8;
-    const { growth, largeMs, result: large } = await measureGrowth(
+  oracleTest('wraps a 1 MB unbroken token without hanging or losing characters', ['pdftotext'], async () => {
+    const TOKEN_BYTES = 1024 * 1024;
+    const large = await runUnderHangGuard(
+      'unbroken token',
       async (bytes) => (await convertFile(Buffer.from('a'.repeat(bytes), 'utf-8'), 'txt', 'pdf', {}, 'token.txt')).buffer,
-      SMALL_BYTES,
       TOKEN_BYTES
     );
-    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, ms: largeMs }).toEqual({
-      linear: true,
-      underCeiling: true,
-      growth,
-      ms: largeMs,
-    });
     const extracted = withoutWhitespace(pdfText(large));
     expect(extracted.length).toBe(TOKEN_BYTES);
     expect(extracted).toBe('a'.repeat(TOKEN_BYTES));
   }, 120_000);
 
-  oracleTest('wraps long runs of spaces and tabs in linear time without losing the text around them', ['pdftotext'], async () => {
-    // Growth, not wall clock: 8x the input must cost well under the 64x a quadratic wrap would.
-    const SMALL = 25_000;
-    const LARGE = 8 * SMALL;
-    const MAX_GROWTH = 20;
+  oracleTest('wraps long runs of spaces and tabs without hanging or losing the text around them', ['pdftotext'], async () => {
+    const LARGE = 200_000;
     for (const [label, whitespace] of [
       ['spaces', ' '],
       ['tabs', '\t'],
     ] as const) {
-      const { growth, largeMs, result: large } = await measureGrowth(
+      const large = await runUnderHangGuard(
+        label,
         async (count) => (await convertFile(Buffer.from(`start${whitespace.repeat(count)}end`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt')).buffer,
-        SMALL,
         LARGE
       );
-      expect({ label, linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, ms: largeMs }).toEqual({
-        label,
-        linear: true,
-        underCeiling: true,
-        growth,
-        ms: largeMs,
-      });
       expect(withoutWhitespace(pdfText(large))).toBe('startend');
     }
   }, 120_000);
@@ -620,19 +598,11 @@ describe('In-process PDF layout limits', () => {
   });
 
   oracleTest('wraps a long unbroken token inside an HTML paragraph without losing characters', ['pdftotext'], async () => {
-    // 4x the token must cost well under the 16x a quadratic wrap would.
-    const MAX_GROWTH = 8;
-    const { growth, largeMs, result } = await measureGrowth(
+    const result = await runUnderHangGuard(
+      'html token',
       (size) => convertFile(Buffer.from(`<p>start ${'x'.repeat(size)} end</p>`, 'utf-8'), 'html', 'pdf', {}, 'token.html'),
-      12_500,
       50_000
     );
-    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, largeMs }).toEqual({
-      linear: true,
-      underCeiling: true,
-      growth,
-      largeMs,
-    });
     expect(withoutWhitespace(pdfText(result.buffer))).toBe(`start${'x'.repeat(50_000)}end`);
   }, 120_000);
 
@@ -894,20 +864,12 @@ describe('Markdown to PDF keeps literal text and structure', () => {
     LIBREOFFICE_TIMEOUT_MS
   );
 
-  oracleTest('converts long runs of table pipes in linear time', ['pdftotext'], async () => {
-    // 4x the pipes must cost well under the 16x the old quadratic table pattern took.
-    const MAX_GROWTH = 8;
-    const { growth, largeMs, result } = await measureGrowth(
+  oracleTest('converts long runs of table pipes without hanging', ['pdftotext'], async () => {
+    const result = await runUnderHangGuard(
+      'table pipes',
       (size) => convertFile(Buffer.from('|'.repeat(size), 'utf-8'), 'md', 'pdf', {}, 'pipes.md'),
-      10_000,
       40_000
     );
-    expect({ linear: growth < MAX_GROWTH, underCeiling: largeMs < GROWTH_CEILING_MS, growth, largeMs }).toEqual({
-      linear: true,
-      underCeiling: true,
-      growth,
-      largeMs,
-    });
     expect(withoutWhitespace(pdfText(result.buffer))).toBe('|'.repeat(40_000));
   }, 120_000);
 });

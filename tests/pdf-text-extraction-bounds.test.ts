@@ -3,12 +3,11 @@ import { extractStructuredTextFromPdf, recursiveXyCut, type PdfTextBlock } from 
 import { PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, singlePagePdf, textContent } from './helpers/pdf-craft';
 import {
-  expectLinearOnInputs,
   expectNoHang,
-  expectSizeIndependentOnInputs,
   SCALING_FACTOR,
   SCALING_TEST_TIMEOUT_MS,
   settle,
+  expectNoHangOnInput,
 } from './helpers/timing';
 
 /**
@@ -27,8 +26,6 @@ const BLOCKS_OVER_CAP = 100 * 1000 + 1;
 const FORM_BLOCKS = 1000;
 const FORM_INVOCATIONS = 120;
 const XY_CUT_BLOCKS = 50 * 1000;
-/** n log n with allocation: measured 4x to 6.5x for 4x the rows; a quadratic cut takes 16x. */
-const XY_CUT_MAX_RATIO = 10;
 
 vi.setConfig({ testTimeout: BOUND_TEST_TIMEOUT_MS });
 
@@ -45,12 +42,13 @@ function pageWith(content: string, extra: CraftObject[] = [], resources?: string
   return singlePagePdf(flate(content), extra, resources ? { resources } : {}).buffer;
 }
 
-describe('operator scanning is linear in the content stream', () => {
+describe('operator scanning terminates on a long content stream (growth is measured by the perf suite)', () => {
   async function expectLinearExtraction(label: string, content: (run: number) => string) {
-    const { largeResult } = await expectLinearOnInputs(label, (pdf: Buffer) => extractStructuredTextFromPdf(pdf), {
-      small: pageWith(content(OPERAND_RUN)),
-      large: pageWith(content(OPERAND_RUN * SCALING_FACTOR)),
-    });
+    const { largeResult } = await expectNoHangOnInput(
+      label,
+      (pdf: Buffer) => extractStructuredTextFromPdf(pdf),
+      pageWith(content(OPERAND_RUN * SCALING_FACTOR))
+    );
     return largeResult;
   }
 
@@ -104,18 +102,19 @@ describe('text operators place and decode text as the specification defines', ()
 });
 
 describe('a document yields a bounded number of text blocks', () => {
-  it('refuses a content stream with more blocks than the cap', async () => {
-    const { largeResult } = await expectLinearOnInputs('blocks past the cap', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
-      small: pageWith('BT (a) Tj ET\n'.repeat(Math.floor(BLOCKS_OVER_CAP / SCALING_FACTOR))),
-      large: pageWith('BT (a) Tj ET\n'.repeat(BLOCKS_OVER_CAP)),
-    });
+  it('refuses a content stream with more blocks than the cap (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
+      'blocks past the cap',
+      (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
+      pageWith('BT (a) Tj ET\n'.repeat(BLOCKS_OVER_CAP))
+    );
     if (largeResult.ok) throw new Error('a stream with more blocks than the cap was accepted');
     expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
     expect((largeResult.error as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
     expect((largeResult.error as Error).message).toMatch(/text blocks/);
   });
 
-  it('counts the blocks of a form XObject once per drawing, across the document', async () => {
+  it('counts the blocks of a form XObject once per drawing, across the document (hang guard; growth ratio in the perf suite)', async () => {
     // 120 drawings of a 1000-block form pass the 100,000 cap; 480 drawings are refused after the same work,
     // because the count stops the extraction, not after drawing all of them.
     const drawings = (invocations: number): Buffer => {
@@ -126,10 +125,11 @@ describe('a document yields a bounded number of text blocks', () => {
       };
       return pageWith('/Fm0 Do\n'.repeat(invocations), [form], '<< /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >>');
     };
-    const { largeResult } = await expectSizeIndependentOnInputs('form drawings', (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)), {
-      modest: drawings(FORM_INVOCATIONS),
-      huge: drawings(FORM_INVOCATIONS * SCALING_FACTOR),
-    });
+    const { largeResult } = await expectNoHangOnInput(
+      'form drawings',
+      (pdf: Buffer) => settle(() => extractStructuredTextFromPdf(pdf)),
+      drawings(FORM_INVOCATIONS * SCALING_FACTOR)
+    );
     if (largeResult.ok) throw new Error('the form drawings were accepted');
     expect(largeResult.error).toBeInstanceOf(PayloadLimitError);
     expect((largeResult.error as Error).message).toMatch(/text blocks/);
@@ -179,17 +179,17 @@ describe('reading-order cuts stay near-linear in the block count', () => {
     expect(ordered[1].text).toBe(`b${blocks - 200 + 1}`);
   });
 
-  it('orders a long column of blocks in near-linear time', async () => {
+  it('orders a long column of blocks in near-linear time (hang guard; growth ratio in the perf suite)', async () => {
     // Each cut peels one row and the recursion stops cutting at MAX_XY_CUT_DEPTH, so once a column is longer than
     // that cap the cost is about n log n per level: 4x the rows costs 4x to 6.5x (measured), a quadratic cut 16x.
     // (Below the cap the depth grows with the input, which makes smaller grids look quadratic.)
     const column = (count: number): PdfTextBlock[] =>
       Array.from({ length: count }, (_, i) => ({ text: `r${i}`, x: 0, y: i * 20, width: 40, height: 10 }));
-    const { largeResult: ordered } = await expectLinearOnInputs('xy-cut column', (blocks: PdfTextBlock[]) => recursiveXyCut(blocks), {
-      small: column(XY_CUT_BLOCKS / SCALING_FACTOR),
-      large: column(XY_CUT_BLOCKS),
-      maxRatio: XY_CUT_MAX_RATIO,
-    });
+    const { largeResult: ordered } = await expectNoHangOnInput(
+      'xy-cut column',
+      (blocks: PdfTextBlock[]) => recursiveXyCut(blocks),
+      column(XY_CUT_BLOCKS)
+    );
     expect(ordered).toHaveLength(XY_CUT_BLOCKS);
     expect(ordered[0].text).toBe(`r${XY_CUT_BLOCKS - 1}`);
     expect(ordered[XY_CUT_BLOCKS - 1].text).toBe('r0');

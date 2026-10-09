@@ -29,7 +29,7 @@ import {
 } from './helpers/font-oracles';
 import { buildGlyfFont, type GlyfFontSpec, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { assembleSfnt } from './helpers/mac-font-containers';
-import { expectSizeIndependentOnInputs, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * TrueType (glyf) to OpenType CFF conversion.
@@ -708,7 +708,7 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     return buildGlyfFont({ family: 'Amplifier', glyphs });
   }
 
-  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations', async () => {
+  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations (hang guard; growth ratio in the perf suite)', async () => {
     // The same number of glyphs, claiming 32 million points in one font and six times as many in the other: the
     // amplification guard refuses both after reading the glyphs, so the time must not follow the claimed expansion
     // (tests/helpers/timing.ts). Growing the glyph count as well would grow the reading, which is legitimate work.
@@ -717,10 +717,10 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     expect(modest.length).toBeLessThan(SMALL_FONT_BYTES);
     expect(huge.length).toBeLessThan(SMALL_FONT_BYTES);
     const rssBefore = process.memoryUsage().rss;
-    const { largeResult } = await expectSizeIndependentOnInputs(
+    const { largeResult } = await expectNoHangOnInput(
       'composite amplification',
       (font: Buffer) => settle(() => convertFontToOpenTypeCff(font)),
-      { modest, huge }
+      huge
     );
     const rssGrowth = process.memoryUsage().rss - rssBefore;
     if (largeResult.ok) throw new Error('the amplifying font was converted instead of rejected');

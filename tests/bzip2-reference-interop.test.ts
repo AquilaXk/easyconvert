@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { compressBzip2, decompressBzip2 } from '../src/lib/conversions/bzip2';
 import { convertFile } from '../src/lib/conversions';
 import { ConversionFailedError } from '../src/lib/types';
-import { expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 import { skipUnless } from './helpers/strict-skip';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
@@ -146,12 +146,13 @@ describe('bzip2 encoder output is accepted by the reference decoder', () => {
     ],
   ];
   for (const [name, make] of timingCases) {
-    it.skipIf(SKIP_WITHOUT_BZIP2)(`compresses a 900 kB block of ${name} in linear time`, async () => {
+    it.skipIf(SKIP_WITHOUT_BZIP2)(`compresses a 900 kB block of ${name} in linear time (hang guard; growth ratio in the perf suite)`, async () => {
       const input = make(BZIP2_MAX_BLOCK_BYTES);
-      const { largeResult: compressed } = await expectLinearOnInputs('compressBzip2', (data: Buffer) => compressBzip2(data), {
-        small: make(BZIP2_MAX_BLOCK_BYTES / SCALING_FACTOR),
-        large: input,
-      });
+      const { largeResult: compressed } = await expectNoHangOnInput(
+        'compressBzip2',
+        (data: Buffer) => compressBzip2(data),
+        input
+      );
       expectSameBytes(systemBzip2(['-dc'], compressed), input);
     }, SCALING_TEST_TIMEOUT_MS);
   }
