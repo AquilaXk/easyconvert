@@ -259,7 +259,7 @@ describe('colour sources', () => {
     ['avifenc', 'avifdec'],
     async () => {
       const graphic = await convertImage(await interface16(), 'avif', { quality: 50 }, 'ui.png', 'png');
-      expect(avifInfo(writeIn('graphic.avif', graphic.buffer))).toMatchObject({ format: 'YUV444', depth: 10 });
+      expect(avifInfo(writeIn('graphic.avif', graphic.buffer))).toMatchObject({ format: 'YUV444', depth: 10, primaries: 1, transfer: 13 });
       expect(graphic.metadata).toMatchObject({ avifEncoder: 'library-cli' });
     },
     60_000
@@ -455,7 +455,8 @@ describe('without the library encoder', () => {
       const out = await convertImage(await photoPng(), 'avif', { quality: 60 }, 'p.png', 'png');
       expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
       expect(out.mimeType).toBe('image/avif');
-      expect(avifInfo(writeIn('fallback.avif', out.buffer))).toMatchObject({ format: 'YUV420', depth: 8 });
+      // An SDR picture keeps the encoder's own sRGB tags (BT.709 primaries, sRGB transfer, BT.601 matrix): not the HDR retag.
+      expect(avifInfo(writeIn('fallback.avif', out.buffer))).toMatchObject({ format: 'YUV420', depth: 8, primaries: 1, transfer: 13, matrix: 6 });
     },
     60_000
   );
