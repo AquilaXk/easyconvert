@@ -243,6 +243,8 @@ npm start
 
 ---
 
-## 라이선스
+## 라이선스 및 오픈소스 고지 (Licensing)
 
-MIT License. 자세한 사항은 [LICENSE](LICENSE)를 참고하십시오.
+- **프로젝트 라이선스**: EasyConvert는 [MIT License](LICENSE)에 따라 배포됩니다.
+- **서드파티 오픈소스 고지**: 프로덕션 의존성에 대한 전체 저작권 및 라이선스 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하십시오.
+- **외부 도구, LGPL 재링크 및 특허 가이드**: 외부 CLI 도구(FFmpeg, Poppler, veraPDF)의 프로세스 격리 원칙, LGPL 재링크 의무, unRAR 컴포넌트 라이선스 조건 및 코덱 특허 관련 세부 안내는 [docs/licensing.md](docs/licensing.md)에서 확인할 수 있습니다.

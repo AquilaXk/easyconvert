@@ -131,7 +131,20 @@ RUN mkdir -p /shared/storage /tmp /home/easyconvert \
     && chown -R easyconvert:easyconvert /app /shared/storage /tmp /home/easyconvert \
     && chmod 0750 /tmp /shared/storage /home/easyconvert
 
-# 4. Drop to unprivileged non-root user (UID:GID 10001:10001)
+# 4. Copy system copyright notices and third-party notices
+RUN mkdir -p /licenses \
+    && copied=0 \
+    && for d in /usr/share/doc/*; do \
+         if [ -f "$d/copyright" ]; then \
+           cp "$d/copyright" "/licenses/$(basename "$d").copyright" || exit 1; \
+           copied=$((copied + 1)); \
+         fi; \
+       done \
+    && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
+COPY THIRD_PARTY_NOTICES.md /licenses/
+RUN chmod -R a+rX /licenses
+
+# 5. Drop to unprivileged non-root user (UID:GID 10001:10001)
 USER easyconvert:easyconvert
 
 # Healthcheck to verify Redis connectivity and worker heartbeat vitality
