@@ -1,6 +1,8 @@
 import type { GraphMetadata } from './scheduler-types';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
+import { enqueueConversionJob } from '../enqueue';
+import { tierForOwner } from '../page-cap';
 import { resolveNodeResourceClass } from '../resource-class';
 import { sealGraphNode } from './sealed-nodes';
 
@@ -26,7 +28,8 @@ export async function enqueueGraphNodeJob(
   const resourceClass = resolveNodeResourceClass(node);
   const jobId = graphNodeJobId(graphId, nodeId);
   const nodeFields = node as { targetFormat?: string; options?: Record<string, unknown> };
-  await getQueueForResourceClass(resourceClass).add(
+  await enqueueConversionJob(
+    getQueueForResourceClass(resourceClass),
     'graph-node',
     {
       jobId,
@@ -44,7 +47,9 @@ export async function enqueueGraphNodeJob(
       inputArtifacts,
       resourceClass,
     },
-    { jobId, attempts: GRAPH_NODE_JOB_ATTEMPTS }
+    { jobId, attempts: GRAPH_NODE_JOB_ATTEMPTS },
+    // The size of a node's inputs is not known until it runs, so it gets the deadline maximum of its owner's tier.
+    { tier: await tierForOwner(meta.ownerUserId) }
   );
 }
 

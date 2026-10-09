@@ -15,6 +15,8 @@ import {
   requireScope,
   FRAME_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
+  CLIENT_CLOSED_DESCRIPTION,
+  JOB_TIMEOUT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -254,7 +256,9 @@ export const internalPaths = {
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
   },
@@ -285,7 +289,9 @@ export const internalPaths = {
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Quota exhausted.'),
         '500': createErrorResponse('Conversion failed.'),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
   },

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
@@ -138,7 +139,8 @@ export async function POST(req: NextRequest) {
     const sourceFormat = detected.extension;
 
     // Add conversion task to BullMQ Distributed Queue
-    const job = await conversionQueue.add(
+    const job = await enqueueConversionJob(
+      conversionQueue,
       'convert',
       {
         jobId: '',
@@ -155,7 +157,8 @@ export async function POST(req: NextRequest) {
       {
         attempts: 2,
         backoff: { type: 'fixed', delay: 1500 },
-      }
+      },
+      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider) }
     );
 
     return NextResponse.json({

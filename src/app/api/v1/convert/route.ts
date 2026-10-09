@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
@@ -287,7 +290,8 @@ export async function POST(req: NextRequest) {
         ));
       }
 
-      const job = await conversionQueue.add(
+      const job = await enqueueConversionJob(
+        conversionQueue,
         'convert',
         {
           jobId: '',
@@ -305,7 +309,8 @@ export async function POST(req: NextRequest) {
         {
           attempts: 3,
           backoff: { type: 'exponential', delay: 1000 },
-        }
+        },
+        { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider) }
       );
 
       return reply(NextResponse.json(
@@ -355,12 +360,21 @@ export async function POST(req: NextRequest) {
     }
 
     // Convert through the shared dispatcher (native engines first, in-process where valid)
-    const conversionResult = await dispatchConversion(
-      inputBuffer,
-      sourceDef.id,
-      targetDef.id,
-      withTierPageCap(options, tierMaxPages(auth.user.tier)),
-      file.name
+    const ownerTier = auth.user.tier;
+    const deadlineMs = conversionDeadlineMs({
+      tier: ownerTier,
+      sourceFormat: sourceDef.id,
+      targetFormat: targetDef.id,
+      inputBytes: inputBuffer.length,
+    });
+    const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
+      dispatchConversion(
+        inputBuffer,
+        sourceDef.id,
+        targetDef.id,
+        { ...withTierPageCap(options, tierMaxPages(ownerTier)), ...limits },
+        file.name
+      )
     );
 
     const durationMs = Date.now() - startTime;
@@ -447,6 +461,8 @@ export async function POST(req: NextRequest) {
     if (reservation?.reservationId) {
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
+    if (deadlineProblem) return deadlineProblem;
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
     }

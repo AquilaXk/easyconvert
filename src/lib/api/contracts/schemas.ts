@@ -1254,11 +1254,11 @@ export const JobResourceSchema = {
     },
     failedCode: {
       type: 'string',
-      description: 'Error class of a typed failure, for example InputPixelLimitError.',
+      description: 'Error class of a typed failure, for example InputPixelLimitError, or JobTimeoutError for a job that ran past its wall-clock deadline.',
     },
     failedStatus: {
       type: 'integer',
-      description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
+      description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit, or 504 when the job ran past its wall-clock deadline.',
     },
     ...EngineTraceProperties,
     ...DroppedStreamsProperties,

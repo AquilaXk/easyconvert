@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { conversionDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -122,43 +124,65 @@ export async function POST(req: NextRequest) {
       defaultOptions = parsed;
     }
 
+    const planned: Array<{ file: File; extension: string; targetFormat: string }> = [];
+    for (const file of files) {
+      const detected = detectFormatFromFilename(file.name);
+      if (!detected) continue;
+      const targetFormat = targetFormatsMap[file.name] || targetFormatsMap['default'] || detected.targetFormats[0];
+      if (!targetFormat) continue;
+      planned.push({ file, extension: detected.extension, targetFormat });
+    }
+
+    // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
+    const batchDeadlineMs = Math.min(
+      planned.reduce(
+        (total, item) =>
+          total +
+          conversionDeadlineMs({
+            tier: auth.user?.tier,
+            sourceFormat: item.extension,
+            targetFormat: item.targetFormat,
+            inputBytes: item.file.size,
+          }),
+        0
+      ),
+      tierMaxDeadlineMs(auth.user.tier)
+    );
+
     const convertedFiles: { filename: string; buffer: Buffer }[] = [];
     const usedNames = new Set<string>();
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const detected = detectFormatFromFilename(file.name);
-      if (!detected) continue;
+    // Nothing to convert needs no deadline, and the route answers it below.
+    await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
+      for (const { file, extension, targetFormat } of planned) {
+        limits.signal.throwIfAborted();
+        const arrayBuffer = await file.arrayBuffer();
+        const inputBuffer = Buffer.from(arrayBuffer);
 
-      const targetFormat = targetFormatsMap[file.name] || targetFormatsMap['default'] || detected.targetFormats[0];
-      if (!targetFormat) continue;
+        const result = await dispatchConversion(
+          inputBuffer,
+          extension,
+          targetFormat,
+          { ...withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), ...limits },
+          file.name
+        );
 
-      const arrayBuffer = await file.arrayBuffer();
-      const inputBuffer = Buffer.from(arrayBuffer);
+        let finalName = result.filename;
+        let counter = 1;
+        while (usedNames.has(finalName)) {
+          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+          finalName = `${nameWithoutExt} (${counter})${ext}`;
+          counter++;
+        }
+        usedNames.add(finalName);
 
-      const result = await dispatchConversion(
-        inputBuffer,
-        detected.extension,
-        targetFormat,
-        withTierPageCap(defaultOptions, tierMaxPages(auth.user.tier)),
-        file.name
-      );
-
-      let finalName = result.filename;
-      let counter = 1;
-      while (usedNames.has(finalName)) {
-        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-        finalName = `${nameWithoutExt} (${counter})${ext}`;
-        counter++;
+        convertedFiles.push({
+          filename: finalName,
+          buffer: result.buffer,
+        });
       }
-      usedNames.add(finalName);
-
-      convertedFiles.push({
-        filename: finalName,
-        buffer: result.buffer,
-      });
-    }
+    });
 
     if (convertedFiles.length === 0) {
       if (reservationId) {
@@ -190,6 +214,8 @@ export async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
     }

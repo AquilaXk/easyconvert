@@ -14,6 +14,8 @@ import {
   FRAME_RESPONSE_HEADERS,
   ENGINE_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
+  CLIENT_CLOSED_DESCRIPTION,
+  JOB_TIMEOUT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -128,7 +130,9 @@ export const conversionPaths = {
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
   },

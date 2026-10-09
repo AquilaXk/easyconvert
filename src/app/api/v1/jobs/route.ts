@@ -5,6 +5,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -655,7 +656,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Enqueue conversion job to the appropriate resource-class queue
-    const job = await targetQueue.add(
+    const job = await enqueueConversionJob(
+      targetQueue,
       'convert',
       {
         jobId: '',
@@ -676,7 +678,8 @@ export async function POST(req: NextRequest) {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
         priority,
-      }
+      },
+      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage) }
     );
 
     const successRes = NextResponse.json(

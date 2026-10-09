@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
@@ -178,12 +180,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
-    const result = await dispatchConversion(
-      inputBuffer,
-      detectedDef.extension,
-      tgt,
-      withTierPageCap(options, tierMaxPages(auth.user?.tier)),
-      file.name
+    const deadlineMs = conversionDeadlineMs({
+      tier: auth.user?.tier,
+      sourceFormat: detectedDef.extension,
+      targetFormat: tgt,
+      inputBytes: inputBuffer.length,
+    });
+    const result = await runUnderDeadline(req, deadlineMs, (limits) =>
+      dispatchConversion(
+        inputBuffer,
+        detectedDef.extension,
+        tgt,
+        { ...withTierPageCap(options, tierMaxPages(auth.user?.tier)), ...limits },
+        file.name
+      )
     );
 
     const duration = Date.now() - startTime;
@@ -210,6 +220,8 @@ export async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
     }

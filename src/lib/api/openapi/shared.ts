@@ -160,3 +160,11 @@ export const CONVERT_FORM_PROPERTIES = {
   sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
   options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
 };
+
+/** The 504 of a synchronous conversion that ran past its wall-clock deadline (JOB_DEADLINE_* settings). */
+export const JOB_TIMEOUT_DESCRIPTION =
+  'The conversion did not finish within the wall-clock limit of the account tier (problem type `https://api.easyconvert.io/problems/job-timeout`, with the limit in `timeoutMs`). The conversion was stopped, its processes were killed and the quota reservation was rolled back. A queued job that hits the same limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, and is not retried.';
+
+/** The 499 of a synchronous conversion whose client closed the connection. */
+export const CLIENT_CLOSED_DESCRIPTION =
+  'The client closed the connection before the conversion finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The conversion was aborted and the quota reservation was rolled back; no client is left to read this answer.';
