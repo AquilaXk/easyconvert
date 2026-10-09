@@ -24,7 +24,7 @@ import {
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
-import { assertOpenDocumentGraphic } from '../lib/conversions/office';
+import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2196,23 +2196,45 @@ const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
 const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
 const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
+/** Sources whose load failure LibreOffice reports on stderr (an encrypted or damaged workbook) instead of writing nothing. */
+const LIBREOFFICE_LOAD_FAILURE_SOURCES: ReadonlySet<string> = new Set(['xls']);
+const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded/;
 
-/** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package (files too big to hold in memory go straight to LibreOffice). */
+/** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
+function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  if (Buffer.isBuffer(input)) return input;
+  if (input.inputBuffer) return input.inputBuffer;
+  if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
+    return fs.readFileSync(input.inputPath);
+  }
+  return undefined;
+}
+
+/** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package. */
 async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: string): Promise<void> {
   if (!DRAWING_SOURCES.has(src)) return;
-  let buffer: Buffer | undefined;
-  if (Buffer.isBuffer(input)) buffer = input;
-  else if (input.inputBuffer) buffer = input.inputBuffer;
-  else if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
-    buffer = fs.readFileSync(input.inputPath);
-  }
+  const buffer = inputAsBuffer(input);
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
+}
+
+/**
+ * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
+ * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
+ * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
+ */
+function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
+  if (src !== 'xls') return;
+  const buffer = inputAsBuffer(input);
+  if (buffer) assertXlsNotEncrypted(buffer);
 }
 
 /** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
 function asUnreadableDocument(err: unknown, src: string): unknown {
   if (LIBREOFFICE_ONLY_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+  }
+  if (LIBREOFFICE_LOAD_FAILURE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
   }
   return err;
 }
@@ -2427,6 +2449,7 @@ export async function executeWorkerConversion(
 
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
+  assertWorkbookNotEncrypted(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
   if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
     try {

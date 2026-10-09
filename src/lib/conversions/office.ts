@@ -14,7 +14,18 @@ import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
 import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
-import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
+import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf, type CfbfContainer } from './hwp';
+import { getMaxInMemoryBytes } from '../storage/errors';
+import {
+  XLSX_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_GRID_CELLS_ENV,
+  XLS_MAX_PDF_TEXT_CELLS_ENV,
+  xlsMaxCellTextChars,
+  xlsMaxGridCells,
+  xlsMaxPdfTextCells,
+  xlsxMaxCellTextChars,
+} from './office/spreadsheet-limits';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
@@ -26,7 +37,7 @@ import { extractPrintReplicaPdf } from './office/print-replica';
 import { extract7zArchive, extractRarArchive } from './archive';
 import { htmlToText } from './office/html-text';
 import { decodeWindows1252 } from './office/windows-1252';
-import { EncryptedOfficeDocumentError } from './office/legacy-office-errors';
+import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
 import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
@@ -5508,6 +5519,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
   // 4. Parse all discovered worksheets
   const allSheets: OfficeWorksheet[] = [];
+  let expandedTextChars = 0;
+  const maxCellTextChars = xlsxMaxCellTextChars();
 
   for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
     const entry = sheetEntries[entryIdx];
@@ -5606,6 +5619,11 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
           cellValue = safeDecodeXmlEntities(tContent);
         }
 
+        expandedTextChars += cellValue.length;
+        if (expandedTextChars > maxCellTextChars) {
+          throw new PayloadLimitError(`The XLSX cells expand to more than ${maxCellTextChars} characters (${XLSX_MAX_CELL_TEXT_CHARS_ENV}).`);
+        }
+
         if (ref) {
           cellMap[ref] = cellValue;
         }
@@ -5672,7 +5690,10 @@ async function generatePdfFromWorksheets(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  const widestRow = sheets.reduce((widest, sheet) => Math.max(widest, ...sheet.rows.map((row) => row.length)), 1);
+  let widestRow = 1;
+  for (const sheet of sheets) {
+    for (const row of sheet.rows) widestRow = Math.max(widestRow, row.length);
+  }
   const isLandscape = options.orientation === 'landscape' || widestRow > WORKSHEET_LANDSCAPE_COLUMNS;
   return renderPdfTables(
     sheets.map((sheet) => ({
@@ -5839,10 +5860,10 @@ async function convertXlsxSource(
   if (tgt === 'tsv') {
     let tsvContent: string;
     if (allSheets.length <= 1) {
-      tsvContent = primaryRows.map((r) => r.join('\t')).join(lineEnding);
+      tsvContent = primaryRows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     } else {
       tsvContent = allSheets
-        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.join('\t')).join(lineEnding))
+        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding))
         .join(lineEnding + lineEnding);
     }
     const buffer = Buffer.from(tsvContent, 'utf-8');
@@ -8541,7 +8562,7 @@ export async function convertOdsSource(
   // ODS -> TSV
   if (tgt === 'tsv') {
     const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
-    const tsv = rows.map((r) => r.join('\t')).join(lineEnding);
+    const tsv = rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     const buffer = Buffer.from(tsv, 'utf-8');
     return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
   }
@@ -8565,7 +8586,8 @@ export async function convertOdsSource(
 
   // ODS -> XLSX
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
@@ -8624,6 +8646,15 @@ export async function convertOdsSource(
   throw unconvertibleOfficeTarget('ods', tgt);
 }
 
+/** FilePass record ([MS-XLS] 2.4.117): present in the workbook globals of an XOR-obfuscated or RC4-encrypted workbook. */
+const BIFF_RECORD_FILEPASS = 0x002f;
+/** Index of the last column (IV) of a BIFF sheet: 256 columns. Rows are a 16-bit field, so their 65536 are bounded by the record itself. */
+const BIFF_MAX_COLUMN_INDEX = 255;
+/** EOF record: ends the workbook globals and each sheet substream. */
+const BIFF_RECORD_EOF = 0x000a;
+/** Record ids of the BOF that starts a BIFF stream: BIFF8 and BIFF5, BIFF4, BIFF3, BIFF2. */
+const BIFF_BOF_RECORDS: ReadonlySet<number> = new Set([0x0809, 0x0409, 0x0209, 0x0009]);
+
 /**
  * Decodes a 32-bit BIFF RK number into its floating point or integer value
  */
@@ -8636,23 +8667,261 @@ export function decodeRk(rk: number): number {
   } else {
     const buf = Buffer.alloc(8);
     buf.writeUInt32LE(0, 0);
-    buf.writeUInt32LE(rk & ~3, 4);
+    // `& ~3` yields a signed 32-bit value, negative when the sign bit of the double is set; the high word is unsigned.
+    buf.writeUInt32LE((rk & ~3) >>> 0, 4);
     val = buf.readDoubleLE(0);
   }
   return is100 ? val / 100 : val;
 }
+
+/** Bytes of the SST record before its first string: the total and the unique string counts ([MS-XLS] 2.4.265). */
+/** BOF version word of a BIFF8 stream. */
+const BIFF8_BOF_VERSION = 0x0600;
+const SST_HEADER_BYTES = 8;
+/** Bytes of an XLUnicodeRichExtendedString before its characters: character count and option flags. */
+const SST_STRING_HEADER_BYTES = 3;
+const SST_FLAG_UTF16 = 0x01;
+const SST_FLAG_PHONETIC = 0x04;
+const SST_FLAG_RICH = 0x08;
+const SST_RICH_RUN_BYTES = 4;
+
+/**
+ * Reads the strings of a BIFF8 shared string table from the bodies of the SST record and the CONTINUE records
+ * after it ([MS-XLS] 2.4.265, 2.5.293). A string whose characters run across a record boundary starts the
+ * continuation with a flag byte that gives the character width of the rest; formatting runs and phonetic data are
+ * skipped across boundaries without one. A table that ends inside a string is refused.
+ */
+function readBiff8SharedStrings(chunks: readonly Buffer[]): string[] {
+  const truncated = (): LegacyOfficeFormatError =>
+    new LegacyOfficeFormatError('Corrupt XLS: the shared string table ends inside a string.');
+  const strings: string[] = [];
+  if (chunks[0].length < SST_HEADER_BYTES) return strings;
+  const uniqueStrings = chunks[0].readUInt32LE(4);
+  let chunkIndex = 0;
+  let offset = SST_HEADER_BYTES;
+
+  const hasMore = (): boolean => {
+    while (chunkIndex < chunks.length && offset >= chunks[chunkIndex].length) {
+      chunkIndex++;
+      offset = 0;
+    }
+    return chunkIndex < chunks.length;
+  };
+  const readBytes = (count: number): Buffer => {
+    const parts: Buffer[] = [];
+    let needed = count;
+    while (needed > 0) {
+      if (!hasMore()) throw truncated();
+      const take = Math.min(needed, chunks[chunkIndex].length - offset);
+      parts.push(chunks[chunkIndex].subarray(offset, offset + take));
+      offset += take;
+      needed -= take;
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+  };
+  const skipBytes = (count: number): void => {
+    let needed = count;
+    while (needed > 0) {
+      if (!hasMore()) throw truncated();
+      const take = Math.min(needed, chunks[chunkIndex].length - offset);
+      offset += take;
+      needed -= take;
+    }
+  };
+  const readCharacters = (count: number, utf16: boolean): string => {
+    let text = '';
+    let remaining = count;
+    let wide = utf16;
+    while (remaining > 0) {
+      if (offset >= chunks[chunkIndex].length) {
+        chunkIndex++;
+        if (chunkIndex >= chunks.length || chunks[chunkIndex].length === 0) throw truncated();
+        wide = (chunks[chunkIndex][0] & SST_FLAG_UTF16) !== 0;
+        offset = 1;
+      }
+      const width = wide ? 2 : 1;
+      const available = Math.floor((chunks[chunkIndex].length - offset) / width);
+      if (available === 0) throw truncated();
+      const take = Math.min(remaining, available);
+      text += chunks[chunkIndex].toString(wide ? 'utf16le' : 'latin1', offset, offset + take * width);
+      offset += take * width;
+      remaining -= take;
+    }
+    return text;
+  };
+
+  for (let i = 0; i < uniqueStrings && hasMore(); i++) {
+    const header = readBytes(SST_STRING_HEADER_BYTES);
+    const flags = header[2];
+    const richRuns = (flags & SST_FLAG_RICH) !== 0 ? readBytes(2).readUInt16LE(0) : 0;
+    const phoneticBytes = (flags & SST_FLAG_PHONETIC) !== 0 ? readBytes(4).readUInt32LE(0) : 0;
+    strings.push(readCharacters(header.readUInt16LE(0), (flags & SST_FLAG_UTF16) !== 0));
+    skipBytes(richRuns * SST_RICH_RUN_BYTES);
+    skipBytes(phoneticBytes);
+  }
+  return strings;
+}
+
+/**
+ * The cells of one legacy spreadsheet, row by row. A sheet read from a BIFF stream keeps only the cells that were
+ * written: its used range can be 65536 rows by 256 columns for a single cell, which the text targets write one
+ * row at a time and only the grid-building targets (`toRows`) expand, under a limit.
+ */
+interface XlsSheet {
+  readonly rowCount: number;
+  /** The cells of one row; a blank row of a sparse sheet is one shared array, not to be changed. */
+  row(index: number): readonly string[];
+  /** The whole grid as arrays; a sparse sheet refuses a grid over the limit with HTTP 413. */
+  toRows(limit?: GridLimit): string[][];
+}
+
+/** A cap on what a dense grid holds (every cell of the used range, or only the cells with text) and the setting that names it. */
+interface GridLimit {
+  readonly counts: 'grid' | 'text';
+  readonly cells: () => number;
+  readonly setting: string;
+}
+
+const GRID_LIMIT: GridLimit = { counts: 'grid', cells: xlsMaxGridCells, setting: XLS_MAX_GRID_CELLS_ENV };
+const PDF_TEXT_LIMIT: GridLimit = { counts: 'text', cells: xlsMaxPdfTextCells, setting: XLS_MAX_PDF_TEXT_CELLS_ENV };
+
+function sparseXlsSheet(cells: ReadonlyMap<number, ReadonlyMap<number, string>>, rowCount: number, columnCount: number): XlsSheet {
+  const blankRow: readonly string[] = new Array<string>(columnCount).fill('');
+  const buildRow = (index: number): string[] => {
+    const row = new Array<string>(columnCount).fill('');
+    for (const [column, value] of cells.get(index) ?? []) row[column] = value;
+    return row;
+  };
+  return {
+    rowCount,
+    row: (index) => (cells.has(index) ? buildRow(index) : blankRow),
+    toRows: (limit = GRID_LIMIT) => {
+      const maxChars = xlsMaxCellTextChars();
+      let expandedChars = 0;
+      for (const rowCells of cells.values()) {
+        for (const value of rowCells.values()) expandedChars += value.length;
+      }
+      if (expandedChars > maxChars) {
+        throw new PayloadLimitError(`The XLS cells expand to more than ${maxChars} characters (${XLS_MAX_CELL_TEXT_CHARS_ENV}).`);
+      }
+      const maxCells = limit.cells();
+      if (limit.counts === 'grid' && rowCount * columnCount > maxCells) {
+        throw new PayloadLimitError(
+          `The XLS sheet spans ${rowCount} rows by ${columnCount} columns (${rowCount * columnCount} cells); at most ${maxCells} are supported (${limit.setting}).`
+        );
+      }
+      if (limit.counts === 'text') {
+        let textCells = 0;
+        for (const rowCells of cells.values()) {
+          for (const value of rowCells.values()) if (value) textCells++;
+        }
+        if (textCells > maxCells) {
+          throw new PayloadLimitError(`The XLS sheet holds ${textCells} cells with text; at most ${maxCells} are supported (${limit.setting}).`);
+        }
+      }
+      return Array.from({ length: rowCount }, (_, index) => buildRow(index));
+    },
+  };
+}
+
+function denseXlsSheet(rows: string[][]): XlsSheet {
+  return { rowCount: rows.length, row: (index) => rows[index], toRows: () => rows };
+}
+
+/** Characters gathered before they are encoded into a byte chunk. */
+const XLS_TEXT_CHUNK_CHARS = 1 << 20;
+
+interface XlsTextLayout {
+  readonly head: string;
+  readonly rowSeparator: string;
+  readonly tail: string;
+  renderRow(cells: readonly string[]): string;
+}
+
+/**
+ * Writes a sheet as text one row at a time, never holding the grid: the output is gathered as encoded chunks and
+ * refused with HTTP 413 once it passes the in-memory limit that the result buffer is held to.
+ */
+function encodeXlsSheetText(sheet: XlsSheet, layout: XlsTextLayout, target: string): Buffer {
+  const limit = getMaxInMemoryBytes();
+  const chunks: Buffer[] = [];
+  let pending: string[] = [];
+  let pendingChars = 0;
+  let encodedBytes = 0;
+  const flush = (): void => {
+    if (pending.length === 0) return;
+    const chunk = Buffer.from(pending.join(''), 'utf-8');
+    encodedBytes += chunk.length;
+    if (encodedBytes > limit) throw new PayloadLimitError(`The XLS sheet converts to more than ${limit} bytes of .${target} output.`);
+    chunks.push(chunk);
+    pending = [];
+    pendingChars = 0;
+  };
+  const write = (text: string): void => {
+    pending.push(text);
+    pendingChars += text.length;
+    if (pendingChars >= XLS_TEXT_CHUNK_CHARS) flush();
+  };
+
+  write(layout.head);
+  let previousCells: readonly string[] | undefined;
+  let previousText = '';
+  for (let index = 0; index < sheet.rowCount; index++) {
+    const cells = sheet.row(index);
+    // Blank rows of a sparse sheet are one array: their text is rendered once.
+    if (cells !== previousCells) {
+      previousText = layout.renderRow(cells);
+      previousCells = cells;
+    }
+    if (index > 0) write(layout.rowSeparator);
+    write(previousText);
+  }
+  write(layout.tail);
+  flush();
+  return Buffer.concat(chunks, encodedBytes);
+}
+
+const delimitedLayout = (delimiter: string): XlsTextLayout => ({
+  head: '',
+  rowSeparator: '\n',
+  tail: '',
+  renderRow: (cells) => cells.map((cell) => formatCsvCell(cell, delimiter)).join(delimiter),
+});
+
+/** The layout of `JSON.stringify(rows, null, 2)` for an array of non-empty rows of strings. */
+const JSON_ROWS_LAYOUT: XlsTextLayout = {
+  head: '[\n',
+  rowSeparator: ',\n',
+  tail: '\n]',
+  renderRow: (cells) => `  [\n${cells.map((cell) => `    ${JSON.stringify(cell)}`).join(',\n')}\n  ]`,
+};
 
 /**
  * Authentic BIFF8 Binary Spreadsheet Stream Parser
  * Parses BOF, SST, LABELSST, LABEL, NUMBER, RK, MULRK, FORMULA, STRING records.
  */
 export function parseBiff8Workbook(stream: Buffer): string[][] {
-  if (stream.length < 4) return [];
+  return readBiff8Sheet(stream).toRows();
+}
+
+/** The sheet of a stream that is not a BIFF workbook: no rows. */
+const EMPTY_XLS_SHEET: XlsSheet = { rowCount: 0, row: () => [], toRows: () => [] };
+
+/**
+ * Reads the cells of a BIFF stream into a sparse sheet. The grid of the used range is never built here: a sheet
+ * whose only cell sits at IV65536 would need 16.7 million entries.
+ */
+function readBiff8Sheet(stream: Buffer): XlsSheet {
+  if (stream.length < 4) return EMPTY_XLS_SHEET;
 
   const firstRec = stream.readUInt16LE(0);
   if (firstRec !== 0x0809 && firstRec !== 0x0409 && firstRec !== 0x0209 && firstRec !== 0x0009) {
-    return [];
+    return EMPTY_XLS_SHEET;
   }
+
+  // BOF record id and version word ([MS-XLS] 2.4.21): only a BIFF8 BOF (id 0x0809, version 0x0600) writes text with option
+  // flags; BIFF5 (id 0x0809, version 0x0500) and BIFF2 to BIFF4 (ids 0x0009, 0x0209, 0x0409) write it without.
+  const hasTextFlags = firstRec === 0x0809 && stream.length >= 6 && stream.readUInt16LE(4) >= BIFF8_BOF_VERSION;
 
   const sst: string[] = [];
   const cells = new Map<number, Map<number, string>>();
@@ -8669,7 +8938,12 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     const data = stream.subarray(pos, pos + recLen);
     pos += recLen;
 
-    // 0x00FC: SST (Shared String Table)
+    // 0x002F: FILEPASS. Every record after it is obfuscated or encrypted, so reading it as cells yields garbage.
+    if (recId === BIFF_RECORD_FILEPASS) {
+      throw new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
+    }
+
+    // 0x00FC: SST (Shared String Table), followed by the CONTINUE records that carry the rest of its strings
     if (recId === 0x00FC) {
       const sstChunks: Buffer[] = [data];
       let peekPos = pos;
@@ -8684,50 +8958,13 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
           break;
         }
       }
-      const sstBuf = Buffer.concat(sstChunks);
-      if (sstBuf.length >= 8) {
-        const uniqueStrings = sstBuf.readUInt32LE(4);
-        let off = 8;
-        for (let i = 0; i < uniqueStrings && off < sstBuf.length; i++) {
-          if (off + 3 > sstBuf.length) break;
-          const charCount = sstBuf.readUInt16LE(off);
-          const flags = sstBuf.readUInt8(off + 2);
-          off += 3;
-          const isUnicode = (flags & 0x01) !== 0;
-          const hasExt = (flags & 0x04) !== 0;
-          const hasRich = (flags & 0x08) !== 0;
-          let richRuns = 0;
-          if (hasRich) {
-            if (off + 2 > sstBuf.length) break;
-            richRuns = sstBuf.readUInt16LE(off);
-            off += 2;
-          }
-          let extLen = 0;
-          if (hasExt) {
-            if (off + 4 > sstBuf.length) break;
-            extLen = sstBuf.readUInt32LE(off);
-            off += 4;
-          }
-          let str = '';
-          if (isUnicode) {
-            const byteLen = charCount * 2;
-            const avail = Math.min(byteLen, Math.floor((sstBuf.length - off) / 2) * 2);
-            str = sstBuf.toString('utf16le', off, off + avail);
-            off += byteLen;
-          } else {
-            const byteLen = charCount;
-            const avail = Math.min(byteLen, sstBuf.length - off);
-            str = sstBuf.toString('latin1', off, off + avail);
-            off += byteLen;
-          }
-          off += richRuns * 4;
-          off += extLen;
-          sst.push(str);
-        }
-      }
+      sst.push(...readBiff8SharedStrings(sstChunks));
     }
 
     const setCell = (r: number, c: number, val: string) => {
+      if (c > BIFF_MAX_COLUMN_INDEX) {
+        throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
+      }
       if (!cells.has(r)) cells.set(r, new Map());
       cells.get(r)!.set(c, val);
       if (r > maxRow) maxRow = r;
@@ -8747,7 +8984,9 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
       const r = data.readUInt16LE(0);
       const c = data.readUInt16LE(2);
       const len = data.readUInt16LE(6);
-      if (data.length >= 9) {
+      if (!hasTextFlags) {
+        setCell(r, c, data.toString('latin1', 8, Math.min(data.length, 8 + len)));
+      } else if (data.length >= 9) {
         const flags = data.readUInt8(8);
         const isUnicode = (flags & 0x01) !== 0;
         let str = '';
@@ -8819,56 +9058,91 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     // 0x0207: STRING
     else if (recId === 0x0207 && lastFormulaCell && data.length >= 3) {
       const len = data.readUInt16LE(0);
-      const flags = data.readUInt8(2);
+      const flags = hasTextFlags ? data.readUInt8(2) : 0;
+      const textStart = hasTextFlags ? 3 : 2;
       const isUnicode = (flags & 0x01) !== 0;
       let str = '';
       if (isUnicode) {
-        str = data.toString('utf16le', 3, Math.min(data.length, 3 + len * 2));
+        str = data.toString('utf16le', textStart, Math.min(data.length, textStart + len * 2));
       } else {
-        str = data.toString('latin1', 3, Math.min(data.length, 3 + len));
+        str = data.toString('latin1', textStart, Math.min(data.length, textStart + len));
       }
       setCell(lastFormulaCell.r, lastFormulaCell.c, str);
       lastFormulaCell = null;
     }
   }
 
-  if (maxRow < 0 || maxCol < 0) return [];
+  if (maxRow < 0 || maxCol < 0) return EMPTY_XLS_SHEET;
 
-  const rows: string[][] = [];
-  for (let r = 0; r <= maxRow; r++) {
-    const rowMap = cells.get(r);
-    const row: string[] = [];
-    for (let c = 0; c <= maxCol; c++) {
-      row.push(rowMap?.get(c) ?? '');
+  // Rows after the last one that holds text are not part of the sheet.
+  let rowCount = 0;
+  for (const [r, rowMap] of cells) {
+    if (r < rowCount) continue;
+    for (const value of rowMap.values()) {
+      if (value) {
+        rowCount = r + 1;
+        break;
+      }
     }
-    rows.push(row);
   }
-
-  while (rows.length > 0 && rows[rows.length - 1].every((cell) => !cell)) {
-    rows.pop();
-  }
-
-  return rows;
+  return sparseXlsSheet(cells, rowCount, maxCol + 1);
 }
 
-/** The cell rows of the BIFF8 workbook stream inside a CFBF container (an Excel 97-2003 or Kingsoft workbook). */
-function readCfbfWorkbookRows(inputBuffer: Buffer): string[][] {
-  const cfbf = parseCfbf(inputBuffer);
+/** The workbook stream of a CFBF container: the BIFF8 `Workbook` of an Excel 97-2003 or Kingsoft file, or else the `Book` of an older one. */
+function selectWorkbookStream(cfbf: CfbfContainer): Buffer | undefined {
+  // A file saved by Excel 97 or later for old readers keeps a BIFF5 `Book` next to the BIFF8 `Workbook`; the newer one wins.
   let workbookStream: Buffer | undefined;
+  let bookStream: Buffer | undefined;
   for (const [name, buf] of cfbf.streams.entries()) {
-    if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
-      workbookStream = buf;
-      break;
-    }
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'workbook') workbookStream ??= buf;
+    else if (lowerName === 'book') bookStream ??= buf;
   }
+  return workbookStream ?? bookStream;
+}
+
+/** The sheet of the BIFF workbook stream inside a CFBF container. */
+function readCfbfWorkbookSheet(inputBuffer: Buffer): XlsSheet {
+  const workbookStream = selectWorkbookStream(parseCfbf(inputBuffer));
   if (!workbookStream) {
     throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
   }
-  const parsed = parseBiff8Workbook(workbookStream);
-  if (parsed.length === 0) {
+  const parsed = readBiff8Sheet(workbookStream);
+  if (parsed.rowCount === 0) {
     throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
   }
   return parsed;
+}
+
+/** True when the record after the BOF of a BIFF stream's globals is a FilePass: the workbook is password protected or obfuscated. */
+function biffGlobalsHaveFilePass(stream: Buffer): boolean {
+  let pos = 0;
+  while (pos + 4 <= stream.length) {
+    const recId = stream.readUInt16LE(pos);
+    if (recId === BIFF_RECORD_FILEPASS) return true;
+    if (recId === BIFF_RECORD_EOF) return false;
+    pos += 4 + stream.readUInt16LE(pos + 2);
+  }
+  return false;
+}
+
+/**
+ * Throws the encrypted-document error (HTTP 422) for an XLS whose workbook carries a FilePass record, so that the
+ * office suite is not started for a file only to report that it cannot load it. A file this cannot read as a
+ * BIFF workbook is left to the converter that was asked for.
+ */
+export function assertXlsNotEncrypted(inputBuffer: Buffer): void {
+  let stream: Buffer | undefined = inputBuffer;
+  if (isCfbfContainer(inputBuffer)) {
+    try {
+      stream = selectWorkbookStream(parseCfbf(inputBuffer));
+    } catch {
+      return;
+    }
+  }
+  if (stream && stream.length >= 4 && BIFF_BOF_RECORDS.has(stream.readUInt16LE(0)) && biffGlobalsHaveFilePass(stream)) {
+    throw new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
+  }
 }
 
 /**
@@ -8880,25 +9154,25 @@ export async function convertXlsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const rows: string[][] = [];
+  let sheet: XlsSheet;
 
   // 1. CFBF Compound File Binary Format containing Workbook stream
   if (isCfbfContainer(inputBuffer)) {
-    rows.push(...readCfbfWorkbookRows(inputBuffer));
+    sheet = readCfbfWorkbookSheet(inputBuffer);
   }
   // 2. Raw BIFF stream (without CFBF container)
   else if (
     inputBuffer.length >= 4 &&
     (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
   ) {
-    const parsed = parseBiff8Workbook(inputBuffer);
-    if (parsed.length === 0) {
+    sheet = readBiff8Sheet(inputBuffer);
+    if (sheet.rowCount === 0) {
       throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in raw BIFF stream');
     }
-    rows.push(...parsed);
   }
   // 3. XML Spreadsheet 2003 (<Row><Cell><Data ...>)
   else {
+    const rows: string[][] = [];
     const text = inputBuffer.toString('utf-8');
     if (text.includes('<Row') || text.includes('<row')) {
       const rowElements = safeExtractXmlElements(text, ['Row', 'row']);
@@ -8922,21 +9196,38 @@ export async function convertXlsSource(
         });
       }
     }
+    sheet = denseXlsSheet(rows);
   }
 
-  if (rows.length === 0) {
+  if (sheet.rowCount === 0) {
     throw new ConversionFailedError('Failed to parse XLS spreadsheet: invalid or empty content');
   }
 
   if (tgt === 'csv') {
-    const delim = options.delimiter || ',';
-    const csv = rows.map((r) => r.join(delim)).join('\n');
-    const buffer = Buffer.from(csv, 'utf-8');
+    const buffer = encodeXlsSheetText(sheet, delimitedLayout(options.delimiter || ','), tgt);
     return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
   }
 
+  if (tgt === 'json') {
+    const buffer = encodeXlsSheetText(sheet, JSON_ROWS_LAYOUT, tgt);
+    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+  }
+
+  if (tgt === 'tsv') {
+    const buffer = encodeXlsSheetText(sheet, delimitedLayout('\t'), tgt);
+    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
+  }
+
+  if (tgt === 'xls') {
+    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
+  }
+
+  // The remaining targets build documents from the whole grid.
+  const rows = sheet.toRows(tgt === 'pdf' ? PDF_TEXT_LIMIT : GRID_LIMIT);
+
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
@@ -8961,17 +9252,6 @@ export async function convertXlsSource(
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
-  if (tgt === 'json') {
-    const buffer = Buffer.from(JSON.stringify(rows, null, 2), 'utf-8');
-    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-  }
-
-  if (tgt === 'tsv') {
-    const tsv = rows.map((r) => r.join('\t')).join('\n');
-    const buffer = Buffer.from(tsv, 'utf-8');
-    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
-  }
-
   if (tgt === 'html') {
     let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;border-color:#CCD2FC;">\n';
     rows.forEach((r, idx) => {
@@ -8992,10 +9272,6 @@ export async function convertXlsSource(
     )}</h2>${tableHtml}</body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-  }
-
-  if (tgt === 'xls') {
-    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
   }
 
   throw unconvertibleOfficeTarget('xls', tgt);
@@ -9262,7 +9538,7 @@ async function extractRowsForOffice(
   if (src === 'et') {
     // A Kingsoft workbook is an OOXML package or a BIFF8 compound file; neither is CSV text.
     if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
-    if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookRows(inputBuffer);
+    if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
   }
 
   const text = inputBuffer.toString('utf-8');
