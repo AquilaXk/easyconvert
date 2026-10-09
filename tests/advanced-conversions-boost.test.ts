@@ -316,20 +316,17 @@ The voyage was recorded.`;
 
       const zip = await JSZip.loadAsync(epubRes.buffer);
       expect(await zipEntryText(zip, 'mimetype')).toBe('application/epub+zip');
-      // EPUB 3 navigation document: a <nav epub:type="toc"> listing the chapter; EPUB 2 NCX: a navMap entry for it.
+      // EPUB 3 navigation document: a <nav epub:type="toc"> listing the heading; EPUB 2 NCX: a navMap entry for it.
       const nav = await zipEntryText(zip, 'OEBPS/nav.xhtml');
       expect(nav).toContain('<nav epub:type="toc"');
-      expect(nav).toContain('<a href="chapter1.xhtml">guide</a>');
+      expect(nav).toContain('<a href="chapter1.xhtml#h-1">Galaxy Guide</a>');
       const ncx = await zipEntryText(zip, 'OEBPS/toc.ncx');
-      expect(ncx).toContain('<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">');
-      expect(ncx).toContain('<navLabel><text>guide</text></navLabel>');
-      expect(await zipEntryText(zip, 'OEBPS/styles.css')).toContain('table.semantic-table');
+      expect(ncx).toContain('<navLabel><text>Galaxy Guide</text></navLabel><content src="chapter1.xhtml#h-1"/>');
 
       const chapterXml = await zipEntryText(zip, 'OEBPS/chapter1.xhtml');
-      expect(chapterXml).toContain('<header>');
-      expect(chapterXml).toContain('<article>');
-      expect(chapterXml).toContain('table');
-      expect(chapterXml).toContain('Towel');
+      expect(chapterXml).toContain('<h1 id="h-1">Galaxy Guide</h1>');
+      expect(chapterXml).toContain('<thead><tr><th>Item</th><th>Essential</th></tr></thead>');
+      expect(chapterXml).toContain('<td>Towel</td><td>Yes</td>');
     });
 
     it('converts DOCX to HTML and Markdown preserving interleaved document order of paragraphs and tables', async () => {
@@ -342,7 +339,7 @@ The voyage was recorded.`;
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Project Plan</w:t></w:r></w:p>
-    <w:p><w:r><w:b/><w:t>Phase 1 Overview</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Phase 1 Overview</w:t></w:r></w:p>
     <w:tbl>
       <w:tr><w:tc><w:p><w:r><w:t>Task</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Status</w:t></w:r></w:p></w:tc></w:tr>
       <w:tr><w:tc><w:p><w:r><w:t>Parser</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Complete</w:t></w:r></w:p></w:tc></w:tr>

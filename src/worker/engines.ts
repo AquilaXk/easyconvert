@@ -1151,6 +1151,11 @@ async function countPagesOfReadablePdf(
   throw new Error('Unable to determine PDF page count: invalid or corrupted PDF structure.');
 }
 
+/** Raster density of a PDF page image: the default and the range the API accepts. */
+const PDF_RASTER_DEFAULT_DPI = 150;
+const PDF_RASTER_MIN_DPI = 72;
+const PDF_RASTER_MAX_DPI = 600;
+
 function buildPdftoppmArgs(
   tgt: string,
   options: WorkerEngineOptions,
@@ -1159,7 +1164,10 @@ function buildPdftoppmArgs(
   inputPath: string,
   prefix: string
 ): string[] {
-  const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
+  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
+  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
+    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
+  }
   const args: string[] = ['-r', String(dpi)];
 
   if (tgt === 'png') {

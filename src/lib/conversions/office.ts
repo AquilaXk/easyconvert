@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
@@ -27,6 +27,17 @@ import { htmlToText } from './office/html-text';
 import { decodeWindows1252 } from './office/windows-1252';
 import { EncryptedOfficeDocumentError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
+import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
+import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
+import { readDocxModel } from './docx-model';
+import { documentToEpub } from './document-model/epub';
+import { documentToOdt } from './document-model/odt';
+import { documentToText } from './document-model/text';
+import { plainTextModel } from './document-model/plain';
+import type { DocumentModel } from './document-model/model';
+import { renderModelTarget } from './document-targets';
+import { htmlToDocumentModel } from './html-model';
+import { markdownToDocumentModel, readEpubModel } from './source-model';
 
 export { buildOpenXpsPackage };
 
@@ -189,8 +200,7 @@ export async function convertOffice(
     };
   }
   if (tgt === 'docx') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const docxBuffer = await generateDocxFromText(textContent, src, options, baseName);
+    const docxBuffer = await generateDocxFromSource(inputBuffer, src, options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -268,8 +278,7 @@ export async function convertOffice(
 
   // 19. Target is ODT (OpenDocument Text)
   if (tgt === 'odt') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const odtBuffer = await generateOdtFromText(textContent, baseName);
+    const odtBuffer = await generateOdtFromSource(inputBuffer, src, options, baseName);
     return {
       buffer: odtBuffer,
       mimeType: 'application/vnd.oasis.opendocument.text',
@@ -366,6 +375,25 @@ export async function convertOffice(
   throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
 }
 
+/** An ODT from any other source: PDF text keeps the text writer; every other source is written from the block model. */
+async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'epub') return documentToOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+  if (src === 'pdf') return generateOdtFromText(textContent, baseName);
+  return documentToOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
+}
+
+/**
+ * A DOCX from any other source. PDF text keeps the existing text writer; every other source is read into the block
+ * model first (EPUB through its package reader, the rest through the text extractor) and written by the DOCX writer.
+ */
+async function generateDocxFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'epub') return documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+  if (src === 'pdf') return generateDocxFromText(textContent, src, options, baseName);
+  return generateDocxFromExtractedText(textContent, src, options, baseName);
+}
+
 /**
  * Extracts clean text content from various source formats for Office generation
  */
@@ -396,12 +424,7 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'hwp') {
-    const doc = parseHwpDocument(inputBuffer);
-    const parts = doc.paragraphs.map((p) => p.text);
-    doc.tables.forEach((t) => {
-      parts.push(t.rows.map((r) => r.join('\t')).join('\n'));
-    });
-    return parts.join('\n\n');
+    return documentToText(parseHwpDocument(inputBuffer).model);
   }
 
   const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([
@@ -503,112 +526,7 @@ export function extractTextFromRtf(rtf: Buffer): string {
 // E-book and OpenDocument text readers
 // ---------------------------------------------------------------------------
 
-/** EPUB: the most spine items, the largest decoded chapter and the most text one book may hold. */
-const EPUB_MAX_SPINE_ITEMS = 10_000;
-const EPUB_MAX_CHAPTER_BYTES = 32 * 1024 * 1024;
-const EPUB_MAX_TEXT_CHARS = 128 * 1024 * 1024;
-const EPUB_CONTAINER_PATH = 'META-INF/container.xml';
-const EPUB_ENCRYPTION_PATH = 'META-INF/encryption.xml';
-const EPUB_PACKAGE_MEDIA_TYPE = 'application/oebps-package+xml';
-/** Spine items that hold readable text: XHTML content documents (EPUB 2 and 3) and HTML. */
-const EPUB_TEXT_MEDIA_TYPES: ReadonlySet<string> = new Set(['application/xhtml+xml', 'text/html']);
-/** Encryption methods that only obfuscate embedded fonts; every other method hides the content itself. */
-// Algorithm identifiers from the EPUB OCF specification: namespace names compared as strings, never fetched.
-const EPUB_FONT_OBFUSCATION_ALGORITHMS: ReadonlySet<string> = new Set([
-  'http://www.idpf.org/2008/embedding', // NOSONAR: a spec-defined identifier, not a network address
-  'http://ns.adobe.com/pdf/enc#RC', // NOSONAR: a spec-defined identifier, not a network address
-]);
 const PARAGRAPH_SEPARATOR = '\n\n';
-
-const UTF8_BOM = [0xef, 0xbb, 0xbf];
-const UTF16LE_BOM = [0xff, 0xfe];
-const UTF16BE_BOM = [0xfe, 0xff];
-const XML_DECLARATION_SCAN_BYTES = 200;
-const XML_ENCODING_PATTERN = /<\?xml[^>]*\bencoding\s*=\s*["']([A-Za-z0-9._-]+)["']/;
-
-/** PK\x03\x04: the local file header every ZIP-based package starts with. */
-const ZIP_LOCAL_HEADER_SIGNATURE = [0x50, 0x4b, 0x03, 0x04];
-
-function startsWithBytes(buffer: Buffer, prefix: readonly number[]): boolean {
-  return prefix.every((byte, index) => buffer[index] === byte);
-}
-
-/** Text of an XML or XHTML file: its byte order mark, or else the encoding its declaration names, or UTF-8. */
-function decodeXmlBytes(bytes: Buffer, what: string): string {
-  if (startsWithBytes(bytes, UTF8_BOM)) return bytes.toString('utf-8', UTF8_BOM.length);
-  if (startsWithBytes(bytes, UTF16LE_BOM)) return bytes.toString('utf16le', UTF16LE_BOM.length);
-  if (startsWithBytes(bytes, UTF16BE_BOM)) {
-    const swapped = Buffer.from(bytes.subarray(UTF16BE_BOM.length));
-    return swapped.swap16().toString('utf16le');
-  }
-  const label = XML_ENCODING_PATTERN.exec(bytes.toString('latin1', 0, XML_DECLARATION_SCAN_BYTES))?.[1]?.toLowerCase();
-  if (label === undefined || label === 'utf-8' || label === 'utf8') return bytes.toString('utf-8');
-  if (label === 'windows-1252' || label === 'cp1252') return decodeWindows1252(bytes);
-  try {
-    return new TextDecoder(label, { fatal: true }).decode(bytes);
-  } catch {
-    throw new ConversionFailedError(`The ${what} declares the encoding "${label}", which cannot be decoded.`);
-  }
-}
-
-/** Opens a ZIP package; anything that is not one is a typed 400 error naming the format. */
-async function openPackage(input: Buffer, format: string): Promise<JSZip> {
-  try {
-    return await JSZip.loadAsync(input);
-  } catch {
-    throw new ConversionFailedError(`The ${format} file is not a valid ZIP package.`);
-  }
-}
-
-/** Reads one package entry as bytes, refusing one that declares or holds more than `limit` bytes. */
-async function readPackageEntry(zip: JSZip, entryPath: string, limit: number, what: string): Promise<Buffer> {
-  const entry = zip.file(entryPath);
-  if (!entry) throw new ConversionFailedError(`The ${what} names "${entryPath}", which is not in the package.`);
-  const declared = (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
-  if (declared !== undefined && declared > limit) {
-    throw new PayloadLimitError(`"${entryPath}" declares ${declared} bytes, more than the ${limit} byte limit.`);
-  }
-  const bytes = await entry.async('nodebuffer');
-  if (bytes.length > limit) throw new PayloadLimitError(`"${entryPath}" holds ${bytes.length} bytes, more than the ${limit} byte limit.`);
-  return bytes;
-}
-
-/** The package path a manifest `href` names, relative to the directory of the file that holds it; never above the package root. */
-function resolvePackagePath(baseDirectory: string, href: string): string {
-  let target = href.split('#')[0];
-  try {
-    target = decodeURIComponent(target);
-  } catch {
-    throw new ConversionFailedError(`The package reference "${href}" is not a valid URI.`);
-  }
-  const segments = (target.startsWith('/') ? target.slice(1) : `${baseDirectory}${target}`).split('/');
-  const resolved: string[] = [];
-  for (const segment of segments) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') {
-      if (resolved.pop() === undefined) throw new ConversionFailedError(`The package reference "${href}" points outside the package.`);
-    } else {
-      resolved.push(segment);
-    }
-  }
-  return resolved.join('/');
-}
-
-/** Paths of the package entries META-INF/encryption.xml encrypts with a method other than font obfuscation. */
-async function encryptedEpubPaths(zip: JSZip): Promise<Set<string>> {
-  const encrypted = new Set<string>();
-  const file = zip.file(EPUB_ENCRYPTION_PATH);
-  if (!file) return encrypted;
-  const xml = decodeXmlBytes(await file.async('nodebuffer'), 'EPUB encryption.xml');
-  for (const data of safeExtractXmlElements(xml, ['EncryptedData', 'enc:EncryptedData'])) {
-    const algorithm = safeExtractFirstXmlElement(data.content, ['EncryptionMethod', 'enc:EncryptionMethod'])?.attrs.Algorithm;
-    const uri = safeExtractFirstXmlElement(data.content, ['CipherReference', 'enc:CipherReference'])?.attrs.URI;
-    if (uri !== undefined && !EPUB_FONT_OBFUSCATION_ALGORITHMS.has(algorithm ?? '')) {
-      encrypted.add(resolvePackagePath('', uri));
-    }
-  }
-  return encrypted;
-}
 
 /**
  * The text of an EPUB in reading order (EPUB Packages 3.3 and Open Packaging Format 2.0.1): META-INF/container.xml
@@ -617,42 +535,15 @@ async function encryptedEpubPaths(zip: JSZip): Promise<Set<string>> {
  * broken package is a typed error.
  */
 async function readEpubText(input: Buffer): Promise<string> {
-  const zip = await openPackage(input, 'EPUB');
-  const container = zip.file(EPUB_CONTAINER_PATH);
-  if (!container) throw new ConversionFailedError(`The EPUB has no ${EPUB_CONTAINER_PATH}, so its package document cannot be found.`);
-  const containerXml = decodeXmlBytes(await container.async('nodebuffer'), 'EPUB container.xml');
-  const rootfile = safeExtractXmlElements(containerXml, ['rootfile', 'container:rootfile']).find(
-    (el) => el.attrs['full-path'] && (el.attrs['media-type'] ?? EPUB_PACKAGE_MEDIA_TYPE) === EPUB_PACKAGE_MEDIA_TYPE
-  );
-  if (!rootfile) throw new ConversionFailedError(`${EPUB_CONTAINER_PATH} names no package document.`);
-  const packagePath = resolvePackagePath('', rootfile.attrs['full-path']);
-  const packageDirectory = packagePath.includes('/') ? packagePath.slice(0, packagePath.lastIndexOf('/') + 1) : '';
-  const packageXml = decodeXmlBytes(await readPackageEntry(zip, packagePath, EPUB_MAX_CHAPTER_BYTES, 'EPUB container.xml'), 'EPUB package document');
-
-  const manifest = new Map<string, { href: string; mediaType: string; properties: string }>();
-  for (const item of safeExtractXmlElements(packageXml, ['item', 'opf:item'], { maxElements: EPUB_MAX_SPINE_ITEMS * 4 })) {
-    if (item.attrs.id && item.attrs.href) {
-      manifest.set(item.attrs.id, { href: item.attrs.href, mediaType: item.attrs['media-type'] ?? '', properties: item.attrs.properties ?? '' });
-    }
-  }
-  const spine = safeExtractXmlElements(packageXml, ['itemref', 'opf:itemref'], { maxElements: EPUB_MAX_SPINE_ITEMS + 1 });
-  if (spine.length === 0) throw new ConversionFailedError('The EPUB package document has an empty spine.');
-  if (spine.length > EPUB_MAX_SPINE_ITEMS) {
-    throw new PayloadLimitError(`The EPUB spine lists more than ${EPUB_MAX_SPINE_ITEMS} content documents.`);
-  }
-
-  const encrypted = await encryptedEpubPaths(zip);
+  const book = await openEpubPackage(input);
   const chapters: string[] = [];
   let totalChars = 0;
-  for (const itemref of spine) {
-    const item = manifest.get(itemref.attrs.idref ?? '');
-    if (!item) throw new ConversionFailedError(`The EPUB spine names "${itemref.attrs.idref}", which the manifest does not list.`);
-    if (!EPUB_TEXT_MEDIA_TYPES.has(item.mediaType) || item.properties.split(/\s+/).includes('nav')) continue;
-    const chapterPath = resolvePackagePath(packageDirectory, item.href);
-    if (encrypted.has(chapterPath)) {
+  for (const item of book.spine) {
+    if (!EPUB_TEXT_MEDIA_TYPES.has(item.mediaType) || item.properties.includes('nav')) continue;
+    if (item.encrypted) {
       throw new EncryptedOfficeDocumentError('The EPUB content is protected by DRM, so its text cannot be read.');
     }
-    const text = htmlToText(decodeXmlBytes(await readPackageEntry(zip, chapterPath, EPUB_MAX_CHAPTER_BYTES, 'EPUB spine'), `EPUB chapter ${chapterPath}`));
+    const text = htmlToText(decodeXmlBytes(await book.read(item.path, 'EPUB spine'), `EPUB chapter ${item.path}`));
     if (text === '') continue;
     totalChars += text.length;
     if (totalChars > EPUB_MAX_TEXT_CHARS) throw new PayloadLimitError(`The EPUB text is longer than ${EPUB_MAX_TEXT_CHARS} characters.`);
@@ -712,6 +603,14 @@ async function readOdtText(input: Buffer): Promise<string> {
   return paragraphs.join(PARAGRAPH_SEPARATOR);
 }
 
+/** DOCX targets only LibreOffice writes. */
+const DOCX_NATIVE_ENGINE_TARGETS: ReadonlySet<string> = new Set(['rtf', 'doc', 'jpg', 'png']);
+
+/** Targets written from the structured DOCX model. */
+const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf', 'epub', 'odt']);
+
+const convertModelTarget = renderModelTarget;
+
 /**
  * DOCX Source Parser & Converter
  */
@@ -729,6 +628,13 @@ async function convertDocxSource(
 
   const xmlText = await docXmlFile.async('text');
   assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
+
+  // Documents without charts or drawing shapes are read into the structured model (styles, numbering, images,
+  // notes); the targets it serves are written from it. Documents with shapes keep the drawing-aware reader below.
+  const read = await readDocxModel(zip);
+  if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
+    return convertModelTarget(read.model, tgt, options, baseName);
+  }
 
   // Load chart relationships and parts if present
   const chartMap = new Map<string, string>();
@@ -824,7 +730,7 @@ async function convertDocxSource(
   // DOCX -> EPUB
   if (tgt === 'epub') {
     const text = generateMarkdownFromDocx(paragraphs, tables, elements);
-    const epubBuffer = await generateEpubFromText(text, 'txt', options, baseName);
+    const epubBuffer = await generateEpubFromText(text, 'md', options, baseName);
     return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
   }
 
@@ -862,7 +768,10 @@ async function convertDocxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from DOCX to ${tgt}`);
+  if (DOCX_NATIVE_ENGINE_TARGETS.has(tgt)) {
+    throw new EngineUnavailableError('soffice', `Converting DOCX to .${tgt} needs the native LibreOffice engine; the in-process engine has no writer for it.`);
+  }
+  throw new UnsupportedTargetError(`Cannot convert DOCX documents to '.${tgt}'.`);
 }
 
 export interface DocxRun {
@@ -6789,7 +6698,7 @@ async function convertPptxSource(
   // PPTX -> DOCX
   if (tgt === 'docx') {
     const text = slides.map((s) => `# Slide ${s.number}\n\n` + s.texts.join('\n')).join('\n\n---\n\n');
-    const docxBuffer = await generateDocxFromText(text, 'pptx', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'pptx', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -6878,7 +6787,7 @@ async function convertOdpSource(
 
   if (tgt === 'docx') {
     const text = slides.map((s) => `# Slide ${s.number}\n\n` + s.texts.join('\n')).join('\n\n---\n\n');
-    const docxBuffer = await generateDocxFromText(text, 'odp', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'odp', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -7265,49 +7174,19 @@ async function convertEpubSource(
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
-  if (tgt === 'html') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
-      baseName
-    )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;max-width:800px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
-      baseName
-    )}</h1>${extractedText
-      .split('\n\n')
-      .map((p) => `<p>${escapeHtml(p)}</p>`)
-      .join('\n')}</body></html>`;
-    const buffer = Buffer.from(html, 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-  }
-
-  if (tgt === 'md') {
-    const buffer = Buffer.from(`# ${baseName}\n\n` + extractedText, 'utf-8');
-    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  if (tgt === 'html' || tgt === 'md' || tgt === 'pdf') {
+    const model = await readEpubModel(inputBuffer);
+    return convertModelTarget(model, tgt, options, baseName);
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromText(extractedText, 'epub', options, baseName);
+    const docxBuffer = await documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       filename: `${baseName}.docx`,
       size: docxBuffer.length,
     };
-  }
-
-  if (tgt === 'pdf') {
-    const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: baseName } });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, extractedText, hasUnicodeFont);
-    doc.end();
-
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from EPUB to ${tgt}`);
@@ -7437,7 +7316,7 @@ async function convertFb2Source(
         md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
       }
     }
-    const docxBuffer = await generateDocxFromText(md, 'fb2', options, bookTitle);
+    const docxBuffer = await generateDocxFromExtractedText(md, 'fb2', options, bookTitle);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -8434,187 +8313,34 @@ export async function generateXlsxFromData(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-/** BCP 47 tag for content whose language is not known. */
-const UNDETERMINED_LANGUAGE = 'und';
+/** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
+const MARKDOWN_TEXT_SOURCES: ReadonlySet<string> = new Set(['md', 'markdown', 'pdf', 'fb2']);
 
-/**
- * Generates IDPF EPUB Container with EPUB 3 Navigation & NCX Semantic Markup
- */
+/** The document model of text extracted from a source: Markdown or HTML where the source produces it, else plain paragraphs. */
+async function modelFromExtractedText(text: string, sourceType: string): Promise<DocumentModel> {
+  if (MARKDOWN_TEXT_SOURCES.has(sourceType)) return markdownToDocumentModel(text);
+  if (sourceType === 'html' || sourceType === 'htm') return htmlToDocumentModel(text);
+  return plainTextModel(text, { lines: 'keep' });
+}
 
+/** Writes an EPUB from text extracted from a source, through the block model. */
 async function generateEpubFromText(
   text: string,
   sourceType: string,
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  const zip = new JSZip();
-  // Every book gets its own identifier; the input carries no language metadata, so it is undetermined.
-  const bookId = `urn:uuid:${crypto.randomUUID()}`;
-  const language = UNDETERMINED_LANGUAGE;
+  return documentToEpub(await modelFromExtractedText(text, sourceType), { title, language: options.language });
+}
 
-  // mimetype must be uncompressed first entry in EPUB
-  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
-
-  zip.file(
-    'META-INF/container.xml',
-    `<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`
-  );
-
-  const lines = text.split(/\r?\n/);
-  const bodyElements: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    if (!trimmed) {
-      i++;
-      continue;
-    }
-
-    // Markdown Table
-    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && lines[i + 1].trim().startsWith('|')) {
-      const tableLines: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
-        tableLines.push(lines[i].trim());
-        i++;
-      }
-      if (tableLines.length >= 2) {
-        let tbl = '<table class="semantic-table">\n';
-        const headers = tableLines[0].split('|').slice(1, -1).map((c) => c.trim());
-        tbl += '  <thead>\n    <tr>\n' + headers.map((h) => `      <th>${escapeXml(h)}</th>\n`).join('') + '    </tr>\n  </thead>\n  <tbody>\n';
-        const rows = tableLines.slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
-        for (const r of rows) {
-          tbl += '    <tr>\n' + r.map((c) => `      <td>${escapeXml(c)}</td>\n`).join('') + '    </tr>\n';
-        }
-        tbl += '  </tbody>\n</table>';
-        bodyElements.push(tbl);
-        continue;
-      }
-    }
-
-    // Headings & Blockquotes
-    if (trimmed.startsWith('# ')) {
-      bodyElements.push(`<h1>${escapeXml(trimmed.slice(2))}</h1>`);
-    } else if (trimmed.startsWith('## ')) {
-      bodyElements.push(`<h2>${escapeXml(trimmed.slice(3))}</h2>`);
-    } else if (trimmed.startsWith('### ')) {
-      bodyElements.push(`<h3>${escapeXml(trimmed.slice(4))}</h3>`);
-    } else if (trimmed.startsWith('> ')) {
-      bodyElements.push(`<blockquote><p>${escapeXml(trimmed.slice(2))}</p></blockquote>`);
-    } else {
-      bodyElements.push(`<p>${escapeXml(trimmed)}</p>`);
-    }
-    i++;
-  }
-
-  const contentHtml = bodyElements.join('\n');
-
-  // Stylesheet
-  zip.file(
-    'OEBPS/styles.css',
-    `body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif; line-height: 1.7; padding: 1.5rem; color: #1F2340; }
-h1, h2, h3 { color: #5C6BC0; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.8rem; }
-p { margin-bottom: 1rem; text-align: justify; }
-table.semantic-table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-table.semantic-table th, table.semantic-table td { border: 1px solid #CCD2FC; padding: 8px 12px; text-align: left; }
-table.semantic-table th { background-color: #F0F2FE; color: #1F2340; font-weight: 600; }
-blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1rem; color: #4D536B; background: #F8F9FE; }`
-  );
-
-  // Chapter 1 XHTML with semantic markup
-  zip.file(
-    'OEBPS/chapter1.xhtml',
-    `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="${language}">
-<head>
-  <title>${escapeXml(title)}</title>
-  <link rel="stylesheet" type="text/css" href="styles.css"/>
-</head>
-<body>
-  <header>
-    <h1>${escapeXml(title)}</h1>
-  </header>
-  <main>
-    <article>
-      ${contentHtml}
-    </article>
-  </main>
-</body>
-</html>`
-  );
-
-  // Navigation document (EPUB 3)
-  zip.file(
-    'OEBPS/nav.xhtml',
-    `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${language}">
-<head>
-  <title>Navigation</title>
-  <link rel="stylesheet" type="text/css" href="styles.css"/>
-</head>
-<body>
-  <nav epub:type="toc" id="toc">
-    <h1>Table of Contents</h1>
-    <ol>
-      <li><a href="chapter1.xhtml">${escapeXml(title)}</a></li>
-    </ol>
-  </nav>
-</body>
-</html>`
-  );
-
-  // NCX (EPUB 2 backward compatibility for all e-readers)
-  zip.file(
-    'OEBPS/toc.ncx',
-    `<?xml version="1.0" encoding="UTF-8"?>
-<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-  <head>
-    <meta name="dtb:uid" content="${bookId}"/>
-    <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalPageCount" content="0"/>
-    <meta name="dtb:maxPageNumber" content="0"/>
-  </head>
-  <docTitle><text>${escapeXml(title)}</text></docTitle>
-  <navMap>
-    <navPoint id="navpoint-1" playOrder="1">
-      <navLabel><text>${escapeXml(title)}</text></navLabel>
-      <content src="chapter1.xhtml"/>
-    </navPoint>
-  </navMap>
-</ncx>`
-  );
-
-  // Package manifest (content.opf)
-  zip.file(
-    'OEBPS/content.opf',
-    `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:title>${escapeXml(title)}</dc:title>
-    <dc:language>${language}</dc:language>
-    <dc:identifier id="BookId">${bookId}</dc:identifier>
-    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
-  </metadata>
-  <manifest>
-    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-    <item id="css" href="styles.css" media-type="text/css"/>
-  </manifest>
-  <spine toc="ncx">
-    <itemref idref="chapter1"/>
-  </spine>
-</package>`
-  );
-
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+/** Writes a DOCX from text extracted from a source, through the block model (real styles, numbering and tables). */
+async function generateDocxFromExtractedText(
+  text: string,
+  sourceType: string,
+  options: ConversionOptions,
+  title: string
+): Promise<Buffer> {
+  return documentToDocx(await modelFromExtractedText(text, sourceType), { title, language: options.language });
 }
 
 /**
@@ -9311,7 +9037,7 @@ export async function convertOdtSource(
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromText(text, 'odt', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'odt', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -9653,7 +9379,7 @@ async function convertGenericDocumentSource(
   if (text.trim() === '') throw new ConversionFailedError(`The .${src} file holds no text.`);
 
   if (tgt === 'docx') {
-    const buffer = await generateDocxFromText(text, src, options, baseName);
+    const buffer = await generateDocxFromExtractedText(text, src, options, baseName);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: `${baseName}.docx`, size: buffer.length };
   }
   if (tgt === 'odt') {

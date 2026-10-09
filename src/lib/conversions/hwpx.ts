@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
-import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, parseHwpDocument, convertHwpDocument } from './hwp';
+import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
   if (!str) return '';
@@ -204,6 +204,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     isDistributed: false,
     paragraphs,
     tables,
+    model: legacyHwpModel(paragraphs, tables),
     metadata: {
       title,
       author,

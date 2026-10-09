@@ -135,6 +135,8 @@ export interface ConversionOptions {
   password?: string;
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
+  /** BCP 47 language of the document content, written to the language metadata of targets that carry it (EPUB). */
+  language?: string;
   ocrEnabled?: boolean;
   ocrLanguage?:
     | 'auto'

@@ -14,5 +14,19 @@
    "text": "이것은 샘플입니다."
   }
  ],
- "tables": []
+ "tables": [],
+ "body": [
+  {
+   "kind": "paragraph",
+   "text": "안녕하세요."
+  },
+  {
+   "kind": "paragraph",
+   "text": "이것은 샘플입니다."
+  }
+ ],
+ "headerFooter": [],
+ "notes": [],
+ "captions": [],
+ "pictures": []
 }

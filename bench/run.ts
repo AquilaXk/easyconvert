@@ -18,7 +18,7 @@ import { type BenchReport, type BenchRow, FAMILIES, type Family, renderMarkdown,
 import { defaultResolver, LIBVMAF_PSEUDO_TOOL, toolVersion } from './tools';
 
 const FAMILY_SET: ReadonlySet<string> = new Set(FAMILIES);
-const REPORTED_TOOLS = ['ffmpeg', 'ffprobe', 'cwebp', 'dwebp', 'avifenc', 'avifdec', 'magick', 'zstd', 'xz', '7z', 'pdftotext', 'tesseract', 'soffice', 'ssimulacra2'] as const;
+const REPORTED_TOOLS = ['ffmpeg', 'ffprobe', 'cwebp', 'dwebp', 'avifenc', 'avifdec', 'magick', 'zstd', 'xz', '7z', 'pdftotext', 'tesseract', 'soffice', 'pdfimages', 'epubcheck', 'ssimulacra2'] as const;
 const EXIT_PASS = 0;
 const EXIT_REGRESSION = 1;
 const EXIT_ERROR = 2;

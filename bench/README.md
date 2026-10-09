@@ -19,6 +19,8 @@ scheduled or label-triggered workflow is a separate change.
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure.
 `ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
 
+The document family reads its inputs from `tests/fixtures/document` and `tests/fixtures/hwp` (provenance is recorded there) and calls the in-process engine directly, because the dispatcher prefers the office suite when it is installed. Its reference time is a cold `soffice --convert-to` process per document, so the speed ratio includes the office suite's start-up.
+
 ## What is measured
 
 | Family | Cases | Metrics | Reference |
@@ -27,11 +29,11 @@ scheduled or label-triggered workflow is a separate change.
 | video | mp4 to h264, hevc, vp9 at four CRFs | SSIM, PSNR, bitrate, BD-rate, VMAF when libvmaf is present | ffmpeg `libx264`, `libx265`, `libvpx-vp9` |
 | audio | wav to opus and aac at four bit rates; wav to flac | SNR (ffmpeg `asdr` after alignment), loudness and true-peak drift (`ebur128`), bit rate, BD-rate; FLAC bit-exact decode and size | ffmpeg `libopus`, `aac`, `flac` |
 | ocr | scanned png to searchable pdf | CER and word F1 of the pdftotext text layer against ground truth | `tesseract` |
-| document | docx to pdf | word F1 and CER of the pdftotext text against the authored text | `soffice` |
+| document | docx to pdf (`report.docx`); an authored DOCX with nested lists, merged table cells, pictures and notes to html, odt, epub and pdf; an EPUB to docx; an HWP 5.0 file to html and txt | word F1 and CER of the text against the authored text; per structure category (headings, list items with level, table cells with spans, pictures by hash, notes) precision and recall against the structure written by hand; EPUBCheck error count; end-to-end time per document | `soffice` for the DOCX cases. It cannot open EPUB or HWP, so those rows use the hand-written structure or an independent OLE2 reader (`tests/fixtures/hwp/reference-extract.py`) as the reference, and the HWP time is compared with that reader |
 | compression | tar to zst and 7z; zst, xz and 7z back to tar | size ratio, compress and decompress MB/s; every output is decoded by the reference tool and compared with the original bytes | `zstd`, `7z`, `xz` |
 
 Throughput rows time ours and the reference alternately in one window (the order flips every run) and report the
-median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. Only the ratio is gated,
+median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. A conversion of milliseconds is timed over five back-to-back calls per sample (the mean per call), so scheduler jitter does not decide it. Only the ratio is gated,
 so the result does not depend on the machine. Our side is called in-process and the reference is spawned, so small
 inputs favour the reference by the process start-up cost; the ratio is for tracking, not for ranking.
 
