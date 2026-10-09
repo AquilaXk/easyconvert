@@ -8,7 +8,9 @@ import {
   SPEED_MIN_PAIRS,
   SPEED_PARITY_TOLERANCE,
 } from '../bench/config';
+import { createContext } from '../bench/context';
 import { BenchArgumentError } from '../bench/errors';
+import { ReferenceCache } from '../bench/ref-cache';
 import { adaptiveSpeedTiming, decideSpeed, HEAVY_SPEED_PLAN, LIGHT_SPEED_PLAN, signTestRank, SpeedSampleError, speedRatios } from '../bench/speed-parity';
 
 /**
@@ -236,6 +238,35 @@ describe('collecting paired runs until the decision is stable', () => {
     expect(timing.decision.upper).toBeGreaterThan(PASS_LINE);
   });
 
+  it('times several back-to-back calls of ours per sample and records the mean per call', async () => {
+    // Calls of ours alternate 10 ms and 90 ms, a jitter that decides a single call but cancels over two.
+    let clock = 0;
+    let oursCalls = 0;
+    const ours = (): void => {
+      clock += oursCalls++ % 2 === 0 ? 10 : 90;
+    };
+    const reference = (): void => {
+      clock += 100;
+    };
+    const batched = await adaptiveSpeedTiming(ours, reference, { ...LIGHT_SPEED_PLAN, warmup: 0, oursRepeats: 2 }, () => clock);
+    expect(oursCalls).toBe(SPEED_LIGHT_INITIAL_PAIRS * 2);
+    expect(batched.oursMs).toEqual(Array(SPEED_LIGHT_INITIAL_PAIRS).fill(50));
+    expect(batched.runs).toBe(SPEED_LIGHT_INITIAL_PAIRS);
+    expect(batched.decision).toMatchObject({ verdict: 'pass', median: 2, lower: 2, upper: 2 });
+
+    // One call per sample sees the jitter itself: ratios of 10 and 1.11 alternate.
+    clock = 0;
+    oursCalls = 0;
+    const single = await adaptiveSpeedTiming(ours, reference, { ...LIGHT_SPEED_PLAN, warmup: 0 }, () => clock);
+    expect(new Set(single.oursMs.slice(0, 4))).toEqual(new Set([10, 90]));
+  });
+
+  it('rejects a repeat count that is not a positive integer', async () => {
+    const noop = (): void => undefined;
+    await expect(adaptiveSpeedTiming(noop, noop, { ...LIGHT_SPEED_PLAN, oursRepeats: 0 }, () => 1)).rejects.toThrow(SpeedSampleError);
+    await expect(adaptiveSpeedTiming(noop, noop, { ...LIGHT_SPEED_PLAN, oursRepeats: 1.5 }, () => 1)).rejects.toThrow(SpeedSampleError);
+  });
+
   it('alternates which side runs first, so a drifting machine favours neither', async () => {
     const order: string[] = [];
     let clock = 0;
@@ -261,5 +292,59 @@ describe('collecting paired runs until the decision is stable', () => {
     await expect(adaptiveSpeedTiming(noop, noop, { initialPairs: 6, maxPairs: 5, step: 1, warmup: 0 }, () => 1)).rejects.toThrow(SpeedSampleError);
     await expect(adaptiveSpeedTiming(noop, noop, { initialPairs: 6, maxPairs: 65, step: 1, warmup: 0 }, () => 1)).rejects.toThrow(SpeedSampleError);
     await expect(adaptiveSpeedTiming(noop, noop, { initialPairs: 6, maxPairs: 8, step: 0, warmup: 0 }, () => 1)).rejects.toThrow(SpeedSampleError);
+  });
+});
+
+describe('the timing a family asks of its context', () => {
+  const context = (parity: boolean) =>
+    createContext({
+      resolve: () => null,
+      strict: true,
+      runs: 6,
+      heavyRuns: 3,
+      warmup: 0,
+      injection: null,
+      parity,
+      quality: true,
+      speed: true,
+      quick: false,
+      refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
+      work: '/nonexistent',
+      log: () => undefined,
+    });
+
+  // A parity run warms up with the plan's own rounds (one call of ours each); the fixed-run context here has none.
+  it.each([
+    ['a fixed-run benchmark', false, 0],
+    ['a parity run', true, LIGHT_SPEED_PLAN.warmup],
+  ])('calls ours the requested number of times per sample in %s', async (_name, parity, warmupCalls) => {
+    let oursCalls = 0;
+    let referenceCalls = 0;
+    const timing = await context(parity).time(
+      async () => {
+        oursCalls++;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+      () => {
+        referenceCalls++;
+      },
+      'light',
+      3
+    );
+    expect(oursCalls).toBe(warmupCalls + timing.runs * 3);
+    expect(referenceCalls).toBe(warmupCalls + timing.runs);
+  });
+
+  it('calls ours once per sample unless asked for more', async () => {
+    let oursCalls = 0;
+    const timing = await context(false).time(
+      async () => {
+        oursCalls++;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+      () => undefined,
+      'light'
+    );
+    expect(oursCalls).toBe(timing.runs);
   });
 });
