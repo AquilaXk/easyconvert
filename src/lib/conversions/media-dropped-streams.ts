@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { ConversionOptions } from '../types';
-import { probeInputStreams, probeInputTimeline, resolveFfprobeBinary } from './media-ffprobe';
+import { probeStreamLayout, resolveFfprobeBinary } from './media-ffprobe';
 import { planStreamMapping, type VideoContainer } from './media-stream-plan';
 
 /**
@@ -25,13 +25,13 @@ export function describeDroppedStreams(
   const mapsStreams =
     VIDEO_CONTAINER_TARGETS.has(tgt) && !options.thumbnail && options.subtitles?.mode !== 'extract' && fs.existsSync(inputPath);
   if (!mapsStreams) return {};
-  const ffprobe = resolveFfprobeBinary(ffmpegBin);
+  const layout = probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin));
   const plan = planStreamMapping({
-    streams: probeInputStreams(inputPath, ffprobe),
+    streams: layout.streams,
     container: tgt as VideoContainer,
     audioTrack: options.audio?.track,
     burnSubtitles: options.subtitles?.mode === 'burn',
-    hasChapters: probeInputTimeline(inputPath, ffprobe).chapterCount > 0,
+    hasChapters: layout.chapters !== undefined,
   });
   return plan.dropped.length > 0 ? { droppedStreams: plan.dropped } : {};
 }

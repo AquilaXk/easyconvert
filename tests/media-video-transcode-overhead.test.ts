@@ -1,0 +1,348 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildFfmpegArguments } from '../src/lib/conversions/media-ffmpeg-args';
+import { probeMediaDuration } from '../src/lib/conversions/media';
+import { InvalidMediaOptionError } from '../src/lib/types';
+import { convertWithNativeFfmpeg } from '../src/worker/engines';
+import { getOracleToolPath } from './helpers/differential-oracle';
+import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
+import { measureSsimPsnr, probeFile } from './helpers/ffmpeg-measure';
+import { oracleTest } from './helpers/oracle-test';
+
+/**
+ * What a video conversion costs besides the encoder. A plain MP4 describes its streams in its header, so planning the
+ * stream mapping needs no prober process; any other input is probed once for everything the conversion asks, not once
+ * per question. The encoded picture must still be the one the reference encoder writes at the same settings. The
+ * process counts come from recording wrappers around the real binaries, the picture facts from ffprobe, and the
+ * quality from ffmpeg's own SSIM and PSNR filters against the source.
+ */
+
+const TEST_TIMEOUT_MS = 240_000;
+const SIZE = '160x120';
+const SECONDS = 1;
+const CRF = 24;
+const TONE_HZ = 440;
+/** Sizes of two encodes at one setting differ by container bookkeeping only. */
+const SIZE_TOLERANCE = 0.03;
+const PSNR_TOLERANCE_DB = 0.1;
+const DURATION_TOLERANCE_S = 0.1;
+
+let workDir: string;
+
+beforeAll(() => {
+  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-video-overhead-'));
+});
+afterAll(() => {
+  fs.rmSync(workDir, { recursive: true, force: true });
+});
+
+function tool(name: 'ffmpeg' | 'ffprobe'): string {
+  const found = getOracleToolPath(name);
+  if (found === null) throw new Error(`${name} is not installed`);
+  return found;
+}
+
+const VIDEO_IN = ['-f', 'lavfi', '-i', `testsrc2=size=${SIZE}:rate=24:duration=${SECONDS}`];
+const AUDIO_IN = ['-f', 'lavfi', '-i', `sine=frequency=${TONE_HZ}:sample_rate=44100:duration=${SECONDS}`];
+
+function make(name: string, args: string[]): string {
+  const out = path.join(workDir, name);
+  execFileSync(tool('ffmpeg'), ['-v', 'error', '-y', ...args, out], { stdio: ['ignore', 'ignore', 'pipe'] });
+  return out;
+}
+
+/** A plain MP4 of an H.264 picture and an AAC track, as an encoder or a phone writes it. */
+function plainMp4(): string {
+  requireEncoders('libx264', 'aac');
+  return make('plain.mp4', [...VIDEO_IN, ...AUDIO_IN, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest']);
+}
+
+/** Bytes of the video packets of a file, from ffprobe. */
+function videoBytes(file: string): number {
+  const sizes = execFileSync(tool('ffprobe'), ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=size', '-of', 'csv=p=0', file], {
+    encoding: 'utf-8',
+  });
+  return sizes
+    .trim()
+    .split('\n')
+    .reduce((sum, line) => sum + Number(line), 0);
+}
+
+interface Call {
+  tool: string;
+  args: string[];
+}
+
+/**
+ * A directory holding wrappers named `ffmpeg` and `ffprobe` that append every invocation to a log and then run the
+ * real binary. Used as the sibling pair the engine resolves, it records exactly the processes a conversion starts.
+ */
+function recordingBinaries(label: string): { ffmpeg: string; calls: () => Call[] } {
+  const dir = path.join(workDir, `wrappers-${label}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const log = path.join(dir, 'calls.log');
+  fs.writeFileSync(log, '');
+  for (const name of ['ffmpeg', 'ffprobe'] as const) {
+    const script = `#!/bin/sh\nprintf '%s' "${name}" >> '${log}'\nfor a in "$@"; do printf '\\t%s' "$a" >> '${log}'; done\nprintf '\\n' >> '${log}'\nexec '${tool(name)}' "$@"\n`;
+    fs.writeFileSync(path.join(dir, name), script, { mode: 0o755 });
+  }
+  return {
+    ffmpeg: path.join(dir, 'ffmpeg'),
+    calls: () =>
+      fs
+        .readFileSync(log, 'utf-8')
+        .split('\n')
+        .filter((line) => line !== '')
+        .map((line) => {
+          const [name, ...args] = line.split('\t');
+          return { tool: name, args };
+        }),
+  };
+}
+
+describe('conversions of a plain MP4', () => {
+  const previousFfmpeg = process.env.FFMPEG_PATH;
+  afterAll(() => {
+    if (previousFfmpeg === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = previousFfmpeg;
+  });
+
+  async function convert(input: string, target: string, recorder: ReturnType<typeof recordingBinaries>, options: Record<string, unknown> = {}) {
+    process.env.FFMPEG_PATH = recorder.ffmpeg;
+    const result = await convertWithNativeFfmpeg(
+      fs.readFileSync(input),
+      path.extname(input).slice(1),
+      target,
+      { disableHwaccel: true, throwOnUnavailable: true, ...options },
+      path.basename(input)
+    );
+    if (result === null || result.filePath === undefined) throw new Error('the engine returned no output file');
+    return result;
+  }
+
+  const CODECS = [
+    { codec: 'h264', target: 'mp4', encoder: 'libx264', reference: ['-c:v', 'libx264', '-preset', 'medium'], streamCodec: 'h264' },
+    { codec: 'hevc', target: 'mp4', encoder: 'libx265', reference: ['-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error'], streamCodec: 'hevc' },
+    {
+      codec: 'vp9',
+      target: 'webm',
+      encoder: 'libvpx-vp9',
+      reference: ['-c:v', 'libvpx-vp9', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '2', '-tile-columns', '2', '-b:v', '0'],
+      streamCodec: 'vp9',
+    },
+  ] as const;
+
+  for (const row of CODECS) {
+    oracleTest(
+      `${row.codec}: no prober process, one encode, the picture the reference encoder writes at the same quality`,
+      ['ffmpeg', 'ffprobe'],
+      async () => {
+        requireEncoders(row.encoder, 'libopus');
+        const source = plainMp4();
+        const recorder = recordingBinaries(`plain-${row.codec}`);
+        const result = await convert(source, row.target, recorder, { video: { codec: row.codec, rateControl: { mode: 'crf', crf: CRF } } });
+        const written = result.filePath as string;
+
+        const calls = recorder.calls();
+        expect(calls.filter((call) => call.tool === 'ffprobe').map((call) => call.args.join(' '))).toEqual([]);
+        const encodes = calls.filter((call) => call.tool === 'ffmpeg' && call.args.includes('-i'));
+        expect(encodes).toHaveLength(1);
+        expect(encodes[0].args).toContain(row.encoder);
+
+        // Oracle one: the stream facts as ffprobe sees them.
+        const probed = probeFile(tool('ffprobe'), written);
+        expect(probed.streams.map((stream) => [stream.codec_type, stream.codec_name])).toEqual([
+          ['video', row.streamCodec],
+          ['audio', row.target === 'webm' ? 'opus' : 'aac'],
+        ]);
+
+        // Oracle two: the reference encoder at the same settings. Same picture quality, same size.
+        const reference = path.join(workDir, `reference-${row.codec}.${row.target}`);
+        execFileSync(
+          tool('ffmpeg'),
+          ['-v', 'error', '-y', '-i', source, ...row.reference, '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference],
+          { stdio: ['ignore', 'ignore', 'pipe'] }
+        );
+        const ours = measureSsimPsnr(tool('ffmpeg'), written, source);
+        const theirs = measureSsimPsnr(tool('ffmpeg'), reference, source);
+        expect(ours.psnr).toBeGreaterThanOrEqual(theirs.psnr - PSNR_TOLERANCE_DB);
+        expect(ours.ssim).toBeGreaterThanOrEqual(theirs.ssim - 0.001);
+        expect(Math.abs(videoBytes(written) - videoBytes(reference)) / videoBytes(reference)).toBeLessThan(SIZE_TOLERANCE);
+        fs.rmSync(written, { force: true });
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+
+  oracleTest(
+    'a conversion that drops a stream still names it, with no prober process',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      requireEncoders('libx264', 'aac', 'ac3');
+      const source = make('two-audio.mp4', [
+        ...VIDEO_IN, ...AUDIO_IN, ...AUDIO_IN, '-map', '0:v', '-map', '1:a', '-map', '2:a',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
+      ]);
+      const recorder = recordingBinaries('plain-track');
+      const result = await convert(source, 'mp4', recorder, { audio: { track: 1 } });
+      expect(recorder.calls().filter((call) => call.tool === 'ffprobe')).toEqual([]);
+      const kept = probeFile(tool('ffprobe'), result.filePath as string).streams.map((stream) => stream.codec_type);
+      expect(kept).toEqual(['video', 'audio']);
+      fs.rmSync(result.filePath as string, { force: true });
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a PQ picture is still recognised from the header and refused when tone mapping is off',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      requireEncoders('libx264');
+      const source = make('pq.mp4', [
+        ...VIDEO_IN, '-vf', 'setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      ]);
+      // The oracle sees the same picture: PQ, which is what must keep this file out of an 8-bit conversion.
+      expect(probeFile(tool('ffprobe'), source).streams[0]).toMatchObject({ codec_name: 'h264' });
+      expect(execFileSync(tool('ffprobe'), ['-v', 'error', '-show_entries', 'stream=color_transfer', '-of', 'csv=p=0', source], { encoding: 'utf-8' }).trim()).toBe('smpte2084');
+      const recorder = recordingBinaries('pq');
+      await expect(convert(source, 'mp4', recorder, { toneMap: 'none' })).rejects.toBeInstanceOf(InvalidMediaOptionError);
+      expect(recorder.calls().filter((call) => call.tool === 'ffprobe')).toEqual([]);
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('the tone mapping plan of an HDR picture', () => {
+  /** An ffmpeg that lists a zscale filter its build may lack (the filter graph is only built here, never run). */
+  function ffmpegListingZscale(): string {
+    const dir = path.join(workDir, 'zscale-listing');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'ffmpeg'),
+      `#!/bin/sh\nif [ "$1" = "-hide_banner" ] && [ "$2" = "-filters" ]; then printf ' ... zscale V->V Apply resizing.\\n'; exit 0; fi\nexec '${tool('ffmpeg')}' "$@"\n`,
+      { mode: 0o755 }
+    );
+    fs.writeFileSync(path.join(dir, 'ffprobe'), `#!/bin/sh\nexec '${tool('ffprobe')}' "$@"\n`, { mode: 0o755 });
+    return path.join(dir, 'ffmpeg');
+  }
+
+  function toneMapFilter(args: string[]): string {
+    return args[args.indexOf('-vf') + 1];
+  }
+
+  oracleTest(
+    'is the same whether the header or ffprobe says the picture is PQ',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      requireEncoders('libx264');
+      const mp4 = make('pq-plan.mp4', [
+        ...VIDEO_IN, '-vf', 'setparams=color_trc=smpte2084:color_primaries=bt2020:colorspace=bt2020nc', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+      ]);
+      const mkv = make('pq-plan.mkv', ['-i', mp4, '-c', 'copy']);
+      const ffmpeg = ffmpegListingZscale();
+      const viaHeader = buildFfmpegArguments(mp4, path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, ffmpeg);
+      const viaProbe = buildFfmpegArguments(mkv, path.join(workDir, 'o.mp4'), 'mkv', 'mp4', { disableHwaccel: true }, ffmpeg);
+      expect(toneMapFilter(viaHeader)).toContain('zscale=t=linear');
+      expect(toneMapFilter(viaHeader)).toBe(toneMapFilter(viaProbe));
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'is not built for an SDR picture',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      const ffmpeg = ffmpegListingZscale();
+      const args = buildFfmpegArguments(plainMp4(), path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, ffmpeg);
+      // The only filter is the one that keeps the picture size even.
+      expect(toneMapFilter(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('conversions of an input the header cannot describe', () => {
+  const previousFfmpeg = process.env.FFMPEG_PATH;
+  afterAll(() => {
+    if (previousFfmpeg === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = previousFfmpeg;
+  });
+
+  oracleTest(
+    'one prober process answers the stream list, the timeline, the transfer, the duration and the dropped streams',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      requireEncoders('libx264', 'aac');
+      const source = make('plain.mkv', [...VIDEO_IN, ...AUDIO_IN, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest']);
+      const recorder = recordingBinaries('mkv');
+      process.env.FFMPEG_PATH = recorder.ffmpeg;
+      const result = await convertWithNativeFfmpeg(fs.readFileSync(source), 'mkv', 'mp4', { disableHwaccel: true, throwOnUnavailable: true }, 'plain.mkv');
+      expect(result?.filePath).toBeDefined();
+      const calls = recorder.calls();
+      expect(calls.filter((call) => call.tool === 'ffprobe')).toHaveLength(1);
+      expect(calls.filter((call) => call.tool === 'ffmpeg' && call.args.includes('-i'))).toHaveLength(1);
+      fs.rmSync(result?.filePath as string, { force: true });
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'an H.265 MP4 is probed once, not once per question',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      requireEncoders('libx265', 'aac');
+      const source = make('hevc.mp4', [
+        ...VIDEO_IN, ...AUDIO_IN, '-c:v', 'libx265', '-pix_fmt', 'yuv420p', '-x265-params', 'log-level=error', '-c:a', 'aac', '-shortest',
+      ]);
+      const recorder = recordingBinaries('hevc-src');
+      process.env.FFMPEG_PATH = recorder.ffmpeg;
+      const result = await convertWithNativeFfmpeg(fs.readFileSync(source), 'mp4', 'mp4', { disableHwaccel: true, throwOnUnavailable: true }, 'hevc.mp4');
+      expect(recorder.calls().filter((call) => call.tool === 'ffprobe')).toHaveLength(1);
+      fs.rmSync(result?.filePath as string, { force: true });
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('the duration that bounds a job', () => {
+  oracleTest(
+    'comes from the movie header of a plain MP4 and agrees with ffprobe',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      const source = plainMp4();
+      const recorder = recordingBinaries('duration');
+      const reported = Number(
+        execFileSync(tool('ffprobe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', source], { encoding: 'utf-8' })
+      );
+      const before = recorder.calls().length;
+      expect(Math.abs(probeMediaDuration(source, {}, recorder.ffmpeg) - reported)).toBeLessThan(DURATION_TOLERANCE_S);
+      expect(recorder.calls().length).toBe(before);
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('the arguments of a plain MP4 to H.264 conversion', () => {
+  oracleTest(
+    'map the picture and the sound the header lists and add no argument for streams that do not exist',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      const source = plainMp4();
+      const args = buildFfmpegArguments(source, path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, tool('ffmpeg'));
+      const maps = args.flatMap((arg, i) => (arg === '-map' ? [args[i + 1]] : []));
+      expect(maps).toEqual(['0:0', '0:1']);
+      expect(args).toContain('libx264');
+      expect(args).not.toContain('-c:s');
+    }
+  );
+
+  it('are built for an input that is not there without asking for streams', () => {
+    const absent = path.join(workDir, 'absent.mp4');
+    const args = buildFfmpegArguments(absent, path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, null);
+    expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-i', absent]);
+    expect(args.filter((arg) => arg === '-map')).toEqual([]);
+  });
+});
