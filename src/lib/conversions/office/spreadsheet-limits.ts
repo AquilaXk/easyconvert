@@ -1,3 +1,6 @@
+import { CONFIG_SCHEMA, ConfigRuleError, parseKind } from '../../config/schema';
+import { ConfigurationError } from '../../config';
+
 /**
  * Limits on the memory a spreadsheet conversion may take. They live apart from `office.ts` so that the
  * configuration schema and its tests can state them without loading the converters.
@@ -7,6 +10,8 @@
 export const XLS_MAX_GRID_CELLS_ENV = 'EASYCONVERT_XLS_MAX_GRID_CELLS';
 /** Environment variable that sets the most cells holding text that a legacy XLS sheet may have for a PDF (a positive whole number). */
 export const XLS_MAX_PDF_TEXT_CELLS_ENV = 'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS';
+/** Environment variable that sets the most characters the cells of a legacy XLS sheet may expand to (a positive whole number). */
+export const XLS_MAX_CELL_TEXT_CHARS_ENV = 'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS';
 /** Environment variable that sets the most characters the cells of an XLSX workbook may expand to (a positive whole number). */
 export const XLSX_MAX_CELL_TEXT_CHARS_ENV = 'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS';
 
@@ -38,25 +43,41 @@ export const DEFAULT_XLS_MAX_PDF_TEXT_CELLS = 500_000;
  */
 export const DEFAULT_XLSX_MAX_CELL_TEXT_CHARS = 64 * 1024 * 1024;
 
-const POSITIVE_WHOLE_NUMBER = /^[1-9]\d{0,15}$/;
+/** The same limit for the cells of a legacy XLS sheet, where one shared string can be used by up to 16.7 million cells. */
+export const DEFAULT_XLS_MAX_CELL_TEXT_CHARS = 64 * 1024 * 1024;
 
-/** The limit in `env[name]`: its value when set to a positive whole number, `fallback` when unset, an error when malformed. */
-function limitFromEnvironment(name: string, fallback: number, env: Readonly<Record<string, string | undefined>>): number {
+type Environment = Readonly<Record<string, string | undefined>>;
+
+/**
+ * The limit in `env[name]`: its value when set, `fallback` when unset or blank. The value is read by the rule of the
+ * schema entry of the same name, so the start-up check and this reader accept the same values; a malformed value is a
+ * ConfigurationError that names the variable, never a replacement by the default.
+ */
+function limitFromEnvironment(name: string, fallback: number, env: Environment): number {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
-  const text = raw.trim();
-  if (!POSITIVE_WHOLE_NUMBER.test(text)) throw new Error(`${name} must be a positive whole number.`);
-  return Number(text);
+  const spec = CONFIG_SCHEMA.find((entry) => entry.name === name);
+  if (spec === undefined) throw new Error(`${name} has no entry in the configuration schema.`);
+  try {
+    return parseKind(spec.kind, raw, { production: false }) as number;
+  } catch (error) {
+    if (!(error instanceof ConfigRuleError)) throw error;
+    throw new ConfigurationError([{ variable: name, rule: error.rule }]);
+  }
 }
 
-export function xlsMaxGridCells(env: Readonly<Record<string, string | undefined>> = process.env): number {
+export function xlsMaxGridCells(env: Environment = process.env): number {
   return limitFromEnvironment(XLS_MAX_GRID_CELLS_ENV, DEFAULT_XLS_MAX_GRID_CELLS, env);
 }
 
-export function xlsMaxPdfTextCells(env: Readonly<Record<string, string | undefined>> = process.env): number {
+export function xlsMaxPdfTextCells(env: Environment = process.env): number {
   return limitFromEnvironment(XLS_MAX_PDF_TEXT_CELLS_ENV, DEFAULT_XLS_MAX_PDF_TEXT_CELLS, env);
 }
 
-export function xlsxMaxCellTextChars(env: Readonly<Record<string, string | undefined>> = process.env): number {
+export function xlsMaxCellTextChars(env: Environment = process.env): number {
+  return limitFromEnvironment(XLS_MAX_CELL_TEXT_CHARS_ENV, DEFAULT_XLS_MAX_CELL_TEXT_CHARS, env);
+}
+
+export function xlsxMaxCellTextChars(env: Environment = process.env): number {
   return limitFromEnvironment(XLSX_MAX_CELL_TEXT_CHARS_ENV, DEFAULT_XLSX_MAX_CELL_TEXT_CHARS, env);
 }

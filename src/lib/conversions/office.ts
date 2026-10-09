@@ -18,8 +18,10 @@ import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, pa
 import { getMaxInMemoryBytes } from '../storage/errors';
 import {
   XLSX_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_CELL_TEXT_CHARS_ENV,
   XLS_MAX_GRID_CELLS_ENV,
   XLS_MAX_PDF_TEXT_CELLS_ENV,
+  xlsMaxCellTextChars,
   xlsMaxGridCells,
   xlsMaxPdfTextCells,
   xlsxMaxCellTextChars,
@@ -8646,6 +8648,8 @@ export async function convertOdsSource(
 
 /** FilePass record ([MS-XLS] 2.4.117): present in the workbook globals of an XOR-obfuscated or RC4-encrypted workbook. */
 const BIFF_RECORD_FILEPASS = 0x002f;
+/** Index of the last column (IV) of a BIFF sheet: 256 columns. Rows are a 16-bit field, so their 65536 are bounded by the record itself. */
+const BIFF_MAX_COLUMN_INDEX = 255;
 /** EOF record: ends the workbook globals and each sheet substream. */
 const BIFF_RECORD_EOF = 0x000a;
 /** Record ids of the BOF that starts a BIFF stream: BIFF8 and BIFF5, BIFF4, BIFF3, BIFF2. */
@@ -8792,6 +8796,14 @@ function sparseXlsSheet(cells: ReadonlyMap<number, ReadonlyMap<number, string>>,
     rowCount,
     row: (index) => (cells.has(index) ? buildRow(index) : blankRow),
     toRows: (limit = GRID_LIMIT) => {
+      const maxChars = xlsMaxCellTextChars();
+      let expandedChars = 0;
+      for (const rowCells of cells.values()) {
+        for (const value of rowCells.values()) expandedChars += value.length;
+      }
+      if (expandedChars > maxChars) {
+        throw new PayloadLimitError(`The XLS cells expand to more than ${maxChars} characters (${XLS_MAX_CELL_TEXT_CHARS_ENV}).`);
+      }
       const maxCells = limit.cells();
       if (limit.counts === 'grid' && rowCount * columnCount > maxCells) {
         throw new PayloadLimitError(
@@ -8907,8 +8919,9 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
     return EMPTY_XLS_SHEET;
   }
 
-  // BOF version word ([MS-XLS] 2.4.21): 0x0600 is BIFF8; 0x0500 (Excel 5.0 and 95) writes text without option flags.
-  const hasTextFlags = firstRec !== 0x0809 || stream.length < 6 + 2 || stream.readUInt16LE(4) >= BIFF8_BOF_VERSION;
+  // BOF record id and version word ([MS-XLS] 2.4.21): only a BIFF8 BOF (id 0x0809, version 0x0600) writes text with option
+  // flags; BIFF5 (id 0x0809, version 0x0500) and BIFF2 to BIFF4 (ids 0x0009, 0x0209, 0x0409) write it without.
+  const hasTextFlags = firstRec === 0x0809 && stream.length >= 6 && stream.readUInt16LE(4) >= BIFF8_BOF_VERSION;
 
   const sst: string[] = [];
   const cells = new Map<number, Map<number, string>>();
@@ -8949,6 +8962,9 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
     }
 
     const setCell = (r: number, c: number, val: string) => {
+      if (c > BIFF_MAX_COLUMN_INDEX) {
+        throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
+      }
       if (!cells.has(r)) cells.set(r, new Map());
       cells.get(r)!.set(c, val);
       if (r > maxRow) maxRow = r;

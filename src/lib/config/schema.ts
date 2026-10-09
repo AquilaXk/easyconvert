@@ -1051,6 +1051,17 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
+    area: 'limits',
+    description:
+      'Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 64 * 1024 * 1024,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
     area: 'limits',
     description:

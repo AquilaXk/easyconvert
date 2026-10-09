@@ -4,12 +4,17 @@ import JSZip from 'jszip';
 import { convertFile, decodeRk, parseBiff8Workbook } from '../src/lib/conversions';
 import {
   DEFAULT_XLSX_MAX_CELL_TEXT_CHARS,
+  DEFAULT_XLS_MAX_CELL_TEXT_CHARS,
+  XLS_MAX_CELL_TEXT_CHARS_ENV,
+  xlsMaxGridCells,
   XLSX_MAX_CELL_TEXT_CHARS_ENV,
   XLS_MAX_GRID_CELLS_ENV,
   XLS_MAX_PDF_TEXT_CELLS_ENV,
 } from '../src/lib/conversions/office/spreadsheet-limits';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EncryptedOfficeDocumentError, PayloadLimitError } from '../src/lib/types';
+import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
+import { ConfigurationError } from '../src/lib/config';
 import { buildCompoundFile } from './helpers/cfb-craft';
 import { oracleTest } from './helpers/oracle-test';
 import { parseCsvWithPython } from './helpers/sheet-rows';
@@ -43,11 +48,11 @@ function record(id: number, data: Buffer): Buffer {
   return Buffer.concat([header, data]);
 }
 
-function bof(substream: number, version = BIFF8_VERSION): Buffer {
+function bof(substream: number, version = BIFF8_VERSION, recordId = BOF_RECORD): Buffer {
   const data = Buffer.alloc(16);
   data.writeUInt16LE(version, 0);
   data.writeUInt16LE(substream, 2);
-  return record(BOF_RECORD, data);
+  return record(recordId, data);
 }
 
 function rkCell(row: number, col: number, rk: number): Buffer {
@@ -172,6 +177,7 @@ describe('oversized sheets and expansions (issue 668)', () => {
   afterEach(() => {
     delete process.env[XLS_MAX_GRID_CELLS_ENV];
     delete process.env[XLS_MAX_PDF_TEXT_CELLS_ENV];
+    delete process.env[XLS_MAX_CELL_TEXT_CHARS_ENV];
     delete process.env[XLSX_MAX_CELL_TEXT_CHARS_ENV];
   });
 
@@ -254,9 +260,81 @@ describe('oversized sheets and expansions (issue 668)', () => {
     expect(() => parseBiff8Workbook(workbookStream(numberCell(1024, 7, 5)))).toThrow(/1025 rows by 8 columns \(8200 cells\); at most 8192/);
   });
 
-  it('rejects a grid limit that is not a positive whole number rather than ignoring it', () => {
-    process.env[XLS_MAX_GRID_CELLS_ENV] = '12.5';
-    expect(() => parseBiff8Workbook(workbookStream(numberCell(0, 0, 5)))).toThrow(new RegExp(`${XLS_MAX_GRID_CELLS_ENV} must be a positive whole number`));
+  describe('cells outside the BIFF8 sheet (issue 668: a 66-byte stream aborted the process)', () => {
+    const outOfRange = workbookStream(numberCell(65535, 65535, 1));
+
+    it.each(['pdf', 'html', 'ods', 'xlsx', 'csv', 'tsv', 'json'])('refuses a cell in column 65535 as malformed input for the .%s target', async (target) => {
+      const failure = await convertFile(outOfRange, 'xls', target, {}, 'wide.xls').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(LegacyOfficeFormatError);
+      expect((failure as LegacyOfficeFormatError).status).toBe(400);
+      expect((failure as Error).message).toBe('Corrupt XLS: a cell lies in column 65535, past the last column (255) of a BIFF sheet.');
+    });
+
+    it('refuses a MULRK run that continues past column 255', () => {
+      const mulrk = Buffer.alloc(4 + 12 + 2);
+      mulrk.writeUInt16LE(3, 0);
+      mulrk.writeUInt16LE(255, 2);
+      mulrk.writeUInt32LE(0xfffffff6, 6);
+      mulrk.writeUInt32LE(0xfffffff6, 12);
+      mulrk.writeUInt16LE(256, 16);
+      expect(() => parseBiff8Workbook(workbookStream(record(MULRK_RECORD, mulrk)))).toThrow(/column 256, past the last column \(255\)/);
+    });
+
+    it('still reads a cell in the last column', () => {
+      expect(parseBiff8Workbook(workbookStream(numberCell(0, 255, 9)))[0][255]).toBe('9');
+    });
+  });
+
+  describe('a shared string used by many cells (issue 668: RangeError for html, ods and xlsx)', () => {
+    /** One 32767-character string in the SST, referenced by `copies` LABELSST cells: 592 KB of input for 1.3 billion characters. */
+    const bombWorkbook = (copies: number): Buffer => {
+      const sst = Buffer.concat([Buffer.from([1, 0, 0, 0, 1, 0, 0, 0]), Buffer.from([0xff, 0x7f, 0]), Buffer.alloc(32767, 0x78)]);
+      const cells = Array.from({ length: copies }, (_, i) => {
+        const data = Buffer.alloc(10);
+        data.writeUInt16LE(i >> 8, 0);
+        data.writeUInt16LE(i & 0xff, 2);
+        return record(LABELSST_RECORD, data);
+      });
+      return Buffer.concat([bof(GLOBALS_SUBSTREAM), record(SST_RECORD, sst), record(EOF_RECORD, Buffer.alloc(0)), bof(WORKSHEET_SUBSTREAM), ...cells, record(EOF_RECORD, Buffer.alloc(0))]);
+    };
+
+    it.each(['html', 'ods', 'xlsx', 'pdf'])('answers 413 for the .%s target before building the grid', async (target) => {
+      const failure = await convertFile(bombWorkbook(40000), 'xls', target, {}, 'bomb.xls').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(PayloadLimitError);
+      expect((failure as PayloadLimitError).status).toBe(413);
+      expect((failure as Error).message).toBe(`The XLS cells expand to more than ${DEFAULT_XLS_MAX_CELL_TEXT_CHARS} characters (${XLS_MAX_CELL_TEXT_CHARS_ENV}).`);
+    }, 120_000);
+
+    it('applies the configured limit, counting the string once for every cell that uses it', async () => {
+      process.env[XLS_MAX_CELL_TEXT_CHARS_ENV] = String(3 * 32767);
+      const failure = await convertFile(bombWorkbook(4), 'xls', 'html', {}, 'bomb.xls').catch((err: unknown) => err);
+      expect((failure as Error).message).toBe(`The XLS cells expand to more than ${3 * 32767} characters (${XLS_MAX_CELL_TEXT_CHARS_ENV}).`);
+      process.env[XLS_MAX_CELL_TEXT_CHARS_ENV] = String(4 * 32767);
+      const converted = await convertFile(bombWorkbook(4), 'xls', 'html', {}, 'bomb.xls');
+      expect(converted.buffer.toString('utf-8').split('x'.repeat(32767)).length - 1).toBe(4);
+    });
+  });
+
+  describe('limit settings share the schema rules (issue 668)', () => {
+    it.each(['9999999999999999', '12.5', '0', '-4', '1e6', 'many'])('rejects %s with a typed configuration error naming the variable', (value) => {
+      process.env[XLS_MAX_GRID_CELLS_ENV] = value;
+      let failure: unknown;
+      try {
+        xlsMaxGridCells();
+      } catch (err) {
+        failure = err;
+      }
+      expect(failure).toBeInstanceOf(ConfigurationError);
+      expect((failure as ConfigurationError).variables).toEqual([XLS_MAX_GRID_CELLS_ENV]);
+      expect((failure as ConfigurationError).failures[0].rule).toBe(`must be a whole number from 1 to ${Number.MAX_SAFE_INTEGER}`);
+    });
+
+    it('accepts the largest safe integer and a value with surrounding spaces', () => {
+      process.env[XLS_MAX_GRID_CELLS_ENV] = String(Number.MAX_SAFE_INTEGER);
+      expect(xlsMaxGridCells()).toBe(Number.MAX_SAFE_INTEGER);
+      process.env[XLS_MAX_GRID_CELLS_ENV] = ' 77 ';
+      expect(xlsMaxGridCells()).toBe(77);
+    });
   });
 
   const amplifiedWorkbook = async (copies: number): Promise<Buffer> => {
@@ -365,6 +443,21 @@ describe('BIFF5 workbooks and files that hold both streams (issue 668: first let
 
   it('reads the text of a BIFF5 LABEL without taking its first character for a flag byte', () => {
     expect(parseBiff8Workbook(biff5Stream(biff5Label(0, 0, 'Latitude'), biff5Label(0, 1, 'Private')))).toEqual([['Latitude', 'Private']]);
+  });
+
+  // BIFF2 to BIFF4 start with their own BOF record ids (0x0009, 0x0209, 0x0409); their text has no option-flag byte either.
+  it.each([
+    ['BIFF4', 0x0409, 0x0400],
+    ['BIFF3', 0x0209, 0x0300],
+  ])('reads the text of a %s LABEL whole, including a first character with an odd code point', (_name, recordId, version) => {
+    const stream = Buffer.concat([bof(WORKSHEET_SUBSTREAM, version, recordId), biff5Label(0, 0, 'Latitude'), biff5Label(0, 1, 'alpha'), record(EOF_RECORD, Buffer.alloc(0))]);
+    expect(parseBiff8Workbook(stream)).toEqual([['Latitude', 'alpha']]);
+  });
+
+  it('converts a raw BIFF4 stream with LABEL cells to JSON without losing the first letters', async () => {
+    const stream = Buffer.concat([bof(WORKSHEET_SUBSTREAM, 0x0400, 0x0409), biff5Label(0, 0, 'Latitude'), biff5Label(0, 1, 'Private'), record(EOF_RECORD, Buffer.alloc(0))]);
+    const converted = await convertFile(stream, 'xls', 'json', {}, 'old.xls');
+    expect(converted.buffer.toString('utf-8')).toBe(JSON.stringify([['Latitude', 'Private']], null, 2));
   });
 
   it('converts a BIFF5 workbook stored under the Book stream name', async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { parseCsvWithPython } from './helpers/sheet-rows';
+import { xlsxRowsWithPython } from './helpers/xlsx-rows';
 
 /** Cells that RFC 4180 section 2.6 requires to be enclosed in double quotes (delimiter, quote, CR/LF) plus a tab. */
 const GRID: string[][] = [
@@ -106,8 +107,7 @@ describe('spreadsheet to XLSX keeps awkward cells intact (issue 668)', () => {
   for (const { format, build } of SOURCES.filter((source) => source.format !== 'xlsx')) {
     it(`${format} to xlsx keeps delimiters and quotes inside their cells`, async () => {
       const converted = await convertFile(await build(), format, 'xlsx', {}, `quoting.${format}`);
-      const csv = await convertFile(converted.buffer, 'xlsx', 'csv', {}, 'again.xlsx');
-      expect(parseCsvWithPython(csv.buffer.toString('utf-8'))).toEqual(GRID);
+      expect(xlsxRowsWithPython(converted.buffer)).toEqual(GRID);
     });
   }
 });

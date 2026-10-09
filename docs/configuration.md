@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 95 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 96 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -198,6 +198,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `EASYCONVERT_PDF_TEXT_DEADLINE_MS` | integer, 1 to 2147483647 | `60000` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_GRID_CELLS` | integer, at least 1 | `4194304` | no | web, worker |
 | `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS` | integer, at least 1 | `500000` | no | web, worker |
+| `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
 | `EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS` | integer, at least 1 | `67108864` | no | web, worker |
 | `ANONYMOUS_DAILY_LIMIT` | integer, 1 to 2147483647 | `10` | no | web |
 | `ANONYMOUS_BURST_CAPACITY` | integer, 1 to 2147483647 | `10` | no | web |
@@ -211,6 +212,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
 - `EASYCONVERT_XLS_MAX_GRID_CELLS`: Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.
 - `EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS`: Most cells holding text of a legacy XLS sheet that the in-process PDF writer lays out as a table (about 3 KB of memory per cell); a sheet with more is refused with HTTP 413. Blank cells are not counted.
+- `EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS`: Most characters the cells of a legacy XLS sheet may expand to for an HTML, ODS, XLSX or PDF conversion, shared strings counted once per cell that uses them; a sheet over it is refused with HTTP 413 (protects against one long shared string used by many cells).
 - `EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS`: Most characters the cells of an XLSX workbook may expand to, shared strings counted once per cell that uses them; a workbook over it is refused with HTTP 413 (protects against one long shared string used by many cells).
 - `ANONYMOUS_DAILY_LIMIT`: Conversions per day for an anonymous caller.
 - `ANONYMOUS_BURST_CAPACITY`: Token bucket size (largest burst of requests) of one anonymous caller.

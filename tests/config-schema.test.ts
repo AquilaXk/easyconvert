@@ -17,6 +17,8 @@ import { PDF_TEXT_DEADLINE_MS } from '../src/lib/conversions/pdf-text-types';
 import { DEFAULT_MAX_IN_MEMORY_BYTES } from '../src/lib/storage/errors';
 import {
   DEFAULT_XLSX_MAX_CELL_TEXT_CHARS,
+  DEFAULT_XLS_MAX_CELL_TEXT_CHARS,
+  XLS_MAX_CELL_TEXT_CHARS_ENV,
   DEFAULT_XLS_MAX_GRID_CELLS,
   DEFAULT_XLS_MAX_PDF_TEXT_CELLS,
   XLSX_MAX_CELL_TEXT_CHARS_ENV,
@@ -467,6 +469,7 @@ describe('schema', () => {
     expect(defaults.get(XLS_MAX_GRID_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_GRID_CELLS);
     expect(defaults.get(XLS_MAX_PDF_TEXT_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_PDF_TEXT_CELLS);
     expect(defaults.get(XLSX_MAX_CELL_TEXT_CHARS_ENV)).toBe(DEFAULT_XLSX_MAX_CELL_TEXT_CHARS);
+    expect(defaults.get(XLS_MAX_CELL_TEXT_CHARS_ENV)).toBe(DEFAULT_XLS_MAX_CELL_TEXT_CHARS);
     // Values written in the consumers' expressions (`|| '1000'`, `: 10`, `?? 600`) and in the issue text.
     expect(Object.fromEntries(['WORKER_CONCURRENCY', 'WORKER_MAX_JOBS', 'WORKER_MAX_RSS_MB', 'WORKER_DRAIN_TIMEOUT_MS', 'WORKER_HEARTBEAT_INTERVAL_MS'].map((name) => [name, defaults.get(name)]))).toEqual({
       WORKER_CONCURRENCY: 3,
@@ -524,6 +527,7 @@ describe('schema', () => {
       'EASYCONVERT_XLS_MAX_GRID_CELLS',
       'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
       'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
+      'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
       // job-secret-seal.ts
       'JOB_SECRET_KEK',
       'JOB_SECRET_KEK_PREVIOUS',
