@@ -21,18 +21,16 @@ import {
  * pipeline stay above the threshold.
  */
 
-const TOOLS = ['soffice', 'identify', 'pdftoppm', 'pdftotext', 'ffmpeg'] as const;
+const TOOLS = ['soffice', 'identify', 'pdftoppm', 'pdftotext', 'magick'] as const;
 const TEST_TIMEOUT_MS = 180_000;
 
-/** A white PNG of the size of `page`, drawn by ffmpeg. */
+/** A white PNG of the size of `page`, drawn by ImageMagick at exactly that pixel size (ffmpeg's yuv420 source rounds an odd height down). */
 function blankPageLike(page: Buffer): Buffer {
   const { width, height } = identifyImage(page, 'png');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blank-page-'));
   try {
     const file = path.join(dir, 'blank.png');
-    execFileSync(requireOracleTool('ffmpeg'), ['-hide_banner', '-nostdin', '-f', 'lavfi', '-i', `color=white:s=${width}x${height}`, '-frames:v', '1', file], {
-      stdio: 'ignore',
-    });
+    execFileSync(requireOracleTool('magick'), ['-size', `${width}x${height}`, 'xc:white', file], { stdio: 'ignore' });
     return fs.readFileSync(file);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
