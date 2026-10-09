@@ -223,14 +223,14 @@ function entryCountError(count: number | null, limits: ArchiveExtractionLimits):
   );
 }
 
-function sizeError(limits: ArchiveExtractionLimits): UnsafeArchiveError {
+export function sizeError(limits: ArchiveExtractionLimits): UnsafeArchiveError {
   return new UnsafeArchiveError(
     'uncompressed-size',
     `Archive bomb detected: uncompressed size exceeds limit of ${describeLimitMb(limits)}`
   );
 }
 
-function ratioError(totalBytes: number, archiveBytes: number, limits: ArchiveExtractionLimits): UnsafeArchiveError {
+export function ratioError(totalBytes: number, archiveBytes: number, limits: ArchiveExtractionLimits): UnsafeArchiveError {
   return new UnsafeArchiveError(
     'compression-ratio',
     `Archive bomb detected: compression ratio (${(totalBytes / archiveBytes).toFixed(1)}:1) exceeds ${limits.MAX_RATIO}:1 limit`
@@ -244,6 +244,25 @@ function assertWithinSizeAndRatio(totalBytes: number, archiveBytes: number, limi
   if (archiveBytes > 0 && totalBytes / archiveBytes > limits.MAX_RATIO) {
     throw ratioError(totalBytes, archiveBytes, limits);
   }
+}
+
+/**
+ * The bound on what one archive may unpack to when only its size is known: the size cap, or the ratio cap times the
+ * archive's own size when that is smaller. A stream that passes it is within both caps; one that does not is a bomb.
+ */
+export function unpackedBytesCap(archiveBytes: number, limits: ArchiveExtractionLimits): number {
+  return Math.min(limits.MAX_UNCOMPRESSED_SIZE, Math.floor(archiveBytes * limits.MAX_RATIO));
+}
+
+/** The typed error for output that outgrew {@link unpackedBytesCap}: the ratio cap when it was the binding one, else the size cap. */
+export function unpackedBytesCapError(archiveBytes: number, limits: ArchiveExtractionLimits): UnsafeArchiveError {
+  if (Math.floor(archiveBytes * limits.MAX_RATIO) < limits.MAX_UNCOMPRESSED_SIZE) {
+    return new UnsafeArchiveError(
+      'compression-ratio',
+      `Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`
+    );
+  }
+  return sizeError(limits);
 }
 
 interface AttributeClassification {
@@ -810,7 +829,7 @@ function classifyRunFailure(err: unknown): RunFailure | null {
  * Maps a failed 7z run to a typed error. Policy errors pass through; infrastructure failures
  * (timeouts, aborts, memory limits) keep their own types so callers can tell them apart.
  */
-function toArchiveFailure(
+export function toArchiveFailure(
   err: unknown,
   label: string,
   phase: 'list' | 'extract',
@@ -968,37 +987,51 @@ const SIGN_BIT = 0x80;
 const BYTE_RANGE = 0x100;
 
 /**
- * Whether the first 512-byte block of `filePath` is a tar header: the checksum field holds an octal number equal to
- * the sum of the block's bytes with that field read as spaces (the POSIX rule, summed as unsigned or as signed bytes).
- * This is the test 7-Zip applies before it opens a file as a tar, so a file that fails it cannot be listed as one, and
- * a v7 tar without the `ustar` magic passes it. An empty file, a short file or a missing file is not a tar header.
+ * Whether a 512-byte block is a tar header: the checksum field holds an octal number equal to the sum of the block's
+ * bytes with that field read as spaces (the POSIX rule, summed as unsigned or as signed bytes). This is the test 7-Zip
+ * applies before it opens a file as a tar, so data that fails it cannot be listed as one, and a v7 tar without the
+ * `ustar` magic passes it. A short block, an all-zero block and anything else is not a tar header.
  */
+export function isTarHeaderBlock(header: Uint8Array): boolean {
+  if (header.length < TAR_HEADER_BYTES) return false;
+  let stored = 0;
+  let digits = 0;
+  let at = TAR_CHECKSUM_OFFSET;
+  const fieldEnd = TAR_CHECKSUM_OFFSET + TAR_CHECKSUM_BYTES;
+  while (at < fieldEnd && (header[at] === SPACE || header[at] === NUL)) at++;
+  while (at < fieldEnd && header[at] >= ASCII_ZERO && header[at] <= ASCII_SEVEN) {
+    stored = stored * TAR_OCTAL_RADIX + (header[at] - ASCII_ZERO);
+    digits++;
+    at++;
+  }
+  if (digits === 0) return false;
+  let unsigned = 0;
+  let signed = 0;
+  for (let i = 0; i < TAR_HEADER_BYTES; i++) {
+    const inField = i >= TAR_CHECKSUM_OFFSET && i < fieldEnd;
+    const byte = inField ? SPACE : header[i];
+    unsigned += byte;
+    signed += byte >= SIGN_BIT ? byte - BYTE_RANGE : byte;
+  }
+  return stored === unsigned || stored === signed;
+}
+
+/** Whether a 512-byte block carries the POSIX or GNU `ustar` magic. */
+export function hasTarMagicBlock(header: Uint8Array): boolean {
+  if (header.length < TAR_HEADER_BYTES) return false;
+  for (let i = 0; i < TAR_MAGIC.length; i++) {
+    if (header[TAR_MAGIC_OFFSET + i] !== TAR_MAGIC.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+/** Whether the first 512-byte block of `filePath` is a tar header (see {@link isTarHeaderBlock}); a missing or short file is not. */
 export function hasTarHeaderChecksum(filePath: string): boolean {
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, 'r');
     const header = Buffer.alloc(TAR_HEADER_BYTES);
-    if (fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0) !== TAR_HEADER_BYTES) return false;
-    let stored = 0;
-    let digits = 0;
-    let at = TAR_CHECKSUM_OFFSET;
-    const fieldEnd = TAR_CHECKSUM_OFFSET + TAR_CHECKSUM_BYTES;
-    while (at < fieldEnd && (header[at] === SPACE || header[at] === NUL)) at++;
-    while (at < fieldEnd && header[at] >= ASCII_ZERO && header[at] <= ASCII_SEVEN) {
-      stored = stored * TAR_OCTAL_RADIX + (header[at] - ASCII_ZERO);
-      digits++;
-      at++;
-    }
-    if (digits === 0) return false;
-    let unsigned = 0;
-    let signed = 0;
-    for (let i = 0; i < TAR_HEADER_BYTES; i++) {
-      const inField = i >= TAR_CHECKSUM_OFFSET && i < fieldEnd;
-      const byte = inField ? SPACE : header[i];
-      unsigned += byte;
-      signed += byte >= SIGN_BIT ? byte - BYTE_RANGE : byte;
-    }
-    return stored === unsigned || stored === signed;
+    return fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0) === TAR_HEADER_BYTES && isTarHeaderBlock(header);
   } catch {
     return false;
   } finally {

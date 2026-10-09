@@ -55,8 +55,18 @@ const ID = {
   EMPTY_FILE: 0x0f,
   ANTI: 0x10,
   NAME: 0x11,
+  MTIME: 0x14,
+  WIN_ATTRIBUTES: 0x15,
   ENCODED_HEADER: 0x17,
 } as const;
+
+/** The AES-256 + SHA-256 coder id of an encrypted folder (06 F1 07 01). */
+const AES_CODEC_ID = Buffer.from([0x06, 0xf1, 0x07, 0x01]);
+/** Ticks of 100 ns between the Windows FILETIME epoch (1601) and the Unix epoch, in milliseconds. */
+const FILETIME_UNIX_EPOCH_OFFSET_MS = 11_644_473_600_000n;
+const FILETIME_TICKS_PER_MS = 10_000n;
+const FILETIME_BYTES = 8;
+const ATTRIBUTE_BYTES = 4;
 
 export interface SevenZipCoder {
   codecId: Buffer;
@@ -321,12 +331,30 @@ function readStreamsInfo(reader: HeaderReader, limits: SevenZipReadLimits): Stre
   return info;
 }
 
-const FILE_TABLE_PROPERTIES: ReadonlySet<number> = new Set([ID.EMPTY_STREAM, ID.EMPTY_FILE, ID.ANTI, ID.NAME]);
+const FILE_TABLE_PROPERTIES: ReadonlySet<number> = new Set([ID.EMPTY_STREAM, ID.EMPTY_FILE, ID.ANTI, ID.NAME, ID.MTIME, ID.WIN_ATTRIBUTES]);
 
 interface FileRecord {
   name: string;
   hasStream: boolean;
   isEmptyFile: boolean;
+  /** An anti-item marks a deletion in an update archive; it names nothing to extract. */
+  isAnti: boolean;
+  /** Modification time in milliseconds since the Unix epoch, when the table states one. */
+  mtimeMs?: number;
+  /** The 32-bit attribute word: Windows attribute bits, plus the Unix mode in the high half when bit 15 is set. */
+  attributes?: number;
+}
+
+/** One value per defined file: the "defined" vector, the external flag, then the packed values. */
+function readPerFileValues<T>(property: HeaderReader, fileCount: number, read: (reader: HeaderReader) => T): (T | undefined)[] {
+  const defined = property.definedVector(fileCount);
+  if (property.byte() !== 0) throw new ConversionFailedError('Unsupported 7z archive: external file properties are not supported');
+  return defined.map((isDefined) => (isDefined ? read(property) : undefined));
+}
+
+function readFileTime(property: HeaderReader): number {
+  const ticks = property.bytesOf(FILETIME_BYTES).readBigUInt64LE(0);
+  return Number(ticks / FILETIME_TICKS_PER_MS - FILETIME_UNIX_EPOCH_OFFSET_MS);
 }
 
 function decodeNames(bytes: Buffer, expected: number): string[] {
@@ -352,6 +380,8 @@ function readFilesInfo(reader: HeaderReader, limits: SevenZipReadLimits): FileRe
   let emptyFile: boolean[] = [];
   let anti: boolean[] = [];
   let names: string[] | null = null;
+  let mtimes: (number | undefined)[] = [];
+  let attributes: (number | undefined)[] = [];
   const seen = new Set<number>();
   for (let type = reader.number(); type !== ID.END; type = reader.number()) {
     const property = new HeaderReader(reader.bytesOf(reader.number()));
@@ -370,14 +400,20 @@ function readFilesInfo(reader: HeaderReader, limits: SevenZipReadLimits): FileRe
     } else if (type === ID.NAME) {
       if (property.byte() !== 0) throw new ConversionFailedError('Unsupported 7z archive: external file names are not supported');
       names = decodeNames(property.bytesOf(property.remaining), fileCount);
+    } else if (type === ID.MTIME) {
+      mtimes = readPerFileValues(property, fileCount, readFileTime);
+    } else if (type === ID.WIN_ATTRIBUTES) {
+      attributes = readPerFileValues(property, fileCount, (reader) => reader.bytesOf(ATTRIBUTE_BYTES).readUInt32LE(0));
     }
   }
   if (names === null) throw corrupt('the file table has no names');
   let emptyIndex = 0;
   return names.map((name, index) => {
-    if (!emptyStream[index]) return { name, hasStream: true, isEmptyFile: false };
+    const metadata = { mtimeMs: mtimes[index], attributes: attributes[index] };
+    if (!emptyStream[index]) return { name, hasStream: true, isEmptyFile: false, isAnti: false, ...metadata };
     const position = emptyIndex++;
-    return { name, hasStream: false, isEmptyFile: emptyFile[position] === true && anti[position] !== true };
+    const isAnti = anti[position] === true;
+    return { name, hasStream: false, isEmptyFile: emptyFile[position] === true && !isAnti, isAnti, ...metadata };
   });
 }
 
@@ -471,17 +507,17 @@ function readStartHeader(archive: Buffer): { headerStart: number; headerSize: nu
   };
 }
 
-/**
- * Every file of a 7z archive, with its stored name and bytes, in file-table order. Directories and anti-items are
- * omitted; an empty file is an entry with no bytes.
- */
-export function readSevenZipArchive(
-  archive: Buffer,
-  decode: SevenZipFolderDecoder,
-  limits: SevenZipReadLimits
-): SevenZipEntry[] {
+interface LoadedHeader {
+  streams: StreamsInfo;
+  files: FileRecord[];
+  headerStart: number;
+  budget: UnpackBudget;
+}
+
+/** Reads the start header and the (possibly encoded) header; `decode` is used on the header's own folders only. */
+function loadHeader(archive: Buffer, decode: SevenZipFolderDecoder, limits: SevenZipReadLimits): LoadedHeader | null {
   const { headerStart, headerSize, headerCrc } = readStartHeader(archive);
-  if (headerSize === 0) return [];
+  if (headerSize === 0) return null;
   const nextHeader = archive.subarray(headerStart, headerStart + headerSize);
   if (zlib.crc32(nextHeader) !== headerCrc) throw corrupt('next header CRC mismatch');
 
@@ -500,6 +536,21 @@ export function readSevenZipArchive(
   if (id !== ID.HEADER) throw corrupt(`unexpected header type 0x${id.toString(16)}`);
 
   const { streams, files } = readHeader(reader, limits);
+  return { streams, files, headerStart, budget };
+}
+
+/**
+ * Every file of a 7z archive, with its stored name and bytes, in file-table order. Directories and anti-items are
+ * omitted; an empty file is an entry with no bytes.
+ */
+export function readSevenZipArchive(
+  archive: Buffer,
+  decode: SevenZipFolderDecoder,
+  limits: SevenZipReadLimits
+): SevenZipEntry[] {
+  const header = loadHeader(archive, decode, limits);
+  if (header === null) return [];
+  const { streams, files, headerStart, budget } = header;
   const folderData = unpackFolders(archive, streams, headerStart, decode, budget);
   const pieces: { data: Buffer; crc?: number }[] = [];
   streams.folders.forEach((folder, folderIndex) => {
@@ -524,4 +575,53 @@ export function readSevenZipArchive(
   }
   if (pieceIndex !== pieces.length) throw corrupt(`${pieces.length} data streams for ${pieceIndex} files`);
   return entries;
+}
+
+/** One item of a 7z file table, as 7-Zip would list it, without decoding any file data. */
+export interface SevenZipListedFile {
+  /** The name as stored (UTF-16LE decoded), not yet sanitized. */
+  name: string;
+  isDirectory: boolean;
+  /** Bytes of the file's data stream; 0 for a directory or an empty file. */
+  size: number;
+  /** CRC-32 of the data stream, when the table states one. */
+  crc?: number;
+  mtimeMs?: number;
+  /** The 32-bit attribute word: Windows bits, plus the Unix mode in the high half when bit 15 is set. */
+  attributes?: number;
+}
+
+export interface SevenZipListing {
+  /** In file-table order, which is the order `7z x -so` writes the data streams. Anti-items are omitted. */
+  files: SevenZipListedFile[];
+  /** A folder uses the AES coder, so its data cannot be read without a password. */
+  encrypted: boolean;
+}
+
+/**
+ * The file table of a 7z archive with sizes, checksums, times and attributes. Only the header is decoded (through
+ * `decode`); the data folders are never touched, so listing costs the header's size, not the archive's. The table
+ * must add up: every stream of every folder belongs to exactly one file, and the stream sizes fit the folders.
+ */
+export function listSevenZipArchive(archive: Buffer, decode: SevenZipFolderDecoder, limits: SevenZipReadLimits): SevenZipListing {
+  const header = loadHeader(archive, decode, limits);
+  if (header === null) return { files: [], encrypted: false };
+  const { streams, files } = header;
+  const substreams = streams.folders.flatMap((folder) => folder.substreams);
+  let streamIndex = 0;
+  const listed: SevenZipListedFile[] = [];
+  for (const file of files) {
+    if (file.isAnti) continue;
+    const common = { name: file.name, mtimeMs: file.mtimeMs, attributes: file.attributes };
+    if (file.hasStream) {
+      const stream = substreams[streamIndex++];
+      if (stream === undefined) throw corrupt(`no data stream for ${file.name}`);
+      listed.push({ ...common, isDirectory: false, size: stream.size, crc: stream.crc });
+    } else {
+      listed.push({ ...common, isDirectory: !file.isEmptyFile, size: 0 });
+    }
+  }
+  if (streamIndex !== substreams.length) throw corrupt(`${substreams.length} data streams for ${streamIndex} files`);
+  const encrypted = streams.folders.some((folder) => folder.coders.some((coder) => coder.codecId.equals(AES_CODEC_ID)));
+  return { files: listed, encrypted };
 }

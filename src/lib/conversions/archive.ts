@@ -25,12 +25,14 @@ import {
   PayloadLimitError,
 } from '../types';
 import {
+  type ListedArchiveEntry,
   NativeRenameUnsupportedError,
   UnreadableArchiveError,
   UnsafeArchiveError,
   assertListingResourceCaps,
   extractArchiveContained,
   extractArchiveContainedSync,
+  findEntryCollision,
   hasTarMagic,
   inspectedKindOf,
   listingBufferLimit,
@@ -45,7 +47,7 @@ import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
-import { readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder } from './sevenzip-reader';
+import { listSevenZipArchive, readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder, type SevenZipListing } from './sevenzip-reader';
 import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
@@ -1468,7 +1470,15 @@ class TarReader {
   /** 32-bit view for the checksum fast path; null when the buffer start is not word-aligned. */
   private readonly words: Uint32Array | null;
 
-  constructor(private readonly tarBuffer: Buffer) {
+  /** In listing mode every entry is recorded as stored (raw name, declared size) and nothing is sanitized or resolved. */
+  private readonly listing: ListedArchiveEntry[] | null;
+
+  /** Link entries are reported as entries but their targets are neither resolved nor tracked (the caller leaves links out). */
+  private readonly ignoreLinks: boolean;
+
+  constructor(private readonly tarBuffer: Buffer, listing: ListedArchiveEntry[] | null = null, ignoreLinks = false) {
+    this.listing = listing;
+    this.ignoreLinks = ignoreLinks;
     const aligned = tarBuffer.byteOffset % TAR_WORD_BYTES === 0;
     this.words = aligned
       ? new Uint32Array(tarBuffer.buffer, tarBuffer.byteOffset, Math.floor(tarBuffer.length / TAR_WORD_BYTES))
@@ -1479,6 +1489,8 @@ class TarReader {
     while (this.offset < this.tarBuffer.length) {
       if (!this.nextHeader()) break;
       this.processHeader();
+      // A listing past the entry cap is already refused by the policy; reading on would only grow it.
+      if (this.listing !== null && this.listing.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) break;
     }
     if (this.localPax.size > 0 || this.longName !== null || this.longLink !== null) {
       throw tarReadError('extension header is not followed by an entry');
@@ -1679,12 +1691,16 @@ class TarReader {
     }
     let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
 
+    if (this.listing !== null) {
+      this.listing.push(listedTarEntry(rawName, type, bodySize));
+      return;
+    }
     const filename = sanitizeArchivePath(rawName);
     if (!filename) return;
 
     if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
     const isLink = type === 'symlink' || type === 'hardlink';
-    if (isLink) body = this.registerLink(filename, linkName, type) ?? body;
+    if (isLink && !this.ignoreLinks) body = this.registerLink(filename, linkName, type) ?? body;
     if (type === 'file' || type === 'hardlink') this.contentByName.set(filename, body);
 
     this.entries.push({
@@ -1700,6 +1716,31 @@ class TarReader {
   }
 }
 
+const TAR_SPECIAL_ENTRY_TYPES: ReadonlySet<TarEntryType> = new Set(['character-device', 'block-device', 'fifo']);
+
+function listedTarEntry(rawName: string, type: TarEntryType, bodySize: number): ListedArchiveEntry {
+  let linkKind: ListedArchiveEntry['linkKind'] = null;
+  if (type === 'symlink' || type === 'hardlink') linkKind = type;
+  return {
+    path: rawName,
+    isDirectory: type === 'directory',
+    sizeBytes: bodySize,
+    linkKind,
+    isSpecial: TAR_SPECIAL_ENTRY_TYPES.has(type),
+  };
+}
+
+/**
+ * Lists every entry of a TAR archive as stored, for the extraction policy: the names are the raw header names (a
+ * traversing or absolute name is reported, not repaired), sizes are the declared sizes, and links and device entries
+ * are flagged. Header checksums, truncation and the size cap are checked exactly as `readTarEntries` checks them.
+ */
+export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
+  const listing: ListedArchiveEntry[] = [];
+  new TarReader(tarBuffer, listing).read();
+  return listing;
+}
+
 /**
  * Reads every entry of a POSIX ustar/pax (and GNU long-name) TAR archive.
  *
@@ -1711,10 +1752,11 @@ class TarReader {
  *
  * Entry buffers are views into `tarBuffer` (no copy); a hardlink entry shares the buffer of the
  * earlier file it points to. Hardlink content counts against the same uncompressed-size budget as
- * regular files. Entries that would be written through an earlier symlink are rejected.
+ * regular files. Entries that would be written through an earlier symlink are rejected. With `ignoreLinks`, link
+ * entries are returned without their targets being resolved or tracked, for a caller that leaves every link out.
  */
-export function readTarEntries(tarBuffer: Buffer): TarEntry[] {
-  return new TarReader(tarBuffer).read();
+export function readTarEntries(tarBuffer: Buffer, options: { ignoreLinks?: boolean } = {}): TarEntry[] {
+  return new TarReader(tarBuffer, null, options.ignoreLinks === true).read();
 }
 
 /**
@@ -2960,6 +3002,19 @@ const decodeSevenZipFolder: SevenZipFolderDecoder = (folder, packed) =>
   decompress7zFolder(packed, folder.coders[0], folder.unpackSize);
 
 /**
+ * The file table of a 7z archive (names, sizes, checksums, times, attributes) read in process. Only the header is
+ * decoded, so the cost does not grow with the archive; a header this engine cannot decode (an encrypted or filtered
+ * header) throws, and the caller then lists the archive with 7-Zip itself.
+ */
+export function listSevenZipEntries(sevenZipBuffer: Buffer): SevenZipListing {
+  return listSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
+    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+  });
+}
+
+/**
  * Extracts the files of a 7z archive in process. A damaged, truncated or mislabelled archive throws a
  * CorruptStreamError; it never yields an empty or partial file list.
  */
@@ -3808,6 +3863,29 @@ async function inspectArchiveEntries(
   throw new ConversionFailedError('Unsupported or unrecognized archive format for inspection.');
 }
 
+/**
+ * The unpacked tar of a compressed tarball, when converting to tar can return it as it is: no entries were selected, and
+ * every member is a plain file or directory under a name the reader would keep as written, with no path stored twice.
+ * Anything else (links, devices, names the reader normalizes, duplicates) is rebuilt from the members by the caller,
+ * which applies the link, rename and collision rules. A tar this reader cannot list is left to the caller to report.
+ */
+function tarForPassthrough(tar: Buffer, targetFormat: string, options: ConversionOptions): Buffer | null {
+  if (targetFormat !== 'tar' || (options.entries && options.entries.length > 0)) return null;
+  let listing: ListedArchiveEntry[];
+  try {
+    listing = listTarEntries(tar);
+  } catch {
+    return null;
+  }
+  if (listing.length === 0) return null;
+  const keptAsWritten = listing.every((entry) => {
+    if (entry.linkKind !== null || entry.isSpecial) return false;
+    const stored = trimTrailingSlashes(entry.path);
+    return sanitizeArchivePath(stored) === stored;
+  });
+  return keptAsWritten && findEntryCollision(listing) === null ? tar : null;
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -3874,6 +3952,12 @@ export async function convertArchive(
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
   let skippedLinks: string[] = [];
+  /** The unpacked tar of a compressed tarball, when it is returned as it is rather than rebuilt from its members. */
+  let passthroughTar: Buffer | null = null;
+  const unpackTar = (tar: Buffer): void => {
+    passthroughTar = tarForPassthrough(tar, tgt, options);
+    if (passthroughTar === null) files = extractTarArchive(tar, options);
+  };
   if (src === 'zip' || ZIP_PACKAGE_SOURCES.has(src)) {
     const hasZipMagic =
       effectiveBuffer.length >= 4 &&
@@ -3905,7 +3989,7 @@ export async function convertArchive(
     try {
       const uncompressed = await gunzipStreamingWithLimits(effectiveBuffer);
       if (src === 'tgz' || src === 'tar.gz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed, options);
+        unpackTar(uncompressed);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -3928,7 +4012,7 @@ export async function convertArchive(
         );
       }
       if (BZIP2_TAR_SOURCES.has(src) || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed, options);
+        unpackTar(uncompressed);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -3980,7 +4064,7 @@ export async function convertArchive(
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-      files = extractTarArchive(uncompressed, options);
+      unpackTar(uncompressed);
     } else {
       files = [{ filename: baseName, buffer: uncompressed }];
     }
@@ -3998,7 +4082,7 @@ export async function convertArchive(
         );
       }
       if (src === 'tar.xz' || src === 'txz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed, options);
+        unpackTar(uncompressed);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
       }
@@ -4041,7 +4125,7 @@ export async function convertArchive(
     return false;
   }
 
-  if (files.length === 0) {
+  if (files.length === 0 && passthroughTar === null) {
     if (isValidEmptyArchive(src, effectiveBuffer)) {
       // Valid empty archive: retain files = [] so empty target archive is generated
     } else if (ARCHIVE_CONTAINER_FORMATS.has(src)) {
@@ -4102,7 +4186,10 @@ export async function convertArchive(
     );
   } else if (tgt === 'tar') {
     // 6. Target TAR
-    result = createTarArchive(files, options, `${baseName}.tar`);
+    result =
+      passthroughTar === null
+        ? createTarArchive(files, options, `${baseName}.tar`)
+        : { buffer: passthroughTar, mimeType: 'application/x-tar', filename: `${baseName}.tar`, size: (passthroughTar as Buffer).length };
   } else if (tgt === 'gz') {
     // 7. Target GZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
