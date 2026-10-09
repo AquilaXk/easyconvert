@@ -120,8 +120,6 @@ describe('the modes of the members', () => {
         hostileTarMember({ name: 'private.txt', mode: 0o600 }, Buffer.from('p')),
         hostileTarMember({ name: 'shared.txt', mode: 0o664 }, Buffer.from('s'))
       );
-      const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-7z-'));
-
       const attributes = storedAttributes(await toSevenZip(tar), 'kept-modes');
 
       expect(Object.fromEntries(attributes)).toEqual({
@@ -131,7 +129,12 @@ describe('the modes of the members', () => {
         'private.txt': 'F -rw-------',
         'shared.txt': 'F -rw-rw-r--',
       });
-      expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-7z-'))).toEqual(before);
+      // The `7z a` call names its output inside the sandbox this conversion created; that exact tree must be gone.
+      const packing = spy.calls().find((call) => call[0] === 'a');
+      const output = packing?.find((argument) => path.basename(argument).startsWith('output.')) as string;
+      const sandbox = path.dirname(output);
+      expect(path.basename(sandbox)).toMatch(/^easyconvert-7z-/);
+      expect(fs.existsSync(sandbox)).toBe(false);
     },
     TEST_TIMEOUT_MS
   );
