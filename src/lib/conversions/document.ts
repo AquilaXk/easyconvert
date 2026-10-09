@@ -25,6 +25,7 @@ import {
   parseAlto,
   evaluatePageOcrDecisions,
   assembleCombinedOcrResult,
+  STRUCTURED_OCR_TARGETS,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { PdfTextGeometryError } from './pdf-text-types';
@@ -224,6 +225,7 @@ export async function convertDocument(
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
           engineMarkup: options.ocrEngineMarkup,
+          parallelBands: STRUCTURED_OCR_TARGETS.has(tgt) ? false : undefined,
         });
       } catch (err: unknown) {
         // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.

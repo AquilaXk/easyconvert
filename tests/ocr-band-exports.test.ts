@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { recognizePage, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { convertImage } from '../src/lib/conversions/image';
+import { convertDocument } from '../src/lib/conversions/document';
+import { requireMagick } from './helpers/imagemagick';
+import { execFileSync } from 'node:child_process';
 import { OCR_BAND_MAX_BANDS } from '../src/lib/conversions/ocr-bands';
 import { getSharedOcrWorkerPool, OCR_POOL_MAX_WORKERS_PER_KEY, type OcrWorkerSpec } from '../src/lib/conversions/ocr-worker-pool';
 import { locateLanguageData } from '../src/lib/conversions/ocr-language-data';
@@ -102,4 +105,33 @@ describe('the OCR exports of an image page that could be read in bands', () => {
     },
     TEST_TIMEOUT_MS
   );
+
+  for (const [format, marker] of [
+    ['hocr', 'ocr_page'],
+    ['alto', '<alto'],
+  ] as const) {
+    oracleTest(
+      `reads each page of a PDF whole for ${format}`,
+      ['tesseract', 'pdftoppm', 'magick'],
+      async (ctx) => {
+        if (needsSeveralCpus(ctx)) return;
+        engineSpec();
+        expect(idle).toBeGreaterThanOrEqual(2);
+        // The PDF is made by ImageMagick, not by the converter under test.
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-band-pdf-'));
+        try {
+          const pdfPath = path.join(dir, 'scan.pdf');
+          execFileSync(requireMagick(), [path.join(__dirname, '..', 'bench', 'corpus', 'scan.png'), '-density', '150', pdfPath]);
+          const pdf = fs.readFileSync(pdfPath);
+          const run = vi.spyOn(getSharedOcrWorkerPool(), 'run');
+          const result = await convertDocument(pdf, 'pdf', format, { ocrEnabled: true }, 'scan.pdf');
+          expect(run).toHaveBeenCalledTimes(1);
+          expect(result.buffer.toString('utf-8')).toContain(marker);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
 });

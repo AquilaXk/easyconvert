@@ -137,6 +137,12 @@ export function recognizePdfPages(
   );
 }
 
+/**
+ * Targets that carry the paragraph and block structure of a page. Reading a page in bands can change that
+ * structure, so these targets read each page whole.
+ */
+export const STRUCTURED_OCR_TARGETS: ReadonlySet<string> = new Set(['hocr', 'alto']);
+
 export interface RenderedPdfOcrOptions {
   /** Resolution the pages are rendered at; OCR_DEFAULT_DPI when unset, at most OCR_MAX_DPI. */
   dpi?: number;
@@ -144,6 +150,8 @@ export interface RenderedPdfOcrOptions {
   detectOrientation?: boolean;
   /** Also read each page's engine markup (see readEngineMarkup); it is kept on the page's result as `engineMarkup`. */
   engineMarkup?: OcrEngineMarkupFormat;
+  /** Passed to the page reading (see OcrRecognitionOptions.parallelBands); `false` reads each page whole. */
+  parallelBands?: boolean;
 }
 
 /**
@@ -163,7 +171,7 @@ export async function recognizeRenderedPdfPages(
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
     const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), async (index) => {
       const rendered = await renderer.render(index);
-      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation);
+      const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, options.parallelBands);
       const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
       return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
     });
