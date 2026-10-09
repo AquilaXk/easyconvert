@@ -296,6 +296,14 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Maintain table structures during text or markup extraction.',
     },
+    language: {
+      type: 'string',
+      minLength: 2,
+      maxLength: 16,
+      pattern: '^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$',
+      description:
+        'BCP 47 language of the document content (`en`, `ko`, `zh-Hant`), written to the language metadata of EPUB output. Left out, the language of the source is used, or recognised from the text when the script or common words make it clear; otherwise it is recorded as undetermined (`und`). A value that is not a language tag is a 400.',
+    },
     ocrEnabled: {
       type: 'boolean',
       description: 'Enable optical character recognition for raster inputs.',

@@ -64,7 +64,8 @@ export type ExternalOracleTool =
   | 'avifenc'
   | 'avifdec'
   | 'cwebp'
-  | 'dwebp';
+  | 'dwebp'
+  | 'epubcheck';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;
@@ -80,7 +81,7 @@ export class OracleToolMissingError extends Error {
 const toolCache = new Map<string, string | null>();
 
 /** Tools that are not on PATH on a typical host and are located through the environment variable the worker also reads. */
-const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH' };
+const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH' };
 
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   // The override is read on every call: a test may point the variable at a different binary.

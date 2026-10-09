@@ -30,8 +30,8 @@ const FIRST_LIST_NUMBER = 1;
 export interface HtmlRenderOptions {
   /** `src` for an image; defaults to a data: URI holding the original bytes. */
   imageSource?: (image: DocImage) => string;
-  /** Rewrites an in-document link target (`#name`), for packages whose content spans several files. */
-  anchorHref?: (anchor: string) => string;
+  /** Rewrites an in-document link target (`#name`) for packages whose content spans several files; undefined drops the link. */
+  anchorHref?: (anchor: string) => string | undefined;
   /** Gives every heading an `id` of this prefix and its running number, so a table of contents can link to it. */
   headingIdPrefix?: string;
   /** Prefix of the ids and links of notes, to keep several documents of one package apart. */
@@ -51,7 +51,7 @@ class HtmlWriter {
     return (this.options.imageSource ?? dataUri)(image);
   }
 
-  private href(target: string): string {
+  private href(target: string): string | undefined {
     if (target.startsWith('#') && this.options.anchorHref) return this.options.anchorHref(target.slice(1));
     return target;
   }
@@ -84,11 +84,12 @@ class HtmlWriter {
       openHref = undefined;
     };
     for (const inline of inlines) {
-      if (inline.kind === 'text' && inline.href !== undefined) {
-        if (openHref !== inline.href) {
+      const target = inline.kind === 'text' && inline.href !== undefined ? this.href(inline.href) : undefined;
+      if (inline.kind === 'text' && target !== undefined) {
+        if (openHref !== target) {
           closeLink();
-          html += `<a href="${escapeXmlAttribute(this.href(inline.href))}">`;
-          openHref = inline.href;
+          html += `<a href="${escapeXmlAttribute(target)}">`;
+          openHref = target;
         }
         html += this.textInline(inline);
         continue;
