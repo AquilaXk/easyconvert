@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
+import { getSharedOcrWorkerPool } from '../src/lib/conversions/ocr-worker-pool';
 import { OCR_PAGE_BUDGET_ENV, OCR_PAGE_GUARD_PAGES, ocrDocumentBudgetMs, OcrWorkLimitError } from '../src/lib/conversions/ocr-work-budget';
 import type { PdfPageRenderer, RenderedOcrPage } from '../src/lib/conversions/pdf-page-render';
 import { requireTessdata } from './helpers/ocr-fixtures';
@@ -41,6 +42,10 @@ const SLOW_PAGE_RENDER_MS = 2_200;
 const MIXED_PAGE_BUDGET_MS = 500;
 const SLACK_MS = 12_000;
 const NEVER_MS = 600_000;
+const ABANDON_PAGE_BUDGET_MS = 300;
+/** How long after the refusal the other pages finish drawing, and how long the test then waits to see whether one reads. */
+const ABANDON_DRAW_MARGIN_MS = 1_200;
+const ABANDON_SETTLE_MS = 1_500;
 
 let pageImage: RenderedOcrPage;
 const releases: Array<() => void> = [];
@@ -158,6 +163,26 @@ describe('the OCR budget scales with the pages', () => {
       expect(largeResult).toBeInstanceOf(OcrWorkLimitError);
       expect(largeResult).toMatchObject({ status: 413 });
       expect((largeResult as Error).message).toContain(`Page ${PATHOLOGICAL_PAGE} needs more than ${pageLimit} ms`);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'starts no reading once the document is refused, for the pages that were still being drawn',
+    ['tesseract', 'pdftoppm'],
+    async () => {
+      requireTessdata('eng');
+      vi.stubEnv(OCR_PAGE_BUDGET_ENV, String(ABANDON_PAGE_BUDGET_MS));
+      const drawnLate = ABANDON_PAGE_BUDGET_MS * OCR_PAGE_GUARD_PAGES + ABANDON_DRAW_MARGIN_MS;
+      mocks.renderer = (pageCount) => fakeRenderer(pageCount, (index) => (index === 0 ? NEVER_MS : drawnLate));
+      const pool = getSharedOcrWorkerPool();
+      const reads = vi.spyOn(pool, 'run');
+      const refusal = await outcomeOf(recognizeRenderedPdfPages(Buffer.alloc(MIXED_PAGES), undefined, {}));
+      expect(refusal).toBeInstanceOf(OcrWorkLimitError);
+      const readsAtRefusal = reads.mock.calls.length;
+      // The pages drawn after the refusal finish drawing during this wait; none may start a reading.
+      await new Promise((resolve) => setTimeout(resolve, ABANDON_DRAW_MARGIN_MS + ABANDON_SETTLE_MS));
+      expect(reads.mock.calls.length - readsAtRefusal).toBe(0);
     },
     TEST_TIMEOUT_MS
   );

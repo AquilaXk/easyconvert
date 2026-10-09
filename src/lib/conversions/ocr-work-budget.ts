@@ -55,6 +55,7 @@ export class OcrWorkBudget {
   private readonly limitMs: number;
   private readonly pageLimitMs = ocrPageBudgetMs() * OCR_PAGE_GUARD_PAGES;
   private pagesRead = 0;
+  private readonly cancellation = new AbortController();
 
   constructor(
     private readonly pagesTotal: number,
@@ -82,22 +83,29 @@ export class OcrWorkBudget {
   }
 
   /**
-   * Runs the work of one page.
+   * Runs the work of one page, which gets a signal that fires as soon as any page of the document is refused or
+   * fails: the document is over then, and the pages still being drawn or read stop at their next stage and give
+   * their place in the engine to the next job instead of finishing work nobody waits for.
    * @throws OcrWorkLimitError (413) when the document has used up its budget, or the page takes more than its own limit.
    */
-  async guardPage<T>(pageNumber: number, work: () => Promise<T>): Promise<T> {
+  async guardPage<T>(pageNumber: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const signal = this.cancellation.signal;
+    signal.throwIfAborted();
     const remaining = this.remainingMs();
-    if (remaining <= 0) throw this.documentError();
-    const documentIsNearer = remaining <= this.pageLimitMs;
     let timer: NodeJS.Timeout | undefined;
-    const expired = new Promise<never>((_, reject) => {
-      const delay = Math.min(MAX_TIMER_MS, Math.ceil(documentIsNearer ? remaining : this.pageLimitMs));
-      timer = setTimeout(() => reject(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
-    });
     try {
-      const result = await Promise.race([work(), expired]);
+      if (remaining <= 0) throw this.documentError();
+      const documentIsNearer = remaining <= this.pageLimitMs;
+      const expired = new Promise<never>((_, reject) => {
+        const delay = Math.min(MAX_TIMER_MS, Math.ceil(documentIsNearer ? remaining : this.pageLimitMs));
+        timer = setTimeout(() => reject(documentIsNearer ? this.documentError() : this.pageError(pageNumber)), delay);
+      });
+      const result = await Promise.race([work(signal), expired]);
       this.pagesRead++;
       return result;
+    } catch (error) {
+      if (!signal.aborted) this.cancellation.abort(error);
+      throw error;
     } finally {
       clearTimeout(timer);
     }
