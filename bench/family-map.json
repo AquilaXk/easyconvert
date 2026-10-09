@@ -44,11 +44,11 @@
     },
     {
       "families": ["video"],
-      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr)\\.ts$"
+      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr|mp4-layout)\\.ts$"
     },
     {
       "families": ["video", "audio"],
-      "match": "^src/lib/conversions/media-(dropped-streams|ffmpeg-args|ffprobe|packaging|stream-plan)\\.ts$"
+      "match": "^src/lib/conversions/media-(dropped-streams|encoder-threads|ffmpeg-args|ffprobe|packaging|stream-plan)\\.ts$"
     },
     {
       "families": ["ocr"],

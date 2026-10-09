@@ -3,7 +3,7 @@
   "gaps": [
     {
       "id": "compression/mixed.7z->tar/throughput",
-      "issue": 487,
+      "issue": 685,
       "ratio": 0.83,
       "note": "speed ratio 0.83 or below when recorded on the CI runner (previous record 0.45): ours is slower than the reference tool",
       "history": [
@@ -23,7 +23,7 @@
     },
     {
       "id": "compression/mixed.tar->7z/throughput",
-      "issue": 487,
+      "issue": 685,
       "ratio": 0.71,
       "note": "speed ratio 0.71 or below when recorded on the CI runner (previous record 0.79): ours is slower than the reference tool",
       "history": [
@@ -59,7 +59,7 @@
     },
     {
       "id": "compression/mixed.xz->tar/throughput",
-      "issue": 487,
+      "issue": 685,
       "ratio": 0.84,
       "note": "speed ratio 0.84 or below when recorded on the CI runner (previous record 0.45): ours is slower than the reference tool",
       "history": [

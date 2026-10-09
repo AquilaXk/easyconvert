@@ -314,7 +314,7 @@ describe('the known gaps', () => {
   it('ships a gap file whose every entry names an issue and a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
-    expect(shipped.gaps.length).toBeGreaterThan(20);
+    expect(shipped.gaps.length).toBeGreaterThan(15);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       expect(gap.id in baseline.entries, gap.id).toBe(true);
@@ -325,13 +325,14 @@ describe('the known gaps', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
-    expect(issuesOf('image/', false)).toEqual([640]);
+    expect(issuesOf('image/', false)).toEqual([]);
     expect(issuesOf('image/', true)).toEqual([641]);
-    expect(issuesOf('audio/', true)).toEqual([642]);
+    expect(issuesOf('audio/', true)).toEqual([]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
+    expect(issuesOf('document/', true)).toEqual([672]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
-    expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([487, 487, 487]);
+    expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
