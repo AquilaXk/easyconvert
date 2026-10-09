@@ -19,6 +19,7 @@ import {
   UnreadableArchiveError,
   UnsafeArchiveError,
   assertCollisionPolicy,
+  assertNoFileDirectoryConflict,
   assertSafeArchiveListing,
   cleanupDirectoryTree,
   sanitizeLeafFilename,
@@ -58,6 +59,9 @@ const TAR_OCTAL_RADIX = 8;
 const MILLISECONDS_PER_SECOND = 1000;
 const ARCHIVE_BOMB_MARKER = 'Archive bomb detected';
 const OWNER_READ_WRITE = 0o600;
+/** What 7-Zip needs of the owner to pack a staged member: read a file, read and search a directory. */
+const OWNER_READ = 0o400;
+const OWNER_READ_SEARCH = 0o500;
 const OWNER_ALL = 0o700;
 
 /** 7z attribute word: Windows bits, with the Unix mode in the high half when the extension bit is set. */
@@ -377,6 +381,8 @@ export interface StagedTar {
   stagingDir: string;
   entryCount: number;
   skippedLinks: string[];
+  /** Gives the owner back write access to every staged directory, so the tree can be removed after packing. */
+  release: () => void;
 }
 
 export interface StageTarOptions {
@@ -412,6 +418,7 @@ export function stageTarForSevenZip(options: StageTarOptions): StagedTar | null 
   try {
     skippedLinks = assertSafeArchiveListing(listing, tar.length, LIMITS, { skipLinks: options.skipLinks }).skippedLinks;
     assertCollisionPolicy(listing, options.collisionPolicy);
+    assertNoFileDirectoryConflict(listing);
   } catch (err) {
     throw toArchiveFailure(err, 'archive', 'list', LIMITS, false);
   }
@@ -430,14 +437,20 @@ export function stageTarForSevenZip(options: StageTarOptions): StagedTar | null 
     }
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: DEFAULT_DIRECTORY_MODE });
     fs.writeFileSync(target, entry.buffer);
-    // The owner keeps read access whatever mode the tar records, so the staging tree can be packed and removed.
-    fs.chmodSync(target, (entry.mode & 0o777) | OWNER_READ_WRITE);
+    // 7-Zip stores the mode it finds on disk. The tar's rwx bits are kept as they are, except that the owner always
+    // keeps read access (a file nobody may read cannot be packed), so such a member is stored with owner read.
+    fs.chmodSync(target, (entry.mode & PERMISSION_BITS) | OWNER_READ);
     fs.utimesSync(target, entry.mtime, entry.mtime);
   }
-  // Deepest first: touching a child would otherwise change its parent's time again.
-  for (const { dir, mode, mtime } of directories.reverse()) {
-    fs.chmodSync(dir, (mode & 0o777) | OWNER_ALL);
+  // Deepest first: touching a child would otherwise change its parent's time again. A directory keeps its mode
+  // except for owner read and search, which 7-Zip needs to list it; `release` gives write access back for removal.
+  const staged = directories.reverse();
+  for (const { dir, mode, mtime } of staged) {
+    fs.chmodSync(dir, (mode & PERMISSION_BITS) | OWNER_READ_SEARCH);
     fs.utimesSync(dir, mtime, mtime);
   }
-  return { stagingDir, entryCount: listing.length - skippedLinks.length, skippedLinks };
+  const release = (): void => {
+    for (const { dir } of staged) fs.chmodSync(dir, OWNER_ALL);
+  };
+  return { stagingDir, entryCount: listing.length - skippedLinks.length, skippedLinks, release };
 }

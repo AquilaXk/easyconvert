@@ -1196,6 +1196,9 @@ export async function convertWithNative7z(
       });
     } catch (err) {
       throw toPackagingFailure(err, tgt);
+    } finally {
+      // The staged directories keep the tar's modes while 7-Zip packs them; the sandbox removes them afterwards.
+      staged?.release();
     }
     if (!packaged || !fs.existsSync(tempOutputPath)) {
       throw new ConversionFailedError('7-Zip packaging failed to produce output archive');

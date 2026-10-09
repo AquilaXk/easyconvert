@@ -523,6 +523,31 @@ export function assertSafeArchiveListing(
 }
 
 /**
+ * Refuses a listing that uses one path both as a file and as a directory (a file `a` with an entry `a/b` below it, or
+ * a directory entry `a/` next to a file `a`): no file tree can hold both. Linear in the entries.
+ */
+export function assertNoFileDirectoryConflict(entries: ListedArchiveEntry[]): void {
+  const files = new Set<string>();
+  const directories = new Set<string>();
+  for (const entry of entries) {
+    if (entry.linkKind !== null) continue;
+    const key = normalizeEntryKey(entry.path);
+    if (key === '') continue;
+    (entry.isDirectory ? directories : files).add(key);
+    for (let slash = key.lastIndexOf('/'); slash > 0; slash = key.lastIndexOf('/', slash - 1)) {
+      const parent = key.slice(0, slash);
+      if (directories.has(parent)) break; // every recorded directory already has its ancestors recorded
+      directories.add(parent);
+    }
+  }
+  for (const key of files) {
+    if (directories.has(key)) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive uses one path both as a file and as a directory.');
+    }
+  }
+}
+
+/**
  * The path an entry occupies once extracted: separators unified, and empty and `.` segments dropped,
  * so `a`, `./a`, `a/` and `d//b` / `d/./b` compare equal. Linear in the name length.
  */
