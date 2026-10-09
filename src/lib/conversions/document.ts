@@ -2,7 +2,7 @@ import { PdfPageFrameError } from './pdf-page-geometry';
 import JSZip from 'jszip';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedTargetError, EngineUnavailableError, OcrEngineUnavailableError, OcrLanguageUnavailableError } from '../types';
 import { buildOpenXpsPackage } from './openxps';
-import { unconvertibleOfficeTarget } from './native-office-targets';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import {
   convertOffice,
   extractTextFromRtf,

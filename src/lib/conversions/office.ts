@@ -6,7 +6,7 @@ import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
-import { unconvertibleOfficeTarget } from './native-office-targets';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
 import { documentToStructuredText } from './document-model/markdown';
