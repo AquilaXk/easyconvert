@@ -8,6 +8,7 @@ import {
   NoVideoStreamError,
   TooManyMediaStreamsError,
 } from '../types';
+import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 
 /**
@@ -95,9 +96,12 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
 
 /**
  * Number of channels in the selected audio stream (the first by default), or 0 when the file has no audio stream.
- * Throws when ffprobe cannot read the file instead of reporting a silent input.
+ * Throws when ffprobe cannot read the file instead of reporting a silent input. A WAVE file with uncompressed
+ * samples answers from its header, without a process.
  */
 export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return streamIndex === 0 ? wav.channels : 0;
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
   if (out === '') {
     return 0;
@@ -117,8 +121,13 @@ export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): n
   return out === '' ? 0 : out.split('\n').length;
 }
 
-/** Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. */
+/**
+ * Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. A WAVE file with
+ * uncompressed samples answers from its header, without a process.
+ */
 export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return streamIndex === 0 ? wav.sampleRate : 0;
   const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
   if (out === '') {
     return 0;
@@ -128,11 +137,6 @@ export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, str
     throw new ConversionFailedError(`ffprobe reported an invalid audio sample rate: "${out}"`);
   }
   return parsed;
-}
-
-/** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when unknown. */
-export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
-  return runFfprobe(ffprobe, filePath, ['-select_streams', 'v:0', '-show_entries', 'stream=color_transfer']);
 }
 
 export type InputStreamType = 'video' | 'audio' | 'subtitle' | 'attachment' | 'data';
@@ -156,6 +160,8 @@ export interface InputStream {
   title?: string;
   /** Language tag (usually ISO 639-2, such as `eng`), when the stream has one. */
   language?: string;
+  /** Transfer characteristic of a video stream (`bt709`, `smpte2084`, `arib-std-b67`), when the stream states one. */
+  colorTransfer?: string;
 }
 
 interface RawStream {
@@ -169,6 +175,7 @@ interface RawStream {
   bit_rate?: unknown;
   disposition?: { attached_pic?: unknown };
   tags?: { title?: unknown; language?: unknown };
+  color_transfer?: unknown;
   side_data_list?: Array<{ rotation?: unknown }>;
 }
 
@@ -225,17 +232,63 @@ function toInputStream(raw: RawStream): InputStream {
     bitRateK: Number.isFinite(bitRate) && bitRate > 0 ? Math.round(bitRate / BITS_PER_KILOBIT) : undefined,
     title: typeof raw.tags?.title === 'string' && raw.tags.title !== '' ? raw.tags.title : undefined,
     language: typeof raw.tags?.language === 'string' && raw.tags.language !== '' ? raw.tags.language : undefined,
+    colorTransfer: typeof raw.color_transfer === 'string' && raw.color_transfer !== '' ? raw.color_transfer : undefined,
   };
 }
 
+export interface InputTimeline {
+  /** Start of the container's timeline in seconds: the earliest stream start, negative for an encoder-delay audio track. */
+  startTimeSec: number;
+  chapterCount: number;
+}
+
+/** Everything one ffprobe run reports about an input, so a conversion inspects the file once. */
+export interface InputProbe {
+  streams: InputStream[];
+  timeline: InputTimeline;
+  /** Container duration in seconds, when the container states a positive one. */
+  durationSec?: number;
+}
+
+/** Inputs whose probe is remembered: a conversion asks for it from the planner, the metadata and the duration check. */
+const PROBE_CACHE_ENTRIES = 16;
+const probeCache = new Map<string, InputProbe>();
+
+/** Identity of the bytes on disk: a rewritten file changes at least one of these, so its probe is never reused. */
+function fileIdentity(filePath: string): string | undefined {
+  try {
+    const stat = fs.statSync(filePath);
+    return [filePath, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino].join('\0');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Forgets every remembered probe (tests that rewrite a file in place). */
+export function resetInputProbeCache(): void {
+  probeCache.clear();
+}
+
 /**
- * Every stream of the input, in index order. More than MAX_MAPPED_STREAMS throws TooManyMediaStreamsError,
- * so no later step lists or maps an unbounded number of streams.
+ * ffprobe's report of every stream, the container start time and duration, and the chapter ids (by id only, so a
+ * file with thousands of chapters stays within the JSON limit; a larger report is not a media file).
  */
-export function probeInputStreams(filePath: string, ffprobe: FfprobePath): InputStream[] {
+const INPUT_PROBE_ARGS = ['-v', 'error', '-show_streams', '-show_entries', 'format=start_time,duration:chapter=id', '-of', 'json'];
+
+/**
+ * One ffprobe run over `filePath` for the stream list, the timeline and the duration. The result is remembered
+ * for the file as it is on disk, so the planner, the metadata that names dropped streams and the duration check of
+ * one conversion cost one process between them. More than MAX_MAPPED_STREAMS streams throws
+ * TooManyMediaStreamsError, so no later step lists or maps an unbounded number of streams.
+ */
+export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
+  const identity = fileIdentity(filePath);
+  const remembered = identity === undefined ? undefined : probeCache.get(identity);
+  if (remembered) return remembered;
+
   let stdout: string;
   try {
-    stdout = execFileSync(ffprobe, ['-v', 'error', '-show_streams', '-of', 'json', filePath], {
+    stdout = execFileSync(ffprobe, [...INPUT_PROBE_ARGS, filePath], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: FFPROBE_TIMEOUT_MS,
@@ -245,9 +298,9 @@ export function probeInputStreams(filePath: string, ffprobe: FfprobePath): Input
     const detail = err instanceof Error ? err.message : String(err);
     throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
   }
-  let parsed: { streams?: unknown };
+  let parsed: { streams?: unknown; format?: { start_time?: unknown; duration?: unknown }; chapters?: unknown };
   try {
-    parsed = JSON.parse(stdout) as { streams?: unknown };
+    parsed = JSON.parse(stdout) as typeof parsed;
   } catch {
     throw new MediaProbeError('ffprobe did not return valid JSON for the input media.');
   }
@@ -259,47 +312,68 @@ export function probeInputStreams(filePath: string, ffprobe: FfprobePath): Input
       `The input has ${parsed.streams.length} streams; a conversion maps at most ${MAX_MAPPED_STREAMS}.`
     );
   }
-  return (parsed.streams as RawStream[]).map(toInputStream);
+  const start = typeof parsed.format?.start_time === 'string' ? Number(parsed.format.start_time) : 0;
+  const duration = typeof parsed.format?.duration === 'string' ? Number.parseFloat(parsed.format.duration) : Number.NaN;
+  const probe: InputProbe = {
+    streams: (parsed.streams as RawStream[]).map(toInputStream),
+    timeline: {
+      startTimeSec: Number.isFinite(start) ? start : 0,
+      chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,
+    },
+    durationSec: Number.isFinite(duration) && duration > 0 ? duration : undefined,
+  };
+  if (identity !== undefined) {
+    if (probeCache.size >= PROBE_CACHE_ENTRIES) probeCache.delete(probeCache.keys().next().value as string);
+    probeCache.set(identity, probe);
+  }
+  return probe;
 }
 
-export interface InputTimeline {
-  /** Start of the container's timeline in seconds: the earliest stream start, negative for an encoder-delay audio track. */
-  startTimeSec: number;
-  chapterCount: number;
+/** The stream facts and the chapter list a conversion plans its mapping from. */
+export interface StreamLayout {
+  streams: LayoutStream[];
+  /** Present when the input has chapters: how many, and where the container's timeline starts (negative for an encoder-delay audio track). */
+  chapters?: { count: number; startTimeSec: number };
 }
 
 /**
- * Start time and chapter count of the input. The chapter list is probed by id only, so a file with thousands of
- * chapters stays within the JSON limit; a larger report is not a media file.
+ * What the stream mapping of a conversion needs to know about `filePath`. A plain MP4 answers from its movie box
+ * without a process; every other input, and every MP4 the header reader cannot describe exactly, is probed with
+ * ffprobe once (the probe is remembered for the file, so the rest of the conversion reads it again at no cost).
  */
+export function probeStreamLayout(filePath: string, ffprobe: FfprobePath): StreamLayout {
+  const identity = fileIdentity(filePath);
+  if (identity === undefined || !probeCache.has(identity)) {
+    const header = readMp4Layout(filePath);
+    if (header !== null) return { streams: header.streams };
+  }
+  const probe = probeInput(filePath, ffprobe);
+  const { chapterCount, startTimeSec } = probe.timeline;
+  return chapterCount > 0 ? { streams: probe.streams, chapters: { count: chapterCount, startTimeSec } } : { streams: probe.streams };
+}
+
+/** Transfer characteristic of the first video stream in `layout` (e.g. `bt709`, `smpte2084`), or '' when it states none. */
+export function layoutColorTransfer(layout: StreamLayout): string {
+  return layout.streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
+}
+
+/** Every stream of the input, in index order. */
+export function probeInputStreams(filePath: string, ffprobe: FfprobePath): InputStream[] {
+  return probeInput(filePath, ffprobe).streams;
+}
+
+/** Start time and chapter count of the input. */
 export function probeInputTimeline(filePath: string, ffprobe: FfprobePath): InputTimeline {
-  let stdout: string;
-  try {
-    stdout = execFileSync(ffprobe, ['-v', 'error', '-show_entries', 'format=start_time:chapter=id', '-of', 'json', filePath], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-      maxBuffer: MAX_FFPROBE_JSON_BYTES,
-    });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
-  }
-  let parsed: { format?: { start_time?: unknown }; chapters?: unknown };
-  try {
-    parsed = JSON.parse(stdout) as typeof parsed;
-  } catch {
-    throw new MediaProbeError('ffprobe did not return valid JSON for the input media.');
-  }
-  const start = typeof parsed.format?.start_time === 'string' ? Number(parsed.format.start_time) : 0;
-  return {
-    startTimeSec: Number.isFinite(start) ? start : 0,
-    chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,
-  };
+  return probeInput(filePath, ffprobe).timeline;
+}
+
+/** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when it states none. */
+export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
+  return probeInput(filePath, ffprobe).streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
 }
 
 /** The first video stream that is a real video track, not cover art; undefined when the input has none. */
-export function firstVideoStream(streams: readonly InputStream[]): InputStream | undefined {
+export function firstVideoStream<T extends LayoutStream>(streams: readonly T[]): T | undefined {
   return streams.find((stream) => stream.type === 'video' && !stream.attachedPicture);
 }
 
