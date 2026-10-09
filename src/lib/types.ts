@@ -910,6 +910,29 @@ export class ComplexScriptRequiresNativeEngineError extends EngineMissingError {
   }
 }
 
+/**
+ * Text of a script that needs shaping contains a character no installed font covers. The font set is part of the
+ * request's environment and not a missing engine, so it answers HTTP 400 (through `status`) rather than 503.
+ */
+export class FontCoverageError extends ConversionFailedError {
+  readonly status = 400;
+  /** The first uncovered code point. */
+  readonly codePoint: number;
+  constructor(message: string, codePoint: number) {
+    super(message);
+    this.name = 'FontCoverageError';
+    this.codePoint = codePoint;
+  }
+}
+
+/** Text to shape is longer than the shaping limits allow (one paragraph, or all glyphs of one document). HTTP 413. */
+export class ShapingLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShapingLimitError';
+  }
+}
+
 export class InvalidSheetIndexError extends ConversionFailedError {
   constructor(message: string) {
     super(message);

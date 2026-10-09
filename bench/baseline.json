@@ -371,6 +371,26 @@
       "delta": null,
       "ratio": 1.4423391726630617
     },
+    "document/complex-script txt->pdf/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -2.7925822035218952,
+      "ratio": null
+    },
+    "document/complex-script txt->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 23.8599863024443
+    },
     "document/pdf-structure->docx/column_accuracy": {
       "direction": "higher",
       "tolerance": {
@@ -439,7 +459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 44.06206113514081
+      "ratio": 23.82794358402252
     },
     "document/pdf-text->txt/cer": {
       "direction": "lower",
@@ -459,7 +479,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.2625067961416203
+      "ratio": 1.146516279349439
     },
     "document/pdf-text->txt/word_f1": {
       "direction": "higher",

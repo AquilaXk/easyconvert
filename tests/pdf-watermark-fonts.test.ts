@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { applyPdfWatermark } from '../src/lib/conversions/pdf-postprocess';
-import { ComplexScriptRequiresNativeEngineError, ConversionFailedError, EngineUnavailableError, PdfPostprocessError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, PdfPostprocessError } from '../src/lib/types';
 import { OracleToolMissingError, requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { captureError } from './helpers/capture-error';
@@ -190,18 +190,20 @@ describe('text watermarks in every script', () => {
     expect((error as EngineUnavailableError).engineName).toBe('unicode-font');
   });
 
-  it('refuses scripts that need shaping instead of drawing them unshaped', async () => {
-    const scripts: [string, string][] = [
-      ['سري للغاية', 'Arabic'],
-      ['סודי ביותר', 'Hebrew'],
-      ['गोपनीय', 'Devanagari'],
-    ];
-    for (const [text, script] of scripts) {
-      const error = await captureError(() => stamp(text));
-      expect(error).toBeInstanceOf(ComplexScriptRequiresNativeEngineError);
-      expect(error.message).toContain(script);
-    }
-  });
+  for (const [text, script] of [
+    ['سري للغاية', 'Arabic'],
+    ['סודי ביותר', 'Hebrew'],
+    ['गोपनीय', 'Devanagari'],
+  ] as const) {
+    oracleTest(`${script} watermark is shaped and extracts in logical order from an embedded subset`, [...POPPLER, 'fc-list'], async () => {
+      needs(`an installed font covering ${script}`, installedFontCovers(text));
+      const out = await stamp(text);
+      expect(pdfText(out).normalize('NFC').replace(/\p{Cf}/gu, '').trim()).toBe(text.normalize('NFC'));
+      const fonts = pdfFonts(out);
+      expect(fonts.length).toBeGreaterThan(0);
+      expect(fonts.every((font) => font.embedded && font.subset && font.unicode)).toBe(true);
+    });
+  }
 
   it('refuses a watermark over the length cap and accepts one at the cap', async () => {
     const error = await captureError(() => stamp('A'.repeat(WATERMARK_MAX_CHARS + 1)));

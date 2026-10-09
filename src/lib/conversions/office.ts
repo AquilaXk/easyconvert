@@ -15,7 +15,6 @@ import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from '
 import { buildTiffOptions } from './image-tiff-options';
 import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
-import { assertNoComplexScript } from './ctl';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
@@ -3403,7 +3402,6 @@ export function renderSafePdfText(
 ): PDFKit.PDFDocument {
   const stringText = String(text ?? '');
   if (!stringText) return doc;
-  assertNoComplexScript(stringText, 'Pure-TS Office PDF rendering');
 
   if (!hasUnicodeFont && !isNonWinAnsi(stringText)) {
     if (x !== undefined && y !== undefined) {
@@ -3918,31 +3916,6 @@ async function generatePdfFromDocx(
   title: string,
   elements?: DocxBlockElement[]
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS DOCX to PDF');
-  for (const p of paragraphs) {
-    assertNoComplexScript(p.text, 'Pure-TS DOCX to PDF');
-  }
-  for (const tbl of tables) {
-    for (const r of tbl.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-      }
-    }
-  }
-  if (elements) {
-    for (const el of elements) {
-      if (el.type === 'paragraph') {
-        assertNoComplexScript(el.paragraph.text, 'Pure-TS DOCX to PDF');
-      } else if (el.type === 'table') {
-        for (const r of el.table.rows) {
-          for (const cell of r) {
-            assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-          }
-        }
-      }
-    }
-  }
-
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const doc = new PDFDocument({
@@ -5789,16 +5762,6 @@ async function generatePdfFromWorksheets(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Spreadsheet to PDF');
-  for (const s of sheets) {
-    assertNoComplexScript(s.name, 'Pure-TS Spreadsheet to PDF');
-    for (const r of s.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS Spreadsheet to PDF');
-      }
-    }
-  }
-
   const widestRow = sheets.reduce((widest, sheet) => Math.max(widest, ...sheet.rows.map((row) => row.length)), 1);
   const isLandscape = options.orientation === 'landscape' || widestRow > WORKSHEET_LANDSCAPE_COLUMNS;
   return renderPdfTables(
@@ -7145,13 +7108,6 @@ async function generatePdfFromSlides(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Presentation to PDF');
-  for (const s of slides) {
-    for (const t of s.texts) {
-      assertNoComplexScript(t, 'Pure-TS Presentation to PDF');
-    }
-  }
-
   return new Promise<Buffer>((resolve, reject) => {
     const firstSlide = slides[0];
     const width = firstSlide?.width || 960;

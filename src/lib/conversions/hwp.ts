@@ -5,7 +5,6 @@ import { ConversionFailedError, ConversionOptions, ConversionResult, CorruptStre
 import { InflateBudget, inflateBounded } from './bounded-inflate';
 import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
-import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { renderHwpToSvg } from './hwp-render';
 import { buildCfbfContainer } from './cfbf-writer';
@@ -1069,17 +1068,6 @@ async function generatePdfFromHwp(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  for (const p of doc.paragraphs ?? []) {
-    if (p.text) assertNoComplexScript(p.text, 'Pure-TS HWP to PDF');
-  }
-  for (const tbl of doc.tables ?? []) {
-    for (const r of tbl.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS HWP to PDF');
-      }
-    }
-  }
-
   const blocks: PdfBlock[] = [];
   for (const p of doc.paragraphs ?? []) {
     blocks.push(

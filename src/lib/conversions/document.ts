@@ -34,7 +34,6 @@ import { documentToMarkdown } from './document-model/markdown';
 import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { characterWeightedConfidence } from './ocr-calibration';
-import { assertNoComplexScript } from './ctl';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeTextInput } from './text-input';
@@ -766,8 +765,6 @@ async function generatePdfFromText(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  assertNoComplexScript(text, `Pure-TS ${sourceType.toUpperCase()} to PDF conversion`);
-
   let blocks: PdfBlock[];
   let title = baseName;
   if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {

@@ -8,7 +8,6 @@ import {
   type PDFFont,
   type PDFImage,
 } from 'pdf-lib';
-import { assertNoComplexScript } from '../ctl';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { parsePageRanges } from '../page-range';
 import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
@@ -297,8 +296,6 @@ function assertWatermarkText(text: string): void {
   if (LINE_BREAK.test(text)) {
     throw new WatermarkFontError('The watermark text must be a single line.');
   }
-  // Scripts that need shaping are refused: drawn unshaped they would be wrong, not merely plain.
-  assertNoComplexScript(text, 'The PDF watermark text');
 }
 
 /** The face the requested family names; it must be installed and have a glyph for every character of the text. */
