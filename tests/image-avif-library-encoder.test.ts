@@ -418,7 +418,7 @@ describe('HDR output without the library encoder', () => {
 
 describe('encoder arguments', () => {
   oracleTest(
-    'quality, speed, bit depth, chroma and threads reach the encoder as the policy states them, and the picture arrives on stdin',
+    'quality, speed, bit depth, chroma and threads reach the encoder as the policy states them, and the picture arrives as a file',
     ['avifenc', 'avifdec'],
     async () => {
       const wrapper = recordingWrapper('args-wrapper');
@@ -435,7 +435,9 @@ describe('encoder arguments', () => {
       expect(valueOf('-y')).toBe('444');
       expect(Number(valueOf('-j'))).toBeGreaterThanOrEqual(1);
       expect(Number(valueOf('-j'))).toBeLessThanOrEqual(os.availableParallelism());
-      expect(args).toContain('--stdin');
+      expect(args).not.toContain('--stdin');
+      expect(args).not.toContain('--input-format');
+      expect(args[args.indexOf('-o') - 1]).toMatch(/\/in\.png$/);
     },
     60_000
   );
@@ -561,6 +563,20 @@ describe('encoder run lifecycle', () => {
     });
   }, 60_000);
 
+  it('hands the picture over as a private file in the private working directory, and removes both afterwards', async () => {
+    await withPrivateTmpdir(async (tmp) => {
+      const seen = path.join(workDir, 'input-seen.png');
+      const modes = path.join(workDir, 'input-modes.txt');
+      const tool = failingTool('copies-input', `for last; do :; done\ndir=$(dirname "$last")\ncp "$dir/in.png" '${seen}'\nls -ld "$dir" "$dir/in.png" | cut -c1-10 > '${modes}'\nexit ${FAILURE_EXIT_STATUS}`);
+      const req = await request();
+      const failure = await rejection(async () => encodeAvifWithCli(tool.script, req));
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect(readFileSync(seen).equals(req.png)).toBe(true);
+      expect(readFileSync(modes, 'utf-8').trim().split('\n')).toEqual(['drwx------', '-rw-------']);
+      expect(jobDirs(tmp)).toEqual([]);
+    });
+  }, 60_000);
+
   it('kills a tool that outlives the timeout and removes the working directory', async () => {
     await withPrivateTmpdir(async (tmp) => {
       const pidFile = path.join(workDir, 'timeout.pid');
@@ -665,7 +681,7 @@ describe('encoder run lifecycle', () => {
 
   it('passes the arguments through only for a whole-number quality from 0 to 100', async () => {
     const base = await request();
-    const argsFor = (quality: number): string[] => avifencArguments({ ...base, quality }, '/out.avif');
+    const argsFor = (quality: number): string[] => avifencArguments({ ...base, quality }, '/in.png', '/out.avif');
     for (const bad of [Number.NaN, 55.5, -1, 101, Number.POSITIVE_INFINITY]) {
       expect(() => argsFor(bad), `quality ${bad}`).toThrow(ConversionFailedError);
     }
@@ -678,7 +694,7 @@ describe('encoder run lifecycle', () => {
     const threadsOn = (cores: number): number => {
       const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
       try {
-        const args = avifencArguments(base, '/out.avif');
+        const args = avifencArguments(base, '/in.png', '/out.avif');
         return Number(args[args.indexOf('-j') + 1]);
       } finally {
         cpus.mockRestore();
@@ -722,21 +738,21 @@ describe('finding the encoder', () => {
     }
   });
 
-  it('counts a libavif older than 1.4.0 as not installed, because it stops on the options that hand over a PNG, and says so once', async () => {
+  it('counts a libavif older than 1.0.0 as not installed, because it has no -q and --qalpha, and says so once', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const old = versionTool('find-v1-0-4', 'Version: 1.0.4 (aom [enc/dec]:3.8.2)');
+      const old = versionTool('find-v0-11-1', 'Version: 0.11.1 (aom [enc/dec]:3.5.0)');
       expect(await findAvifenc(envWith(old))).toBeNull();
       expect(await findAvifenc(envWith(old))).toBeNull();
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0][0])).toMatch(/libavif 1\.0\.4.*1\.4\.0 or newer/);
+      expect(String(warn.mock.calls[0][0])).toMatch(/libavif 0\.11\.1.*1\.0\.0 or newer/);
       const unreadable = versionTool('find-no-version', 'avifenc, a program');
       expect(await findAvifenc(envWith(unreadable))).toBeNull();
-      for (const supported of ['Version: 1.4.0 (aom)', 'Version: 1.4.2 (aom)', 'Version: 2.0.0 (aom)', 'Version: 1.10.0 (aom)']) {
+      for (const supported of ['Version: 1.0.0 (aom)', 'Version: 1.0.4 (aom)', 'Version: 1.2.1 (aom)', 'Version: 1.4.2 (aom)', 'Version: 2.0.0 (aom)', 'Version: 1.10.0 (aom)']) {
         const tool = versionTool(`find-${supported.replace(/\W+/g, '-')}`, supported);
         expect(await findAvifenc(envWith(tool)), supported).toBe(tool);
       }
-      const justBelow = versionTool('find-v1-3-9', 'Version: 1.3.9 (aom)');
+      const justBelow = versionTool('find-v0-99-9', 'Version: 0.99.9 (aom)');
       expect(await findAvifenc(envWith(justBelow))).toBeNull();
     } finally {
       warn.mockRestore();
@@ -749,7 +765,7 @@ describe('finding the encoder', () => {
     async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       try {
-        process.env.AVIFENC_PATH = versionTool('convert-v1-0-4', 'Version: 1.0.4 (aom)');
+        process.env.AVIFENC_PATH = versionTool('convert-v0-11-1', 'Version: 0.11.1 (aom)');
         const out = await convertImage(await interface16(), 'avif', { quality: 60 }, 'ui.png', 'png');
         expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
         expect(avifInfo(writeIn('old-tool.avif', out.buffer))).toMatchObject({ format: 'YUV444', depth: 10 });

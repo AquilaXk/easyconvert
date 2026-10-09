@@ -16,9 +16,9 @@ import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout
 /**
  * AVIF written by the reference AVIF library's command-line encoder (`avifenc`, which drives the AV1 encoder), run
  * as an external executable under the process sandbox. The caller prepares the pixels (orientation, resize, colour
- * management) and hands them over as a PNG on standard input: PNG keeps 8 or 16 bits per sample, one to four
- * channels and the EXIF block, and costs about 4 ms at compression level 1 where the encoder takes 25 to 100 ms.
- * The encoder writes into a private directory that is removed afterwards.
+ * management) and hands them over as a PNG file: PNG keeps 8 or 16 bits per sample, one to four channels and the
+ * EXIF block, and costs about 4 ms at compression level 1 where the encoder takes 25 to 100 ms. The PNG and the
+ * encoder's output live in a private directory (mode 0700) that is removed afterwards.
  *
  * Without the executable the caller keeps using the image library (`AvifEncoder`); an executable that is present
  * and fails is an error, never a reason to answer with the other encoder.
@@ -58,7 +58,9 @@ const AVIFENC_OUTPUT_OVERHEAD_BYTES = 64 * 1024;
 /** Characters of the encoder's diagnostics written to the log on a failure. */
 const AVIFENC_DIAGNOSTIC_LOGGED_CHARS = 500;
 const AVIFENC_JOB_DIR_PREFIX = 'easyconvert-avif-';
+const AVIFENC_INPUT_NAME = 'in.png';
 const AVIFENC_OUTPUT_NAME = 'out.avif';
+const PRIVATE_FILE_MODE = 0o600;
 const AVIFENC_CLEANUP_RETRIES = 3;
 const AVIFENC_CLEANUP_RETRY_DELAY_MS = 50;
 const BYTES_PER_MB = 1024 * 1024;
@@ -114,11 +116,15 @@ function isExecutableFile(candidate: string): boolean {
 }
 
 /**
- * Oldest libavif whose `avifenc` reads a PNG from standard input (`--input-format`), the hand-off this module uses
- * and the version the encoder policy was measured on. Older builds (Debian 12 ships 0.11.1, Ubuntu 24.04 1.0.4)
- * stop on the first unknown option, which would fail every picture: they count as "not installed".
+ * Oldest libavif whose `avifenc` accepts every option this module passes. From the libavif changelog: 1.0.0 adds the
+ * quality and qualityAlpha settings of the encoder and with them `-q` and `--qalpha` ("Add quality and qualityAlpha to
+ * avifEncoder"); 0.11.1 has only the quantizer pair `--min`/`--max` and stops on `-q`. The other options are older:
+ * `-j all` and `-j N` (0.9.2), `--cicp` as the alias of `--nclx` (the CICP refactor, 0.9 series), `-y`, `-d`, `-s`, `-o`
+ * and `-a` with the `c:` prefix for colour-only codec options (present in 0.11.1 and 1.0.0). `-V`/`--version`, which
+ * the probe uses, is in 1.0.0. The picture is a file argument, which every version reads. Debian 12 ships 0.11.1 (not
+ * accepted); Debian 13 ships 1.2.1 and Ubuntu 24.04 1.0.4 (accepted). Anything older counts as "not installed".
  */
-export const AVIFENC_MIN_VERSION: readonly [number, number, number] = [1, 4, 0];
+export const AVIFENC_MIN_VERSION: readonly [number, number, number] = [1, 0, 0];
 const AVIFENC_PROBE_TIMEOUT_MS = 10_000;
 const AVIFENC_PROBE_MAX_BYTES = 64 * 1024;
 
@@ -198,18 +204,15 @@ function encoderThreads(): number {
 
 /**
  * Arguments of one encode. Quality applies to colour and alpha alike, as in the image library; a tuning metric
- * applies to the colour planes only (the alpha plane keeps the encoder's PSNR tuning). Reading the picture from
- * standard input and writing to a path in the private directory keeps every file name fixed.
+ * applies to the colour planes only (the alpha plane keeps the encoder's PSNR tuning). Reading the picture from a
+ * path and writing to a path in the private directory keeps every file name fixed.
  */
-export function avifencArguments(request: AvifCliRequest, outputPath: string): string[] {
+export function avifencArguments(request: AvifCliRequest, inputPath: string, outputPath: string): string[] {
   if (!Number.isInteger(request.quality) || request.quality < AVIFENC_QUALITY_MIN || request.quality > AVIFENC_QUALITY_MAX) {
     throw new ConversionFailedError(`Cannot encode the image as .avif (the quality must be a whole number from ${AVIFENC_QUALITY_MIN} to ${AVIFENC_QUALITY_MAX})`);
   }
   const quality = String(request.quality);
   const args = [
-    '--stdin',
-    '--input-format',
-    'png',
     '-d',
     String(request.bitdepth),
     '-y',
@@ -225,7 +228,7 @@ export function avifencArguments(request: AvifCliRequest, outputPath: string): s
   ];
   if (request.tune !== undefined) args.push('-a', `c:tune=${request.tune}`);
   if (request.cicp) args.push('--cicp', `${request.cicp.primaries}/${request.cicp.transfer}/${request.cicp.matrix}`);
-  args.push('-o', outputPath);
+  args.push(inputPath, '-o', outputPath);
   return args;
 }
 
@@ -283,12 +286,18 @@ export async function encodeAvifWithCli(avifenc: string, request: AvifCliRequest
   } catch {
     throw new ConversionFailedError('Cannot encode the image as .avif (the encoder working directory could not be created)');
   }
+  const inputPath = path.join(jobDir, AVIFENC_INPUT_NAME);
   const outputPath = path.join(jobDir, AVIFENC_OUTPUT_NAME);
   try {
+    const args = avifencArguments(request, inputPath, outputPath);
     try {
-      await executeSandboxedBinary(avifenc, avifencArguments(request, outputPath), {
+      await fs.promises.writeFile(inputPath, request.png, { flag: 'wx', mode: PRIVATE_FILE_MODE });
+    } catch {
+      throw new ConversionFailedError('Cannot encode the image as .avif (the picture could not be handed to the encoder)');
+    }
+    try {
+      await executeSandboxedBinary(avifenc, args, {
         cwd: jobDir,
-        stdin: request.png,
         timeoutMs,
         maxBuffer: AVIFENC_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: maxOutputBytes,
