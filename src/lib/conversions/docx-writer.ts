@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { PayloadLimitError } from '../types';
 import { resolveLanguage } from './document-language';
+import { redrawAsPng } from './image-to-png';
 import {
   IMAGE_FILE_EXTENSION,
   escapeXmlAttribute,
@@ -124,7 +125,7 @@ class PackageState {
     let { data } = image;
     let mime: string = image.mime;
     if (!IMAGE_TYPES_IN_WORD.has(mime)) {
-      data = await sharp(image.data).png().toBuffer();
+      data = await redrawAsPng(image.data, mime);
       mime = 'image/png';
     }
     const file: MediaFile = { path: `word/media/image${this.media.length + 1}.${IMAGE_FILE_EXTENSION[mime as DocImage['mime']]}`, mime, data };

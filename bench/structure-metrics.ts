@@ -30,6 +30,8 @@ const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const LIST_TAGS = new Set(['ul', 'ol']);
 const CELL_TAGS = new Set(['td', 'th']);
 const NOTE_CONTAINER = /^(?:fn-|footnote-|endnote-|sdfootnote|sdendnote)/;
+/** EPUB Structural Semantics vocabulary values that mark a note body (EPUB 3.3 section 4.3 of the structural semantics vocabulary). */
+const NOTE_EPUB_TYPES = new Set(['footnote', 'endnote', 'rearnote']);
 const DATA_IMAGE = /^data:[^;,]*;base64,(.*)$/s;
 
 export function emptyStructure(): DocumentStructure {
@@ -81,10 +83,12 @@ export function structureOfHtml(html: string, resolveImage?: (src: string) => Bu
     }
     const tag = node.tagName;
     const id = attribute(node, 'id') ?? '';
-    const enteringNote = NOTE_CONTAINER.test(id) && (tag === 'li' || tag === 'div' || tag === 'aside' || tag === 'section');
+    const epubTypes = (attribute(node, 'epub:type') ?? '').split(/\s+/);
+    const marksNote = NOTE_CONTAINER.test(id) || epubTypes.some((type) => NOTE_EPUB_TYPES.has(type));
+    const enteringNote = marksNote && (tag === 'li' || tag === 'div' || tag === 'aside' || tag === 'section');
     if (enteringNote && !inNote) {
       // A note's own numeral and the back-link arrow are reading aids, not its text.
-      structure.notes.push(normalizeText(textOf(node)).replace(/^(?:\d+\s*|[ivx]+\s+)/, '').replace(/\s*↩$/, ''));
+      structure.notes.push(normalizeText(textOf(node)).replace(/^(?:\d+\s*|[ivx]+\s+|[ivx]+(?=[A-Z]))/, '').replace(/\s*↩$/, ''));
       return;
     }
     if (HEADING_TAGS.has(tag)) {

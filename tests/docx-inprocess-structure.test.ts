@@ -6,6 +6,8 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import MarkdownIt from 'markdown-it';
 import { convertFile } from '../src/lib/conversions';
+import { convertOffice } from '../src/lib/conversions/office';
+import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import {
@@ -65,6 +67,20 @@ describe('docx to html keeps the document structure', () => {
     const html = await convertToText('html');
     expect([...html.matchAll(/<a href="([^"]+)">([^<]*)<\/a>/g)].map((match) => [match[1], match[2]])).toEqual([['https://example.org/portal', 'the maintenance portal']]);
     expect([...html.matchAll(/<img [^>]*alt="([^"]*)"/g)].map((match) => match[1])).toEqual(['Green checker photo', 'Red and blue bars']);
+  });
+});
+
+describe('docx targets the in-process engine cannot write', () => {
+  it.each(['rtf', 'doc'])('%s needs LibreOffice and answers as a missing engine, not an untyped failure', async (target) => {
+    const failure = await convertFile(RICH, 'docx', target, {}, 'rich-structure.docx').then(() => undefined, (err: unknown) => err);
+    expect(failure).toBeInstanceOf(EngineUnavailableError);
+    expect((failure as Error).message).toBe(`Engine 'soffice' is unavailable: Converting DOCX to .${target} needs the native LibreOffice engine; the in-process engine has no writer for it.`);
+  });
+
+  it('a target no engine writes is an unsupported-target error', async () => {
+    const failure = await convertOffice(RICH, 'docx', 'xyz', {}, 'rich-structure.docx').then(() => undefined, (err: unknown) => err);
+    expect(failure).toBeInstanceOf(UnsupportedTargetError);
+    expect((failure as Error).message).toBe("Cannot convert DOCX documents to '.xyz'.");
   });
 });
 

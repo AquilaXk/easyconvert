@@ -1,5 +1,6 @@
 import { EngineUnavailableError, type ConversionOptions } from '../types';
 import { assertNoComplexScript } from './ctl';
+import { redrawAsPng } from './image-to-png';
 import { MAX_DOCUMENT_IMAGE_PIXELS, MAX_IMAGES_PER_DOCUMENT, prepareEmbeddedImage } from './html-blocks';
 import { PDF_DOCUMENT_SPACING, renderPdfBlocks, type PdfBlock, type PdfRasterImage, type PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
@@ -42,7 +43,7 @@ class PdfBlockBuilder {
           `the document embeds more than ${MAX_IMAGES_PER_DOCUMENT} pictures, which the in-process PDF renderer does not draw`
         );
       }
-      prepared = prepareEmbeddedImage(image.data, 'A DOCX picture');
+      prepared = (image.mime === 'image/bmp' ? redrawAsPng(image.data, image.mime) : Promise.resolve(image.data)).then((bytes) => prepareEmbeddedImage(bytes, 'A document picture'));
       this.images.set(image.data, prepared);
     }
     const raster = await prepared;

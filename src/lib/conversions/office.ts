@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
 import sharp, { type Sharp } from 'sharp';
 import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -30,9 +30,10 @@ import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOC
 import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
 import { readDocxModel } from './docx-model';
 import { renderModelHtml } from './document-html';
-import { renderModelPdf } from './docx-pdf';
 import { writeEpub } from './epub-writer';
+import { renderModelTarget } from './document-targets';
 import { writeDocx } from './docx-writer';
+import { writeOdt } from './odt-writer';
 import { markdownToDocModel, plainTextToDocModel, readEpubModel, htmlSourceToDocModel } from './source-model';
 import { renderModelMarkdown, renderModelText } from './document-markdown';
 import type { DocModel } from './document-model';
@@ -266,8 +267,7 @@ export async function convertOffice(
 
   // 19. Target is ODT (OpenDocument Text)
   if (tgt === 'odt') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const odtBuffer = await generateOdtFromText(textContent, baseName);
+    const odtBuffer = await generateOdtFromSource(inputBuffer, src, options, baseName);
     return {
       buffer: odtBuffer,
       mimeType: 'application/vnd.oasis.opendocument.text',
@@ -362,6 +362,14 @@ export async function convertOffice(
   }
 
   throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
+}
+
+/** An ODT from any other source: PDF text keeps the text writer; every other source is written from the block model. */
+async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'epub') return writeOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+  if (src === 'pdf') return generateOdtFromText(textContent, baseName);
+  return writeOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
 }
 
 /**
@@ -622,29 +630,13 @@ async function readOdtText(input: Buffer): Promise<string> {
   return paragraphs.join(PARAGRAPH_SEPARATOR);
 }
 
-/** Targets written from the structured DOCX model. */
-const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf', 'epub']);
+/** DOCX targets only LibreOffice writes. */
+const DOCX_NATIVE_ENGINE_TARGETS: ReadonlySet<string> = new Set(['rtf', 'doc', 'jpg', 'png']);
 
-async function convertModelTarget(model: DocModel, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
-  if (tgt === 'pdf') {
-    const buffer = await renderModelPdf(model, options, baseName);
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
-  }
-  if (tgt === 'epub') {
-    const buffer = await writeEpub(model, { title: baseName, language: options.language });
-    return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
-  }
-  if (tgt === 'txt') {
-    const buffer = Buffer.from(renderModelText(model), 'utf-8');
-    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
-  }
-  if (tgt === 'html') {
-    const buffer = Buffer.from(renderModelHtml(model, baseName), 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-  }
-  const buffer = Buffer.from(renderModelMarkdown(model), 'utf-8');
-  return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
-}
+/** Targets written from the structured DOCX model. */
+const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf', 'epub', 'odt']);
+
+const convertModelTarget = renderModelTarget;
 
 /**
  * DOCX Source Parser & Converter
@@ -803,7 +795,10 @@ async function convertDocxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from DOCX to ${tgt}`);
+  if (DOCX_NATIVE_ENGINE_TARGETS.has(tgt)) {
+    throw new EngineUnavailableError('soffice', `Converting DOCX to .${tgt} needs the native LibreOffice engine; the in-process engine has no writer for it.`);
+  }
+  throw new UnsupportedTargetError(`Cannot convert DOCX documents to '.${tgt}'.`);
 }
 
 export interface DocxRun {

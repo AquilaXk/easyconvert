@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
-import sharp from 'sharp';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
 import { resolveLanguage } from './document-language';
+import { redrawAsPng } from './image-to-png';
 import { renderBlocksHtml, renderNotesHtml, type HtmlRenderOptions } from './document-html';
 import {
   IMAGE_FILE_EXTENSION,
@@ -126,7 +126,7 @@ async function packageImages(model: DocModel): Promise<{ byData: Map<Buffer, Pac
       let data = image.data;
       let mime: string = image.mime;
       if (!EPUB_IMAGE_TYPES.has(mime)) {
-        data = await sharp(image.data).png().toBuffer();
+        data = await redrawAsPng(image.data, mime);
         mime = 'image/png';
       }
       const extension = IMAGE_FILE_EXTENSION[mime as DocImage['mime']];
