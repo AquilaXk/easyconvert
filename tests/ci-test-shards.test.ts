@@ -17,27 +17,31 @@ const CI_SHARDS = 6;
 const FILES = listShardedTests();
 const DURATIONS = loadDurations();
 const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
+/** The files that read the S3 test server: they run in the one job that starts it, not in a shard. */
+const S3_SERVER_FILES = ['tests/s3-minio-integration.test.ts', 'tests/s3-object-client.test.ts'];
 
 const load = (shard: { load: number }): number => shard.load;
 
 describe('which files the sharded job runs', () => {
-  it('lists the test files of tests/ without the timing suites and the conformance gate', () => {
+  it('lists the test files of tests/ without the timing suites, the conformance gate and the S3 server tests', () => {
     expect(FILES.length).toBeGreaterThan(400);
     expect(FILES.every((file) => file.startsWith('tests/') && file.endsWith('.test.ts'))).toBe(true);
     expect(FILES.filter((file) => file.endsWith('.perf.test.ts'))).toEqual([]);
     expect(FILES).not.toContain('tests/registry-engine-conformance.test.ts');
+    for (const file of S3_SERVER_FILES) expect(FILES, file).not.toContain(file);
     expect(FILES).toContain('tests/ci-test-shards.test.ts');
     expect([...FILES].sort()).toEqual(FILES);
   });
 
-  it('matches what vitest would collect, minus the two exclusions', () => {
+  it('matches what vitest would collect, minus the exclusions', () => {
     const collected = spawnSync('npx', ['--no-install', 'vitest', 'list', '--filesOnly'], { cwd: ROOT, encoding: 'utf-8' });
     expect(collected.status, collected.stderr).toBe(0);
     const all = collected.stdout
       .split('\n')
       .map((line) => path.relative(ROOT, line.trim()).split(path.sep).join('/'))
       .filter((file) => file.endsWith('.test.ts'));
-    const expected = all.filter((file) => !file.endsWith('.perf.test.ts') && file !== 'tests/registry-engine-conformance.test.ts').sort();
+    const excluded = new Set(['tests/registry-engine-conformance.test.ts', ...S3_SERVER_FILES]);
+    const expected = all.filter((file) => !file.endsWith('.perf.test.ts') && !excluded.has(file)).sort();
     expect(FILES).toEqual(expected);
   }, 120_000);
 });

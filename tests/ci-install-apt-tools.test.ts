@@ -162,10 +162,11 @@ describe('the committed package list and scripts', () => {
 
   it('starts every part of the setup in the background and fails the step when any part failed', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
-    expect(script).toContain('tasks=(apt pip verapdf epubcheck raw s3)');
-    expect(script).toContain('"task_$task" > "$logs/$task.log" 2>&1 &');
+    expect(script).toContain('tasks=(apt pip verapdf epubcheck raw)');
+    expect(script).toContain('tasks+=(s3)');
+    expect(script).toContain('run_bounded "$task" > "$task_logs/$task.log" 2>&1 &');
     expect(script).toContain('failed+=("$task")');
-    expect(script).toMatch(/if \[ "\$\{#failed\[@\]\}" -gt 0 \]; then[\s\S]*exit 1/);
+    expect(script).toMatch(/if \[ "\$\{#failed\[@\]\}" -gt 0 \]; then[\s\S]*tool setup failed: \$\{failed\[\*\]\}[\s\S]*return 1/);
     expect(existsSync(path.join(ROOT, 'scripts', 'install-verapdf.sh'))).toBe(true);
   });
 
