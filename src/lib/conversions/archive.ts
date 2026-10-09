@@ -42,6 +42,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
@@ -384,9 +385,7 @@ export async function createZipArchive(
     // The extractor refuses archives past this count, so the writer does not produce one.
     throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
-  const compressionLevel = options.compressionLevel
-    ? Math.max(1, Math.min(9, options.compressionLevel))
-    : 6;
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
   const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
 
   return {
@@ -2162,7 +2161,7 @@ export function get7zBinaryPath(): string | null {
  * Pure TypeScript .xz packager (The .xz File Format 1.1.0; see xz-format.ts).
  */
 export function packXz(uncompressed: Buffer, options: ConversionOptions = {}): Buffer {
-  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: options.compressionLevel }));
+  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel) }));
 }
 
 /** `packXz` with the LZMA2 stream built on a pool thread, so a large input does not hold the event loop. */
@@ -2171,7 +2170,10 @@ export async function packXzAsync(
   options: ConversionOptions = {},
   runtime: { signal?: AbortSignal } = {}
 ): Promise<Buffer> {
-  return packXzStream(uncompressed, await compressLzma2Async(uncompressed, { level: options.compressionLevel, signal: runtime.signal }));
+  return packXzStream(
+    uncompressed,
+    await compressLzma2Async(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel), signal: runtime.signal })
+  );
 }
 
 /**
@@ -2182,10 +2184,10 @@ export function unpackXz(buf: Buffer): Buffer {
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
   const xzBin = getXzBinaryPath();
   if (xzBin) {
     try {
-      const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
       return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
@@ -2205,9 +2207,9 @@ export async function compressXzAsync(
   options: ConversionOptions = {},
   runtime: { signal?: AbortSignal } = {}
 ): Promise<Buffer> {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
   const xzBin = getXzBinaryPath();
   if (xzBin) {
-    const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
     try {
       const run = await executeSandboxedBinary(xzBin, [`-${level}`, '-c', '-q'], {
         stdin: inputBuffer,
@@ -2623,8 +2625,8 @@ function prepare7zArchive(
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
 
-  const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
-  const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
+  const isCompressed = compressionLevel > 0;
 
   let coderType: SevenZipCoderType;
   if (options.archiveCoder) {
@@ -4122,7 +4124,7 @@ export async function convertArchive(
   if (tgt === 'tar.gz' || tgt === 'tgz') {
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
     const gzipped = zlib.gzipSync(tarResult.buffer, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,
@@ -4165,7 +4167,7 @@ export async function convertArchive(
     // 7. Target GZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     const gzipped = zlib.gzipSync(rawToCompress, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,
