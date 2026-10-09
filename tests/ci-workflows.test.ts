@@ -165,7 +165,7 @@ describe('the nightly workflow', () => {
 
   it('opens or updates one nightly-regression issue when a job fails, with the permissions to do it', () => {
     const report = nightly.jobs.report;
-    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'licenses', 'perf']);
+    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'licenses', 'perf', 'realworld', 'realworld-gate']);
     expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
     expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
     const script = String(report.steps[0].with?.script);
@@ -174,6 +174,19 @@ describe('the nightly workflow', () => {
     expect(script).toContain('github.rest.issues.createComment(');
     expect(script).toContain('actions/runs/${context.runId}');
     expect(script).toContain('job.html_url');
+  });
+
+  it('runs the real-world corpus in ten cached shards and gates on their merged report', () => {
+    const run = nightly.jobs.realworld;
+    expect(run.strategy?.matrix?.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    const steps = run.steps.map((step) => step.run ?? step.uses ?? '');
+    expect(steps).toContain('npm run bench:realworld -- run --shard ${{ matrix.shard }}/10 --out realworld-shard-${{ matrix.shard }}.json');
+    const cache = run.steps.find((step) => String(step.uses).startsWith('actions/cache@'));
+    expect(cache?.with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}");
+    const gate = nightly.jobs['realworld-gate'];
+    expect(gate.needs).toEqual(['realworld']);
+    expect(gate.if).toBe('always()');
+    expect(gate.steps.map((step) => step.run ?? '')).toContain('npm run bench:realworld -- merge --out realworld-results realworld-shards/*.json');
   });
 
   it('never queues two nightly runs on top of each other', () => {
