@@ -20,13 +20,24 @@ export interface PoolOptions {
   env: NodeJS.ProcessEnv;
 }
 
-/** Longest a single job may run whatever its size; a shard has to finish inside its CI job. */
-export const MAX_JOB_DEADLINE_MS = 1_200_000;
+/** Workers of a nightly shard: the 4-vCPU runner minus one (see `workers` in run.ts). */
+export const NIGHTLY_WORKERS = 3;
+/** Jobs that may hang at the longest deadline before they use up half of a shard's `timeout-minutes` (nightly.yml, job realworld). */
+export const TOLERATED_HUNG_JOBS = 10;
+const NIGHTLY_SHARD_TIMEOUT_MS = 60 * 60_000;
 
 /**
- * The deadline of a job on a file of `pages` pages: the base deadline plus the page budget the converter itself allows
- * each page of a scanned document (src/lib/conversions/ocr-work-budget.ts), so a long scan that is still being read
- * is not reported as hung while the converter's own limits (which answer with a typed 413) are what bound it.
+ * Longest a single job may run whatever its size. The pool runs `NIGHTLY_WORKERS` jobs at a time, so
+ * `TOLERATED_HUNG_JOBS` hung jobs hold it for TOLERATED_HUNG_JOBS x cap / NIGHTLY_WORKERS, and that is kept to half of
+ * the shard timeout (30 min -> 9 min per job): a shard that is cancelled loses its report, and with it the hangs.
+ */
+export const MAX_JOB_DEADLINE_MS = (NIGHTLY_SHARD_TIMEOUT_MS / 2 * NIGHTLY_WORKERS) / TOLERATED_HUNG_JOBS;
+
+/**
+ * The deadline of a job on a file that is read by OCR, of `pages` pages (0 for any other file): the base deadline plus
+ * the page budget the converter itself allows each page (src/lib/conversions/ocr-work-budget.ts), so a long scan that is
+ * still being read is not reported as hung while the converter's own limits (a typed 413) are what bound it. A file
+ * that is not read by OCR keeps the base deadline: its work is bounded by the parser deadline, not by pages.
  */
 export function scaledDeadlineMs(baseMs: number, pages: number): number {
   return Math.max(baseMs, Math.min(MAX_JOB_DEADLINE_MS, baseMs + pages * ocrPageBudgetMs()));
