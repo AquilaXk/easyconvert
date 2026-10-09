@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { measureLoudnessStage } from '../src/lib/conversions/media-audio-run';
-import { buildFfmpegArguments } from '../src/lib/conversions/media-ffmpeg-args';
+import { buildFfmpegArguments, resetHardwareAccelerationCache } from '../src/lib/conversions/media-ffmpeg-args';
 import { probeAudioChannels, probeAudioSampleRate } from '../src/lib/conversions/media-ffprobe';
 import { ConversionFailedError } from '../src/lib/types';
 import { convertWithNativeFfmpeg } from '../src/worker/engines';
@@ -235,6 +235,46 @@ describe('loudness is measured only when it is asked for', () => {
       measurement: { inputI: -23.5, inputTp: -6.1, inputLra: 4.2, inputThresh: -33.9, targetOffset: 0, sampleRate: 44_100 },
     });
   });
+});
+
+describe('an audio conversion asks which encoders exist and opens no hardware session', () => {
+  /**
+   * A sibling pair whose ffmpeg lists a hardware video encoder on top of the real list and logs every call. The
+   * Ubuntu build lists them all, so a hardware session probe would start another ffmpeg there; no host needs one
+   * to write audio.
+   */
+  function hardwareListingBinaries(label: string): { ffmpeg: string; calls: () => string[] } {
+    const dir = path.join(workDir, `hw-listing-${label}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(log, '');
+    const real = tool('ffmpeg');
+    const script = `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase " $* " in\n  *" -encoders "*) '${real}' "$@"; printf ' V....D h264_nvenc NVIDIA NVENC H.264 encoder\\n'; exit 0;;\nesac\nexec '${real}' "$@"\n`;
+    fs.writeFileSync(path.join(dir, 'ffmpeg'), script, { mode: 0o755 });
+    return {
+      ffmpeg: path.join(dir, 'ffmpeg'),
+      calls: () => fs.readFileSync(log, 'utf-8').split('\n').filter((line) => line !== ''),
+    };
+  }
+
+  oracleTest(
+    'lists the encoders once per binary and starts no ffmpeg that reads an input',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      resetHardwareAccelerationCache();
+      const input = writeWav('hw-listing.wav', 44_100, 2, 0.2);
+      const binaries = hardwareListingBinaries('opus');
+      for (let conversion = 0; conversion < 3; conversion++) {
+        const args = buildFfmpegArguments(input, path.join(workDir, `hw-listing-${conversion}.opus`), 'wav', 'opus', { audio: { bitrateK: 64 } }, binaries.ffmpeg);
+        expect(args).toContain('libopus');
+      }
+      const calls = binaries.calls();
+      expect(calls.filter((call) => call.includes('-encoders'))).toHaveLength(1);
+      expect(calls.filter((call) => /(^| )-i /.test(call))).toEqual([]);
+      resetHardwareAccelerationCache();
+    },
+    TEST_TIMEOUT_MS
+  );
 });
 
 describe('the engine starts one process for a WAVE to Opus or AAC conversion', () => {
