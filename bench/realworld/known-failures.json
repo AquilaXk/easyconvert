@@ -1,5 +1,1 @@
-[
-  { "pair": "jpg->avif", "verdict": "bad-output", "detail": "output bytes do not match avif", "issue": 635 },
-  { "pair": "png->avif", "verdict": "bad-output", "detail": "output bytes do not match avif", "issue": 635 },
-  { "pair": "gif->avif", "verdict": "bad-output", "detail": "output bytes do not match avif", "issue": 635 }
-]
+[]

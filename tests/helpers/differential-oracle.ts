@@ -63,6 +63,7 @@ export type ExternalOracleTool =
   | 'exiftool'
   | 'avifenc'
   | 'avifdec'
+  | 'heif-enc'
   | 'cwebp'
   | 'dwebp'
   | 'epubcheck';
