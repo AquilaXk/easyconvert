@@ -62,7 +62,7 @@ describe('ppt output', () => {
   for (const target of ['png', 'jpg'] as const) {
     oracleTest(
       `ppt -> ${target} is one decodable ${target} per slide, in slide order, carrying the slide text`,
-      ['soffice', 'unzip', 'identify', 'magick', 'tesseract'],
+      ['soffice', 'unzip', 'identify', 'tesseract'],
       async () => {
         const archive = await convert(authorWithReferenceSuite('ppt'), 'ppt', target);
         readZipWithUnzip(archive, (entries) => {
@@ -92,7 +92,7 @@ describe('xls output', () => {
   for (const target of ['png', 'jpg'] as const) {
     oracleTest(
       `xls -> ${target} is a decodable page image showing every cell of the sheet`,
-      ['soffice', 'identify', 'magick', 'tesseract'],
+      ['soffice', 'identify', 'tesseract'],
       async () => {
         const image = await convert(authorWithReferenceSuite('xls'), 'xls', target);
         expect(startsWithHex(image, target === 'png' ? PNG_MAGIC : JPEG_MAGIC)).toBe(true);
@@ -114,7 +114,7 @@ describe('doc output', () => {
   for (const target of ['png', 'jpg'] as const) {
     oracleTest(
       `doc -> ${target} is a decodable page image carrying the authored paragraphs`,
-      ['soffice', 'identify', 'magick', 'tesseract'],
+      ['soffice', 'identify', 'tesseract'],
       async () => {
         const image = await convert(authorWithReferenceSuite('doc'), 'doc', target);
         expect(startsWithHex(image, target === 'png' ? PNG_MAGIC : JPEG_MAGIC)).toBe(true);
@@ -160,7 +160,7 @@ describe('rtf output', () => {
   for (const target of ['png', 'jpg'] as const) {
     oracleTest(
       `rtf -> ${target} is a decodable page image carrying the authored paragraphs`,
-      ['soffice', 'identify', 'magick', 'tesseract'],
+      ['soffice', 'identify', 'tesseract'],
       async () => {
         const image = await convert(authorWithReferenceSuite('rtf'), 'rtf', target);
         expect(startsWithHex(image, target === 'png' ? PNG_MAGIC : JPEG_MAGIC)).toBe(true);

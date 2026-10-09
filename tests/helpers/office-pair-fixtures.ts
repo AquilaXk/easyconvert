@@ -123,7 +123,7 @@ export function pixelSpread(buffer: Buffer, extension: string): number {
 export function ocrText(buffer: Buffer, extension: string): string {
   return withTempFile(buffer, extension, (file) => {
     const enlarged = `${file}.large.png`;
-    run('magick', [file, '-resize', '300%', '-colorspace', 'Gray', '-threshold', '25%', enlarged]);
+    run(['magick', 'convert'], [file, '-resize', '300%', '-colorspace', 'Gray', '-threshold', '25%', enlarged]);
     return normalizeWhitespace(run('tesseract', [enlarged, 'stdout', '--psm', '6']));
   });
 }
