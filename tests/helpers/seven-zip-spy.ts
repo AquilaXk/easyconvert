@@ -13,6 +13,8 @@ export interface SevenZipSpy {
   calls(): string[][];
   /** Calls whose real 7-Zip process ran to its end (exit status written). */
   completedCalls(): number;
+  /** The process id of the wrapper shell of every call so far, in call order. */
+  pids(): number[];
   /**
    * Shell commands the wrapper runs just before the real 7-Zip starts, on every call until `reset`. A test uses them
    * to change a file between the moment the code under test read it and the moment 7-Zip opens it.
@@ -31,12 +33,14 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
   if (real === null) throw new Error('7z is required');
   const callLog = path.join(workDir, 'spy-calls.log');
   const doneLog = path.join(workDir, 'spy-done.log');
+  const pidLog = path.join(workDir, 'spy-pids.log');
   const script = path.join(workDir, 'spy-7z.sh');
   const hookFile = path.join(workDir, 'spy-before-run.sh');
   fs.writeFileSync(
     script,
     [
       '#!/bin/sh',
+      `echo $$ >> '${pidLog}'`,
       `{ for a in "$@"; do printf '%s\\n' "$a"; done; echo '${ARGUMENT_SEPARATOR}'; } >> '${callLog}'`,
       `[ -f '${hookFile}' ] && sh '${hookFile}'`,
       `'${real}' "$@"`,
@@ -64,6 +68,9 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
       }
       return calls;
     },
+    pids() {
+      return fs.existsSync(pidLog) ? fs.readFileSync(pidLog, 'utf8').split('\n').filter((line) => line !== '').map(Number) : [];
+    },
     completedCalls() {
       return fs.existsSync(doneLog) ? fs.readFileSync(doneLog, 'utf8').split('\n').filter((line) => line !== '').length : 0;
     },
@@ -74,6 +81,7 @@ export function createSevenZipSpy(workDir: string): SevenZipSpy {
       fs.rmSync(hookFile, { force: true });
       fs.rmSync(callLog, { force: true });
       fs.rmSync(doneLog, { force: true });
+      fs.rmSync(pidLog, { force: true });
     },
     install() {
       previous = process.env.P7ZIP_PATH;
