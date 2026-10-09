@@ -26,6 +26,8 @@ export const CICP_TRANSFER_PQ = 16;
 export const CICP_TRANSFER_HLG = 18;
 /** H.273 matrix coefficients: identity (RGB) and BT.2020 non-constant luminance. */
 export const CICP_MATRIX_IDENTITY = 0;
+/** BT.2020 non-constant luminance: the matrix of YCbCr that goes with BT.2020 primaries. */
+export const CICP_MATRIX_BT2020_NCL = 9;
 
 const HDR_TRANSFERS: ReadonlySet<number> = new Set([CICP_TRANSFER_PQ, CICP_TRANSFER_HLG]);
 

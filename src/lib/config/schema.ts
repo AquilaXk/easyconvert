@@ -1082,6 +1082,7 @@ const SCHEMA_ENTRIES = [
   // ---- tools ------------------------------------------------------------------------------------------
   toolPath('FFMPEG_PATH', 'Path of the ffmpeg executable; searched in the standard locations when unset.', BOTH),
   toolPath('FFPROBE_PATH', 'Path of the ffprobe executable.', BOTH),
+  toolPath('AVIFENC_PATH', 'Path of the libavif `avifenc` executable that encodes AVIF; the image library encodes when it is not installed.', BOTH),
   toolPath('P7ZIP_PATH', 'Path of the 7-Zip executable (`7zz`, `7z` or `7za`).', BOTH),
   toolPath('P7Z_PATH', 'Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.', BOTH),
   toolPath('ZIP_PATH', 'Path of the Info-ZIP `zip` executable.', BOTH),

@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent } from '../src/lib/conversions/image-content';
-import { avifBitdepthFor, avifEffortFor, avifChromaFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
+import { avifBitdepthFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -95,6 +95,44 @@ describe('encoder choices', () => {
   it('uses full chroma from JPEG quality 90 and from AVIF quality 80, and for graphic content at any quality', () => {
     expect([jpegChromaFor(89, 'photo'), jpegChromaFor(90, 'photo'), jpegChromaFor(40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
     expect([avifChromaFor(79, 'photo'), avifChromaFor(80, 'photo'), avifChromaFor(40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+  });
+
+  it('writes a grey AVIF as monochrome at any quality and content, and a colour one by the chroma rule', () => {
+    expect([avifLayoutFor(true, 30, 'photo'), avifLayoutFor(true, 95, 'graphic')]).toEqual(['4:0:0', '4:0:0']);
+    expect([avifLayoutFor(false, 79, 'photo'), avifLayoutFor(false, 80, 'photo'), avifLayoutFor(false, 40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+  });
+
+  it('maps the library effort onto the encoder speed preset the other way round: effort 3 is speed 6', () => {
+    expect([avifSpeedFor(0), avifSpeedFor(3), avifSpeedFor(5), avifSpeedFor(9)]).toEqual([9, 6, 4, 0]);
+  });
+
+  it('gives both AVIF encoders one policy: the image library cannot write monochrome and keeps the colour chroma rule for a grey picture', () => {
+    const policy = avifPolicyFor(40, 'photo', 0.5 * MEGAPIXEL, true, true, 'image-library');
+    expect(policy).toEqual({ encoder: 'image-library', quality: 40, effort: 3, bitdepth: 10, chroma: '4:2:0', layout: '4:0:0', tune: 'ssim' });
+    expect(avifLibraryOptionsOf(policy)).toEqual({ quality: 40, effort: 3, tune: 'ssim', chromaSubsampling: '4:2:0', bitdepth: 10 });
+    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, false, false, 'image-library')).toEqual({
+      encoder: 'image-library',
+      quality: 60,
+      effort: 5,
+      bitdepth: 8,
+      chroma: '4:4:4',
+      layout: '4:4:4',
+      tune: 'ssim',
+    });
+  });
+
+  it("gives the library encoder's tool its own effort ladder and tuning: speed 6 for graphics, the encoder's own tuning for them, ssim for photographs", () => {
+    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, true, true, 'library-cli')).toEqual({
+      encoder: 'library-cli',
+      quality: 60,
+      effort: 3,
+      bitdepth: 10,
+      chroma: '4:4:4',
+      layout: '4:0:0',
+      tune: undefined,
+    });
+    expect(avifPolicyFor(50, 'photo', 0.5 * MEGAPIXEL, false, false, 'library-cli')).toMatchObject({ effort: 3, layout: '4:2:0', tune: 'ssim' });
+    expect(avifEffortFor(30 * MEGAPIXEL, 'photo', 'library-cli')).toBe(avifEffortFor(30 * MEGAPIXEL, 'photo'));
   });
 
   it('searches longer for small graphic pictures and shorter for very large ones', () => {
@@ -219,9 +257,12 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(avifInfo(writeIn('translucent.avif', (await convertImage(translucent, 'avif', {}, 't.png', 'png')).buffer)).alpha).toMatch(/Present|premultiplied/i);
   });
 
-  it('keeps a 16-bit alpha channel whose only deviation is one step below full', async () => {
+  // The AVIF holds 10 bits: one 10-bit step below full is 64 of the 16-bit values, which an 8-bit reduction (>> 8)
+  // still reads as 255, so only a check at the picture's own depth keeps this channel.
+  const ALPHA_STEP_10_BIT = 64;
+  it('keeps a 16-bit alpha channel whose only deviation is one 10-bit step below full', async () => {
     const samples = new Uint16Array(WIDTH * HEIGHT * 4).fill(65_535);
-    samples[3] = 65_534;
+    samples[3] = 65_535 - ALPHA_STEP_10_BIT;
     const png16 = await sharp(samples, { raw: { width: WIDTH, height: HEIGHT, channels: 4 } }).toColourspace('rgb16').png().toBuffer();
     expect(await sharp(png16).metadata()).toMatchObject({ depth: 'ushort', hasAlpha: true });
     const out = (await convertImage(png16, 'avif', {}, 'a16.png', 'png')).buffer;

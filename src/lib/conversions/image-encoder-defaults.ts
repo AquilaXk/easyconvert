@@ -27,6 +27,11 @@ export const JPEG_FULL_CHROMA_QUALITY = 90;
 export const AVIF_FULL_CHROMA_QUALITY = 80;
 
 export type ChromaSubsampling = '4:4:4' | '4:2:0';
+/** Plane layout of an AVIF: monochrome (4:0:0, the AV1 Main profile has it) or one of the chroma subsamplings. */
+export type AvifPlaneLayout = ChromaSubsampling | '4:0:0';
+
+/** The encoders that can write an AVIF: the library encoder's command-line tool, or the image library. */
+export type AvifEncoder = 'library-cli' | 'image-library';
 
 /** libwebp effort (cwebp -m): 4 is the reference encoder's setting and the project's. */
 export const WEBP_EFFORT = 4;
@@ -61,6 +66,22 @@ export const AVIF_EFFORT_TIERS: readonly EffortTier[] = [
 ];
 /** Effort for pictures larger than the last tier. */
 export const AVIF_EFFORT_HUGE = 2;
+
+/**
+ * Effort ladder of the library encoder's tool. Its speed 6 (effort 3) is the AV1 encoder's own default preset and
+ * the reference the benchmark compares with: graphic content reaches the reference's BD-rate there (the image
+ * library needed effort 5 for the same), while effort 5 takes 4.5 times as long (a 1024 x 640 interface: 420 ms
+ * against 94 ms; lineart 406 ms against 86 ms) for 4 to 10% fewer bytes. Large pictures take the same step down
+ * as in the image library.
+ */
+export const AVIF_CLI_EFFORT_TIERS: readonly EffortTier[] = [{ maxPixels: 16 * MEGAPIXEL, photo: 3, graphic: 3 }];
+
+/**
+ * Metric the library encoder's tool optimises photographs for. For graphic content it keeps the encoder's own
+ * tuning for still images (`iq`, which tracks SSIMULACRA 2): `ssim` loses 2.9% PSNR BD-rate on grey line art against
+ * it at speed 6 and gains nothing on interfaces (0.1% SSIM), while on photographs it saves 4 to 10% of the bytes.
+ */
+export const AVIF_CLI_PHOTO_TUNE = 'ssim';
 /** Effort the other encoders that embed AVIF (vector, office) use: no content analysis is run there. */
 export const AVIF_EFFORT = 3;
 
@@ -74,11 +95,18 @@ export const AVIF_EFFORT = 3;
 export const AVIF_DEEP_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
 
-export function avifEffortFor(pixels: number, content: ContentClass): number {
-  for (const tier of AVIF_EFFORT_TIERS) {
+export function avifEffortFor(pixels: number, content: ContentClass, encoder: AvifEncoder = 'image-library'): number {
+  const tiers = encoder === 'library-cli' ? AVIF_CLI_EFFORT_TIERS : AVIF_EFFORT_TIERS;
+  for (const tier of tiers) {
     if (pixels <= tier.maxPixels) return content === 'graphic' ? tier.graphic : tier.photo;
   }
   return AVIF_EFFORT_HUGE;
+}
+
+/** The tuning metric to ask the encoder for, or undefined to keep the tool's own. */
+export function avifTuneFor(encoder: AvifEncoder, content: ContentClass): string | undefined {
+  if (encoder === 'image-library') return AVIF_TUNE;
+  return content === 'photo' ? AVIF_CLI_PHOTO_TUNE : undefined;
 }
 
 export function clampQuality(quality: number | undefined, fallback: number): number {
@@ -94,6 +122,25 @@ export function jpegChromaFor(quality: number, content: ContentClass): ChromaSub
 export function avifChromaFor(quality: number, content: ContentClass): ChromaSubsampling {
   if (quality >= AVIF_FULL_CHROMA_QUALITY) return '4:4:4';
   return content === 'graphic' ? '4:4:4' : '4:2:0';
+}
+
+/**
+ * Layout of the AVIF planes: a grey source is monochrome (a colour layout spends bytes on two chroma planes that
+ * carry nothing), anything else follows `avifChromaFor`.
+ */
+export function avifLayoutFor(grey: boolean, quality: number, content: ContentClass): AvifPlaneLayout {
+  return grey ? '4:0:0' : avifChromaFor(quality, content);
+}
+
+/**
+ * Effort is the image library's scale, 0 the fastest encode and 9 the slowest; the AV1 encoder's speed preset runs
+ * the other way (0 slowest), and the library maps one to the other as `speed = 9 - effort`. Effort 3 is speed 6.
+ */
+export const AVIF_EFFORT_SPEED_SUM = 9;
+
+/** The encoder speed preset (0 slowest) for an effort of the policy's ladder. */
+export function avifSpeedFor(effort: number): number {
+  return AVIF_EFFORT_SPEED_SUM - effort;
 }
 
 /**
@@ -128,18 +175,47 @@ export function avifBitdepthFor(deep: boolean): AvifBitdepth {
   return deep ? AVIF_DEEP_BITDEPTH : AVIF_STANDARD_BITDEPTH;
 }
 
-export function avifOptionsFor(
+/** Every choice the AVIF encoders share, whichever of them runs: the library encoder and the image library read the same policy. */
+export interface AvifPolicy {
+  encoder: AvifEncoder;
+  quality: number;
+  effort: number;
+  bitdepth: AvifBitdepth;
+  /** Chroma subsampling of a colour picture. */
+  chroma: ChromaSubsampling;
+  /** Plane layout actually written: monochrome for a grey picture, otherwise `chroma`. */
+  layout: AvifPlaneLayout;
+  /** Tuning metric, or undefined for the encoder's own. */
+  tune: string | undefined;
+}
+
+export function avifPolicyFor(
   requestedQuality: number | undefined,
   content: ContentClass,
   pixels: number,
-  bitdepth: AvifBitdepth
-): AvifOptions {
+  deep: boolean,
+  grey: boolean,
+  encoder: AvifEncoder
+): AvifPolicy {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.avif);
   return {
+    encoder,
     quality,
-    effort: avifEffortFor(pixels, content),
+    effort: avifEffortFor(pixels, content, encoder),
+    bitdepth: avifBitdepthFor(deep),
+    chroma: avifChromaFor(quality, content),
+    layout: avifLayoutFor(grey, quality, content),
+    tune: avifTuneFor(encoder, content),
+  };
+}
+
+/** The image library's options for the policy; it cannot write monochrome, so a grey picture is encoded as colour there. */
+export function avifLibraryOptionsOf(policy: AvifPolicy): AvifOptions {
+  return {
+    quality: policy.quality,
+    effort: policy.effort,
     tune: AVIF_TUNE,
-    chromaSubsampling: avifChromaFor(quality, content),
-    bitdepth,
+    chromaSubsampling: policy.chroma,
+    bitdepth: policy.bitdepth,
   };
 }

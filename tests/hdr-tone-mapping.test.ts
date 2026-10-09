@@ -162,7 +162,8 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     expect(info).toMatch(/Color Primaries\s*:\s*9\b/);
     expect(info).toMatch(/Transfer Char\.\s*:\s*16\b/);
     expect(info).toMatch(/Bit Depth\s*:\s*10/);
-    expect(result.metadata).toBeUndefined();
+    // no tone mapping happened, so the only fact reported is which AVIF encoder wrote the file
+    expect(result.metadata).toEqual({ avifEncoder: expect.stringMatching(/^(library-cli|image-library)$/) });
     // grey row, 1000 nits at the right edge: PQ(1000) in 10-bit codes
     const decodedPng = file('hdr.png', execFileSync(requireOracleTool('avifdec'), ['-d', '16', target, path.join(work, 'hdr-out.png')]) && readFileSync(path.join(work, 'hdr-out.png')));
     const codes = samples16(readFileSync(decodedPng));
