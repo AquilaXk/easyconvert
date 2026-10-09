@@ -17,3 +17,15 @@ the package is installed).
 
 The `SHA-256` column is checked by `tests/document-fixtures.test.ts`, so a changed file fails the suite. Regenerating
 with another Pillow release can change the picture bytes; update the hashes in the same commit.
+
+## EPUB input
+
+`book.epub` is written by `tests/helpers/python/author_epub.py` with ebooklib (a package writer that shares nothing with
+the converter) from content listed in that script: two chapters with a heading, a link, a nested ordered and bulleted
+list, a picture (the PNG of `rich-structure.docx`) and a table with a horizontal and a vertical merge. The benchmark
+(`bench/families/document.ts`) and `tests/epub-structure.test.ts` hold the structure written by hand for it. ebooklib
+stamps the build time into the package, so this file is committed once rather than regenerated on every run.
+
+| File | Holds | SHA-256 |
+| --- | --- | --- |
+| `book.epub` | The book described above (ebooklib, EPUB 3, language `en`) | 3dfc7f653ca348f79fa5df95f1f4d8768c9ade0d434c962f9f5d7cbc24711d5f |

@@ -4,6 +4,9 @@ import path from 'node:path';
 
 export const REPO_ROOT = path.resolve(__dirname, '..');
 export const CORPUS_DIR = path.join(__dirname, 'corpus');
+/** Authored documents the document family converts (their provenance and hand-written structure live with the tests). */
+export const DOCUMENT_FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'document');
+export const HWP_FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'hwp');
 export const BASELINE_PATH = path.join(__dirname, 'baseline.json');
 export const RESULTS_DIR = path.join(REPO_ROOT, 'bench-results');
 

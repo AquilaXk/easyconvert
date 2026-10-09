@@ -32,6 +32,9 @@ export const SPEC = {
   losslessExact: { metric: 'lossless_exact', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   cer: { metric: 'cer', unit: '%', direction: 'lower', kind: 'quality', tolerance: tol(0.75, 0) },
   wordF1: { metric: 'word_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  structurePrecision: { metric: 'structure_precision', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  structureRecall: { metric: 'structure_recall', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
+  epubcheckErrors: { metric: 'epubcheck_errors', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
   throughput: { metric: 'throughput', unit: 'MB/s', direction: 'higher', kind: 'throughput', tolerance: tol(0, 0.35) },
 } as const satisfies Record<string, MetricSpec>;

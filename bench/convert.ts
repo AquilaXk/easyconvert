@@ -21,3 +21,19 @@ export async function convertWithProject(
   const result = await dispatchConversion(input, sourceFormat, targetFormat, options, filename);
   return { buffer: result.buffer, engineUsed: result.engineUsed };
 }
+
+/**
+ * Our in-process engine called directly. The dispatcher prefers the native office engine when it is installed, which
+ * would make a document comparison measure the reference tool against itself; the document family measures what
+ * this project's own readers and writers produce, so it calls the in-process entry point.
+ */
+export async function convertInProcess(
+  input: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: ConversionOptions,
+  filename: string
+): Promise<Buffer> {
+  const { convertFile } = await import('../src/lib/conversions');
+  return (await convertFile(input, sourceFormat, targetFormat, options, filename)).buffer;
+}

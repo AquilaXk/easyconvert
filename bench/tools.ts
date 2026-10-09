@@ -26,6 +26,9 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   pdftotext: ['pdftotext'],
   tesseract: ['tesseract'],
   soffice: ['soffice', 'libreoffice'],
+  pdfimages: ['pdfimages'],
+  epubcheck: ['epubcheck'],
+  python3: ['python3'],
   ssimulacra2: ['ssimulacra2', 'ssimulacra2_rs'],
 };
 
@@ -45,6 +48,8 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   pdftotext: ['-v'],
   tesseract: ['--version'],
   soffice: ['--version'],
+  pdfimages: ['-v'],
+  epubcheck: ['--version'],
   ssimulacra2: ['--version'],
 };
 
@@ -53,6 +58,8 @@ const VERSION_LINE_LIMIT = 200;
 
 export const TESSDATA_PSEUDO_TOOL = 'tessdata-eng';
 export const LIBVMAF_PSEUDO_TOOL = 'libvmaf';
+/** Resolves to python3 when the olefile package (OLE2 container access) imports in isolated mode. */
+export const OLEFILE_PSEUDO_TOOL = 'python3-olefile';
 
 const TESSDATA_DIRS = [
   ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
@@ -91,6 +98,9 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
     if (tool === TESSDATA_PSEUDO_TOOL) {
       const dirs = env.BENCH_TOOL_DIRS === undefined ? TESSDATA_DIRS : [];
       found = dirs.find((dir) => fs.existsSync(path.join(dir, 'eng.traineddata'))) ?? null;
+    } else if (tool === OLEFILE_PSEUDO_TOOL) {
+      const python = defaultResolver(env)('python3');
+      found = python && pythonImports(python, 'olefile') ? python : null;
     } else if (tool === LIBVMAF_PSEUDO_TOOL) {
       const ffmpeg = defaultResolver(env)('ffmpeg');
       found = ffmpeg && ffmpegHasFilter(ffmpeg, 'libvmaf') ? ffmpeg : null;
@@ -107,6 +117,12 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
     cache.set(tool, found);
     return found;
   };
+}
+
+/** Whether `python -I -c "import <module>"` succeeds. */
+export function pythonImports(python: string, moduleName: string): boolean {
+  const run = spawnSync(python, ['-I', '-c', `import ${moduleName}`], { timeout: VERSION_TIMEOUT_MS });
+  return run.status === 0;
 }
 
 /** Whether `ffmpeg -filters` lists `filter`. */

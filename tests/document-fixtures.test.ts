@@ -17,10 +17,10 @@ interface DocxFacts {
 }
 
 describe('fixture provenance', () => {
-  it('every .docx fixture is the file recorded in PROVENANCE.md', () => {
+  it('every .docx and .epub fixture is the file recorded in PROVENANCE.md', () => {
     const provenance = fs.readFileSync(path.join(DOCUMENT_FIXTURES, 'PROVENANCE.md'), 'utf-8');
-    const recorded = new Map([...provenance.matchAll(/^\| `([^`]+\.docx)` \|.*\| ([0-9a-f]{64}) \|$/gm)].map((match) => [match[1], match[2]]));
-    const present = fs.readdirSync(DOCUMENT_FIXTURES).filter((name) => name.endsWith('.docx')).sort();
+    const recorded = new Map([...provenance.matchAll(/^\| `([^`]+\.(?:docx|epub))` \|.*\| ([0-9a-f]{64}) \|$/gm)].map((match) => [match[1], match[2]]));
+    const present = fs.readdirSync(DOCUMENT_FIXTURES).filter((name) => /\.(?:docx|epub)$/.test(name)).sort();
     expect([...recorded.keys()].sort()).toEqual(present);
     for (const name of present) expect(sha256(fixtureBytes(name)), name).toBe(recorded.get(name));
   });
