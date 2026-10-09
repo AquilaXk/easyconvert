@@ -22,8 +22,8 @@ import {
   DANGEROUS_SYSCALL_FILTER_LIST,
   NETWORK_SYSCALL_FILTER_LIST,
   resolveSandboxedCommand,
-  SandboxedProcessError,
 } from '../src/lib/security/process-sandbox';
+import { SandboxUnavailableError } from '../src/lib/types';
 
 describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () => {
   describe('1. Cooperative Event Loop & Starvation Prevention', () => {
@@ -282,7 +282,7 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
             networkIsolated: true,
             strictIsolation: true,
           });
-        }).toThrow(SandboxedProcessError);
+        }).toThrow(SandboxUnavailableError);
       } finally {
         Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
       }

@@ -77,6 +77,7 @@ import {
 import {
   executeSandboxedBinary,
   resolveSandboxedCommand,
+  rethrowSandboxUnavailable,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
 import {
@@ -2382,6 +2383,8 @@ export function convertWithNative7z(
       ...(skippedLinks.length > 0 ? { skippedLinks } : {}),
     };
   } catch (err) {
+    // A host that cannot sandbox 7-Zip refuses the request: the in-process engines are not a substitute for it.
+    rethrowSandboxUnavailable(err);
     // A policy violation or bad password must surface; an archive 7-Zip cannot read may still be
     // handled by the in-process engines, which the null return hands the conversion to.
     if (err instanceof ConversionFailedError && !(err instanceof UnreadableArchiveError) && !(err instanceof EngineUnavailableError)) {

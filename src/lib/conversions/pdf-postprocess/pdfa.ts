@@ -14,6 +14,7 @@ import {
 } from '../../types';
 import {
   resolveSandboxedCommand,
+  rethrowSandboxUnavailable,
   getSanitizedEnvironment,
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -198,6 +199,7 @@ async function runVerapdf(
     });
     return result.stdout.toString('utf-8');
   } catch (err) {
+    rethrowSandboxUnavailable(err);
     if (err instanceof SandboxedProcessError && err.stdout) return err.stdout;
     console.error('[pdfa] veraPDF failed without a report:', err instanceof Error ? err.message : err);
     if (isStartFailure(err)) {

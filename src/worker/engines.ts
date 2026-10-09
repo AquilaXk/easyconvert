@@ -62,7 +62,13 @@ import {
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
-import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
+import {
+  executeSandboxedBinary,
+  rethrowSandboxUnavailable,
+  SandboxedMemoryLimitError,
+  SandboxedProcessError,
+  SandboxedBufferLimitError,
+} from './sandbox';
 import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
@@ -464,6 +470,8 @@ export async function convertWithHeadlessOffice(
         return poolResult;
       }
     } catch (poolErr) {
+      // The standalone run below needs the same sandbox the pool just failed to get.
+      rethrowSandboxUnavailable(poolErr);
       if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError) {
         throw poolErr;
       }
@@ -529,6 +537,8 @@ export async function convertWithHeadlessOffice(
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -723,6 +733,8 @@ export async function convertWithNativeFfmpeg(
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -804,6 +816,7 @@ async function assertCreatedArchiveEncrypted(
     });
     outcome = { listing: result.stdout.toString('utf-8') };
   } catch (err) {
+    rethrowSandboxUnavailable(err);
     outcome = { failureOutput: archiveFailureStderr(err) };
   }
   assertListingShowsEncryption(format, outcome);
@@ -1118,6 +1131,7 @@ async function countPagesOfReadablePdf(
         if (pages > 0) return pages;
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       const passwordError = toPopplerPasswordError(err);
       if (passwordError) {
         throw passwordError;
@@ -1231,6 +1245,8 @@ async function convertPdfToTextWithPoppler(
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -1428,6 +1444,8 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -2295,6 +2313,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (isNativeTextPdf && !options.signal?.aborted) {
         // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
         const message = err instanceof Error ? err.message : String(err);
@@ -2356,6 +2375,7 @@ export async function executeWorkerConversion(
         }
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (isPasswordHandlingUnavailable(err, options.password)) {
         throw err;
       }
@@ -2403,6 +2423,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-postscript: ${err.message}`);
         fallbackReason = err.message;
@@ -2425,6 +2446,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-raw: ${err.message}`);
         fallbackReason = err.message;
@@ -2455,6 +2477,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-ffmpeg: ${err.message}`);
         fallbackReason = err.message;
@@ -2488,6 +2511,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (isPasswordHandlingUnavailable(err, options.password)) {
         // Only qpdf can open the document; falling back would convert an unreadable file.
         throw err;
@@ -2513,6 +2537,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-7z: ${err.message}`);
         fallbackReason = err.message;

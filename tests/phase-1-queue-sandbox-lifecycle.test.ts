@@ -19,8 +19,8 @@ import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
   buildUnshareIsolationArgs,
-  SandboxedProcessError,
 } from '../src/lib/security/process-sandbox';
+import { SandboxUnavailableError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { readUnshareOptionMeanings } from './helpers/unshare-help';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -556,7 +556,7 @@ describe('Phase 1: Distributed BullMQ Queue Decoupling & Container Airgap Remedi
             networkIsolated: true,
             strictIsolation: true,
           });
-        }).toThrow(SandboxedProcessError);
+        }).toThrow(SandboxUnavailableError);
 
         expect(() => {
           resolveSandboxedCommand('/bin/echo', ['test'], {
