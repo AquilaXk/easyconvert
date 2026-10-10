@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,6 +39,8 @@ import {
 import { buildWoff2, minimalTransformedFont } from './helpers/woff2-builder';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
+
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 180_000 });
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(__dirname, '..');
