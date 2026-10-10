@@ -76,20 +76,27 @@ function everySampleIs(samples: Uint8Array | Uint16Array, first: number, stride:
  * The pipeline over the decoded pixels of `pipeline` when its source is a plain PNG, or null when it is not (the caller
  * keeps `pipeline`). The decode runs under the input pixel limit the pipeline was opened with; a decode failure
  * reaches the caller as the library's own error, as it would from the first read of the picture.
+ *
+ * An encoder that writes 8 bits per sample (`eightBit`) is given a 16-bit colour picture reduced to 8 bits by the decode
+ * itself, the high byte of every sample, which is what the encoder would take from the 16-bit samples: the samples held are
+ * half as many bytes, the alpha check reads bytes, and the encoder has no reduction left to do. A grey picture keeps its
+ * 16 bits (the library's grey reduction is not the high byte, and drops a grey picture's alpha band).
  */
-export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DECODED_SOURCE_MAX_BYTES): Promise<DecodedPng | null> {
+export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DECODED_SOURCE_MAX_BYTES, eightBit = false): Promise<DecodedPng | null> {
   const meta = await pipeline.metadata();
   if (!isPlainPng(meta, maxBytes)) return null;
   const deep = meta.depth === SIXTEEN_BIT_DEPTH;
+  const narrow = deep && eightBit && meta.space === 'rgb16';
   // Written in the colourspace the PNG is in: left to itself the raw output turns a grey picture into three colour bands.
   const { data, info } = await pipeline
     .clone()
-    .toColourspace(meta.space)
-    .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
+    .toColourspace(narrow ? 'srgb' : meta.space)
+    .raw({ depth: deep && !narrow ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
     .toBuffer({ resolveWithObject: true });
   // The library takes the sample depth of a raw input from the typed array that holds it.
-  const samples = deep ? samples16Of(data) : data;
-  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? everySampleIs(samples, info.channels - 1, info.channels, deep ? MAX_16_BIT_SAMPLE : MAX_8_BIT_SAMPLE) : undefined;
+  const wide = deep && !narrow;
+  const samples = wide ? samples16Of(data) : data;
+  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? everySampleIs(samples, info.channels - 1, info.channels, wide ? MAX_16_BIT_SAMPLE : MAX_8_BIT_SAMPLE) : undefined;
   return {
     pipeline: sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() }),
     alphaIsOpaque,

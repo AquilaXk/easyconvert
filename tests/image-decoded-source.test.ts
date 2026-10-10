@@ -100,6 +100,39 @@ describe('decodePlainPngOnce', () => {
     }
   });
 
+  it.each([
+    ['16-bit colour', 3],
+    ['16-bit colour with alpha', 4],
+  ] as const)('%s: decoded for an 8-bit encoder, the pipeline and the raster hold the high byte of every sample', async (_name, channels) => {
+    const source = await png(channels, true, (image) => image.toColourspace('rgb16'));
+    const wide = (await decodePlainPngOnce(sharp(source))) as DecodedPng;
+    const narrow = (await decodePlainPngOnce(sharp(source), undefined, true)) as DecodedPng;
+    expect(wide.raster.samples).toBeInstanceOf(Uint16Array);
+    expect(narrow.raster.samples).toBeInstanceOf(Uint8Array);
+    expect(narrow.raster.samples).not.toBeInstanceOf(Uint16Array);
+    expect([narrow.raster.width, narrow.raster.height, narrow.raster.channels]).toEqual([wide.raster.width, wide.raster.height, wide.raster.channels]);
+    expect(Array.from(narrow.raster.samples)).toEqual(Array.from(wide.raster.samples, (sample) => sample >> 8));
+    const meta = await narrow.pipeline.metadata();
+    expect([meta.space, meta.depth, meta.channels]).toEqual(['srgb', 'uchar', channels]);
+    expect(narrow.alphaIsOpaque).toBe(channels === 4 ? false : undefined);
+  });
+
+  it('reads the alpha plane of a picture decoded to 8 bits at 8 bits: a sample whose high byte is full is opaque', async () => {
+    const samples = new Uint16Array(WIDTH * HEIGHT * 4).fill(0x8000);
+    for (let at = 3; at < samples.length; at += 4) samples[at] = 0xff80;
+    const source = await sharp(samples, { raw: { width: WIDTH, height: HEIGHT, channels: 4 } }).toColourspace('rgb16').png().toBuffer();
+    expect((await decodePlainPngOnce(sharp(source)))?.alphaIsOpaque).toBe(false);
+    expect((await decodePlainPngOnce(sharp(source), undefined, true))?.alphaIsOpaque).toBe(true);
+  });
+
+  it.each(PLAIN_PNGS.filter(([name]) => !name.startsWith('16-bit colour')))('%s: is decoded as it is whatever the encoder', async (_name, make) => {
+    const source = await make();
+    const wide = (await decodePlainPngOnce(sharp(source))) as DecodedPng;
+    const narrow = (await decodePlainPngOnce(sharp(source), undefined, true)) as DecodedPng;
+    expect(narrow.raster.samples.constructor).toBe(wide.raster.samples.constructor);
+    expect(Array.from(narrow.raster.samples)).toEqual(Array.from(wide.raster.samples));
+  });
+
   it('leaves a JPEG, which the decoder can read at a reduced size, and a PNG over the memory cap alone', async () => {
     const jpeg = await sharp(await png(3, false)).jpeg().toBuffer();
     expect(await decodePlainPngOnce(sharp(jpeg))).toBeNull();
@@ -140,6 +173,38 @@ describe('convertImage on a plain PNG', () => {
     expect((await pipelineRuns(await png(4, false), target)).pngReads).toBe(1);
   });
 
+  /** Sample depths asked of the raw output by a conversion: the decode of the PNG is the first raw read, and the WebP path makes none. */
+  async function rawDepths(source: Buffer, target: string): Promise<unknown[]> {
+    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
+    const raw = proto.raw;
+    const depths: unknown[] = [];
+    vi.spyOn(proto, 'raw').mockImplementation(function (this: Sharp, ...args: unknown[]) {
+      depths.push((args[0] as { depth?: unknown } | undefined)?.depth);
+      return (raw as (...a: unknown[]) => Sharp).apply(this, args);
+    } as never);
+    try {
+      await convertImage(source, target, { quality: 70 }, 'plain.png', 'png');
+    } finally {
+      vi.restoreAllMocks();
+    }
+    return depths;
+  }
+
+  it.each([
+    ['jpg', 'uchar'],
+    ['jpeg', 'uchar'],
+    ['avif', 'ushort'],
+  ] as const)('decodes a 16-bit colour PNG once at %s samples for %s: only an 8-bit encoder takes the high byte', async (target, depth) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    const depths = await rawDepths(source, target);
+    expect(depths[0]).toBe(depth);
+  });
+
+  it('decodes a 16-bit colour PNG for WebP without a raw read: the encoder reads the PNG itself', async () => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    expect(await rawDepths(source, 'webp')).toEqual([]);
+  });
+
   it.each([
     ['jpg', (image: Sharp, content: ContentClass) => image.pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) }).jpeg(jpegOptionsFor(70, content))],
     ['webp', (image: Sharp) => image.webp(webpOptionsFor(70))],
@@ -151,10 +216,22 @@ describe('convertImage on a plain PNG', () => {
     expect(converted.equals(direct)).toBe(true);
   });
 
-  it('takes whether the alpha plane is opaque from the decoded pixels, and WebP needs no content class: a WebP is the decode and the encode, nothing more', async () => {
+  it('takes whether the alpha plane is opaque from the decoded pixels for JPEG, and hands a PNG to the WebP encoder as it is: the encoder drops an opaque alpha plane itself', async () => {
     const opaque = await png(4, false, (image) => image, true);
-    expect((await pipelineRuns(opaque, 'webp')).all).toBe(2);
+    expect((await pipelineRuns(opaque, 'webp')).all).toBe(1);
     expect((await pipelineRuns(opaque, 'jpg')).all).toBe(2);
+  });
+
+  it.each([
+    ['8-bit colour', () => png(4, false, (image) => image, true)],
+    ['16-bit colour', () => png(4, true, (image) => image.toColourspace('rgb16'), true)],
+    ['8-bit grey', () => png(2, false, (image) => image, true)],
+    ['16-bit grey', () => png(2, true, (image) => image.toColourspace('grey16'), true)],
+  ] as const)('writes a WebP of a PNG with an opaque alpha plane that is the WebP of the PNG without it (%s)', async (_name, make) => {
+    const source = await make();
+    const converted = (await convertImage(source, 'webp', { quality: 70 }, 'opaque.png', 'png')).buffer;
+    const withoutAlpha = await sharp(source).removeAlpha().webp(webpOptionsFor(70)).toBuffer();
+    expect(converted.equals(withoutAlpha)).toBe(true);
   });
 
   it('drops an alpha plane that is opaque and keeps one that is not, at 8 and 16 bits and with a resize', async () => {
