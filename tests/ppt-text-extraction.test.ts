@@ -261,21 +261,40 @@ describe('PowerPoint 97-2003 symbol-font characters', () => {
     expect(texts(readPptSlides(ppt))).toEqual([['\u2713 Done']]);
   });
 
-  it('keeps private-use characters of fonts that are not symbol fonts, so that no glyph is invented for them', () => {
+  it('maps the space of every symbol font to a space', () => {
+    for (const font of ['Symbol', 'Wingdings', 'Wingdings 2', 'Wingdings 3', 'Webdings']) {
+      const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: 'a\uF020b', fontRuns: [{ count: 1 }, { count: 1, symbolFont: font }, { count: 1 }] }] }] });
+      expect(texts(readPptSlides(ppt))).toEqual([['a b']]);
+    }
+  });
+
+  it('replaces a private-use character with no known counterpart by U+FFFD and reports it once per font and code', () => {
     const ppt = buildPptBinary({
-      slides: [{ shapes: [{ chars: '\uF0FC\uF0FC', fontRuns: [{ count: 1, font: 'Arial' }, { count: 1, symbolFont: 'Math1' }] }] }],
+      slides: [
+        {
+          shapes: [
+            {
+              chars: 'a\uF073\uF073\uF0FF\uF0FC',
+              fontRuns: [{ count: 1 }, { count: 2, symbolFont: 'Mathematica1' }, { count: 1, symbolFont: 'Wingdings' }, { count: 1, font: 'Arial' }],
+            },
+          ],
+        },
+      ],
     });
-    expect(texts(readPptSlides(ppt))).toEqual([['\uF0FC\uF0FC']]);
+    const warnings: string[] = [];
+    expect(texts(readPptSlides(ppt, warnings))).toEqual([['a\uFFFD\uFFFD\uFFFD\uFFFD']]);
+    expect(warnings).toEqual([
+      'Replaced U+F073 of the font "Mathematica1" with U+FFFD: no Unicode counterpart is known.',
+      'Replaced U+F0FF of the font "Wingdings" with U+FFFD: no Unicode counterpart is known.',
+      'Replaced U+F0FC of the font "Arial" with U+FFFD: no Unicode counterpart is known.',
+    ]);
   });
 
-  it('keeps a private-use character whose symbol font has no counterpart for its code', () => {
-    const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: '\uF0FF', fontRuns: [{ count: 1, symbolFont: 'Wingdings' }] }] }] });
-    expect(texts(readPptSlides(ppt))).toEqual([['\uF0FF']]);
-  });
-
-  it('keeps private-use characters when the block has no character formatting', () => {
+  it('replaces private-use characters of a block without character formatting, naming no font', () => {
     const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: 'Bullet \uF0FC' }] }] });
-    expect(texts(readPptSlides(ppt))).toEqual([['Bullet \uF0FC']]);
+    const warnings: string[] = [];
+    expect(texts(readPptSlides(ppt, warnings))).toEqual([['Bullet \uFFFD']]);
+    expect(warnings).toEqual(['Replaced U+F0FC with U+FFFD: no Unicode counterpart is known.']);
   });
 
   oracleTest('writes the mapped characters into a PDF whose text and embedded fonts a separate PDF reader confirms', ['pdftotext', 'pdffonts'], async () => {
@@ -287,11 +306,14 @@ describe('PowerPoint 97-2003 symbol-font characters', () => {
     expect(fonts.every((font) => font.emb)).toBe(true);
   });
 
-  it('still refuses a private-use character of a font it has no table for, with a typed 400 error', async () => {
+  oracleTest('converts a deck with a math-font character to a PDF that shows U+FFFD and reports the replacement', ['pdftotext'], async () => {
     const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: 'Sum \uF073', fontRuns: [{ count: 4, font: 'Arial' }, { count: 1, symbolFont: 'Mathematica1' }] }] }] });
-    const run = convertFile(ppt, 'ppt', 'pdf', {}, 'math.ppt');
-    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(run).rejects.toMatchObject({ message: expect.stringContaining('U+F073') });
+    const result = await convertFile(ppt, 'ppt', 'pdf', {}, 'math.ppt');
+    expect(normalizeWhitespace(extractTextWithExternalPdftotext(result.buffer) ?? '')).toBe('Sum \uFFFD');
+    expect(result.metadata?.warnings).toEqual(['Replaced U+F073 of the font "Mathematica1" with U+FFFD: no Unicode counterpart is known.']);
+    const txt = await convertFile(ppt, 'ppt', 'txt', {}, 'math.ppt');
+    expect(txt.buffer.toString('utf-8')).toBe('Sum \uFFFD');
+    expect(txt.metadata?.warnings).toHaveLength(1);
   });
 });
 

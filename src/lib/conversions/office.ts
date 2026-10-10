@@ -6865,7 +6865,9 @@ async function convertPptSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const slides = readPptSlides(inputBuffer);
+  const warnings: string[] = [];
+  const slides = readPptSlides(inputBuffer, warnings);
+  const withWarnings = (result: ConversionResult): ConversionResult => (warnings.length > 0 ? { ...result, metadata: { ...result.metadata, warnings } } : result);
 
   if (tgt === 'txt') {
     const text = slides
@@ -6873,18 +6875,18 @@ async function convertPptSource(
       .map((slide) => slide.texts.join('\n'))
       .join('\n\n');
     const buffer = Buffer.from(text, 'utf-8');
-    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+    return withWarnings({ buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length });
   }
 
   if (tgt === 'html') {
     const html = generateHtmlFromSlides(slides, baseName);
     const buffer = Buffer.from(html, 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    return withWarnings({ buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length });
   }
 
   if (tgt === 'pdf') {
     const pdfBuffer = await generatePdfFromSlides(slides, options, baseName);
-    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+    return withWarnings({ buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length });
   }
 
   if (tgt === 'pptx') {
@@ -6893,12 +6895,12 @@ async function convertPptSource(
       .map((slide) => `# Slide ${slide.number}\n\n` + slide.texts.join('\n'))
       .join('\n\n---\n\n');
     const pptxBuffer = await generatePptxFromText(text, 'ppt', options, baseName);
-    return {
+    return withWarnings({
       buffer: pptxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       filename: `${baseName}.pptx`,
       size: pptxBuffer.length,
-    };
+    });
   }
 
   throw unconvertibleOfficeTarget('ppt', tgt);

@@ -80,6 +80,10 @@ const FIELD_PLACEHOLDER = '*';
 const FIRST_PRINTABLE = 0x20;
 /** A FontEntityAtom starts with the face name: 32 UTF-16 code units, zero padded. */
 const FONT_FACE_NAME_BYTES = 64;
+const REPLACEMENT_CHARACTER = '\uFFFD';
+/** Most replaced symbol characters listed one by one; the rest are counted in a final line. */
+export const PPT_MAX_REPORTED_REPLACEMENTS = 50;
+const HEX_RADIX = 16;
 
 interface RecordHeader {
   offset: number;
@@ -277,6 +281,23 @@ function readFontNames(reader: CheckedReader, document: RecordHeader, budget: Re
   return names;
 }
 
+/** The fonts of a presentation and the symbol characters no table could map, in the order they were met. */
+interface TextContext {
+  readonly fontNames: readonly string[];
+  readonly replaced: Map<string, string>;
+  replacedTotal: number;
+}
+
+function recordReplacement(context: TextContext, font: string | undefined, code: number): void {
+  const key = `${font ?? ''}|${code}`;
+  if (context.replaced.has(key)) return;
+  context.replacedTotal++;
+  if (context.replaced.size >= PPT_MAX_REPORTED_REPLACEMENTS) return;
+  const hex = `U+${code.toString(HEX_RADIX).toUpperCase()}`;
+  const source = font === undefined ? hex : `${hex} of the font "${font}"`;
+  context.replaced.set(key, `Replaced ${source} with U+FFFD: no Unicode counterpart is known.`);
+}
+
 /** The symbol font of the character at `index`: the run's symbol typeface, else its typeface, else none. */
 function symbolFontAt(block: TextBlock, index: number, fontNames: readonly string[]): string | undefined {
   const run = block.fontRuns?.find((candidate) => index >= candidate.start && index < candidate.end);
@@ -285,7 +306,7 @@ function symbolFontAt(block: TextBlock, index: number, fontNames: readonly strin
 }
 
 /** Splits a text block into paragraphs: field placeholders drop out, paragraph and line breaks split. */
-function paragraphsOf(block: TextBlock, fontNames: readonly string[]): string[] {
+function paragraphsOf(block: TextBlock, context: TextContext): string[] {
   const skip = new Set(block.metaPositions);
   const paragraphs: string[] = [];
   let line = '';
@@ -297,8 +318,10 @@ function paragraphsOf(block: TextBlock, fontNames: readonly string[]): string[] 
       paragraphs.push(line);
       line = '';
     } else if (isSymbolFontPrivateUse(code)) {
-      const font = symbolFontAt(block, i, fontNames);
-      line += (font === undefined ? undefined : mapSymbolFontCharacter(font, code)) ?? ch;
+      const font = symbolFontAt(block, i, context.fontNames);
+      const mapped = font === undefined ? undefined : mapSymbolFontCharacter(font, code);
+      if (mapped === undefined) recordReplacement(context, font, code);
+      line += mapped ?? REPLACEMENT_CHARACTER;
     } else if (code === CH_TAB || code >= FIRST_PRINTABLE) {
       line += ch;
     }
@@ -362,7 +385,7 @@ function readSlideTexts(
   reader: CheckedReader,
   slide: RecordHeader,
   entry: SlideEntry,
-  fontNames: readonly string[],
+  context: TextContext,
   budget: RecordBudget
 ): string[] {
   const texts: string[] = [];
@@ -377,7 +400,7 @@ function readSlideTexts(
         const atoms = readChildren(reader, child, budget);
         const inline = readTextBlock(reader, atoms);
         if (inline) {
-          texts.push(...paragraphsOf(inline, fontNames));
+          texts.push(...paragraphsOf(inline, context));
           continue;
         }
         const reference = atoms.find((atom) => atom.recType === RT_OUTLINE_TEXT_REF_ATOM);
@@ -388,7 +411,7 @@ function readSlideTexts(
           }
           referenced.add(index);
           const outline = entry.blocks[index];
-          if (outline) texts.push(...paragraphsOf(outline, fontNames));
+          if (outline) texts.push(...paragraphsOf(outline, context));
         }
       } else {
         visit(child, depth + 1);
@@ -398,16 +421,17 @@ function readSlideTexts(
   visit(slide, 0);
   // Outline text that no shape refers to still belongs to the slide.
   entry.blocks.forEach((block, index) => {
-    if (block && !referenced.has(index)) texts.push(...paragraphsOf(block, fontNames));
+    if (block && !referenced.has(index)) texts.push(...paragraphsOf(block, context));
   });
   return texts;
 }
 
 /**
  * Reads the slides of a PowerPoint 97-2003 presentation with their text in slide order. Malformed or empty
- * presentations throw a LegacyOfficeFormatError, encrypted ones an EncryptedOfficeDocumentError.
+ * presentations throw a LegacyOfficeFormatError, encrypted ones an EncryptedOfficeDocumentError. A symbol-font character
+ * with no Unicode counterpart becomes U+FFFD and one line per font and code is appended to `warnings`.
  */
-export function readPptSlides(buffer: Buffer): PptSlide[] {
+export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide[] {
   const streams = readCfbStreams(buffer, LABEL);
   const documentStream = new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL);
   const currentUser = new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL);
@@ -415,12 +439,16 @@ export function readPptSlides(buffer: Buffer): PptSlide[] {
   const budget = new RecordBudget();
   const entries = readSlideEntries(documentStream, chain, budget);
   const fontNames = readFontNames(documentStream, persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document'), budget);
+  const context: TextContext = { fontNames, replaced: new Map(), replacedTotal: 0 };
   const slides: PptSlide[] = entries.map((entry, i) => ({
     number: i + 1,
-    texts: readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, fontNames, budget),
+    texts: readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, context, budget),
   }));
   if (slides.length === 0 || slides.every((slide) => slide.texts.length === 0)) {
     throw new LegacyOfficeFormatError(`${LABEL}: the presentation holds no slide text.`);
   }
+  warnings.push(...context.replaced.values());
+  const unlisted = context.replacedTotal - context.replaced.size;
+  if (unlisted > 0) warnings.push(`Replaced ${unlisted} more private-use characters with U+FFFD: no Unicode counterpart is known.`);
   return slides;
 }

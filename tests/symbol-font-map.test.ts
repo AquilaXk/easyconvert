@@ -67,6 +67,12 @@ describe('symbol font tables', () => {
     expect(mapSymbolFontCharacter('Arial', 0xf0b7)).toBeUndefined();
   });
 
+  it('maps the space of every symbol font to U+0020', () => {
+    for (const font of ['Symbol', 'Wingdings', 'Wingdings 2', 'Wingdings 3', 'Webdings']) {
+      expect({ font, mapped: mapSymbolFontCharacter(font, 0xf020) }).toEqual({ font, mapped: ' ' });
+    }
+  });
+
   it('has no counterpart for codes the symbol font leaves without a Unicode character', () => {
     expect(mapSymbolFontCharacter('Wingdings', 0xf0ff)).toBeUndefined();
     expect(mapSymbolFontCharacter('Symbol', 0xf060)).toBeUndefined();
