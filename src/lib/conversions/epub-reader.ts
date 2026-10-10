@@ -1,4 +1,5 @@
 import type JSZip from 'jszip';
+import { readZipEntryBytes } from './zip-entry-reader';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { decodeXmlBytes, openPackage, readPackageEntry, resolvePackagePath } from './package-access';
 import { childElements, firstChild, ownText, parseXmlTree, type XmlElement } from './xml-tree';
@@ -54,7 +55,7 @@ async function encryptedPaths(zip: JSZip): Promise<Set<string>> {
   const encrypted = new Set<string>();
   const file = zip.file(EPUB_ENCRYPTION_PATH);
   if (!file) return encrypted;
-  const root = parseXmlTree(decodeXmlBytes(await file.async('nodebuffer'), 'EPUB encryption.xml'), EPUB_ENCRYPTION_PATH, 'EPUB');
+  const root = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(file), 'EPUB encryption.xml'), EPUB_ENCRYPTION_PATH, 'EPUB');
   const stack: XmlElement[] = [root];
   while (stack.length > 0) {
     const element = stack.pop() as XmlElement;
@@ -78,7 +79,7 @@ export async function openEpubPackage(input: Buffer): Promise<EpubPackage> {
   const zip = await openPackage(input, 'EPUB');
   const container = zip.file(EPUB_CONTAINER_PATH);
   if (!container) throw new ConversionFailedError(`The EPUB has no ${EPUB_CONTAINER_PATH}, so its package document cannot be found.`);
-  const containerRoot = parseXmlTree(decodeXmlBytes(await container.async('nodebuffer'), 'EPUB container.xml'), EPUB_CONTAINER_PATH, 'EPUB');
+  const containerRoot = parseXmlTree(decodeXmlBytes(await readZipEntryBytes(container), 'EPUB container.xml'), EPUB_CONTAINER_PATH, 'EPUB');
   const rootfiles = firstChild(containerRoot, 'rootfiles');
   const rootfile = (rootfiles ? childElements(rootfiles, 'rootfile') : []).find(
     (el) => el.attrs.get('full-path') && (el.attrs.get('media-type') ?? EPUB_PACKAGE_MEDIA_TYPE) === EPUB_PACKAGE_MEDIA_TYPE
