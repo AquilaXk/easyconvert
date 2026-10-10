@@ -1287,8 +1287,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -20.937501242701806,
-      "delta": -20.937501242701806,
+      "ours": -12.371034839316742,
+      "delta": -12.371034839316742,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bd_rate_ssim": {
@@ -1297,8 +1297,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -17.186346668835604,
-      "delta": -17.186346668835604,
+      "ours": -10.724257397477178,
+      "delta": -10.724257397477178,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bytes": {
@@ -1307,8 +1307,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 20896,
-      "delta": -7559,
+      "ours": 24798,
+      "delta": -3657,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/psnr": {
@@ -1467,8 +1467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -16.63783533880594,
-      "delta": -16.63783533880594,
+      "ours": -9.352509499806239,
+      "delta": -9.352509499806239,
       "ratio": null
     },
     "image/photo-b.png->jpg/bd_rate_ssim": {
@@ -1477,8 +1477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.965236817645444,
-      "delta": -14.965236817645444,
+      "ours": -9.485670248673328,
+      "delta": -9.485670248673328,
       "ratio": null
     },
     "image/photo-b.png->jpg/bytes": {
@@ -1487,8 +1487,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 16479,
-      "delta": -4741,
+      "ours": 19067,
+      "delta": -2153,
       "ratio": null
     },
     "image/photo-b.png->jpg/psnr": {
@@ -1647,8 +1647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -63.659605226723095,
-      "delta": -63.659605226723095,
+      "ours": -48.688476176223915,
+      "delta": -48.688476176223915,
       "ratio": null
     },
     "image/screenshot.png->jpg/bd_rate_ssim": {
@@ -1657,8 +1657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -21.461941386992123,
-      "delta": -21.461941386992123,
+      "ours": -9.758173927798131,
+      "delta": -9.758173927798131,
       "ratio": null
     },
     "image/screenshot.png->jpg/bytes": {
@@ -1677,8 +1677,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.894442,
-      "delta": 4.431027,
+      "ours": 42.40279,
+      "delta": 1.9393750000000054,
       "ratio": null
     },
     "image/screenshot.png->jpg/ssim": {

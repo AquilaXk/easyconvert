@@ -1,22 +1,27 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { interface16, interpolateAt, lineArt16, type Point } from './helpers/graphic-parity';
+import { requireOracleTool } from './helpers/differential-oracle';
+import { measureSsimPsnr } from './helpers/ffmpeg-measure';
+import { bdRatePercent, interface16, lineArt16, type Point } from './helpers/graphic-parity';
 import { runConvert, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
- * Graphic content (line art, interfaces) against the reference encoders. The reference curves come from the
- * reference tools themselves: ImageMagick's `-quality` for JPEG, decoded by ImageMagick, decoded by an independent decoder. Ours is judged at the reference's quality
- * for the same number of bytes, found by interpolating the reference curve in the logarithm of the size, so a
- * smaller or larger file is not mistaken for a better or worse encoder.
+ * Graphic content (line art, interfaces) against the reference encoder. The reference curves come from the reference tool
+ * itself: ImageMagick's `-quality` for JPEG, which subsamples the chroma below quality 90, as the converter does. Both
+ * are decoded by an independent decoder (ffmpeg) and judged as the gate judges them: by BD-rate (Bjontegaard, cubic fit
+ * of the log size over the quality) between the two curves encoded at the same qualities, so a smaller or larger file is
+ * not mistaken for a better or worse encoder and no single quality point decides.
  */
 
-const REQUEST_QUALITIES = [40, 55, 70, 85];
-const JPEG_REFERENCE_QUALITIES = Array.from({ length: 20 }, (_, i) => 5 * (i + 1));
-const PSNR_SLACK_DB = 0.1;
-const BYTE_MAX = 255;
+const QUALITIES = [30, 40, 50, 55, 60, 70, 80, 85];
+const SSIM_TO_DB = 10;
+/** The parity gate's BD-rate allowance in percent: `bdRateSsim` and `bdRatePsnr` tolerance in bench/rows.ts. */
+const BD_RATE_ALLOWANCE_PERCENT = 1.5;
 
 let workDir: string;
 beforeAll(() => {
@@ -32,36 +37,41 @@ function writeIn(name: string, bytes: Buffer): string {
   return file;
 }
 
-function psnr8(decoded: Buffer, source: Buffer): number {
-  expect(decoded.length).toBe(source.length);
-  let squares = 0;
-  for (let i = 0; i < source.length; i += 1) squares += (decoded[i] - source[i]) ** 2;
-  return squares === 0 ? Infinity : 10 * Math.log10((BYTE_MAX * BYTE_MAX * source.length) / squares);
-}
+describe.skipIf(SKIP_WITHOUT_MAGICK || skipWithoutTools('ffmpeg'))('JPEG of graphic content against ImageMagick over the quality curve', () => {
+  const measure = (jpeg: string, name: string, source: string): { psnr: number; ssimDb: number } => {
+    const decoded = path.join(workDir, `${name}.png`);
+    execFileSync(requireOracleTool('ffmpeg'), ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', jpeg, '-frames:v', '1', decoded]);
+    const { ssim, psnr } = measureSsimPsnr(requireOracleTool('ffmpeg'), decoded, source);
+    return { psnr, ssimDb: -SSIM_TO_DB * Math.log10(1 - ssim) };
+  };
 
-describe.skipIf(SKIP_WITHOUT_MAGICK)('JPEG of graphic content against ImageMagick at the same size', () => {
-  /** 8-bit samples as ImageMagick decodes a file: grey stays one channel, colour three. */
-  const decode8 = (file: string, grey: boolean): Buffer => runConvert([file, '-depth', '8', grey ? 'gray:-' : 'rgb:-']);
-
-  const cases: Array<[string, () => Promise<Buffer>, boolean]> = [
-    ['16-bit grey line art', lineArt16, true],
-    ['16-bit RGB interface', interface16, false],
+  const cases: Array<[string, () => Promise<Buffer>]> = [
+    ['16-bit grey line art', lineArt16],
+    ['16-bit RGB interface', interface16],
   ];
 
-  it.each(cases)('%s: PSNR is at least the reference quality for the same bytes at every quality tested', async (label, make, grey) => {
+  it.each(cases)('%s: needs no more bytes for the same PSNR and SSIM than the reference, by BD-rate', async (label, make) => {
     const png = await make();
-    const sourceFile = writeIn('jpeg-source.png', png);
-    const source = decode8(sourceFile, grey);
-    const reference: Point[] = JPEG_REFERENCE_QUALITIES.map((quality) => {
-      const file = path.join(workDir, `ref-${quality}.jpg`);
-      runConvert([sourceFile, '-quality', String(quality), file]);
-      return { bytes: readFileSync(file).length, value: psnr8(decode8(file, grey), source) };
-    });
-    for (const quality of REQUEST_QUALITIES) {
-      const ours = (await convertImage(png, 'jpg', { quality }, 'g.png', 'png')).buffer;
-      const oursPsnr = psnr8(decode8(writeIn(`ours-${quality}.jpg`, ours), grey), source);
-      const expected = interpolateAt(reference, ours.length);
-      expect(oursPsnr + PSNR_SLACK_DB, `${label} q${quality}: ${ours.length} B, ${oursPsnr.toFixed(2)} dB against ${expected.toFixed(2)} dB`).toBeGreaterThanOrEqual(expected);
+    const source = writeIn('jpeg-source.png', png);
+    const reference = { psnr: [] as Point[], ssim: [] as Point[] };
+    const ours = { psnr: [] as Point[], ssim: [] as Point[] };
+    for (const quality of QUALITIES) {
+      const referenceFile = path.join(workDir, `ref-${quality}.jpg`);
+      runConvert([source, '-quality', String(quality), referenceFile]);
+      const measuredReference = measure(referenceFile, `ref-${quality}`, source);
+      const referenceBytes = readFileSync(referenceFile).length;
+      reference.psnr.push({ bytes: referenceBytes, value: measuredReference.psnr });
+      reference.ssim.push({ bytes: referenceBytes, value: measuredReference.ssimDb });
+
+      const converted = (await convertImage(png, 'jpg', { quality }, 'g.png', 'png')).buffer;
+      const measuredOurs = measure(writeIn(`ours-${quality}.jpg`, converted), `ours-${quality}`, source);
+      ours.psnr.push({ bytes: converted.length, value: measuredOurs.psnr });
+      ours.ssim.push({ bytes: converted.length, value: measuredOurs.ssimDb });
     }
-  }, 120_000);
+    const bdPsnr = bdRatePercent(reference.psnr, ours.psnr);
+    const bdSsim = bdRatePercent(reference.ssim, ours.ssim);
+    console.info(`${label} JPEG BD-rate against the reference: PSNR ${bdPsnr.toFixed(2)}%, SSIM ${bdSsim.toFixed(2)}%`);
+    expect(bdPsnr, `${label}: BD-rate in PSNR ${bdPsnr.toFixed(2)}%`).toBeLessThanOrEqual(BD_RATE_ALLOWANCE_PERCENT);
+    expect(bdSsim, `${label}: BD-rate in SSIM (dB) ${bdSsim.toFixed(2)}%`).toBeLessThanOrEqual(BD_RATE_ALLOWANCE_PERCENT);
+  }, 240_000);
 });

@@ -65,6 +65,9 @@ x-worker: &worker
     WORKER_CONCURRENCY: "3"
     EASYCONVERT_STORAGE_DIR: /shared/storage
     STRICT_SANDBOX: "true"
+    # Bounds the glibc heap of the image library's threads, which lets AVIF encodes of photographs lease up to 8 of them
+    # (2 without it): a run of 4-megapixel conversions peaks at 0.7 times its single-thread resident memory.
+    MALLOC_ARENA_MAX: "2"
   deploy:
     resources:
       limits:

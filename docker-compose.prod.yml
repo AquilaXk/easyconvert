@@ -24,6 +24,8 @@ x-production-environment: &production-environment
   - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
   - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
   - JOB_SECRET_KEK_PREVIOUS
+  # Bounds the glibc heap of the image library's threads; see docker-compose.yml.
+  - MALLOC_ARENA_MAX=2
   # Public origin of the application (https://...); the local driver needs it to build upload URLs.
   - APP_URL
   - OCI_NAMESPACE
