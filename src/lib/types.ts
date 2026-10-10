@@ -624,8 +624,21 @@ export class ArchiveNotEncryptedError extends ConversionFailedError {
   }
 }
 
+/**
+ * An archive the service understands but cannot or will not read as sent: it needs a password the request lacks or got
+ * wrong, or it uses a method or work factor this engine does not decode. The input is intact, so the routes answer
+ * HTTP 422 (through `status`) like the password errors of a PDF, not the 400 of a malformed input.
+ */
+export class ArchiveInputUnprocessableError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchiveInputUnprocessableError';
+  }
+}
+
 /** The archive is encrypted and the request carried no password. */
-export class ArchivePasswordRequiredError extends ConversionFailedError {
+export class ArchivePasswordRequiredError extends ArchiveInputUnprocessableError {
   constructor(message: string) {
     super(message);
     this.name = 'ArchivePasswordRequiredError';
@@ -633,10 +646,21 @@ export class ArchivePasswordRequiredError extends ConversionFailedError {
 }
 
 /** The request carried a password that does not decrypt the archive. */
-export class InvalidArchivePasswordError extends ConversionFailedError {
+export class InvalidArchivePasswordError extends ArchiveInputUnprocessableError {
   constructor(message: string) {
     super(message);
     this.name = 'InvalidArchivePasswordError';
+  }
+}
+
+/**
+ * An archive names a compression method, filter or key derivation this engine does not decode, or asks for more work
+ * than it accepts. The archive is intact, so the routes answer HTTP 422; the bytes are never passed on undecoded.
+ */
+export class UnsupportedArchiveMethodError extends ArchiveInputUnprocessableError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedArchiveMethodError';
   }
 }
 

@@ -14,6 +14,7 @@ import {
   readTarEntries,
   type TarEntry,
 } from './archive';
+import { classifySevenZipAttributes } from './sevenzip-reader';
 import {
   type ListedArchiveEntry,
   UnreadableArchiveError,
@@ -65,14 +66,8 @@ const OWNER_READ_SEARCH = 0o500;
 const OWNER_ALL = 0o700;
 
 /** 7z attribute word: Windows bits, with the Unix mode in the high half when the extension bit is set. */
-const ATTRIBUTE_DIRECTORY = 0x10;
-const ATTRIBUTE_REPARSE_POINT = 0x400;
 const ATTRIBUTE_UNIX_EXTENSION = 0x8000;
 const UNIX_MODE_SHIFT = 16;
-const S_IFMT = 0o170000;
-const S_IFDIR = 0o040000;
-const S_IFLNK = 0o120000;
-const SPECIAL_FILE_TYPES: ReadonlySet<number> = new Set([0o020000, 0o060000, 0o010000, 0o140000]);
 
 /** The archive to convert: held in memory, or a file the caller owns. */
 export interface ArchiveSource {
@@ -279,15 +274,13 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
 }
 
 function toListedEntry(file: ReturnType<typeof listSevenZipEntries>['files'][number]): ListedArchiveEntry {
-  const attributes = file.attributes ?? 0;
-  const unixType = (attributes & ATTRIBUTE_UNIX_EXTENSION) !== 0 ? ((attributes >>> UNIX_MODE_SHIFT) & S_IFMT) : 0;
-  const isSymlink = unixType === S_IFLNK || (attributes & ATTRIBUTE_REPARSE_POINT) !== 0;
+  const kind = classifySevenZipAttributes(file.attributes);
   return {
     path: file.name,
-    isDirectory: file.isDirectory || (attributes & ATTRIBUTE_DIRECTORY) !== 0 || unixType === S_IFDIR,
+    isDirectory: file.isDirectory || kind.isDirectory,
     sizeBytes: file.size,
-    linkKind: isSymlink ? 'symlink' : null,
-    isSpecial: SPECIAL_FILE_TYPES.has(unixType),
+    linkKind: kind.isSymlink ? 'symlink' : null,
+    isSpecial: kind.isSpecial,
   };
 }
 

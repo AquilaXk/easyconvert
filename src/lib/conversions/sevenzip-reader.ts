@@ -1,5 +1,13 @@
 import zlib from 'node:zlib';
-import { ConversionFailedError, CorruptStreamError, DecompressionLimitError } from '../types';
+import {
+  ArchivePasswordRequiredError,
+  ConversionFailedError,
+  CorruptStreamError,
+  DecompressionLimitError,
+  InvalidArchivePasswordError,
+  PayloadLimitError,
+  UnsupportedArchiveMethodError,
+} from '../types';
 
 /**
  * Reader for the 7z container (7-Zip's 7zFormat.txt): the 32-byte start header, the (possibly encoded) header with
@@ -29,7 +37,7 @@ const UTF16_UNIT_BYTES = 2;
 
 /** An encoded header may itself be encoded; 7-Zip writes one level, so a deeper chain is not an archive. */
 const MAX_ENCODED_HEADER_DEPTH = 4;
-/** 7-Zip allows 64 coders per folder; real archives use at most 4 (a filter plus a compressor). */
+/** 7-Zip allows 64 coders per folder; real archives use at most 8 (BCJ2 with its three compressors, AES, filters). */
 const MAX_CODERS_PER_FOLDER = 32;
 const MAX_STREAMS_PER_CODER = 32;
 /** The decoded header holds file names and tables only; this bounds how much a packed header may inflate to. */
@@ -75,10 +83,23 @@ export interface SevenZipCoder {
   numOutStreams: number;
 }
 
+/** The input stream `inIndex` of a coder reads the output stream `outIndex` of another (indexes run over all coders). */
+export interface SevenZipBindPair {
+  inIndex: number;
+  outIndex: number;
+}
+
 export interface SevenZipFolder {
   coders: SevenZipCoder[];
+  bindPairs: SevenZipBindPair[];
+  /** The input streams that read packed data, in the order of the folder's pack streams. */
+  packedInStreams: number[];
   /** Number of pack streams this folder consumes, in order, from the pack stream table. */
   packedStreamCount: number;
+  /** The size of every coder output stream, in output-stream order. */
+  outSizes: number[];
+  /** The output stream no bind pair consumes: the folder's result. */
+  mainOut: number;
   /** Size of the folder's final output, the out stream no bind pair consumes. */
   unpackSize: number;
   crc?: number;
@@ -96,6 +117,8 @@ export interface SevenZipEntry {
   /** The name as stored (UTF-16LE decoded), not yet sanitized. */
   name: string;
   data: Buffer;
+  /** The 32-bit attribute word: Windows bits, plus the Unix mode in the high half when bit 15 is set. */
+  attributes?: number;
 }
 
 export interface SevenZipReadLimits {
@@ -104,7 +127,49 @@ export interface SevenZipReadLimits {
   maxRatio: number;
 }
 
-export type SevenZipFolderDecoder = (folder: SevenZipFolder, packed: Buffer) => Buffer;
+/** Decodes one folder from its pack streams (in pack order) to the bytes of its final output stream. */
+export type SevenZipFolderDecoder = (folder: SevenZipFolder, packed: Buffer[]) => Buffer;
+
+const ATTRIBUTE_DIRECTORY = 0x10;
+const ATTRIBUTE_REPARSE_POINT = 0x400;
+const ATTRIBUTE_UNIX_EXTENSION = 0x8000;
+const UNIX_MODE_SHIFT = 16;
+const S_IFMT = 0o170000;
+const S_IFDIR = 0o040000;
+const S_IFLNK = 0o120000;
+/** Character and block devices, FIFOs and sockets. */
+const SPECIAL_FILE_TYPES: ReadonlySet<number> = new Set([0o020000, 0o060000, 0o010000, 0o140000]);
+
+export interface SevenZipAttributeKind {
+  isDirectory: boolean;
+  /** A Unix symbolic link, or a Windows reparse point (symlink or junction). */
+  isSymlink: boolean;
+  /** A device, FIFO or socket. */
+  isSpecial: boolean;
+}
+
+/** What an attribute word says an item is. An item without attributes is a regular file. */
+export function classifySevenZipAttributes(attributes: number | undefined): SevenZipAttributeKind {
+  const word = attributes ?? 0;
+  const unixType = (word & ATTRIBUTE_UNIX_EXTENSION) !== 0 ? (word >>> UNIX_MODE_SHIFT) & S_IFMT : 0;
+  return {
+    isDirectory: (word & ATTRIBUTE_DIRECTORY) !== 0 || unixType === S_IFDIR,
+    isSymlink: unixType === S_IFLNK || (word & ATTRIBUTE_REPARSE_POINT) !== 0,
+    isSpecial: SPECIAL_FILE_TYPES.has(unixType),
+  };
+}
+
+/**
+ * A folder whose structure cannot be decoded whatever the key (a coder graph that loops, an input that reads nothing,
+ * properties that do not parse, an encrypted stream that is not whole blocks). It stays a plain malformed-input error
+ * when the folder is encrypted; only a failure of the decoded data reads as a wrong password.
+ */
+export class SevenZipStructureError extends CorruptStreamError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SevenZipStructureError';
+  }
+}
 
 function corrupt(detail: string): CorruptStreamError {
   return new CorruptStreamError(`Corrupted 7z archive: ${detail}`);
@@ -190,7 +255,7 @@ function readPackInfo(reader: HeaderReader, info: StreamsInfo, limits: SevenZipR
   }
 }
 
-function readFolder(reader: HeaderReader): { folder: SevenZipFolder; outStreams: number; mainOut: number } {
+function readFolder(reader: HeaderReader): { folder: SevenZipFolder; outStreams: number } {
   const coderCount = reader.count(MAX_CODERS_PER_FOLDER, 'coder');
   if (coderCount === 0) throw corrupt('a folder has no coders');
   const coders: SevenZipCoder[] = [];
@@ -198,7 +263,9 @@ function readFolder(reader: HeaderReader): { folder: SevenZipFolder; outStreams:
   let totalOut = 0;
   for (let index = 0; index < coderCount; index += 1) {
     const flags = reader.byte();
-    if ((flags & CODER_FLAG_ALTERNATIVES) !== 0) throw new ConversionFailedError('Unsupported 7z coder: alternative methods are reserved');
+    if ((flags & CODER_FLAG_ALTERNATIVES) !== 0) {
+      throw new UnsupportedArchiveMethodError('Unsupported 7z coder: alternative methods are reserved');
+    }
     const codecId = Buffer.from(reader.bytesOf(flags & CODER_ID_SIZE_MASK));
     let numInStreams = 1;
     let numOutStreams = 1;
@@ -213,19 +280,45 @@ function readFolder(reader: HeaderReader): { folder: SevenZipFolder; outStreams:
   }
   if (totalOut === 0) throw corrupt('a folder produces no output');
   const bindPairCount = totalOut - 1;
+  const bindPairs: SevenZipBindPair[] = [];
+  const boundIn = new Set<number>();
   const boundOut = new Set<number>();
   for (let index = 0; index < bindPairCount; index += 1) {
-    reader.number();
-    boundOut.add(reader.number());
+    const inIndex = reader.number();
+    const outIndex = reader.number();
+    if (inIndex >= totalIn || outIndex >= totalOut) throw corrupt('a bind pair names a stream the coders do not have');
+    if (boundIn.has(inIndex) || boundOut.has(outIndex)) throw corrupt('a coder stream is bound twice');
+    boundIn.add(inIndex);
+    boundOut.add(outIndex);
+    bindPairs.push({ inIndex, outIndex });
   }
   const packedStreamCount = totalIn - bindPairCount;
   if (packedStreamCount < 1) throw corrupt('a folder has no packed stream');
-  if (packedStreamCount > 1) {
-    for (let index = 0; index < packedStreamCount; index += 1) reader.number();
+  const packedInStreams: number[] = [];
+  if (packedStreamCount === 1) {
+    for (let inIndex = 0; inIndex < totalIn; inIndex += 1) if (!boundIn.has(inIndex)) packedInStreams.push(inIndex);
+  } else {
+    const seen = new Set<number>();
+    for (let index = 0; index < packedStreamCount; index += 1) {
+      const inIndex = reader.number();
+      if (inIndex >= totalIn || boundIn.has(inIndex) || seen.has(inIndex)) throw corrupt('a packed stream names an input that is bound or unknown');
+      seen.add(inIndex);
+      packedInStreams.push(inIndex);
+    }
   }
   let mainOut = 0;
   while (boundOut.has(mainOut)) mainOut += 1;
-  return { folder: { coders, packedStreamCount, unpackSize: 0, substreams: [] }, outStreams: totalOut, mainOut };
+  const folder: SevenZipFolder = {
+    coders,
+    bindPairs,
+    packedInStreams,
+    packedStreamCount,
+    outSizes: [],
+    mainOut,
+    unpackSize: 0,
+    substreams: [],
+  };
+  return { folder, outStreams: totalOut };
 }
 
 function readUnpackInfo(reader: HeaderReader, info: StreamsInfo, limits: SevenZipReadLimits): void {
@@ -233,19 +326,15 @@ function readUnpackInfo(reader: HeaderReader, info: StreamsInfo, limits: SevenZi
   const folderCount = reader.count(limits.maxFiles, 'folder');
   if (reader.byte() !== 0) throw new ConversionFailedError('Unsupported 7z archive: external folder data is not supported');
   const outStreamCounts: number[] = [];
-  const mainOutIndexes: number[] = [];
   for (let index = 0; index < folderCount; index += 1) {
-    const { folder, outStreams, mainOut } = readFolder(reader);
-    mainOutIndexes.push(mainOut);
+    const { folder, outStreams } = readFolder(reader);
     outStreamCounts.push(outStreams);
     info.folders.push(folder);
   }
   if (reader.byte() !== ID.CODERS_UNPACK_SIZE) throw corrupt('the coder output sizes are missing');
   info.folders.forEach((folder, folderIndex) => {
-    for (let outIndex = 0; outIndex < outStreamCounts[folderIndex]; outIndex += 1) {
-      const size = reader.number();
-      if (outIndex === mainOutIndexes[folderIndex]) folder.unpackSize = size;
-    }
+    for (let outIndex = 0; outIndex < outStreamCounts[folderIndex]; outIndex += 1) folder.outSizes.push(reader.number());
+    folder.unpackSize = folder.outSizes[folder.mainOut];
   });
   for (let id = reader.byte(); id !== ID.END; id = reader.byte()) {
     if (id === ID.CRC) {
@@ -447,6 +536,35 @@ interface UnpackBudget {
   limits: SevenZipReadLimits;
 }
 
+function usesAes(folder: SevenZipFolder): boolean {
+  return folder.coders.some((coder) => coder.codecId.equals(AES_CODEC_ID));
+}
+
+/** Errors that say something about the request or the archive's declared work, not about whether the bytes decoded. */
+function isDecodeFailureOfDataAlone(err: unknown): boolean {
+  return (
+    err instanceof ConversionFailedError &&
+    !(err instanceof SevenZipStructureError) &&
+    !(err instanceof ArchivePasswordRequiredError) &&
+    !(err instanceof InvalidArchivePasswordError) &&
+    !(err instanceof UnsupportedArchiveMethodError) &&
+    !(err instanceof PayloadLimitError)
+  );
+}
+
+function invalidPassword(): InvalidArchivePasswordError {
+  return new InvalidArchivePasswordError('Invalid password for the encrypted 7z archive.');
+}
+
+function assertWithinBudget(size: number, archiveBytes: number, limits: SevenZipReadLimits): void {
+  if (size > limits.maxUncompressedBytes) {
+    throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.maxUncompressedBytes} bytes (500MB)`);
+  }
+  if (archiveBytes > 0 && size / archiveBytes > limits.maxRatio) {
+    throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.maxRatio}:1 limit`);
+  }
+}
+
 /** Decodes every folder of `streams`, checking sizes, checksums and the decompression-bomb limits. */
 function unpackFolders(
   archive: Buffer,
@@ -458,33 +576,34 @@ function unpackFolders(
   let packOffset = START_HEADER_BYTES + streams.packPos;
   let packIndex = 0;
   return streams.folders.map((folder) => {
-    if (folder.coders.length !== 1 || folder.packedStreamCount !== 1) {
-      throw new ConversionFailedError(
-        `Unsupported 7z folder: ${folder.coders.length} chained coders (filters such as BCJ are not supported)`
-      );
+    if (packIndex + folder.packedStreamCount > streams.packSizes.length) throw corrupt('a folder has no pack stream');
+    const packed: Buffer[] = [];
+    for (let stream = 0; stream < folder.packedStreamCount; stream += 1) {
+      const packSize = streams.packSizes[packIndex++];
+      if (packOffset + packSize > packEnd) throw corrupt('truncated pack stream');
+      packed.push(Buffer.from(archive.subarray(packOffset, packOffset + packSize)));
+      packOffset += packSize;
     }
-    if (packIndex >= streams.packSizes.length) throw corrupt('a folder has no pack stream');
-    const packSize = streams.packSizes[packIndex++];
-    if (packOffset + packSize > packEnd) throw corrupt('truncated pack stream');
-    const packed = Buffer.from(archive.subarray(packOffset, packOffset + packSize));
-    packOffset += packSize;
 
+    // Every coder's output is allocated or produced in full, so each declared size is bounded before any is decoded.
+    folder.outSizes.forEach((size) => assertWithinBudget(size, budget.archiveBytes, budget.limits));
     budget.totalBytes += folder.unpackSize;
-    if (budget.totalBytes > budget.limits.maxUncompressedBytes) {
-      throw new DecompressionLimitError(
-        `Archive bomb detected: uncompressed size exceeds limit of ${budget.limits.maxUncompressedBytes} bytes (500MB)`
-      );
-    }
-    if (budget.archiveBytes > 0 && budget.totalBytes / budget.archiveBytes > budget.limits.maxRatio) {
-      throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${budget.limits.maxRatio}:1 limit`);
-    }
+    assertWithinBudget(budget.totalBytes, budget.archiveBytes, budget.limits);
 
-    const data = decode(folder, packed);
+    const encrypted = usesAes(folder);
+    let data: Buffer;
+    try {
+      data = decode(folder, packed);
+    } catch (err) {
+      // Decrypting with a wrong key yields noise, which no decoder accepts: that is the signal 7-Zip reports too.
+      throw encrypted && isDecodeFailureOfDataAlone(err) ? invalidPassword() : err;
+    }
+    const mismatch = (detail: string): CorruptStreamError | InvalidArchivePasswordError => (encrypted ? invalidPassword() : corrupt(detail));
     if (data.length !== folder.unpackSize) {
-      throw corrupt(`unpack size mismatch (expected ${folder.unpackSize}, got ${data.length})`);
+      throw mismatch(`unpack size mismatch (expected ${folder.unpackSize}, got ${data.length})`);
     }
     if (folder.crc !== undefined && zlib.crc32(data) !== folder.crc) {
-      throw corrupt(`CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${zlib.crc32(data).toString(16)})`);
+      throw mismatch(`CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${zlib.crc32(data).toString(16)})`);
     }
     return data;
   });
@@ -552,11 +671,12 @@ export function readSevenZipArchive(
   if (header === null) return [];
   const { streams, files, headerStart, budget } = header;
   const folderData = unpackFolders(archive, streams, headerStart, decode, budget);
-  const pieces: { data: Buffer; crc?: number }[] = [];
+  const pieces: { data: Buffer; crc?: number; encrypted: boolean }[] = [];
   streams.folders.forEach((folder, folderIndex) => {
     let offset = 0;
+    const encrypted = usesAes(folder);
     for (const substream of folder.substreams) {
-      pieces.push({ data: Buffer.from(folderData[folderIndex].subarray(offset, offset + substream.size)), crc: substream.crc });
+      pieces.push({ data: Buffer.from(folderData[folderIndex].subarray(offset, offset + substream.size)), crc: substream.crc, encrypted });
       offset += substream.size;
     }
   });
@@ -567,14 +687,26 @@ export function readSevenZipArchive(
     if (file.hasStream) {
       const piece = pieces[pieceIndex++];
       if (piece === undefined) throw corrupt(`no data stream for ${file.name}`);
-      if (piece.crc !== undefined && zlib.crc32(piece.data) !== piece.crc) throw corrupt(`CRC mismatch for ${file.name}`);
-      entries.push({ name: file.name, data: piece.data });
+      if (piece.crc !== undefined && zlib.crc32(piece.data) !== piece.crc) {
+        throw piece.encrypted ? invalidPassword() : corrupt(`CRC mismatch for ${file.name}`);
+      }
+      entries.push({ name: file.name, data: piece.data, attributes: file.attributes });
     } else if (file.isEmptyFile) {
-      entries.push({ name: file.name, data: Buffer.alloc(0) });
+      entries.push({ name: file.name, data: Buffer.alloc(0), attributes: file.attributes });
     }
   }
   if (pieceIndex !== pieces.length) throw corrupt(`${pieces.length} data streams for ${pieceIndex} files`);
   return entries;
+}
+
+/**
+ * The properties of every AES coder of the archive's data folders, read from the header alone (the header itself is
+ * decoded through `decode`). An async reader derives the keys they name before it decodes any data.
+ */
+export function collectSevenZipAesProperties(archive: Buffer, decode: SevenZipFolderDecoder, limits: SevenZipReadLimits): Buffer[] {
+  const header = loadHeader(archive, decode, limits);
+  if (header === null) return [];
+  return header.streams.folders.flatMap((folder) => folder.coders.filter((coder) => coder.codecId.equals(AES_CODEC_ID)).map((coder) => coder.properties));
 }
 
 /** One item of a 7z file table, as 7-Zip would list it, without decoding any file data. */
@@ -622,6 +754,5 @@ export function listSevenZipArchive(archive: Buffer, decode: SevenZipFolderDecod
     }
   }
   if (streamIndex !== substreams.length) throw corrupt(`${substreams.length} data streams for ${streamIndex} files`);
-  const encrypted = streams.folders.some((folder) => folder.coders.some((coder) => coder.codecId.equals(AES_CODEC_ID)));
-  return { files: listed, encrypted };
+  return { files: listed, encrypted: streams.folders.some(usesAes) };
 }
