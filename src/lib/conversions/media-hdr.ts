@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { rethrowSandboxUnavailable } from '../security/process-sandbox';
 import { EngineUnavailableError } from '../types';
 import { DEFAULT_HDR_PEAK_NITS, HLG_REFERENCE_PEAK_NITS, PQ_PEAK_NITS, SDR_PEAK_NITS, createBt2390Parameters } from './hdr-tonemap';
-import { type FfprobePath } from './media-ffprobe';
+import { type FfprobePath, type ProbeJob, runSandboxedFfprobe } from './media-ffprobe';
 
 /**
  * HDR to SDR video: the filter chain and the colour tags of the 8-bit BT.709 result.
@@ -25,7 +26,6 @@ export const SDR_COLOUR_ARGS: readonly string[] = [
 ];
 
 const FULL_SCALE_16 = 65_535;
-const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_KILL_SIGNAL = 'SIGKILL';
 const FILTER_LIST_TIMEOUT_MS = 10_000;
 const FILTER_LIST_MAX_BYTES = 1024 * 1024;
@@ -74,15 +74,19 @@ export function resetZscaleCache(): void {
  * Maximum content light level in cd/m2 from the first video stream's side data (MP4 `clli`, Matroska
  * MaxCLL), or undefined when the stream states none.
  */
-export function probeVideoMaxLightLevel(filePath: string, ffprobe: FfprobePath): number | undefined {
+export function probeVideoMaxLightLevel(filePath: string, ffprobe: FfprobePath, job?: ProbeJob): number | undefined {
   let out = '';
   try {
-    out = execFileSync(
+    out = runSandboxedFfprobe(
       ffprobe,
       ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1', filePath],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES },
+      MAX_LIGHT_LEVEL_OUTPUT_BYTES,
+      job,
     );
-  } catch {
+  } catch (err) {
+    // A missing sandbox and an aborted job end the conversion; only a probe that failed to read the file leaves the level unstated.
+    rethrowSandboxUnavailable(err);
+    if (job?.signal?.aborted) throw err;
     return undefined;
   }
   for (const line of out.split('\n')) {

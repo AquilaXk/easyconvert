@@ -14,7 +14,7 @@ import {
   MediaPackagingOptions,
 } from '../types';
 export { ConversionFailedError };
-import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
+import { executeSandboxedBinary, rethrowSandboxUnavailable, SandboxedProcessError } from '../security/process-sandbox';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -146,8 +146,11 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
   try {
     const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
     if (!ffprobe) return 0;
-    return probeInput(filePath, ffprobe as FfprobePath).durationSec ?? 0;
-  } catch {
+    return probeInput(filePath, ffprobe as FfprobePath, options).durationSec ?? 0;
+  } catch (err) {
+    // An unreadable file has no known duration; a host that cannot confine ffprobe, or a job that was stopped, has no answer.
+    rethrowSandboxUnavailable(err);
+    if (options?.signal?.aborted) throw err;
     return 0;
   }
 }
@@ -554,7 +557,7 @@ export async function packageHlsDashMedia(
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
-    const source = probePackagingSource(inputPath, ffmpegBin);
+    const source = probePackagingSource(inputPath, ffmpegBin, options);
     const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: outputDir,

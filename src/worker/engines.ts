@@ -654,7 +654,7 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const source = probePackagingSource(inputPath, ffmpegBin);
+        const source = probePackagingSource(inputPath, ffmpegBin, options);
         const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
         await executeSandboxedBinary(ffmpegBin, args, {
           cwd: outputDir,

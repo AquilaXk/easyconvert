@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,8 @@ export interface SandboxedRlimitsOptions {
   fsizeBytes?: number;
   nproc?: number;
   cpuSeconds?: number;
+  /** Most file descriptors the process may hold open. */
+  nofile?: number;
 }
 
 export interface SandboxedExecutionOptions {
@@ -301,6 +303,9 @@ export function buildPrlimitArgs(
   if (rlimits.cpuSeconds && Number.isFinite(rlimits.cpuSeconds) && rlimits.cpuSeconds > 0) {
     args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
   }
+  if (rlimits.nofile && Number.isFinite(rlimits.nofile) && rlimits.nofile > 0) {
+    args.push(`--nofile=${Math.round(rlimits.nofile)}`);
+  }
   return args;
 }
 
@@ -507,7 +512,8 @@ export function resolveSandboxedCommand(
     effectiveRlimits.asBytes !== undefined ||
     effectiveRlimits.fsizeBytes !== undefined ||
     effectiveRlimits.nproc !== undefined ||
-    effectiveRlimits.cpuSeconds !== undefined;
+    effectiveRlimits.cpuSeconds !== undefined ||
+    effectiveRlimits.nofile !== undefined;
 
   if (process.platform === 'linux' && capPrlimit.available && hasRlimits) {
     const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
@@ -852,4 +858,83 @@ export async function executeSandboxedBinary(
       });
     });
   });
+}
+
+export type SandboxedSyncOptions = Omit<SandboxedExecutionOptions, 'stdin'>;
+
+/**
+ * The synchronous counterpart of `executeSandboxedBinary` for short probes whose callers cannot await (the
+ * argument builders). It resolves the same confinement (`resolveSandboxedCommand`: the user and network namespace,
+ * the rlimits, a SandboxUnavailableError thrown before any spawn under STRICT_SANDBOX), runs the binary without a
+ * shell and with the sanitized environment and a closed stdin, and bounds the time and each output stream.
+ *
+ * It blocks the event loop while the child runs, so an abort cannot interrupt a running child: a signal that is
+ * already aborted starts nothing and rethrows its reason, and the caller holds `timeoutMs` to the time its job has
+ * left. Errors are the typed ones of the asynchronous runner: SandboxedTimeoutError, SandboxedBufferLimitError and
+ * SandboxedProcessError.
+ */
+export function runSandboxedBinarySync(
+  binaryPath: string,
+  args: string[],
+  options: SandboxedSyncOptions = {}
+): { stdout: Buffer; stderr: Buffer } {
+  const {
+    timeoutMs = 30000,
+    maxBuffer = 50 * 1024 * 1024,
+    memoryLimitMb,
+    maxFileSize,
+    rlimits,
+    env: customEnv = {},
+    cwd = os.tmpdir(),
+    networkIsolated = true,
+  } = options;
+
+  if (!binaryPath || typeof binaryPath !== 'string') {
+    throw new SandboxedProcessError('Sandboxed execution error: invalid binary path provided.', null, '');
+  }
+  if (options.signal?.aborted) {
+    throw options.signal.reason || new Error('The operation was aborted');
+  }
+
+  const resolvedCmd = resolveSandboxedCommand(binaryPath, args, {
+    networkIsolated,
+    sandboxOptions: options.sandboxOptions,
+    strictIsolation: options.strictIsolation,
+    memoryLimitMb,
+    maxFileSize,
+    rlimits,
+  });
+  const result = spawnSync(resolvedCmd.binary, resolvedCmd.args, {
+    cwd,
+    env: getSanitizedEnvironment(customEnv, networkIsolated),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+    maxBuffer,
+  });
+
+  if (result.error) {
+    const code = (result.error as NodeJS.ErrnoException).code;
+    if (code === 'ETIMEDOUT') throw new SandboxedTimeoutError(timeoutMs);
+    if (code === 'ENOBUFS') throw new SandboxedBufferLimitError(maxBuffer);
+    throw spawnFailureError(result.error);
+  }
+
+  const stdout = result.stdout ?? Buffer.alloc(0);
+  const stderr = result.stderr ?? Buffer.alloc(0);
+  if (result.signal === 'SIGXFSZ') {
+    throw new SandboxedBufferLimitError(options.maxFileSize || options.rlimits?.fsizeBytes || maxBuffer);
+  }
+  if (result.signal !== null || result.status !== 0) {
+    const stderrText = stderr.toString('utf-8').trim();
+    const summary =
+      result.signal !== null
+        ? stderrText
+          ? `Process terminated by signal ${result.signal}: ${stderrText}`
+          : `Process terminated by signal ${result.signal}`
+        : stderrText || `Process exited with code ${result.status}`;
+    throw new SandboxedProcessError(summary, result.status, stderr.toString('utf-8'), result.signal, stdout.toString('utf-8'));
+  }
+  return { stdout, stderr };
 }
