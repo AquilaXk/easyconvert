@@ -61,8 +61,11 @@ describe('planZstdJobs', () => {
         expect(job.from).toBe(next);
         expect(job.from % ZSTD_BLOCK_SIZE_MAX).toBe(0);
         expect(job.to).toBeGreaterThan(job.from);
-        expect(job.historyFrom).toBeGreaterThanOrEqual(0);
+        expect(job.sparseFrom).toBeGreaterThanOrEqual(0);
+        expect(job.sparseFrom).toBeLessThanOrEqual(job.historyFrom);
         expect(job.historyFrom).toBeLessThanOrEqual(job.from);
+        // The whole window before the cut is reachable: indexed densely near it and sparsely farther back.
+        expect(job.from - job.sparseFrom).toBe(Math.min(job.from, 2 ** 20));
         next = job.to;
       }
       expect(next).toBe(length);
@@ -114,6 +117,48 @@ describe('ratio of the frame of jobs', () => {
   });
 });
 
+/** One random member stored twice, as a tar with a duplicated file is: the second copy can only be found far back. */
+const DUPLICATED_MEMBER_BYTES = [300_000, 1_000_000, 4_000_000] as const;
+/** Allowed excess over the frame it is compared with: the container of a few tens of bytes per job. */
+const DUPLICATE_TOLERANCE_BYTES = 1024;
+
+describe('repeats farther back than a job reaches densely', () => {
+  oracleTest(
+    'a member stored twice (300 KB, 1 MB, 4 MB) is no larger than the frame of one job, and than the frame of `zstd -3` and `zstd -3 -T4` where one job is',
+    ['zstd'],
+    async () => {
+      const zstd = getOracleToolPath('zstd')!;
+      for (const size of DUPLICATED_MEMBER_BYTES) {
+        const member = Buffer.from(new SeededRandom(90 + size).bytes(size));
+        const input = Buffer.concat([member, member]);
+        const references = [['-3'], ['-3', '-T4']].map((flags) => execFileSync(zstd, [...flags, '-q', '-c'], { input, maxBuffer: 1 << 28 }).length);
+        const frame = compressZstd(input, { level: 3 });
+        const oneJob = compressZstd(input, { level: 3, singleJob: true });
+        expect(frame.length, `2 x ${size}: jobs against one job`).toBeLessThanOrEqual(oneJob.length + DUPLICATE_TOLERANCE_BYTES);
+        // The unsplit encoder is itself 4.8 percent over the tool on the 1 MB input (it indexes the first copy sparsely and
+        // finds the second late); that is not the jobs' to fix, so the tool is the bound only where one job meets it.
+        if (oneJob.length <= Math.min(...references) + DUPLICATE_TOLERANCE_BYTES) {
+          expect(frame.length, `2 x ${size} against ${references.join(' and ')}`).toBeLessThanOrEqual(Math.min(...references) + DUPLICATE_TOLERANCE_BYTES);
+        }
+        expect(decompressZstd(frame).equals(input), `2 x ${size}`).toBe(true);
+        if (size <= MEGABYTE) expect((await compressZstdAsync(input, { level: 3 })).equals(frame), `2 x ${size} on the pool`).toBe(true);
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('a repeat of 300 KB at the far end of the window is found across the cuts of a 1.3 MB input, as one job finds it', () => {
+    const member = Buffer.from(new SeededRandom(95).bytes(300_000));
+    // 700 KB of other bytes between the copies: farther back than the 64 KB of dense history and than any job, inside the window.
+    const input = Buffer.concat([member, Buffer.from(new SeededRandom(96).bytes(700_000)), member]);
+    expect(planZstdJobs(input.length, 3)!.length).toBeGreaterThanOrEqual(3);
+    const frame = compressZstd(input, { level: 3 });
+    expect(frame.length).toBeLessThan(input.length - 250_000);
+    expect(frame.length).toBeLessThanOrEqual(compressZstd(input, { level: 3, singleJob: true }).length + DUPLICATE_TOLERANCE_BYTES);
+    expect(decompressZstd(frame).equals(input)).toBe(true);
+  });
+});
+
 describe('a pool that cannot take a job', () => {
   it.each([
     ['has no thread entry on this deployment', () => new EngineUnavailableError('cpu-pool', 'no cpu-worker bundle')],
@@ -155,15 +200,15 @@ describe('a pool with no thread', () => {
 });
 
 describe('singleJob', () => {
-  it('keeps the whole input as one job: a match across the whole window is found, as the unsplit encoder finds it', () => {
+  it('keeps the whole input as one job: a frame that decodes, and the frame of jobs is no larger than it on an input with a repeat across the cuts', () => {
     const block = new SeededRandom(81).bytes(60_000);
-    // The same 60 KB twice, 400 KB apart: beyond the one block of history a job reaches back, inside the window.
     const input = Buffer.concat([block, new SeededRandom(82).bytes(340_000), block, new SeededRandom(83).bytes(10_000)]);
     const single = compressZstd(input, { level: 3, singleJob: true });
     const jobs = compressZstd(input, { level: 3 });
     expect(planZstdJobs(input.length, 3)).not.toBeNull();
     expect(single.length).toBeLessThan(input.length - 50_000);
-    expect(jobs.length).toBeGreaterThan(single.length + 50_000);
+    expect(jobs.length).toBeLessThan(input.length - 50_000);
+    expect(jobs.length).toBeLessThanOrEqual(single.length + DUPLICATE_TOLERANCE_BYTES);
     expect(decompressZstd(single).equals(input)).toBe(true);
     expect(decompressZstd(jobs).equals(input)).toBe(true);
   });

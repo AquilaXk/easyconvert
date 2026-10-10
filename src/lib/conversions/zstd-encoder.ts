@@ -238,6 +238,9 @@ class SequenceStore {
  */
 export interface ZstdJobStart {
   historyFrom: number;
+  /** With `sparseStride`: the window before `historyFrom` is indexed from here, every `sparseStride` positions. */
+  sparseFrom?: number;
+  sparseStride?: number;
   firstJob: boolean;
 }
 
@@ -311,8 +314,11 @@ class MatchFinder {
     const historyFrom = job?.historyFrom ?? 0;
     [this.rep1, this.rep2, this.rep3] = initialRepeatOffsets(job);
     this.nextInsert = historyFrom;
-    // Tables never need more slots than roughly two per byte of the region this finder sees.
-    const inputLog = Math.max(MIN_TABLE_LOG, 32 - Math.clz32(regionEnd - historyFrom) + 1);
+    // Tables never need more slots than roughly two per byte of the region this finder sees (the sparse part counted by its positions).
+    const sparseFrom = job?.sparseFrom ?? historyFrom;
+    const sparseStride = job?.sparseStride ?? 1;
+    const indexed = regionEnd - historyFrom + Math.ceil((historyFrom - sparseFrom) / sparseStride);
+    const inputLog = Math.max(MIN_TABLE_LOG, 32 - Math.clz32(indexed) + 1);
     const hashLog = Math.min(params.hashLog, inputLog);
     const chainLog = Math.min(params.chainLog, inputLog);
     this.head = takeTable(1 << hashLog).fill(NO_POSITION);
@@ -326,6 +332,21 @@ class MatchFinder {
     }
     this.chainReach = this.chainMask - HASH_READ_BYTES;
     this.insertEnd = data.length - HASH_READ_BYTES;
+    this.insertSparse(sparseFrom, historyFrom, sparseStride);
+  }
+
+  /** Indexes every `stride`-th position of [from, to): the far part of a job's window, where a repeat only needs to be found, not found at its first byte. */
+  private insertSparse(from: number, to: number, stride: number): void {
+    const d = this.data;
+    const head = this.head;
+    const chain = this.chain;
+    const chainMask = this.chainMask;
+    const stop = Math.min(to, this.insertEnd + 1);
+    for (let p = from; p < stop; p += stride) {
+      const h = this.hashOfWord(d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] << 24), p);
+      if (chain !== null) chain[p & chainMask] = head[h];
+      head[h] = p;
+    }
   }
 
   /** Hands the tables back for the next finder on this thread; the finder is not used afterwards. */

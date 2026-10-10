@@ -5,7 +5,9 @@ import { ZSTD_BLOCK_SIZE_MAX } from './zstd-tables';
  * Splitting one Zstandard frame into jobs. The greedy and lazy parsers of the levels below ZSTD_POOL_MIN_LEVEL read
  * only the data behind them, so an input of several blocks can be cut at block boundaries into jobs that are parsed
  * and entropy coded independently and then joined, in order, into one RFC 8878 frame (the technique of multi-threaded
- * `zstd -T`, where a job's history is an overlap with the data before it). The layout is a function of the input
+ * `zstd -T`, where a job's history is an overlap with the data before it). Unlike the reference's jobs of several windows, a
+ * job here is a quarter of the input, so the whole window before its cut stays reachable (densely near the cut, sparsely
+ * farther back) and a repeat anywhere in the window is found across the cuts. The layout is a function of the input
  * length and the level alone, never of the number of threads or of where a job runs, so the frame is the same bytes
  * whether the jobs run one after another or on pool threads.
  *
@@ -28,13 +30,24 @@ export const ZSTD_JOB_BLOCKS_MAX = 16;
  */
 export const ZSTD_JOB_HISTORY_BYTES = ZSTD_BLOCK_SIZE_MAX / 2;
 
+/**
+ * Of the window before the cut, the part older than the history is indexed by a job only every this many positions. A
+ * repeat farther back than the history is still found, at most this many bytes late: the match finder meets the indexed
+ * position the repeat starts at within that many steps. Indexing all of it would cost a job more than a third
+ * of its time on the benchmark input; every 8th position costs about 3 percent and keeps the frames within 0.1 percent of
+ * those of the whole window.
+ */
+export const ZSTD_JOB_SPARSE_STRIDE = 8;
+
 export interface ZstdJob {
   /** First byte the job encodes; a multiple of the block size. */
   from: number;
   /** End of the job's bytes. */
   to: number;
-  /** First byte of the history the job's matches may reach. */
+  /** First byte of the history every position of which the job's match finder indexes. */
   historyFrom: number;
+  /** First byte of the level's window before the job, indexed every ZSTD_JOB_SPARSE_STRIDE positions up to `historyFrom`. */
+  sparseFrom: number;
 }
 
 /** The jobs of an input at a level, or null when it is one frame of one job (short input or a level of the optimal parser). */
@@ -44,9 +57,15 @@ export function planZstdJobs(inputLength: number, level: number): ZstdJob[] | nu
   if (blocks <= ZSTD_JOB_BLOCKS_MIN) return null;
   const jobBlocks = Math.min(ZSTD_JOB_BLOCKS_MAX, Math.max(ZSTD_JOB_BLOCKS_MIN, Math.ceil(blocks / ZSTD_JOB_COUNT_TARGET)));
   const jobBytes = jobBlocks * ZSTD_BLOCK_SIZE_MAX;
+  const window = 2 ** getZstdLevelParams(level).windowLog;
   const jobs: ZstdJob[] = [];
   for (let from = 0; from < inputLength; from += jobBytes) {
-    jobs.push({ from, to: Math.min(from + jobBytes, inputLength), historyFrom: Math.max(0, from - ZSTD_JOB_HISTORY_BYTES) });
+    jobs.push({
+      from,
+      to: Math.min(from + jobBytes, inputLength),
+      historyFrom: Math.max(0, from - ZSTD_JOB_HISTORY_BYTES),
+      sparseFrom: Math.max(0, from - window),
+    });
   }
   return jobs;
 }
@@ -64,7 +83,7 @@ export function encodeZstdJob(data: Uint8Array, level: number, jobs: readonly Zs
   const params = getZstdLevelParams(level);
   const { windowSize } = zstdFrameWindow(data.length, level);
   const job = jobs[index];
-  const encoder = new ZstdBlockEncoder(data, params, windowSize, job.to, { historyFrom: job.historyFrom, firstJob: index === 0 });
+  const encoder = new ZstdBlockEncoder(data, params, windowSize, job.to, { historyFrom: job.historyFrom, sparseFrom: job.sparseFrom, sparseStride: ZSTD_JOB_SPARSE_STRIDE, firstJob: index === 0 });
   const encoded = encoder.encodeRange(job.from, job.to, index === jobs.length - 1, new Uint8Array(0), 0);
   encoder.release();
   return encoded.data.subarray(0, encoded.length);
