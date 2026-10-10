@@ -1858,7 +1858,7 @@
         "rel": 0.03
       },
       "ours": 54061,
-      "delta": -3098,
+      "delta": 284,
       "ratio": null
     },
     "pdf-ops/merge.pdf->pdf/page_count_error": {
@@ -1977,8 +1977,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 19766,
-      "delta": -1789,
+      "ours": 19408,
+      "delta": 471,
       "ratio": null
     },
     "pdf-ops/watermark.pdf->pdf/page_count_error": {
@@ -2015,6 +2015,26 @@
       "direction": "higher",
       "tolerance": {
         "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/watermark.pdf->pdf/stamp_geometry_matches_spec": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/watermark.pdf->pdf/stamp_ink_matches_reference": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
         "rel": 0
       },
       "ours": 1,
