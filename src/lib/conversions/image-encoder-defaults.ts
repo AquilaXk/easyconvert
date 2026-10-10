@@ -177,10 +177,12 @@ export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
 /**
  * What the JPEG encoder is asked for, by the picture's content. All three keep the encoder's optimal Huffman tables and
  * its overshoot deringing; they differ in the searches that cost the most time (benchmark corpus, 4 quality points,
- * BD-rate against ImageMagick's encoder; encode times are those of the 640 x 432 photograph and the 640 x 640 line art):
+ * BD-rate against ImageMagick's encoder; encode times are those of the 768 x 512 photograph, the 640 x 640 line art and
+ * the 1024 x 640 interface, measured on Linux with the prebuilt image library):
  *
- * - Photographs: baseline scan, trellis quantisation, table 3. The search for the best progressive scan script
- *   (`optimiseScans`) saves under 1% on a photograph (BD-rate -16.8% against -16.8% with it) and cost 4 ms of the 9.
+ * - Photographs: baseline scan, table 3, no trellis quantisation. The trellis saves another 8% of the bytes (BD-rate
+ *   -19.9% PSNR against -12.4% without it) and costs 5.6 ms of the 7.6 ms encode, which made the row slower than the
+ *   reference encoder, whose whole run takes 10 ms. Without it the BD-rate stays 12% ahead in PSNR and 11% in SSIM.
  * - Grey graphics (one component): baseline scan, table 2, no trellis. The scan search costs 7 ms of 11 on a picture that
  *   has a single plane and still saves under 5% of the bytes (BD-rate -18.8% PSNR / -45.3% SSIM with the search; the
  *   difference stays far below the reference).
@@ -192,7 +194,7 @@ export function jpegOptionsFor(requestedQuality: number | undefined, content: Co
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
   const chromaSubsampling = jpegChromaFor(quality, content);
   const common = { quality, chromaSubsampling, optimiseCoding: true, overshootDeringing: true } satisfies JpegOptions;
-  if (content === 'photo') return { ...common, progressive: false, trellisQuantisation: true, quantisationTable: PHOTO_JPEG_QUANTISATION_TABLE };
+  if (content === 'photo') return { ...common, progressive: false, trellisQuantisation: false, quantisationTable: PHOTO_JPEG_QUANTISATION_TABLE };
   // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,
   // with table 2, the file is 10% smaller than the reference encoder's at equal PSNR, where it was 9% larger.
   // Overshoot deringing stays on: switching it off costs 1.5 dB on text and rules.

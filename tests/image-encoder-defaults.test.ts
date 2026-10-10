@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { classifyContent } from '../src/lib/conversions/image-content';
+import { classifyContent, classifyRaster, type Raster } from '../src/lib/conversions/image-content';
 import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
@@ -88,6 +88,42 @@ describe('content classification', () => {
     expect(await classifyContent(sharp(await svgPng(lineBody)))).toBe('graphic');
     expect(await classifyContent(sharp(await svgPng(uiBody)))).toBe('graphic');
     expect(await classifyContent(sharp(await photoPng()))).toBe('photo');
+  });
+});
+
+describe('content classification of decoded samples', () => {
+  /** The samples a plain PNG decodes to, in the layout `decodePlainPngOnce` hands over. */
+  async function rasterOf(png: Buffer): Promise<Raster> {
+    const meta = await sharp(png).metadata();
+    const deep = meta.depth === 'ushort';
+    const { data, info } = await sharp(png).toColourspace(meta.space as string).raw({ depth: deep ? 'ushort' : 'uchar' }).toBuffer({ resolveWithObject: true });
+    const samples = deep ? new Uint16Array(data.buffer, data.byteOffset, data.length / 2) : new Uint8Array(data.buffer, data.byteOffset, data.length);
+    return { samples, width: info.width, height: info.height, channels: info.channels };
+  }
+
+  const corpus = (name: string): Buffer => readFileSync(path.join(__dirname, '..', 'bench', 'corpus', name));
+  const pictures: Array<[string, () => Promise<Buffer>, 'graphic' | 'photo']> = [
+    ['text', () => svgPng(textBody), 'graphic'],
+    ['line art', () => svgPng(lineBody), 'graphic'],
+    ['interface', () => svgPng(uiBody), 'graphic'],
+    ['photograph', photoPng, 'photo'],
+    ['photograph in 16 bits', async () => sharp(await photoPng()).toColourspace('rgb16').png().toBuffer(), 'photo'],
+    ['interface in 16 bits with alpha', async () => sharp(await svgPng(uiBody)).toColourspace('rgb16').ensureAlpha().png().toBuffer(), 'graphic'],
+    ['grey line art', async () => sharp(await svgPng(lineBody)).toColourspace('b-w').png().toBuffer(), 'graphic'],
+    ['16-bit grey line art with alpha', async () => sharp(await svgPng(lineBody)).toColourspace('grey16').ensureAlpha().png().toBuffer(), 'graphic'],
+    ['benchmark screenshot (16-bit colour with alpha)', async () => corpus('screenshot.png'), 'graphic'],
+    ['benchmark line art (16-bit grey with alpha)', async () => corpus('lineart.png'), 'graphic'],
+    ['benchmark photograph', async () => corpus('photo-b.png'), 'photo'],
+  ];
+
+  it.each(pictures)('%s: the class of the samples is the class of the pipeline', async (_name, make, expected) => {
+    const png = await make();
+    expect(await classifyContent(sharp(png))).toBe(expected);
+    expect(classifyRaster(await rasterOf(png))).toBe(expected);
+  });
+
+  it('calls a picture one column wide a photo, as the thumbnail of one column has no pair to compare', () => {
+    expect(classifyRaster({ samples: new Uint8Array(3 * 40), width: 1, height: 40, channels: 3 })).toBe('photo');
   });
 });
 
