@@ -204,7 +204,7 @@ export interface ParityOptions {
   nightlyOnly?: Readonly<Record<string, Pick<AbNightlyOnly, 'reason'>>>;
   /**
    * The gap file of the base the change is measured against. When given, every gap entry that is new or changed
-   * against it, in a family this report measures, must be backed by the speed rows of this report (bench/config.ts,
+   * against it, in a family whose rows this report holds, must be backed by the speed rows of this report (bench/config.ts,
    * GAP_BACKING_LOG_MARGIN). The entries of the families it does not measure are left to the run that measures them.
    */
   baseGaps?: GapFile;
@@ -353,8 +353,9 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
   if (options.baseGaps) {
     const baseById = gapIndex(options.baseGaps);
     const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
-    // A shard measures its own families only; the entries of the others are backed by the shards that measure them.
-    const measuredFamilies = new Set<string>(report.families);
+    // A shard measures its own families only; the entries of the others are backed by the shards that measure them. The
+    // families are those of the rows: report.families is written by the change's own runner and says nothing the rows do not.
+    const measuredFamilies = new Set<string>(report.rows.map((row) => row.family));
     for (const gap of gaps.gaps) {
       const base = baseById.get(gap.id);
       if (!measuredFamilies.has(gap.id.split('/')[0]) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;

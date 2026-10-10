@@ -118,6 +118,22 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "benchmark families: ${families:-none}; without bench rows: ${unmapped:-none}"
 
+      # A speed shard backs the gap entries of its own family only, so each family of a changed gap entry needs a shard.
+      # The families come from the base's family map and gap file: the change cannot map its entries away from their shard.
+      - name: Require a speed shard for every changed gap entry
+        id: shards
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FAMILIES: ${{ steps.families.outputs.families }}
+        run: |
+          if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "no comparable base commit: every family is measured"
+            exit 0
+          fi
+          node scripts/ci-parity-shards.mjs "$FAMILIES"
+
   # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
   # type-checks). They run in their own job so the tool install does not delay them.
   checks:

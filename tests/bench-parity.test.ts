@@ -598,9 +598,17 @@ describe('a parity run on a saved report', () => {
       expect(bypass.code).toBe(3);
       expect(bypass.verdict.parity.rows.filter((candidate) => candidate.basis === 'gap-not-backed').map((candidate) => candidate.id)).toEqual([SPEED_ID]);
       // A shard that measures pdf-ops, and does not measure the entry, still refuses it.
-      const measuredElsewhere = await run(slow(), { baseline: baselineEntries(0.5), gaps: [pdf], baseGaps: [], families: ['image', 'pdf-ops'] });
+      const pdfRow = row({ id: 'pdf-ops/extract.pdf->pdf/throughput', direction: 'higher', kind: 'throughput', ours: 10, reference: 20, ratio: 0.5, runs: 9, speedVerdict: 'fail', ratioLow: 0.4, ratioHigh: 0.6, ratioMedian: 0.5, tolerance: { abs: 0, rel: 0.35 } });
+      const measuredElsewhere = await run([...slow(), pdfRow], { baseline: baselineEntries(0.5), gaps: [pdf], baseGaps: [], families: ['image', 'pdf-ops'] });
       expect(measuredElsewhere.code).toBe(3);
       expect(measuredElsewhere.lines.some((line) => line.includes('this run did not measure pdf-ops/split.pdf->pdf/throughput'))).toBe(true);
+    });
+
+    it('takes the measured families from the rows, not from the families the report claims', async () => {
+      // The head writes report.families; an empty list there must not switch the check off for the rows that were measured.
+      const bypass = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [], families: [] });
+      expect(bypass.code).toBe(3);
+      expect(bypass.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
     });
 
     it('checks an edit of a ratio, and leaves an entry the base already has as it is recorded', async () => {

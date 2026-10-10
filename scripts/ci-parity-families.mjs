@@ -167,7 +167,7 @@ export function changedRowIds(kind, before, after) {
 const ABSENT_AT_BASE = /does not exist in|exists on disk, but not in/;
 
 /** The text of `file` at `sha`: null when the commit has no such file, an error when the commit cannot be read. */
-function gitShow(sha, file, root) {
+export function gitShow(sha, file, root) {
   execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
   try {
     return execFileSync('git', ['show', `${sha}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
