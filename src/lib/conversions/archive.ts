@@ -2088,7 +2088,7 @@ export async function packXzAsync(
 }
 
 /**
- * Pure TypeScript .xz unpacker: any number of blocks and streams, LZMA2 only, every check verified.
+ * Pure TypeScript .xz unpacker: any number of blocks and streams, branch and Delta filters in front of LZMA2, every check verified.
  */
 export function unpackXz(buf: Buffer): Buffer {
   return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
@@ -2137,6 +2137,18 @@ export async function compressXzAsync(
   return packXzAsync(inputBuffer, options, runtime);
 }
 
+/**
+ * Memory the native `xz` may use to decode: far above any preset (the largest, -9, needs 65 MiB), far below the
+ * 1.5 GiB a header can announce. A stream that asks for more is decoded by the in-process reader, whose memory follows
+ * the decoded output (capped below) and not the dictionary size.
+ */
+const NATIVE_XZ_MEMLIMIT_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Decodes an .xz file. The native `xz` does the work when it is installed; when it cannot (it refused the stream, hit
+ * the memory limit, or is an older build without a filter the file uses) the in-process reader decodes it or names
+ * the defect with a typed error. Output past the byte cap is a 413 from either.
+ */
 export function decompressXz(inputBuffer: Buffer): Buffer {
   if (inputBuffer.length < 32) {
     throw new CorruptStreamError('Invalid XZ archive: buffer too small');
@@ -2144,11 +2156,17 @@ export function decompressXz(inputBuffer: Buffer): Buffer {
   const xzBin = getXzBinaryPath();
   if (xzBin) {
     try {
-      return execFileSync(xzBin, ['-d', '-c', '-q'], {
+      return execFileSync(xzBin, ['-d', '-c', '-q', `--memlimit-decompress=${NATIVE_XZ_MEMLIMIT_BYTES}`], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
       });
-    } catch {}
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOBUFS') {
+        throw new DecompressionLimitError(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+    }
   }
   return unpackXz(inputBuffer);
 }
@@ -4016,6 +4034,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );

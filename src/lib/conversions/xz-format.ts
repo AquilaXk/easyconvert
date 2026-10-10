@@ -1,13 +1,27 @@
 import { createHash } from 'node:crypto';
-import { CorruptStreamError, DecompressionLimitError, UnsupportedOptionError } from '../types';
+import { CorruptStreamError, DecompressionLimitError, UnsupportedArchiveMethodError } from '../types';
+import {
+  decodeArm,
+  decodeArm64,
+  decodeArmThumb,
+  decodeDelta,
+  decodeIa64,
+  decodePowerPc,
+  decodeSparc,
+  decodeX86,
+} from './archive-sevenzip-filters';
 import { crc32 } from './crc32';
 import { decodeLzma2At } from './lzma-decoder';
 
 /**
- * The .xz file format, version 1.1.0 (Lasse Collin's specification): stream header, blocks with a header listing the
+ * The .xz file format, version 1.2.0 (Lasse Collin's specification): stream header, blocks with a header listing the
  * filter chain, the LZMA2 payload and a check, an index, and a stream footer. Writing produces one stream with one
  * block and a CRC-32 check. Reading accepts what real encoders write: any number of blocks and concatenated streams
- * (with the zero padding between them), CRC-32, CRC-64, SHA-256 or no check, and LZMA2 as the only filter.
+ * (with the zero padding between them), CRC-32, CRC-64, SHA-256 or no check, and a filter chain of x86, PowerPC,
+ * IA-64, ARM, ARM Thumb, ARM64 or SPARC branch filters and Delta in front of LZMA2. Memory follows the decoded output,
+ * which is capped by the caller, never the dictionary size a header announces, so a header that asks for gigabytes of
+ * dictionary costs nothing; a dictionary byte outside 0..40 is malformed. A check type, filter or option this reader
+ * does not decode is an UnsupportedArchiveMethodError (422): the bytes are never returned unverified or undecoded.
  */
 
 const HEADER_MAGIC = Uint8Array.of(0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00);
@@ -20,6 +34,17 @@ const CHECK_CRC32 = 0x01;
 const CHECK_CRC64 = 0x04;
 const CHECK_SHA256 = 0x0a;
 const FILTER_LZMA2 = 0x21;
+const FILTER_DELTA = 0x03;
+const FILTER_X86 = 0x04;
+const FILTER_POWERPC = 0x05;
+const FILTER_IA64 = 0x06;
+const FILTER_ARM = 0x07;
+const FILTER_ARM_THUMB = 0x08;
+const FILTER_SPARC = 0x09;
+const FILTER_ARM64 = 0x0a;
+const LZMA2_DICTIONARY_BYTE_MAX = 40;
+const DELTA_PROPS_BYTES = 1;
+const BRANCH_START_PROPS_BYTES = 4;
 const BLOCK_HEADER_MIN_BYTES = 8;
 const INDEX_INDICATOR = 0x00;
 const VARINT_MAX_BYTES = 9;
@@ -139,7 +164,7 @@ function checkSize(type: number): number {
   if (type === CHECK_CRC32) return 4;
   if (type === CHECK_CRC64) return 8;
   if (type === CHECK_SHA256) return 32;
-  throw new UnsupportedOptionError(`XZ check type ${type} is not supported`);
+  throw new UnsupportedArchiveMethodError(`XZ check type ${type} is not supported`);
 }
 
 function verifyCheck(type: number, data: Uint8Array, stored: Uint8Array): void {
@@ -225,11 +250,44 @@ function readVarint(buf: Uint8Array, pos: number, limit: number): VarintRead {
   throw xzError('variable-length integer is too long');
 }
 
+/** A filter in front of LZMA2, in the order the encoder applied it. */
+interface BlockFilter {
+  id: number;
+  /** Start offset of a branch filter, or the distance of Delta. */
+  parameter: number;
+}
+
 interface BlockHeader {
   size: number;
   compressedSize?: number;
   uncompressedSize?: number;
   dictionaryByte: number;
+  filters: BlockFilter[];
+}
+
+type InPlaceFilter = (buffer: Uint8Array, parameter: number) => void;
+
+/** Branch filters and Delta as they run when decoding, with the alignment a start offset must have. */
+const FILTER_DECODERS = new Map<number, { decode: InPlaceFilter; alignment: number }>([
+  [FILTER_X86, { decode: decodeX86, alignment: 1 }],
+  [FILTER_POWERPC, { decode: decodePowerPc, alignment: 4 }],
+  [FILTER_IA64, { decode: decodeIa64, alignment: 16 }],
+  [FILTER_ARM, { decode: decodeArm, alignment: 4 }],
+  [FILTER_ARM_THUMB, { decode: decodeArmThumb, alignment: 2 }],
+  [FILTER_SPARC, { decode: decodeSparc, alignment: 4 }],
+  [FILTER_ARM64, { decode: decodeArm64, alignment: 4 }],
+]);
+
+function readFilterParameter(id: number, props: Uint8Array): number {
+  if (id === FILTER_DELTA) {
+    if (props.length !== DELTA_PROPS_BYTES) throw xzError('invalid Delta filter properties');
+    return props[0] + 1;
+  }
+  if (props.length === 0) return 0;
+  if (props.length !== BRANCH_START_PROPS_BYTES) throw xzError('invalid branch filter properties');
+  const start = (props[0] | (props[1] << 8) | (props[2] << 16) | (props[3] << 24)) >>> 0;
+  if (start % (FILTER_DECODERS.get(id)?.alignment ?? 1) !== 0) throw xzError('branch filter start offset is not aligned');
+  return start;
 }
 
 function parseBlockHeader(buf: Uint8Array, offset: number): BlockHeader {
@@ -254,16 +312,41 @@ function parseBlockHeader(buf: Uint8Array, offset: number): BlockHeader {
     pos = read.next;
   }
   const filterCount = (flags & BLOCK_FLAG_FILTER_COUNT_MASK) + 1;
-  if (filterCount !== 1) throw new UnsupportedOptionError('XZ blocks with a filter chain before LZMA2 are not supported');
-  const id = readVarint(buf, pos, end);
-  if (id.value !== FILTER_LZMA2) throw new UnsupportedOptionError(`XZ filter 0x${id.value.toString(16)} is not supported`);
-  const propsSize = readVarint(buf, id.next, end);
-  if (propsSize.value !== LZMA2_PROPS_BYTES || propsSize.next + LZMA2_PROPS_BYTES > end) throw xzError('invalid LZMA2 filter properties');
-  const dictionaryByte = buf[propsSize.next];
-  for (let i = propsSize.next + LZMA2_PROPS_BYTES; i < end; i++) {
+  const filters: BlockFilter[] = [];
+  let dictionaryByte = -1;
+  for (let index = 0; index < filterCount; index++) {
+    const id = readVarint(buf, pos, end);
+    const propsSize = readVarint(buf, id.next, end);
+    const propsEnd = propsSize.next + propsSize.value;
+    if (propsEnd > end) throw xzError('filter properties run past the block header');
+    const props = buf.subarray(propsSize.next, propsEnd);
+    pos = propsEnd;
+    const isLast = index === filterCount - 1;
+    if (id.value === FILTER_LZMA2) {
+      if (!isLast) throw xzError('LZMA2 must be the last filter');
+      if (props.length !== LZMA2_PROPS_BYTES) throw xzError('invalid LZMA2 filter properties');
+      dictionaryByte = props[0];
+      if (dictionaryByte > LZMA2_DICTIONARY_BYTE_MAX) throw xzError(`LZMA2 dictionary size byte ${dictionaryByte} is out of range`);
+    } else if (id.value === FILTER_DELTA || FILTER_DECODERS.has(id.value)) {
+      if (isLast) throw new UnsupportedArchiveMethodError('XZ blocks that do not end in LZMA2 are not supported');
+      filters.push({ id: id.value, parameter: readFilterParameter(id.value, props) });
+    } else {
+      throw new UnsupportedArchiveMethodError(`XZ filter 0x${id.value.toString(16)} is not supported`);
+    }
+  }
+  for (let i = pos; i < end; i++) {
     if (buf[i] !== 0) throw xzError('block header padding is not zero');
   }
-  return { size, compressedSize, uncompressedSize, dictionaryByte };
+  return { size, compressedSize, uncompressedSize, dictionaryByte, filters };
+}
+
+/** Undoes the filters of a block, last applied first, on the decoded LZMA2 output (which keeps its size). */
+function undoFilters(filters: BlockFilter[], data: Uint8Array): void {
+  for (let i = filters.length - 1; i >= 0; i--) {
+    const filter = filters[i];
+    if (filter.id === FILTER_DELTA) decodeDelta(data, filter.parameter);
+    else (FILTER_DECODERS.get(filter.id) as { decode: InPlaceFilter }).decode(data, filter.parameter);
+  }
 }
 
 interface IndexRecord {
@@ -327,6 +410,7 @@ export function unpackXzStream(buf: Uint8Array, maxOutput: number): Buffer {
       const block = parseBlockHeader(buf, pos);
       const dataStart = pos + block.size;
       const decoded = decodeLzma2At(buf, dataStart, maxOutput - total, block.uncompressedSize);
+      undoFilters(block.filters, decoded.output);
       const compressedSize = decoded.end - dataStart;
       if (block.compressedSize !== undefined && block.compressedSize !== compressedSize) throw xzError('block compressed size mismatch');
       const padding = pad4(compressedSize);
