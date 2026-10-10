@@ -95,9 +95,48 @@ our side runs in-process and its JIT needs them; one for video, OCR and office),
 reference time to our time. The interval is the sign-test interval of the median ratio, taken from the order
 statistics of the sorted ratios (`bench/speed-parity.ts`): 95 percent coverage, no distribution assumption, no random
 numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound is below 0.97, otherwise UNSTABLE: four
-more pairs are added, up to 25 for light rows and 12 for video, OCR and office. An interval that still straddles 0.97 at
-the cap is a failure. The interval of a median is as wide as the noise of a single pair, so a row whose true ratio
-sits at the pass line ends UNSTABLE: ours has to be clearly at or above the reference, not merely not behind it.
+more pairs are added, up to 25 for light rows and 12 for video, OCR and office, and then (second cap) up to 50 and 36
+(`SPEED_LIGHT_EXTENDED_MAX_PAIRS`, `SPEED_HEAVY_EXTENDED_MAX_PAIRS`; the interval is exact up to 64 pairs). The extension
+is sequential sampling: only a row still undecided at the first cap pays for it, and it stops at the first decision.
+
+**A row undecided at the second cap** sits at the pass line within the noise of one run (its true ratio is within a
+percent or two of 0.97), and failing it says nothing about the change under test. It is judged by its median, as a gate
+that must not fail on noise is, and by whether the run shows a regression:
+
+| Median ratio | Upper bound of the interval against the ratio recorded for the row (`bench/baseline.json`, set from CI) | Verdict |
+|---|---|---|
+| at least 0.97 | not below the recorded ratio times exp(-0.22) (`SPEED_REGRESSION_LOG_MARGIN`, twice the run-to-run spread) | PASS, basis `speed-pass-at-median` |
+| at least 0.97 | below that limit | FAIL, `speed-regressed-at-cap` |
+| at least 0.97 | the row has no recorded ratio | PASS |
+| below 0.97 | any | FAIL, `speed-unstable-at-cap` |
+
+A row listed in `bench/parity-gaps.json` keeps its own rule (its history). The recorded ratio comes from CI runs, so
+the check compares the run with the runner's own earlier numbers. It cannot see a regression smaller than the run-to-run
+spread of one row (about 11 percent in log ratio, `SPEED_HISTORY_MIN_LOG_SPREAD`); a row that lost 10 percent is caught by
+the interval itself when it lands below 0.97 (below), and one that stays at or above the line stays at parity, which is
+what the gate promises. Measuring the base build in the same job would remove that blind spot, but it needs the product
+loaded in two versions in one process (the families import the engines directly) and a second install and build
+(minutes per run), so it is left to a follow-up (#700).
+
+**False-failure rate** of the rule, from the real procedure on simulated rows (5 percent noise per pair, the width of
+the intervals CI recorded for near-parity rows; 1000 trials per cell with fixed seeds, and
+`tests/bench-speed-gate-rate.test.ts` repeats the parity, 0.99, slowdown and clear cases with 500):
+
+| True speed ratio | Light rows, before | Light rows, now | Heavy rows, before | Heavy rows, now |
+|---|---|---|---|---|
+| 1.00 (parity) | 0.8% | 0.1% | 3.7% | 0.1% (36 pairs) |
+| 0.99 | 5.3% | 0.7% | 10.8% | 2.0% |
+| 0.98 | 21.1% | 10.8% | 25.0% | 15.7% |
+| 0.97 (the pass line) | 48.9% | 49.0% | 48.0% | 47.5% |
+| 0.92 or 0.90 (a 8 or 10 percent slowdown from parity) | 100% | 100% | 100% | 100% |
+
+A row exactly at 0.97 fails half of the time under any rule; the rule removes the failures of rows at or just above
+parity and leaves every real shortfall failing. Replaying the last 10 CI speed reports (8 nightly and 1 pull-request run
+of the branch that edits the gate, and the nightly run before them; the pairs behind each interval are not kept, so
+the replay applies only the verdict rule to the interval each report recorded, without the extension): 372 speed rows,
+9 rows undecided at the cap in untracked families, of which the 4 whose median was at or above 0.97 (including the two
+that failed `parity speed` of #697: `image/photo-a.jpg->webp` and `video/clip.mp4->hevc`) pass, and the 5 with a median
+of 0.947 to 0.967 (audio rows in the four oldest reports, before the audio speed-up landed) still fail, as they should.
 **Minimum sample duration.** A timed sample of either side lasts at least `SPEED_MIN_SAMPLE_MS` (50 ms). Before the
 timed pairs, the warm-up rounds of a row are timed; the fastest single call of each side sets the number of back-to-back
 calls per sample, `ceil(50 / fastest call)` with at least 1 and at most `SPEED_MAX_SAMPLE_REPEATS` (1000), and each sample is

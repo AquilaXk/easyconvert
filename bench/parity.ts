@@ -1,4 +1,4 @@
-import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
+import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, SPEED_REGRESSION_LOG_MARGIN, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
@@ -34,6 +34,8 @@ export type ParityBasis =
   | 'speed-pass'
   | 'speed-below-reference'
   | 'speed-unstable-at-cap'
+  | 'speed-pass-at-median'
+  | 'speed-regressed-at-cap'
   | 'tracked-gap'
   | 'tracked-short-history'
   | 'tracked-now-at-parity'
@@ -121,7 +123,7 @@ function describeDirect(row: BenchRow, d: Direct): string {
 
 type SpeedJudgement = Omit<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'gap'>;
 
-function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, recordedRatio: number | null): SpeedJudgement {
   if (row.speedVerdict === undefined) {
     throw new ParityInputError(`${row.id} is a throughput row without a speed decision; measure it with --parity`);
   }
@@ -168,7 +170,19 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
     return { outcome: 'pass', basis: 'tracked-gap', detail: `${interval}; below the reference, tracked (issue #${tracked.issue}), median not below ${limit}`, ...none };
   }
   if (row.unstableAtCap) {
-    return { outcome: 'fail', basis: 'speed-unstable-at-cap', detail: `${interval}; the interval still straddled ${show(line)} at the cap on pairs, which counts as a failure`, ...none };
+    // Undecided after the second cap: the row sits at the pass line within the noise of a run. It passes on its median
+    // unless the run shows a credible regression against the ratio recorded for the row.
+    const median = row.ratioMedian ?? row.ratio ?? 0;
+    if (median >= line) {
+      const upper = row.ratioHigh ?? median;
+      const credibleLimit = recordedRatio === null ? null : recordedRatio * Math.exp(-SPEED_REGRESSION_LOG_MARGIN);
+      if (credibleLimit !== null && upper < credibleLimit) {
+        return { outcome: 'fail', basis: 'speed-regressed-at-cap', detail: `${interval}; undecided at the last cap, but the upper bound ${show(upper)} is below ${show(credibleLimit)}, the recorded ratio ${show(recordedRatio as number)} less the run-to-run margin: a regression`, ...none };
+      }
+      const against = recordedRatio === null ? 'the row has no recorded ratio to regress from' : `the upper bound ${show(upper)} is not below ${show(credibleLimit as number)}, the recorded ratio ${show(recordedRatio)} less the run-to-run margin`;
+      return { outcome: 'pass', basis: 'speed-pass-at-median', detail: `${interval}; undecided at the last cap, passed on its median at or above ${show(line)}: ${against}`, ...none };
+    }
+    return { outcome: 'fail', basis: 'speed-unstable-at-cap', detail: `${interval}; undecided at the last cap with its median ${show(median)} below ${show(line)}, which counts as a failure`, ...none };
   }
   return { outcome: 'fail', basis: 'speed-below-reference', detail: `${interval}; the upper bound is below ${show(line)}, so ours is slower than the reference`, ...none };
 }
@@ -179,6 +193,8 @@ export interface ParityOptions {
    * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
    */
   baseGaps?: GapFile;
+  /** The ratio each speed row had when last recorded from CI (bench/baseline.json); a row without one cannot regress from it. */
+  recordedRatios?: ReadonlyMap<string, number | null>;
 }
 
 const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
@@ -232,7 +248,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       continue;
     }
     if (row.kind === 'throughput') {
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null) });
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options.recordedRatios?.get(row.id) ?? null) });
       continue;
     }
     const siblings = byCase.get(caseKey(row)) ?? [];

@@ -287,11 +287,12 @@ function judgeParity(report: BenchReport, options: CliOptions, out: (line: strin
     if (scope === 'both') return true;
     return scope === 'speed' ? entry.ratio !== null : entry.ratio === null;
   };
-  const gate = evaluateGate(report, readBaseline(options.baselinePath), { families: new Set(options.families), include });
+  const baseline = readBaseline(options.baselinePath);
+  const gate = evaluateGate(report, baseline, { families: new Set(options.families), include });
   printGate(gate, out);
   // A quality-only run measures no speed, so it cannot back a gap entry; the speed run of the same change does.
   const baseGaps = options.baseGapsPath && scope !== 'quality' ? readGaps(options.baseGapsPath) : undefined;
-  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps });
+  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, recordedRatios: new Map(Object.entries(baseline.entries).map(([id, entry]) => [id, entry.ratio] as const)) });
   for (const line of failureLines(parity)) out(line);
   for (const line of renderParityText(parity)) out(line);
 

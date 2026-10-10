@@ -69,6 +69,13 @@ export const SPEED_LIGHT_MAX_PAIRS = 25;
 /** The same for video, OCR and office rows, which take seconds per run. */
 export const SPEED_HEAVY_INITIAL_PAIRS = 6;
 export const SPEED_HEAVY_MAX_PAIRS = 12;
+/**
+ * A row still undecided at its cap collects pairs up to this second cap (sequential sampling that stops as soon as the
+ * interval decides). It is at most the 64 pairs the sign-test interval is exact for. Only rows whose interval straddles the pass
+ * line at the first cap reach it, so a row that decides early costs nothing.
+ */
+export const SPEED_LIGHT_EXTENDED_MAX_PAIRS = 50;
+export const SPEED_HEAVY_EXTENDED_MAX_PAIRS = 36;
 /** Paired runs added each time the interval straddles the pass line. */
 export const SPEED_PAIRS_STEP = 4;
 /**
@@ -118,6 +125,13 @@ export const SPEED_GAP_FLOOR = 0.65;
  * points does not call every small rise a step. It is the per-run spread measured on the runner (see SPEED_GAP_FLOOR).
  */
 export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.11;
+/**
+ * A row still undecided at the second cap passes when its median ratio is at or above the pass line and the run shows no
+ * credible regression against the ratio recorded for the row in bench/baseline.json: the upper end of its interval is
+ * not below the recorded ratio by more than this log margin. The margin is twice SPEED_HISTORY_MIN_LOG_SPREAD, the
+ * spread of one row's ratio from one CI run to the next, so the recorded number and this run differ by noise inside it.
+ */
+export const SPEED_REGRESSION_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
 /**
  * A run this many times above the geometric mean of a history is a step: a speed-up that landed on main, after which the
  * older points describe code that no longer exists. A run of unchanged code rose by as much as 1.33 times over the run

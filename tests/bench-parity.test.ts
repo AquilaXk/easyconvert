@@ -161,12 +161,47 @@ describe('speed rows', () => {
     expect(verdict.detail).toContain('9 pairs');
   });
 
-  it('fails a row that is slower, and one that stayed unstable at the cap', () => {
+  it('fails a row that is slower', () => {
     const slower = evaluateParity(report([speed({ speedVerdict: 'fail', ratioLow: 0.5, ratioHigh: 0.6, ratioMedian: 0.54 })]), NO_GAPS).rows[0];
     expect(slower).toMatchObject({ outcome: 'fail', basis: 'speed-below-reference' });
-    const unstable = evaluateParity(report([speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: 0.9, ratioHigh: 1.1, ratioMedian: 1 })]), NO_GAPS).rows[0];
-    expect(unstable).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
-    expect(unstable.detail).toContain('cap');
+  });
+
+  describe('a row still undecided at its last cap', () => {
+    const undecided = (median: number, low: number, high: number): BenchRow => speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: low, ratioHigh: high, ratioMedian: median, runs: 50 });
+    const ID = 'compression/mixed.tar->zst/throughput';
+    const verdictOf = (row: BenchRow, recorded: number | null): { outcome: string; basis: string; detail: string } => {
+      const found = evaluateParity(report([row]), NO_GAPS, { recordedRatios: new Map([[ID, recorded]]) }).rows[0];
+      return { outcome: found.outcome, basis: found.basis, detail: found.detail };
+    };
+
+    it('passes on its median at or above the pass line when it has not regressed from its recorded ratio', () => {
+      expect(verdictOf(undecided(0.978, 0.958, 1.008), 0.99)).toMatchObject({ outcome: 'pass', basis: 'speed-pass-at-median' });
+      expect(verdictOf(undecided(0.985, 0.969, 0.995), 1)).toMatchObject({ outcome: 'pass', basis: 'speed-pass-at-median' });
+      expect(verdictOf(undecided(0.97, 0.9, 1.05), 1.02).outcome).toBe('pass');
+    });
+
+    it('passes a row that has no recorded ratio to regress from', () => {
+      expect(verdictOf(undecided(0.98, 0.95, 1.01), null)).toMatchObject({ outcome: 'pass', basis: 'speed-pass-at-median' });
+      expect(evaluateParity(report([undecided(0.98, 0.95, 1.01)]), NO_GAPS).rows[0]).toMatchObject({ outcome: 'pass', basis: 'speed-pass-at-median' });
+    });
+
+    it('fails when its median is below the pass line', () => {
+      expect(verdictOf(undecided(0.96, 0.94, 0.99), 0.98)).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
+      expect(verdictOf(undecided(0.9699, 0.9, 1.05), null).outcome).toBe('fail');
+    });
+
+    it('fails when the median clears the line but the run shows a credible regression from the recorded ratio', () => {
+      // Recorded 1.4: the run-to-run margin is about 20 percent, so an upper bound under 1.12 is a regression, not noise.
+      const regressed = verdictOf(undecided(0.98, 0.95, 1.05), 1.4);
+      expect(regressed).toMatchObject({ outcome: 'fail', basis: 'speed-regressed-at-cap' });
+      expect(regressed.detail).toContain('a regression');
+      expect(verdictOf(undecided(0.98, 0.95, 1.15), 1.4).outcome).toBe('pass');
+    });
+
+    it('does not change a row the interval decided', () => {
+      expect(evaluateParity(report([speed({ speedVerdict: 'pass', ratioLow: 1.0, ratioHigh: 1.2, ratioMedian: 1.1 })]), NO_GAPS).rows[0].basis).toBe('speed-pass');
+      expect(evaluateParity(report([speed({ speedVerdict: 'fail', ratioLow: 0.8, ratioHigh: 0.9, ratioMedian: 0.85 })]), NO_GAPS).rows[0].basis).toBe('speed-below-reference');
+    });
   });
 
   it('refuses a throughput row that carries no speed decision', () => {
@@ -473,6 +508,28 @@ describe('a parity run on a saved report', () => {
     expect(lines.some((line) => line.startsWith('TRACKED ROWS'))).toBe(true);
     expect(lines.some((line) => line.includes('TRACK image/a.jpg->webp/throughput [tracked-gap]') && line.includes('issue #487'))).toBe(true);
     expect(verdict.parity.summary).toMatchObject({ fail: 0, tracked: 1 });
+  });
+
+  describe('a row undecided at its last cap', () => {
+    const undecided = (median: number, low: number, high: number): BenchRow[] => [
+      ...rowsWith(-2, 0.96, 'pass').slice(0, 2),
+      row({ id: SPEED_ID, direction: 'higher', kind: 'throughput', ours: 20, reference: 20, ratio: median, runs: 50, speedVerdict: 'fail', unstableAtCap: true, ratioLow: low, ratioHigh: high, ratioMedian: median, tolerance: { abs: 0, rel: 0.35 } }),
+    ];
+
+    it('exits 0 when its median is at or above the pass line and the baseline ratio is not far above it', async () => {
+      const { code, verdict } = await run(undecided(0.98, 0.95, 1.01), { baseline: baselineEntries(1.0) });
+      expect(code).toBe(0);
+      expect(verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'pass', basis: 'speed-pass-at-median' });
+    });
+
+    it('exits 3 when the baseline ratio shows a credible regression, and when the median is below the line', async () => {
+      const regressed = await run(undecided(0.98, 0.95, 1.01), { baseline: baselineEntries(1.5) });
+      expect(regressed.code).toBe(3);
+      expect(regressed.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'speed-regressed-at-cap' });
+      const below = await run(undecided(0.95, 0.93, 0.99), { baseline: baselineEntries(1.0) });
+      expect(below.code).toBe(3);
+      expect(below.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
+    });
   });
 
   describe('a gap entry the change adds or edits', () => {
