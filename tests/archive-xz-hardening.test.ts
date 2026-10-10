@@ -85,8 +85,19 @@ function sha256(bytes: Uint8Array): string {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
+/** Raised when the installed xz is too old for an option (--arm64 needs 5.4, --riscv 5.6): oracleTest turns it into a skip. */
+class XzOptionUnavailableError extends Error {
+  readonly isOracleSkip = true;
+}
+
 function encode(input: Buffer, args: string[]): Buffer {
-  return execFileSync(xzPath(), ['-c', '-q', ...args], { input, maxBuffer: 256 * MIB });
+  const run = spawnSync(xzPath(), ['-c', ...args], { input, maxBuffer: 256 * MIB });
+  if (run.status === 0) return run.stdout;
+  const message = run.stderr?.toString() ?? '';
+  if (/unrecognized option|try 'xz --help'|unsupported filter|invalid filter/i.test(message)) {
+    throw new XzOptionUnavailableError(`xz does not support ${args.join(' ')}: ${message.trim()}`);
+  }
+  throw new Error(`xz ${args.join(' ')} failed: ${message.trim()}`);
 }
 
 function referenceDecode(stream: Buffer): Buffer {
