@@ -124,7 +124,7 @@ cases `music.wav->opus`, `speech.wav->aac` and `music.wav->flac`; and every case
 are one case or seconds each. The per-push quality gate uses it; the nightly run measures everything.
 
 **Which families a pull request runs** is decided by `bench/family-map.json`: each path under `src/lib/conversions/`,
-`src/lib/workers/` and `src/worker/` maps to a family (`scripts/ci-parity-families.mjs`, which the `changes` job of
+`src/lib/workers/` and `src/worker/`, and the two graph files `src/lib/jobs/artifact-helpers.ts` (PDF merge, pdf-ops) and `src/lib/queue/graph/node-executor.ts` (dispatches every node, so every family), maps to a family (`scripts/ci-parity-families.mjs`, which the `changes` job of
 `ci.yml` runs). Shared code (the dispatcher, the worker pool, the sandbox) maps to every benchmarked family, and so does what every
 conversion runs on: the tool runner `src/lib/security/process-sandbox.ts`, `package.json` and `package-lock.json`, the
 Dockerfiles, the seccomp profiles and `.github/actions/ci-setup/` (the SVG sanitizer maps to image). A path in

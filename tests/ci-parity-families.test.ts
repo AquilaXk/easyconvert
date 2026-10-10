@@ -32,7 +32,9 @@ describe('the map', () => {
     expect(MAP.scope.test('src/lib/conversions/image.ts')).toBe(true);
     expect(MAP.scope.test('src/worker/sandbox.ts')).toBe(true);
     expect(MAP.scope.test('src/lib/workers/cpu-pool.ts')).toBe(true);
-    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'bench/run.ts', 'tests/x.test.ts', 'docs/a.md']) {
+    expect(MAP.scope.test('src/lib/jobs/artifact-helpers.ts')).toBe(true);
+    expect(MAP.scope.test('src/lib/queue/graph/node-executor.ts')).toBe(true);
+    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'src/lib/jobs/graph.ts', 'src/lib/queue/graph/scheduler.ts', 'bench/run.ts', 'tests/x.test.ts', 'docs/a.md']) {
       expect(MAP.scope.test(outside), outside).toBe(false);
     }
   });
@@ -119,6 +121,7 @@ describe('classifying changed paths', () => {
     ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', [], ['ebook']],
     ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', ['pdf-ops'], []],
     ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
+    ['the PDF merge of the workflow graph', 'src/lib/jobs/artifact-helpers.ts', ['pdf-ops'], []],
     ['a vector file', 'src/lib/conversions/svg-geometry.ts', [], ['vector']],
     ['an HDR file', 'src/lib/conversions/openexr-decode.ts', [], ['hdr-image']],
   ])('maps %s', (_name, file, benchmarked, unmapped) => {
@@ -129,6 +132,10 @@ describe('classifying changed paths', () => {
     for (const file of ['src/lib/conversions/dispatch.ts', 'src/lib/conversions/index.ts', 'src/worker/engines.ts', 'src/worker/sandbox.ts', 'src/lib/workers/cpu-pool.ts']) {
       expect(classify(file), file).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
     }
+  });
+
+  it('sends the graph node executor, which dispatches the conversion, watermark, protect and merge nodes, to every benchmarked family', () => {
+    expect(classify('src/lib/queue/graph/node-executor.ts')).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
   });
 
   it('sends the shared tool runner and the manifests every conversion depends on to every benchmarked family', () => {
