@@ -1241,6 +1241,17 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
+    area: 'limits',
+    description:
+      'Most bytes of embedded media (pictures, video) one deck or document may decode to, each part counted once however many pictures use it; a document over it is refused with HTTP 413 (keeps the memory of a deck with large or repeated media within a job share).',
+    kind: { type: 'integer', min: 1, max: Number.MAX_SAFE_INTEGER },
+    default: 1024 * 1024 * 1024,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'ANONYMOUS_DAILY_LIMIT',
     area: 'limits',
     description: 'Conversions per day for an anonymous caller.',

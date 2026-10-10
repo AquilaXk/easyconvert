@@ -53,7 +53,7 @@ type Environment = Readonly<Record<string, string | undefined>>;
  * schema entry of the same name, so the start-up check and this reader accept the same values; a malformed value is a
  * ConfigurationError that names the variable, never a replacement by the default.
  */
-function limitFromEnvironment(name: string, fallback: number, env: Environment): number {
+export function limitFromEnvironment(name: string, fallback: number, env: Environment): number {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const spec = CONFIG_SCHEMA.find((entry) => entry.name === name);
