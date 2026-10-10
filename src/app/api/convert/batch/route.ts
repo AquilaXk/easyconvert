@@ -1,16 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
+import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
+  EncryptedOfficeDocumentError,
+  PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import {
+  createProblemDetailsResponse,
+  createEngineUnavailableResponse,
+  createPdfPostprocessResponse,
+} from '@/lib/api/problem-details';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +34,16 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
+  // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
+  let releaseSlot: (() => void) | undefined;
+
+  /** The 429 of a caller over its concurrency limit, after releasing the quota reservation. */
+  const failWithRollbackProblem = async (limit: number) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return concurrencyLimitResponse(limit, instanceUri);
+  };
 
   const failWithRollback = async (status: number, error: string) => {
     if (reservationId) {
@@ -61,6 +84,12 @@ export async function POST(req: NextRequest) {
     }
 
     reservationId = auth.reservationId;
+
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      return await failWithRollbackProblem(slot.limit);
+    }
+    releaseSlot = slot.release;
 
     let totalBatchSize = 0;
     for (const f of files) {
@@ -112,43 +141,65 @@ export async function POST(req: NextRequest) {
       defaultOptions = parsed;
     }
 
+    const planned: Array<{ file: File; extension: string; targetFormat: string }> = [];
+    for (const file of files) {
+      const detected = detectFormatFromFilename(file.name);
+      if (!detected) continue;
+      const targetFormat = targetFormatsMap[file.name] || targetFormatsMap['default'] || detected.targetFormats[0];
+      if (!targetFormat) continue;
+      planned.push({ file, extension: detected.extension, targetFormat });
+    }
+
+    // One deadline for the whole batch: the files' deadlines added up, never above the maximum of the tier.
+    const batchDeadlineMs = syncDeadlineMs(Math.min(
+      planned.reduce(
+        (total, item) =>
+          total +
+          conversionDeadlineMs({
+            tier: auth.user?.tier,
+            sourceFormat: item.extension,
+            targetFormat: item.targetFormat,
+            inputBytes: item.file.size,
+          }),
+        0
+      ),
+      tierMaxDeadlineMs(auth.user.tier)
+    ));
+
     const convertedFiles: { filename: string; buffer: Buffer }[] = [];
     const usedNames = new Set<string>();
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const detected = detectFormatFromFilename(file.name);
-      if (!detected) continue;
+    // Nothing to convert needs no deadline, and the route answers it below.
+    await runUnderDeadline(req, Math.max(batchDeadlineMs, 1), async (limits) => {
+      for (const { file, extension, targetFormat } of planned) {
+        limits.signal.throwIfAborted();
+        const arrayBuffer = await file.arrayBuffer();
+        const inputBuffer = Buffer.from(arrayBuffer);
 
-      const targetFormat = targetFormatsMap[file.name] || targetFormatsMap['default'] || detected.targetFormats[0];
-      if (!targetFormat) continue;
+        const result = await dispatchConversion(
+          inputBuffer,
+          extension,
+          targetFormat,
+          bindJobLimits(withTierPageCap(defaultOptions, tierMaxPages(auth.user?.tier)), limits),
+          file.name
+        );
 
-      const arrayBuffer = await file.arrayBuffer();
-      const inputBuffer = Buffer.from(arrayBuffer);
+        let finalName = result.filename;
+        let counter = 1;
+        while (usedNames.has(finalName)) {
+          const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
+          const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
+          finalName = `${nameWithoutExt} (${counter})${ext}`;
+          counter++;
+        }
+        usedNames.add(finalName);
 
-      const result = await dispatchConversion(
-        inputBuffer,
-        detected.extension,
-        targetFormat,
-        defaultOptions,
-        file.name
-      );
-
-      let finalName = result.filename;
-      let counter = 1;
-      while (usedNames.has(finalName)) {
-        const ext = finalName.includes('.') ? `.${finalName.split('.').pop()}` : '';
-        const nameWithoutExt = finalName.replace(/\.[^/.]+$/, '');
-        finalName = `${nameWithoutExt} (${counter})${ext}`;
-        counter++;
+        convertedFiles.push({
+          filename: finalName,
+          buffer: result.buffer,
+        });
       }
-      usedNames.add(finalName);
-
-      convertedFiles.push({
-        filename: finalName,
-        buffer: result.buffer,
-      });
-    }
+    });
 
     if (convertedFiles.length === 0) {
       if (reservationId) {
@@ -178,16 +229,33 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (reservationId) {
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
       await rollbackQuota(reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
+    }
+    if (error instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(error, instanceUri);
     }
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
-    if (error instanceof InputPixelLimitError) {
+    const limitStatus = payloadLimitStatus(error);
+    if (limitStatus !== null) {
+      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
+    }
+    if (error instanceof EncryptedOfficeDocumentError) {
+      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert/batch] Worker output vanished before it was read:', error);
+      return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.
@@ -195,5 +263,7 @@ export async function POST(req: NextRequest) {
     }
     const message = error instanceof Error ? error.message : 'Batch conversion failed';
     return NextResponse.json({ success: false, error: message }, { status: 500 });
+  } finally {
+    releaseSlot?.();
   }
 }

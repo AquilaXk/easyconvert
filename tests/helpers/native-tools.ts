@@ -1,9 +1,5 @@
-import { isOracleToolAvailable } from './differential-oracle';
-
-export const HAS_SOFFICE = isOracleToolAvailable('soffice');
-export const HAS_PDFTOTEXT = isOracleToolAvailable('pdftotext');
-export const HAS_PDFTOPPM = isOracleToolAvailable('pdftoppm');
-export const HAS_PDFTOCAIRO = isOracleToolAvailable('pdftocairo');
+// Suites that need a native tool skip through skipWithoutTools / skipUnless (./strict-skip), which fail under
+// ORACLE_STRICT_MODE=1 instead of skipping.
 
 /** A path that never resolves to a binary, so the worker engines treat the tool as not installed. */
 const MISSING_BINARY_PATH = '/nonexistent/easyconvert-missing-binary';

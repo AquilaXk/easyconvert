@@ -1,4 +1,4 @@
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import {
   FORMAT_REGISTRY,
   assertNotSpoofedFile,
@@ -27,6 +27,7 @@ import {
   type FfmpegEnvironmentInfo,
   checkFfmpeg,
 } from './media';
+import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -98,7 +99,6 @@ import {
   parseIgesBSplineCurves,
 } from './cad-nurbs';
 import {
-  encodePureMp3,
   encodeFlacStream,
   BitWriter,
 } from './media-encoder';
@@ -107,12 +107,10 @@ import {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  decodeAdtsAac,
   decodeOgg,
   type DecodedAudio,
   BitReader,
 } from './media-decoder';
-import { decodePdfHexString, unescapePdfString } from './pdf-utils';
 import {
   convertArchive,
   convertToArchive,
@@ -123,6 +121,7 @@ import {
   createRarArchive,
   extractRarArchive,
   create7zArchive,
+  create7zArchiveAsync,
   extract7zArchive,
   decompressLzma,
   decompressLzma2,
@@ -155,11 +154,8 @@ import {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
   getUnrarBinaryPath,
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
@@ -177,7 +173,6 @@ import {
   repairZipArchive,
   resolveArchiveEntryCollisions,
   matchArchiveGlob,
-  buildSyntheticStoredRarBuffer,
   validateMultiVolumeSequence,
 } from './archive';
 
@@ -210,6 +205,7 @@ export {
   createRarArchive,
   extractRarArchive,
   create7zArchive,
+  create7zArchiveAsync,
   extract7zArchive,
   convertArchive,
   convertToArchive,
@@ -275,12 +271,9 @@ export {
   extractStepBSplineCurves,
   parseIgesBSplineSurfaces,
   parseIgesBSplineCurves,
-  encodePureMp3,
   encodeFlacStream,
   BitWriter,
   parseSvgPathToBezierPoints,
-  decodePdfHexString,
-  unescapePdfString,
   quantizeMedianCut,
   quantizeNeuQuant,
   encodeBmp8,
@@ -303,7 +296,6 @@ export {
   decodeWav,
   decodeFlac,
   decodeMp3,
-  decodeAdtsAac,
   decodeOgg,
   decompressLzma,
   decompressLzma2,
@@ -336,11 +328,8 @@ export {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
   getUnrarBinaryPath,
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
@@ -358,7 +347,6 @@ export {
   repairZipArchive,
   resolveArchiveEntryCollisions,
   matchArchiveGlob,
-  buildSyntheticStoredRarBuffer,
   validateMultiVolumeSequence,
   detectFfmpegEnvironment,
   type FfmpegEnvironmentInfo,
@@ -441,7 +429,7 @@ export async function convertFile(
 
   // Verify that the requested conversion is allowed in registry
   if (!srcDef.targetFormats.includes(tgt)) {
-    throw new Error(
+    throw new UnsupportedTargetError(
       `Cannot convert from ${srcDef.name} (.${src}) to target format .${tgt}. Available targets: ${srcDef.targetFormats.join(
         ', '
       )}`
@@ -670,7 +658,8 @@ export async function convertFile(
  * converting so an incompatible request fails without spending conversion work.
  */
 export function assertPdfPostProcessOptions(options: ConversionOptions): void {
-  if (options.pdfa && options.protect) {
+  assertPdfExportOptions(options);
+  if (resolvePdfAConformance(options) && options.protect) {
     // ISO 19005 forbids encryption in PDF/A files.
     throw new UnsupportedOptionError('PDF/A output cannot be encrypted; remove either the pdfa or the protect option.');
   }
@@ -680,18 +669,25 @@ export function assertPdfPostProcessOptions(options: ConversionOptions): void {
  * PDF post-processing shared by every conversion route: watermark, PDF/A, then protection.
  * Updates `result.buffer` and `result.size` in place; a result without a buffer is left untouched.
  */
-export async function applyPdfPostProcessing(result: ConversionResult, options: ConversionOptions): Promise<void> {
+export async function applyPdfPostProcessing(
+  result: ConversionResult,
+  options: ConversionOptions,
+  /** `pdfaExported`: the PDF is already a PDF/A export of the requested level, so it is not converted again. */
+  state: { pdfaExported?: boolean } = {}
+): Promise<void> {
   if (!Buffer.isBuffer(result.buffer)) return;
   assertPdfPostProcessOptions(options);
-  if (!options.watermark && !options.pdfa && !options.protect) return;
+  const pdfaLevel = state.pdfaExported ? null : resolvePdfAConformance(options);
+  if (!options.watermark && !pdfaLevel && !options.protect) return;
   let pdf = result.buffer;
   // Watermark first: any edit after the PDF/A conversion would break conformance.
   if (options.watermark) {
     pdf = await applyPdfWatermark(pdf, options.watermark);
   }
-  if (options.pdfa) {
-    const pdfaRes = await convertToPdfA(pdf, options.pdfa);
+  if (pdfaLevel) {
+    const pdfaRes = await convertToPdfA(pdf, { ...options.pdfa, conformance: pdfaLevel });
     pdf = pdfaRes.buffer;
+    result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }
   if (options.protect) {
     pdf = await protectPdf(pdf, options.protect);

@@ -34,6 +34,7 @@ import {
   halfBandInterpolateBlock,
   halfBandInterpolateMaxSpan,
 } from './audio-halfband';
+import { createMacKernel, MAC_MEMORY_MAX_BYTES, macKernelSupported, type MacKernel } from './wasm/resampler-mac';
 
 export class AudioResampleError extends ConversionFailedError {
   constructor(message: string) {
@@ -55,6 +56,21 @@ export interface ResampleOptions {
   outputBitDepth?: ResampleOutputBitDepth;
   /** Seed of the dither generator; the same seed and input give identical output. */
   ditherSeed?: number;
+  /**
+   * Multiply-accumulate kernel of the polyphase stage. `auto` (default) uses WebAssembly SIMD when the runtime has it and
+   * the stage is mono or stereo; `scalar` forces the TypeScript loops (the reference); `simd` requires the SIMD kernels and
+   * fails when they cannot run. The two paths give identical samples. Meant for tests and diagnostics.
+   */
+  kernel?: ResampleKernel;
+  /** When given, filled in with the kernel that processed the signal. */
+  report?: ResampleReport;
+}
+
+export type ResampleKernel = 'auto' | 'scalar' | 'simd';
+export type ResampleKernelUsed = 'simd-f64x2' | 'scalar';
+
+export interface ResampleReport {
+  kernel?: ResampleKernelUsed;
 }
 
 export interface ResamplerPlanInfo {
@@ -113,6 +129,12 @@ const SUPPORTED_INT16_OUTPUT_BITS = new Set<number>([8, INT16_BITS]);
 const DITHERED_BIT_DEPTHS = new Set<ResampleOutputBitDepth>([8, 16]);
 const KNOWN_BIT_DEPTHS = new Set<ResampleOutputBitDepth>([8, 16, 24, 32, 'float']);
 const KNOWN_QUALITIES = new Set<ResampleQuality>(['standard', 'high']);
+const KNOWN_KERNELS = new Set<ResampleKernel>(['auto', 'scalar', 'simd']);
+/** Channel counts the SIMD kernels cover. */
+const SIMD_MIN_CHANNELS = 1;
+const SIMD_MAX_CHANNELS = 2;
+const DOUBLE_BYTES = 8;
+const KERNEL_ALIGN_BYTES = 16;
 const DEFAULT_DITHER_SEED = 0x2f6e2b1;
 
 // ---------------------------------------------------------------------------------------------
@@ -863,6 +885,45 @@ function convolveRowPalindrome(
 }
 
 /**
+ * One polyphase stage's view of a WebAssembly kernel instance: the coefficient table, the stage input and the stage output
+ * live in the kernel's linear memory, and the input and output arrays of the stage are views onto it, so the scalar rows
+ * (symmetric ones) and the SIMD rows read and write the same bytes and nothing is copied per row.
+ */
+class SimdPolyState {
+  private constructor(
+    readonly kernel: MacKernel,
+    readonly tablePtr: number,
+    readonly xPtr: number,
+    readonly outPtr: number,
+    readonly xView: Float64Array,
+    readonly outView: Float64Array
+  ) {}
+
+  /** Returns null when the kernels cannot be used for this stage (no SIMD here, other channel count, memory bound). */
+  static create(plan: PolyPlan, channels: number, inputSamples: number, outputSamples: number): SimdPolyState | null {
+    if (plan.mode !== 'exact' || channels < SIMD_MIN_CHANNELS || channels > SIMD_MAX_CHANNELS || !macKernelSupported()) return null;
+    const align = (bytes: number): number => Math.ceil(bytes / KERNEL_ALIGN_BYTES) * KERNEL_ALIGN_BYTES;
+    const tableBytes = align(plan.table.length * DOUBLE_BYTES);
+    const xBytes = align(inputSamples * DOUBLE_BYTES);
+    const outBytes = align(outputSamples * DOUBLE_BYTES);
+    if (tableBytes + xBytes + outBytes > MAC_MEMORY_MAX_BYTES) return null;
+    const kernel = createMacKernel(tableBytes + xBytes + outBytes);
+    if (kernel === null) return null;
+    const xPtr = tableBytes;
+    const outPtr = tableBytes + xBytes;
+    new Float64Array(kernel.memory.buffer, 0, plan.table.length).set(plan.table);
+    return new SimdPolyState(
+      kernel,
+      0,
+      xPtr,
+      outPtr,
+      new Float64Array(kernel.memory.buffer, xPtr, inputSamples),
+      new Float64Array(kernel.memory.buffer, outPtr, outputSamples)
+    );
+  }
+}
+
+/**
  * Exact polyphase for output frames [start, start + count): output n = k x L + r uses kernel row
  * (r x M) mod L at input offset k x M + floor(r x M / L) (relative to the first output's
  * position). Residue-major order keeps one kernel row hot in cache across the block's periods.
@@ -875,9 +936,13 @@ function convolveExactBlock(
   channels: number,
   start: number,
   count: number,
-  out: Float64Array
+  dst: Float64Array,
+  simd: SimdPolyState | null
 ): void {
   const { taps, upFactor, downFactor, residueRow, residueBase, residueSymmetry } = plan;
+  // With the SIMD kernels the block is computed in kernel memory and copied to `dst` once, after every row is done.
+  const out = simd === null || count * channels > simd.outView.length ? dst : simd.outView;
+  const useSimd = simd !== null && out === simd.outView;
   const periodStart = Math.floor(start / upFactor);
   // Block-local quantities are small, so they are forced to int32 for index arithmetic.
   const periods = (Math.floor((start + count - 1) / upFactor) - periodStart + 1) | 0;
@@ -894,10 +959,19 @@ function convolveExactBlock(
       convolveRowCentreSymmetric(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
     } else if (symmetry === ROW_PALINDROME) {
       convolveRowPalindrome(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
+    } else if (useSimd) {
+      const row = simd.tablePtr + rowOffset * DOUBLE_BYTES;
+      const run = channels === STEREO ? simd.kernel.rowStereo : simd.kernel.rowMono;
+      try {
+        run(row, simd.xPtr, simd.outPtr, taps, upFactor, downFactor, base, firstPeriod, periods, firstOutput, count);
+      } catch (error) {
+        throw new AudioResampleError(`The SIMD resampler kernel failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     } else {
       convolveRowAsymmetric(plan, x, channels, out, rowOffset, base, firstPeriod, periods, firstOutput, count);
     }
   }
+  if (useSimd) dst.set(out.subarray(0, count * channels));
 }
 
 /** Oversampled rows: the row for each output is linearly interpolated once, then shared by all channels. */
@@ -1007,9 +1081,11 @@ class PolyphaseStage implements FrameSource {
     private readonly upstream: FrameSource,
     private readonly plan: PolyPlan,
     private readonly channels: number,
-    inputSpan: number
+    inputSpan: number,
+    private readonly simd: SimdPolyState | null
   ) {
-    this.input = new Float64Array(inputSpan * channels);
+    // The upstream stage writes straight into kernel memory when the SIMD kernels run this stage.
+    this.input = simd === null ? new Float64Array(inputSpan * channels) : simd.xView;
     this.rowScratch = new Float64Array(plan.mode === 'exact' ? 0 : plan.taps);
   }
 
@@ -1031,7 +1107,7 @@ class PolyphaseStage implements FrameSource {
     const lastPos = pos0 + Math.floor((rem0 + (count - 1) * downFactor) / upFactor);
     this.upstream.produce(firstInput, lastPos + halfTaps - firstInput + 1, this.input);
     if (mode === 'exact') {
-      convolveExactBlock(this.plan, this.input, this.channels, start, count, dst);
+      convolveExactBlock(this.plan, this.input, this.channels, start, count, dst, this.simd);
     } else {
       convolveInterpolatedBlock(this.plan, this.input, this.channels, rem0, count, dst, this.rowScratch);
     }
@@ -1046,7 +1122,11 @@ class PolyphaseStage implements FrameSource {
  * Builds the stage chain for `plan` and returns its last stage plus the output block size.
  * Stage input scratch sizes follow from the block size backwards through the chain.
  */
-function buildPipeline(plan: ResamplerPlan, io: ChannelIo): { source: FrameSource; blockFrames: number } {
+function buildPipeline(
+  plan: ResamplerPlan,
+  io: ChannelIo,
+  kernel: ResampleKernel
+): { source: FrameSource; blockFrames: number; kernelUsed: ResampleKernelUsed } {
   const { poly, halfBands, halfBandsFirst } = plan;
   const channels = io.channels;
   const exactPoly = poly.mode === 'exact';
@@ -1099,23 +1179,34 @@ function buildPipeline(plan: ResamplerPlan, io: ChannelIo): { source: FrameSourc
   // Stages are not truncated at the signal edges: each one computes its response to the
   // zero-extended signal, so a cascade matches the same signal padded with silence.
   let source: FrameSource = new SignalSource(io);
+  let kernelUsed: ResampleKernelUsed = 'scalar';
   for (let i = 0; i < order.length; i++) {
     const stage = order[i];
-    if (stage.kind === 'poly') source = new PolyphaseStage(source, poly, channels, requests[i]);
-    else if (stage.kind === 'decimate') source = new HalfBandDecimateStage(source, stage.filter, channels, requests[i]);
+    if (stage.kind === 'poly') {
+      // Most output frames this stage is asked for in one call: the block, or what the next stage requests of it.
+      const outputFrames = i === order.length - 1 ? blockFrames : requests[i + 1];
+      const simd = kernel === 'scalar' ? null : SimdPolyState.create(poly, channels, requests[i] * channels, outputFrames * channels);
+      if (simd === null && kernel === 'simd') {
+        throw new AudioResampleError('The SIMD resampler kernel was requested but is not available for this stage');
+      }
+      if (simd !== null) kernelUsed = 'simd-f64x2';
+      source = new PolyphaseStage(source, poly, channels, requests[i], simd);
+    } else if (stage.kind === 'decimate') source = new HalfBandDecimateStage(source, stage.filter, channels, requests[i]);
     else source = new HalfBandInterpolateStage(source, stage.filter, channels, requests[i]);
   }
-  return { source, blockFrames };
+  return { source, blockFrames, kernelUsed };
 }
 
 function runResampler(
   plan: ResamplerPlan,
   io: ChannelIo,
   outFrames: number,
-  quantizer: DitherQuantizer | null
+  quantizer: DitherQuantizer | null,
+  options: ResampleOptions
 ): void {
   const channels = io.channels;
-  const { source, blockFrames } = buildPipeline(plan, io);
+  const { source, blockFrames, kernelUsed } = buildPipeline(plan, io, resolveKernel(options));
+  if (options.report !== undefined) options.report.kernel = kernelUsed;
   const raw = new Float64Array(blockFrames * channels);
   const quantized = quantizer ? new Float64Array(blockFrames * channels) : raw;
   for (let n0 = 0; n0 < outFrames; n0 += blockFrames) {
@@ -1132,6 +1223,14 @@ function resolveOutputBitDepth(options: ResampleOptions, fallback: ResampleOutpu
     throw new AudioResampleError(`Unsupported output bit depth ${String(depth)}`);
   }
   return depth;
+}
+
+function resolveKernel(options: ResampleOptions): ResampleKernel {
+  const kernel = options.kernel ?? 'auto';
+  if (!KNOWN_KERNELS.has(kernel)) {
+    throw new AudioResampleError(`Unsupported resampler kernel ${String(kernel)}`);
+  }
+  return kernel;
 }
 
 function resolveSeed(options: ResampleOptions): number {
@@ -1239,7 +1338,7 @@ export function resamplePlanarFloat(
     },
   };
 
-  runResampler(plan, io, outFrames, quantizer);
+  runResampler(plan, io, outFrames, quantizer, options);
   return outputs;
 }
 
@@ -1298,6 +1397,6 @@ export function resampleInterleavedInt16(
   };
 
   const quantizer = new DitherQuantizer(lsb, INT16_MIN, INT16_MAX + 1 - lsb, seed);
-  runResampler(plan, io, outFrames, quantizer);
+  runResampler(plan, io, outFrames, quantizer, options);
   return output;
 }

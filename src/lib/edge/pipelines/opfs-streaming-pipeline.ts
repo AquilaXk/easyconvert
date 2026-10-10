@@ -8,7 +8,7 @@
  * - Automated post-conversion cleanup.
  */
 
-import { ConversionOptions } from '../../types';
+import { ConversionFailedError, ConversionOptions } from '../../types';
 import {
   createSessionId,
   sweepOrphanedSessions,
@@ -16,7 +16,7 @@ import {
   registerZeroRetentionLifecycleHooks,
 } from '../opfs/storage-gc';
 import { processOpfsStreaming } from '../workers/opfs-vfs.worker';
-import { rehydrateWorkerError } from '../workers/worker-errors';
+import { EdgeUnsupportedError, rehydrateWorkerError } from '../workers/worker-errors';
 
 export interface OpfsPipelineResult {
   blob: Blob;
@@ -24,6 +24,21 @@ export interface OpfsPipelineResult {
   size: number;
   sessionId: string;
   destroy: () => Promise<boolean>;
+}
+
+/** The converted bytes of a worker result; a result with no bytes is a failure, never the input file. */
+function outputBlobOf(output: { blob?: Blob; buffer?: ArrayBuffer }): Blob {
+  if (output.blob) return output.blob;
+  if (output.buffer) return new Blob([output.buffer]);
+  throw new ConversionFailedError('The streaming conversion finished without producing an output.');
+}
+
+/** An object URL for the converted bytes; a runtime that cannot make one cannot hand the result over. */
+function resultUrlOf(blob: Blob): string {
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    throw new EdgeUnsupportedError('This runtime cannot hand out a result URL for the converted file.');
+  }
+  return URL.createObjectURL(blob);
 }
 
 // Active OPFS conversion session registry for zero-retention guarantee
@@ -82,12 +97,12 @@ export async function streamConvertWithOpfs(
           (progress) => onProgress?.(progress)
         )
           .then((res) => {
-            const blob = res.blob || (res.buffer ? new Blob([res.buffer]) : file);
-            const url = URL.createObjectURL(blob);
+            const blob = outputBlobOf(res);
+            const url = resultUrlOf(blob);
             resolve({
               blob,
               url,
-              size: res.outputSize || blob.size,
+              size: blob.size,
               sessionId,
               destroy: createDestroyHandler(sessionId),
             });
@@ -116,16 +131,21 @@ export async function streamConvertWithOpfs(
         } else if (data.type === 'COMPLETED') {
           if (isSettled) return;
           isSettled = true;
-          const blob = data.blob || (data.buffer ? new Blob([data.buffer]) : file);
-          const url = URL.createObjectURL(blob);
           cleanup();
-          resolve({
-            blob,
-            url,
-            size: data.outputSize || blob.size,
-            sessionId,
-            destroy: createDestroyHandler(sessionId),
-          });
+          try {
+            const blob = outputBlobOf(data);
+            resolve({
+              blob,
+              url: resultUrlOf(blob),
+              size: blob.size,
+              sessionId,
+              destroy: createDestroyHandler(sessionId),
+            });
+          } catch (err) {
+            activePipelineSessions.delete(sessionId);
+            destroySessionImmediately(sessionId).catch(() => {});
+            reject(err);
+          }
         } else if (data.type === 'ERROR') {
           if (isSettled) return;
           isSettled = true;
@@ -173,16 +193,13 @@ export async function streamConvertWithOpfs(
       (progress) => onProgress?.(progress)
     );
 
-    const blob = result.blob || (result.buffer ? new Blob([result.buffer]) : file);
-    const url =
-      typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-        ? URL.createObjectURL(blob)
-        : `blob:mock-opfs-url-${Date.now()}`;
+    const blob = outputBlobOf(result);
+    const url = resultUrlOf(blob);
 
     return {
       blob,
       url,
-      size: result.outputSize || blob.size,
+      size: blob.size,
       sessionId,
       destroy: createDestroyHandler(sessionId),
     };

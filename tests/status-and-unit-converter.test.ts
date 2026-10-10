@@ -4,6 +4,9 @@ import path from 'node:path';
 import { BRAND_PALETTE } from '../src/lib/theme';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { UNIT_CATEGORIES, convertValue } from '../src/components/UnitConverter';
+import sharp from 'sharp';
+import { oracleTest } from './helpers/oracle-test';
+import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
 
 describe('Brand Signature Palette & Design Tokens Verification', () => {
   it('verifies exact Brand Palette color tokens match specification', () => {
@@ -39,34 +42,44 @@ describe('Brand Signature Palette & Design Tokens Verification', () => {
     expect(BRAND_PALETTE.ink.primary.toUpperCase()).toBe('#1F2340');
   });
 
-  it('verifies official logo.svg and icon.svg contain the circular emblem badge, EC monogram, lavender arrow, and valid XML', () => {
+  oracleTest('verifies official logo.svg and icon.svg are valid XML with the circular emblem badge, EC monogram and lavender arrow', ['xmllint'], async () => {
     const logoSvg = fs.readFileSync(path.join(process.cwd(), 'public/logo.svg'), 'utf-8');
     const iconSvg = fs.readFileSync(path.join(process.cwd(), 'public/icon.svg'), 'utf-8');
 
-    // Must not contain invalid JSX comments
-    expect(logoSvg).not.toContain('{/*');
-    expect(logoSvg).not.toContain('*/}');
-    expect(iconSvg).not.toContain('{/*');
-    expect(iconSvg).not.toContain('*/}');
+    // Both files are well-formed XML (xmllint) and carry no JSX comment syntax, which XML would not accept.
+    expect(xmlWellFormed(logoSvg).ok).toBe(true);
+    expect(xmlWellFormed(iconSvg).ok).toBe(true);
 
-    // Check signature palette colors and elements
-    expect(logoSvg).toContain('#5C6BC0');
-    expect(iconSvg).toContain('#5C6BC0');
-    expect(logoSvg).toContain('#B4BCFB');
-    expect(iconSvg).toContain('#B4BCFB');
-    expect(logoSvg).toContain('#F4F5FD');
-    expect(iconSvg).toContain('#F4F5FD');
-    expect(logoSvg).toContain('#1F2340');
-    expect(logoSvg).toContain('EasyConvert');
+    // The drawing, read with XPath: root size, the emblem circle, the monogram and arrow paths with their palette
+    // colours (brand.700 monogram, brand.400 lavender arrow), and no obsolete badge groups.
+    const circle = (svg: string, attribute: string) => xpathString(svg, `string(//*[local-name()='circle']/@${attribute})`);
+    for (const svg of [logoSvg, iconSvg]) {
+      expect(['cx', 'cy', 'r', 'fill', 'stroke', 'stroke-width'].map((attribute) => circle(svg, attribute))).toEqual([
+        '60', '60', '50', '#F4F5FD', BRAND_PALETTE.brand[700].toUpperCase(), '3.75',
+      ]);
+      expect(xpathAttributes(svg, "//*[local-name()='path']/@fill").map((fill) => fill.toUpperCase())).toEqual([
+        BRAND_PALETTE.brand[400].toUpperCase(),
+        BRAND_PALETTE.brand[700].toUpperCase(),
+      ]);
+      expect(xpathString(svg, "string(//*[local-name()='g']/@id)")).toBe('brand-signature-icon');
+      expect(xpathCount(svg, "//*[contains(@id, 'badge')]")).toBe(0);
+    }
+    expect(xpathAttributes(logoSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 420 120']);
+    expect(xpathAttributes(iconSvg, "/*[local-name()='svg']/@viewBox")).toEqual(['0 0 120 120']);
+    expect(xpathString(logoSvg, "string(//*[local-name()='text'])")).toBe('EasyConvert');
+    expect(xpathString(logoSvg, "string(//*[local-name()='text']/@fill)").toUpperCase()).toBe(BRAND_PALETTE.brand[950].toUpperCase());
+    // The icon sits on a rounded plate in the chrome colour (brand.50).
+    expect(['width', 'height', 'rx', 'fill'].map((attribute) => xpathString(iconSvg, `string(//*[local-name()='rect']/@${attribute})`))).toEqual([
+      '120', '120', '28', BRAND_PALETTE.brand[50].toUpperCase(),
+    ]);
 
-    // Background plate for icon.svg
-    expect(iconSvg).toContain('<rect width="120" height="120" rx="28" fill="#F8F9FF" />');
-
-    // Must not contain obsolete loop badge strings
-    expect(logoSvg).not.toContain('badge-pdf');
-    expect(iconSvg).not.toContain('badge-pdf');
-    expect(logoSvg).not.toContain('badge-doc');
-    expect(iconSvg).not.toContain('badge-doc');
+    // Rendered with librsvg: the plate, the emblem disc, a monogram pixel and the rounded corner.
+    const { data, info } = await sharp(Buffer.from(iconSvg)).raw().toBuffer({ resolveWithObject: true });
+    const pixel = (x: number, y: number) => [...data.subarray((y * info.width + x) * info.channels, (y * info.width + x) * info.channels + info.channels)];
+    expect([info.width, info.height]).toEqual([120, 120]);
+    expect(pixel(4, 60)).toEqual([0xf8, 0xf9, 0xff, 255]); // plate, outside the emblem (the circle starts at x = 10)
+    expect(pixel(14, 60)).toEqual([0xf4, 0xf5, 0xfd, 255]); // emblem disc, clear of the monogram
+    expect(pixel(1, 1)[3]).toBe(0); // outside the plate's rounded corner
   });
 });
 

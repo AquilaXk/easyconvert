@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
-import { OPTIMIZERS } from '../conversions/optimizers';
+import { hasOptimizer, optimizeUnavailableMessage } from '../conversions/optimizers';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,
@@ -67,7 +67,6 @@ export interface GraphValidationErrorDetail {
   path: string;
   message: string;
   code: string;
-  node?: string;
 }
 
 export interface GraphValidationResult {
@@ -630,6 +629,10 @@ export function validateJobGraph(
         inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS.metadata as string;
         break;
       }
+      case 'media.package': {
+        inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS['media.package'] as string;
+        break;
+      }
       case 'thumbnail':
       case 'merge':
       case 'archive.create': {
@@ -644,16 +647,14 @@ export function validateJobGraph(
             path: `nodes.${nodeId}`,
             message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
             code: 'SOURCE_FORMAT_UNKNOWN',
-            node: nodeId,
           });
         } else if (srcFmt !== DYNAMIC_FORMAT) {
-          if (!OPTIMIZERS.has(srcFmt.toLowerCase())) {
+          if (!hasOptimizer(srcFmt)) {
             errors.push({
               path: `nodes.${nodeId}`,
-              message: `optimize is not available for ${srcFmt.toLowerCase()}`,
+              message: optimizeUnavailableMessage(srcFmt),
               code: 'UNSUPPORTED_TARGET_FORMAT',
-              node: nodeId,
-            });
+              });
           }
         }
         inferredFormats[nodeId] = srcFmt;

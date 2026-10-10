@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
+import Link from 'next/link';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import {
@@ -211,13 +212,13 @@ export default function ApiDocsPage() {
                 <Download className="w-4 h-4" />
                 Download OpenAPI JSON
               </a>
-              <a
+              <Link
                 href="/dashboard"
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-medium text-sm transition-colors"
               >
                 <Code2 className="w-4 h-4" />
                 API Key Dashboard
-              </a>
+              </Link>
             </div>
           </div>
 

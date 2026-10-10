@@ -4,6 +4,8 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { extractZipArchive } from '../src/lib/conversions/archive';
 import { triangulatePolygonEarcut, Point3D } from '../src/lib/conversions/cad-nurbs';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
+import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
+import { CorruptStreamError } from '../src/lib/types';
 import { performOcr } from '../src/lib/conversions/ocr';
 import sharp from 'sharp';
 import fs from 'node:fs';
@@ -77,7 +79,12 @@ describe('Skeptical Audit & Robustness Verification', () => {
 
   it('fails closed when extractZipArchive is given a corrupted archive', async () => {
     const corruptedZip = Buffer.from('NOT_A_VALID_ZIP_HEADER_JUST_GARBAGE');
-    await expect(extractZipArchive(corruptedZip)).rejects.toThrow();
+    const failure = await extractZipArchive(corruptedZip).catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect((failure as Error).message).toMatch(/^Invalid ZIP archive: .*end of central directory/);
+    // The same call opens a real archive, so the refusal above comes from the input.
+    const valid = await new JSZip().file('a.txt', 'alpha').generateAsync({ type: 'nodebuffer' });
+    expect((await extractZipArchive(valid)).map((entry) => [entry.filename, entry.buffer.toString('utf-8')])).toEqual([['a.txt', 'alpha']]);
   });
 
   it('safely handles corrupted tkhd box with small tSize in demuxMp4', () => {
@@ -90,7 +97,8 @@ describe('Skeptical Audit & Robustness Verification', () => {
     buf.write('tkhd', 20, 'ascii');
 
     const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    expect(() => demuxMp4(arrayBuf)).not.toThrow();
+    // A typed refusal, never a RangeError from reading past the box
+    expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
   });
 
   // Confidence calibration is tracked separately; this asserts what was recognized.

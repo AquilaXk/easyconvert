@@ -7,6 +7,14 @@ import { execFileSync } from 'node:child_process';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import { compareImages, VrtOptions, VrtResult } from './vrt-engine';
+import {
+  MediaDecodeError,
+  ProbedFile,
+  decodeAudioStream,
+  decodeEveryStream,
+  decodeVideoFrames,
+  probeFile,
+} from './ffmpeg-measure';
 
 // ============================================================================
 // 1. External CLI Tool Probing & Availability
@@ -16,8 +24,12 @@ export type ExternalOracleTool =
   | 'pdftotext'
   | 'pdfinfo'
   | 'pdftoppm'
+  | 'pdftops'
   | 'pdftocairo'
   | 'pdffonts'
+  | 'pdfimages'
+  | 'verapdf'
+  | 'fc-list'
   | 'ffmpeg'
   | 'ffprobe'
   | 'flac'
@@ -27,7 +39,15 @@ export type ExternalOracleTool =
   | '7z'
   | 'tar'
   | 'zstd'
+  | 'bzip2'
+  | 'xz'
+  | 'gzip'
+  | 'zip'
+  | 'unzip'
+  | 'zipinfo'
+  | 'unshare'
   | 'magick'
+  | 'convert'
   | 'identify'
   | 'unrar'
   | 'qpdf'
@@ -37,8 +57,17 @@ export type ExternalOracleTool =
   | 'jq'
   | 'raw-identify'
   | 'dcraw_emu'
+  | 'ps2pdf'
   | 'woff2_decompress'
-  | 'woff2_info';
+  | 'woff2_info'
+  | 'tiffinfo'
+  | 'exiftool'
+  | 'avifenc'
+  | 'avifdec'
+  | 'heif-enc'
+  | 'cwebp'
+  | 'dwebp'
+  | 'epubcheck';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;
@@ -53,22 +82,28 @@ export class OracleToolMissingError extends Error {
 
 const toolCache = new Map<string, string | null>();
 
+/** Tools that are not on PATH on a typical host and are located through the environment variable the worker also reads. */
+const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH' };
+
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
+  // The override is read on every call: a test may point the variable at a different binary.
+  const envName = TOOL_PATH_ENV[tool];
+  const envOverride = envName ? process.env[envName] : undefined;
+  if (envOverride && fs.existsSync(envOverride)) {
+    return envOverride;
+  }
   if (toolCache.has(tool)) {
     return toolCache.get(tool)!;
   }
 
+  // ORACLE_TOOL_DIRS narrows the search to the listed directories (empty: nothing is found). A child process
+  // started with it sees a toolchain without the tools, which is how the strict-mode behaviour is exercised.
+  const restrictedDirs = process.env.ORACLE_TOOL_DIRS;
   const pathEnvDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-  const candidateDirs = Array.from(
-    new Set([
-      ...pathEnvDirs,
-      '/usr/bin',
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      '/opt/local/bin',
-      '/bin',
-    ])
-  );
+  const candidateDirs =
+    restrictedDirs === undefined
+      ? Array.from(new Set([...pathEnvDirs, '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin', '/opt/local/bin', '/bin']))
+      : restrictedDirs.split(path.delimiter).filter(Boolean);
 
   for (const dir of candidateDirs) {
     const fullPath = path.join(dir, tool);
@@ -79,7 +114,7 @@ export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   }
 
   try {
-    const whichBinary = candidateDirs.find((d) => fs.existsSync(path.join(d, 'which')));
+    const whichBinary = restrictedDirs === undefined ? candidateDirs.find((d) => fs.existsSync(path.join(d, 'which'))) : undefined;
     if (whichBinary) {
       const res = execFileSync(path.join(whichBinary, 'which'), [tool], {
         encoding: 'utf-8',
@@ -260,16 +295,19 @@ export function extractFontsWithExternalPdffonts(buffer: Buffer): PdfFontEntry[]
     if (lines.length < 2) return [];
     const entries: PdfFontEntry[] = [];
     for (let i = 2; i < lines.length; i++) {
+      // Columns: name, type (may be several words, e.g. "CID TrueType"), encoding, emb, sub, uni,
+      // object number, generation. Read the fixed columns from the right so multi-word types parse.
       const parts = lines[i].trim().split(/\s+/);
-      if (parts.length >= 7) {
+      if (parts.length >= 8) {
+        const n = parts.length;
         entries.push({
           name: parts[0],
-          type: parts[1],
-          encoding: parts[2],
-          emb: parts[3] === 'yes',
-          sub: parts[4] === 'yes',
-          uni: parts[5] === 'yes',
-          object: parseInt(parts[6], 10) || 0,
+          type: parts.slice(1, n - 6).join(' '),
+          encoding: parts[n - 6],
+          emb: parts[n - 5] === 'yes',
+          sub: parts[n - 4] === 'yes',
+          uni: parts[n - 3] === 'yes',
+          object: parseInt(parts[n - 2], 10) || 0,
         });
       }
     }
@@ -870,6 +908,69 @@ export function checkAdtsAacIntegrity(buffer: Buffer): {
   };
 }
 
+/**
+ * What a reference decode of one file established. Every field comes from ffprobe or from decoded samples and
+ * frames; nothing is read from the container structure alone.
+ */
+export interface FileDecodeReport {
+  probed: ProbedFile;
+  /** Samples per channel decoded from the first audio stream (audio kind only). */
+  audioSamples?: number;
+  /** Frames decoded from the first video stream (video kind only). */
+  videoFrames?: number;
+}
+
+/**
+ * Decodes every stream of `file` with `ffmpeg -xerror` and then the first stream of `kind` to raw samples or
+ * frames. Throws MediaDecodeError when a stream is missing, a decode reports an error, or nothing decodes.
+ * Missing ffmpeg or ffprobe throws OracleToolMissingError (a skip locally, a failure in strict mode).
+ */
+export function decodeFileWithFfmpeg(file: string, kind: 'audio' | 'video'): FileDecodeReport {
+  const ffmpeg = requireOracleTool('ffmpeg');
+  const ffprobe = requireOracleTool('ffprobe');
+  const probed = probeFile(ffprobe, file);
+  const stream = probed.streams.find((s) => s.codec_type === kind);
+  if (!stream) throw new MediaDecodeError(`no ${kind} stream in the file`);
+  decodeEveryStream(ffmpeg, file);
+  if (kind === 'audio') {
+    const channels = Number(stream.channels);
+    const decoded = decodeAudioStream(ffmpeg, file, Number(stream.sample_rate), channels);
+    if (decoded.samplesPerChannel === 0) throw new MediaDecodeError('the audio stream decoded to zero samples');
+    return { probed, audioSamples: decoded.samplesPerChannel };
+  }
+  if (!stream.width || !stream.height) throw new MediaDecodeError('the video stream reports no geometry');
+  const frames = decodeVideoFrames(ffmpeg, file, stream.width, stream.height);
+  if (frames.frameCount === 0) throw new MediaDecodeError('the video stream decoded to zero frames');
+  return { probed, videoFrames: frames.frameCount };
+}
+
+function withVerificationFile<T>(buffer: Buffer, formatHint: string, run: (file: string) => T): T {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle_decode_'));
+  try {
+    const file = path.join(dir, `input.${formatHint.toLowerCase().replace(/^\./, '')}`);
+    fs.writeFileSync(file, buffer);
+    return run(file);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Whether the movie box precedes the media data box among the top-level ISO BMFF boxes. */
+function movieBoxPrecedesMediaData(buffer: Buffer): boolean {
+  let moov = -1;
+  let mdat = -1;
+  let offset = 0;
+  while (offset + 8 <= buffer.length) {
+    const size = buffer.readUInt32BE(offset);
+    const type = buffer.toString('latin1', offset + 4, offset + 8);
+    if (type === 'moov' && moov < 0) moov = offset;
+    if (type === 'mdat' && mdat < 0) mdat = offset;
+    if (size < 8) break;
+    offset += size;
+  }
+  return moov >= 0 && mdat >= 0 && moov < mdat;
+}
+
 export interface AudioBitstreamVerification {
   valid: boolean;
   formatName?: string;
@@ -877,128 +978,44 @@ export interface AudioBitstreamVerification {
   sampleRate?: number;
   channels?: number;
   durationSec?: number;
+  /** Samples per channel the reference decoder produced. */
+  sampleCount?: number;
   error?: string;
 }
 
+/**
+ * Judges an audio file by decoding it: valid only when ffprobe lists an audio stream and ffmpeg decodes the
+ * whole file with `-xerror` to a non-empty sample run. Structural checks (checkWavIntegrity and the like)
+ * remain available as extra assertions but never decide the verdict.
+ */
 export function verifyAudioBitstreamWithFfprobe(
   buffer: Buffer,
   formatHint: string,
   expectedCodec?: string
 ): AudioBitstreamVerification {
-  const toolPath = getOracleToolPath('ffprobe');
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('ffprobe', 'Strict oracle mode requires ffprobe for audio verification');
-    }
-    const format = formatHint.toLowerCase().replace(/^\./, '');
-    try {
-      if (format === 'wav') {
-        checkWavIntegrity(buffer);
-        const channels = buffer.readUInt16LE(22);
-        const sampleRate = buffer.readUInt32LE(24);
-        return {
-          valid: true,
-          formatName: 'wav',
-          codecName: expectedCodec || 'pcm_s16le',
-          sampleRate,
-          channels,
-        };
-      }
-      if (format === 'aac') {
-        const info = checkAdtsAacIntegrity(buffer);
-        return {
-          valid: true,
-          formatName: 'aac',
-          codecName: expectedCodec || 'aac',
-          channels: info.channels,
-          sampleRate: info.sampleRate,
-        };
-      }
-      if (format === 'mp3') {
-        checkMp3Integrity(buffer);
-        return {
-          valid: true,
-          formatName: 'mp3',
-          codecName: expectedCodec || 'mp3',
-        };
-      }
-      if (format === 'flac') {
-        checkFlacIntegrity(buffer);
-        return {
-          valid: true,
-          formatName: 'flac',
-          codecName: expectedCodec || 'flac',
-        };
-      }
-      if (format === 'ogg' || format === 'opus' || format === 'vorbis') {
-        const info = checkOggIntegrity(buffer);
-        return {
-          valid: true,
-          formatName: info.format,
-          codecName: info.codec,
-          channels: info.channels,
-          sampleRate: info.sampleRate,
-        };
-      }
-      if (format === 'm4a') {
-        const info = checkIsoBmffIntegrity(buffer);
-        return {
-          valid: true,
-          formatName: 'm4a',
-          codecName: expectedCodec || info.audioCodec || info.codec || 'aac',
-        };
-      }
-      return { valid: false, error: `Unsupported audio format verification: ${format}` };
-    } catch (err: any) {
-      if (err instanceof OracleToolMissingError || err?.isOracleSkip) {
-        throw err;
-      }
-      return { valid: false, error: err.message || String(err) };
-    }
-  }
-
-  const tmpPath = path.join(os.tmpdir(), `oracle_audio_${crypto.randomUUID()}.${formatHint}`);
+  requireOracleTool('ffmpeg');
+  requireOracleTool('ffprobe');
   try {
-    fs.writeFileSync(tmpPath, buffer);
-    const stdout = execFileSync(
-      toolPath,
-      [
-        '-v', 'error',
-        '-select_streams', 'a:0',
-        '-show_entries', 'stream=codec_name,sample_rate,channels,duration:format=format_name,duration',
-        '-of', 'json',
-        tmpPath,
-      ],
-      {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5000,
+    return withVerificationFile(buffer, formatHint, (file) => {
+      const report = decodeFileWithFfmpeg(file, 'audio');
+      const stream = report.probed.streams.find((s) => s.codec_type === 'audio')!;
+      const codecName = stream.codec_name;
+      if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
+        return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
       }
-    );
-    const parsed = JSON.parse(stdout);
-    const stream = parsed.streams && parsed.streams[0];
-    const format = parsed.format;
-    if (!stream && !format) {
-      return { valid: false, error: 'No audio stream or format metadata found' };
-    }
-    const codecName = stream?.codec_name;
-    if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
-      return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
-    }
-    return {
-      valid: true,
-      formatName: format?.format_name,
-      codecName,
-      sampleRate: stream?.sample_rate ? Number(stream.sample_rate) : undefined,
-      channels: stream?.channels ? Number(stream.channels) : undefined,
-      durationSec: stream?.duration ? Number(stream.duration) : (format?.duration ? Number(format.duration) : undefined),
-    };
+      return {
+        valid: true,
+        formatName: report.probed.format.format_name,
+        codecName,
+        sampleRate: Number(stream.sample_rate),
+        channels: stream.channels,
+        durationSec: Number(stream.duration ?? report.probed.format.duration),
+        sampleCount: report.audioSamples,
+      };
+    });
   } catch (err: any) {
+    if (err instanceof OracleToolMissingError || err?.isOracleSkip) throw err;
     return { valid: false, error: err?.message || String(err) };
-  } finally {
-    try {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    } catch {}
   }
 }
 
@@ -1010,112 +1027,41 @@ export interface VideoBitstreamVerification {
   height?: number;
   durationSec?: number;
   isFastStart?: boolean;
+  /** Frames the reference decoder produced from the first video stream. */
+  frameCount?: number;
   error?: string;
 }
 
+/** Judges a video file by decoding every stream and the first video stream's frames; see the audio verifier. */
 export function verifyVideoBitstreamWithFfprobe(
   buffer: Buffer,
   formatHint: string,
   expectedCodec?: string
 ): VideoBitstreamVerification {
-  const toolPath = getOracleToolPath('ffprobe');
-
-  if (!toolPath) {
-    if (process.env.ORACLE_STRICT_MODE === '1') {
-      throw new OracleToolMissingError('ffprobe', 'Strict oracle mode requires ffprobe for video verification');
-    }
-
-    const format = formatHint.toLowerCase().replace(/^\./, '');
-    if (format === 'mp4' || format === 'mov') {
-      try {
-        const info = checkIsoBmffIntegrity(buffer);
-        const normCodec = (c: string) => c.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const isH264Family = (c: string) => {
-          const n = normCodec(c);
-          return n.includes('h264') || n.includes('avc') || n.includes('avc1');
-        };
-        const codecMatches = !expectedCodec ||
-          info.codec.toLowerCase().includes(expectedCodec.toLowerCase()) ||
-          (isH264Family(expectedCodec) && isH264Family(info.codec));
-
-        if (!codecMatches) {
-          return { valid: false, codecName: info.codec, error: `Codec mismatch: expected ${expectedCodec}, got ${info.codec}` };
-        }
-        return {
-          valid: true,
-          formatName: info.format,
-          codecName: expectedCodec || info.codec,
-          isFastStart: info.isFastStart,
-        };
-      } catch (err: any) {
-        return { valid: false, error: err.message || String(err) };
-      }
-    }
-    if (format === 'webm' || format === 'mkv') {
-      try {
-        const info = checkEbmlIntegrity(buffer);
-        return {
-          valid: true,
-          formatName: info.format,
-          codecName: expectedCodec || 'vp9',
-        };
-      } catch (err: any) {
-        return { valid: false, error: err.message || String(err) };
-      }
-    }
-    return {
-      valid: false,
-      error: `CLI tool "ffprobe" is absent and pure frame verification is unavailable for video format ${format}`,
-    };
-  }
-
-  const tmpPath = path.join(os.tmpdir(), `oracle_video_${crypto.randomUUID()}.${formatHint}`);
+  requireOracleTool('ffmpeg');
+  requireOracleTool('ffprobe');
   try {
-    fs.writeFileSync(tmpPath, buffer);
-    const stdout = execFileSync(
-      toolPath,
-      [
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=codec_name,width,height,duration:format=format_name,duration',
-        '-of', 'json',
-        tmpPath,
-      ],
-      {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5000,
+    return withVerificationFile(buffer, formatHint, (file) => {
+      const report = decodeFileWithFfmpeg(file, 'video');
+      const stream = report.probed.streams.find((s) => s.codec_type === 'video')!;
+      const codecName = stream.codec_name;
+      if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
+        return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
       }
-    );
-    const parsed = JSON.parse(stdout);
-    const stream = parsed.streams && parsed.streams[0];
-    const format = parsed.format;
-    if (!stream && !format) {
-      return { valid: false, error: 'No video stream or format metadata found' };
-    }
-    const codecName = stream?.codec_name;
-    if (expectedCodec && codecName && !codecName.includes(expectedCodec)) {
-      return { valid: false, codecName, error: `Codec mismatch: expected ${expectedCodec}, got ${codecName}` };
-    }
-    const moovIdx = buffer.indexOf('moov');
-    const mdatIdx = buffer.indexOf('mdat');
-    const isFastStart = moovIdx > 0 && mdatIdx > 0 && moovIdx < mdatIdx;
-
-    return {
-      valid: true,
-      formatName: format?.format_name,
-      codecName,
-      width: stream?.width ? Number(stream.width) : undefined,
-      height: stream?.height ? Number(stream.height) : undefined,
-      durationSec: stream?.duration ? Number(stream.duration) : (format?.duration ? Number(format.duration) : undefined),
-      isFastStart,
-    };
+      return {
+        valid: true,
+        formatName: report.probed.format.format_name,
+        codecName,
+        width: stream.width,
+        height: stream.height,
+        durationSec: Number(stream.duration ?? report.probed.format.duration),
+        isFastStart: movieBoxPrecedesMediaData(buffer),
+        frameCount: report.videoFrames,
+      };
+    });
   } catch (err: any) {
+    if (err instanceof OracleToolMissingError || err?.isOracleSkip) throw err;
     return { valid: false, error: err?.message || String(err) };
-  } finally {
-    try {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    } catch {}
   }
 }
 
@@ -2716,7 +2662,14 @@ export function checkWebpIntegrity(buffer: Buffer): void {
   }
 }
 
-export function checkFlacIntegrity(buffer: Buffer): void {
+export interface FlacStreamInfo {
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+}
+
+/** Validates the STREAMINFO block of a FLAC stream and returns its audio parameters (RFC 9639 section 8.2). */
+export function checkFlacIntegrity(buffer: Buffer): FlacStreamInfo {
   if (buffer.length < 42) {
     throw new Error('Integrity Violation: FLAC buffer too small (< 42 bytes)');
   }
@@ -2736,6 +2689,8 @@ export function checkFlacIntegrity(buffer: Buffer): void {
   const b20 = buffer[20];
   const sampleRate = (b18 << 12) | (b19 << 4) | (b20 >> 4);
   const channels = ((b20 >> 1) & 0x07) + 1;
+  // Bits per sample minus one: the last bit of byte 20 and the high nibble of byte 21.
+  const bitsPerSample = (((b20 & 0x01) << 4) | (buffer[21] >> 4)) + 1;
   if (sampleRate === 0 || channels === 0) {
     throw new Error(`Integrity Violation: Invalid FLAC parameters (sampleRate=${sampleRate}, channels=${channels})`);
   }
@@ -2745,6 +2700,7 @@ export function checkFlacIntegrity(buffer: Buffer): void {
       throw new Error('Integrity Violation: FFmpeg CLI failed to decode FLAC bitstream');
     }
   }
+  return { sampleRate, channels, bitsPerSample };
 }
 
 export function checkMp3Integrity(buffer: Buffer): void {

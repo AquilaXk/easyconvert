@@ -1,14 +1,188 @@
 name: CI
 
+# A pull request runs once per commit: a newer push to the same pull request cancels the run in progress, and the
+# pushes to `main` queue instead (a merge must not be cancelled by the one after it). `push` is limited to `main`,
+# so a pull request commit is never built twice.
+#
+# Wall time is set by the slowest job, so the work is split into jobs of about the same length:
+#   - the unit/integration files by recorded duration (scripts/ci-test-shards.mjs, .github/ci/test-durations.json),
+#   - the registry conformance pairs by recorded duration, in as many parts as keep each part near the tests.
+# Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
+#
+# Reference parity: a conversion change merges only when it is at or above the reference tool in quality and speed.
+#   - parity-quality measures the changed families' quality rows on every push to the pull request;
+#   - parity-speed measures their speed rows once the `automerge` label is on (and again for a commit pushed after it),
+#     so the timing run is the last gate before the merge. Without the label, and with a conversion family changed, it
+#     is skipped, which `verify` reports as not yet satisfied: automerge cannot merge before speed parity has run on
+#     the current head.
+# The label-dependent verdicts need a fresh run when a label is added or removed, so those events trigger this workflow.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
-  verify:
+  # Decides whether the pull request changes anything but documentation. The heavy jobs wait for it and run only
+  # when `code` is true; `verify` accepts their being skipped only when this job said so.
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
+      # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
+      bench_families: ${{ steps.families.outputs.families }}
+      bench_unmapped: ${{ steps.families.outputs.unmapped }}
+      bench_changed: ${{ steps.families.outputs.changed }}
+
+    env:
+      # A file is documentation when it is under docs/ or is a Markdown file outside the directories whose
+      # Markdown the tests, benchmarks and scripts read as input.
+      DOCS_ONLY_DIRECTORY: '^docs/'
+      DOCS_ONLY_MARKDOWN: '\.md$'
+      MARKDOWN_INPUT_DIRECTORIES: '^(tests|src|bench|scripts|docker|public)/'
+      # Generated files that drift tests compare with their generators: changing one alone is a code change.
+      GENERATED_DOCS: '^(THIRD_PARTY_NOTICES\.md|docs/configuration\.md|docs/configuration\.example\.env|docs/licensing\.md)$'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Decide whether code changed
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Fail open: anything but a comparable pull request runs the full suite.
+          code=true
+          if [ "$EVENT_NAME" = pull_request ] && [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+            changed="$(git diff --name-only "$PR_BASE_SHA" HEAD)"
+            printf 'changed files:\n%s\n' "$changed"
+            if [ -n "$changed" ]; then
+              code=false
+              while IFS= read -r file; do
+                if printf '%s\n' "$file" | grep -Eq "$GENERATED_DOCS"; then code=true; break; fi
+                if printf '%s\n' "$file" | grep -Eq "$DOCS_ONLY_DIRECTORY"; then continue; fi
+                if printf '%s\n' "$file" | grep -Eq "$DOCS_ONLY_MARKDOWN" && ! printf '%s\n' "$file" | grep -Eq "$MARKDOWN_INPUT_DIRECTORIES"; then continue; fi
+                code=true
+                break
+              done <<< "$changed"
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code changed: $code"
+
+      # Which benchmark families the reference-parity jobs must measure. Only a pull request has them; the map is
+      # bench/family-map.json and the mapper needs no installed dependencies.
+      - name: Map changed paths to benchmark families
+        id: families
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression
+        run: |
+          families=""
+          unmapped=""
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+              mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)"
+              printf '%s\n' "$mapped"
+              families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
+              unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
+            else
+              # Fail open: without a comparable base, measure every family.
+              families="$ALL_BENCH_FAMILIES"
+            fi
+          fi
+          changed=false
+          if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
+          {
+            echo "families=$families"
+            echo "unmapped=$unmapped"
+            echo "changed=$changed"
+          } >> "$GITHUB_OUTPUT"
+          echo "benchmark families: ${families:-none}; without bench rows: ${unmapped:-none}"
+
+  # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
+  # type-checks). They run in their own job so the tool install does not delay them.
+  checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify test integrity and anti-cheating guards
+        run: npm run guard:anti-cheat
+
+      # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
+      # lockfile cannot bring in a new licence.
+      - name: Decide whether dependencies changed
+        id: deps
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DEPENDENCY_PATHS: '^(package\.json|package-lock\.json|licenses\.allow\.json|THIRD_PARTY_NOTICES\.md|scripts/third-party-notices\.mjs)$'
+        run: |
+          # Fail open: when the base commit cannot be compared, run the gate.
+          zero_sha=0000000000000000000000000000000000000000
+          changed=true
+          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            if ! git diff --name-only "$base" HEAD | grep -Eq "$DEPENDENCY_PATHS"; then
+              changed=false
+              echo "skipped: no dependency changes"
+            fi
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Verify third-party notices and dependency licences
+        if: steps.deps.outputs.changed == 'true'
+        run: npm run licenses:check
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Build application
+        run: npm run build
+
+  # The unit and integration suites, in shards of about equal recorded duration.
+  tests:
+    name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
 
     # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
     # and stall recovery (an in-process mock cannot execute Lua).
@@ -25,81 +199,164 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      - name: Install external conversion and oracle CLI tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg \
-            p7zip-full \
-            poppler-utils \
-            zstd \
-            tar \
-            libreoffice-calc \
-            libreoffice-writer \
-            libreoffice-impress \
-            libreoffice-draw \
-            imagemagick \
-            tesseract-ocr \
-            tesseract-ocr-kor \
-            tesseract-ocr-jpn \
-            fonts-nanum \
-            fonts-noto-core \
-            fonts-noto-cjk \
-            libxml2-utils \
-            flac \
-            woff2 \
-            python3-fonttools \
-            python3-brotli \
-            python3-fitz \
-            fonts-noto-ui-core \
-            fonts-noto-color-emoji \
-            unrar \
-            qpdf \
-            libraw-bin
-          # Pre-stage Tesseract traineddata assets for offline inference
-          find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
 
-      # Format oracles (columnar readers, PDF text extraction): the tests run python3 -I, which
-      # ignores user site-packages, so the pinned packages go to the system interpreter.
-      # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall.
-      # Test-only; nothing ships.
-      - name: Install Python format oracles
-        run: sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2
-
-      # PDF/A validator: PDF/A results are refused unless veraPDF validates them.
-      - name: Install veraPDF
-        run: sudo scripts/install-verapdf.sh /opt/verapdf
-
-      - name: Verify test integrity and anti-cheating guards
-        run: npm run guard:anti-cheat
-
-      - name: Run linter
-        run: npm run lint
-
-      - name: Restore RAW sample cache
-        uses: actions/cache@v4
-        with:
-          path: tests/fixtures/raw/.cache
-          key: raw-fixtures-${{ hashFiles('tests/fixtures/raw/manifest.json', 'tests/fixtures/raw/variants.json') }}
-
-      - name: Fetch RAW samples
-        run: npm run fixtures:raw
-
+      # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly).
       - name: Run unit and integration tests
         env:
           ORACLE_STRICT_MODE: "1"
-        run: npm test
+          SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ strategy.job-total }}
+        run: |
+          mapfile -t files < <(node scripts/ci-test-shards.mjs "$SHARD" "$SHARD_COUNT")
+          echo "shard $SHARD/$SHARD_COUNT: ${#files[@]} files"
+          npx --no-install vitest run "${files[@]}"
+
+  conformance:
+    name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
+      # pairs (CONFORMANCE_PART), packed by recorded duration (.github/ci/conformance-durations.json), and part 1 also
+      # runs the registry-wide checks. The part writes what each of its keys cost; the upload below keeps it, so the
+      # table is refreshed from real CI numbers with `node scripts/ci-conformance-parts.mjs --update <recordings>`.
+      - name: Run the registry conformance gate
+        env:
+          ORACLE_STRICT_MODE: "1"
+          CONFORMANCE_PART: ${{ matrix.part }}/${{ strategy.job-total }}
+          CONFORMANCE_DURATIONS_OUT: ${{ runner.temp }}/conformance-part-${{ matrix.part }}.json
+        run: npx --no-install vitest run tests/registry-engine-conformance.test.ts
+
+      - name: Upload the recorded durations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conformance-durations-${{ matrix.part }}
+          path: ${{ runner.temp }}/conformance-part-${{ matrix.part }}.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The checks that need both the tools and Redis and are not part of the shards.
+  integration:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
+    # and stall recovery (an in-process mock cannot execute Lua).
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # Dummy credentials of the throwaway S3 test server started below (the only job that starts it), shared by
+    # the step that starts it and by the storage tests that read STORAGE_TEST_S3_*.
+    env:
+      STORAGE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      STORAGE_TEST_S3_ACCESS_KEY_ID: ci-s3-access-key
+      STORAGE_TEST_S3_SECRET_ACCESS_KEY: ci-s3-secret-key
+      STORAGE_TEST_S3_BUCKET: easyconvert-client-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+        with:
+          s3-test-server: 'true'
+
+      # The storage tests that need a server this repository did not write. They are not in the shards
+      # (scripts/ci-test-shards.mjs), so this is the one job that starts the S3 test server; with
+      # ORACLE_STRICT_MODE a missing server is a failure, not a skip.
+      - name: Run the S3 storage tests against the real server
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npx --no-install vitest run tests/s3-minio-integration.test.ts tests/s3-object-client.test.ts
+
+      # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
+      # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
+      - name: Run archive tests against pinned 7-Zip
+        env:
+          ORACLE_STRICT_MODE: "1"
+          SEVEN_ZIP_VERSION: "26.01"
+          SEVEN_ZIP_RELEASE: "2601"
+          SEVEN_ZIP_SHA256_X64: 8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+        run: |
+          SEVEN_ZIP_DIR="${RUNNER_TEMP}/seven-zip"
+          mkdir -p "${SEVEN_ZIP_DIR}"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+            --output "${SEVEN_ZIP_DIR}/7zip.tar.xz" \
+            "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-x64.tar.xz"
+          echo "${SEVEN_ZIP_SHA256_X64}  ${SEVEN_ZIP_DIR}/7zip.tar.xz" | sha256sum --check --strict -
+          tar -xJf "${SEVEN_ZIP_DIR}/7zip.tar.xz" -C "${SEVEN_ZIP_DIR}" 7zzs
+          "${SEVEN_ZIP_DIR}/7zzs" i | grep -q ' Rar5 '
+          P7ZIP_PATH="${SEVEN_ZIP_DIR}/7zzs" npx --no-install vitest run \
+            tests/*archive* tests/*7z* tests/*rar* tests/worker-seven-zip-packaging.test.ts
 
       # Kept separate from `npm test`: some suites assume no Redis is configured.
       - name: Run Redis-mode queue tests
@@ -107,5 +364,380 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: npm run test:redis
 
-      - name: Build application
-        run: npm run build
+  # Builds the worker image and proves the container hardening from inside a container started with the
+  # compose security settings (scripts/verify-worker-container.sh). It runs in parallel with the other
+  # jobs and does the work only when a file that affects the image, its compose settings or the sandbox
+  # changed; otherwise it succeeds at once, so `verify` can always require it.
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Files whose change can alter the worker container or its sandbox.
+      CONTAINER_PATHS: '^(Dockerfile\.worker$|docker/|docker-compose[^/]*\.yml$|scripts/verify-worker-container\.sh$|src/lib/security/process-sandbox\.ts$|\.github/workflows/ci\.yml$|\.github/actions/)'
+      WORKER_IMAGE: easyconvert-worker:ci
+      REDIS_PORT: '6379'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Decide whether the container changed
+        id: changes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # Fail open: when the base commit cannot be compared, run the checks.
+          zero_sha=0000000000000000000000000000000000000000
+          relevant=true
+          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
+            changed="$(git diff --name-only "$base" HEAD)"
+            printf 'changed files:\n%s\n' "$changed"
+            if printf '%s\n' "$changed" | grep -Eq "$CONTAINER_PATHS"; then
+              echo "container paths changed: running the container checks"
+            else
+              relevant=false
+              echo "skipped: no container changes"
+            fi
+          else
+            echo "no comparable base commit: running the container checks"
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
+      # The in-container `unshare -r -n` needs unprivileged user namespaces; recent runner images restrict
+      # them for AppArmor-confined programs by default.
+      - name: Allow unprivileged user namespaces
+        if: steps.changes.outputs.relevant == 'true'
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build the worker image
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: Dockerfile.worker
+          load: true
+          tags: ${{ env.WORKER_IMAGE }}
+          cache-from: type=gha,scope=worker-container
+          cache-to: type=gha,mode=max,scope=worker-container
+
+      # Redis runs as the compose service so the worker container can reach it over the project network.
+      - name: Start Redis
+        if: steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          docker compose up -d redis
+          for attempt in $(seq 1 30); do
+            if [ "$(docker compose exec -T redis redis-cli ping 2>/dev/null)" = PONG ]; then exit 0; fi
+            sleep 1
+          done
+          echo "Redis did not answer PING after 30 attempts" >&2
+          docker compose logs redis >&2
+          exit 1
+
+      # The worker service from docker-compose.yml (read_only, cap_drop ALL, no-new-privileges, the seccomp
+      # profile, nodev/noexec tmpfs), run against the image built above.
+      - name: Verify the hardened worker container
+        if: steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          override="$RUNNER_TEMP/compose.ci-image.yml"
+          printf 'services:\n  worker:\n    image: %s\n    pull_policy: never\n' "$WORKER_IMAGE" > "$override"
+          redis_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' easyconvert-redis)"
+          echo "Redis container address: $redis_ip"
+          docker compose -f docker-compose.yml -f "$override" run --rm --no-deps -T \
+            -e VERIFY_REDIS_HOST="$redis_ip" -e VERIFY_REDIS_PORT="$REDIS_PORT" \
+            -v "$PWD/scripts/verify-worker-container.sh:/verify.sh:ro" \
+            --entrypoint /bin/bash worker /verify.sh | tee "$RUNNER_TEMP/verify-worker-container.log"
+
+      - name: Publish the verification output
+        if: always() && steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/verify-worker-container.log" ]; then
+            { echo '### Worker container verification'; echo '```'; cat "$RUNNER_TEMP/verify-worker-container.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Show container state after a failure
+        if: failure() && steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color redis
+
+      - name: Stop Redis
+        if: always() && steps.changes.outputs.relevant == 'true'
+        run: docker compose down --volumes
+
+  # Reference parity, quality half: the changed families' quality rows (BD-rate, CER, F1, size, SSIM/PSNR) against the
+  # reference tools, on the quick subset of each family (QUICK_SUBSET in bench/config.ts). The reference side is
+  # deterministic for fixed tool versions, so it is read from the cache the nightly run keeps; ours is measured here.
+  # Runs only when a conversion family changed. A `security` label with a linked issue excuses the parity verdict and
+  # nothing else (scripts/ci-parity-policy.mjs).
+  parity-quality:
+    name: parity quality
+    needs: changes
+    if: needs.changes.outputs.bench_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    env:
+      ORACLE_STRICT_MODE: "1"
+      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # A family with no reference-compared rows cannot be judged, so a change to it cannot merge until the same
+      # change adds the rows and points its entry in bench/family-map.json at them.
+      - name: Require bench rows for every changed conversion family
+        if: env.BENCH_UNMAPPED != ''
+        run: |
+          for family in ${BENCH_UNMAPPED//,/ }; do
+            echo "::error::add reference-compared bench rows for $family"
+          done
+          exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Fingerprint the reference tools
+        id: tools
+        run: echo "fingerprint=$(npx --no-install tsx bench/run.ts --print-tool-fingerprint)" >> "$GITHUB_OUTPUT"
+
+      # Read-only: the nightly run on main writes this cache (a pull request cannot save into main's scope).
+      - name: Restore the reference measurements
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .bench-cache
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}
+          restore-keys: |
+            bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
+
+      # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
+      # file it leaves is what the policy step below reads, so this step never fails the job by itself.
+      - name: Measure quality against the reference tools
+        id: bench
+        run: |
+          set +e
+          npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES"
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark exit code: $code"
+          exit 0
+
+      - name: Publish the parity table
+        if: always()
+        run: |
+          if [ -f bench-results/parity-verdict.md ]; then
+            { echo '### Reference parity: quality'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-quality-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Apply the parity verdict and the security exemption
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
+            await policy.applyParityVerdict({
+              github,
+              context,
+              core,
+              fs: require('node:fs'),
+              runFilePath: 'bench-results/parity-verdict.json',
+              scope: 'quality',
+            });
+
+  # Reference parity, speed half: ours against the reference tool, interleaved in this job, for the changed families'
+  # throughput rows, decided by a confidence interval of the speed ratio (bench/speed-parity.ts). Timing is never
+  # cached and never compared with a stored number. It runs once the `automerge` label is on, and again for a commit
+  # pushed after the label, so it is the last gate before the merge.
+  #   - nothing to measure (no conversion family changed): the job runs, says so, and succeeds;
+  #   - a conversion family changed and the label is on: the job measures;
+  #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
+  #     added, so automerge cannot merge before this job has run on the current head.
+  parity-speed:
+    name: parity speed
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' &&
+      (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    env:
+      ORACLE_STRICT_MODE: "1"
+      BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
+      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+
+    steps:
+      - name: Say that there is nothing to measure
+        if: env.BENCH_CHANGED != 'true'
+        run: echo "speed parity runs when the automerge label is added; no conversion family changed, so there is nothing to measure"
+
+      - name: Checkout repository
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Require bench rows for every changed conversion family
+        if: env.BENCH_UNMAPPED != ''
+        run: |
+          for family in ${BENCH_UNMAPPED//,/ }; do
+            echo "::error::add reference-compared bench rows for $family"
+          done
+          exit 1
+
+      - name: Setup Node.js
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: env.BENCH_CHANGED == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        if: env.BENCH_CHANGED == 'true'
+        uses: ./.github/actions/ci-setup
+
+      - name: Measure speed against the reference tools
+        id: bench
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          set +e
+          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark exit code: $code"
+          exit 0
+
+      - name: Publish the parity table
+        if: always() && env.BENCH_CHANGED == 'true'
+        run: |
+          if [ -f bench-results/parity-verdict.md ]; then
+            { echo '### Reference parity: speed'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark report
+        if: always() && env.BENCH_CHANGED == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-speed-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Apply the parity verdict and the security exemption
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
+            await policy.applyParityVerdict({
+              github,
+              context,
+              core,
+              fs: require('node:fs'),
+              runFilePath: 'bench-results/parity-verdict.json',
+              scope: 'speed',
+            });
+
+  # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
+  # other skipped, cancelled or failed job fails the gate. The parity jobs follow the same rule with their own
+  # verdict: quality runs when a conversion family changed, and speed runs when nothing needs measuring or the
+  # `automerge` label is on; a skipped speed job with a conversion family changed is not yet satisfied.
+  verify:
+    if: always()
+    needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass, or to be skipped for a documentation-only change
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
+          HAS_AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          CONTAINER_RESULT: ${{ needs.container.result }}
+          PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
+          PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
+        run: |
+          echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
+          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
+          failed=0
+          if [ "$CHANGES_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
+          # The expected result of the heavy jobs follows from the filter's verdict alone.
+          case "$CODE_CHANGED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) expected=none; failed=1 ;;
+          esac
+          for result in "$CHECKS_RESULT" "$TESTS_RESULT" "$CONFORMANCE_RESULT" "$INTEGRATION_RESULT"; do
+            if [ "$result" != "$expected" ]; then failed=1; fi
+          done
+          # Parity quality runs on a pull request that changes a conversion family, and on nothing else.
+          quality_expected=skipped
+          if [ "$EVENT_NAME" = pull_request ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
+          if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
+          # Parity speed: success when nothing needs measuring or the label started the measurement. With a
+          # conversion family changed and no label the job is skipped, and that is not yet satisfied.
+          speed_expected=skipped
+          if [ "$EVENT_NAME" = pull_request ]; then
+            if [ "$BENCH_CHANGED" != true ] || [ "$HAS_AUTOMERGE_LABEL" = true ]; then
+              speed_expected=success
+            else
+              echo "::error::speed parity has not run: add the automerge label to run it before the merge"
+              failed=1
+            fi
+          fi
+          if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
+          if [ "$failed" != 0 ]; then
+            echo "::error::a required job did not finish as expected"
+            exit 1
+          fi

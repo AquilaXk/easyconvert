@@ -1,21 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { HAS_PDFTOTEXT } from './helpers/native-tools';
-
-const TESSDATA_DIRS = [
-  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
-  process.cwd(),
-  '/usr/share/tesseract-ocr/5/tessdata',
-  '/usr/share/tesseract-ocr/4.00/tessdata',
-  '/usr/share/tessdata',
-];
-const HAS_ENG = TESSDATA_DIRS.some(
-  (dir) => existsSync(path.join(dir, 'eng.traineddata')) || existsSync(path.join(dir, 'eng.traineddata.gz'))
-);
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
+import { hasTesseractLanguage } from './helpers/tessdata';
 
 const WORD = 'HARBOR';
 const PAGE_WIDTH = 480;
@@ -38,7 +26,7 @@ async function buildImageOnlyPdf(): Promise<Buffer> {
   return Buffer.from(await doc.save());
 }
 
-describe.skipIf(!HAS_ENG || !HAS_PDFTOTEXT)('pdf to txt on an image-only PDF (needs eng.traineddata, pdftotext)', () => {
+describe.skipIf(skipUnless('eng.traineddata (Tesseract English data)', hasTesseractLanguage('eng')) || skipWithoutTools('pdftotext'))('pdf to txt on an image-only PDF (needs eng.traineddata, pdftotext)', () => {
   it('recognizes the page text when OCR is requested instead of returning the empty text layer', async () => {
     const pdf = await buildImageOnlyPdf();
     const result = await dispatchConversion(pdf, 'pdf', 'txt', { ocrEnabled: true }, 'scan.pdf');

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { isBlockedIp, isBlockedIpv4, isBlockedIpv6, validateUrlForSsrf } from '../src/lib/security/ssrf';
@@ -18,6 +18,12 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
 import { DataLimitExceededError, DataParseError } from '../src/lib/types';
 import JSZip from 'jszip';
+import { oracleTest } from './helpers/oracle-test';
+import { parseCsvWithPython, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
+import { xpathAttributes } from './helpers/xml-oracle';
+
+const OVER_FILE_CAP_ENTRIES = 50_001;
+const FIXTURE_BUILD_TIMEOUT_MS = 60_000;
 
 describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () => {
   describe('1. Fail-Closed Removal of Fake Synthesizers and Generators', () => {
@@ -121,14 +127,18 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
   });
 
   describe('3. Zip Bomb & Archive Security Limits', () => {
-    it('enforces maximum file count limit (1000 files)', async () => {
+    // Building 50,001 entries is fixture cost, not the behaviour under test, so it gets its own budget.
+    let overCapZip: Buffer;
+    beforeAll(async () => {
       const zip = new JSZip();
-      for (let i = 0; i < 1005; i++) {
+      for (let i = 0; i < OVER_FILE_CAP_ENTRIES; i++) {
         zip.file(`file_${i}.txt`, 'a');
       }
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      overCapZip = await zip.generateAsync({ type: 'nodebuffer' });
+    }, FIXTURE_BUILD_TIMEOUT_MS);
 
-      await expect(extractZipArchive(zipBuffer)).rejects.toThrow(
+    it('enforces maximum file count limit (50,000 files)', async () => {
+      await expect(extractZipArchive(overCapZip)).rejects.toThrow(
         /Archive bomb detected: file count .* exceeds limit/
       );
     });
@@ -196,20 +206,20 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       expect(sheetXml).toMatch(/<c r="AA2" t="inlineStr"><is><t>Val27<\/t><\/is><\/c>/);
     });
 
-    it('parses CSV with quoted commas cleanly using Papa.parse without splitting fields', async () => {
+    oracleTest('keeps quoted commas inside their cells when a CSV becomes an XLSX workbook', ['soffice', 'python3', 'xmllint'], async () => {
       const csv = 'Name,Bio,Role\n"Smith, John","Software Engineer, Lead",Architect';
       const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {}, 'quoted_sheet');
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 
-      expect(sheetXml).toContain('Smith, John');
-      expect(sheetXml).toContain('Software Engineer, Lead');
-      expect(sheetXml).toContain('Architect');
-      // Ensure Row 2 only has 3 cells (A2, B2, C2), not split into 5 cells
-      expect(sheetXml).toContain('r="A2"');
-      expect(sheetXml).toContain('r="B2"');
-      expect(sheetXml).toContain('r="C2"');
-      expect(sheetXml).not.toContain('r="D2"');
+      // Cell references straight from the sheet XML (XPath): row 2 has exactly A2, B2 and C2, not five cells.
+      expect(xpathAttributes(sheetXml, "//*[local-name()='row'][2]/*[local-name()='c']/@r")).toEqual(['A2', 'B2', 'C2']);
+      // LibreOffice, an independent reader, finds the rows Python's csv module finds in the source text.
+      expect(sheetRowsViaLibreOffice(xlsxBuffer, 'xlsx')).toEqual([
+        ['Name', 'Bio', 'Role'],
+        ['Smith, John', 'Software Engineer, Lead', 'Architect'],
+      ]);
+      expect(parseCsvWithPython(csv)).toEqual(sheetRowsViaLibreOffice(xlsxBuffer, 'xlsx'));
     });
   });
 

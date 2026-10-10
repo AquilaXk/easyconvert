@@ -2,17 +2,42 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
-import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
+import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
+import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
-import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import {
+  createProblemDetailsResponse,
+  createEngineUnavailableResponse,
+  createPdfPostprocessResponse,
+} from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
-import { ArchiveEntryCollisionError, ConversionFailedError, EngineUnavailableError } from '@/lib/types';
+import {
+  ArchiveEntryCollisionError,
+  ConversionFailedError,
+  EncryptedOfficeDocumentError,
+  EngineUnavailableError,
+  PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
+} from '@/lib/types';
 import type { FormatDefinition, ConversionOptions } from '@/lib/types';
+
+const ZIP_MIME_TYPE = 'application/zip';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,8 +123,13 @@ export async function POST(req: NextRequest) {
     // daily-quota headers report the real remaining quota and the burst Retry-After takes precedence.
     let headers = authErrorHeaders(auth);
     if (auth.user) {
-      const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
-      headers = { ...buildRateLimitHeaders(userQuota), ...headers };
+      try {
+        const userQuota = await redisKeyStore.getQuotaUsage(auth.user.id);
+        headers = { ...buildRateLimitHeaders(userQuota), ...headers };
+      } catch (quotaError) {
+        // The quota headers are a courtesy: the guard's rejection stands without them.
+        console.error('[v1/convert] Quota headers left out of a rejection, the quota lookup failed:', quotaError);
+      }
     }
     return createProblemDetailsResponse(
       auth.status ?? 401,
@@ -151,7 +181,16 @@ export async function POST(req: NextRequest) {
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
 
+  // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
+  // the request ends; an asynchronous handoff stays counted through the job it queues.
+  let releaseSlot: (() => void) | undefined;
   try {
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      if (idempotencyCtx) await idempotencyCtx.abort();
+      return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
+    }
+    releaseSlot = slot.release;
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
@@ -241,6 +280,17 @@ export async function POST(req: NextRequest) {
         if (reservation?.reservationId) {
           await redisKeyStore.rollbackQuota(reservation.reservationId);
         }
+        const storageProblem = describeStorageError(err);
+        if (storageProblem) {
+          return reply(createProblemDetailsResponse(
+            storageProblem.status,
+            storageProblem.detail,
+            instanceUri,
+            storageProblem.title,
+            undefined,
+            { ...rateLimitHeaders, ...storageProblem.headers }
+          ));
+        }
         return reply(createProblemDetailsResponse(
           400,
           err.message || 'File upload or validation failed.',
@@ -251,7 +301,8 @@ export async function POST(req: NextRequest) {
         ));
       }
 
-      const job = await conversionQueue.add(
+      const job = await enqueueConversionJob(
+        conversionQueue,
         'convert',
         {
           jobId: '',
@@ -260,7 +311,7 @@ export async function POST(req: NextRequest) {
           targetFormat: targetDef.id,
           fileSize: file.size,
           storageKey: uploadedStorageKey,
-          options,
+          options: stripEngineControls(options),
           webhookUrl: effectiveWebhookUrl,
           webhookSecret: effectiveWebhookSecret,
           userId: auth.user.id,
@@ -269,7 +320,8 @@ export async function POST(req: NextRequest) {
         {
           attempts: 3,
           backoff: { type: 'exponential', delay: 1000 },
-        }
+        },
+        { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider) }
       );
 
       return reply(NextResponse.json(
@@ -319,27 +371,43 @@ export async function POST(req: NextRequest) {
     }
 
     // Convert through the shared dispatcher (native engines first, in-process where valid)
-    const conversionResult = await dispatchConversion(
-      inputBuffer,
-      sourceDef.id,
-      targetDef.id,
-      options,
-      file.name
+    const ownerTier = auth.user.tier;
+    const deadlineMs = syncDeadlineMs(
+      conversionDeadlineMs({
+        tier: ownerTier,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        inputBytes: inputBuffer.length,
+      })
     );
+    const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
+      dispatchConversion(
+        inputBuffer,
+        sourceDef.id,
+        targetDef.id,
+        bindJobLimits(withTierPageCap(options, tierMaxPages(ownerTier)), limits),
+        file.name
+      )
+    );
+
+    const durationMs = Date.now() - startTime;
+    const outputBuffer = conversionResult.buffer;
+
+    // Store the result before the quota unit is committed: a storage outage fails the request and
+    // rolls the reservation back, so the user is not charged for a result they cannot download.
+    const baseName = file.name.replace(/\.[^/.]+$/, '');
+    // Multi-page results (one image per page) come back as a ZIP whatever the requested target is.
+    const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
+    const outFileName = `${baseName}.${outExtension}`;
+    const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
+    await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
 
     // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
     if (reservation?.reservationId) {
       await redisKeyStore.commitQuota(reservation.reservationId);
     }
 
-    const durationMs = Date.now() - startTime;
-    const outputBuffer = conversionResult.buffer;
-
     // Record in user's file conversion history
-    const baseName = file.name.replace(/\.[^/.]+$/, '');
-    const outFileName = `${baseName}.${targetDef.extension || targetDef.id}`;
-    const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, 3600 * 1000);
     const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
 
     const userFile = await redisKeyStore.recordUserFile({
@@ -361,6 +429,9 @@ export async function POST(req: NextRequest) {
           'Content-Disposition': `attachment; filename="${outFileName}"`,
           'X-Conversion-Time-Ms': durationMs.toString(),
           'X-File-Id': userFile.id,
+          ...frameMetadataHeaders(conversionResult),
+          ...engineTraceHeaders(conversionResult),
+          ...droppedStreamsHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -387,6 +458,9 @@ export async function POST(req: NextRequest) {
         dataUri,
         downloadUrl,
         expiresAt: userFile.expiresAt,
+        ...frameMetadataFields(conversionResult),
+        ...engineTraceFields(conversionResult),
+        ...droppedStreamsFields(conversionResult),
       },
       {
         status: 200,
@@ -398,11 +472,19 @@ export async function POST(req: NextRequest) {
       await idempotencyCtx.abort();
     }
     if (reservation?.reservationId) {
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
+    if (deadlineProblem) return deadlineProblem;
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
     }
+    if (err instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
+    }
+    const storageProblem = storageErrorResponse(err, instanceUri, rateLimitHeaders);
+    if (storageProblem) return storageProblem;
     if (err instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(
         err.status,
@@ -413,8 +495,26 @@ export async function POST(req: NextRequest) {
         rateLimitHeaders
       );
     }
-    if (err instanceof InputPixelLimitError) {
+    const limitStatus = payloadLimitStatus(err);
+    if (limitStatus !== null) {
+      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+      return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
+    }
+    if (err instanceof EncryptedOfficeDocumentError) {
+      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
+    }
+    if (err instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: log it, answer 500 without the worker's file name.
+      console.error('[v1/convert] Worker output vanished before it was read:', err);
+      return createProblemDetailsResponse(
+        err.status,
+        WORKER_OUTPUT_MISSING_DETAIL,
+        instanceUri,
+        'Internal Server Error',
+        undefined,
+        rateLimitHeaders
+      );
     }
     if (err instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, invalid page range, malformed input): fail closed with 400.
@@ -430,5 +530,7 @@ export async function POST(req: NextRequest) {
       undefined,
       rateLimitHeaders
     );
+  } finally {
+    releaseSlot?.();
   }
 }

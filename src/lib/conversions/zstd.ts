@@ -1,26 +1,63 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { decodeZstdCompressedBlockWithDict } from './zstd-dict';
+import { ConversionFailedError } from '../types';
+import {
+  ZstdOutputBuffer,
+  createFrameDecodeState,
+  decodeCompressedBlock,
+  type ZstdParsedDictionary,
+} from './zstd-decoder';
+import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
+import { getCpuPool, shareBytes } from '../workers/cpu-pool';
+import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
+import {
+  ZSTD_BLOCK_SIZE_MAX,
+  ZSTD_DECODER_WINDOW_SIZE_MAX,
+  ZSTD_LEVEL_DEFAULT,
+  ZSTD_LEVEL_MAX,
+  ZSTD_LEVEL_MIN,
+  ZSTD_WINDOW_LOG_MIN,
+} from './zstd-tables';
 
 /**
  * Pure TypeScript RFC 8878 Zstandard (zstd) Compression and Decompression Engine
  *
  * Implements:
  * - Magic byte detection (0xFD2FB528) and skippable frames (0x184D2A50..0x184D2A5F)
- * - Frame header parsing (single segment, window descriptor, dictionary ID, FCS)
- * - Raw, RLE, and Compressed block parsing with Finite State Entropy (FSE) & sequence execution
+ * - Frame header parsing (single segment, window descriptor, dictionary ID, FCS) with a window-size cap
+ * - Raw, RLE, and Compressed block decoding (Huffman literals, FSE sequences, repeat offsets)
+ * - Compression levels 1-19: LZ77 hash-chain match finding, lazy matching, Huffman/FSE entropy coding
  * - Multi-frame streaming decoding
  * - XXH64 32-bit Content Checksum calculation & verification
  * - Archive bomb protection: 100:1 ratio and 500MB cumulative limit
+ *
+ * Block-level coding lives in zstd-encoder.ts / zstd-decoder.ts; this module owns framing.
  */
 
 export const ZSTD_MAGIC_NUMBER = 0xfd2fb528;
 export const ZSTD_MAGIC_LE = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
+/**
+ * The 100:1 ratio guard only applies once the decoded output is larger than this. Highly repetitive
+ * but legitimate data (sparse files, repeated log lines) compresses past 100:1 at small sizes; a
+ * real bomb has to grow beyond this floor to do harm, and the absolute cap still applies below it.
+ */
+export const ZSTD_RATIO_GUARD_FLOOR_BYTES = 32 * 1024 * 1024;
+
 export const ZSTD_SECURITY_LIMITS = {
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB
   MAX_RATIO: 100, // 100:1
+  RATIO_GUARD_FLOOR_BYTES: ZSTD_RATIO_GUARD_FLOOR_BYTES,
 };
+
+/** True when `uncompressedBytes` from `compressedBytes` is past the floor and beyond the maximum ratio. */
+export function exceedsZstdRatioGuard(uncompressedBytes: number, compressedBytes: number): boolean {
+  return (
+    uncompressedBytes > ZSTD_RATIO_GUARD_FLOOR_BYTES &&
+    compressedBytes > 0 &&
+    uncompressedBytes / compressedBytes > ZSTD_SECURITY_LIMITS.MAX_RATIO
+  );
+}
 
 let resolvedZstdPath: string | null = null;
 export function getZstdBinaryPath(): string | null {
@@ -52,21 +89,6 @@ export function getZstdBinaryPath(): string | null {
   return null;
 }
 
-export function decompressWithNativeZstd(inputBuffer: Buffer): Buffer | null {
-  const zstdBin = getZstdBinaryPath();
-  if (!zstdBin) return null;
-  try {
-    return execFileSync(zstdBin, ['-d', '-c', '-q'], {
-      input: inputBuffer,
-      maxBuffer: ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      timeout: 10000,
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
-  } catch {
-    return null;
-  }
-}
-
 export interface ZstdFrameHeader {
   singleSegment: boolean;
   contentChecksumFlag: boolean;
@@ -86,6 +108,7 @@ export interface ZstdBlockHeader {
 // XXH64 Content Checksum Engine (RFC 8878)
 // ==========================================
 const PRIME64_1 = 11400714785074694791n;
+const LOW_32_BITS = 0xffffffffn;
 const PRIME64_2 = 14029467366897019727n;
 const PRIME64_3 = 1609587929392839161n;
 const PRIME64_4 = 9650029242287828579n;
@@ -112,6 +135,7 @@ export class FastStreamingXxHash64 {
   private v4_hi: number; private v4_lo: number;
   private totalLen = 0;
   private rem = Buffer.alloc(32);
+  private readonly remView = new DataView(this.rem.buffer, this.rem.byteOffset, this.rem.byteLength);
   private remLen = 0;
   private seeded = false;
 
@@ -129,6 +153,7 @@ export class FastStreamingXxHash64 {
     if (chunk.length === 0) return;
     this.totalLen += chunk.length;
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
     let offset = 0;
 
     if (this.remLen > 0) {
@@ -137,14 +162,14 @@ export class FastStreamingXxHash64 {
       this.remLen += take;
       offset += take;
       if (this.remLen === 32) {
-        this.process32(this.rem, 0);
+        this.process32(this.remView, 0);
         this.remLen = 0;
       }
     }
 
     const limit = buf.length - 32;
     while (offset <= limit) {
-      this.process32(buf, offset);
+      this.process32(view, offset);
       offset += 32;
     }
 
@@ -154,11 +179,11 @@ export class FastStreamingXxHash64 {
     }
   }
 
-  private process32(buf: Buffer, offset: number): void {
+  private process32(view: DataView, offset: number): void {
     this.seeded = true;
     {
-      const n_lo = buf.readInt32LE(offset);
-      const n_hi = buf.readInt32LE(offset + 4);
+      const n_lo = view.getInt32(offset, true);
+      const n_hi = view.getInt32(offset + 4, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -182,8 +207,8 @@ export class FastStreamingXxHash64 {
       this.v1_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 8);
-      const n_hi = buf.readInt32LE(offset + 12);
+      const n_lo = view.getInt32(offset + 8, true);
+      const n_hi = view.getInt32(offset + 12, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -207,8 +232,8 @@ export class FastStreamingXxHash64 {
       this.v2_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 16);
-      const n_hi = buf.readInt32LE(offset + 20);
+      const n_lo = view.getInt32(offset + 16, true);
+      const n_hi = view.getInt32(offset + 20, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -232,8 +257,8 @@ export class FastStreamingXxHash64 {
       this.v3_lo = Math.imul(rot_lo, C1_LO);
     }
     {
-      const n_lo = buf.readInt32LE(offset + 24);
-      const n_hi = buf.readInt32LE(offset + 28);
+      const n_lo = view.getInt32(offset + 24, true);
+      const n_hi = view.getInt32(offset + 28, true);
       const n0 = n_lo & 0xffff, n1 = n_lo >>> 16;
       const p0 = Math.imul(n0, c2_0);
       const p1 = Math.imul(n1, c2_0);
@@ -327,65 +352,101 @@ export class FastStreamingXxHash64 {
 }
 
 export function xxh64(buf: Uint8Array): bigint {
+  if (buf.length >= XXH64_WASM_MIN_BYTES) {
+    const hashed = xxh64Wasm(buf);
+    if (hashed !== null) return hashed;
+  }
   const hasher = new FastStreamingXxHash64();
   hasher.update(buf);
   return hasher.digest64();
 }
 
+/** The low 32 bits of XXH64 (seed 0) of `data`: the content checksum of a Zstandard frame. */
 export function computeZstdChecksum(data: Uint8Array): number {
-  const hasher = new FastStreamingXxHash64();
-  hasher.update(data);
-  return hasher.digest();
+  return Number(xxh64(data) & LOW_32_BITS);
 }
 
 // ==========================================
 // Zstandard Frame Parser & Decompressor
 // ==========================================
 
+const FHD_FCS_SHIFT = 6;
+const FHD_SINGLE_SEGMENT_BIT = 5;
+const FHD_RESERVED_BIT = 3;
+const FHD_CHECKSUM_BIT = 2;
+const FHD_DICT_ID_MASK = 0x03;
+const FCS_TWO_BYTE_BIAS = 256;
+const FCS_TWO_BYTE_MAX = 65536 + FCS_TWO_BYTE_BIAS;
+const FCS_FOUR_BYTE_LIMIT = 2 ** 32;
+const WINDOW_DESCRIPTOR_EXPONENT_SHIFT = 3;
+const WINDOW_DESCRIPTOR_MANTISSA_MASK = 0x07;
+const WINDOW_MANTISSA_STEPS = 8;
+const BLOCK_HEADER_BYTES = 3;
+const BLOCK_TYPE_RAW = 0;
+const BLOCK_TYPE_RLE = 1;
+const BLOCK_TYPE_COMPRESSED = 2;
+const SKIPPABLE_FRAME_MAGIC_MIN = 0x184d2a50;
+const SKIPPABLE_FRAME_MAGIC_MAX = 0x184d2a5f;
+const SKIPPABLE_HEADER_BYTES = 8;
+const CONTENT_CHECKSUM_BYTES = 4;
+/** Largest input the encoder accepts: match positions are stored as signed 32-bit integers. */
+export const ZSTD_ENCODER_INPUT_MAX = 2 ** 30;
+
+function bombSizeError(limit: number = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE): ConversionFailedError {
+  return new ConversionFailedError(`Archive bomb detected: uncompressed size exceeds limit of ${limit} bytes`);
+}
+
+function bombRatioError(uncompressed: number, compressed: number): ConversionFailedError {
+  return new ConversionFailedError(
+    `Archive bomb detected: compression ratio (${(uncompressed / compressed).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+  );
+}
+
 export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHeader {
   if (offset + 5 > buf.length) {
-    throw new Error('Malformed Zstandard frame: header truncated.');
+    throw new ConversionFailedError('Malformed Zstandard frame: header truncated.');
   }
 
   const magic = buf.readUInt32LE(offset);
   if (magic !== ZSTD_MAGIC_NUMBER) {
-    throw new Error(`Invalid Zstandard magic number: expected 0xFD2FB528, got 0x${magic.toString(16).toUpperCase()}`);
+    throw new ConversionFailedError(
+      `Invalid Zstandard magic number: expected 0xFD2FB528, got 0x${magic.toString(16).toUpperCase()}`
+    );
   }
 
   const startOffset = offset;
   offset += 4;
 
   const fhd = buf[offset++];
-  const fcsFlag = (fhd >> 6) & 0x03;
-  const singleSegment = ((fhd >> 5) & 0x01) === 1;
-  const reserved = (fhd >> 4) & 0x01;
-  if (reserved !== 0) {
-    throw new Error('Malformed Zstandard frame: reserved header bit must be 0.');
+  const fcsFlag = (fhd >> FHD_FCS_SHIFT) & 0x03;
+  const singleSegment = ((fhd >> FHD_SINGLE_SEGMENT_BIT) & 0x01) === 1;
+  if (((fhd >> FHD_RESERVED_BIT) & 0x01) !== 0) {
+    throw new ConversionFailedError('Malformed Zstandard frame: reserved header bit must be 0.');
   }
-  const contentChecksumFlag = ((fhd >> 2) & 0x01) === 1;
-  const dictIdFlag = fhd & 0x03;
+  const contentChecksumFlag = ((fhd >> FHD_CHECKSUM_BIT) & 0x01) === 1;
+  const dictIdFlag = fhd & FHD_DICT_ID_MASK;
 
   let windowSize = 0;
   if (!singleSegment) {
-    if (offset >= buf.length) throw new Error('Malformed Zstandard frame: missing window descriptor.');
+    if (offset >= buf.length) throw new ConversionFailedError('Malformed Zstandard frame: missing window descriptor.');
     const wd = buf[offset++];
-    const exponent = (wd >> 3) & 0x1f;
-    const mantissa = wd & 0x07;
-    const windowBase = 2 ** (10 + exponent);
-    const windowAdd = (windowBase / 8) * mantissa;
+    const exponent = wd >> WINDOW_DESCRIPTOR_EXPONENT_SHIFT;
+    const mantissa = wd & WINDOW_DESCRIPTOR_MANTISSA_MASK;
+    const windowBase = 2 ** (ZSTD_WINDOW_LOG_MIN + exponent);
+    const windowAdd = (windowBase / WINDOW_MANTISSA_STEPS) * mantissa;
     windowSize = windowBase + windowAdd;
   }
 
   let dictionaryId = 0;
   if (dictIdFlag === 1) {
-    if (offset + 1 > buf.length) throw new Error('Truncated dictionary ID');
+    if (offset + 1 > buf.length) throw new ConversionFailedError('Truncated dictionary ID');
     dictionaryId = buf[offset++];
   } else if (dictIdFlag === 2) {
-    if (offset + 2 > buf.length) throw new Error('Truncated dictionary ID');
+    if (offset + 2 > buf.length) throw new ConversionFailedError('Truncated dictionary ID');
     dictionaryId = buf.readUInt16LE(offset);
     offset += 2;
   } else if (dictIdFlag === 3) {
-    if (offset + 4 > buf.length) throw new Error('Truncated dictionary ID');
+    if (offset + 4 > buf.length) throw new ConversionFailedError('Truncated dictionary ID');
     dictionaryId = buf.readUInt32LE(offset);
     offset += 4;
   }
@@ -393,23 +454,26 @@ export function parseZstdFrameHeader(buf: Buffer, offset: number): ZstdFrameHead
   let frameContentSize: number | null = null;
   if (fcsFlag === 0) {
     if (singleSegment) {
-      if (offset >= buf.length) throw new Error('Truncated FCS');
+      if (offset >= buf.length) throw new ConversionFailedError('Truncated FCS');
       frameContentSize = buf[offset++];
     }
   } else if (fcsFlag === 1) {
-    if (offset + 2 > buf.length) throw new Error('Truncated FCS');
-    frameContentSize = buf.readUInt16LE(offset) + 256;
+    if (offset + 2 > buf.length) throw new ConversionFailedError('Truncated FCS');
+    frameContentSize = buf.readUInt16LE(offset) + FCS_TWO_BYTE_BIAS;
     offset += 2;
   } else if (fcsFlag === 2) {
-    if (offset + 4 > buf.length) throw new Error('Truncated FCS');
+    if (offset + 4 > buf.length) throw new ConversionFailedError('Truncated FCS');
     frameContentSize = buf.readUInt32LE(offset);
     offset += 4;
   } else if (fcsFlag === 3) {
-    if (offset + 8 > buf.length) throw new Error('Truncated FCS');
+    if (offset + 8 > buf.length) throw new ConversionFailedError('Truncated FCS');
     frameContentSize = Number(buf.readBigUInt64LE(offset));
     offset += 8;
   }
 
+  if (singleSegment && frameContentSize !== null) {
+    windowSize = frameContentSize;
+  }
   return {
     singleSegment,
     contentChecksumFlag,
@@ -431,253 +495,186 @@ export interface ZstdDecompressOptions {
 
 /**
  * Decompresses an arbitrary RFC 8878 Zstandard stream with bomb safeguards.
+ * Every failure surfaces as a ConversionFailedError; there is no fallback decoder.
  */
 export function decompressZstd(inputBuffer: Buffer, options: ZstdDecompressOptions = {}): Buffer {
-  const callerBound = options.maxOutputBytes;
-  const sizeLimit = callerBound ?? ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  if (!inputBuffer || inputBuffer.length < 4) {
-    throw new Error('Decompress error: input buffer too small for Zstandard stream.');
-  }
-
-  try {
-    const outChunks: Buffer[] = [];
-    let totalUncompressedSize = 0;
-    let offset = 0;
-
-    while (offset < inputBuffer.length) {
-      if (offset + 4 > inputBuffer.length) break;
-      const magic = inputBuffer.readUInt32LE(offset);
-
-      // Skippable frames: 0x184D2A50 to 0x184D2A5F
-      if (magic >= 0x184d2a50 && magic <= 0x184d2a5f) {
-        if (offset + 8 > inputBuffer.length) {
-          throw new Error('Malformed skippable frame: header truncated.');
-        }
-        const skipLength = inputBuffer.readUInt32LE(offset + 4);
-        offset += 8 + skipLength;
-        continue;
-      }
-
-      if (magic !== ZSTD_MAGIC_NUMBER) {
-        throw new Error(
-          `Invalid Zstandard magic signature: 0x${magic.toString(16).toUpperCase()} at offset ${offset}`
-        );
-      }
-
-      const frameHeader = parseZstdFrameHeader(inputBuffer, offset);
-      offset += frameHeader.headerSize;
-
-      const frameChunks: Buffer[] = [];
-      let frameUncompressedSize = 0;
-
-      let isLast = false;
-      while (!isLast) {
-        if (offset + 3 > inputBuffer.length) {
-          throw new Error('Malformed Zstandard frame: truncated block header.');
-        }
-
-        const b0 = inputBuffer[offset];
-        const b1 = inputBuffer[offset + 1];
-        const b2 = inputBuffer[offset + 2];
-        const headerVal = b0 | (b1 << 8) | (b2 << 16);
-        offset += 3;
-
-        isLast = (headerVal & 0x01) === 1;
-        const blockType = (headerVal >> 1) & 0x03;
-        const blockSize = headerVal >>> 3;
-
-        if (blockType === 3) {
-          throw new Error('Malformed Zstandard block: reserved block type 3 encountered.');
-        }
-
-        let blockData: Buffer;
-
-        if (blockType === 0) {
-          // Raw Block: uncompressed data of length blockSize
-          if (offset + blockSize > inputBuffer.length) {
-            throw new Error('Malformed Zstandard raw block: out of bounds data.');
-          }
-          blockData = Buffer.from(inputBuffer.subarray(offset, offset + blockSize));
-          offset += blockSize;
-        } else if (blockType === 1) {
-          // RLE Block: single byte repeated blockSize times
-          if (offset + 1 > inputBuffer.length) {
-            throw new Error('Malformed Zstandard RLE block: missing byte.');
-          }
-          const rleByte = inputBuffer[offset++];
-          blockData = Buffer.alloc(blockSize, rleByte);
-        } else {
-          // Compressed Block (FSE / Huffman sequence decoding)
-          if (offset + blockSize > inputBuffer.length) {
-            throw new Error('Malformed Zstandard compressed block: truncated data.');
-          }
-          const compSlice = inputBuffer.subarray(offset, offset + blockSize);
-          blockData = decodeZstdCompressedBlock(compSlice, frameChunks);
-          offset += blockSize;
-        }
-
-        frameChunks.push(blockData);
-        frameUncompressedSize += blockData.length;
-        totalUncompressedSize += blockData.length;
-
-        // Cumulative Security Limits Check
-        if (totalUncompressedSize > sizeLimit) {
-          throw new Error(
-            `Archive bomb detected: uncompressed size exceeds limit of ${sizeLimit} bytes`
-          );
-        }
-
-        if (
-          callerBound === undefined &&
-          inputBuffer.length > 0 &&
-          totalUncompressedSize / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
-        ) {
-          throw new Error(
-            `Archive bomb detected: compression ratio (${(
-              totalUncompressedSize / inputBuffer.length
-            ).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-          );
-        }
-      }
-
-      const frameDecompressed = Buffer.concat(frameChunks);
-
-      // Verify Checksum if present
-      if (frameHeader.contentChecksumFlag) {
-        if (offset + 4 > inputBuffer.length) {
-          throw new Error('Malformed Zstandard frame: missing content checksum.');
-        }
-        const expectedChecksum = inputBuffer.readUInt32LE(offset);
-        offset += 4;
-        const actualChecksum = computeZstdChecksum(frameDecompressed);
-        if (actualChecksum !== expectedChecksum) {
-          throw new Error(
-            `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, computed 0x${actualChecksum.toString(16)}`
-          );
-        }
-      }
-
-      outChunks.push(frameDecompressed);
-    }
-
-    return Buffer.concat(outChunks);
-  } catch (err) {
-    if (err instanceof Error && err.message.includes('Archive bomb detected')) {
-      throw err;
-    }
-    // Attempt fallback via native zstd if available
-    const nativeDec = decompressWithNativeZstd(inputBuffer);
-    if (nativeDec) {
-      if (nativeDec.length > sizeLimit) {
-        throw new Error(
-          `Archive bomb detected: uncompressed size exceeds limit of ${sizeLimit} bytes`
-        );
-      }
-      if (
-        callerBound === undefined &&
-        inputBuffer.length > 0 &&
-        nativeDec.length / inputBuffer.length > ZSTD_SECURITY_LIMITS.MAX_RATIO
-      ) {
-        throw new Error(
-          `Archive bomb detected: compression ratio (${(
-            nativeDec.length / inputBuffer.length
-          ).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
-      return nativeDec;
-    }
-    throw err;
-  }
+  return decodeZstdFrames(inputBuffer, null, options.maxOutputBytes);
 }
 
 /**
- * Decodes a Zstandard compressed block (literals + sequences)
+ * Same decoder and guards as `decompressZstd`, with the dictionary content as match history and
+ * (for full RFC 8878 section 5 dictionaries) its entropy tables and repeat offsets as the
+ * starting state of every frame.
  */
-function decodeZstdCompressedBlock(compressedSlice: Buffer, previousBlocks: Buffer[]): Buffer {
-  if (compressedSlice.length === 0) return Buffer.alloc(0);
+export function decompressZstdWithDictionary(inputBuffer: Buffer, dictionary: ZstdParsedDictionary): Buffer {
+  return decodeZstdFrames(inputBuffer, dictionary);
+}
 
-  // 1. Literals Section Header
+function decodeZstdFrames(inputBuffer: Buffer, dictionary: ZstdParsedDictionary | null, callerBound?: number): Buffer {
+  // A caller that knows the exact size it accepts bounds the output itself, so the ratio guard is not applied.
+  const sizeLimit = callerBound ?? ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+  const ratioGuarded = callerBound === undefined;
+  if (!inputBuffer || inputBuffer.length < 4) {
+    throw new ConversionFailedError('Decompress error: input buffer too small for Zstandard stream.');
+  }
+
+  const src = inputBuffer;
+  const dictionaryLength = dictionary === null ? 0 : dictionary.content.length;
+  const out = new ZstdOutputBuffer(sizeLimit + ZSTD_BLOCK_SIZE_MAX + dictionaryLength);
   let offset = 0;
-  const lh0 = compressedSlice[offset++];
-  const literalsBlockType = lh0 & 0x03; // 0=Raw, 1=RLE, 2=Compressed (Huffman), 3=Treeless
-  const sizeFormat = (lh0 >> 2) & 0x03;
 
-  let regeneratedSize = 0;
-  let compressedLitSize = 0;
-  let fourStreams = false;
-
-  if (literalsBlockType === 0 || literalsBlockType === 1) {
-    // Raw or RLE literals
-    if (sizeFormat === 0 || sizeFormat === 2) {
-      // 1-byte header: size is bits 3..7
-      regeneratedSize = lh0 >> 3;
-    } else if (sizeFormat === 1) {
-      // 2-byte header
-      if (offset >= compressedSlice.length) throw new Error('Truncated literals header');
-      const lh1 = compressedSlice[offset++];
-      regeneratedSize = (lh0 >> 4) | (lh1 << 4);
-    } else {
-      // 3-byte header
-      if (offset + 1 >= compressedSlice.length) throw new Error('Truncated literals header');
-      const lh1 = compressedSlice[offset++];
-      const lh2 = compressedSlice[offset++];
-      regeneratedSize = (lh0 >> 4) | (lh1 << 4) | (lh2 << 12);
+  while (offset < src.length) {
+    if (offset + 4 > src.length) {
+      throw new ConversionFailedError('Malformed Zstandard stream: trailing bytes after the last frame.');
     }
-  } else {
-    // Compressed (Huffman) literals
-    if (sizeFormat === 0 || sizeFormat === 1) {
-      const lh1 = compressedSlice[offset++];
-      regeneratedSize = (lh0 >> 4) | ((lh1 & 0x3f) << 4);
-      compressedLitSize = (lh1 >> 6) | (compressedSlice[offset++] << 2);
-    } else if (sizeFormat === 2) {
-      const lh1 = compressedSlice[offset++];
-      const lh2 = compressedSlice[offset++];
-      regeneratedSize = (lh0 >> 4) | ((lh1 & 0x3f) << 4) | ((lh2 & 0x03) << 10);
-      compressedLitSize = (lh2 >> 2) | (compressedSlice[offset++] << 6);
-    } else {
-      const lh1 = compressedSlice[offset++];
-      const lh2 = compressedSlice[offset++];
-      regeneratedSize = (lh0 >> 4) | ((lh1 & 0x3f) << 4) | ((lh2 & 0x03) << 10);
-      compressedLitSize =
-        (lh2 >> 2) | (compressedSlice[offset++] << 6) | (compressedSlice[offset++] << 14);
+    const magic = src.readUInt32LE(offset);
+
+    if (magic >= SKIPPABLE_FRAME_MAGIC_MIN && magic <= SKIPPABLE_FRAME_MAGIC_MAX) {
+      if (offset + SKIPPABLE_HEADER_BYTES > src.length) {
+        throw new ConversionFailedError('Malformed skippable frame: header truncated.');
+      }
+      const skipLength = src.readUInt32LE(offset + 4);
+      if (offset + SKIPPABLE_HEADER_BYTES + skipLength > src.length) {
+        throw new ConversionFailedError('Malformed skippable frame: payload truncated.');
+      }
+      offset += SKIPPABLE_HEADER_BYTES + skipLength;
+      continue;
+    }
+
+    if (magic !== ZSTD_MAGIC_NUMBER) {
+      throw new ConversionFailedError(
+        `Invalid Zstandard magic signature: 0x${magic.toString(16).toUpperCase()} at offset ${offset}`
+      );
+    }
+
+    const frameHeader = parseZstdFrameHeader(src, offset);
+    offset += frameHeader.headerSize;
+    if (frameHeader.windowSize > ZSTD_DECODER_WINDOW_SIZE_MAX) {
+      throw new ConversionFailedError(
+        `Zstandard frame window size ${frameHeader.windowSize} exceeds the decoder limit of ${ZSTD_DECODER_WINDOW_SIZE_MAX} bytes.`
+      );
+    }
+    if (dictionary === null && frameHeader.dictionaryId !== 0) {
+      throw new ConversionFailedError(
+        `Zstandard frame requires dictionary ${frameHeader.dictionaryId}; use the dictionary decoder.`
+      );
+    }
+    if (
+      dictionary !== null &&
+      frameHeader.dictionaryId !== 0 &&
+      dictionary.id !== null &&
+      frameHeader.dictionaryId !== dictionary.id
+    ) {
+      throw new ConversionFailedError(
+        `Decoding error (36): Dictionary mismatch: frame requires dictionary ID 0x${frameHeader.dictionaryId.toString(16)}, but provided dictionary has ID 0x${dictionary.id.toString(16)}`
+      );
+    }
+    const declaredSize = frameHeader.frameContentSize;
+    if (declaredSize !== null) {
+      // Reject a declared size that the guards would reject anyway before reserving memory for it.
+      if (out.length + declaredSize > sizeLimit) throw bombSizeError(sizeLimit);
+      if (ratioGuarded && exceedsZstdRatioGuard(out.length + declaredSize, src.length)) {
+        throw bombRatioError(out.length + declaredSize, src.length);
+      }
+      out.reserve(declaredSize + dictionaryLength);
+    }
+
+    // The dictionary content sits right before the frame's output so offsets reach it directly;
+    // it is squeezed out again once the frame is verified.
+    if (dictionary !== null) {
+      out.ensure(dictionaryLength);
+      out.data.set(dictionary.content, out.length);
+      out.length += dictionaryLength;
+    }
+    const frameStart = out.length;
+    const state = createFrameDecodeState(frameHeader.windowSize, declaredSize, dictionary);
+
+    let isLast = false;
+    while (!isLast) {
+      if (offset + BLOCK_HEADER_BYTES > src.length) {
+        throw new ConversionFailedError('Malformed Zstandard frame: truncated block header.');
+      }
+      const headerVal = src[offset] | (src[offset + 1] << 8) | (src[offset + 2] << 16);
+      offset += BLOCK_HEADER_BYTES;
+
+      isLast = (headerVal & 0x01) === 1;
+      const blockType = (headerVal >> 1) & 0x03;
+      const blockSize = headerVal >>> 3;
+
+      if (blockType === 3) {
+        throw new ConversionFailedError('Malformed Zstandard block: reserved block type 3 encountered.');
+      }
+      if (blockSize > state.blockMaxSize) {
+        throw new ConversionFailedError('Malformed Zstandard block: size exceeds the block maximum.');
+      }
+      if (declaredSize !== null && blockType !== BLOCK_TYPE_COMPRESSED && out.length - frameStart + blockSize > declaredSize) {
+        throw new ConversionFailedError(
+          `Zstandard frame content size mismatch: header declares ${declaredSize}, blocks decode to more.`
+        );
+      }
+
+      if (blockType === BLOCK_TYPE_RAW) {
+        if (offset + blockSize > src.length) {
+          throw new ConversionFailedError('Malformed Zstandard raw block: out of bounds data.');
+        }
+        out.ensure(blockSize);
+        out.data.set(src.subarray(offset, offset + blockSize), out.length);
+        out.length += blockSize;
+        offset += blockSize;
+      } else if (blockType === BLOCK_TYPE_RLE) {
+        if (offset + 1 > src.length) {
+          throw new ConversionFailedError('Malformed Zstandard RLE block: missing byte.');
+        }
+        out.ensure(blockSize);
+        out.data.fill(src[offset++], out.length, out.length + blockSize);
+        out.length += blockSize;
+      } else {
+        if (offset + blockSize > src.length) {
+          throw new ConversionFailedError('Malformed Zstandard compressed block: truncated data.');
+        }
+        decodeCompressedBlock(src, offset, offset + blockSize, out, frameStart, state);
+        offset += blockSize;
+      }
+
+      // Cumulative security limits, on decoded bytes only (the dictionary prefix does not count)
+      const produced = out.length - dictionaryLength;
+      if (produced > sizeLimit) {
+        throw bombSizeError(sizeLimit);
+      }
+      if (ratioGuarded && exceedsZstdRatioGuard(produced, src.length)) {
+        throw bombRatioError(produced, src.length);
+      }
+      out.projectedTotal = Math.ceil((produced * src.length) / offset) + dictionaryLength;
+    }
+
+    const frameLength = out.length - frameStart;
+    if (frameHeader.frameContentSize !== null && frameHeader.frameContentSize !== frameLength) {
+      throw new ConversionFailedError(
+        `Zstandard frame content size mismatch: header declares ${frameHeader.frameContentSize}, decoded ${frameLength}.`
+      );
+    }
+
+    if (frameHeader.contentChecksumFlag) {
+      if (offset + CONTENT_CHECKSUM_BYTES > src.length) {
+        throw new ConversionFailedError('Malformed Zstandard frame: missing content checksum.');
+      }
+      const expectedChecksum = src.readUInt32LE(offset);
+      offset += CONTENT_CHECKSUM_BYTES;
+      const actualChecksum = computeZstdChecksum(out.data.subarray(frameStart, out.length));
+      if (actualChecksum !== expectedChecksum) {
+        throw new ConversionFailedError(
+          `Zstandard content checksum mismatch: expected 0x${expectedChecksum.toString(16)}, computed 0x${actualChecksum.toString(16)}`
+        );
+      }
+    }
+
+    if (dictionaryLength > 0) {
+      out.data.copyWithin(frameStart - dictionaryLength, frameStart, out.length);
+      out.length -= dictionaryLength;
     }
   }
 
-  let literals: Buffer;
-  if (literalsBlockType === 0) {
-    literals = Buffer.from(compressedSlice.subarray(offset, offset + regeneratedSize));
-    offset += regeneratedSize;
-  } else if (literalsBlockType === 1) {
-    const rleByte = compressedSlice[offset++];
-    literals = Buffer.alloc(regeneratedSize, rleByte);
-  } else {
-    // For compressed literals, if standard raw payload exists
-    literals = Buffer.from(compressedSlice.subarray(offset, offset + compressedLitSize));
-    offset += compressedLitSize;
-  }
-
-  // 2. Sequences Section Header
-  if (offset >= compressedSlice.length) {
-    // No sequences: whole block is the literals
-    return literals;
-  }
-
-  const seqByte0 = compressedSlice[offset++];
-  let numSequences = 0;
-  if (seqByte0 < 128) {
-    numSequences = seqByte0;
-  } else if (seqByte0 < 255) {
-    numSequences = ((seqByte0 - 128) << 8) | compressedSlice[offset++];
-  } else {
-    numSequences = compressedSlice[offset++] | (compressedSlice[offset++] << 8);
-    numSequences += 0x7f00;
-  }
-
-  if (numSequences === 0) {
-    return literals;
-  }
-
-  return decodeZstdCompressedBlockWithDict(compressedSlice, Buffer.alloc(0), previousBlocks);
+  return out.toBuffer();
 }
 
 /**
@@ -715,78 +712,123 @@ export function encodeZstdSingleSegmentHeader(
   return { fhd, fcsBuf, dictIdBuf };
 }
 
+export interface ZstdCompressOptions {
+  /** Compression level 1-19 (default 3). */
+  level?: number;
+  /** Append the XXH64 content checksum (default true). */
+  checksum?: boolean;
+}
+
+/** Spare output capacity above 1/8 of the result triggers a right-sizing copy. */
+const OUTPUT_SPARE_DENOMINATOR = 8;
+
 /**
- * Compresses data into an RFC 8878 compliant Zstandard frame.
- * Automatically chooses RLE or Raw block encoding for maximum efficiency and speed.
+ * Encodes a frame header. A null windowLog selects single-segment form (window = content size);
+ * otherwise a window descriptor for 2^windowLog is emitted. The content size is always present.
  */
-export function compressZstd(inputBuffer: Buffer, options: { level?: number } = {}): Buffer {
-  const chunks: Buffer[] = [];
-
-  // 1. Zstandard Magic Number (0xFD2FB528 in Little Endian)
-  chunks.push(ZSTD_MAGIC_LE);
-
-  // 2. Frame Header
-  const inputLen = inputBuffer.length;
-  const { fhd, fcsBuf } = encodeZstdSingleSegmentHeader(inputLen);
-  chunks.push(Buffer.from([fhd]));
-  chunks.push(fcsBuf);
-
-  // 3. Blocks
-  const MAX_BLOCK_SIZE = 128 * 1024; // 128KB max block size
-  if (inputLen === 0) {
-    // Empty block, lastBlock = 1, Raw block, size 0
-    const blockHeader = Buffer.alloc(3);
-    blockHeader[0] = 0x01; // lastBlock=1, type=0
-    chunks.push(blockHeader);
+export function encodeZstdFrameHeader(
+  inputLen: number,
+  windowLog: number | null,
+  checksum: boolean
+): Buffer {
+  let fcsFlag: number;
+  let fcsBytes: number;
+  if (windowLog === null && inputLen < FCS_TWO_BYTE_BIAS) {
+    fcsFlag = 0;
+    fcsBytes = 1;
+  } else if (inputLen < FCS_TWO_BYTE_MAX) {
+    fcsFlag = 1;
+    fcsBytes = 2;
+  } else if (inputLen < FCS_FOUR_BYTE_LIMIT) {
+    fcsFlag = 2;
+    fcsBytes = 4;
   } else {
-    let offset = 0;
-    while (offset < inputLen) {
-      const remaining = inputLen - offset;
-      const currentBlockSize = Math.min(MAX_BLOCK_SIZE, remaining);
-      const isLast = offset + currentBlockSize === inputLen;
+    fcsFlag = 3;
+    fcsBytes = 8;
+  }
+  const descriptorBytes = windowLog === null ? 0 : 1;
+  const header = Buffer.alloc(1 + descriptorBytes + fcsBytes);
+  let pos = 0;
+  header[pos++] =
+    (fcsFlag << FHD_FCS_SHIFT) |
+    ((windowLog === null ? 1 : 0) << FHD_SINGLE_SEGMENT_BIT) |
+    ((checksum ? 1 : 0) << FHD_CHECKSUM_BIT);
+  if (windowLog !== null) {
+    header[pos++] = (windowLog - ZSTD_WINDOW_LOG_MIN) << WINDOW_DESCRIPTOR_EXPONENT_SHIFT;
+  }
+  if (fcsFlag === 0) header[pos] = inputLen;
+  else if (fcsFlag === 1) header.writeUInt16LE(inputLen - FCS_TWO_BYTE_BIAS, pos);
+  else if (fcsFlag === 2) header.writeUInt32LE(inputLen, pos);
+  else header.writeBigUInt64LE(BigInt(inputLen), pos);
+  return header;
+}
 
-      const slice = inputBuffer.subarray(offset, offset + currentBlockSize);
+function resolveZstdLevel(options: ZstdCompressOptions): number {
+  const level = options.level ?? ZSTD_LEVEL_DEFAULT;
+  if (!Number.isInteger(level) || level < ZSTD_LEVEL_MIN || level > ZSTD_LEVEL_MAX) {
+    throw new ConversionFailedError(
+      `Unsupported zstd compression level ${String(level)}: expected an integer from ${ZSTD_LEVEL_MIN} to ${ZSTD_LEVEL_MAX}.`
+    );
+  }
+  return level;
+}
 
-      // Check if all bytes in slice are identical (RLE candidate)
-      let isRle = slice.length > 8;
-      const firstByte = slice[0];
-      if (isRle) {
-        for (let i = 1; i < slice.length; i++) {
-          if (slice[i] !== firstByte) {
-            isRle = false;
-            break;
-          }
-        }
-      }
-
-      const blockHeader = Buffer.alloc(3);
-      if (isRle) {
-        // Block_Type = 1 (RLE)
-        const headerVal = (isLast ? 1 : 0) | (1 << 1) | (currentBlockSize << 3);
-        blockHeader[0] = headerVal & 0xff;
-        blockHeader[1] = (headerVal >> 8) & 0xff;
-        blockHeader[2] = (headerVal >> 16) & 0xff;
-        chunks.push(blockHeader);
-        chunks.push(Buffer.from([firstByte]));
-      } else {
-        // Block_Type = 0 (Raw)
-        const headerVal = (isLast ? 1 : 0) | (0 << 1) | (currentBlockSize << 3);
-        blockHeader[0] = headerVal & 0xff;
-        blockHeader[1] = (headerVal >> 8) & 0xff;
-        blockHeader[2] = (headerVal >> 16) & 0xff;
-        chunks.push(blockHeader);
-        chunks.push(slice);
-      }
-
-      offset += currentBlockSize;
-    }
+/**
+ * Compresses data into an RFC 8878 compliant Zstandard frame at the requested level (1-19).
+ * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
+ */
+export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+  const level = resolveZstdLevel(options);
+  const checksum = options.checksum ?? true;
+  const inputLen = inputBuffer.length;
+  if (inputLen > ZSTD_ENCODER_INPUT_MAX) {
+    throw new ConversionFailedError(
+      `Zstandard input of ${inputLen} bytes exceeds the encoder limit of ${ZSTD_ENCODER_INPUT_MAX} bytes.`
+    );
   }
 
-  // 4. Content Checksum (XXH64 lowest 32 bits LE)
-  const checksum = computeZstdChecksum(inputBuffer);
-  const checksumBuf = Buffer.alloc(4);
-  checksumBuf.writeUInt32LE(checksum, 0);
-  chunks.push(checksumBuf);
+  const params = getZstdLevelParams(level);
+  const declaredWindow = 2 ** params.windowLog;
+  const singleSegment = inputLen <= declaredWindow;
+  const windowSize = singleSegment ? inputLen : declaredWindow;
+  const header = encodeZstdFrameHeader(inputLen, singleSegment ? null : params.windowLog, checksum);
 
-  return Buffer.concat(chunks);
+  const prefix = Buffer.concat([ZSTD_MAGIC_LE, header]);
+  const trailerBytes = checksum ? CONTENT_CHECKSUM_BYTES : 0;
+  const encoded = new ZstdBlockEncoder(inputBuffer, params, windowSize).encodeAll(prefix, trailerBytes);
+  let end = encoded.length;
+  if (checksum) {
+    new DataView(encoded.data.buffer, encoded.data.byteOffset, encoded.data.byteLength).setUint32(
+      end,
+      computeZstdChecksum(inputBuffer),
+      true
+    );
+    end += CONTENT_CHECKSUM_BYTES;
+  }
+  // Hand back a view when the spare capacity is small (incompressible input); otherwise right-size
+  // with one copy of the (much smaller) compressed bytes so a large scratch buffer is not retained.
+  const spare = encoded.data.length - end;
+  if (spare * OUTPUT_SPARE_DENOMINATOR > end) return Buffer.from(encoded.data.subarray(0, end));
+  return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
+}
+
+/** Levels from here on use the lazy and optimal parsers, slow enough to hold the event loop for tens of milliseconds per slice. */
+export const ZSTD_POOL_MIN_LEVEL = 10;
+/** Smallest input worth a pool thread at those levels (the optimal parser runs at about 1 MB/s). */
+export const ZSTD_POOL_MIN_BYTES = 32 * 1024;
+
+/**
+ * `compressZstd` for callers that must keep the event loop free: levels of ZSTD_POOL_MIN_LEVEL and above run on a pool
+ * thread (the frame is the same bytes), faster levels and small inputs run inline.
+ */
+export async function compressZstdAsync(
+  inputBuffer: Buffer,
+  options: ZstdCompressOptions & { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const { signal, ...encoderOptions } = options;
+  const level = resolveZstdLevel(encoderOptions);
+  if (level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return compressZstd(inputBuffer, encoderOptions);
+  const data = await shareBytes(inputBuffer);
+  const reply = await getCpuPool().submit<Uint8Array>('zstd', { data, options: encoderOptions }, { signal });
+  return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
 }

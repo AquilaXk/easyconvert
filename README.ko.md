@@ -2,7 +2,7 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert는 Next.js 14(App Router), TypeScript, 그리고 고유한 라벤더 디자인 시스템을 기반으로 구축된 고성능 범용 파일 변환 플랫폼입니다. **12개 카테고리**, **292개 포맷**, 그리고 **2,156개의 검증된 변환 경로**에 대해 안정적이고 결정론적인 변환 환경을 제공합니다.
+EasyConvert는 Next.js 15(App Router), TypeScript, 그리고 고유한 라벤더 디자인 시스템을 기반으로 구축된 고성능 범용 파일 변환 플랫폼입니다. **12개 카테고리**, **292개 포맷**, 그리고 **2,156개의 검증된 변환 경로**에 대해 안정적이고 결정론적인 변환 환경을 제공합니다.
 
 순수 TypeScript 기반 인메모리 바이너리 엔진, BullMQ 분산 비동기 작업 큐, S3 및 OCI 멀티파트 청크 스토리지 추상화를 통합하여 브라우저 및 REST API 환경 모두에서 엄격한 무보관(Zero-Retention) 원칙과 실패 시 즉시 차단(Fail-Closed) 보안 아키텍처를 철저히 보장합니다.
 
@@ -171,7 +171,8 @@ EasyConvert는 동기식 REST 엔드포인트와 장시간 대용량 처리를 �
 
 ### 7. 서비스 헬스체크 및 진단
 - **엔드포인트**: `GET /api/health`
-- **응답**: 시스템 가동 시간, 가용 변환 엔진, 메모리 사용량 및 큐 상태.
+- **응답**: `{"status": "healthy" | "unhealthy"}`와 `200` 또는 `503`. 준비 상태는 Redis(설정된 경우)와 스토리지의 실시간 점검으로 결정됩니다. 네이티브 도구(soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z, dcraw_emu)도 점검하지만 참고용이며, 도구가 없으면 그 도구가 필요한 변환만 실패합니다. 결과는 몇 초간 캐시됩니다.
+- **관리자 상세 보기**: 와일드카드(`*`) 스코프 API 키는 구성 요소별 상태도 받으며, 경로·호스트·자격 증명은 포함되지 않습니다.
 
 ---
 
@@ -193,7 +194,14 @@ npm install
 ### 환경 변수 설정
 
 - `KEY_HASH_PEPPER`: API 키 해시를 일반 SHA-256 대신 HMAC-SHA256으로 저장하는 서버 측 비밀 값입니다. 프로덕션에서는 32바이트 이상의 긴 무작위 값으로 설정해야 하며, 값을 교체하면 이전 값으로 생성되거나 재해시된 모든 키가 무효화됩니다.
+- `JOB_SECRET_KEK`: 대기열 작업 데이터에 저장되는 서명 URL과 요청 헤더를 봉인하는 전용 비밀 값입니다(AES-256-GCM, 작업 ID에 결합). 프로덕션에서는 웹 앱과 모든 워커에 필수이며, `openssl rand -hex 32`처럼 32바이트 이상의 무작위 값을 사용하세요. JWT, 보관소, 암호화 비밀 값은 이 용도로 재사용하지 않습니다. 이 값이 없으면 `docker compose up`은 워커를 시작하지 않습니다. 프로덕션이 아니면 값이 없을 때 개발용 키를 사용합니다.
+- `JOB_SECRET_KEK_PREVIOUS`: 선택 사항입니다. 키를 교체할 때 이전 `JOB_SECRET_KEK` 값을 넣으면 교체 전에 대기열에 들어간 작업을 계속 열 수 있습니다. 해당 작업이 끝나면 제거하세요. 설정되지 않은 키로 봉인된 작업은 알 수 없는 키 오류로 실패합니다.
 - `EASYCONVERT_MAX_INPUT_PIXELS`: 변환 전에 정지 이미지(또는 문서 안의 이미지)가 선언할 수 있는 최대 픽셀 수입니다. 이보다 큰 이미지는 픽셀을 디코딩하기 전에 컨테이너 헤더만 읽고 HTTP 413으로 거부합니다. 기본값은 100000000(100메가픽셀)이며 십진수만 허용하고, 268402689(16383 x 16383)보다 크면 이 값으로 낮춥니다. 잘못된 값은 로그에 한 번 알리고 무시합니다. 프로세스 안에서 픽셀 단위로 처리하는 경로(Oklab/Riemersma 팔레트 양자화, 카메라 RAW 센서, Ultra HDR)에는 더 엄격한 내장 한도가 적용됩니다.
+- `TRUSTED_PROXIES`: 클라이언트 IP 신뢰 모드이며 `NODE_ENV=production`에서는 필수입니다. 서버 앞단 프록시 홉의 CIDR 목록으로 설정하거나, 서버가 직접 노출된 경우 `none`으로 설정합니다(이 경우 모든 클라이언트가 하나의 속도 제한 버킷을 공유합니다). 설정하지 않으면 엣지가 `/api/*`에 503을 반환합니다.
+- `TRUSTED_CDN`: 검증된 Cloudflare 엣지 홉의 `CF-Connecting-IP`를 신뢰하려면 `cloudflare`로 설정합니다.
+- `TRUSTED_PROXY_HEADER`: 프록시가 관리하는 단일 전달 헤더이며 `x-forwarded-for`(기본값) 또는 `forwarded`입니다.
+
+전체 배포 규약은 [docs/client-ip-trust.md](docs/client-ip-trust.md)를 참고하세요.
 
 ### 개발 서버 실행
 
@@ -235,6 +243,8 @@ npm start
 
 ---
 
-## 라이선스
+## 라이선스 및 오픈소스 고지 (Licensing)
 
-MIT License. 자세한 사항은 [LICENSE](LICENSE)를 참고하십시오.
+- **프로젝트 라이선스**: EasyConvert는 [MIT License](LICENSE)에 따라 배포됩니다.
+- **서드파티 오픈소스 고지**: 프로덕션 의존성에 대한 전체 저작권 및 라이선스 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하십시오.
+- **외부 도구, LGPL 재링크 및 특허 가이드**: 외부 CLI 도구(FFmpeg, Poppler, veraPDF)의 프로세스 격리 원칙, LGPL 재링크 의무, unRAR 컴포넌트 라이선스 조건 및 코덱 특허 관련 세부 안내는 [docs/licensing.md](docs/licensing.md)에서 확인할 수 있습니다.

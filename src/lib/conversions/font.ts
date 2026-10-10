@@ -1,13 +1,25 @@
 import zlib from 'node:zlib';
-import { ConversionFailedError, ConversionOptions, ConversionResult, UnsupportedOptionError } from '../types';
+import {
+  ConversionFailedError,
+  ConversionOptions,
+  ConversionResult,
+  CorruptStreamError,
+  DecompressionLimitError,
+  UnsupportedOptionError,
+} from '../types';
+import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
 export { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 };
+
+/** WOFF 1.0 header and table directory entry sizes in bytes (section 5). */
+const WOFF_HEADER_BYTES = 44;
+const WOFF_DIRECTORY_ENTRY_BYTES = 20;
 
 /**
  * Universal Font Conversion Engine
@@ -128,7 +140,7 @@ export async function convertFont(
       break;
 
     case 'woff2':
-      outputBuffer = encodeWoff2(parsedFont);
+      outputBuffer = await encodeWoff2Async(parsedFont);
       mimeType = 'font/woff2';
       break;
 
@@ -375,8 +387,8 @@ export function encodeWoff(font: ParsedFont): Buffer {
   const tableEntries = prepareSfntTables(font, flavor);
   const numTables = tableEntries.length;
 
-  const woffHeaderSize = 44;
-  const dirSize = numTables * 20;
+  const woffHeaderSize = WOFF_HEADER_BYTES;
+  const dirSize = numTables * WOFF_DIRECTORY_ENTRY_BYTES;
   let currentOffset = woffHeaderSize + dirSize;
 
   const tableDataChunks: Buffer[] = [];
@@ -436,37 +448,58 @@ export function encodeWoff(font: ParsedFont): Buffer {
  * Decodes WOFF 1.0 container format into ParsedFont
  */
 export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
-  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'wOFF') {
+  if (buffer.length < WOFF_HEADER_BYTES || buffer.toString('ascii', 0, 4) !== 'wOFF') {
     throw new Error('Invalid WOFF font: missing wOFF magic signature.');
   }
 
   const flavor = buffer.readUInt32BE(4);
   const numTables = buffer.readUInt16BE(12);
 
-  const tables: Record<string, SfntTable> = {};
-  let dirOffset = 44;
-
+  // WOFF 1.0 section 5: a table is stored when compLength equals origLength and zlib compressed
+  // when it is smaller; it never exceeds origLength and must lie inside the file. Declared sizes
+  // are charged to the document budget before any table is inflated.
+  const budget = new InflateBudget();
+  const entries: Array<{
+    tag: string;
+    offset: number;
+    compLength: number;
+    origLength: number;
+    checkSum: number;
+  }> = [];
   for (let i = 0; i < numTables; i++) {
-    if (dirOffset + 20 > buffer.length) break;
+    const dirOffset = WOFF_HEADER_BYTES + i * WOFF_DIRECTORY_ENTRY_BYTES;
+    if (dirOffset + WOFF_DIRECTORY_ENTRY_BYTES > buffer.length) break;
 
     const tag = buffer.toString('ascii', dirOffset, dirOffset + 4);
     const offset = buffer.readUInt32BE(dirOffset + 4);
     const compLength = buffer.readUInt32BE(dirOffset + 8);
     const origLength = buffer.readUInt32BE(dirOffset + 12);
     const checkSum = buffer.readUInt32BE(dirOffset + 16);
+    const label = `WOFF table '${tag}'`;
 
-    const compData = buffer.subarray(offset, Math.min(buffer.length, offset + compLength));
-    let rawData: Buffer;
-
-    if (compLength < origLength) {
-      try {
-        rawData = zlib.inflateSync(compData);
-      } catch (err: any) {
-        throw new Error(`Failed to decode WOFF table '${tag}': decompression failed: ${err.message}`);
-      }
-    } else {
-      rawData = Buffer.from(compData);
+    if (compLength > origLength) {
+      throw new CorruptStreamError(`${label} has compLength ${compLength} larger than its origLength ${origLength}.`);
     }
+    if (offset + compLength > buffer.length) {
+      throw new CorruptStreamError(`${label} extends past the end of the file.`);
+    }
+    if (origLength > MAX_STREAM_INFLATE_BYTES) {
+      throw new DecompressionLimitError(
+        `${label} declares ${origLength} decoded bytes, more than the limit of ${MAX_STREAM_INFLATE_BYTES} bytes.`
+      );
+    }
+    budget.charge(origLength, label);
+    entries.push({ tag, offset, compLength, origLength, checkSum });
+  }
+
+  const tables: Record<string, SfntTable> = {};
+  for (const entry of entries) {
+    const { tag, offset, compLength, origLength, checkSum } = entry;
+    const compData = buffer.subarray(offset, offset + compLength);
+    const rawData =
+      compLength < origLength
+        ? inflateBounded(compData, { label: `WOFF table '${tag}'`, format: 'zlib', expectedLength: origLength })
+        : Buffer.from(compData);
 
     tables[tag] = {
       tag,
@@ -475,8 +508,6 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
       length: rawData.length,
       data: rawData,
     };
-
-    dirOffset += 20;
   }
 
   let fontFamily = defaultName;
@@ -500,6 +531,12 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
 export function encodeWoff2(font: ParsedFont): Buffer {
   const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
   return encodeWoff2Container(font.sfntVersion || 0x00010000, tables);
+}
+
+/** `encodeWoff2` with the Brotli step off the event loop (see `encodeWoff2ContainerAsync`). */
+export async function encodeWoff2Async(font: ParsedFont): Promise<Buffer> {
+  const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
+  return encodeWoff2ContainerAsync(font.sfntVersion || 0x00010000, tables);
 }
 
 /** Builds the canonical font model from a font that decodeWoff2Fonts reconstructed. */
@@ -1733,7 +1770,7 @@ export function parseFvarTable(
   nameTableData?: Buffer
 ): { axes: VariableFontAxis[]; instances: VariableFontInstance[] } {
   if (fvarData.length < 16) {
-    throw new Error('Invalid fvar table: truncated header (less than 16 bytes).');
+    throw new ConversionFailedError('Invalid fvar table: truncated header (less than 16 bytes).');
   }
 
   const axesArrayOffset = fvarData.readUInt16BE(4);
@@ -1743,14 +1780,14 @@ export function parseFvarTable(
   const instanceSize = fvarData.readUInt16BE(14);
 
   if (axisCount > 0 && axisSize < 20) {
-    throw new Error(`Invalid fvar table: axisSize ${axisSize} is less than minimum 20 bytes`);
+    throw new ConversionFailedError(`Invalid fvar table: axisSize ${axisSize} is less than minimum 20 bytes`);
   }
 
   const axes: VariableFontAxis[] = [];
   for (let i = 0; i < axisCount; i++) {
     const offset = axesArrayOffset + i * axisSize;
     if (offset + axisSize > fvarData.length) {
-      throw new Error(`Invalid fvar table: truncated axis record ${i} of ${axisCount}`);
+      throw new ConversionFailedError(`Invalid fvar table: truncated axis record ${i} of ${axisCount}`);
     }
 
     const tag = fvarData.toString('ascii', offset, offset + 4);
@@ -1780,7 +1817,7 @@ export function parseFvarTable(
   const instances: VariableFontInstance[] = [];
   const minInstanceSize = axes.length * 4 + 4;
   if (instanceCount > 0 && instanceSize < minInstanceSize) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Invalid fvar table: instanceSize ${instanceSize} is less than minimum required ${minInstanceSize} bytes`
     );
   }
@@ -1788,7 +1825,7 @@ export function parseFvarTable(
   for (let j = 0; j < instanceCount; j++) {
     const offset = instStart + j * instanceSize;
     if (offset + instanceSize > fvarData.length) {
-      throw new Error(`Invalid fvar table: truncated instance record ${j} of ${instanceCount}`);
+      throw new ConversionFailedError(`Invalid fvar table: truncated instance record ${j} of ${instanceCount}`);
     }
 
     const subfamilyNameID = fvarData.readUInt16BE(offset);
@@ -1831,7 +1868,7 @@ export function parseStatTable(
   nameTableData?: Buffer
 ): { axes: StatDesignAxis[]; values: StatAxisValue[] } {
   if (statData.length < 8) {
-    throw new Error('Invalid STAT table: truncated header.');
+    throw new ConversionFailedError('Invalid STAT table: truncated header.');
   }
 
   const designAxisSize = statData.readUInt16BE(4);
@@ -1850,7 +1887,9 @@ export function parseStatTable(
   const axes: StatDesignAxis[] = [];
   for (let i = 0; i < designAxisCount; i++) {
     const offset = designAxesOffset + i * designAxisSize;
-    if (offset + designAxisSize > statData.length) break;
+    if (offset + designAxisSize > statData.length) {
+      throw new ConversionFailedError(`Invalid STAT table: design axis record ${i} of ${designAxisCount} lies outside the table`);
+    }
 
     const tag = statData.toString('ascii', offset, offset + 4);
     const axisNameID = statData.readUInt16BE(offset + 4);
@@ -2121,10 +2160,13 @@ export function instantiateVariableFont(
 
   for (const axis of axes) {
     const requested = coordinates[axis.tag];
-    if (requested !== undefined && Number.isFinite(requested)) {
-      pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
-    } else {
+    if (requested !== undefined && !Number.isFinite(requested)) {
+      throw new ConversionFailedError(`Variation coordinate for axis '${axis.tag}' must be a finite number, got ${requested}.`);
+    }
+    if (requested === undefined) {
       pinnedCoords[axis.tag] = axis.defaultValue;
+    } else {
+      pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
     }
   }
 

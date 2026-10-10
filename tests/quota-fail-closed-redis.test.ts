@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import type Redis from 'ioredis';
 import {
@@ -22,6 +22,10 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
   beforeEach(() => {
     redisKeyStore.resetStore();
     redisUserStore.resetStore();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe('Redis Outage Fail-Closed Integrity', () => {
@@ -201,10 +205,12 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
     });
 
     it('allows anonymous API access within quota when allowAnonymous is true', async () => {
+      // A declared front proxy appends the address it observed; that address is the anonymous identity.
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const req = new NextRequest('http://localhost:3000/api/convert', {
         method: 'POST',
         headers: {
-          'cf-connecting-ip': '203.0.113.88',
+          'x-forwarded-for': '203.0.113.88',
         },
       });
 

@@ -89,8 +89,8 @@ describe('parseTesseractTsv', () => {
     const first = (result.lineBlocks ?? []).find((b) => b.text === 'Hello world');
     expect(first?.bbox).toMatchObject({ x: 100, y: 100, width: 300, height: 40 });
     expect(first?.words.map((w) => [w.text, w.bbox.x, w.bbox.width, w.confidence])).toEqual([
-      ['Hello', 100, 120, 90.5],
-      ['world', 240, 160, 80.5],
+      ['Hello', 100, 120, 0.905],
+      ['world', 240, 160, 0.805],
     ]);
     expect(result.lines.sort()).toEqual(['Hello world', 'right', 'second']);
   });
@@ -217,7 +217,14 @@ describe('recognizeWithCli', () => {
       const elapsedMs = performance.now() - startedAt;
       // The call must really have taken long enough for a blocking implementation to show.
       expect(elapsedMs).toBeGreaterThan(MAX_EVENT_LOOP_STALL_MS);
-      expect(histogram.max / NS_PER_MS - HISTOGRAM_RESOLUTION_MS).toBeLessThan(MAX_EVENT_LOOP_STALL_MS);
+      // Reference: the same span spent idle, on the same loaded machine. A busy runner delays timers in both
+      // cases; only a blocked loop (a synchronous spawn holds it for the whole call) exceeds the reference.
+      const idle = monitorEventLoopDelay({ resolution: HISTOGRAM_RESOLUTION_MS });
+      idle.enable();
+      await new Promise((resolve) => setTimeout(resolve, elapsedMs));
+      idle.disable();
+      const stallBeyondIdleMs = (histogram.max - idle.max) / NS_PER_MS;
+      expect(stallBeyondIdleMs).toBeLessThan(MAX_EVENT_LOOP_STALL_MS);
     },
     TEST_TIMEOUT_MS
   );
@@ -263,6 +270,7 @@ describe('recognizeWithCli', () => {
     const common = { tessdataDir: '/tessdata', tesseractLang: 'eng', image };
 
     // Zombie detection reads /proc, which only Linux provides.
+    // skip-ok: platform capability: the process-group check reads /proc, which exists on Linux only.
     it.skipIf(!fs.existsSync(PROC_STAT_PROBE))('kills the whole process group when the timeout expires', async () => {
       const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-pid-')), 'child.pid');
       const cliPath = writeScript(`sleep 300 &\necho $! > "${pidFile}"\nwait`);
@@ -331,7 +339,8 @@ describe('recognizeWithCli', () => {
     });
 
     it('rejects output that is not TSV as an engine fault', async () => {
-      const cliPath = writeScript('echo "plain text, not tsv"');
+      // The output base is the fourth argument; the run reads <base>.tsv and <base>.txt.
+      const cliPath = writeScript('echo "plain text, not tsv" > "$4.tsv"\necho "plain text" > "$4.txt"');
       const failure = await recognizeWithCli({ ...common, cliPath }).then(
         () => null,
         (err: unknown) => err as Error
@@ -340,12 +349,42 @@ describe('recognizeWithCli', () => {
       expect(failure?.message).toBe('Malformed Tesseract TSV output: the header row is missing.');
     });
 
+    it('rejects a run that wrote no TSV or no page text as an engine fault', async () => {
+      const noFiles = writeScript('exit 0');
+      const noText = writeScript(`printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n' > "$4.tsv"`);
+      for (const [cliPath, what] of [[noFiles, 'TSV'], [noText, 'text']] as const) {
+        const failure = await recognizeWithCli({ ...common, cliPath }).then(
+          () => null,
+          (err: unknown) => err as Error
+        );
+        expect(failure).toBeInstanceOf(OcrEngineUnavailableError);
+        expect(failure?.message).toBe(`Malformed Tesseract TSV output: the ${what} output is missing.`);
+      }
+    });
+
+    it('rejects an output file beyond the size limit before reading it', async () => {
+      const cliPath = writeScript('head -c 8192 /dev/zero | tr "\\0" "x" > "$4.tsv"\necho text > "$4.txt"');
+      await expect(recognizeWithCli({ ...common, cliPath, maxOutputBytes: 4096 })).rejects.toThrow(
+        new OcrEngineUnavailableError('Tesseract CLI produced more output than the allowed limit.')
+      );
+    });
+
+    it('removes its output directory after a run, whether it succeeded or failed', async () => {
+      const dirFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-jobdir-')), 'dir.txt');
+      const cliPath = writeScript(`dirname "$4" > "${dirFile}"\nexit 1`);
+      await expect(recognizeWithCli({ ...common, cliPath })).rejects.toThrow(OcrEngineUnavailableError);
+      const jobDir = fs.readFileSync(dirFile, 'utf-8').trim();
+      expect(path.basename(jobDir).startsWith('easyconvert-ocr-')).toBe(true);
+      expect(fs.existsSync(jobDir)).toBe(false);
+    });
+
     it('never runs more processes at once than the concurrency limit', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ocr-cli-conc-'));
       // The stand-in prints one word, so the empty-result single-block retry does not run twice.
       const cliPath = writeScript(
         `touch "${dir}/$$"\nls "${dir}" | wc -l >> "${dir}.log"\nsleep 0.3\nrm "${dir}/$$"\n` +
-          `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t5\\t5\\t90\\tw\\n'`
+          `printf '${TSV_HEADER.replace(/\t/g, '\\t')}\\n1\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t5\\t5\\t-1\\t\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t5\\t5\\t90\\tw\\n' > "$4.tsv"\n` +
+          `echo w > "$4.txt"`
       );
       const runs = OCR_CLI_MAX_CONCURRENCY * 3;
       const results = await Promise.all(Array.from({ length: runs }, () => recognizeWithCli({ ...common, cliPath })));

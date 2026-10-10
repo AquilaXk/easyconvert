@@ -16,6 +16,8 @@ import {
 } from '../src/lib/api/idempotency';
 import { withIdempotency } from '../src/lib/api/with-idempotency';
 
+const DEFAULT_REDIS_URL = 'redis://127.0.0.1:6379';
+
 describe.each([
   { name: 'InMemoryIdempotencyStore', isRedis: false },
   { name: 'RedisIdempotencyStore', isRedis: true },
@@ -26,29 +28,31 @@ describe.each([
   let fakeTime: number;
   let redisClient: Redis | null = null;
 
-  beforeEach(async () => {
+  beforeEach(async (ctx) => {
     fakeTime = Date.now();
     const clock = () => fakeTime;
 
     if (isRedis) {
-      const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+      const redisUrl = process.env.REDIS_URL || DEFAULT_REDIS_URL;
       redisClient = new Redis(redisUrl, {
         lazyConnect: true,
         enableOfflineQueue: false,
         maxRetriesPerRequest: 1,
       });
+      // A refused connection emits 'error' events; the ping below reports the outcome.
+      redisClient.on('error', () => {});
 
       try {
         await redisClient.connect();
-      } catch {
-        // Already connected or lazy
-      }
-
-      // Check redis health
-      try {
         await redisClient.ping();
       } catch (err) {
-        console.warn('Redis is not accessible, skipping RedisIdempotencyStore tests.');
+        redisClient.disconnect();
+        redisClient = null;
+        // CI runs a Redis service and sets ORACLE_STRICT_MODE=1; an unreachable server there is a failure.
+        if (process.env.ORACLE_STRICT_MODE === '1' || process.env.REDIS_URL) {
+          throw new Error(`Redis is required for the RedisIdempotencyStore variant but unreachable at ${redisUrl}: ${String(err)}`);
+        }
+        ctx.skip();
         return;
       }
 

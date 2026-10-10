@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError, RawDecodeError } from '../src/lib/types';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
@@ -64,6 +64,7 @@ describe('native RAW decode tooling', () => {
   });
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW sensor decode through the dispatcher', () => {
   const pairs = NATIVE_FORMATS.flatMap((format) => NATIVE_TARGETS.map((target) => [format, target] as [string, string]));
 
@@ -76,8 +77,10 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW sensor decode through the dispatche
       const meta = await sharp(result.buffer).metadata();
       expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : 'png');
       expect({ width: meta.width, height: meta.height }).toEqual(expectedOutputSize(format));
+      // PNG keeps the sensor precision as 16 bits per sample; JPEG is 8-bit by definition.
+      expect(meta.depth).toBe(target === 'jpg' ? 'uchar' : 'ushort');
 
-      const { channels } = await sharp(result.buffer).stats();
+      const { channels } = await sharp(await toEightBit(result.buffer)).stats();
       expect(Math.max(...channels.map((channel) => channel.stdev))).toBeGreaterThan(0);
       const mean = channels.reduce((sum, channel) => sum + channel.mean, 0) / channels.length;
       expect(mean).toBeGreaterThan(MEAN_MIN);
@@ -92,8 +95,13 @@ const REGION_GRID = 6;
 const REGION_MEAN_TOLERANCE = 12;
 const HALF_SIZE_FLAG = '-h';
 
+/** The picture as 8-bit sRGB, so statistics of 16-bit and 8-bit outputs share one scale. */
+async function toEightBit(image: Buffer): Promise<Buffer> {
+  return sharp(image).toColourspace('srgb').png().toBuffer();
+}
+
 /** Per-region channel means of an image, on a grid, as 8-bit values. */
-async function regionMeans(image: sharp.Sharp, width: number, height: number): Promise<number[]> {
+async function regionMeans(image: Sharp, width: number, height: number): Promise<number[]> {
   const cellWidth = Math.floor(width / REGION_GRID);
   const cellHeight = Math.floor(height / REGION_GRID);
   const means: number[] = [];
@@ -116,15 +124,16 @@ async function worstRegionDifference(format: string, decoded: Buffer): Promise<n
     const referencePath = path.join(dir, 'half.tiff');
     execFileSync(DCRAW_EMU!, [HALF_SIZE_FLAG, '-T', '-6', '-w', '-o', '1', '-Z', referencePath, samplePath(format)]);
     const { width, height } = await sharp(decoded).metadata();
-    const referencePng = await sharp(referencePath).resize(width, height, { kernel: 'lanczos3' }).removeAlpha().png().toBuffer();
+    const referencePng = await sharp(referencePath).resize(width, height, { kernel: 'lanczos3' }).removeAlpha().toColourspace('srgb').png().toBuffer();
     const referenceMeans = await regionMeans(sharp(referencePng), width!, height!);
-    const decodedMeans = await regionMeans(sharp(decoded).removeAlpha(), width!, height!);
+    const decodedMeans = await regionMeans(sharp(await toEightBit(decoded)).removeAlpha(), width!, height!);
     return Math.max(...decodedMeans.map((mean, index) => Math.abs(mean - referenceMeans[index])));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-size decode region by region', () => {
   it.each(REGION_FORMATS)(
     '%s: every region of the full decode matches the downscaled -h reference',
@@ -152,6 +161,7 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW decode matches an independent half-
   }, DECODE_TIMEOUT_MS);
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () => {
   it('fails a truncated DNG with a typed 400 error and cleans its temporary files', async () => {
     const truncated = readFileSync(samplePath('dng')).subarray(0, TRUNCATED_SAMPLE_BYTES);
@@ -171,6 +181,7 @@ describe.skipIf(!CHECKS_ENABLED)('native RAW decode rejects corrupt input', () =
   });
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!SAMPLES_PRESENT)('RAW conversion without the native engine', () => {
   it('raises EngineUnavailableError for a sample only sensor decode can convert', async () => {
     const error = await withMissingBinary('DCRAW_EMU_PATH', () =>

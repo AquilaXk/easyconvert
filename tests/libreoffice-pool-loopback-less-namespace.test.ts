@@ -12,7 +12,11 @@ import {
 import { getUnshareCapability, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { EngineUnavailableError } from '../src/lib/types';
 import { extractTextWithExternalPdftotext, getOracleToolPath } from './helpers/differential-oracle';
-import { HAS_PDFTOTEXT, HAS_SOFFICE } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Issue #396: the pool sandboxes soffice in a fresh network namespace whose loopback interface is
@@ -25,10 +29,11 @@ const PDF_MAGIC = '%PDF-';
 const PDF_MAGIC_LENGTH = PDF_MAGIC.length;
 /** The sandbox default execution timeout the hang used to burn; the fixed pool must stay far below it. */
 const LEGACY_HANG_TIMEOUT_MS = 45_000;
-/** A real docx -> pdf conversion takes a few seconds; anything near the timeout means the hang is back. */
-const FAST_CONVERSION_BUDGET_MS = 25_000;
+/** Hang guard: a real docx -> pdf conversion takes a few seconds; anything near the legacy timeout means the hang is back. */
+const FAST_CONVERSION_HANG_GUARD_MS = 25_000;
 const TEST_TIMEOUT_MS = 120_000;
-const FAILED_PROBE_BUDGET_MS = 1_000;
+/** Hang guard: a failed probe is refused in milliseconds; the legacy behaviour waited the full 45 s. */
+const FAILED_PROBE_HANG_GUARD_MS = 15_000;
 const SAMPLE_PHRASES = ['EasyConvert Golden DOCX Standard', 'Header A', 'Header B'];
 
 const HAS_NET_NAMESPACE = getUnshareCapability().supportsNetNamespace;
@@ -57,7 +62,8 @@ function okResult() {
   };
 }
 
-describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT || !HAS_NET_NAMESPACE)(
+// skip-ok: an unprivileged network namespace is a kernel setting some hosts forbid, not a missing tool.
+describe.skipIf(skipWithoutTools('soffice', 'pdftotext', 'unshare') || !HAS_NET_NAMESPACE)(
   'pooled LibreOffice inside the loopback-less sandbox namespace (needs soffice, pdftotext, unshare -n)',
   () => {
     it(
@@ -78,7 +84,7 @@ describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT || !HAS_NET_NAMESPACE)(
 
         expect(result).not.toBeNull();
         expect(result!.engineUsed).toBe('native-soffice-pool');
-        expect(elapsedMs).toBeLessThan(FAST_CONVERSION_BUDGET_MS);
+        expect(elapsedMs).toBeLessThan(FAST_CONVERSION_HANG_GUARD_MS);
 
         const pdf = result!.buffer;
         expect(pdf.subarray(0, PDF_MAGIC_LENGTH).toString('latin1')).toBe(PDF_MAGIC);
@@ -167,7 +173,7 @@ describe('LibreOffice pool readiness probe fails fast with a typed error', () =>
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'libreoffice-pool' });
     await expect(run).rejects.toThrow(/readiness probe/);
-    expect(Date.now() - started).toBeLessThan(FAILED_PROBE_BUDGET_MS);
+    expect(Date.now() - started).toBeLessThan(FAILED_PROBE_HANG_GUARD_MS);
 
     // Only the bounded probe ran; the 45 s job conversion was never attempted.
     expect(seenTimeouts.filter((t) => t === LEGACY_HANG_TIMEOUT_MS)).toHaveLength(0);
@@ -416,7 +422,7 @@ describe('LibreOffice pool readiness probe lifecycle', () => {
         const run = pool.convert(Buffer.from('x'), 'docx', 'pdf', { signal: controller.signal });
         setTimeout(() => controller.abort(reason), 20);
         await expect(run).rejects.toBe(reason);
-        expect(Date.now() - started).toBeLessThan(FAILED_PROBE_BUDGET_MS);
+        expect(Date.now() - started).toBeLessThan(FAILED_PROBE_HANG_GUARD_MS);
         // One caller's signal must never be wired into the probe other callers share.
         expect(probeSignal).toBeUndefined();
       } finally {

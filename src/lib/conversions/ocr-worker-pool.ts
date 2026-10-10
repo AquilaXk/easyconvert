@@ -3,8 +3,11 @@ import path from 'node:path';
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import { OcrEngineUnavailableError } from '../types';
 
-/** Workers kept per language set. Each holds a WebAssembly heap of roughly 100-300 MB. */
-export const OCR_POOL_MAX_WORKERS_PER_KEY = 2;
+/**
+ * Workers kept per language set. Each holds a WebAssembly heap of roughly 100-300 MB (about 50 MB for English
+ * alone). Four let one page's bands (see ocr-bands.ts) be read side by side.
+ */
+export const OCR_POOL_MAX_WORKERS_PER_KEY = 4;
 /** Workers kept across all language sets; the least recently idle one is evicted for another set. */
 export const OCR_POOL_MAX_WORKERS_TOTAL = 4;
 /** An idle worker is terminated after this long without a job. */
@@ -30,6 +33,8 @@ const LANGUAGE_SEPARATOR = '+';
 
 export type OcrRecognizeResult = Awaited<ReturnType<TesseractWorker['recognize']>>;
 export type OcrRecognizeFn = TesseractWorker['recognize'];
+/** Orientation and script detection; needs a worker started with the legacy engine and `osd` data. */
+export type OcrDetectFn = TesseractWorker['detect'];
 /** Recognizes with temporary parameter overrides; the job's own parameters are restored afterwards. */
 export type OcrRecognizeWithFn = (
   overrides: Record<string, string>,
@@ -40,6 +45,8 @@ export type OcrRecognizeWithFn = (
 export interface OcrPooledWorker {
   setParameters(params: Record<string, string>): Promise<unknown>;
   recognize: OcrRecognizeFn;
+  /** Present on real workers; a worker without it cannot run a detection job. */
+  detect?: OcrDetectFn;
   terminate(): Promise<unknown>;
   /** The underlying thread, when available; it is ref'd only while a job runs. */
   worker?: { ref?: () => void; unref?: () => void };
@@ -166,6 +173,39 @@ export class OcrWorkerPool {
   }
 
   /**
+   * How many idle, healthy workers could take a job for `spec` this instant. Zero while jobs are queued or the pool
+   * is closing, so a page that wants several workers never takes them from other requests.
+   */
+  idleWorkers(spec: OcrWorkerSpec): number {
+    if (this.closing || this.waiters.length > 0) return 0;
+    const key = keyFor(spec);
+    let idle = 0;
+    for (const entry of this.entries) {
+      if (entry.key === key && !entry.busy && !entry.health.failed) idle++;
+    }
+    return idle;
+  }
+
+  /**
+   * Starts workers for `spec` in the background until `count` of them exist (at most the per-set and pool limits),
+   * and leaves them idle. A page cut into bands can only use workers that are already running: starting one costs
+   * more than the band it would read. A start that fails is dropped; the next job that needs a worker starts its own
+   * and reports the failure. Nothing is started while jobs are queued.
+   */
+  warm(spec: OcrWorkerSpec, count: number): void {
+    if (this.closing || this.waiters.length > 0) return;
+    const key = keyFor(spec);
+    const missing = Math.min(count, this.limits.maxWorkersPerKey) - this.countFor(key);
+    const room = this.limits.maxWorkersTotal - this.size;
+    for (let started = 0; started < Math.min(missing, room); started++) {
+      this.startEntry(key, spec).then(
+        (entry) => this.release(entry),
+        () => undefined
+      );
+    }
+  }
+
+  /**
    * Starts one worker. Overridable seam: tests wrap or replace it to count creations. A start
    * whose language data fails to load is reported through the error handler, so it fails here
    * instead of hanging.
@@ -192,11 +232,23 @@ export class OcrWorkerPool {
     return worker as unknown as OcrPooledWorker;
   }
 
+  /**
+   * Runs `job` on a worker for `spec`. When `signal` fires the job ends with the signal's reason: a job still waiting
+   * for a worker gives up its place and never starts, and a running one is interrupted and its worker terminated and
+   * replaced, since the engine cannot cancel a single reading.
+   */
   async run<T>(
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>,
+    signal?: AbortSignal
   ): Promise<T> {
-    const entry = await this.acquire(spec);
+    signal?.throwIfAborted();
+    const entry = await this.acquire(spec, signal);
+    if (signal?.aborted) {
+      // The signal fired while the worker was being handed out; it is idle again for the next job.
+      this.release(entry);
+      throw signal.reason;
+    }
     if (!this.entries.has(entry)) {
       // A shutdown retired the worker between hand-out and start.
       throw new OcrEngineUnavailableError('The OCR worker pool was shut down.');
@@ -213,8 +265,13 @@ export class OcrWorkerPool {
         this.limits.jobTimeoutMs
       );
     });
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal?.reason);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
     try {
-      const outcome = await Promise.race([this.execute(entry, spec, job), interrupted, timedOut]);
+      const outcome = await Promise.race([this.execute(entry, spec, job), interrupted, timedOut, cancelled]);
       this.release(entry);
       return outcome;
     } catch (err) {
@@ -222,6 +279,7 @@ export class OcrWorkerPool {
       throw err;
     } finally {
       clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
       entry.abort = null;
     }
   }
@@ -253,7 +311,7 @@ export class OcrWorkerPool {
   private async execute<T>(
     entry: PoolEntry,
     spec: OcrWorkerSpec,
-    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn) => Promise<T>
+    job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
   ): Promise<T> {
     const { worker } = entry;
     await worker.setParameters(spec.parameters);
@@ -266,13 +324,18 @@ export class OcrWorkerPool {
         await worker.setParameters(spec.parameters).catch(() => undefined);
       }
     };
-    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith);
+    const detect: OcrDetectFn = (image, jobId) => {
+      if (!worker.detect) throw new OcrEngineUnavailableError('This OCR worker cannot detect orientation.');
+      return worker.detect(image, jobId);
+    };
+    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith, detect);
   }
 
-  private async acquire(spec: OcrWorkerSpec): Promise<PoolEntry> {
+  private async acquire(spec: OcrWorkerSpec, signal?: AbortSignal): Promise<PoolEntry> {
     const key = keyFor(spec);
     let queued = false;
     for (;;) {
+      signal?.throwIfAborted();
       if (this.closing) {
         throw new OcrEngineUnavailableError('The OCR worker pool is shutting down.');
       }
@@ -295,7 +358,20 @@ export class OcrWorkerPool {
         );
       }
       queued = true;
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await new Promise<void>((resolve) => {
+        const leave = (): void => {
+          signal?.removeEventListener('abort', leave);
+          const index = this.waiters.indexOf(wake);
+          if (index >= 0) this.waiters.splice(index, 1);
+          resolve();
+        };
+        const wake = (): void => {
+          signal?.removeEventListener('abort', leave);
+          resolve();
+        };
+        this.waiters.push(wake);
+        signal?.addEventListener('abort', leave, { once: true });
+      });
     }
   }
 

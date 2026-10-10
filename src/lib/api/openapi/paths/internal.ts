@@ -1,5 +1,9 @@
 import {
   CONVERT_FORM_PROPERTIES,
+  CONVERT_OPTIONS_DESCRIPTION,
+  PDFA_ENGINE_NOTE,
+  PDFA_PROBLEM_DESCRIPTION,
+  createPdfaProblemResponse,
   INPUT_PIXEL_LIMIT_DESCRIPTION,
   PUBLIC_ACCESS,
   SESSION_ONLY,
@@ -9,6 +13,11 @@ import {
   createProblemResponse,
   multipartBody,
   requireScope,
+  FRAME_RESPONSE_HEADERS,
+  DROPPED_STREAMS_RESPONSE_HEADERS,
+  CLIENT_CLOSED_DESCRIPTION,
+  CONCURRENCY_LIMIT_NOTE,
+  JOB_TIMEOUT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -19,9 +28,36 @@ import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
 const INTERNAL = { 'x-internal': true };
 
-const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).`;
+const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
+const PAYLOAD_LIMIT_DESCRIPTION =
+  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
+
+const HEALTH_COMPONENT_SCHEMA = {
+  type: 'object',
+  required: ['status', 'required'],
+  properties: {
+    status: { type: 'string', enum: ['ok', 'failed', 'not_configured'] },
+    required: {
+      type: 'boolean',
+      description: 'True for components whose failure makes the service unhealthy (redis, storage); false for advisory native tools.',
+    },
+    reason: { type: 'string', enum: ['timeout', 'unreachable', 'missing', 'not_writable', 'misconfigured'] },
+    driver: { type: 'string', enum: ['local', 'oci', 's3'], description: 'Storage only: the configured driver.' },
+  },
+};
+
+const healthResponse = (description: string) =>
+  createJsonResponse(description, {
+    status: { type: 'string', enum: ['healthy', 'unhealthy'] },
+    checkedAt: { type: 'string', format: 'date-time', description: 'Admin view only: when the probes ran.' },
+    components: {
+      type: 'object',
+      description: 'Admin view only: one entry per probed component (redis, storage and each native tool).',
+      additionalProperties: HEALTH_COMPONENT_SCHEMA,
+    },
+  });
 
 const binaryResponse = (description: string, mediaType = 'application/octet-stream') => ({
   description,
@@ -205,14 +241,25 @@ export const internalPaths = {
       security: ANONYMOUS_OR_SCOPE('convert:write'),
       requestBody: multipartBody(CONVERT_FORM_PROPERTIES, ['file', 'targetFormat']),
       responses: {
-        '200': binaryResponse('Converted file.'),
+        '200': {
+          ...binaryResponse('Converted file.'),
+          headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS },
+        },
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),
-        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
-        '422': createErrorResponse('Page count exceeds the tier limit.'),
-        '429': createProblemResponse('Quota exhausted.'),
+        '422': {
+          description: `Page count exceeds the tier limit, the document is encrypted, password protected or DRM protected so its text cannot be read, or: ${PDFA_PROBLEM_DESCRIPTION}`,
+          content: {
+            ...createErrorResponse('').content,
+            'application/problem+json': createPdfaProblemResponse('').content['application/problem+json'],
+          },
+        },
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
+        '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
   },
@@ -226,7 +273,7 @@ export const internalPaths = {
       requestBody: multipartBody({
         files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
-        options: { type: 'string', description: 'JSON-serialized conversion options.' },
+        options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
       }, ['files']),
       responses: {
         '200': binaryResponse('ZIP archive of converted files.', 'application/zip'),
@@ -239,10 +286,13 @@ export const internalPaths = {
           },
         },
         '401': createProblemResponse('Authentication required.'),
-        '413': createProblemResponse(INPUT_PIXEL_LIMIT_DESCRIPTION),
-        '429': createProblemResponse('Quota exhausted.'),
+        '422': createPdfaProblemResponse(`The document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
+        '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
+        '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+        '504': createProblemResponse(JOB_TIMEOUT_DESCRIPTION),
       },
     },
   },
@@ -275,18 +325,17 @@ export const internalPaths = {
     get: {
       ...INTERNAL,
       summary: 'Health Check',
+      description:
+        'Readiness probe built from live checks: Redis PING (only when Redis is configured) and storage reachability decide the status; a failure of either makes the service unhealthy (503). ' +
+        'The native tools soffice, ffmpeg, ffprobe, pdftoppm, pdftotext, tesseract, 7z and dcraw_emu are probed as advisory components: a missing tool fails only the conversions that need it. Results are cached for a few seconds. ' +
+        'Anonymous callers receive only `status`. A request with an API key holding the admin wildcard (*) scope also receives the per-component view; the view names components and coarse reasons, never paths, hosts or credentials.',
       operationId: 'getHealth',
-      security: PUBLIC_ACCESS,
+      security: ANONYMOUS_OR_SCOPE('*'),
       responses: {
-        '200': createJsonResponse('Service is running.', {
-          status: { type: 'string' },
-          service: { type: 'string' },
-          version: { type: 'string' },
-          timestamp: { type: 'string' },
-          supportedFormatsCount: { type: 'integer' },
-          domainsCount: { type: 'integer' },
-          features: { type: 'object' },
-        }),
+        '200': healthResponse('Redis (when configured) and storage are available.'),
+        '401': createProblemResponse('The API key is invalid.'),
+        '403': createProblemResponse('The API key lacks the admin wildcard (*) scope.'),
+        '503': healthResponse('Redis or storage is unavailable.'),
       },
     },
   },

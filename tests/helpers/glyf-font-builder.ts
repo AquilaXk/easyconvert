@@ -139,7 +139,19 @@ function compositeBox(components: GlyfComponent[], glyphs: GlyfGlyphSpec[]): [nu
     }
   }
   if (xs.length === 0) return [0, 0, 0, 0];
-  return [Math.floor(Math.min(...xs)), Math.floor(Math.min(...ys)), Math.ceil(Math.max(...xs)), Math.ceil(Math.max(...ys))];
+  // Loops, not Math.min(...xs): a composite of thousands of components has more points than a call can take as arguments.
+  const extent = (values: number[]): [number, number] => {
+    let low = values[0];
+    let high = values[0];
+    for (const value of values) {
+      if (value < low) low = value;
+      if (value > high) high = value;
+    }
+    return [low, high];
+  };
+  const [xMin, xMax] = extent(xs);
+  const [yMin, yMax] = extent(ys);
+  return [Math.floor(xMin), Math.floor(yMin), Math.ceil(xMax), Math.ceil(yMax)];
 }
 
 function compositeGlyphRecord(components: GlyfComponent[], box: [number, number, number, number]): Buffer {
@@ -232,11 +244,18 @@ export function buildGlyfFont(spec: GlyfFontSpec): Buffer {
   const glyf = Buffer.concat(records);
 
   const points = all.flatMap((g) => (g.contours ?? []).flat());
-  const xMin = points.length > 0 ? Math.min(...points.map((p) => p.x)) : 0;
-  const yMin = points.length > 0 ? Math.min(...points.map((p) => p.y)) : 0;
-  const xMax = points.length > 0 ? Math.max(...points.map((p) => p.x)) : 0;
-  const yMax = points.length > 0 ? Math.max(...points.map((p) => p.y)) : 0;
-  const maxAdvance = Math.max(...all.map((g) => g.advance));
+  // Reduced in a loop: spreading tens of thousands of points into Math.min / Math.max overflows the call stack.
+  let xMin = 0;
+  let yMin = 0;
+  let xMax = 0;
+  let yMax = 0;
+  points.forEach((point, index) => {
+    xMin = index === 0 ? point.x : Math.min(xMin, point.x);
+    yMin = index === 0 ? point.y : Math.min(yMin, point.y);
+    xMax = index === 0 ? point.x : Math.max(xMax, point.x);
+    yMax = index === 0 ? point.y : Math.max(yMax, point.y);
+  });
+  const maxAdvance = all.reduce((largest, g) => Math.max(largest, g.advance), 0);
 
   const head = Buffer.alloc(54);
   head.writeUInt32BE(0x00010000, 0);

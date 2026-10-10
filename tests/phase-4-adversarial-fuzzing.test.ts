@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import JSZip from 'jszip';
 import {
   parseHwpxDocument,
@@ -9,6 +10,7 @@ import {
   decodeParquet,
   encodeParquet,
   CompactProtocolReader,
+  ParquetFormatError,
 } from '../src/lib/conversions/parquet';
 import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
 import {
@@ -29,21 +31,47 @@ import {
   isCfbfContainer,
 } from '../src/lib/conversions/hwp';
 import { synthesizeVariableFontCorpus } from './helpers/corpus-synthesizer';
-import { ConversionFailedError } from '../src/lib/types';
+import { ConversionFailedError, CorruptStreamError, DataParseError } from '../src/lib/types';
+import { buildRleBombFrame } from './helpers/zstd-frames';
+import { expectNoHang, settle } from './helpers/timing';
 
 // ============================================================================
 // Adversarial Mutator Primitives
 // ============================================================================
 
-function mutateBitFlip(buf: Buffer, count = 5): Buffer {
+/** Small deterministic generator (mulberry32) so every fuzz run, and any failure, replays from its seed. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function mutateBitFlip(buf: Buffer, random: () => number, count = 5): Buffer {
   const mutated = Buffer.from(buf);
   for (let i = 0; i < count; i++) {
-    const byteIdx = Math.floor(Math.random() * mutated.length);
-    const bitIdx = Math.floor(Math.random() * 8);
+    const byteIdx = Math.floor(random() * mutated.length);
+    const bitIdx = Math.floor(random() * 8);
     mutated[byteIdx] ^= 1 << bitIdx;
   }
   return mutated;
 }
+
+const sha256Hex = (data: Buffer | Uint8Array): string => createHash('sha256').update(data).digest('hex');
+
+/** Fuzz iterations of the Zstandard bit-flip test; every one must end in a typed error or the original bytes. */
+const ZSTD_FUZZ_ITERATIONS = 25;
+const ZSTD_FUZZ_FLIPS_PER_ITERATION = 3;
+/** Parser fuzz rounds over a 256-byte seed buffer. */
+const PARSER_FUZZ_ROUNDS = 100;
+const PARSER_FUZZ_SEED_BYTES = 256;
+const PARSER_FUZZ_FLIPS = 4;
+/** A 12-bit size field of 0xfff means the real size follows as a 32-bit word (HWP 5.0 record header). */
+const HWP_EXTENDED_SIZE_MARKER = 0xfff;
+const HWP_ABSURD_RECORD_SIZE = 0x7fffffff;
 
 function mutateTruncate(buf: Buffer, fraction = 0.5): Buffer {
   const targetLen = Math.max(1, Math.floor(buf.length * fraction));
@@ -72,10 +100,12 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       zip.file('Contents/section0.xml', '<hp:sec><hp:p><hp:run><hp:t>Safe Text</hp:t></hp:run></hp:p></hp:sec>');
       const hostileZip = await zip.generateAsync({ type: 'nodebuffer' });
 
-      // Must safely process or reject without permitting directory traversal
+      // The package is read in memory by entry name: the traversal entry is never opened as a section or
+      // metadata part, so the document is exactly what the one real section holds.
       const doc = await parseHwpxDocument(hostileZip);
-      expect(doc).toBeDefined();
-      expect(doc.paragraphs.map((p) => p.text).join('')).not.toContain('root:x:0:0');
+      expect(doc.paragraphs.map((p) => p.text)).toEqual(['Safe Text']);
+      expect(doc.tables).toEqual([]);
+      expect(JSON.stringify(doc)).not.toContain('root:x:0:0');
     });
 
     it('fails closed on truncated ZIP archives before central directory', async () => {
@@ -84,7 +114,9 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       });
       const truncated = mutateTruncate(validHwpx, 0.4);
 
-      await expect(parseHwpxDocument(truncated)).rejects.toThrow();
+      const failure = await parseHwpxDocument(truncated).catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(CorruptStreamError);
+      expect((failure as Error).message).toMatch(/^Invalid HWPX package: Not a valid ZIP archive/);
     });
 
     it('fails closed on malformed XML in Contents/section0.xml without parser crash', async () => {
@@ -93,11 +125,10 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       zip.file('Contents/section0.xml', '<<<malformed unclosed << << xml ??? & not escaped');
       const malformedZip = await zip.generateAsync({ type: 'nodebuffer' });
 
-      // Parsing malformed XML should fail-closed and return safe empty AST without crash
-      const doc = await parseHwpxDocument(malformedZip);
-      expect(doc.paragraphs).toEqual([]);
-      expect(doc.tables).toEqual([]);
-      expect(doc.version).toBe('1.0.0.0');
+      // A section that is not well-formed XML is refused, not read as an empty document.
+      const failure = await parseHwpxDocument(malformedZip).catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(DataParseError);
+      expect((failure as Error).message).toMatch(/Invalid HWPX package: Contents\/section0\.xml is not well-formed XML/);
     });
 
     it('fails closed on completely random non-ZIP garbage buffers', async () => {
@@ -105,7 +136,9 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       const isContainer = await isHwpxContainer(garbage);
       expect(isContainer).toBe(false);
 
-      await expect(parseHwpxDocument(garbage)).rejects.toThrow(/Invalid HWPX package/i);
+      const failure = await parseHwpxDocument(garbage).catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(CorruptStreamError);
+      expect((failure as Error).message).toMatch(/Invalid HWPX package/i);
     });
   });
 
@@ -133,7 +166,8 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       // Write absurd footer length: 0x7FFFFFFF (2GB) at length - 8
       hostileParquet.writeUInt32LE(0x7fffffff, hostileParquet.length - 8);
 
-      expect(() => decodeParquet(hostileParquet)).toThrow();
+      expect(() => decodeParquet(hostileParquet)).toThrow(ParquetFormatError);
+      expect(() => decodeParquet(hostileParquet)).toThrow(/Corrupted Parquet metadata: metadata offset -?\d+ overlaps magic header/);
     });
 
     it('fails closed when string byte length in PLAIN page exceeds available buffer', () => {
@@ -148,7 +182,8 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
         }
       }
 
-      expect(() => decodeParquet(hostile)).toThrow();
+      expect(() => decodeParquet(hostile)).toThrow(ParquetFormatError);
+      expect(() => decodeParquet(hostile)).toThrow(/string length 2147483647 exceeds page bounds in column 'text'/);
     });
 
     it('fails closed across progressive truncation intervals (10%, 25%, 50%, 75%)', () => {
@@ -157,10 +192,17 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
         { id: 102, name: 'Bob', score: 88.2, active: false },
       ]);
 
+      // The untouched file reads back exactly, so the refusals below come from the cut and not from the reader.
+      expect(decodeParquet(validParquet)).toEqual([
+        { id: 101, name: 'Alice', score: 99.4, active: true },
+        { id: 102, name: 'Bob', score: 88.2, active: false },
+      ]);
+
       const fractions = [0.1, 0.25, 0.5, 0.75];
       for (const frac of fractions) {
         const truncated = mutateTruncate(validParquet, frac);
-        expect(() => decodeParquet(truncated)).toThrow();
+        expect(() => decodeParquet(truncated), `cut to ${frac}`).toThrow(ParquetFormatError);
+        expect(() => decodeParquet(truncated), `cut to ${frac}`).toThrow(/Invalid Parquet file: magic header='PAR1', magic footer=/);
       }
     });
 
@@ -207,36 +249,44 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       const validZstd = compressZstd(data);
       const truncated = validZstd.subarray(0, 4); // Only magic number
 
-      expect(() => decompressZstd(truncated)).toThrow();
+      expect(() => decompressZstd(truncated)).toThrow(ConversionFailedError);
+      expect(() => decompressZstd(truncated)).toThrow(/Malformed Zstandard frame: header truncated/);
     });
 
-    it('enforces archive bomb safeguards for suspicious compression ratios (>100:1)', () => {
-      const repetitive = Buffer.alloc(40000, 0x5a); // 40KB
-      const compressed = compressZstd(repetitive);
-
-      expect(repetitive.length / compressed.length).toBeGreaterThan(100);
-      expect(() => decompressZstd(compressed)).toThrow(/Archive bomb detected/i);
+    it('enforces archive bomb safeguards for suspicious compression ratios (>100:1) beyond the floor', () => {
+      // 300 RLE blocks of 128 KiB: 37.5 MiB from ~1.2 KB
+      const bomb = buildRleBombFrame(300);
+      expect(bomb.length * 100).toBeLessThan(300 * 128 * 1024);
+      expect(() => decompressZstd(bomb)).toThrow(/Archive bomb detected/i);
     });
 
-    it('survives randomized bit-flip fuzzing loop without crashes or unhandled exceptions', () => {
+    it('ends every bit-flip fuzz iteration in a typed error or the original bytes, never in different bytes', () => {
       const original = Buffer.from('Robustness fuzzing against corrupted Zstandard bitstreams in pure TypeScript');
       const validZstd = compressZstd(original);
+      const originalDigest = sha256Hex(original);
+      expect(sha256Hex(decompressZstd(validZstd))).toBe(originalDigest);
 
-      let handledErrors = 0;
-      const fuzzIterations = 25;
+      let typedErrors = 0;
+      let identicalOutputs = 0;
+      const silentCorruptions: number[] = [];
 
-      for (let i = 0; i < fuzzIterations; i++) {
-        const corrupted = mutateBitFlip(validZstd, 3);
+      for (let seed = 1; seed <= ZSTD_FUZZ_ITERATIONS; seed++) {
+        const corrupted = mutateBitFlip(validZstd, seededRandom(seed), ZSTD_FUZZ_FLIPS_PER_ITERATION);
         try {
-          decompressZstd(corrupted);
-        } catch (err: any) {
-          handledErrors++;
-          expect(err).toBeInstanceOf(Error);
+          const output = decompressZstd(corrupted);
+          if (sha256Hex(output) === originalDigest) identicalOutputs++;
+          else silentCorruptions.push(seed);
+        } catch (err) {
+          expect(err, `seed ${seed}`).toBeInstanceOf(ConversionFailedError);
+          typedErrors++;
         }
       }
 
-      // Corrupted bitstreams should either throw handled error or rarely succeed if flips are benign
-      expect(handledErrors).toBeGreaterThanOrEqual(1);
+      // The frame carries a content checksum, so a flipped bit cannot decode to other bytes: all 25 outcomes
+      // are accounted for, none of them as silently different output.
+      expect(silentCorruptions).toEqual([]);
+      expect(typedErrors + identicalOutputs).toBe(ZSTD_FUZZ_ITERATIONS);
+      expect(typedErrors).toBeGreaterThanOrEqual(ZSTD_FUZZ_ITERATIONS - 1);
     });
 
     it('handles large window descriptor exponents (>= 21) without 32-bit bitwise integer overflow or negative window size', () => {
@@ -258,7 +308,7 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
   // 4. SFNT fvar & STAT Variable Font Tables
   // =========================================================================
   describe('4. SFNT fvar & STAT Variable Font Tables', () => {
-    it('fails closed when fvar table has 0 axis count or truncated table bytes', () => {
+    it('reads an fvar with zero axes as an empty axis list and refuses one cut short', () => {
       // fvar header: majorVersion(2), minorVersion(2), axesOffset(2), reserved(2), axisCount(2), axisSize(2)
       const emptyFvar = Buffer.alloc(16);
       emptyFvar.writeUInt16BE(1, 0); // majorVersion 1
@@ -268,9 +318,9 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       emptyFvar.writeUInt16BE(0, 8); // axisCount = 0
       emptyFvar.writeUInt16BE(20, 10); // axisSize = 20
 
-      const parsed = parseFvarTable(emptyFvar);
-      expect(parsed.axes).toHaveLength(0);
-      expect(parsed.instances).toHaveLength(0);
+      expect(parseFvarTable(emptyFvar)).toEqual({ axes: [], instances: [] });
+      expect(() => parseFvarTable(emptyFvar.subarray(0, 8))).toThrow(ConversionFailedError);
+      expect(() => parseFvarTable(emptyFvar.subarray(0, 8))).toThrow(/truncated header \(less than 16 bytes\)/);
     });
 
     it('fails closed when fvar axis count claims more axes than buffer contains', () => {
@@ -283,7 +333,8 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       hostileFvar.writeUInt16BE(20, 10);
 
       // Must fail closed with handled Error without unhandled exception or crash
-      expect(() => parseFvarTable(hostileFvar)).toThrow(/Invalid fvar table: truncated axis record/i);
+      expect(() => parseFvarTable(hostileFvar)).toThrow(ConversionFailedError);
+      expect(() => parseFvarTable(hostileFvar)).toThrow(/Invalid fvar table: truncated axis record 0 of 500/i);
     });
 
     it('fails closed when STAT table claims out-of-bounds design axis count', () => {
@@ -294,8 +345,8 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       hostileStat.writeUInt16BE(1000, 6); // Claiming 1000 design axes!
       hostileStat.writeUInt32BE(20, 8); // offset
 
-      const parsed = parseStatTable(hostileStat);
-      expect(parsed.axes.length).toBeLessThan(1000);
+      expect(() => parseStatTable(hostileStat)).toThrow(ConversionFailedError);
+      expect(() => parseStatTable(hostileStat)).toThrow(/Invalid STAT table: design axis record 0 of 1000 lies outside the table/);
     });
 
     it('fails closed when font buffer has truncated table directory', () => {
@@ -337,19 +388,28 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       expect(() => parseFvarTable(hostileFvar)).toThrow(/instanceSize 2 is less than minimum required 8 bytes/i);
     });
 
-    it('handles NaN or infinite coordinates in instantiateVariableFont safely by falling back to default values', () => {
+    it('refuses NaN or infinite coordinates in instantiateVariableFont instead of pinning a default', () => {
       const fontCorpus = synthesizeVariableFontCorpus();
-      const instantiated = instantiateVariableFont(fontCorpus.fontBuffer, {
-        wght: NaN,
-        wdth: Infinity,
-      });
 
-      expect(instantiated).toBeDefined();
-      expect(instantiated.length).toBeGreaterThan(100);
-      const meta = inspectVariableFont(instantiated);
-      expect(meta.isVariableFont).toBe(true);
-      const wghtAxis = meta.axes.find((a) => a.tag === 'wght');
-      expect(wghtAxis?.defaultValue).toBe(400); // Fell back to default 400
+      expect(() => instantiateVariableFont(fontCorpus.fontBuffer, { wght: NaN })).toThrow(ConversionFailedError);
+      expect(() => instantiateVariableFont(fontCorpus.fontBuffer, { wght: NaN })).toThrow(
+        /Variation coordinate for axis 'wght' must be a finite number, got NaN/
+      );
+      expect(() => instantiateVariableFont(fontCorpus.fontBuffer, { wdth: Infinity })).toThrow(
+        /Variation coordinate for axis 'wdth' must be a finite number, got Infinity/
+      );
+    });
+
+    it('pins a finite coordinate and clamps it to the axis range', () => {
+      const fontCorpus = synthesizeVariableFontCorpus();
+      const axisDefaults = (coordinates: Record<string, number>) => {
+        const meta = inspectVariableFont(instantiateVariableFont(fontCorpus.fontBuffer, coordinates));
+        return Object.fromEntries(meta.axes.map((axis) => [axis.tag, axis.defaultValue]));
+      };
+
+      // The corpus font declares wght 100..900 (default 400) and wdth 50..150 (default 100).
+      expect(axisDefaults({ wght: 700 })).toMatchObject({ wght: 700, wdth: 100 });
+      expect(axisDefaults({ wght: 5000, wdth: 1 })).toMatchObject({ wght: 900, wdth: 50 });
     });
   });
 
@@ -361,11 +421,12 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       const invalidMagic = Buffer.alloc(512);
       invalidMagic.write('NOT_AN_OLE_FILE', 0, 'ascii');
 
+      expect(() => parseCfbf(invalidMagic)).toThrow(CorruptStreamError);
       expect(() => parseCfbf(invalidMagic)).toThrow(/Invalid CFBF container/i);
       expect(isCfbfContainer(invalidMagic)).toBe(false);
     });
 
-    it('fails closed on cyclic sector allocation table (SAT) loops without infinite loop', () => {
+    it('fails closed on cyclic sector allocation table (SAT) loops without infinite loop', async () => {
       const cyclicOle = Buffer.alloc(1536);
       // Valid CFBF magic: 0xD0CF11E0A1B11AE1
       cyclicOle[0] = 0xd0;
@@ -389,54 +450,63 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       cyclicOle.writeUInt32LE(1, 512);
       cyclicOle.writeUInt32LE(0, 512 + 4);
 
-      const startTime = Date.now();
-      const cfbf = parseCfbf(cyclicOle);
-      const elapsed = Date.now() - startTime;
-
-      expect(elapsed).toBeLessThan(100); // Must not hang
-      expect(cfbf).toBeDefined();
+      // The walk ends at the first repeated sector and the container is refused.
+      const outcome = await expectNoHang('cyclic SAT', () => settle(() => parseCfbf(cyclicOle)));
+      expect(outcome.ok).toBe(false);
+      const error = (outcome as { ok: false; error: unknown }).error;
+      expect(error).toBeInstanceOf(CorruptStreamError);
+      expect((error as Error).message).toMatch(/Corrupt CFBF container: the sector chain starting at sector 0 returns to sector 0/);
     });
 
     it('fails closed on record headers with negative or absurd payload lengths in parseHwpRecords', () => {
       const corruptedRecord = Buffer.alloc(20);
       // HWP record header format: (tagId: 10 bits) | (level: 10 bits) | (size: 12 bits)
       // If size is 0xFFF (4095), it reads extended 32-bit size
-      const headerVal = (0x01) | (0 << 10) | (0xfff << 20);
+      const headerVal = 0x01 | (0 << 10) | (HWP_EXTENDED_SIZE_MARKER << 20);
       corruptedRecord.writeUInt32LE(headerVal >>> 0, 0);
-      corruptedRecord.writeUInt32LE(0x7fffffff, 4); // Extended size: 2GB payload!
+      corruptedRecord.writeUInt32LE(HWP_ABSURD_RECORD_SIZE, 4); // Extended size: 2GB payload in a 20-byte stream
 
-      const records = parseHwpRecords(corruptedRecord);
-      // Must safely terminate and return 0 or safe empty records without OOM
-      expect(records).toBeDefined();
+      expect(() => parseHwpRecords(corruptedRecord)).toThrow(CorruptStreamError);
+      expect(() => parseHwpRecords(corruptedRecord)).toThrow(
+        /Corrupt HWP record: tag 1 declares 2147483647 payload bytes but only 12 remain/
+      );
     });
   });
 
   // =========================================================================
   // 6. Anti-Hang & Strict Millisecond Execution Oracle
   // =========================================================================
-  describe('6. Anti-Hang & Strict Millisecond Execution Oracle', () => {
-    it('executes 100 random bitstream mutations across all parsers within 500ms', () => {
-      const startTime = Date.now();
-      const seedBuffer = Buffer.alloc(256);
+  describe('6. Parser robustness over seeded random mutations', () => {
+    it('answers 100 random bitstream mutations with a typed error from every parser, within the hang guard', async () => {
+      const seedBuffer = Buffer.alloc(PARSER_FUZZ_SEED_BYTES);
       for (let i = 0; i < seedBuffer.length; i++) {
         seedBuffer[i] = (i * 37) % 256;
       }
 
-      for (let i = 0; i < 100; i++) {
-        const mutated = mutateBitFlip(seedBuffer, 4);
-        try {
-          decodeParquet(mutated);
-        } catch {}
-        try {
-          decompressZstd(mutated);
-        } catch {}
-        try {
-          parseCfbf(mutated);
-        } catch {}
-      }
+      const outcomes = await expectNoHang('parser fuzz rounds', () => {
+        const typed: Record<string, number> = { parquet: 0, zstd: 0, cfbf: 0 };
+        const untyped: string[] = [];
+        for (let seed = 1; seed <= PARSER_FUZZ_ROUNDS; seed++) {
+          const mutated = mutateBitFlip(seedBuffer, seededRandom(seed), PARSER_FUZZ_FLIPS);
+          const parsers: Array<[string, () => unknown, new (...args: never[]) => Error]> = [
+            ['parquet', () => decodeParquet(mutated), ParquetFormatError],
+            ['zstd', () => decompressZstd(mutated), ConversionFailedError],
+            ['cfbf', () => parseCfbf(mutated), CorruptStreamError],
+          ];
+          for (const [name, run, expectedType] of parsers) {
+            const result = settle(run);
+            if (result.ok) untyped.push(`${name} accepted seed ${seed}`);
+            else if (result.error instanceof expectedType) typed[name]++;
+            else untyped.push(`${name} seed ${seed}: ${String(result.error)}`);
+          }
+        }
+        return { typed, untyped };
+      });
 
-      const elapsed = Date.now() - startTime;
-      expect(elapsed).toBeLessThan(1500); // 100 iterations completed rapidly with zero hangs
+      // The seed bytes are not a Parquet, Zstandard or CFBF file, so each parser must refuse every mutation with
+      // its own typed error; a TypeError or RangeError from a read past the buffer would be listed here.
+      expect(outcomes.untyped).toEqual([]);
+      expect(outcomes.typed).toEqual({ parquet: PARSER_FUZZ_ROUNDS, zstd: PARSER_FUZZ_ROUNDS, cfbf: PARSER_FUZZ_ROUNDS });
     });
   });
 
@@ -444,20 +514,52 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
   // 7. Audio Bitstream Adversarial Fuzzing
   // =========================================================================
   describe('7. Audio Bitstream Adversarial Fuzzing', () => {
+    const REFUSAL = /^Unsupported audio format: decoder unavailable$/;
+
+    it('decodes a well-formed WAV, so the refusals below are about the input', () => {
+      const SAMPLE_RATE = 8000;
+      const samples = [0, 1000, -1000, 32767];
+      const data = Buffer.alloc(samples.length * 2);
+      samples.forEach((value, index) => data.writeInt16LE(value, index * 2));
+      const fmt = Buffer.alloc(16);
+      fmt.writeUInt16LE(1, 0); // PCM
+      fmt.writeUInt16LE(1, 2); // mono
+      fmt.writeUInt32LE(SAMPLE_RATE, 4);
+      fmt.writeUInt32LE(SAMPLE_RATE * 2, 8);
+      fmt.writeUInt16LE(2, 12);
+      fmt.writeUInt16LE(16, 14);
+      const chunk = (id: string, body: Buffer) => {
+        const header = Buffer.alloc(8);
+        header.write(id, 0, 'ascii');
+        header.writeUInt32LE(body.length, 4);
+        return Buffer.concat([header, body]);
+      };
+      const wav = chunk('RIFF', Buffer.concat([Buffer.from('WAVE', 'ascii'), chunk('fmt ', fmt), chunk('data', data)]));
+
+      const decoded = decodeAudioBuffer(wav, 'wav');
+      expect([...decoded.samples]).toEqual(samples);
+      expect(decoded.sampleRate).toBe(SAMPLE_RATE);
+      expect(decoded.channels).toBe(1);
+    });
+
     it('fails closed on truncated WAV bitstreams missing subchunk header', () => {
       const badWav = Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt '); // Truncated mid fmt chunk
-      expect(() => decodeAudioBuffer(badWav, 'wav')).toThrow();
+      expect(() => decodeAudioBuffer(badWav, 'wav')).toThrow(ConversionFailedError);
+      expect(() => decodeAudioBuffer(badWav, 'wav')).toThrow(REFUSAL);
     });
 
     it('fails closed on corrupted FLAC stream with broken sync word or truncated header', () => {
       const badFlac = Buffer.from('fLaC\x80\x00\x00\x22TRUNCATED_STREAMINFO_LESS_THAN_34_BYTES');
-      expect(() => decodeAudioBuffer(badFlac, 'flac')).toThrow();
+      expect(() => decodeAudioBuffer(badFlac, 'flac')).toThrow(ConversionFailedError);
+      expect(() => decodeAudioBuffer(badFlac, 'flac')).toThrow(REFUSAL);
     });
 
     it('fails closed on non-audio random noise bitstreams without unhandled crashes', () => {
       const noise = Buffer.from('RANDOM_NOISE_NON_AUDIO_BYTES_0123456789');
-      expect(() => decodeAudioBuffer(noise, 'wav')).toThrow();
-      expect(() => decodeAudioBuffer(noise, 'flac')).toThrow();
+      for (const hint of ['wav', 'flac']) {
+        expect(() => decodeAudioBuffer(noise, hint), hint).toThrow(ConversionFailedError);
+        expect(() => decodeAudioBuffer(noise, hint), hint).toThrow(REFUSAL);
+      }
     });
   });
 });

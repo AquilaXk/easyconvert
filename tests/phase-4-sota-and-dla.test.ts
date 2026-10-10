@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   rgbToOklab,
   oklabToRgb,
@@ -29,6 +29,13 @@ import {
 } from '../src/lib/conversions/office';
 import JSZip from 'jszip';
 import sharp from 'sharp';
+import { oracleTest } from './helpers/oracle-test';
+import { sheetRowsViaLibreOffice } from './helpers/sheet-rows';
+import { xmlWellFormed, xpathAttributes, xpathCount, xpathString } from './helpers/xml-oracle';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
@@ -466,7 +473,7 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
   // ==========================================================================
   describe('DLA-Structured HTML & Markdown Output in document.ts (Component 4.6)', () => {
     it('produces semantic HTML and Markdown with header, heading, list, paragraph, and footer blocks', async () => {
-      // Build a synthetic PDF containing structured text blocks
+      // PDF user space has its origin at the bottom left (ISO 32000-1, 8.3.2.3): the header is drawn near y = 792.
       const pdfSource = `%PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -478,31 +485,36 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>
 endobj
 4 0 obj
-<< /Length 400 >>
+<< /Length 480 >>
 stream
 BT
 /F1 10 Tf
-50 30 Td
+50 762 Td
 (Document Confidential Header) Tj
 ET
 BT
 /F1 24 Tf
-50 120 Td
+50 690 Td
 (Architecture Specification) Tj
 ET
 BT
 /F1 12 Tf
-50 200 Td
+50 640 Td
 (- High throughput transformation engine) Tj
 ET
 BT
 /F1 12 Tf
-50 300 Td
+50 622 Td
+(- Client-side processing) Tj
+ET
+BT
+/F1 12 Tf
+50 590 Td
 (The platform processes media entirely client-side without cloud hops.) Tj
 ET
 BT
 /F1 10 Tf
-50 750 Td
+50 40 Td
 (Page 1 of 12 - EasyConvert) Tj
 ET
 endstream
@@ -526,16 +538,10 @@ startxref
       const htmlText = htmlRes.buffer.toString('utf-8');
 
       expect(htmlRes.mimeType).toBe('text/html');
-      expect(htmlText).toContain('<header');
-      expect(htmlText).toContain('Document Confidential Header');
-      expect(htmlText).toContain('<h2');
-      expect(htmlText).toContain('Architecture Specification');
-      expect(htmlText).toContain('<ul');
-      expect(htmlText).toContain('<li>High throughput transformation engine</li>');
-      expect(htmlText).toContain('<p');
-      expect(htmlText).toContain('client-side without cloud hops');
-      expect(htmlText).toContain('<footer');
-      expect(htmlText).toContain('Page 1 of 12');
+      const body = htmlText.slice(htmlText.indexOf('<body>'));
+      expect(body).toMatch(
+        /^<body><header><p>Document Confidential Header<\/p><\/header>\s*<h1>Architecture Specification<\/h1>\s*<ul><li>High throughput transformation engine<\/li><li>Client-side processing<\/li><\/ul>\s*<p>The platform processes media entirely client-side without cloud hops\.<\/p>\s*<footer><p>Page 1 of 12 - EasyConvert<\/p><\/footer><\/body>/,
+      );
       expect(htmlText).not.toContain('<pre>');
 
       // Convert to Markdown
@@ -543,11 +549,13 @@ startxref
       const mdText = mdRes.buffer.toString('utf-8');
 
       expect(mdRes.mimeType).toBe('text/markdown');
-      expect(mdText).toContain('*Document Confidential Header*');
-      expect(mdText).toContain('## Architecture Specification');
-      expect(mdText).toContain('- High throughput transformation engine');
-      expect(mdText).toContain('The platform processes media entirely client-side');
-      expect(mdText).toContain('*Page 1 of 12 - EasyConvert*');
+      expect(mdText.trimEnd().split('\n\n')).toEqual([
+        '*Document Confidential Header*',
+        '# Architecture Specification',
+        '- High throughput transformation engine\n- Client-side processing',
+        'The platform processes media entirely client-side without cloud hops.',
+        '*Page 1 of 12 - EasyConvert*',
+      ]);
     });
   });
 
@@ -639,7 +647,7 @@ startxref
       expect(contentXml).toContain('R&amp;D');
     });
 
-    it('creates multi-sheet ODS using generateOdsFromData', async () => {
+    oracleTest('creates multi-sheet ODS using generateOdsFromData', ['xmllint', 'soffice', 'python3'], async () => {
       const odsBuffer = await generateOdsFromData(
         [
           { name: 'Summary', rows: [['Total', '100']] },
@@ -648,10 +656,25 @@ startxref
         'report'
       );
       const odsZip = await JSZip.loadAsync(odsBuffer);
-      const contentXml = await odsZip.file('content.xml')?.async('text');
+      const contentXml = (await odsZip.file('content.xml')?.async('text')) as string;
 
-      expect(contentXml).toContain('<table:table table:name="Summary">');
-      expect(contentXml).toContain('<table:table table:name="Details">');
+      // The package: the stored mimetype entry comes first (OpenDocument packaging), and content.xml is XML.
+      expect(Object.keys(odsZip.files)[0]).toBe('mimetype');
+      expect(await odsZip.file('mimetype')?.async('text')).toBe('application/vnd.oasis.opendocument.spreadsheet');
+      expect(xmlWellFormed(contentXml).ok).toBe(true);
+
+      // Sheet names and the cells of each sheet, read with XPath.
+      const SHEET = "//*[local-name()='table']";
+      expect(xpathAttributes(contentXml, `${SHEET}/@*[local-name()='name']`)).toEqual(['Summary', 'Details']);
+      const cellText = (sheet: number, row: number, cell: number) =>
+        xpathString(contentXml, `string((${SHEET}[${sheet}]//*[local-name()='table-row'])[${row}]/*[local-name()='table-cell'][${cell}])`);
+      expect([cellText(1, 1, 1), cellText(1, 1, 2)]).toEqual(['Total', '100']);
+      expect([cellText(2, 1, 1), cellText(2, 1, 2), cellText(2, 2, 1), cellText(2, 2, 2)]).toEqual(['Item', '50', 'Item2', '50']);
+      expect(xpathCount(contentXml, `${SHEET}[1]//*[local-name()='table-row']`)).toBe(1);
+      expect(xpathCount(contentXml, `${SHEET}[2]//*[local-name()='table-row']`)).toBe(2);
+
+      // LibreOffice opens the file and reads the first sheet's row.
+      expect(sheetRowsViaLibreOffice(odsBuffer, 'ods')).toEqual([['Total', '100']]);
     });
   });
 

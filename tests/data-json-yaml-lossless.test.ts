@@ -15,6 +15,7 @@ import {
   UnsupportedTargetError,
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 import { oracleTest } from './helpers/oracle-test';
 
 /**
@@ -287,37 +288,26 @@ describe('YAML expansion is capped', () => {
 });
 
 describe('YAML keys are checked in linear time', () => {
-  const SMALL_KEY_COUNT = 25_000;
-  const LARGE_KEY_COUNT = 100_000;
+  const SMALL_KEY_COUNT = 10_000;
   /**
-   * 4x the keys may cost at most 8x the time: linear work scales by about 4, the pairwise
-   * uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
+   * 4x the keys may cost at most 8x the time (tests/helpers/timing.ts): linear work scales by about 4, the
+   * pairwise uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
    */
-  const MAX_SCALING_RATIO = 8;
-  /** Ceiling for 100,000 keys on a loaded runner; the pairwise check needed minutes. */
-  const LARGE_KEYS_CEILING_MS = 10_000;
-  const TIMING_RUNS = 2;
+  const LARGE_KEY_COUNT = SMALL_KEY_COUNT * SCALING_FACTOR;
 
-  async function fastestConversionMs(keyCount: number): Promise<number> {
-    const yamlText = Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
-    let fastest = Number.POSITIVE_INFINITY;
-    for (let run = 0; run < TIMING_RUNS; run++) {
-      const started = performance.now();
-      const result = await convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml');
-      fastest = Math.min(fastest, performance.now() - started);
-      const parsed = JSON.parse(result.buffer.toString('utf-8')) as Record<string, number>;
-      expect(Object.keys(parsed)).toHaveLength(keyCount);
-      expect(parsed[`k${keyCount - 1}`]).toBe(keyCount - 1);
-    }
-    return fastest;
-  }
+  const yamlWithKeys = (keyCount: number) =>
+    Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
 
-  it('converts YAML maps in time linear in their key count', async () => {
-    const small = await fastestConversionMs(SMALL_KEY_COUNT);
-    const large = await fastestConversionMs(LARGE_KEY_COUNT);
-    expect(large / small).toBeLessThan(MAX_SCALING_RATIO);
-    expect(large).toBeLessThan(LARGE_KEYS_CEILING_MS);
-  }, 60_000);
+  it('converts YAML maps in time linear in their key count (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
+      'yaml to json',
+      (yamlText: Buffer) => convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml'),
+      yamlWithKeys(LARGE_KEY_COUNT)
+    );
+    const parsed = JSON.parse(largeResult.buffer.toString('utf-8')) as Record<string, number>;
+    expect(Object.keys(parsed)).toHaveLength(LARGE_KEY_COUNT);
+    expect(parsed[`k${LARGE_KEY_COUNT - 1}`]).toBe(LARGE_KEY_COUNT - 1);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   const DUPLICATES: readonly [label: string, yamlText: string, line: number][] = [
     ['a repeated key', 'a: 1\nb: 2\na: 3\n', 3],

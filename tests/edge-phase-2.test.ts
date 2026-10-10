@@ -4,10 +4,8 @@ import {
   denormalizeTimestampFromMicros,
   WatermarkFlowController,
   resolveWebCodecsConfig,
-  wrapAacWithAdts,
-  muxWebmVideo,
-  muxMp4Media,
   processWebCodecsConversion,
+  demuxMedia,
   demuxMp4,
   demuxWav,
 } from '../src/lib/edge/workers/webcodecs.worker';
@@ -16,6 +14,24 @@ import {
   isWebCodecsEligible,
 } from '../src/lib/edge/pipelines/webcodecs-pipeline';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
+import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
+import { buildAdtsHeader, parseAacLcConfig } from '../src/lib/edge/media/aac';
+import { extractAvcC } from './helpers/iso-bmff-walker';
+import {
+  countVideoPackets,
+  ffmpegTestVideoMp4,
+  sineSamples,
+  toArrayBuffer,
+  wavFromSamples,
+} from './helpers/media-lossy-oracle';
+import { oracleTest } from './helpers/oracle-test';
+import { installFakeWebCodecs } from './helpers/webcodecs-platform-fakes';
+
+const sourceAvcC = (mp4: Buffer): Uint8Array => extractAvcC(new Uint8Array(mp4));
+
+/** AudioSpecificConfig of AAC-LC at 44.1 kHz in stereo: object type 2, frequency index 4, channel configuration 2. */
+const AAC_LC_44100_STEREO_ASC = Uint8Array.from([0x12, 0x10]);
+const AAC_ENCODER_REPORT = { codec: 'mp4a.40.2', description: AAC_LC_44100_STEREO_ASC, sampleRate: 44100, numberOfChannels: 2 };
 
 describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L1)', () => {
   describe('1. Timescale to Microsecond PTS Normalization', () => {
@@ -107,16 +123,19 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
 
   describe('3. Codec Configuration Resolution', () => {
     it('resolves standard video and audio codecs accurately', () => {
+      // The H.264 and VP9 defaults name a family: the level (and the VP9 profile) is derived from the video
       expect(resolveWebCodecsConfig('mp4')).toEqual({
         codec: 'avc1.4d002a',
         mimeType: 'video/mp4',
         isVideo: true,
+        deriveLevel: 'h264',
       });
 
       expect(resolveWebCodecsConfig('webm')).toEqual({
         codec: 'vp09.00.10.08',
         mimeType: 'video/webm',
         isVideo: true,
+        deriveLevel: 'vp9',
       });
 
       expect(resolveWebCodecsConfig('av1')).toEqual({
@@ -125,7 +144,14 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
         isVideo: true,
       });
 
+      // An ADTS stream is audio/aac; the MP4 container of the m4a target is audio/mp4
       expect(resolveWebCodecsConfig('aac')).toEqual({
+        codec: 'mp4a.40.2',
+        mimeType: 'audio/aac',
+        isVideo: false,
+      });
+
+      expect(resolveWebCodecsConfig('m4a')).toEqual({
         codec: 'mp4a.40.2',
         mimeType: 'audio/mp4',
         isVideo: false,
@@ -148,60 +174,37 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
   });
 
   describe('4. Deterministic VRAM Cleanup Invariant', () => {
-    it('guarantees VideoFrame.close() is called deterministically in try...finally', async () => {
-      // Create mock VideoFrame with spy on close()
-      const closeSpies: Array<ReturnType<typeof vi.fn>> = [];
+    oracleTest(
+      'closes every decoded VideoFrame exactly once and encodes one frame per source packet',
+      ['ffmpeg', 'ffprobe'],
+      async () => {
+        const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: true });
+        const referencePackets = countVideoPackets(mp4, 'mp4');
+        expect(referencePackets).toBe(25);
 
-      class MockVideoFrame {
-        public close = vi.fn();
-        public timestamp: number;
-        public duration: number;
+        const platform = installFakeWebCodecs({
+          decodedFrameSize: { width: 160, height: 120 },
+          videoDecoderConfig: { codec: 'avc1.64000a', description: sourceAvcC(mp4) },
+        });
+        try {
+          await processWebCodecsConversion({
+            jobId: 'test-vram-cleanup',
+            sourceFormat: 'mp4',
+            targetFormat: 'mp4',
+            fileBuffer: toArrayBuffer(mp4),
+            options: {},
+          });
 
-        constructor(_source: any, init: { timestamp: number; duration: number }) {
-          this.timestamp = init.timestamp;
-          this.duration = init.duration;
-          closeSpies.push(this.close);
+          expect(platform.decodedFrames).toHaveLength(referencePackets);
+          expect(platform.encodedFrames).toHaveLength(referencePackets);
+          for (const frame of platform.decodedFrames) {
+            expect(frame.close).toHaveBeenCalledTimes(1);
+          }
+        } finally {
+          platform.restore();
         }
       }
-
-      class MockVideoEncoder {
-        public encodeQueueSize = 0;
-        public configure = vi.fn();
-        public encode = vi.fn((frame: any) => {
-          // Verify frame is not yet closed during encode
-          expect(frame.close).not.toHaveBeenCalled();
-        });
-        public flush = vi.fn(async () => {});
-        public close = vi.fn();
-        constructor(private init: any) {}
-      }
-
-      // Temporarily mock globals in Node environment
-      const originalVideoFrame = (globalThis as any).VideoFrame;
-      const originalVideoEncoder = (globalThis as any).VideoEncoder;
-      (globalThis as any).VideoFrame = MockVideoFrame;
-      (globalThis as any).VideoEncoder = MockVideoEncoder;
-
-      try {
-        const dummyBuffer = new ArrayBuffer(100);
-        await processWebCodecsConversion({
-          jobId: 'test-vram-cleanup',
-          sourceFormat: 'mp4',
-          targetFormat: 'mp4',
-          fileBuffer: dummyBuffer,
-          options: { width: 320, height: 240, framerate: 30 },
-        });
-
-        // 30 frames must have been created, and every single one must have close() called!
-        expect(closeSpies).toHaveLength(30);
-        for (const spy of closeSpies) {
-          expect(spy).toHaveBeenCalledTimes(1);
-        }
-      } finally {
-        (globalThis as any).VideoFrame = originalVideoFrame;
-        (globalThis as any).VideoEncoder = originalVideoEncoder;
-      }
-    });
+    );
 
     it('ensures VideoFrame.close() is called even if VideoEncoder.encode throws', () => {
       let closed = false;
@@ -223,138 +226,84 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
     });
   });
 
-  describe('5. Container Packaging & Muxers', () => {
-    it('generates ADTS AAC frame header with 0xFFF syncword and length mapping', () => {
-      const rawPayload = new Uint8Array([0x12, 0x34, 0x56]);
-      const adts = wrapAacWithAdts(rawPayload, 44100, 2);
+  describe('5. Container Packaging', () => {
+    it('writes the ADTS header of AAC-LC at 44.1 kHz stereo for a 3-byte frame, field by field', () => {
+      // The AudioSpecificConfig 0x12 0x10 is AAC-LC (2), index 4 (44100 Hz), 2 channels
+      const header = buildAdtsHeader(3, parseAacLcConfig(Uint8Array.from([0x12, 0x10])));
 
-      expect(adts).toHaveLength(rawPayload.length + 7);
-      // Byte 0: 0xFF
-      expect(adts[0]).toBe(0xff);
-      // Byte 1: 0xF1 (syncword 0xFFF + layer 00 + protection absent 1)
-      expect(adts[1]).toBe(0xf1);
-      // Verify payload is correctly appended after 7 header bytes
-      expect(adts.slice(7)).toEqual(rawPayload);
-    });
-
-    it('muxes WebM video with valid EBML header', () => {
-      const chunks = [
-        { data: new Uint8Array([1, 2, 3]), timestampMicros: 0, isKeyFrame: true },
-        { data: new Uint8Array([4, 5, 6]), timestampMicros: 33333, isKeyFrame: false },
-      ];
-      const webm = muxWebmVideo(chunks, 640, 480);
-      expect(webm.length).toBeGreaterThan(30);
-      // EBML ID: 0x1A 0x45 0xDF 0xA3
-      expect(webm[0]).toBe(0x1a);
-      expect(webm[1]).toBe(0x45);
-      expect(webm[2]).toBe(0xdf);
-      expect(webm[3]).toBe(0xa3);
-    });
-
-    it('muxes MP4 video with valid ftyp and mdat boxes', () => {
-      const chunks = [
-        { data: new Uint8Array([10, 20, 30, 40]), timestampMicros: 0, isKeyFrame: true },
-      ];
-      const mp4 = muxMp4Media(chunks, 1280, 720);
-      expect(mp4).toHaveLength(32 + 8 + 4);
-      // 'ftyp' box
-      const ftypTag = String.fromCharCode(...mp4.slice(4, 8));
-      expect(ftypTag).toBe('ftyp');
-      // 'mdat' box
-      const mdatTag = String.fromCharCode(...mp4.slice(36, 40));
-      expect(mdatTag).toBe('mdat');
-      expect(mp4.slice(40)).toEqual(chunks[0].data);
+      // 0xFFF sync, MPEG-4, no CRC | profile 1 (LC), index 4, channels 2 | frame length 3 + 7 = 10 | VBR fullness
+      expect([...header]).toEqual([0xff, 0xf1, 0x50, 0x80, 0x01, 0x5f, 0xfc]);
     });
   });
 
   describe('6. WebCodecs Pipeline Controller Execution', () => {
-    let origVideoEncoder: any;
-    let origVideoFrame: any;
-    let origAudioEncoder: any;
-    let origAudioData: any;
+    const SOURCE_RATE = 44100;
+    const SOURCE_CHANNELS = 2;
 
-    beforeEach(() => {
-      origVideoEncoder = (globalThis as any).VideoEncoder;
-      origVideoFrame = (globalThis as any).VideoFrame;
-      origAudioEncoder = (globalThis as any).AudioEncoder;
-      origAudioData = (globalThis as any).AudioData;
-
-      (globalThis as any).VideoFrame = class {
-        public close = vi.fn();
-        constructor(public source: any, public init: any) {}
-      };
-
-      (globalThis as any).VideoEncoder = class {
-        public encodeQueueSize = 0;
-        public configure = vi.fn();
-        public encode = vi.fn((frame: any, opts: any) => {
-          this.init.output({
-            byteLength: 9,
-            copyTo: (dest: Uint8Array) => dest.set(new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3, 4])),
-            timestamp: frame.init?.timestamp || 0,
-            type: opts?.keyFrame ? 'key' : 'delta',
-          });
+    oracleTest(
+      'executes a conversion of a real MP4 and delivers progress telemetry from 5% to 100%',
+      ['ffmpeg', 'ffprobe'],
+      async () => {
+        const mp4 = ffmpegTestVideoMp4({ width: 160, height: 120, fps: 25, seconds: 1, gop: 25, faststart: true });
+        const platform = installFakeWebCodecs({
+          decodedFrameSize: { width: 160, height: 120 },
+          videoDecoderConfig: { codec: 'vp09.00.10.08' },
         });
-        public flush = vi.fn(async () => {});
-        public close = vi.fn();
-        constructor(private init: any) {}
-      };
+        try {
+          const progressUpdates: number[] = [];
+          const file = new File([toArrayBuffer(mp4)], 'input-clip.mp4', { type: 'video/mp4' });
 
-      (globalThis as any).AudioData = class {
-        public close = vi.fn();
-        constructor(public init: any) {}
-      };
+          const result = await convertWithWebCodecs(file, 'mp4', 'webm', {}, (p) => progressUpdates.push(p));
 
-      (globalThis as any).AudioEncoder = class {
-        public encodeQueueSize = 0;
-        public configure = vi.fn();
-        public encode = vi.fn((data: any) => {
-          this.init.output({
-            byteLength: 6,
-            copyTo: (dest: Uint8Array) => dest.set(new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0])),
-            timestamp: data.init?.timestamp || 0,
-          });
+          expect(result.mimeType).toBe('video/webm');
+          expect(platform.encodedFrames).toHaveLength(countVideoPackets(mp4, 'mp4'));
+          expect(progressUpdates[0]).toBe(5);
+          expect(progressUpdates[progressUpdates.length - 1]).toBe(100);
+          expect(progressUpdates).toEqual([...progressUpdates].sort((a, b) => a - b));
+        } finally {
+          platform.restore();
+        }
+      }
+    );
+
+    it('transcodes real PCM from a WAV to an AAC stream with the sample rate and channels of the source', async () => {
+      const platform = installFakeWebCodecs({ audioDecoderConfig: AAC_ENCODER_REPORT });
+      try {
+        const source = sineSamples(SOURCE_RATE, SOURCE_CHANNELS, 1);
+        const file = new File([toArrayBuffer(wavFromSamples(source, SOURCE_RATE, SOURCE_CHANNELS))], 'input.wav', {
+          type: 'audio/wav',
         });
-        public flush = vi.fn(async () => {});
-        public close = vi.fn();
-        constructor(private init: any) {}
-      };
+
+        const result = await convertWithWebCodecs(file, 'wav', 'aac', {});
+
+        expect(result.mimeType).toBe('audio/aac');
+        expect(platform.audioEncoderConfigures[0]).toMatchObject({
+          codec: 'mp4a.40.2',
+          sampleRate: SOURCE_RATE,
+          numberOfChannels: SOURCE_CHANNELS,
+        });
+        const encodedFrames = platform.audioDataEncoded.reduce((sum, d) => sum + Number(d.numberOfFrames), 0);
+        expect(encodedFrames).toBe(source.length / SOURCE_CHANNELS);
+      } finally {
+        platform.restore();
+      }
     });
 
-    afterEach(() => {
-      (globalThis as any).VideoEncoder = origVideoEncoder;
-      (globalThis as any).VideoFrame = origVideoFrame;
-      (globalThis as any).AudioEncoder = origAudioEncoder;
-      (globalThis as any).AudioData = origAudioData;
-    });
+    it('refuses a sample rate the encoder cannot reach without resampling', async () => {
+      const platform = installFakeWebCodecs();
+      try {
+        const source = sineSamples(SOURCE_RATE, SOURCE_CHANNELS, 1);
+        const file = new File([toArrayBuffer(wavFromSamples(source, SOURCE_RATE, SOURCE_CHANNELS))], 'input.wav', {
+          type: 'audio/wav',
+        });
 
-    it('executes conversion and delivers progress telemetry from 5% to 100%', async () => {
-      const progressUpdates: number[] = [];
-      const dummyFile = new File([new Uint8Array(1024)], 'input-clip.mp4', { type: 'video/mp4' });
-
-      const result = await convertWithWebCodecs(
-        dummyFile,
-        'mp4',
-        'webm',
-        { width: 640, height: 360 },
-        (p) => progressUpdates.push(p)
-      );
-
-      expect(result.size).toBeGreaterThan(0);
-      expect(result.mimeType).toBe('video/webm');
-      expect(progressUpdates.length).toBeGreaterThan(0);
-      expect(progressUpdates[0]).toBe(5);
-      expect(progressUpdates[progressUpdates.length - 1]).toBe(100);
-    });
-
-    it('transcodes to AAC container with audio/mp4 mime type', async () => {
-      const dummyFile = new File([new Uint8Array(512)], 'input.wav', { type: 'audio/wav' });
-      const result = await convertWithWebCodecs(dummyFile, 'wav', 'aac', {
-        audioSampleRate: 44100,
-        audioChannels: 'stereo',
-      });
-      expect(result.mimeType).toBe('audio/mp4');
-      expect(result.size).toBeGreaterThan(0);
+        await expect(convertWithWebCodecs(file, 'wav', 'aac', { audioSampleRate: 16000 })).rejects.toBeInstanceOf(
+          EdgeUnsupportedError
+        );
+        expect(platform.audioDataEncoded).toHaveLength(0);
+      } finally {
+        platform.restore();
+      }
     });
   });
 
@@ -400,14 +349,13 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
   });
 
   describe('8. Universal Media Demuxing & Timescale Preservation', () => {
-    it('demuxes MP4 container and accurately extracts timescale and samples', () => {
-      // Build a minimal MP4 with ftyp, moov (mvhd with timescale 90,000), and mdat
+    it('reads no samples from an MP4 whose moov has no track, instead of cutting mdat into invented samples', () => {
+      // ftyp, a moov holding only mvhd (timescale 90,000), and an mdat of 2048 payload bytes
       const ftyp = new Uint8Array([
         0x00, 0x00, 0x00, 0x14, 0x66, 0x74, 0x79, 0x70,
         0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x02, 0x00,
         0x69, 0x73, 0x6f, 0x6d,
       ]);
-      // moov with mvhd
       const mvhd = new Uint8Array([
         0x00, 0x00, 0x00, 0x6c, 0x6d, 0x76, 0x68, 0x64,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -420,7 +368,6 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       moov.set([0x6d, 0x6f, 0x6f, 0x76], 4); // 'moov'
       moov.set(mvhd, 8);
 
-      // mdat with sample data
       const mdatData = new Uint8Array(2048);
       mdatData.fill(0xaa);
       const mdat = new Uint8Array(8 + mdatData.byteLength);
@@ -434,11 +381,8 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       mp4Buf.set(moov, ftyp.byteLength);
       mp4Buf.set(mdat, ftyp.byteLength + moov.byteLength);
 
-      const track = demuxMp4(mp4Buf.buffer);
-      expect(track).toBeDefined();
-      expect(track?.timescale).toBe(90000);
-      expect(track?.samples.length).toBeGreaterThan(0);
-      expect(track?.samples[0].timestampMicros).toBe(0);
+      expect(() => demuxMp4(mp4Buf.buffer)).toThrow(/no video or audio track/);
+      expect(() => demuxMedia(mp4Buf.buffer, 'mp4')).toThrow(EdgeUnsupportedError);
     });
 
     it('demuxes WAV container and extracts audio PCM samples', () => {
@@ -469,74 +413,37 @@ describe('Phase 2: WebCodecs Hardware Media Pipeline & Watermark Backpressure (L
       view.setUint32(40, pcmLen, true);
 
       const track = demuxWav(wavBuf);
-      expect(track).toBeDefined();
       expect(track?.type).toBe('audio');
       expect(track?.sampleRate).toBe(44100);
       expect(track?.channels).toBe(2);
-      expect(track?.samples.length).toBeGreaterThan(0);
+      // 4096 bytes of 4-byte frames = 1024 frames, which is 23.2 ms at 44.1 kHz
+      const frames = track?.samples.reduce((sum, s) => sum + s.data.byteLength / (channels * 2), 0);
+      expect(frames).toBe(1024);
+      expect(track?.samples[0].timestampMicros).toBe(0);
     });
   });
 
   describe('9. WebCodecs Hardware Audio & Video Isolation Invariant', () => {
     it('uses AudioEncoder for audio conversion and NEVER instantiates VideoEncoder with audio codec', async () => {
-      let videoEncoderConstructed = false;
-      let audioEncoderConstructed = false;
-      let audioCodecConfigured = '';
-
-      class MockAudioData {
-        public close = vi.fn();
-        constructor(public init: any) {}
-      }
-
-      class MockAudioEncoder {
-        public encodeQueueSize = 0;
-        public configure = vi.fn((config: any) => {
-          audioCodecConfigured = config.codec;
-        });
-        public encode = vi.fn((data: any) => {
-          data.close();
-        });
-        public flush = vi.fn(async () => {});
-        public close = vi.fn();
-        constructor(private init: any) {
-          audioEncoderConstructed = true;
-        }
-      }
-
-      class MockVideoEncoderFailOnAudio {
-        constructor() {
-          videoEncoderConstructed = true;
-        }
-      }
-
-      const originalAudioEncoder = (globalThis as any).AudioEncoder;
-      const originalAudioData = (globalThis as any).AudioData;
-      const originalVideoEncoder = (globalThis as any).VideoEncoder;
-
-      (globalThis as any).AudioEncoder = MockAudioEncoder;
-      (globalThis as any).AudioData = MockAudioData;
-      (globalThis as any).VideoEncoder = MockVideoEncoderFailOnAudio;
-
+      const platform = installFakeWebCodecs({ audioDecoderConfig: AAC_ENCODER_REPORT });
       try {
-        const dummyAudio = new ArrayBuffer(500);
+        const source = sineSamples(44100, 2, 1);
         const result = await processWebCodecsConversion({
           jobId: 'test-hardware-audio',
           sourceFormat: 'wav',
           targetFormat: 'aac',
-          fileBuffer: dummyAudio,
+          fileBuffer: toArrayBuffer(wavFromSamples(source, 44100, 2)),
           options: { audioSampleRate: 44100, audioChannels: 2 },
         });
 
-        expect(result.mimeType).toBe('audio/mp4');
-        expect(audioEncoderConstructed).toBe(true);
-        expect(videoEncoderConstructed).toBe(false); // VideoEncoder must NEVER be called for audio!
-        expect(audioCodecConfigured).toBe('mp4a.40.2');
+        expect(result.mimeType).toBe('audio/aac');
+        expect(platform.audioEncoderConfigures).toHaveLength(1);
+        expect(platform.audioEncoderConfigures[0]).toMatchObject({ codec: 'mp4a.40.2' });
+        expect(platform.videoEncoderConfigures).toHaveLength(0); // VideoEncoder must NEVER be called for audio!
+        expect(platform.encodedFrames).toHaveLength(0);
       } finally {
-        (globalThis as any).AudioEncoder = originalAudioEncoder;
-        (globalThis as any).AudioData = originalAudioData;
-        (globalThis as any).VideoEncoder = originalVideoEncoder;
+        platform.restore();
       }
     });
   });
 });
-

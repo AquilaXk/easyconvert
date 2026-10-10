@@ -1,136 +1,191 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createElement, type ComponentType } from 'react';
 import { parseConverterSlug } from '../src/lib/slug-parser';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import Header from '../src/components/Header';
+import Footer from '../src/components/Footer';
+import Hero from '../src/components/Hero';
+import Features from '../src/components/Features';
+import FormatSelector from '../src/components/FormatSelector';
+import FaqSection from '../src/components/FaqSection';
+import StatusDashboard from '../src/components/StatusDashboard';
+import AdBanner from '../src/components/AdBanner';
+import ConversionQueue from '../src/components/ConversionQueue';
+import DynamicConverterPage from '../src/app/[slug]/page';
+import type { ConversionQueueItem } from '../src/lib/types';
+import {
+  allElements,
+  attrOf,
+  classTokens,
+  headings,
+  links,
+  missingFrom,
+  phrasesMissing,
+  phrasesPresent,
+  presentIn,
+  renderDom,
+  select,
+  visibleText,
+  type DomElement,
+} from './helpers/rendered-dom';
+import { callArguments, firstStringArguments, initializersOf, parseSource } from './helpers/ts-source';
+
+/**
+ * The redesign checks read what a visitor receives: each component is rendered to markup (react-dom/server), the
+ * markup is parsed by parse5, and the assertions are about visible text, headings, link targets, ARIA attributes
+ * and class tokens. Where behaviour cannot be observed in a server-side render (a drop handler, a window event),
+ * the TypeScript compiler's parser reads the module's structure instead of a text search.
+ */
+
+const rootDir = path.resolve(__dirname, '..');
+const sourcePath = (...parts: string[]) => path.join(rootDir, ...parts);
+
+/** A resolved promise React's `use()` reads synchronously, standing in for the route's `params`. */
+function slugParams(slug: string): Promise<{ slug: string }> {
+  const value = { slug };
+  const settled = Promise.resolve(value) as Promise<{ slug: string }> & { status: string; value: { slug: string } };
+  settled.status = 'fulfilled';
+  settled.value = value;
+  return settled;
+}
+
+const renderSlug = (slug: string) => renderDom(createElement(DynamicConverterPage, { params: slugParams(slug) }));
+const render = <P extends object>(component: ComponentType<P>, props: P) => renderDom(createElement(component, props));
+const noop = () => undefined;
+const hrefsOf = (root: DomElement) => links(root).map((l) => l.href);
+const classAttr = (element: DomElement | undefined) => (element ? attrOf(element, 'class') : null);
+
+const FOOTER_SECTION_HEADINGS = [
+  'Video Converter',
+  'Audio Converter',
+  'Image Converter',
+  'Document & Ebook',
+  'Archive & Compression',
+  'Data & Unit Tools',
+  'Web Apps',
+  'Client & Edge Tools',
+];
 
 describe('Redesign & Free Static Architecture Verification', () => {
-  const rootDir = path.resolve(__dirname, '..');
-
   it('verifies obsolete pricing page route has been completely eliminated', () => {
-    const pricingPagePath = path.join(rootDir, 'src', 'app', 'pricing', 'page.tsx');
+    const pricingPagePath = sourcePath('src', 'app', 'pricing', 'page.tsx');
     expect(fs.existsSync(pricingPagePath)).toBe(false);
   });
 
   it('verifies obsolete api/v2 documentation page route has been completely eliminated', () => {
-    const apiV2PagePath = path.join(rootDir, 'src', 'app', 'api', 'v2', 'page.tsx');
+    const apiV2PagePath = sourcePath('src', 'app', 'api', 'v2', 'page.tsx');
     expect(fs.existsSync(apiV2PagePath)).toBe(false);
   });
 
-  it('verifies login and register routes and AuthModal have been completely eliminated', () => {
-    const loginPath = path.join(rootDir, 'src', 'app', 'login');
-    const registerPath = path.join(rootDir, 'src', 'app', 'register');
-    const authModalPath = path.join(rootDir, 'src', 'components', 'AuthModal.tsx');
+  it('verifies the retired login and register routes and the AuthModal have been completely eliminated', () => {
+    const loginPath = sourcePath('src', 'app', 'login');
+    const registerPath = sourcePath('src', 'app', 'register');
+    const authModalPath = sourcePath('src', 'components', 'AuthModal.tsx');
     expect(fs.existsSync(loginPath)).toBe(false);
     expect(fs.existsSync(registerPath)).toBe(false);
     expect(fs.existsSync(authModalPath)).toBe(false);
   });
 
   it('verifies Header uses root-relative anchor links to prevent dead links on subpages', () => {
-    const headerPath = path.join(rootDir, 'src', 'components', 'Header.tsx');
-    const headerContent = fs.readFileSync(headerPath, 'utf-8');
+    const header = render(Header, {});
+    const hrefs = hrefsOf(header);
 
-    // Should point to /#format-catalog and /#how-it-works
-    expect(headerContent).toContain('href="/#format-catalog"');
-    expect(headerContent).toContain('href="/#how-it-works"');
-
-    // Should NOT contain bare anchor links href="#format-catalog" or href="#how-it-works"
-    expect(headerContent).not.toMatch(/href="#format-catalog"/);
-    expect(headerContent).not.toMatch(/href="#how-it-works"/);
-
-    // Should contain 100% Free badge
-    expect(headerContent).toContain('100% Free');
+    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works'])).toEqual([]);
+    // Bare fragments only resolve on the home page.
+    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
+    expect(visibleText(header)).toMatch(/100% Free/);
   });
 
-  it('verifies Header is sleek without auth/login/signup residue and contains key elements', () => {
-    const headerPath = path.join(rootDir, 'src', 'components', 'Header.tsx');
-    const headerContent = fs.readFileSync(headerPath, 'utf-8');
+  it('verifies Header offers sign-in through /auth only, with no link to the retired login and register routes', () => {
+    const header = render(Header, {});
 
-    // No auth/login/signup residue or state handlers
-    expect(headerContent).not.toContain('AuthModal');
-    expect(headerContent).not.toContain('Sign in');
-    expect(headerContent).not.toContain('Sign up');
-    expect(headerContent).not.toContain('href="/login"');
-    expect(headerContent).not.toContain('href="/register"');
-    expect(headerContent).not.toContain('easyconvert_user');
-    expect(headerContent).not.toContain('handleAuthSuccess');
-    expect(headerContent).not.toContain('handleSignOut');
-    expect(headerContent).not.toContain('userEmail');
-    expect(headerContent).not.toContain('isAuthOpen');
-    expect(headerContent).not.toContain('authMode');
+    // The visible navigation, in order: brand, catalog and how-it-works anchors, API console, then the two auth entries.
+    expect(links(header)).toEqual([
+      { text: 'EasyConvert', href: '/' },
+      { text: 'Formats', href: '/#format-catalog' },
+      { text: 'How It Works', href: '/#how-it-works' },
+      { text: 'API', href: '/dashboard' },
+      { text: 'Log In', href: '/auth' },
+      { text: 'Sign Up', href: '/auth?tab=register' },
+    ]);
+    expect(presentIn(hrefsOf(header), ['/login', '/register'])).toEqual([]);
 
-    // Key elements present: Brand Logo, Tools dropdown, Formats, How It Works, 100% Free badge, Dark/Light mode toggle
-    expect(headerContent).toContain('<BrandLogo');
-    expect(headerContent).toContain('<span>Tools</span>');
-    expect(headerContent).toContain('aria-expanded={isToolsOpen}');
-    expect(headerContent).toContain('aria-expanded={isMobileMenuOpen}');
-    expect(headerContent).toContain('href="/#format-catalog"');
-    expect(headerContent).toContain('href="/#how-it-works"');
-    expect(headerContent).toContain('100% Free');
-    expect(headerContent).toContain('toggleDarkMode');
+    // Key controls: the brand mark, the Tools dropdown trigger, the theme toggle and the mobile menu trigger, all
+    // collapsed in the initial render.
+    const toolsTrigger = select(header, 'button', 'aria-haspopup', 'true');
+    expect(toolsTrigger.map((b) => [visibleText(b), attrOf(b, 'aria-expanded')])).toEqual([['Tools', 'false']]);
+    expect(select(header, 'button', 'aria-label', 'Switch to dark mode')).toHaveLength(1);
+    const mobileMenu = select(header, 'button', 'aria-label', 'Open menu');
+    expect(mobileMenu.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['false']);
+    expect(select(header, 'a', 'aria-label', 'EasyConvert Home')).toHaveLength(1);
+    expect(visibleText(header)).toMatch(/100% Free/);
   });
 
-  it('verifies subpage scripts do not target eliminated auth routes', () => {
-    const captureScriptPath = path.join(rootDir, 'scripts', 'capture-all-subpages.mjs');
-    if (fs.existsSync(captureScriptPath)) {
-      const scriptContent = fs.readFileSync(captureScriptPath, 'utf-8');
-      expect(scriptContent).not.toContain("path: '/login'");
-      expect(scriptContent).not.toContain("path: '/register'");
-    }
+  it('verifies the subpage capture script only visits live routes, none of the retired auth routes', () => {
+    const captureScriptPath = sourcePath('scripts', 'capture-all-subpages.mjs');
+    const script = fs.readFileSync(captureScriptPath, 'utf-8');
+    const captured = [...script.matchAll(/path: '([^']+)'/g)].map((m) => m[1]);
+
+    expect(captured).toEqual(['/pdf-converter', '/unit-converter', '/status']);
+    expect(presentIn(captured, ['/login', '/register'])).toEqual([]);
   });
 
   it('verifies Footer uses root-relative anchor links to prevent dead links on subpages', () => {
-    const footerPath = path.join(rootDir, 'src', 'components', 'Footer.tsx');
-    const footerContent = fs.readFileSync(footerPath, 'utf-8');
+    const footer = render(Footer, {});
+    const hrefs = hrefsOf(footer);
 
-    expect(footerContent).toContain('href="/#format-catalog"');
-    expect(footerContent).toContain('href="/#how-it-works"');
-    expect(footerContent).not.toMatch(/href="#format-catalog"/);
-    expect(footerContent).not.toMatch(/href="#how-it-works"/);
-
+    expect(missingFrom(hrefs, ['/#format-catalog', '/#how-it-works'])).toEqual([]);
+    expect(presentIn(hrefs, ['#format-catalog', '#how-it-works'])).toEqual([]);
     // Obsolete pricing and api links should not exist
-    expect(footerContent).not.toContain('/pricing');
-    expect(footerContent).not.toContain('/api/v2');
+    expect(hrefs.filter((href) => href.includes('/pricing') || href.includes('/api/v2'))).toEqual([]);
 
     // Categorized converter directory headings
-    expect(footerContent).toContain('Video Converter');
-    expect(footerContent).toContain('Audio Converter');
-    expect(footerContent).toContain('Image Converter');
-    expect(footerContent).toContain('Document & Ebook');
-    expect(footerContent).toContain('Archive & Compression');
-    expect(footerContent).toContain('Data & Unit Tools');
-    expect(footerContent).toContain('Web Apps');
-    expect(footerContent).toContain('Client & Edge Tools');
+    expect(headings(footer)).toEqual(FOOTER_SECTION_HEADINGS);
 
     // Key conversion routes
-    expect(footerContent).toContain('href: \'/mp4-to-mp3\'');
-    expect(footerContent).toContain('href: \'/jpg-to-pdf\'');
-    expect(footerContent).toContain('href: \'/pdf-to-docx\'');
-    expect(footerContent).toContain('href: \'/video-to-gif\'');
-    expect(footerContent).toContain('href: \'/heic-to-jpg\'');
-    expect(footerContent).toContain('href: \'/rar-to-zip\'');
+    expect(
+      missingFrom(hrefs, ['/mp4-to-mp3', '/jpg-to-pdf', '/pdf-to-docx', '/video-to-gif', '/heic-to-jpg', '/rar-to-zip'])
+    ).toEqual([]);
 
     // Privacy badge and copyright
-    expect(footerContent).toMatch(/100% Client-Side (&|&amp;) Zero-Server Retention/);
-    expect(footerContent).toContain('© 2026 EasyConvert.com');
+    const text = visibleText(footer);
+    expect(text).toMatch(/100% Client-Side & Zero-Server Retention/);
+    expect(text).toMatch(/© 2026 EasyConvert\.com/);
   });
 
   it('verifies Terms of Service has no obsolete daily quotas or paid credits mentions', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const terms = renderSlug('terms');
+    const text = visibleText(terms);
 
-    expect(slugContent).not.toContain('10 daily conversions');
-    expect(slugContent).not.toContain('credits with prioritized throughput');
-    expect(slugContent).toContain('100% free with unlimited conversions');
+    expect(headings(terms).slice(0, 4)).toEqual([
+      'Terms of Service',
+      '1. Acceptance of Terms',
+      '2. Acceptable Use',
+      '3. Service Availability & Free Use',
+    ]);
+    expect(phrasesPresent(text, ['10 daily conversions', 'credits with prioritized throughput'])).toEqual([]);
+    expect(phrasesMissing(text, ['100% free with unlimited conversions'])).toEqual([]);
   });
 
-  it('verifies Hero component synchronizes target format on file drop and selection', () => {
-    const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
-    const heroContent = fs.readFileSync(heroPath, 'utf-8');
+  it('verifies Hero synchronizes target format on file drop and selection', () => {
+    // Drop and selection are browser events, so the data flow is read from the module's structure: both handlers
+    // pass the file list and the effective target to onFilesSelected, and the effective target is derived from the
+    // ref that follows the selected format (a ref avoids a stale closure when the format changes mid-drag).
+    const hero = parseSource(sourcePath('src', 'components', 'Hero.tsx'));
+    const handlerCalls = callArguments(hero, 'onFilesSelected').filter((args) => args[1] === 'effectiveTarget');
 
-    // Uses targetFormatRef to guard against closure latency
-    expect(heroContent).toContain('targetFormatRef');
-    expect(heroContent).toContain('const chosen = targetFormatRef.current');
+    expect(handlerCalls).toEqual([
+      ['files', 'effectiveTarget'],
+      ['files', 'effectiveTarget'],
+    ]);
+    expect(initializersOf(hero, 'effectiveTarget')).toEqual([
+      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
+      'getEffectiveTargetFormat(chosen, activeTargetFormat)',
+    ]);
+    expect(initializersOf(hero, 'chosen')).toEqual(['targetFormatRef.current', 'targetFormatRef.current']);
+    expect(initializersOf(hero, 'targetFormatRef')).toEqual(['useRef(targetFormat)']);
   });
 
   it('verifies all Hero popular presets specify supported formats in FORMAT_REGISTRY', () => {
@@ -151,6 +206,11 @@ describe('Redesign & Free Static Architecture Verification', () => {
         `Source ${preset.src} should support target ${preset.tgt}`
       ).toBe(true);
     }
+
+    // The presets are the ones the Hero renders, in this order.
+    const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
+    expect(visibleText(hero)).toMatch(/POPULAR: PDF to Word Word to PDF Image to WebP Video to MP3 HEIC to JPG EPUB to PDF$/);
+    expect(popularPresets.map((p) => p.label)).toEqual(['PDF to Word', 'Word to PDF', 'Image to WebP', 'Video to MP3', 'HEIC to JPG', 'EPUB to PDF']);
   });
 
   it('verifies parseConverterSlug properly routes dynamic converter and informational paths', () => {
@@ -179,7 +239,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     const lbsToKg = parseConverterSlug('lbs-to-kg');
     expect(lbsToKg.isInfoPage).toBe(true);
     expect(lbsToKg.infoType).toBe('unit');
-    expect(lbsToKg.pageTitle).toContain('LBS to KG');
+    expect(lbsToKg.pageTitle).toMatch(/LBS to KG/);
   });
 
   it('verifies category and alias slugs resolve to registered canonical formats', () => {
@@ -210,297 +270,308 @@ describe('Redesign & Free Static Architecture Verification', () => {
   });
 
   it('verifies footer directory grid uses balanced responsive layout with status link', () => {
-    const footerPath = path.join(rootDir, 'src', 'components', 'Footer.tsx');
-    const footerContent = fs.readFileSync(footerPath, 'utf-8');
+    const footer = render(Footer, {});
 
-    expect(footerContent).toContain('href="/status"');
-    expect(footerContent).toContain('grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8');
-    expect(footerContent).toContain('easyconvert-theme-change');
+    expect(links(footer).filter((l) => l.href === '/status')).toEqual([{ text: 'Status', href: '/status' }]);
+    // Eight directory columns on a wide screen, halving down to two on a phone.
+    const grids = allElements(footer).filter((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('xl:grid-cols-8'));
+    expect(grids.map((g) => classAttr(g))).toEqual([
+      expect.stringContaining('grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8'),
+    ]);
+    expect(allElements(grids[0]).filter((e) => e.tagName === 'h3' || e.tagName === 'h4').length).toBe(FOOTER_SECTION_HEADINGS.length);
+
+    // The footer follows the theme the header toggle announces on the window; both ends use the same event name.
+    const footerSource = parseSource(sourcePath('src', 'components', 'Footer.tsx'));
+    expect(firstStringArguments(footerSource, 'addEventListener')).toEqual(['easyconvert-theme-change', 'mousedown']);
+    expect(firstStringArguments(footerSource, 'CustomEvent')).toEqual(['easyconvert-theme-change']);
   });
 
   it('verifies Hero implements spacious converter architecture with Choose Files CTA and eliminates 2-card console box', () => {
-    const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
-    const heroContent = fs.readFileSync(heroPath, 'utf-8');
+    const hero = render(Hero, { onFilesSelected: noop, hasActiveQueue: false });
+    const text = visibleText(hero);
 
     // Spacious hero structure with prominent Choose Files CTA
-    expect(heroContent).toContain('Choose Files');
-    expect(heroContent).toContain('292 Formats Supported');
-    expect(heroContent).toContain('bg-brand-700');
-    expect(heroContent).toContain('POPULAR:');
+    const chooseFiles = select(hero, 'button').filter((b) => visibleText(b) === 'Choose Files');
+    expect(chooseFiles).toHaveLength(1);
+    expect(classAttr(chooseFiles[0])).toMatch(/\bbg-brand-700\b/);
+    expect(phrasesMissing(text, ['Choose Files to Convert', '292 Formats Supported', 'POPULAR:'])).toEqual([]);
 
     // 2-card converter box and obsolete animations completely eliminated
-    expect(heroContent).not.toContain('animate-card-flip');
-    expect(heroContent).not.toContain('Conversion Console');
-    expect(heroContent).not.toContain('animate-orbit-slow');
-    expect(heroContent).not.toContain('animate-orbit-fast');
+    expect(phrasesPresent(text, ['Conversion Console'])).toEqual([]);
+    expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);
   });
 
   it('verifies design token alignment across Console, FormatSelector, and Features', () => {
-    const selectorPath = path.join(rootDir, 'src', 'components', 'FormatSelector.tsx');
-    const selectorContent = fs.readFileSync(selectorPath, 'utf-8');
-    expect(selectorContent).toContain('#14182B');
-    expect(selectorContent).toContain('#2B3556');
+    const selector = classTokens(render(FormatSelector, {} as never));
+    expect(missingFrom(selector, ['dark:bg-[#14182B]', 'dark:border-[#2B3556]'])).toEqual([]);
 
-    const featuresPath = path.join(rootDir, 'src', 'components', 'Features.tsx');
-    const featuresContent = fs.readFileSync(featuresPath, 'utf-8');
-    expect(featuresContent).toContain('dark:bg-[#151A2E]');
-    expect(featuresContent).toContain('dark:border-[#2B3556]');
+    const features = classTokens(render(Features, {} as never));
+    expect(missingFrom(features, ['dark:bg-[#151A2E]', 'dark:border-[#2B3556]'])).toEqual([]);
   });
 
   it('verifies Dynamic Converter Page implements dynamic breadcrumb navigation', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const page = renderSlug('pdf-to-docx');
+    const breadcrumb = select(page, 'nav', 'aria-label', 'Breadcrumb');
 
-    // Breadcrumb navigation elements
-    expect(slugContent).toContain('aria-label="Breadcrumb"');
-    expect(slugContent).toContain('categoryLabel');
-    expect(slugContent).toContain('srcKey');
-    expect(slugContent).toContain('tgtKey');
-    expect(slugContent).toContain('ChevronRight');
-    expect(slugContent).toContain('Home');
+    expect(breadcrumb).toHaveLength(1);
+    // Home > category > source format > the pair; the last item is the current page.
+    const items = allElements(breadcrumb[0]).filter((e) => e.tagName === 'li');
+    expect(items.map((li) => [visibleText(li), attrOf(li, 'aria-current')])).toEqual([
+      ['Home', null],
+      ['Document', null],
+      ['pdf Converter', null],
+      ['pdf to docx', 'page'],
+    ]);
+    // A home icon, then a chevron between each pair of items.
+    expect(select(breadcrumb[0], 'svg')).toHaveLength(4);
   });
 
   it('verifies Dynamic Converter Page implements 3-step visual conversion workflow', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const page = renderSlug('pdf-to-docx');
+    const text = visibleText(page);
 
-    // 3-step guide presence and structure
-    expect(slugContent).toContain('Step-by-Step Guide');
-    expect(slugContent).toContain('How to Convert');
-    expect(slugContent).toContain('UploadCloud');
-    expect(slugContent).toContain('Settings2');
-    expect(slugContent).toContain('Download');
-    expect(slugContent).toContain('01');
-    expect(slugContent).toContain('02');
-    expect(slugContent).toContain('03');
+    expect(phrasesMissing(text, ['Step-by-Step Guide', 'How to Convert PDF to DOCX'])).toEqual([]);
+    expect(headings(page).filter((h) => ['Upload PDF File(s)', 'Choose to DOCX', 'Download Your DOCX'].includes(h))).toEqual([
+      'Upload PDF File(s)',
+      'Choose to DOCX',
+      'Download Your DOCX',
+    ]);
+    // The step numerals appear in order before their headings.
+    expect(text.match(/\b0[123] (?:Upload PDF File\(s\)|Choose to DOCX|Download Your DOCX)/g)).toEqual([
+      '01 Upload PDF File(s)',
+      '02 Choose to DOCX',
+      '03 Download Your DOCX',
+    ]);
   });
 
   it('verifies Side-by-Side Format Specification Comparison Deck and technical dossier', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const page = renderSlug('pdf-to-docx');
+    const text = visibleText(page);
 
-    // Specification deck structure
-    expect(slugContent).toContain('Technical Specifications');
-    expect(slugContent).toContain('SOURCE FORMAT');
-    expect(slugContent).toContain('TARGET FORMAT');
-    expect(slugContent).toContain('Full Name');
-    expect(slugContent).toContain('Developer');
-    expect(slugContent).toContain('MIME Type');
-    expect(slugContent).toContain('Key Capabilities');
-    expect(slugContent).toContain('FORMAT_SPECIFICATIONS');
+    expect(phrasesMissing(text, ['Technical Specifications', 'PDF vs DOCX Specifications', 'SOURCE FORMAT'])).toEqual([]);
+    expect(headings(page).filter((h) => /—/.test(h))).toEqual(['PDF — Portable Document Format', 'DOCX — Microsoft Word Document']);
+    // Every dossier card lists the same fields for the source and the target.
+    const fieldLabels = ['Full Name', 'Developer', 'MIME Type', 'Category'];
+    for (const label of fieldLabels) {
+      expect(text.split(label).length - 1).toBeGreaterThanOrEqual(2);
+    }
+    expect(phrasesMissing(text, ['Portable Document Format', 'application/pdf', 'Adobe Systems / ISO 32000'])).toEqual([]);
   });
 
   it('verifies top leaderboard ad unit has CLS protection container', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const page = renderSlug('pdf-to-docx');
+    const leaderboard = select(page, 'aside', 'aria-label', 'Advertisement').find((aside) => /728 × 90 Leaderboard/.test(visibleText(aside)));
+    expect(leaderboard).toBeDefined();
 
-    expect(slugContent).toContain('min-h-[50px] sm:min-h-[64px]');
+    // The reserved height lives on the wrapper element around the unit, so the layout does not shift when the ad loads.
+    const wrapper = allElements(page).find(
+      (e) => (attrOf(e, 'class') ?? '').includes('min-h-[50px] sm:min-h-[64px]') && allElements(e).includes(leaderboard as DomElement)
+    );
+    expect(wrapper).toBeDefined();
+    expect(classAttr(wrapper)).toBe('w-full min-h-[50px] sm:min-h-[64px] flex items-center justify-center my-2');
   });
 
   it('verifies fake rating pills are purged and replaced with genuine client-side zero-retention guarantee', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    const page = renderSlug('pdf-to-docx');
+    const text = visibleText(page);
 
     // Fake social proof and manufactured ratings must be purged completely
-    expect(slugContent).not.toContain('4.8 / 5.0');
-    expect(slugContent).not.toContain('14,200+ user ratings');
-    expect(slugContent).not.toContain('rating-star-');
+    expect(phrasesPresent(text, ['4.8 / 5.0', '14,200+ user ratings'])).toEqual([]);
+    expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // Genuine verifiable architecture guarantees must be present
-    expect(slugContent).toContain('100% Free & Unlimited');
-    expect(slugContent).toContain('Zero Server Storage');
-    expect(slugContent).toContain('Private & Secure');
-    expect(slugContent).toContain('Client-Side WebAssembly Pipeline');
+    expect(phrasesMissing(text, ['100% Free & Unlimited', 'Zero Server Storage', 'Private & Secure', 'Client-Side WebAssembly Pipeline'])).toEqual([]);
   });
 
   it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {
-    const adBannerPath = path.join(rootDir, 'src', 'components', 'AdBanner.tsx');
-    const adBannerContent = fs.readFileSync(adBannerPath, 'utf-8');
+    const slots = [
+      ['top-leaderboard', '728 × 90 Leaderboard'],
+      ['mid-content', '728 × 90 / 970 × 90 Responsive Banner'],
+      ['in-feed', '728 × 90 In-Feed Placement'],
+      ['post-conversion', '728 × 90 Display Placement'],
+      ['sidebar', '300 × 250 Medium Rectangle'],
+    ] as const;
 
-    // Must NOT contain fake feature/sponsored cards pretending to be ads
-    expect(adBannerContent).not.toContain('High-speed edge cloud network');
-    expect(adBannerContent).not.toContain('Fast & Secure Storage Sponsor');
-    expect(adBannerContent).not.toContain('Enterprise Cloud Infrastructure');
-    expect(adBannerContent).not.toContain('100% Free Service');
-
-    // Must NOT contain wireframe slop (dashed borders, fake Ad Choices, Reserved Display Unit)
-    expect(adBannerContent).not.toContain('border-dashed');
-    expect(adBannerContent).not.toContain('Ad Choices');
-    expect(adBannerContent).not.toContain('Reserved Display Unit');
-
-    // Must contain standardized Advertisement header, solid borders, adsbygoogle script integration, and IAB dimensions
-    expect(adBannerContent).toContain('Advertisement');
-    expect(adBannerContent).toContain('adsbygoogle');
-    expect(adBannerContent).toContain('728 × 90 Leaderboard');
-    expect(adBannerContent).toContain('300 × 250 Medium Rectangle');
+    for (const [slot, dimensionLabel] of slots) {
+      const banner = render(AdBanner, { slot });
+      // Each unit is one labelled <aside> holding the standard "Advertisement" header and its IAB dimension label,
+      // and nothing else: no fake feature or sponsor cards pretending to be ads.
+      expect(select(banner, 'aside', 'aria-label', 'Advertisement')).toHaveLength(1);
+      expect(visibleText(banner)).toBe(`Advertisement ${dimensionLabel}`);
+      // Solid borders: no dashed wireframe box.
+      expect(presentIn(classTokens(banner), ['border-dashed'])).toEqual([]);
+      expect(select(banner, 'a')).toHaveLength(0);
+    }
   });
 
   it('verifies StatusDashboard purges fake uptime stats, fake incident logs, and fake modals', () => {
-    const statusPath = path.join(rootDir, 'src', 'components', 'StatusDashboard.tsx');
-    const statusContent = fs.readFileSync(statusPath, 'utf-8');
+    const dashboard = render(StatusDashboard, {} as never);
+    const text = visibleText(dashboard);
 
-    // Must NOT contain fake 99.99% claims or fake incident log
-    expect(statusContent).not.toContain('99.99%');
-    expect(statusContent).not.toContain('PAST_INCIDENTS');
-    expect(statusContent).not.toContain('WebCodecs GPU Hardware Buffer Optimization');
-    expect(statusContent).not.toContain('Subscribe to Status Updates');
-    expect(statusContent).not.toContain('uptime90d');
+    // Must NOT contain fake 99.99% claims, a made-up incident log or a subscription modal
+    expect(phrasesPresent(text, ['99.99%', 'WebCodecs GPU Hardware Buffer Optimization', 'Subscribe to Status Updates'])).toEqual([]);
+    expect(headings(dashboard).filter((h) => /incident/i.test(h))).toEqual([]);
+    expect(select(dashboard, 'dialog')).toHaveLength(0);
 
     // Must contain genuine client edge telemetry and diagnostics
-    expect(statusContent).toContain('Run Edge Diagnostics');
-    expect(statusContent).toContain('SIMD WebAssembly Core Engine');
-    expect(statusContent).toContain('WebCodecs GPU Hardware Pipeline');
-    expect(statusContent).toContain('Origin Private File System (OPFS)');
-    expect(statusContent).toContain('Ephemeral Memory Buffer Sandbox');
-    expect(statusContent).toContain('100% In-Browser Execution');
+    expect(
+      phrasesMissing(text, [
+        'Run Edge Diagnostics',
+        'SIMD WebAssembly Core Engine',
+        'WebCodecs VPU Transcoding Accelerator',
+        'Origin Private File System (OPFS)',
+        'Zero Data Retention Ephemeral Memory Sandbox',
+        '100% In-Browser Execution',
+      ])
+    ).toEqual([]);
   });
 
   it('verifies informational pages eliminate forgot-password and fake alert forms', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+    // No forgot-password page exists: the slug is an ordinary converter slug, so it renders the converter page and
+    // none of the credential-reset controls.
+    expect(parseConverterSlug('forgot-password').isInfoPage).toBe(false);
+    const forgot = renderSlug('forgot-password');
+    expect(select(forgot, 'form')).toHaveLength(0);
+    expect(select(forgot, 'input').map((i) => attrOf(i, 'type'))).toEqual(['file']);
 
-    // No forgot-password or dummy alert handlers
-    expect(slugContent).not.toContain("parsed.infoType === 'forgot-password'");
-    expect(slugContent).not.toContain("alert('Message received!");
-    expect(slugContent).not.toContain("alert('Reset link sent");
-    expect(slugContent).toContain('support@easyconvert.com');
+    // The contact page is a plain support contact: a mailto link, no form that would pretend to send a message
+    const contact = renderSlug('contact');
+    expect(links(contact).filter((l) => l.href.startsWith('mailto:')).map((l) => l.href)).toEqual([
+      'mailto:support@easyconvert.com',
+      'mailto:support@easyconvert.com?subject=Bug%20Report',
+    ]);
+    const alerts = callArguments(parseSource(sourcePath('src', 'app', '[slug]', 'page.tsx')), 'alert');
+    expect(alerts).toEqual([]);
   });
 
   it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
-    // Video to Audio pair should NOT claim to preserve typography or document formatting
-    const mp4ToMp3 = parseConverterSlug('mp4-to-mp3');
-    expect(mp4ToMp3.pageDescription).not.toContain('layouts, fonts, and data formatting');
-    expect(mp4ToMp3.pageDescription).toContain('audio');
+    // Video to Audio pair must not claim to preserve typography or document formatting
+    expect(parseConverterSlug('mp4-to-mp3').pageDescription).toBe(
+      'Convert MP4 to MP3 online and free. Extract clean, high-fidelity audio from video files directly in your browser with zero server storage.'
+    );
 
-    // Document pair should preserve layout and typography
-    const pdfToDocx = parseConverterSlug('pdf-to-docx');
-    expect(pdfToDocx.pageDescription).toContain('layouts, formatting');
+    // Document pair preserves layout and typography
+    expect(parseConverterSlug('pdf-to-docx').pageDescription).toBe(
+      'Convert PDF to DOCX online and free. High-fidelity document conversion preserving layouts, formatting, and typography with zero server storage.'
+    );
 
-    // Format converters should not falsely claim to be document converters or mention MS Office
-    const mp4Converter = parseConverterSlug('mp4-converter');
-    expect(mp4Converter.pageDescription).not.toContain('online document converter');
-    expect(mp4Converter.pageDescription).not.toContain('Microsoft Office');
-    expect(mp4Converter.pageDescription).toContain('video');
-
-    const svgConverter = parseConverterSlug('svg-converter');
-    expect(svgConverter.pageDescription).not.toContain('online document converter');
-    expect(svgConverter.pageDescription).not.toContain('Microsoft Office');
-  });
-
-  it('verifies category-aware dynamic descriptions in parseConverterSlug without AI slop', () => {
-    // Video to Audio pair should NOT claim to preserve typography or document formatting
-    const mp4ToMp3 = parseConverterSlug('mp4-to-mp3');
-    expect(mp4ToMp3.pageDescription).not.toContain('layouts, fonts, and data formatting');
-    expect(mp4ToMp3.pageDescription).toContain('audio');
-
-    // Document pair should preserve layout and typography
-    const pdfToDocx = parseConverterSlug('pdf-to-docx');
-    expect(pdfToDocx.pageDescription).toContain('layouts, formatting');
-
-    // Format converters should not falsely claim to be document converters or mention external office software
-    const mp4Converter = parseConverterSlug('mp4-converter');
-    expect(mp4Converter.pageDescription).not.toContain('online document converter');
-    expect(mp4Converter.pageDescription).not.toContain('Microsoft Office');
-    expect(mp4Converter.pageDescription).toContain('video');
-
-    const svgConverter = parseConverterSlug('svg-converter');
-    expect(svgConverter.pageDescription).not.toContain('online document converter');
-    expect(svgConverter.pageDescription).not.toContain('Microsoft Office');
-  });
-
-  it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
-    const faqPath = path.join(rootDir, 'src', 'components', 'FaqSection.tsx');
-    const faqContent = fs.readFileSync(faqPath, 'utf-8');
-
-    expect(faqContent).toContain('aria-expanded={isOpen}');
-    expect(faqContent).toContain('aria-controls={`faq-answer-${idx}`}');
-    expect(faqContent).toContain('id={`faq-answer-${idx}`}');
-    expect(faqContent).toContain('role="region"');
-  });
-
-  it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
-
-    expect(slugContent).toContain(
-      'className="flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors"'
+    // Format converters do not falsely claim to be document converters or mention external office software
+    expect(parseConverterSlug('mp4-converter').pageDescription).toBe(
+      'Convert MP4 video files online and free to MP4, WebM, AVI, and other media formats directly in your browser.'
+    );
+    expect(parseConverterSlug('svg-converter').pageDescription).toBe(
+      'Convert SVG files online and free to PNG, JPG, WebP, SVG, and other graphic formats with lossless visual quality.'
     );
   });
 
-  it('verifies Dynamic Converter Page handles category slugs and protects specification arrays', () => {
-    const slugPagePath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPagePath, 'utf-8');
+  it('verifies FaqSection accordion conforms to WCAG accessibility standards', () => {
+    const faq = render(FaqSection, {} as never);
+    const triggers = select(faq, 'button').filter((b) => attrOf(b, 'aria-controls') !== null);
 
-    expect(slugContent).toContain('isCategorySlug');
-    expect(slugContent).toContain('(meta.advantages || []).map');
-    expect(slugContent).toContain('FormatDossierCard');
-    expect(slugContent).toContain('useClientQueue');
+    // Five questions, each a button that controls its own answer region; only the open one is in the markup.
+    expect(triggers.map((b) => attrOf(b, 'aria-controls'))).toEqual([0, 1, 2, 3, 4].map((i) => `faq-answer-${i}`));
+    expect(triggers.map((b) => attrOf(b, 'aria-expanded'))).toEqual(['true', 'false', 'false', 'false', 'false']);
+    const regions = select(faq, 'div', 'role', 'region');
+    expect(regions.map((r) => attrOf(r, 'id'))).toEqual(['faq-answer-0']);
+    expect(visibleText(regions[0])).toMatch(/^Yes, EasyConvert is completely free\./);
+  });
+
+  it('verifies Dynamic Converter Page maintains clean dual-theme scaffold regardless of queue state', () => {
+    for (const slug of ['pdf-to-docx', 'terms', 'status', 'unit-converter']) {
+      const page = renderSlug(slug);
+      const root = select(page, 'body')[0].childNodes.find((n): n is DomElement => 'tagName' in n);
+      expect(classAttr(root), slug).toBe('flex flex-col min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text transition-colors');
+    }
+  });
+
+  it('verifies Dynamic Converter Page handles category slugs and protects specification arrays', () => {
+    // A category slug and a pair whose target has no specification entry both render a full page instead of failing
+    // on a missing advantages array.
+    for (const slug of ['video-converter', 'cad-converter', 'mp4-to-xyz']) {
+      const page = renderSlug(slug);
+      expect(headings(page).filter((h) => h.length > 0).length, slug).toBeGreaterThan(5);
+      expect(select(page, 'input').map((i) => attrOf(i, 'type')), slug).toEqual(['file']);
+    }
+    expect(headings(renderSlug('video-converter'))[0]).toBe('Video Converter');
+    expect(headings(renderSlug('mp4-to-xyz'))[0]).toBe('MP4 to XYZ Converter');
   });
 
   it('verifies ConversionQueue eliminates duplicate fixed bottom bar and fake cloud storage options', () => {
-    const queuePath = path.join(rootDir, 'src', 'components', 'ConversionQueue.tsx');
-    const queueContent = fs.readFileSync(queuePath, 'utf-8');
+    const queue = renderQueue();
+    const text = visibleText(queue);
 
     // Must NOT have redundant fixed bottom bar causing duplicate CTA dock
-    expect(queueContent).not.toContain('fixed bottom-0');
-    expect(queueContent).not.toContain('files ready');
+    const fixedBottom = allElements(queue).filter((e) => {
+      const tokens = (attrOf(e, 'class') ?? '').split(/\s+/);
+      return tokens.includes('fixed') && tokens.includes('bottom-0');
+    });
+    expect(fixedBottom).toEqual([]);
+    expect(phrasesPresent(text, ['files ready'])).toEqual([]);
 
     // Must NOT have fake/dummy cloud storage options
-    expect(queueContent).not.toContain('From Google Drive');
-    expect(queueContent).not.toContain('From Dropbox');
-    expect(queueContent).not.toContain('From OneDrive');
+    expect(phrasesPresent(text, ['From Google Drive', 'From Dropbox', 'From OneDrive'])).toEqual([]);
 
-    // Must have clean attached conversion dock with Add more files and Convert CTA
-    expect(queueContent).toContain('Add more files');
-    expect(queueContent).toContain('Convert');
+    // Must have the one attached conversion dock with Add more files and Convert CTA
+    expect(select(queue, 'button').map((b) => visibleText(b)).filter((label) => /Add more files|^Convert$/.test(label))).toEqual([
+      '+ Add more files',
+      'Convert',
+    ]);
   });
 
   it('verifies Hero and dynamic slug pages do not contain fake cloud storage options or claims', () => {
-    const heroPath = path.join(rootDir, 'src', 'components', 'Hero.tsx');
-    const heroContent = fs.readFileSync(heroPath, 'utf-8');
-    expect(heroContent).not.toContain('From Google Drive');
-    expect(heroContent).not.toContain('From Dropbox');
-    expect(heroContent).not.toContain('From OneDrive');
+    const hero = visibleText(render(Hero, { onFilesSelected: noop, hasActiveQueue: false }));
+    expect(phrasesPresent(hero, ['From Google Drive', 'From Dropbox', 'From OneDrive'])).toEqual([]);
 
-    const slugPath = path.join(rootDir, 'src', 'app', '[slug]', 'page.tsx');
-    const slugContent = fs.readFileSync(slugPath, 'utf-8');
-    expect(slugContent).not.toContain('import from URLs or cloud storage');
-    expect(slugContent).not.toContain('From Google Drive');
-    expect(slugContent).not.toContain('From Dropbox');
+    const slugPage = visibleText(renderSlug('pdf-to-docx'));
+    expect(phrasesPresent(slugPage, ['import from URLs or cloud storage', 'From Google Drive', 'From Dropbox'])).toEqual([]);
   });
 
   it('verifies ConversionQueue bottom dock has harmonious surface styling without stark dark navy light-mode block', () => {
-    const queuePath = path.join(rootDir, 'src', 'components', 'ConversionQueue.tsx');
-    const queueContent = fs.readFileSync(queuePath, 'utf-8');
+    const queue = renderQueue();
+    const tokens = classTokens(queue);
 
     // Must NOT have jarring dark navy background in light mode
-    expect(queueContent).not.toContain('bg-[#1F2340]');
+    expect(presentIn(tokens, ['bg-[#1F2340]'])).toEqual([]);
 
-    // Must have harmonious subtle light surface and dark mode surface
-    expect(queueContent).toContain('bg-[#F8F9FD]');
-    expect(queueContent).toContain('dark:bg-[#121629]');
+    // The dock: subtle light surface with its dark-mode surface, a rounded bottom edge and a top rule
+    const dock = allElements(queue).find((e) => (attrOf(e, 'class') ?? '').split(/\s+/).includes('bg-[#F8F9FD]'));
+    expect(classAttr(dock)).toMatch(/dark:bg-\[#121629\]/);
 
-    // Must have tactile Add more files button styling
-    expect(queueContent).toContain('border-neutral-300');
-    expect(queueContent).toContain('dark:border-[#2C3452]');
+    // Tactile "Add more files" button and legible helper text tokens
+    const addMore = select(queue, 'button').find((b) => visibleText(b) === '+ Add more files');
+    expect(missingFrom((classAttr(addMore) ?? '').split(/\s+/), ['border-neutral-300', 'dark:border-[#2C3452]'])).toEqual([]);
+    expect(missingFrom(tokens, ['text-ink-secondary', 'dark:text-neutral-300'])).toEqual([]);
 
-    // Must have high legibility text tokens
-    expect(queueContent).toContain('text-ink-secondary');
-    expect(queueContent).toContain('dark:text-neutral-300');
-    expect(queueContent).toContain('text-amber-600');
-    expect(queueContent).toContain('dark:text-amber-400');
-
-    // Must have prominent brand.700 Convert CTA styling
-    expect(queueContent).toContain('bg-brand-700 hover:bg-brand-800 active:bg-brand-900');
-
-    // Must have refined secondary brand ZIP styling
-    expect(queueContent).toContain('bg-brand-50 hover:bg-brand-100');
-    expect(queueContent).toContain('border-brand-200');
-
-    // Must have responsive layout classes preventing mobile overflow
-    expect(queueContent).toContain('flex-wrap sm:flex-nowrap');
+    // Prominent brand.700 Convert CTA and responsive layout classes preventing mobile overflow
+    const convert = select(queue, 'button').find((b) => visibleText(b) === 'Convert');
+    expect(missingFrom((classAttr(convert) ?? '').split(/\s+/), ['bg-brand-700', 'hover:bg-brand-800', 'active:bg-brand-900'])).toEqual([]);
+    expect(missingFrom(tokens, ['flex-wrap', 'sm:flex-nowrap'])).toEqual([]);
   });
 });
 
-
-
+/** One PDF, ready to be converted to DOCX. */
+function renderQueue(): DomElement {
+  const item: ConversionQueueItem = {
+    id: 'item-1',
+    file: new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' }),
+    name: 'report.pdf',
+    size: 2048,
+    sourceFormat: 'pdf',
+    targetFormat: 'docx',
+    status: 'ready',
+    progress: 0,
+    options: {},
+  };
+  return render(ConversionQueue, {
+    items: [item],
+    onRemoveItem: noop,
+    onClearAll: noop,
+    onUpdateTargetFormat: noop,
+    onUpdateOptions: noop,
+    onConvertAll: noop,
+    onConvertSingle: noop,
+    onAddMoreFiles: noop,
+    onDownloadAllZip: noop,
+    isConverting: false,
+  });
+}

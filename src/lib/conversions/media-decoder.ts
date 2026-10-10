@@ -17,8 +17,7 @@
  *    - Pure IMDCT spectral reconstruction for authentic 16-bit PCM output.
  */
 
-import { decodeAacLcFramePayload } from './media-encoder';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 
 export interface DecodedAudio {
   samples: Int16Array;
@@ -811,109 +810,19 @@ export function decodeMp3(buffer: Buffer): DecodedAudio {
 }
 
 // ============================================================================
-// 4. Advanced Audio Coding (AAC / ADTS) Decoder
+// 4. Advanced Audio Coding (AAC / ADTS): no in-process decoder
 // ============================================================================
 
-const AAC_SAMPLE_RATES = [
-  96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
-];
-
 /**
- * Decodes MPEG-2 / MPEG-4 Audio Data Transport Stream (ADTS) AAC into signed 16-bit PCM samples
+ * AAC needs FFmpeg to decode. A faithful AAC LC decoder needs window switching, overlap-add, TNS,
+ * PNS, intensity and mid/side stereo and the full ISO/IEC 14496-3 codebook set; none is implemented
+ * here, so an AAC source fails closed (HTTP 503) before any bytes are read.
  */
-export function decodeAdtsAac(buffer: Buffer): DecodedAudio {
-  if (!buffer || buffer.length < 7) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  let offset = 0;
-
-  // Strip ID3v2 metadata prefix if present
-  if (buffer.length >= 10 && buffer.toString('ascii', 0, 3) === 'ID3') {
-    const tagSize =
-      ((buffer[6] & 0x7f) << 21) |
-      ((buffer[7] & 0x7f) << 14) |
-      ((buffer[8] & 0x7f) << 7) |
-      (buffer[9] & 0x7f);
-    offset = 10 + tagSize;
-    if (buffer[5] & 0x10) offset += 10;
-  }
-
-  let sampleRate = 44100;
-  let channels = 2;
-  const outSamples: number[] = [];
-  let frameCount = 0;
-
-  while (offset + 7 <= buffer.length) {
-    // Scan for ADTS syncword (12 bits: 0xFFF)
-    if (buffer[offset] !== 0xff || (buffer[offset + 1] & 0xf0) !== 0xf0) {
-      offset++;
-      continue;
-    }
-
-    const layer = (buffer[offset + 1] >> 1) & 3;
-    if (layer !== 0) {
-      offset++;
-      continue;
-    }
-
-    const protectionAbsent = buffer[offset + 1] & 1;
-    const srIdx = (buffer[offset + 2] >> 2) & 0x0f;
-    if (srIdx >= AAC_SAMPLE_RATES.length) {
-      offset++;
-      continue;
-    }
-    sampleRate = AAC_SAMPLE_RATES[srIdx];
-
-    const chConfig = ((buffer[offset + 2] & 1) << 2) | (buffer[offset + 3] >> 6);
-    channels = chConfig === 1 ? 1 : 2;
-
-    const frameLength =
-      ((buffer[offset + 3] & 3) << 11) |
-      (buffer[offset + 4] << 3) |
-      (buffer[offset + 5] >> 5);
-
-    if (frameLength < 7) {
-      offset++;
-      continue;
-    }
-
-    if (offset + frameLength > buffer.length) {
-      if (frameCount === 0) {
-        offset++;
-        continue;
-      }
-      break;
-    }
-
-    const headerSize = protectionAbsent === 1 ? 7 : 9;
-    const payloadOffset = offset + headerSize;
-    const payloadLength = frameLength - headerSize;
-
-    if (payloadLength > 0) {
-      // 1. Try decoding authentic ISO/IEC 13818-7 / 14496-3 AAC LC raw_data_block
-      const payloadBuf = buffer.subarray(payloadOffset, payloadOffset + payloadLength);
-      const aacDecoded = decodeAacLcFramePayload(payloadBuf, channels);
-      if (aacDecoded) {
-        for (let s = 0; s < aacDecoded.length; s++) {
-          outSamples.push(aacDecoded[s]);
-        }
-      } else {
-        throw new Error('Failed to decode AAC frame payload: bitstream is corrupted or unsupported');
-      }
-    }
-
-    frameCount++;
-    offset += frameLength;
-  }
-
-  if (frameCount === 0 || outSamples.length === 0) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  const samples = new Int16Array(outSamples);
-  const duration = samples.length / (channels * sampleRate);
-  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
+function refuseAacWithoutFfmpeg(): never {
+  throw new EngineUnavailableError(
+    'ffmpeg',
+    'Native FFmpeg engine is required to decode AAC audio; there is no in-process AAC decoder (Fail-Closed).'
+  );
 }
 
 // ============================================================================
@@ -1050,7 +959,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
 
   // Explicit hint priority when container magic is ambiguous or wrapped
   if (hint === 'aac' || hint === 'adts' || hint === 'm4a') {
-    return decodeAdtsAac(buffer);
+    return refuseAacWithoutFfmpeg();
   }
   if (hint === 'ogg' || hint === 'oga' || hint === 'opus' || hint === 'vorbis') {
     return decodeOgg(buffer);
@@ -1093,7 +1002,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     buffer[0] === 0xff &&
     (buffer[1] & 0xf6) === 0xf0
   ) {
-    return decodeAdtsAac(buffer);
+    return refuseAacWithoutFfmpeg();
   }
 
   // 5. MP3 (sync word 0xFFE0..0xFFFF, layer != 00)
@@ -1122,7 +1031,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
         buffer[postId3] === 0xff &&
         (buffer[postId3 + 1] & 0xf6) === 0xf0
       ) {
-        return decodeAdtsAac(buffer);
+        return refuseAacWithoutFfmpeg();
       }
       if (
         buffer.length - postId3 >= 4 &&

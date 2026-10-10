@@ -9,13 +9,18 @@ import {
   PdfAOptions,
   PdfAConversionResult,
   PdfPostprocessError,
+  PdfAValidationError,
   EngineUnavailableError,
 } from '../../types';
 import {
   resolveSandboxedCommand,
+  rethrowSandboxUnavailable,
   getSanitizedEnvironment,
+  executeSandboxedBinary,
+  SandboxedProcessError,
 } from '../../security/process-sandbox';
 import { resolveBinaryPath } from './utils';
+import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 
 /**
  * Locate LibreOffice binary on the host or in container.
@@ -44,56 +49,207 @@ export function getVerapdfBinaryPath(): string | null {
 
 /** PDF/A part number written to XMP `pdfaid:part` for each supported conformance level. */
 const PDFA_PART: Record<PdfAConformance, string> = { 'pdfa-1b': '1', 'pdfa-2b': '2', 'pdfa-3b': '3' };
+/** veraPDF validation profile (`--flavour`) for each supported conformance level. */
+const VERAPDF_FLAVOUR: Record<PdfAConformance, string> = { 'pdfa-1b': '1b', 'pdfa-2b': '2b', 'pdfa-3b': '3b' };
 const SOFFICE_TIMEOUT_MS = 60_000;
 const VERAPDF_TIMEOUT_MS = 60_000;
+/** Upper bound for veraPDF's JSON report on stdout. */
+const VERAPDF_MAX_REPORT_BYTES = 16 * 1024 * 1024;
+/** The report lists rules, so one displayed failed check per rule is enough and keeps it small. */
+const VERAPDF_MAX_FAILURES_DISPLAYED = '1';
+/** Most rule IDs one validation error carries; a profile defines far fewer rules than this. */
+const MAX_FAILED_RULES_REPORTED = 200;
+/** Engine name of the EngineUnavailableError raised when veraPDF is missing or cannot run. */
+export const VERAPDF_ENGINE_NAME = 'verapdf';
+/** Detail of the 422 for a document the validator could not process; it never carries paths or commands. */
+const VALIDATOR_UNPROCESSABLE_MESSAGE = 'The PDF/A validator could not process the document.';
+const PDF_UNREADABLE_MESSAGE = 'The PDF/A output could not be read as a PDF document.';
+
+export interface VerapdfVerdict {
+  compliant: boolean;
+  /** Failed rule IDs as `<clause>-<test number>`, in report order, without duplicates. */
+  failedRules: string[];
+}
 
 /**
- * Reads compliance from a veraPDF JSON report. Supports the array form
+ * Reads the verdict and the failed rules from a veraPDF JSON report. Supports the array form
  * (`validationResult: [{ compliant }]`) and the object form (`validationResult: { isCompliant }`).
  * Throws when the report has no validation result, so an unknown format is never read as a pass.
  */
-export function parseVerapdfReport(json: string): boolean {
+export function parseVerapdfVerdict(json: string): VerapdfVerdict {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch {
-    throw new PdfPostprocessError('veraPDF did not return a JSON report.');
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
   const jobs = (parsed as { report?: { jobs?: unknown[] } })?.report?.jobs;
   const results = Array.isArray(jobs) ? jobs.map((job) => (job as { validationResult?: unknown }).validationResult) : [];
   const verdicts: boolean[] = [];
+  const failedRules = new Set<string>();
   for (const result of results) {
     for (const entry of Array.isArray(result) ? result : [result]) {
-      const record = (entry ?? {}) as { compliant?: unknown; isCompliant?: unknown };
+      const record = (entry ?? {}) as {
+        compliant?: unknown;
+        isCompliant?: unknown;
+        details?: { ruleSummaries?: unknown };
+      };
       const verdict = typeof record.compliant === 'boolean' ? record.compliant : record.isCompliant;
       if (typeof verdict === 'boolean') {
         verdicts.push(verdict);
       }
+      const summaries = Array.isArray(record.details?.ruleSummaries) ? record.details.ruleSummaries : [];
+      for (const summary of summaries) {
+        const rule = (summary ?? {}) as { clause?: unknown; testNumber?: unknown; status?: unknown };
+        const failed = typeof rule.status === 'string' && rule.status.toLowerCase() === 'failed';
+        if (failed && typeof rule.clause === 'string' && typeof rule.testNumber === 'number') {
+          failedRules.add(`${rule.clause}-${rule.testNumber}`);
+        }
+        if (failedRules.size >= MAX_FAILED_RULES_REPORTED) break;
+      }
     }
   }
   if (verdicts.length === 0) {
-    throw new PdfPostprocessError('veraPDF report contains no validation result.');
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
   }
-  return verdicts.every(Boolean);
+  return { compliant: verdicts.every(Boolean), failedRules: [...failedRules] };
 }
 
 /** `pdfaid:part` and `pdfaid:conformance` from the document's XMP metadata, if present. */
 async function readPdfAIdentification(pdf: Buffer): Promise<{ part?: string; conformance?: string }> {
-  const doc = await PDFDocument.load(pdf, { updateMetadata: false });
-  const metadata = doc.catalog.lookup(PDFName.of('Metadata'));
-  if (!(metadata instanceof PDFRawStream)) {
-    return {};
+  try {
+    const doc = await PDFDocument.load(pdf, { updateMetadata: false });
+    const metadata = doc.catalog.lookup(PDFName.of('Metadata'));
+    if (!(metadata instanceof PDFRawStream)) {
+      return {};
+    }
+    const xmp = Buffer.from(decodePDFRawStream(metadata).decode()).toString('utf-8');
+    const field = (name: string) =>
+      xmp.match(new RegExp(`pdfaid:${name}\\s*(?:=\\s*["']([^"']+)["']|>\\s*([^<\\s]+)\\s*<)`))?.slice(1).find(Boolean);
+    return { part: field('part'), conformance: field('conformance') };
+  } catch {
+    // The parser's own message can quote offsets and object contents of an untrusted file.
+    throw new PdfPostprocessError(PDF_UNREADABLE_MESSAGE);
   }
-  const xmp = Buffer.from(decodePDFRawStream(metadata).decode()).toString('utf-8');
-  const field = (name: string) =>
-    xmp.match(new RegExp(`pdfaid:${name}\\s*(?:=\\s*["']([^"']+)["']|>\\s*([^<\\s]+)\\s*<)`))?.slice(1).find(Boolean);
-  return { part: field('part'), conformance: field('conformance') };
+}
+
+/** The veraPDF binary, or an EngineUnavailableError (HTTP 503): an unvalidated PDF/A is never returned. */
+export function requireVerapdf(): string {
+  const verapdf = getVerapdfBinaryPath();
+  if (!verapdf) {
+    throw new EngineUnavailableError(
+      VERAPDF_ENGINE_NAME,
+      'veraPDF is required to validate PDF/A output but is not installed or not in PATH'
+    );
+  }
+  return verapdf;
+}
+
+/** Exit statuses a shell and `unshare` use for a command that is not executable or not found. */
+const SHELL_NOT_EXECUTABLE_STATUS = 126;
+const SHELL_NOT_FOUND_STATUS = 127;
+const SPAWN_FAILURE_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'ENOEXEC']);
+
+/** Whether the validator could not be started at all (a server problem, not the document's). */
+function isStartFailure(err: unknown): boolean {
+  if (err instanceof SandboxedProcessError) {
+    const notStarted = err.exitCode === SHELL_NOT_EXECUTABLE_STATUS || err.exitCode === SHELL_NOT_FOUND_STATUS;
+    return notStarted && err.signal === null && err.stdout === '';
+  }
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && SPAWN_FAILURE_CODES.has(code);
+}
+
+/** Environment of the validator: sanitized, with the Java runtime location when the host sets one. */
+function verapdfEnvironment(): Record<string, string> {
+  return process.env.JAVA_HOME ? { JAVA_HOME: process.env.JAVA_HOME } : {};
 }
 
 /**
- * Converts a PDF to PDF/A-1b, 2b, or 3b with LibreOffice. The result must be a new file whose XMP
- * identifies the requested part; when veraPDF is installed it must also report compliance.
- * `pdfaValidated` is true only when veraPDF validated the output.
+ * Runs veraPDF with an explicit flavour, in the same sandbox as the other native engines, and
+ * returns its JSON report. veraPDF exits non-zero for a non-compliant file but still prints the
+ * report, so a failed run that printed one is not an error.
+ *
+ * A validator that cannot be started is an EngineUnavailableError (503). A run that times out,
+ * crashes or prints nothing is a PdfPostprocessError (422): the document, not the deployment,
+ * is the likely cause. Detail is logged on the server and never returned.
+ */
+async function runVerapdf(
+  verapdf: string,
+  file: string,
+  conformance: PdfAConformance,
+  timeoutMs: number
+): Promise<string> {
+  const args = [
+    '--flavour',
+    VERAPDF_FLAVOUR[conformance],
+    '--format',
+    'json',
+    '--maxfailuresdisplayed',
+    VERAPDF_MAX_FAILURES_DISPLAYED,
+    file,
+  ];
+  try {
+    const result = await executeSandboxedBinary(verapdf, args, {
+      timeoutMs,
+      maxBuffer: VERAPDF_MAX_REPORT_BYTES,
+      cwd: path.dirname(file),
+      env: verapdfEnvironment(),
+      networkIsolated: true,
+    });
+    return result.stdout.toString('utf-8');
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    if (err instanceof SandboxedProcessError && err.stdout) return err.stdout;
+    console.error('[pdfa] veraPDF failed without a report:', err instanceof Error ? err.message : err);
+    if (isStartFailure(err)) {
+      throw new EngineUnavailableError(VERAPDF_ENGINE_NAME, 'veraPDF could not be started');
+    }
+    throw new PdfPostprocessError(VALIDATOR_UNPROCESSABLE_MESSAGE);
+  }
+}
+
+/**
+ * Checks that a PDF identifies itself as the requested PDF/A level and that veraPDF validates it
+ * against that level's flavour. Without veraPDF the request fails with an EngineUnavailableError,
+ * and a file that fails validation with a PdfAValidationError that lists the failed rule IDs.
+ * Used for the Draw round trip and for Office exports that LibreOffice wrote as PDF/A directly.
+ */
+export async function verifyPdfA(
+  pdf: Buffer,
+  conformance: PdfAConformance,
+  limits: { timeoutMs?: number } = {}
+): Promise<{ pdfaValidated: true; conformanceLevel: PdfAConformance }> {
+  const part = PDFA_PART[conformance];
+  if (!part) {
+    throw new PdfPostprocessError(`Unsupported PDF/A conformance level: ${conformance}`);
+  }
+  const verapdf = requireVerapdf();
+  const id = await readPdfAIdentification(pdf);
+  if (id.part !== part || (id.conformance ?? '').toUpperCase() !== 'B') {
+    throw new PdfPostprocessError(
+      `PDF/A conversion failed: PDF/A identification is part "${id.part ?? 'none'}" conformance "${id.conformance ?? 'none'}", expected ${part}B.`
+    );
+  }
+
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert_verapdf_'));
+  try {
+    const candidate = path.join(workDir, 'candidate.pdf');
+    fs.writeFileSync(candidate, pdf);
+    const verdict = parseVerapdfVerdict(await runVerapdf(verapdf, candidate, conformance, limits.timeoutMs ?? VERAPDF_TIMEOUT_MS));
+    if (!verdict.compliant) {
+      throw new PdfAValidationError(conformance, verdict.failedRules);
+    }
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+  return { pdfaValidated: true, conformanceLevel: conformance };
+}
+
+/**
+ * Converts a PDF to PDF/A-1b, 2b, or 3b with LibreOffice (a lossy Draw round trip, for PDF inputs).
+ * The result must be a new file whose XMP identifies the requested part and that veraPDF validates
+ * against the requested flavour; see verifyPdfA for the errors.
  */
 export async function convertToPdfA(
   pdfBuffer: Buffer,
@@ -108,11 +264,13 @@ export async function convertToPdfA(
     throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
   }
 
-  const conformance = options.conformance ?? 'pdfa-1b';
+  const conformance = options.conformance ?? DEFAULT_PDFA_CONFORMANCE;
   const part = PDFA_PART[conformance];
   if (!part) {
     throw new PdfPostprocessError(`Unsupported PDF/A conformance level: ${conformance}`);
   }
+  // Fail before converting: a result veraPDF cannot validate is never returned.
+  requireVerapdf();
 
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(os.tmpdir(), `easyconvert_pdfa_${Date.now()}_${token}`);
@@ -126,10 +284,24 @@ export async function convertToPdfA(
     fs.writeFileSync(inputPdf, pdfBuffer);
 
     // LibreOffice opens a PDF in Draw, so the Draw PDF export filter applies.
-    const filterDef = `pdf:draw_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"${part}"}}`;
+    // The default image settings keep JPEG streams byte for byte, as in the Office export.
+    const filterDef = `pdf:draw_pdf_Export:${JSON.stringify(buildPdfExportFilterData({ pdfa: { conformance } }))}`;
+    // A private profile per job: concurrent jobs must not share (or lock) the default profile.
+    const profileDir = path.join(workDir, 'profile');
     const resolved = resolveSandboxedCommand(
       soffice,
-      ['--headless', '--convert-to', filterDef, '--outdir', outDir, inputPdf],
+      [
+        '--headless',
+        '--norestore',
+        '--nofirststartwizard',
+        '--nologo',
+        `-env:UserInstallation=file://${profileDir}`,
+        '--convert-to',
+        filterDef,
+        '--outdir',
+        outDir,
+        inputPdf,
+      ],
       { networkIsolated: true }
     );
 
@@ -140,8 +312,9 @@ export async function convertToPdfA(
         timeout: SOFFICE_TIMEOUT_MS,
       });
     } catch (err: any) {
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '');
-      throw new PdfPostprocessError(`PDF/A conversion via LibreOffice failed: ${errMsg}`);
+      // The command line and stderr hold sandbox paths: log them here, keep them out of the response.
+      console.error('[pdfa] LibreOffice PDF/A conversion failed:', (err?.message || '') + (err?.stderr?.toString() || ''));
+      throw new PdfPostprocessError('PDF/A conversion failed: LibreOffice could not convert the document.');
     }
 
     if (!fs.existsSync(outputPdf)) {
@@ -152,28 +325,7 @@ export async function convertToPdfA(
       throw new PdfPostprocessError('PDF/A conversion failed: the document was not converted.');
     }
 
-    const id = await readPdfAIdentification(resultBuffer);
-    if (id.part !== part || (id.conformance ?? '').toUpperCase() !== 'B') {
-      throw new PdfPostprocessError(
-        `PDF/A conversion failed: PDF/A identification is part "${id.part ?? 'none'}" conformance "${id.conformance ?? 'none'}", expected ${part}B.`
-      );
-    }
-
-    let pdfaValidated = false;
-    const verapdf = getVerapdfBinaryPath();
-    if (verapdf) {
-      let report: string;
-      try {
-        report = execFileSync(verapdf, ['--format', 'json', outputPdf], { timeout: VERAPDF_TIMEOUT_MS }).toString('utf-8');
-      } catch (err: any) {
-        // veraPDF exits non-zero for non-compliant files but still prints the report.
-        report = err?.stdout?.toString('utf-8') ?? '';
-      }
-      if (!parseVerapdfReport(report)) {
-        throw new PdfPostprocessError(`PDF/A conversion failed: the output is not PDF/A compliant (${conformance}).`);
-      }
-      pdfaValidated = true;
-    }
+    const { pdfaValidated } = await verifyPdfA(resultBuffer, conformance);
 
     return {
       buffer: resultBuffer,

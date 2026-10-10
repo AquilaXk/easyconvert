@@ -211,6 +211,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 `;
 
+/** The `mode` values of the Uniforms struct in COLOR_TRANSFORM_WGSL. */
+const COLOR_TRANSFORM_MODE_CODES: Record<WebGpuColorTransformOptions['mode'], number> = {
+  grayscale: 0,
+  invert: 1,
+  brightness: 2,
+  sepia: 3,
+};
+
 let cachedDevice: any = null;
 
 /**
@@ -274,14 +282,7 @@ export async function executeWebGpuCompute(
 
     if (task.type === 'color-transform') {
       shaderCode = COLOR_TRANSFORM_WGSL;
-      const modeInt =
-        task.options.mode === 'grayscale'
-          ? 0
-          : task.options.mode === 'invert'
-          ? 1
-          : task.options.mode === 'brightness'
-          ? 2
-          : 3; // sepia
+      const modeInt = COLOR_TRANSFORM_MODE_CODES[task.options.mode];
       const paramVal = task.options.param ?? (task.options.mode === 'brightness' ? 25.0 : 1.0);
 
       const uBuf = new ArrayBuffer(16);

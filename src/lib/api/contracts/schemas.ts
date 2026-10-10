@@ -1,6 +1,14 @@
 import { GRAPH_OPERATIONS } from '@/lib/jobs/graph-operations';
+import { MAX_OUTPUT_DIMENSION } from '@/lib/conversions/image-limits';
+import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/lib/conversions/archive-compression-level';
+import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 
+import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
+import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
+
+/** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
+const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
 
 export const PdfWatermarkOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdf-watermark-options.json',
@@ -9,7 +17,11 @@ export const PdfWatermarkOptionsSchema = {
     type: { type: 'string', enum: ['text', 'image'] },
     text: { type: 'string', description: 'Watermark text.' },
     fontSize: { type: 'number', minimum: 6, maximum: 200, description: 'Font size in points.' },
-    fontColor: { type: 'string', description: 'Hex or RGB color string.' },
+    fontColor: {
+      type: 'string',
+      pattern: '^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\\(\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*,\\s*[0-9]{1,3}\\s*\\))$',
+      description: 'Text colour as `#rgb`, `#rrggbb` or `rgb(r,g,b)`. Any other value is a 400.',
+    },
     fontFamily: { type: 'string', description: 'Font family name.' },
     image: { type: 'string', description: 'Base64 image data or URI.' },
     imageType: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format type.' },
@@ -60,7 +72,7 @@ export const PdfAOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdfa-options.json',
   type: 'object',
   properties: {
-    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level.' },
+    conformance: { type: 'string', enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'], description: 'PDF/A conformance level. Defaults to pdfa-2b.' },
     recalculate: { type: 'boolean', description: 'Trigger recalculation during conversion.' },
   },
 } as const;
@@ -74,16 +86,19 @@ export const ConversionOptionsSchema = {
       type: 'integer',
       minimum: 1,
       maximum: 100,
-      description: 'Image/lossy output quality factor (1-100).',
+      description:
+        'Image/lossy output quality factor (1-100). When omitted each codec uses its own default: JPEG 85, WebP 80, AVIF 60.',
     },
     width: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image width in pixels.',
     },
     height: {
       type: 'integer',
       minimum: 1,
+      maximum: MAX_OUTPUT_DIMENSION,
       description: 'Target image height in pixels.',
     },
     dimensions: {
@@ -96,15 +111,32 @@ export const ConversionOptionsSchema = {
       enum: ['cover', 'contain', 'fill', 'inside', 'outside'],
       description: 'Image resize fit strategy.',
     },
+    kernel: {
+      type: 'string',
+      enum: ['lanczos3', 'lanczos2', 'mitchell', 'cubic', 'nearest', 'mks2021'],
+      description:
+        'Resampling kernel of a resize. Defaults to lanczos3. A downscale to half the size or less resamples in linear light with premultiplied alpha, whatever the kernel.',
+    },
     stripMetadata: {
       type: 'boolean',
       description: 'Remove EXIF, XMP, and color profile metadata.',
+    },
+    background: {
+      type: 'string',
+      pattern: '^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$',
+      description:
+        'Background colour as #rgb or #rrggbb. Fills transparency for outputs without alpha (JPEG, BMP, EPS/PS, EXR, Ultra HDR) and the bars of fit "contain"; defaults to white for outputs without alpha.',
     },
     dpi: {
       type: 'integer',
       minimum: 72,
       maximum: 600,
       description: 'Dots per inch resolution (72-600).',
+    },
+    layout: {
+      type: 'boolean',
+      description:
+        'PDF to TXT: keep the physical page layout so table rows stay on one line. Defaults to false, which reads text in reading order (column after column).',
     },
     colorDepth: {
       type: 'integer',
@@ -194,6 +226,19 @@ export const ConversionOptionsSchema = {
       description: 'Embed ISO 21496-1 HDR gain map metadata.',
     },
 
+    tiffCompression: {
+      type: 'string',
+      enum: ['deflate', 'lzw', 'none', 'jpeg'],
+      description:
+        'TIFF output compression. Defaults to deflate with a horizontal predictor (lossless); jpeg is lossy and used only when requested, and quality does not select it.',
+    },
+    toneMap: {
+      type: 'string',
+      enum: ['none', 'clip', 'bt2390'],
+      description:
+        'HDR to SDR rendering of OpenEXR, PQ or HLG tagged pictures and HDR video. bt2390 (default) compresses highlights with the ITU-R BT.2390 EETF toward a 100 cd/m2 display; clip cuts everything above SDR white; none keeps HDR and is accepted only for targets that hold it (AVIF, PNG, EXR, Ultra HDR).',
+    },
+
     // CAD & NURBS options
     uSamples: {
       type: 'integer',
@@ -225,7 +270,8 @@ export const ConversionOptionsSchema = {
     page: {
       type: 'integer',
       minimum: 1,
-      description: 'Single target page index for rasterization (1-indexed).',
+      description:
+        'Single target page or frame index (1-indexed): the PDF page to rasterize, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output.',
     },
     pages: {
       type: 'string',
@@ -255,19 +301,41 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Maintain table structures during text or markup extraction.',
     },
+    language: {
+      type: 'string',
+      minLength: 2,
+      maxLength: 16,
+      pattern: '^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$',
+      description:
+        'BCP 47 language of the document content (`en`, `ko`, `zh-Hant`), written to the language metadata of EPUB output. Left out, the language of the source is used, or recognised from the text when the script or common words make it clear; otherwise it is recorded as undetermined (`und`). A value that is not a language tag is a 400.',
+    },
     ocrEnabled: {
       type: 'boolean',
       description: 'Enable optical character recognition for raster inputs.',
     },
     ocrLanguage: {
       type: 'string',
-      enum: ['auto', 'en', 'ko'],
-      description: 'Target OCR language model.',
+      minLength: 1,
+      maxLength: 128,
+      pattern: OCR_LANGUAGE_PATTERN,
+      description:
+        `OCR language: \`auto\` (English), or a language by traineddata name, ISO 639-1 code or BCP 47 tag (\`kor\`, \`ko\`, \`zh-Hans\`, \`sr-Latn\`). Join up to ${OCR_MAX_LANGUAGES_PER_REQUEST} with \`+\` (\`eng+kor\`). An unknown code or too many languages is a 400; a known language whose data is not installed is a 503. GET /api/v1/ocr/languages lists the languages and which are installed.`,
     },
     ocrMode: {
       type: 'string',
       enum: ['skip_text', 'skip-text', 'force', 'redo'],
       description: 'OCR multi-page processing strategy: skip digital text pages or force full OCR.',
+    },
+    ocrDetectOrientation: {
+      type: 'boolean',
+      description:
+        'Detect the page orientation and script of scans that read badly, and read them again turned upright. Omit it to detect when the OCR orientation data is installed; true requires it and fails with 503 when it is missing; false never detects.',
+    },
+    ocrEngineMarkup: {
+      type: 'string',
+      enum: ['hocr', 'alto'],
+      description:
+        'Debug and verification only: also return the OCR engine\'s own hOCR or ALTO of each recognized PDF page in the result metadata, next to the product export. Needs the tesseract command line (503 when missing).',
     },
     ocrDensityThreshold: {
       type: 'number',
@@ -347,8 +415,8 @@ export const ConversionOptionsSchema = {
     // Archive options
     compressionLevel: {
       type: 'integer',
-      minimum: 0,
-      maximum: 9,
+      minimum: ARCHIVE_COMPRESSION_LEVEL_MIN,
+      maximum: ARCHIVE_COMPRESSION_LEVEL_MAX,
       description: 'Archive compression level (0-9).',
     },
     archiveCoder: {
@@ -386,6 +454,12 @@ export const ConversionOptionsSchema = {
       type: 'array',
       items: { type: 'string' },
       description: 'Glob patterns for selective extraction from archives.',
+    },
+    skipLinks: {
+      type: 'boolean',
+      default: false,
+      description:
+        'Extract archives that contain symbolic or hard links by leaving those entries out. By default such archives are rejected. The skipped entry names are reported in the result as skippedLinks.',
     },
     repair: {
       type: 'boolean',
@@ -451,6 +525,34 @@ export const ConversionOptionsSchema = {
           enum: ['itu-r-bs775'],
           description: 'ITU-R BS.775 surround-to-stereo downmixing matrix.',
         },
+        loudness: {
+          type: 'object',
+          description:
+            'Opt-in EBU R128 / ITU-R BS.1770-4 loudness normalisation in two passes: a measuring pass, then a linear gain. Needs a single audio track. Without values it normalises to -23 LUFS with a -1 dBTP ceiling.',
+          properties: {
+            preset: {
+              type: 'string',
+              enum: ['ebu-r128', 'streaming', 'podcast'],
+              default: 'ebu-r128',
+              description: 'Starting target: ebu-r128 = -23 LUFS / -1 dBTP / 7 LU, streaming = -14 LUFS / -1 dBTP / 11 LU, podcast = -16 LUFS / -1.5 dBTP / 11 LU.',
+            },
+            integrated: { type: 'number', minimum: -70, maximum: -5, description: 'Integrated loudness target in LUFS.' },
+            truePeak: { type: 'number', minimum: -9, maximum: 0, description: 'True-peak ceiling in dBTP.' },
+            lra: { type: 'number', minimum: 1, maximum: 50, description: 'Loudness range target in LU.' },
+          },
+          additionalProperties: false,
+        },
+        resampler: {
+          type: 'string',
+          enum: ['soxr', 'swr'],
+          description:
+            'Resampler for sample-rate changes. Unset uses soxr (precision 28) when the ffmpeg build has it and the default swresample otherwise, reported in the result metadata; an explicit soxr on a build without it answers 503.',
+        },
+        dither: {
+          type: 'string',
+          enum: ['none', 'rectangular', 'triangular', 'triangular_hp'],
+          description: 'Dither for the reduction to 16-bit PCM output. Defaults to triangular_hp (high-pass shaped TPDF). Other codecs reject it.',
+        },
         track: {
           oneOf: [
             { type: 'integer', minimum: 0 },
@@ -487,6 +589,11 @@ export const ConversionOptionsSchema = {
               properties: {
                 mode: { const: 'crf' },
                 crf: { type: 'number', minimum: 0, maximum: 63 },
+                maxBitrateK: {
+                  type: 'number',
+                  minimum: 1,
+                  description: 'Optional peak-bitrate cap in kbit/s (capped CRF): -maxrate with a buffer of twice that. Unset leaves the rate to quality alone.',
+                },
               },
             },
             {
@@ -497,7 +604,11 @@ export const ConversionOptionsSchema = {
                 bitrateK: { type: 'number', minimum: 1 },
                 maxrateK: { type: 'number', minimum: 1 },
                 bufsizeK: { type: 'number', minimum: 1 },
-                twoPass: { type: 'boolean' },
+                twoPass: {
+                  type: 'boolean',
+                  description:
+                    'Encode in two passes (h264, hevc, vp9; software encoders) so the video bitrate lands closer to bitrateK. Costs about twice the encode time and counts both passes against the job timeout. Other codecs answer 400.',
+                },
               },
             },
             {
@@ -513,7 +624,8 @@ export const ConversionOptionsSchema = {
         },
         preset: {
           type: 'string',
-          description: 'Encoding speed-to-compression ratio preset.',
+          description:
+            'Encoding speed-to-compression preset. h264 and hevc: ultrafast, superfast, veryfast, faster, fast, medium (default), slow, slower or veryslow. av1: an integer from 0 (slowest) to 13, default 8. Other values answer an error.',
         },
         fps: {
           type: 'number',
@@ -539,7 +651,8 @@ export const ConversionOptionsSchema = {
         },
         deinterlace: {
           type: 'boolean',
-          description: 'Apply yadif deinterlacing filter.',
+          description:
+            'Deinterlace interlaced frames with bwdif in send_field mode: one progressive frame per field, so the output frame rate is twice the field-pair rate of the source.',
         },
         scale: {
           type: 'object',
@@ -629,8 +742,17 @@ export const ConversionOptionsSchema = {
           default: 4,
           description: 'Segment duration target in seconds (2..10).',
         },
+        segmentType: {
+          type: 'string',
+          enum: ['ts', 'fmp4'],
+          default: 'ts',
+          description:
+            'HLS segment container: MPEG-2 transport stream (ts) or fragmented MP4 / CMAF (fmp4, ISO/IEC 23000-19, with an EXT-X-MAP init section). MPEG-DASH always uses fmp4.',
+        },
         ladder: {
           type: 'array',
+          minItems: 1,
+          maxItems: 10,
           items: {
             type: 'object',
             required: ['height', 'bitrateK'],
@@ -641,7 +763,8 @@ export const ConversionOptionsSchema = {
               audioBitrateK: { type: 'integer', minimum: 16, maximum: 1024, description: 'Audio bitrate target in kbps.' },
             },
           },
-          description: 'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted.',
+          description:
+            'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted. Rungs taller than the source are dropped, a rung never asks for more bitrate than the source carries, and each rung peaks at 1.07x its bitrate.',
         },
         masterPlaylistName: {
           type: 'string',
@@ -681,9 +804,10 @@ export const ConversionOptionsSchema = {
     },
     duration: {
       type: 'number',
-      minimum: 0,
-      description: 'Maximum duration in seconds to transcode (planned).',
-      'x-easyconvert-status': 'planned',
+      exclusiveMinimum: 0,
+      maximum: 86400,
+      description:
+        'Longest output in seconds, applied as an output-side limit (-t). Must be more than 0 and not longer than the input; a longer value answers 400.',
     },
     useFfmpeg: {
       type: 'boolean',
@@ -691,14 +815,24 @@ export const ConversionOptionsSchema = {
     },
     fastStart: {
       type: 'boolean',
-      description: 'Relocate moov atom to beginning of MP4 container for web streaming (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Place the moov atom before the media data of mp4, mov and m4a output for progressive playback. Defaults to true for those containers; false leaves it at the end. true for any other container answers 400.',
     },
     aspectRatio: {
-      type: 'string',
-      pattern: '^\\d+:\\d+$',
-      description: 'Video aspect ratio (e.g. 16:9, 4:3) (planned).',
-      'x-easyconvert-status': 'planned',
+      description:
+        'Display aspect ratio. A "W:H" string sets the display ratio without touching the pixels (setdar). The object form adds a mode: "pad" adds black bars and "crop" removes picture, both reshaping the frame to the ratio with even sizes. Terms are whole numbers up to 10000 and the ratio at most 10:1; anything else answers 400.',
+      oneOf: [
+        { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+        {
+          type: 'object',
+          required: ['ratio'],
+          properties: {
+            ratio: { type: 'string', pattern: '^[0-9]{1,5}:[0-9]{1,5}$' },
+            mode: { type: 'string', enum: ['dar', 'pad', 'crop'], default: 'dar' },
+          },
+          additionalProperties: false,
+        },
+      ],
     },
     disableHwaccel: {
       type: 'boolean',
@@ -708,16 +842,12 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Bypass native system engine binaries.',
     },
-    allowPureLossyBitstream: {
-      type: 'boolean',
-      description: 'Permit pure software fallback when bitstream transcoding.',
-    },
 
     // Office & PDF export options
     pdfStandard: {
       type: 'string',
       enum: ['pdfa', 'pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
-      description: 'PDF archival standard conformance level.',
+      description: "PDF archival standard conformance level. The bare value 'pdfa' means pdfa-2b.",
     },
     pdfVersion: {
       type: 'string',
@@ -730,6 +860,20 @@ export const ConversionOptionsSchema = {
     losslessImageCompression: {
       type: 'boolean',
       description: 'Preserve lossless pixel compression during document export.',
+    },
+    imageDpi: {
+      type: 'integer',
+      minimum: 72,
+      maximum: 1200,
+      description:
+        'Office to PDF: downsample embedded images to this resolution (72-1200). Defaults to keeping images at their source resolution.',
+    },
+    jpegQuality: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description:
+        'Office to PDF: re-encode embedded JPEG images at this quality (1-100). Defaults to keeping the source JPEG stream byte for byte.',
     },
     watermark: {
       type: 'object',
@@ -982,6 +1126,71 @@ export const ProblemDetailsSchema = {
   },
 } as const;
 
+/** Members a PDF/A validation problem (HTTP 422) adds to the problem details. */
+export const PdfaValidationProblemSchema = {
+  $id: 'https://easyconvert.local/schemas/pdfa-validation-problem.json',
+  type: 'object',
+  required: ['profile', 'failedRules'],
+  properties: {
+    profile: {
+      type: 'string',
+      enum: ['pdfa-1b', 'pdfa-2b', 'pdfa-3b'],
+      description: 'The PDF/A level the request asked for and the output was validated against.',
+    },
+    failedRules: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'veraPDF rule IDs the output failed, as `<clause>-<test number>` (for example `6.2.11.4.1-1`).',
+    },
+  },
+} as const;
+
+/** Which engine ran and, only after a fallback, why; shared by every response that reports a conversion. */
+export const EngineTraceProperties = {
+  engineUsed: {
+    type: 'string',
+    description: 'Engine that produced the output, for example `native-ffmpeg`, `native-soffice` or `internal-fallback`.',
+  },
+  fallbackReason: {
+    type: 'string',
+    maxLength: MAX_FALLBACK_REASON_CHARS,
+    description:
+      'Why a first-choice engine did not produce the output. Present only when a fallback happened; redacted, one line, without file paths.',
+  },
+} as const;
+
+/** Input streams a media conversion left out because the target container cannot carry them; absent when none. */
+export const DroppedStreamsProperties = {
+  droppedStreams: {
+    type: 'array',
+    maxItems: MAX_DROPPED_STREAMS,
+    description:
+      'Streams of the input that the output does not contain, for example the subtitle tracks of an mkv converted to avi. The conversion succeeded; this lists what it could not carry. Present only when something was left out. Audio tracks `audio.track` did not choose and subtitles burned into the picture are not listed.',
+    items: {
+      type: 'object',
+      required: ['kind', 'reason'],
+      additionalProperties: false,
+      properties: {
+        index: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Stream index in the input; absent for the chapter list.',
+        },
+        kind: { type: 'string', enum: [...DROPPED_STREAM_KINDS] },
+        codec: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Codec name of the stream, when known.' },
+        language: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Language tag of the stream, when it has one.' },
+        title: { type: 'string', maxLength: MAX_DROPPED_TEXT_CHARS, description: 'Title of the stream, when it has one.' },
+        reason: {
+          type: 'string',
+          enum: [...DROPPED_STREAM_REASONS],
+          description:
+            '`container_unsupported`: the target container cannot carry this stream. `stream_type_unsupported`: no video-container output carries this kind of stream (data, cover art). `additional_video_track`: only the first video track is kept.',
+        },
+      },
+    },
+  },
+} as const;
+
 export const JobResourceSchema = {
   $id: 'https://easyconvert.local/schemas/job-resource.json',
   type: 'object',
@@ -1045,15 +1254,31 @@ export const JobResourceSchema = {
     },
     failedCode: {
       type: 'string',
-      description: 'Error class of a typed failure, for example InputPixelLimitError.',
+      description: 'Error class of a typed failure, for example InputPixelLimitError, or JobTimeoutError for a job that ran past its wall-clock deadline.',
     },
     failedStatus: {
       type: 'integer',
-      description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit.',
+      description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit, or 504 when the job ran past its wall-clock deadline.',
     },
+    ...EngineTraceProperties,
+    ...DroppedStreamsProperties,
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
+      properties: {
+        ...EngineTraceProperties,
+        ...DroppedStreamsProperties,
+        sourceFrameCount: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Frames or pages the source image holds; present only for multi-frame sources.',
+        },
+        frameUsed: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based frame or page a single-image output was taken from; present only when one was chosen.',
+        },
+      },
     },
     tasks: {
       type: 'array',
@@ -1089,12 +1314,12 @@ export const WebhookSecretRotateRequestSchema = {
     endpointId: {
       type: 'string',
       maxLength: 255,
-      description: 'Optional webhook endpoint identifier to rotate.',
+      description: 'Webhook endpoint identifier to rotate. Either endpointId or apiKeyId is required.',
     },
     apiKeyId: {
       type: 'string',
       maxLength: 255,
-      description: 'Optional API key identifier associated with the webhook.',
+      description: 'API key identifier whose webhook secret to rotate. Either endpointId or apiKeyId is required.',
     },
     graceSeconds: {
       type: 'integer',
@@ -1214,16 +1439,66 @@ export const UsageQueryResponseSchema = {
   },
 } as const;
 
+export const OcrLanguageEntrySchema = {
+  $id: 'https://easyconvert.local/schemas/ocr-language-entry.json',
+  type: 'object',
+  required: ['code', 'traineddata', 'name', 'script', 'direction', 'installed'],
+  additionalProperties: false,
+  properties: {
+    code: { type: 'string', description: 'Short code to request the language by: its ISO 639-1 code, or the traineddata name when it has none.' },
+    traineddata: { type: 'string', description: 'Name of the language data file without extension (`eng`, `chi_sim_vert`).' },
+    name: { type: 'string', description: 'English name of the language.' },
+    script: { type: 'string', description: 'ISO 15924 script code of the writing system (`Latn`, `Hang`, `Arab`).' },
+    direction: { type: 'string', enum: ['ltr', 'rtl', 'ttb'], description: 'Direction text runs in; `ttb` is data trained on vertical lines.' },
+    installed: { type: 'boolean', description: 'Whether this server has the language data. Read from the configured data directories once at start.' },
+  },
+} as const;
+
+export const OcrLanguagesResponseSchema = {
+  $id: 'https://easyconvert.local/schemas/ocr-languages-response.json',
+  type: 'object',
+  required: ['success', 'languages', 'maxLanguagesPerRequest'],
+  additionalProperties: false,
+  properties: {
+    success: { type: 'boolean', const: true },
+    languages: { type: 'array', items: { $ref: 'https://easyconvert.local/schemas/ocr-language-entry.json' } },
+    maxLanguagesPerRequest: {
+      type: 'integer',
+      minimum: 1,
+      description: 'Most languages one request may join with `+`.',
+    },
+  },
+} as const;
+
 export const ArchiveInspectResponseSchema = {
   $id: 'https://easyconvert.local/schemas/archive-inspect-response.json',
   type: 'object',
-  required: ['format', 'totalEntries', 'totalUncompressedBytes', 'totalCompressedBytes', 'isEncrypted', 'entries'],
+  required: [
+    'format',
+    'totalEntries',
+    'totalUncompressedBytes',
+    'totalCompressedBytes',
+    'isEncrypted',
+    'entries',
+    'extractable',
+    'unextractableReasons',
+  ],
   properties: {
     format: { type: 'string', description: 'Detected archive format standard.' },
     totalEntries: { type: 'integer', minimum: 0, description: 'Total number of items in the archive.' },
     totalUncompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of uncompressed file sizes in bytes.' },
     totalCompressedBytes: { type: 'integer', minimum: 0, description: 'Sum of compressed storage sizes in bytes.' },
     isEncrypted: { type: 'boolean', description: 'Whether archive or its entries require a password.' },
+    extractable: {
+      type: 'boolean',
+      description:
+        'False when extraction would refuse the archive because of links, unsafe paths, special entries or duplicate paths. Inspection reports these and never follows them.',
+    },
+    unextractableReasons: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'One line per category that blocks extraction, with a count and the first offending entry.',
+    },
     entries: {
       type: 'array',
       items: {
@@ -1237,6 +1512,16 @@ export const ArchiveInspectResponseSchema = {
           isDirectory: { type: 'boolean', description: 'Whether this entry represents a directory.' },
           modifiedAt: { type: 'string', description: 'ISO 8601 modification timestamp.' },
           crc32: { type: 'string', description: 'Hex-encoded CRC32 checksum.' },
+          kind: {
+            type: 'string',
+            enum: ['symlink', 'hardlink', 'special'],
+            description: 'Present for link and device/FIFO/socket entries. Links are never resolved.',
+          },
+          unsafePath: {
+            type: 'boolean',
+            description: 'The name is absolute, traverses with `..`, or is invalid. The name is reported verbatim.',
+          },
+          duplicate: { type: 'boolean', description: 'Another entry in the archive has the same path.' },
         },
       },
     },

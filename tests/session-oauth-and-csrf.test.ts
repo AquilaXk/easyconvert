@@ -35,6 +35,9 @@ import { POST as logoutHandler } from '../src/app/api/auth/logout/route';
 import { hashPassword } from '../src/lib/auth/crypto';
 import type { SessionPayload } from '../src/lib/auth/types';
 
+/** The failed-login window of the account lockout, in seconds (5 minutes). */
+const LOGIN_WINDOW_SECONDS = 300;
+
 describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
   beforeEach(() => {
     redisUserStore.resetStore();
@@ -408,7 +411,11 @@ describe('Phase 1-B: Session, OAuth PKCE, CSRF & Login Protection', () => {
 
       const lockedRes = await loginHandler(lockedReq);
       expect(lockedRes.status).toBe(429);
-      expect(lockedRes.headers.get('Retry-After')).toBeDefined();
+      // RFC 9110 delay-seconds: a whole number of seconds within the 5-minute failed-login window.
+      const retryAfter = lockedRes.headers.get('Retry-After');
+      expect(retryAfter).toMatch(/^\d+$/);
+      expect(Number(retryAfter)).toBeGreaterThan(0);
+      expect(Number(retryAfter)).toBeLessThanOrEqual(LOGIN_WINDOW_SECONDS);
 
       const errorPayload = await lockedRes.json();
       expect(errorPayload.status).toBe(429);

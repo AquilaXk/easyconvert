@@ -1,10 +1,13 @@
-import sharp from 'sharp';
+import sharp, { type ResizeOptions } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, CadGeometryUnavailableError, CadTopologyError } from '../types';
-import { encodeBmp, encodePostscript } from './image';
-import { openInputImage } from './image-input-limits';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError, EngineUnavailableError } from '../types';
+import { assertOutputPixels, outputSideOf } from './image-limits';
+import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
+import { buildTiffOptions } from './image-tiff-options';
+import { openInputImage, resizedDimensions } from './image-input-limits';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
+import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
   tessellateCadBuffer,
@@ -18,6 +21,7 @@ import {
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
+import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
 
 export {
@@ -75,21 +79,23 @@ export {
   parseSvgPathToBezierPoints,
 };
 
+/**
+ * The canvas size of a CGM is its VDC extent. A drawing that states none, or an empty one, has no size to
+ * read, so it is refused instead of being drawn on a canvas of an invented size.
+ */
 function parseCgmDimensions(cgmText: string): { width: number; height: number } {
-  let width = 800;
-  let height = 600;
   const vdcRegex = /VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i;
   const vdcMatch = vdcRegex.exec(cgmText);
-  if (vdcMatch) {
-    // Either corner order is legal; a reversed y extent only flips the VDC axis.
-    const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
-    const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
-    if (w > 0 && h > 0) {
-      width = Math.round(w);
-      height = Math.round(h);
-    }
+  if (!vdcMatch) {
+    throw new ConversionFailedError('The CGM states no VDC extent (VDCEXT), so its size cannot be read.');
   }
-  return { width, height };
+  // Either corner order is legal; a reversed y extent only flips the VDC axis.
+  const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
+  const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
+  if (!(Math.round(w) > 0 && Math.round(h) > 0)) {
+    throw new ConversionFailedError('The CGM has an empty VDC extent, so its size cannot be read.');
+  }
+  return { width: Math.round(w), height: Math.round(h) };
 }
 
 function parseCgmLines(cgmText: string): string[] {
@@ -225,6 +231,7 @@ export async function convertVectorCad(
   const baseName = (originalFilename || 'model').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  if (tgt === 'pdf') await loadFontCoverageIndex();
 
   if (!inputBuffer || inputBuffer.length === 0) {
     throw new Error('Vector/CAD conversion payload is empty (0 bytes).');
@@ -260,7 +267,7 @@ export async function convertVectorCad(
 
   // 6. EPS / PS Source
   if (src === 'eps' || src === 'ps') {
-    return convertPostScriptSource(inputBuffer, src, tgt, options, baseName);
+    return convertPostScriptSource(inputBuffer, src, tgt);
   }
 
 
@@ -322,6 +329,42 @@ function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): 
   return { buffer, mimeType, filename: `${baseName}.${tgt}`, size: buffer.length };
 }
 
+/** Targets the SVG converter writes without rendering pixels, so the output size options do not apply. */
+const SVG_NON_RASTER_TARGETS = new Set(['svg', 'emf', 'wmf', 'cgm']);
+
+/**
+ * Size the drawing renders at for `density`, read from the SVG header without rendering it. A drawing that
+ * would render over the output pixel limit is refused before any pixel is allocated.
+ */
+async function assertSvgRenderSize(svg: Buffer, density: number): Promise<{ width: number; height: number }> {
+  let width: number | undefined;
+  let height: number | undefined;
+  try {
+    ({ width, height } = await sharp(svg, { density }).metadata());
+  } catch (error) {
+    throw new ConversionFailedError(`The SVG drawing cannot be rendered at ${density} dpi: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!width || !height) throw new ConversionFailedError('The SVG drawing declares no size');
+  assertOutputPixels(width, height);
+  return { width, height };
+}
+
+/**
+ * Resize parameters for the requested width and height, or null when the request does not resize. The sides
+ * are validated like raster images and the resized box is checked against the output pixel limit before the
+ * drawing is rendered.
+ */
+async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<ResizeOptions | null> {
+  const width = outputSideOf(options.width, 'width');
+  const height = outputSideOf(options.height, 'height');
+  const rendered = await assertSvgRenderSize(svg, density);
+  if (width === undefined && height === undefined) return null;
+  const resize = { width, height, fit: options.fit || 'contain' };
+  const resized = resizedDimensions(rendered.width, rendered.height, resize);
+  assertOutputPixels(resized.width, resized.height);
+  return { ...resize, background: { r: 255, g: 255, b: 255, alpha: 0 } };
+}
+
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
@@ -355,14 +398,17 @@ async function convertSvgSource(
     };
   }
 
+  const density = options.dpi || DEFAULT_SVG_RENDER_DPI;
+
   // SVG -> PDF
   if (tgt === 'pdf') {
-    // The render size follows the requested dpi, so the declared canvas is checked at that density.
-    const renderer = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
+    // The render size follows the requested dpi, so the declared canvas is checked at that density first.
+    const renderer = await openInputImage(inputBuffer, { density });
+    await assertSvgRenderSize(inputBuffer, density);
     const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
-    const width = meta.width || 600;
-    const height = meta.height || 400;
+    const { width, height } = meta;
+    if (!width || !height) throw new ConversionFailedError('The rendered SVG drawing has no size.');
 
     return new Promise<ConversionResult>((resolve, reject) => {
       const doc = new PDFDocument({
@@ -393,15 +439,11 @@ async function convertSvgSource(
   if (vectorOutput) return vectorOutput;
 
   // SVG -> Raster Images via Sharp
-  let pipeline = await openInputImage(inputBuffer, { density: options.dpi || DEFAULT_SVG_RENDER_DPI });
+  let pipeline = await openInputImage(inputBuffer, { density });
 
-  if (options.width || options.height) {
-    pipeline = pipeline.resize({
-      width: options.width ? Number(options.width) : undefined,
-      height: options.height ? Number(options.height) : undefined,
-      fit: options.fit || 'contain',
-      background: { r: 255, g: 255, b: 255, alpha: 0 },
-    });
+  if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
+    const resize = await svgResizeOf(inputBuffer, density, options);
+    if (resize) pipeline = pipeline.resize(resize);
   }
 
   const quality = options.quality ? Math.max(1, Math.min(100, options.quality)) : 90;
@@ -426,12 +468,12 @@ async function convertSvgSource(
       break;
 
     case 'avif':
-      outputBuffer = await pipeline.avif({ quality }).toBuffer();
+      outputBuffer = await pipeline.avif({ quality, tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       mimeType = 'image/avif';
       break;
 
     case 'tiff':
-      outputBuffer = await pipeline.tiff({ quality }).toBuffer();
+      outputBuffer = await pipeline.tiff(buildTiffOptions(options)).toBuffer();
       mimeType = 'image/tiff';
       break;
 
@@ -544,7 +586,7 @@ async function convertDwgSource(
   const raw = inputBuffer.toString('utf-8');
 
   if (!raw.includes('SECTION') || !raw.includes('ENTITIES')) {
-    throw new Error('Unsupported CAD format: DWG binary decoder unavailable');
+    throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary decoder unavailable');
   }
 
   const dxfBuf = Buffer.from(raw, 'utf-8');
@@ -561,30 +603,12 @@ async function convertDwgSource(
 }
 
 /**
- * Converts PostScript (EPS / PS) Source
+ * Converts PostScript (EPS / PS) Source. Interpreting PostScript needs a PostScript interpreter, which the
+ * in-process engine does not have: the worker renders it with ps2pdf and Poppler, and without them this
+ * fails with a typed 503 error rather than drawing a guess at the page.
  */
-async function convertPostScriptSource(
-  inputBuffer: Buffer,
-  src: string,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  const text = inputBuffer.toString('utf-8');
-  const svg = postScriptToSvg(text, baseName);
-  const cleanSvg = sanitizeSvgDocument(svg);
-  const svgBuf = Buffer.from(cleanSvg, 'utf-8');
-
-  if (tgt === 'svg') {
-    return {
-      buffer: svgBuf,
-      mimeType: 'image/svg+xml',
-      filename: `${baseName}.svg`,
-      size: svgBuf.length,
-    };
-  }
-
-  return convertSvgSource(svgBuf, tgt, options, baseName);
+async function convertPostScriptSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+  throw new EngineUnavailableError('ps2pdf', `Rendering .${src} to ${tgt} needs a PostScript interpreter (ps2pdf) and Poppler; the in-process engine cannot interpret PostScript.`);
 }
 
 /**
@@ -645,106 +669,12 @@ async function convert3dCad(
 
 
 /**
- * Converts SVG XML path and geometry elements into AutoCAD DXF ASCII format
+ * Converts an SVG drawing into AutoCAD DXF ASCII text: the same geometry the page draws (transforms applied,
+ * curves flattened, Y pointing up) written by the R12 writer in vector-dxf.ts. A drawing without any outline
+ * is refused with a ConversionFailedError instead of being answered with a made-up line.
  */
 export function svgToDxf(svgContent: string): string {
-  const entities: string[] = [];
-
-  // 1. Lines (<line x1="" y1="" x2="" y2="" />)
-  const lineRegex = /<line\s+[^>]*?x1="([^"]+)"[^>]*?y1="([^"]+)"[^>]*?x2="([^"]+)"[^>]*?y2="([^"]+)"[^>]*?\/?>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = lineRegex.exec(svgContent)) !== null) {
-    const [, x1, y1, x2, y2] = m;
-    entities.push(`  0\nLINE\n  8\n0\n 10\n${parseFloat(x1) || 0}\n 20\n${-(parseFloat(y1) || 0)}\n 11\n${parseFloat(x2) || 0}\n 21\n${-(parseFloat(y2) || 0)}`);
-  }
-
-  // 2. Rectangles (<rect x="" y="" width="" height="" />)
-  const rectRegex = /<rect\s+[^>]*?x="([^"]+)"[^>]*?y="([^"]+)"[^>]*?width="([^"]+)"[^>]*?height="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = rectRegex.exec(svgContent)) !== null) {
-    const x = parseFloat(m[1]) || 0;
-    const y = parseFloat(m[2]) || 0;
-    const w = parseFloat(m[3]) || 0;
-    const h = parseFloat(m[4]) || 0;
-    entities.push(
-      `  0\nLWPOLYLINE\n  8\n0\n 90\n4\n 70\n1\n 10\n${x}\n 20\n${-y}\n 10\n${x + w}\n 20\n${-y}\n 10\n${x + w}\n 20\n${-(y + h)}\n 10\n${x}\n 20\n${-(y + h)}`
-    );
-  }
-
-  // 3. Circles (<circle cx="" cy="" r="" />)
-  const circleRegex = /<circle\s+[^>]*?cx="([^"]+)"[^>]*?cy="([^"]+)"[^>]*?r="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = circleRegex.exec(svgContent)) !== null) {
-    const cx = parseFloat(m[1]) || 0;
-    const cy = parseFloat(m[2]) || 0;
-    const r = parseFloat(m[3]) || 0;
-    entities.push(`  0\nCIRCLE\n  8\n0\n 10\n${cx}\n 20\n${-cy}\n 40\n${r}`);
-  }
-
-  // 4. Polygons / Polylines (<polygon points="..." />)
-  const polyRegex = /<(?:polygon|polyline)\s+[^>]*?points="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = polyRegex.exec(svgContent)) !== null) {
-    const pts = m[1].trim().split(/[\s,]+/).map(Number);
-    if (pts.length >= 4) {
-      const numPts = Math.floor(pts.length / 2);
-      let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${numPts}\n 70\n1`;
-      for (let i = 0; i < numPts; i++) {
-        polyDxf += `\n 10\n${pts[i * 2]}\n 20\n${-pts[i * 2 + 1]}`;
-      }
-      entities.push(polyDxf);
-    }
-  }
-
-  // 5. Paths with Cubic / Quadratic Bezier curves (<path d="..." />)
-  const pathRegex = /<path\s+[^>]*?d="([^"]+)"[^>]*?\/?>/gi;
-  while ((m = pathRegex.exec(svgContent)) !== null) {
-    const dAttr = m[1];
-    const subpaths = parseSvgPathToBezierPoints(dAttr);
-    for (const sub of subpaths) {
-      if (sub.length < 2) continue;
-      let polyDxf = `  0\nLWPOLYLINE\n  8\n0\n 90\n${sub.length}\n 70\n0`;
-      for (const pt of sub) {
-        polyDxf += `\n 10\n${pt.x.toFixed(4)}\n 20\n${(-pt.y).toFixed(4)}`;
-      }
-      entities.push(polyDxf);
-    }
-  }
-
-  // Fallback entity if no recognized shapes
-  if (entities.length === 0) {
-    entities.push('  0\nLINE\n  8\n0\n 10\n0.0\n 20\n0.0\n 11\n100.0\n 21\n100.0');
-  }
-
-  return `  0
-SECTION
-  2
-HEADER
-  9
-$ACADVER
-  1
-AC1015
-  0
-ENDSEC
-  0
-SECTION
-  2
-TABLES
-  0
-ENDSEC
-  0
-SECTION
-  2
-BLOCKS
-  0
-ENDSEC
-  0
-SECTION
-  2
-ENTITIES
-${entities.join('\n')}
-  0
-ENDSEC
-  0
-EOF
-`;
+  return encodeSvgPageToDxf(Buffer.from(svgContent, 'utf-8')).toString('utf-8');
 }
 
 /**
@@ -1070,36 +1000,6 @@ async function renderDxfToPdf(
   });
 }
 
-
-/**
- * Converts PostScript commands into SVG
- */
-function postScriptToSvg(ps: string, title: string): string {
-  const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  const lineRegex = /([0-9.-]+)\s+([0-9.-]+)\s+moveto\s+([0-9.-]+)\s+([0-9.-]+)\s+lineto/gi;
-  let m: RegExpExecArray | null;
-
-  while ((m = lineRegex.exec(ps)) !== null) {
-    lines.push({
-      x1: parseFloat(m[1]),
-      y1: parseFloat(m[2]),
-      x2: parseFloat(m[3]),
-      y2: parseFloat(m[4]),
-    });
-  }
-
-  const svgLines = lines
-    .map((l) => `<line x1="${l.x1}" y1="${l.y1}" x2="${l.x2}" y2="${l.y2}" stroke="#5C6BC0" stroke-width="1.5" />`)
-    .join('\n    ');
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600">
-  <title>${escapeXml(title)}</title>
-  <g>
-    ${svgLines || '<rect x="50" y="50" width="500" height="500" fill="none" stroke="#5C6BC0" stroke-width="2" />'}
-  </g>
-</svg>`;
-}
 
 /**
  * 3D CAD Parser (STEP, STP, IGES, IGS, STL, OBJ)
@@ -1728,7 +1628,7 @@ export function encodeIges(mesh: CadMesh3D): string {
 }
 
 function dxfToDwg(_dxfString: string): Buffer {
-  throw new Error('Unsupported CAD format: DWG binary encoder unavailable');
+  throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
 }
 
 function escapeXml(str: string): string {

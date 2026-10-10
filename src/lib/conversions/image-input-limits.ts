@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Sharp, type SharpOptions } from 'sharp';
 import { ConversionFailedError } from '../types';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
@@ -67,6 +67,12 @@ export const RAW_SENSOR_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, sco
  * megapixels keeps the worst target near 1.9 GB per job.
  */
 export const HDR_FLOAT_PIXEL_BUDGET: PixelBudget = { maxPixels: 64_000_000, scope: 'Ultra HDR float reconstruction' };
+
+/**
+ * HDR tone mapping holds the decoded samples (2 B each), the luminance array (4 B each) and the rendition, about
+ * 30 B per pixel. 36 megapixels (the OpenEXR decoder's limit) keeps a job near 1.1 GB.
+ */
+export const HDR_TONE_MAP_PIXEL_BUDGET: PixelBudget = { maxPixels: 36_000_000, scope: 'HDR tone mapping' };
 
 /** A whole number of pixels in plain decimal digits: no sign, exponent, fraction or radix prefix. */
 const DECIMAL_PIXEL_COUNT = /^\d{1,64}$/;
@@ -151,7 +157,7 @@ export function assertPixelBudget(width: number, height: number, budget: PixelBu
  * Opens an image for decoding with sharp's own pixel check set from the same limit, so the native decoder
  * enforces it even where the header could not be read in advance.
  */
-export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}): sharp.Sharp {
+export function openLimitedSharp(input: Buffer, options: SharpOptions = {}): Sharp {
   return sharp(input, { ...options, limitInputPixels: maxInputPixels() });
 }
 
@@ -161,7 +167,7 @@ export function openLimitedSharp(input: Buffer, options: sharp.SharpOptions = {}
  * `ConversionFailedError`: a lenient decoder (pdfkit, pdf-lib) may accept bytes that libvips rejects, so an
  * unreadable header proves nothing about the size.
  */
-export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: sharp.SharpOptions = {}): Promise<void> {
+export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: SharpOptions = {}): Promise<void> {
   let width: number | undefined;
   let height: number | undefined;
   try {
@@ -196,7 +202,7 @@ export async function assertEmbeddableImageWithinLimit(input: Buffer): Promise<v
 }
 
 /** Checks the declared dimensions of an encoded image, then opens it for decoding under the same limit. */
-export async function openInputImage(input: Buffer, options: sharp.SharpOptions = {}): Promise<sharp.Sharp> {
+export async function openInputImage(input: Buffer, options: SharpOptions = {}): Promise<Sharp> {
   await assertEncodedImageWithinLimit(input, undefined, options);
   return openLimitedSharp(input, options);
 }

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "scope": "^src/(lib/conversions|lib/workers|worker)/|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
+  "families": {
+    "image": { "bench": "image" },
+    "video": { "bench": "video" },
+    "audio": { "bench": "audio" },
+    "ocr": { "bench": "ocr" },
+    "document": { "bench": "document" },
+    "compression": { "bench": "compression" },
+    "cad": { "bench": null },
+    "font": { "bench": null },
+    "raw": { "bench": null },
+    "data": { "bench": null },
+    "ebook": { "bench": null },
+    "pdf-ops": { "bench": null },
+    "vector": { "bench": null },
+    "hdr-image": { "bench": null }
+  },
+  "rules": [
+    {
+      "families": ["*"],
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
+    },
+    {
+      "families": ["image"],
+      "match": "^src/lib/security/svg-sanitizer\\.ts$"
+    },
+    {
+      "families": ["compression"],
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
+    },
+    {
+      "families": ["image"],
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-reader|ico|image[^/]*|kd-tree|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+    },
+    {
+      "families": ["hdr-image"],
+      "match": "^src/lib/conversions/(float16|hdr-image|hdr-tonemap|openexr-[^/]*)\\.ts$"
+    },
+    {
+      "families": ["raw"],
+      "match": "^src/lib/conversions/raw-[^/]*\\.ts$|^src/worker/raw-[^/]*\\.ts$"
+    },
+    {
+      "families": ["audio"],
+      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
+    },
+    {
+      "families": ["video"],
+      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr|mp4-layout)\\.ts$"
+    },
+    {
+      "families": ["video", "audio"],
+      "match": "^src/lib/conversions/media-(dropped-streams|encoder-threads|ffmpeg-args|ffprobe|packaging|stream-plan)\\.ts$"
+    },
+    {
+      "families": ["ocr"],
+      "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts|pdf-page-render\\.ts)$"
+    },
+    {
+      "families": ["ebook"],
+      "match": "^src/lib/conversions/office/(mobi-reader|pml-reader)\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/libreoffice-pool\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^src/lib/conversions/(pdf-text-[^/]*|pdf-winansi-tounicode|pdf-office|pdf-blocks|pdf-fonts)\\.ts$|^src/lib/conversions/(pdf-layout|text-shaping)/"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range|optimizers)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
+    },
+    {
+      "families": ["vector"],
+      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|openxps|xps-text-layout|odg)\\.ts$"
+    },
+    {
+      "families": ["cad"],
+      "match": "^src/lib/conversions/(cad-[^/]*|vector-cad|vector-dxf)\\.ts$"
+    },
+    {
+      "families": ["font"],
+      "match": "^src/lib/conversions/font[^/]*\\.ts$"
+    },
+    {
+      "families": ["data"],
+      "match": "^src/lib/conversions/(data[^/]*|delimited-[^/]*|parquet[^/]*|xml-wellformed)\\.ts$"
+    }
+  ]
+}

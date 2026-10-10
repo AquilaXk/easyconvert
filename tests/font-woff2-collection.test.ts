@@ -21,6 +21,7 @@ import {
   type Woff2TableSpec,
 } from './helpers/woff2-builder';
 import { readWoff2Reference } from './helpers/woff2-reference';
+import { SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * Collection and sharing rules of the W3C WOFF2 Recommendation: the glyf and loca of a font are adjacent
@@ -122,19 +123,24 @@ describe('WOFF2 collection: tables shared between fonts', () => {
     return collectionFile(tables, Array.from({ length: fonts }, () => ({ indices: [0, 1] })));
   };
 
-  it('refuses a head table that is not 54 bytes before inflating anything', () => {
+  it('refuses a head table that is not 54 bytes before inflating anything (hang guard; growth ratio in the perf suite)', async () => {
     const BOMB_BYTES = 32 * MIB;
     const FONTS = 16;
-    const tables: Woff2TableSpec[] = [{ tag: 'head', data: Buffer.alloc(BOMB_BYTES) }];
-    const file = collectionFile(tables, Array.from({ length: FONTS }, () => ({ indices: [0] })));
-    expect(file.length).toBeLessThan(64 * 1024);
+    const bombFile = (bytes: number) =>
+      collectionFile([{ tag: 'head', data: Buffer.alloc(bytes) }], Array.from({ length: FONTS }, () => ({ indices: [0] })));
+    const huge = bombFile(BOMB_BYTES);
+    expect(huge.length).toBeLessThan(64 * 1024);
     const before = process.memoryUsage().arrayBuffers;
-    const started = process.hrtime.bigint();
-    expect(() => decodeWoff2Fonts(file)).toThrow(/head/);
-    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-    expect(elapsedMs).toBeLessThan(500);
+    // Refusing before inflating means a 16x larger declared head table costs the same (tests/helpers/timing.ts).
+    const { largeResult } = await expectNoHangOnInput(
+      'head table bomb',
+      (file: Buffer) => settle(() => decodeWoff2Fonts(file)),
+      huge
+    );
+    if (largeResult.ok) throw new Error('the oversized head table was decoded instead of refused');
+    expect((largeResult.error as Error).message).toMatch(/head/);
     expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(8 * MIB);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it.each([53, 55])('refuses a head table of %i bytes', (length) => {
     const file = buildWoff2({ tables: [{ tag: 'head', data: Buffer.alloc(length) }] });

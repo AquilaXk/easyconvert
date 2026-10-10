@@ -1,9 +1,11 @@
 import {
   ConversionFailedError,
+  CorruptStreamError,
   DataEncodingError,
   DataLimitExceededError,
   DataParseError,
   DataRepresentationError,
+  DecompressionLimitError,
   UnsupportedOptionError,
 } from '../../types';
 
@@ -20,14 +22,41 @@ export interface SerializedWorkerError {
   column?: number;
 }
 
+/**
+ * The browser edge tier cannot convert this input or target: a container it has no demuxer for, a codec the
+ * platform has no decoder or encoder for, or a configuration the muxers cannot describe truthfully. The tier
+ * router answers it by running the server tier; it is never an invitation to produce substitute output.
+ */
+export class EdgeUnsupportedError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EdgeUnsupportedError';
+  }
+}
+
+/**
+ * The browser storage the conversion writes to is full. It is a verdict on this device, not on the file, so the
+ * server tier runs; the partial output is deleted and the work is never restarted in memory.
+ */
+export class EdgeStorageQuotaError extends EdgeUnsupportedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EdgeStorageQuotaError';
+  }
+}
+
 type MessageOnlyError = new (message: string) => ConversionFailedError;
 
 /** Typed errors rebuilt by name; DataParseError is handled separately for its location. */
 const MESSAGE_ONLY_ERRORS: ReadonlyMap<string, MessageOnlyError> = new Map<string, MessageOnlyError>([
   ['ConversionFailedError', ConversionFailedError],
+  ['CorruptStreamError', CorruptStreamError],
   ['DataEncodingError', DataEncodingError],
   ['DataLimitExceededError', DataLimitExceededError],
   ['DataRepresentationError', DataRepresentationError],
+  ['DecompressionLimitError', DecompressionLimitError],
+  ['EdgeStorageQuotaError', EdgeStorageQuotaError],
+  ['EdgeUnsupportedError', EdgeUnsupportedError],
   ['UnsupportedOptionError', UnsupportedOptionError],
 ]);
 

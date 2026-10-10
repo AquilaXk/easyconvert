@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import { applyPdfWatermark } from '../src/lib/conversions/pdf-postprocess/watermark';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError } from '../src/lib/types';
-import { bombJpeg, bombPng, withBrokenIhdrCrc } from './helpers/image-bombs';
+import { bombJpeg, bombPng, withCorruptIhdr } from './helpers/image-bombs';
 
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const OVER_LIMIT_SIDE = 15_000;
@@ -38,7 +38,7 @@ describe('an image watermark is held to the input pixel limit before pdf-lib dec
   });
 
   it('refuses a watermark PNG whose header cannot be read, which pdf-lib would still decode', async () => {
-    const run = applyPdfWatermark(await onePagePdf(), { type: 'image', image: withBrokenIhdrCrc(bombPng(OVER_LIMIT_SIDE, OVER_LIMIT_SIDE)) });
+    const run = applyPdfWatermark(await onePagePdf(), { type: 'image', image: withCorruptIhdr(bombPng(OVER_LIMIT_SIDE, OVER_LIMIT_SIDE)) });
     await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
     await expect(run).rejects.toThrow(/header could not be decoded/);
   });

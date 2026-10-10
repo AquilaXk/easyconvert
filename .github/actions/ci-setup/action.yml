@@ -1,0 +1,84 @@
+name: CI setup
+description: >-
+  Installs the conversion and oracle CLI tools, the Python format oracles and veraPDF, fetches the
+  RAW samples, and, for a job that asks for it, starts the S3 test server. Shared by every CI job that runs test
+  suites. The .deb files of the package install, the veraPDF install and the S3 test server image are cached, and
+  the independent parts of the setup run at once, each under a time limit (see install-tools.sh).
+
+inputs:
+  s3-test-server:
+    description: >-
+      'true' starts the S3 test server that the real-server storage tests read through STORAGE_TEST_S3_*, which the
+      job must set; 'false' (the default) leaves it out. Only a job that runs those tests asks for it.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Allow unprivileged user namespaces for the child sandbox
+      shell: bash
+      run: |
+        # The runner's AppArmor policy denies unprivileged user namespaces; the worker's per-child sandbox
+        # (unshare -r -n) needs them, and the strict sandbox suites fail closed without them.
+        if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        fi
+        unshare -r -n -p --fork true
+
+    # The cached .deb files fit one runner image, so the image version is part of the key; a new image rebuilds
+    # the cache once. Changing the package list or the install script does the same.
+    - name: Name the runner image
+      id: image
+      shell: bash
+      run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the cached package files
+      id: apt-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/apt-debs
+        key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/apt-packages.txt', '.github/actions/ci-setup/install-apt-tools.sh') }}
+
+    # The veraPDF release is pinned in scripts/install-verapdf.sh, so its hash is the key. The directory must be
+    # writable by the runner user for the cache to extract into it.
+    - name: Prepare the veraPDF directory
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/verapdf
+
+    - name: Restore the cached veraPDF install
+      id: verapdf-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/verapdf
+        key: verapdf-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-verapdf.sh') }}
+
+    - name: Restore RAW sample cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: tests/fixtures/raw/.cache
+        key: raw-fixtures-${{ hashFiles('tests/fixtures/raw/manifest.json', 'tests/fixtures/raw/variants.json') }}
+
+    # The S3 test server image is pinned by digest in s3-test-server-image.txt, which is also the key of its cache:
+    # a job that starts the server loads the image from the cache instead of pulling it from the registry, which
+    # limits anonymous pulls per address. Move the pin if that image repository is removed.
+    - name: Restore the cached S3 test server image
+      if: inputs.s3-test-server == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/s3-test-server-image
+        key: s3-test-server-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/s3-test-server-image.txt') }}
+
+    # Packages, Python oracles, veraPDF and RAW samples at once, and the S3 test server when the job asked for it,
+    # each part under its own time limit (see install-tools.sh). The name stays the one that the strict-mode failure
+    # message of tests/helpers/s3-test-server.ts points to.
+    - name: Install the tools and start the S3 test server
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        APT_DEBS: ${{ runner.temp }}/apt-debs
+        APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
+        VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
+        S3_TEST_SERVER: ${{ inputs.s3-test-server }}
+        S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
+      run: bash "$ACTION_PATH/install-tools.sh"

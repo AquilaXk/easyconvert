@@ -4,7 +4,8 @@ import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { HAS_PDFTOTEXT, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 
 const FIXTURES = path.resolve(__dirname, 'fixtures');
@@ -53,7 +54,7 @@ describe('dispatchConversion', () => {
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftotext'))(
     'routes a native-capable pair to LibreOffice and returns the output in memory (needs soffice, pdftotext)',
     async () => {
       const result = await dispatchConversion(SAMPLE_DOCX, 'docx', 'pdf', {}, 'sample.docx');

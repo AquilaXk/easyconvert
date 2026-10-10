@@ -3,6 +3,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import sharp from 'sharp';
 import { convertImage } from '../src/lib/conversions/image';
 import { encode16BitTiff } from '../src/lib/conversions/raw-hdr';
+import { readExifOrientation } from './helpers/exif-orientation';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * Regression for the colour shift of 16-bit RGB sources (the decoded RAW intermediate is a 16-bit TIFF):
@@ -102,6 +104,7 @@ function imageMagickBinary(): string | null {
 }
 
 const MAGICK = imageMagickBinary();
+const SKIP_WITHOUT_MAGICK_BINARY = skipUnless('ImageMagick', MAGICK !== null);
 
 /** Decodes an encoded image to 8-bit RGB samples with ImageMagick. */
 function decodeRgb8(encoded: Buffer, extension: string): Buffer {
@@ -112,13 +115,16 @@ function decodeRgb8(encoded: Buffer, extension: string): Buffer {
   });
 }
 
-function expectBlocksMatch(rgb: Buffer, tolerance: number): void {
+/** `halfTurn` expects the stored grid rotated by 180 degrees, as EXIF orientation 3 displays it. */
+function expectBlocksMatch(rgb: Buffer, tolerance: number, halfTurn = false): void {
   expect(rgb.length).toBe(SIDE * SIDE * CHANNELS);
   for (let blockY = 0; blockY < GRID; blockY += 1) {
     for (let blockX = 0; blockX < GRID; blockX += 1) {
       const centreX = blockX * BLOCK + BLOCK / 2;
       const centreY = blockY * BLOCK + BLOCK / 2;
-      const expected = blockColour(centreX, centreY).map((sample) => sample >> BYTE_SHIFT);
+      const expected = (halfTurn ? blockColour(SIDE - 1 - centreX, SIDE - 1 - centreY) : blockColour(centreX, centreY)).map(
+        (sample) => sample >> BYTE_SHIFT
+      );
       const at = (centreY * SIDE + centreX) * CHANNELS;
       const actual = [rgb[at], rgb[at + 1], rgb[at + 2]];
       actual.forEach((value, channel) => {
@@ -153,38 +159,39 @@ describe.each(sources)('convertImage of 16-bit RGB from %s', (_label, build) => 
     expect(meta.hasProfile).toBe(false);
   });
 
-  it.skipIf(!MAGICK)('keeps the high byte of every sample in PNG output', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK_BINARY)('keeps the high byte of every sample in PNG output', async () => {
     const result = await convertImage(build(), 'png', {}, 'sample.tiff', 'tiff');
     expect(result.buffer.subarray(1, 4).toString('latin1')).toBe('PNG');
     expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE);
   });
 
-  it.skipIf(!MAGICK)('keeps the high byte of every sample in JPEG output', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK_BINARY)('keeps the high byte of every sample in JPEG output', async () => {
     const result = await convertImage(build(), 'jpg', { quality: 100 }, 'sample.tiff', 'tiff');
     expect(result.buffer.readUInt16BE(0)).toBe(0xffd8);
     expectBlocksMatch(decodeRgb8(result.buffer, 'jpg'), JPEG_TOLERANCE);
   });
 
-  it.skipIf(!MAGICK)('keeps the high byte of every sample with metadata stripped', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK_BINARY)('keeps the high byte of every sample with metadata stripped', async () => {
     const result = await convertImage(build(), 'png', { stripMetadata: true }, 'sample.tiff', 'tiff');
     expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE);
   });
 });
 
 describe('convertImage of 16-bit RGB with an EXIF orientation', () => {
-  it.skipIf(!MAGICK)('keeps the EXIF orientation tag and the stored colours, as the 8-bit path does', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK_BINARY)('applies the orientation to the pixels and leaves no stale tag, keeping the stored colours', async () => {
     const rotatedHalfTurn = 3;
     const source = writeTiff16(SIDE, SIDE, blockColour, rotatedHalfTurn);
     expect((await sharp(source).metadata()).orientation).toBe(rotatedHalfTurn);
+    expect(readExifOrientation(source)).toBe(rotatedHalfTurn);
     const result = await convertImage(source, 'png', {}, 'sample.tiff', 'tiff');
-    // The EXIF block reaches the output, so viewers apply the orientation; the pixels stay as stored.
-    expect((await sharp(result.buffer).metadata()).orientation).toBe(rotatedHalfTurn);
-    expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE);
+    // The pixels are rotated by the half turn the tag asked for, so the tag must not ask for it again.
+    expect([undefined, 1]).toContain(readExifOrientation(result.buffer));
+    expectBlocksMatch(decodeRgb8(result.buffer, 'png'), PNG_TOLERANCE, true);
   });
 });
 
 describe('convertImage of 8-bit RGB (control)', () => {
-  it.skipIf(!MAGICK)('keeps every sample of an 8-bit PNG exactly', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK_BINARY)('keeps every sample of an 8-bit PNG exactly', async () => {
     const rgb8 = Buffer.alloc(SIDE * SIDE * CHANNELS);
     for (let y = 0; y < SIDE; y += 1) {
       for (let x = 0; x < SIDE; x += 1) {
