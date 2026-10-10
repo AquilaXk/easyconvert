@@ -773,12 +773,14 @@ async function generatePdfFromText(
 ): Promise<ConversionResult> {
   let blocks: PdfBlock[];
   let title = baseName;
+  let warnings: string[] = [];
   if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {
     // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
     const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
-    const parsed = await parseHtmlToPdfBlocks(html);
+    const parsed = await parseHtmlToPdfBlocks(html, { requireResources: options.requireResources });
     blocks = parsed.blocks;
     title = parsed.title || baseName;
+    warnings = parsed.warnings;
   } else {
     blocks = plainTextToPdfBlocks(text);
   }
@@ -789,5 +791,6 @@ async function generatePdfFromText(
     mimeType: 'application/pdf',
     filename: `${baseName}.pdf`,
     size: buffer.length,
+    ...(warnings.length > 0 ? { metadata: { warnings } } : {}),
   };
 }

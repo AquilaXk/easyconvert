@@ -2,11 +2,14 @@ import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
+import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
  * text, quotes, rules and embedded (data: URI) PNG/JPEG images. Content the in-process renderer
- * cannot draw is refused with a typed error instead of being dropped.
+ * cannot draw is refused with a typed error instead of being dropped. The one exception is an image
+ * that is not embedded: resources are never fetched, so it is left out and reported (see
+ * HtmlResourcePolicy) unless the caller requires every resource.
  */
 
 export interface HtmlElement {
@@ -29,6 +32,8 @@ export interface HtmlDocumentBlocks {
   /** Text of the <title> element, for PDF metadata. */
   title?: string;
   blocks: PdfBlock[];
+  /** One line per external image left out (see HtmlResourcePolicy); empty when none was. */
+  warnings: string[];
 }
 
 const MAX_NESTING_DEPTH = 256;
@@ -484,6 +489,10 @@ interface PendingImage {
 
 class HtmlBlockBuilder {
   readonly images: PendingImage[] = [];
+  readonly omitted = new OmittedExternalImages();
+
+  constructor(private readonly policy: HtmlResourcePolicy) {}
+
 
   private isBlock(node: HtmlNode): node is HtmlElement {
     return typeof node !== 'string' && BLOCK_ELEMENTS.has(node.tag);
@@ -586,7 +595,7 @@ class HtmlBlockBuilder {
       const images: HtmlElement[] = [];
       const content = this.inlineContent(pendingInline, images);
       if (content.length > 0) blocks.push({ kind: 'paragraph', content });
-      for (const image of images) blocks.push(this.image(image));
+      for (const image of images) appendAll(blocks, this.imageBlocks(image));
       pendingInline = [];
     };
     for (const node of nodes) {
@@ -606,7 +615,7 @@ class HtmlBlockBuilder {
       const images: HtmlElement[] = [];
       const content = this.inlineContent(node.children, images);
       const heading: PdfBlock[] = content.length > 0 ? [{ kind: 'heading', level: Number(node.tag.slice(1)), content }] : [];
-      return [...heading, ...images.map((image) => this.image(image))];
+      return [...heading, ...images.flatMap((image) => this.imageBlocks(image))];
     }
     if (PREFORMATTED_ELEMENTS.has(node.tag)) return this.preformatted(node);
     if (LIST_ELEMENTS.has(node.tag)) return [this.list(node)];
@@ -704,9 +713,18 @@ class HtmlBlockBuilder {
     return segments;
   }
 
-  private image(node: HtmlElement): PdfBlock {
+  /** The image block of an `<img>`; none when its source is external and the policy leaves such images out. */
+  private imageBlocks(node: HtmlElement): PdfBlock[] {
     const src = node.attrs.get('src');
     if (!src) throw new ConversionFailedError('HTML <img> has no src attribute');
+    if (!this.policy.requireResources && !DATA_URI.test(src.trim())) {
+      this.omitted.add(src);
+      return [];
+    }
+    return [this.image(node, src)];
+  }
+
+  private image(node: HtmlElement, src: string): PdfBlock {
     const block = { kind: 'image' as const, image: { data: Buffer.alloc(0), widthPx: 0, heightPx: 0 } };
     this.images.push({ block, bytes: decodeImageSource(src) });
     return block;
@@ -864,12 +882,13 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
  * engine draws (embedded media, form fields, SVG, MathML, non-PNG/JPEG images) and
- * ConversionFailedError for images that are external references or cannot be decoded.
+ * ConversionFailedError for embedded images that cannot be decoded, and for external images when the
+ * policy requires every resource.
  */
-export async function parseHtmlToPdfBlocks(html: string): Promise<HtmlDocumentBlocks> {
+export async function parseHtmlToPdfBlocks(html: string, policy: HtmlResourcePolicy = {}): Promise<HtmlDocumentBlocks> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
-  const builder = new HtmlBlockBuilder();
+  const builder = new HtmlBlockBuilder(policy);
   const blocks = builder.blocks(tree.root.children);
   await verifyImages(builder.images);
-  return { title: tree.title || undefined, blocks };
+  return { title: tree.title || undefined, blocks, warnings: builder.omitted.warnings() };
 }

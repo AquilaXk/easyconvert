@@ -581,6 +581,12 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Attempt archive repair mode (supported for ZIP via zip -FF).',
     },
+    requireResources: {
+      type: 'boolean',
+      default: false,
+      description:
+        'HTML to PDF: refuse a page that names an external resource with a 400 error. Resources are never fetched, so by default an external image is left out of the PDF and reported as a warning in the result.',
+    },
 
     // Audio options
     audioBitrate: {

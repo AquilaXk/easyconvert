@@ -301,6 +301,12 @@ export async function processNodeJob(
         `[${engine.name}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
       );
     }
+    const warnings = finalResult.metadata?.warnings;
+    if (Array.isArray(warnings)) {
+      for (const warning of warnings) {
+        if (typeof warning === 'string') await job.log(`[${engine.name}] Warning: ${warning}`);
+      }
+    }
     if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
       for (const step of finalResult.fallbackChain) {
         await job.log(`[${engine.name}] Engine fallback: ${step}`);

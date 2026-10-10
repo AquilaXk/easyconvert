@@ -10,6 +10,7 @@ import {
   type HtmlElement,
   type HtmlNode,
 } from './html-blocks';
+import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Rebuilds HTML bound for LibreOffice from the parsed tree, so LibreOffice reads exactly what was
@@ -19,7 +20,8 @@ import {
  * value is escaped. Any URL that leaves the document is refused with a typed 400 first: on every
  * element (inline SVG included) URL attributes must be data: URIs or `#fragment`s, image sources
  * must be base64 PNG, JPEG or GIF data that decodes, and only `<a href>` may link to http, https
- * or mailto. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
+ * or mailto. The exception is an `<img>` that is not embedded: resources are never fetched, so it is left out of
+ * the staged document and reported, unless the caller requires every resource. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
  * form controls) is refused with EngineUnavailableError rather than dropped; only elements that
  * render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
  */
@@ -93,6 +95,7 @@ const ANIMATION_VALUE_SEPARATOR = ';';
 const ANCHOR_ELEMENT = 'a';
 const HREF_ATTRIBUTE = 'href';
 const SRC_ATTRIBUTE = 'src';
+const SRCSET_ATTRIBUTE = 'srcset';
 const IMAGE_ELEMENT = 'img';
 const NAMESPACED_HREF_SUFFIX = ':href';
 const META_ELEMENT = 'meta';
@@ -372,6 +375,41 @@ function assertElementStaysInDocument(element: HtmlElement): void {
   if (element.tag === STYLE_ELEMENT) checkedStyleSheet(element);
 }
 
+/** The staged document and one warning per external image that was left out of it. */
+export interface StagedHtml {
+  html: string;
+  warnings: string[];
+}
+
+/** Whether an `<img>` names something other than an embedded data: image, in `src` or `srcset`. */
+function isExternalImage(element: HtmlElement): boolean {
+  const sources = [element.attrs.get(SRC_ATTRIBUTE), ...attributeUrls(SRCSET_ATTRIBUTE, element.attrs.get(SRCSET_ATTRIBUTE) ?? '')];
+  return sources.some((source) => {
+    const url = source === undefined ? '' : normalizeUrl(source);
+    return url.length > 0 && !DATA_URI_PREFIX.test(url) && !url.startsWith(FRAGMENT_PREFIX);
+  });
+}
+
+/**
+ * Removes every `<img>` that is not embedded from the tree, with its content (an image has none), and records it.
+ * Nothing is fetched for them, so LibreOffice never sees the reference; the rest of the page is kept.
+ */
+function leaveOutExternalImages(root: HtmlElement, omitted: OmittedExternalImages): void {
+  const pending: HtmlElement[] = [root];
+  while (pending.length > 0) {
+    const parent = pending.pop() as HtmlElement;
+    parent.children.forEach((child, index) => {
+      if (typeof child === 'string') return;
+      if (child.tag === IMAGE_ELEMENT && isExternalImage(child)) {
+        omitted.add(child.attrs.get(SRC_ATTRIBUTE) ?? child.attrs.get(SRCSET_ATTRIBUTE) ?? '');
+        parent.children[index] = '';
+      } else {
+        pending.push(child);
+      }
+    });
+  }
+}
+
 /** Checks every element of the tree, written or not, so a refused reference is a 400 wherever it is. */
 function assertTreeStaysInDocument(root: HtmlElement): void {
   const pending: HtmlNode[] = [...root.children];
@@ -468,11 +506,13 @@ class StagedHtmlWriter {
  * (escapes, imports, non-ASCII outside strings, a stray "<"), for images that do not decode and
  * for documents nested too deeply; EngineUnavailableError for content it would have to drop.
  */
-export async function stageHtmlForNativeEngine(html: string): Promise<string> {
+export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourcePolicy = {}): Promise<StagedHtml> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
+  const omitted = new OmittedExternalImages();
+  if (!policy.requireResources) leaveOutExternalImages(document.root, omitted);
   assertTreeStaysInDocument(document.root);
   const writer = new StagedHtmlWriter(document.title);
   const staged = writer.write(document.root);
   await verifyEmbeddedImages(writer.images);
-  return staged;
+  return { html: staged, warnings: omitted.warnings() };
 }
