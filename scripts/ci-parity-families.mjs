@@ -3,8 +3,10 @@
 //
 //   git diff --name-only <base> HEAD | node scripts/ci-parity-families.mjs
 //
-// prints three lines for the `changes` job of ci.yml:
+// prints four lines for the `changes` job of ci.yml:
 //   families=<comma list>    benchmarked families to measure (those whose `bench` is set in the map)
+//   specific=<comma list>    the part of `families` that a rule names itself; a family reached only through the
+//                            all-family rules ("*") is not in it
 //   unmapped=<comma list>    conversion families that have no reference-compared bench rows yet
 //   unclassified=<comma list> conversion paths no rule of bench/family-map.json covers (exit status 1)
 //
@@ -103,6 +105,7 @@ export function loadFamilyMap(file = FAMILY_MAP_FILE) {
 export function classifyPaths(paths, map, options = {}) {
   if (paths.length > MAX_CHANGED_PATHS) throw new FamilyMapError(`more than ${MAX_CHANGED_PATHS} changed paths`);
   const benchmarked = new Set();
+  const specific = new Set();
   const unmapped = new Set();
   const unclassified = [];
   for (const file of paths) {
@@ -119,27 +122,40 @@ export function classifyPaths(paths, map, options = {}) {
       for (const id of rowIds) {
         const name = id.split('/')[0];
         if (!map.families.has(name)) {
-          for (const bench of map.benchmarked) benchmarked.add(bench);
+          for (const bench of map.benchmarked) {
+            benchmarked.add(bench);
+            specific.add(bench);
+          }
         } else if (map.families.get(name) === null) {
           unmapped.add(name);
         } else {
           benchmarked.add(map.families.get(name));
+          specific.add(map.families.get(name));
         }
       }
       continue;
     }
     for (const name of rule.families) {
       if (name === ALL_FAMILIES) {
-        for (const bench of map.benchmarked) benchmarked.add(bench);
+        for (const bench of map.benchmarked) {
+          benchmarked.add(bench);
+          // A row file whose rows cannot be told apart stands for rows of any family: nothing is shared about it.
+          if (rule.rows !== undefined) specific.add(bench);
+        }
         continue;
       }
       const bench = map.families.get(name);
-      if (bench === null) unmapped.add(name);
-      else benchmarked.add(bench);
+      if (bench === null) {
+        unmapped.add(name);
+      } else {
+        benchmarked.add(bench);
+        specific.add(bench);
+      }
     }
   }
   return {
     benchmarked: map.benchmarked.filter((name) => benchmarked.has(name)),
+    specific: map.benchmarked.filter((name) => specific.has(name)),
     unmapped: [...unmapped].sort(),
     unclassified: unclassified.sort(),
   };
@@ -201,6 +217,7 @@ function main() {
     .filter((line) => line !== '');
   const result = classifyPaths(paths, loadFamilyMap(), { changedRows: gitChangedRows(process.env.PR_BASE_SHA) });
   console.log(`families=${result.benchmarked.join(',')}`);
+  console.log(`specific=${result.specific.join(',')}`);
   console.log(`unmapped=${result.unmapped.join(',')}`);
   console.log(`unclassified=${result.unclassified.join(',')}`);
   if (result.unclassified.length > 0) {
