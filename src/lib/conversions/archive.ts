@@ -3933,7 +3933,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (err instanceof DecompressionLimitError) throw err;
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -3957,6 +3957,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress BZIP2 archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4000,13 +4001,13 @@ export async function convertArchive(
       );
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new ConversionFailedError(
+      throw new DecompressionLimitError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
     // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
     if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
-      throw new ConversionFailedError(
+      throw new DecompressionLimitError(
         `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }

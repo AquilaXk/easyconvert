@@ -547,14 +547,14 @@ describe('archive conversion maps dictionary failures to typed errors', () => {
     }
   });
 
-  it('maps a zstd decompression bomb to HTTP 400 at the convert route', async () => {
+  it('maps a zstd decompression bomb to HTTP 413 at the convert route', async () => {
     const bomb = buildRleBombFrame(FLOOR_BLOCKS + 1);
     const formData = new FormData();
     formData.append('file', new File([new Uint8Array(bomb)], 'bomb.zst', { type: 'application/zstd' }));
     formData.append('targetFormat', 'zip');
     const response = await convertRoute(new NextRequest('http://localhost/api/convert', { method: 'POST', body: formData }));
     const body = (await response.json()) as { success: boolean; error: string };
-    expect(response.status, body.error).toBe(400);
+    expect(response.status, body.error).toBe(413);
     expect(body.success).toBe(false);
     expect(body.error).toMatch(/Archive bomb detected/);
   });
