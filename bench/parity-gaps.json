@@ -311,6 +311,71 @@
       ]
     },
     {
+      "id": "pdf-ops/split.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.76,
+      "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
+      "history": [
+        {
+          "ratio": 0.7679,
+          "at": "2026-10-10T22:36:40.942Z",
+          "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/extract.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.76,
+      "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
+      "history": [
+        {
+          "ratio": 0.7639,
+          "at": "2026-10-10T22:36:40.942Z",
+          "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/delete.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.76,
+      "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
+      "history": [
+        {
+          "ratio": 0.7658,
+          "at": "2026-10-10T22:36:40.942Z",
+          "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/reorder.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.77,
+      "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
+      "history": [
+        {
+          "ratio": 0.7709,
+          "at": "2026-10-10T22:36:40.942Z",
+          "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/rotate.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.75,
+      "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
+      "history": [
+        {
+          "ratio": 0.7592,
+          "at": "2026-10-10T22:36:40.942Z",
+          "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        }
+      ]
+    },
+    {
       "id": "video/clip.mp4->hevc/throughput",
       "issue": 643,
       "ratio": 0.97,

@@ -204,9 +204,16 @@ export interface ParityOptions {
   nightlyOnly?: Readonly<Record<string, Pick<AbNightlyOnly, 'reason'>>>;
   /**
    * The gap file of the base the change is measured against. When given, every gap entry that is new or changed
-   * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
+   * against it, in a family this run is the shard of, must be backed by the speed rows of this report (bench/config.ts,
+   * GAP_BACKING_LOG_MARGIN). The entries of the families it does not measure are left to the run that measures them.
    */
   baseGaps?: GapFile;
+  /**
+   * The families this run is the shard of: the `--family` argument of the command, which the gate files of the base read
+   * and the change cannot write; neither the report's `families` field nor its rows say which family a shard is. Without
+   * it every family counts as measured, so every changed entry is checked.
+   */
+  families?: readonly Family[];
 }
 
 const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
@@ -352,9 +359,11 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
   if (options.baseGaps) {
     const baseById = gapIndex(options.baseGaps);
     const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
+    // A shard backs the entries of its own families only; the shards of the others back theirs. A family that emitted no rows is still the shard's, so its entries are refused as unmeasured.
+    const shardFamilies = options.families === undefined ? null : new Set<string>(options.families);
     for (const gap of gaps.gaps) {
       const base = baseById.get(gap.id);
-      if (!isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
+      if ((shardFamilies !== null && !shardFamilies.has(gap.id.split('/')[0])) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
       const failure = gapBackingFailure(gap, base, measuredById.get(gap.id));
       if (failure === null) continue;
       const detail = `known-gap entry not backed by this run: ${failure}`;

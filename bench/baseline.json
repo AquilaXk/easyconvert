@@ -1851,6 +1851,26 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/delete.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7660331303220665
+    },
+    "pdf-ops/extract.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7628434923487097
+    },
     "pdf-ops/merge.pdf->pdf/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -1970,6 +1990,36 @@
       "ours": 1,
       "delta": 0,
       "ratio": null
+    },
+    "pdf-ops/reorder.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7634987879572142
+    },
+    "pdf-ops/rotate.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7556619435949562
+    },
+    "pdf-ops/split.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7672800885012911
     },
     "pdf-ops/unlock.pdf->pdf/bytes": {
       "direction": "lower",
