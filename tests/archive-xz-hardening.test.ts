@@ -196,14 +196,28 @@ describe('branch and delta filters are decoded like xz -dc', () => {
   }
 
   oracleTest(
-    'a filter this reader does not decode (RISC-V) answers 422 instead of returning undecoded bytes',
+    'a filter this reader does not decode (RISC-V, id 0x0b) answers 422 instead of returning undecoded bytes',
     [...XZ_TOOLS],
     () => {
-      const stream = encode(machineCode, ['--riscv', '--lzma2=preset=1']);
-      const outcome = attempt(() => unpackXz(stream));
+      // Made with --x86, then the first filter id is rewritten and the block header checksum refreshed, so the test
+      // does not depend on an xz new enough to write the RISC-V filter itself.
+      const patched = Buffer.from(encode(machineCode, ['--x86', '--lzma2=preset=1']));
+      const headerSize = (patched[12] + 1) * 4;
+      // Skip the optional compressed and uncompressed size varints to reach the first filter id.
+      let idAt = 14;
+      for (const flag of [0x40, 0x80]) {
+        if ((patched[13] & flag) === 0) continue;
+        while ((patched[idAt] & 0x80) !== 0) idAt++;
+        idAt++;
+      }
+      expect(patched[idAt]).toBe(0x04);
+      patched[idAt] = 0x0b;
+      refreshCrc(patched, 12, 12 + headerSize - 4, 12 + headerSize - 4);
+      const outcome = attempt(() => unpackXz(patched));
       expect(outcome.ok).toBe(false);
       const error = (outcome as { error: unknown }).error;
       expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
+      expect((error as Error).message).toMatch(/filter 0xb is not supported/);
       expect(statusOf(error)).toBe(422);
     }
   );
