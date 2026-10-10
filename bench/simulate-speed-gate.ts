@@ -10,7 +10,7 @@
  * cap counting as a failure.
  */
 import { abSpeedTiming } from './ab-speed';
-import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, PARITY_SCHEMA_VERSION, SCHEMA_VERSION } from './config';
+import { AB_DEFAULT_REGRESSION, AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, PARITY_SCHEMA_VERSION, SCHEMA_VERSION } from './config';
 import { evaluateParity } from './parity';
 import type { BenchReport } from './report';
 import { throughputRow } from './rows';
@@ -79,7 +79,7 @@ function drawer(truth: Truth, seed: number) {
 }
 
 /** Whether the A/B gate fails the simulated row. */
-export async function abGateFails(truth: Truth, weight: Weight, seed: number): Promise<boolean> {
+export async function abGateFails(truth: Truth, weight: Weight, seed: number, regression?: { delta: number }): Promise<boolean> {
   const draw = drawer(truth, seed);
   let clock = 0;
   let calls = 0;
@@ -97,7 +97,8 @@ export async function abGateFails(truth: Truth, weight: Weight, seed: number): P
     () => clock
   );
   const row = throughputRow('compression', 'c', 1e6, timing, 'tool');
-  return evaluateParity(reportOf(row), { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [] }).rows[0].outcome === 'fail';
+  const overrides = regression ? { [row.id]: regression } : undefined;
+  return evaluateParity(reportOf(row), { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [] }, { regression: overrides }).rows[0].outcome === 'fail';
 }
 
 /** Whether the absolute gate (the head against the reference alone) fails the simulated row. */
@@ -133,7 +134,7 @@ async function main(args: string[]): Promise<void> {
   const rows = flag('--rows', 40);
   const perRun = (rate: number): string => percent(1 - (1 - rate) ** rows);
   console.log(`trials ${trials}, noise per sample ${sigma}, common load ${COMMON_SIGMA}, ${rows} rows per run\n`);
-  console.log('| Weight | Change of the head against the base | True ratio to the reference | Absolute gate fails | A/B gate fails | A/B gate, any of the rows of a run |');
+  console.log(`| Weight | Head slower than the base by | True ratio to the reference | Absolute gate fails | A/B gate fails (threshold ${AB_DEFAULT_REGRESSION * 100}%) | A/B gate fails a run of ${rows} unchanged rows |`);
   console.log('|---|---|---|---|---|---|');
   for (const weight of ['light', 'heavy'] as const) {
     const cases: Array<[string, number, number]> = [
@@ -145,15 +146,17 @@ async function main(args: string[]): Promise<void> {
       ['none', 1, 0.9],
       ['none', 1, 1.1],
       ['-5%', 0.95, 1.0],
-      ['-10%', 0.9, 1.0],
-      ['-10%', 0.9, 0.98],
-      ['-20%', 0.8, 1.0],
+      ['-10%', 1 / 1.1, 1.0],
+      ['-15%', 1 / 1.15, 1.0],
+      ['-15%', 1 / 1.15, 0.98],
+      ['-20%', 1 / 1.2, 1.0],
+      ['-30%', 1 / 1.3, 1.0],
     ];
     for (const [label, headVsBase, headVsReference] of cases) {
       const truth: Truth = { headVsBase, headVsReference, sigma };
       const absolute = await failureRate((seed) => absoluteGateFails(truth, weight, seed), trials);
       const ab = await failureRate((seed) => abGateFails(truth, weight, seed), trials);
-      console.log(`| ${weight} | ${label} | ${headVsReference} | ${percent(absolute)} | ${percent(ab)} | ${perRun(ab)} |`);
+      console.log(`| ${weight} | ${label} | ${headVsReference} | ${percent(absolute)} | ${percent(ab)} | ${label === 'none' ? perRun(ab) : '-'} |`);
     }
   }
 }

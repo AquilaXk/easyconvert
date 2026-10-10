@@ -173,25 +173,34 @@ describe('speed rows', () => {
   });
 
   describe('a row measured against the base of the change in the same pairs', () => {
-    const ID = 'compression/mixed.tar->zst/throughput';
+    const ID = 'ocr/scan.png->pdf/throughput';
     const measured = (ab: Partial<BenchRow>, verdict: 'pass' | 'fail' = 'fail'): BenchRow =>
-      speed({ speedVerdict: verdict, ratioLow: 0.7, ratioHigh: 0.8, ratioMedian: 0.75, runs: 24, abPairs: 24, abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.8, abBaseVsReferenceMedian: 0.75, ...ab });
+      speed({ id: ID, speedVerdict: verdict, ratioLow: 0.7, ratioHigh: 0.8, ratioMedian: 0.75, runs: 24, abPairs: 24, abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.8, abBaseVsReferenceMedian: 0.75, ...ab });
     const verdictOf = (row: BenchRow, gaps: GapFile = NO_GAPS): { outcome: string; basis: string; detail: string } => {
       const found = evaluateParity(report([row]), gaps).rows.find((candidate) => candidate.id === ID);
       if (!found) throw new Error('no verdict');
       return { outcome: found.outcome, basis: found.basis, detail: found.detail };
     };
 
-    it('fails when the head is credibly slower than the base: the upper bound is below the pass line', () => {
-      const slower = verdictOf(measured({ abMedian: 0.9, abUpper: 0.95 }));
+    it('fails when the head is credibly more than 10 percent slower than the base: the upper bound is below 1 / 1.1', () => {
+      const slower = verdictOf(measured({ abMedian: 0.85, abUpper: 0.9 }));
       expect(slower).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
-      expect(slower.detail).toContain('slower than its base');
-      expect(verdictOf(measured({ abMedian: 0.9, abUpper: 0.9699 })).basis).toBe('speed-slower-than-base');
+      expect(slower.detail).toContain('more than 10% slower than its base');
+      expect(verdictOf(measured({ abMedian: 0.85, abUpper: 0.9090 })).basis).toBe('speed-slower-than-base');
     });
 
-    it('passes a head that is not credibly slower, however low the reference ratio sits', () => {
-      expect(verdictOf(measured({ abMedian: 0.94, abUpper: 0.97 })).outcome).toBe('pass');
+    it('passes a head that is not credibly slower by that much, however low the reference ratio sits', () => {
+      expect(verdictOf(measured({ abMedian: 0.9, abUpper: 0.9092 })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abMedian: 0.94, abUpper: 0.96 })).outcome).toBe('pass');
       expect(verdictOf(measured({ abMedian: 1, abUpper: undefined })).outcome).toBe('pass');
+    });
+
+    it('takes the threshold of the row: a row with its own threshold is judged by it', () => {
+      const stricter = { [ID]: { delta: 0.05 } };
+      const found = evaluateParity(report([measured({ abMedian: 0.93, abUpper: 0.94 })]), NO_GAPS, { regression: stricter }).rows[0];
+      expect(found).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+      expect(found.detail).toContain('more than 5% slower');
+      expect(verdictOf(measured({ abMedian: 0.93, abUpper: 0.94 })).outcome).toBe('pass');
     });
 
     it('fails when the base was at the reference and the head is credibly below it', () => {
@@ -533,10 +542,10 @@ describe('a parity run on a saved report', () => {
       const unchanged = await run(withBase({}), { baseline: baselineEntries(1.0) });
       expect(unchanged.code).toBe(0);
       expect(unchanged.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'pass', basis: 'speed-not-slower-than-base' });
-      const slower = await run(withBase({ abMedian: 0.88, abUpper: 0.93 }), { baseline: baselineEntries(1.0) });
+      const slower = await run(withBase({ abMedian: 0.83, abUpper: 0.88 }), { baseline: baselineEntries(1.0) });
       expect(slower.code).toBe(3);
       expect(slower.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
-      expect(slower.lines.some((line) => line.startsWith(`BELOW REFERENCE ${SPEED_ID}: head against base 0.88 over 24 pairs`))).toBe(true);
+      expect(slower.lines.some((line) => line.startsWith(`BELOW REFERENCE ${SPEED_ID}: head against base 0.83 over 24 pairs`))).toBe(true);
     });
   });
 

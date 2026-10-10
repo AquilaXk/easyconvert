@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { AB_FAMILYWISE_ALPHA, AB_ROW_BUDGET, SPEED_MAX_SAMPLE_REPEATS, SPEED_PARITY_TOLERANCE } from './config';
+import { AB_DEFAULT_REGRESSION, AB_FAMILYWISE_ALPHA, AB_ROW_BUDGET, AB_ROW_REGRESSION, type AbRegressionOverride, SPEED_MAX_SAMPLE_REPEATS } from './config';
 import { type AdaptiveTiming, binomialCdfHalf, calibrateRepeats, decideSpeed, SpeedSampleError, type SpeedPlan } from './speed-parity';
 import { coefficientOfVariation, mean, median, timed } from './stats';
 
@@ -16,7 +16,8 @@ function standardDeviation(values: readonly number[]): number {
  * minute) cancels in the head-to-base ratio; that is what an absolute threshold on the reference ratio cannot do.
  *
  * The decision is one-sided and fails only on evidence: the head is credibly slower than the base when the upper
- * confidence bound of the median of base time / head time is below the pass line (1 - SPEED_PARITY_TOLERANCE). The
+ * confidence bound of the median of base time / head time is below the row's slowdown line, 1 / (1 + delta) for the
+ * regression threshold delta of the row (AB_DEFAULT_REGRESSION unless the row has its own). The
  * bound is the exact sign-test bound (the order statistic x(n + 1 - k) with k the largest rank such that
  * P(Binomial(n, 1/2) <= k - 1) <= alpha; Conover, Practical Nonparametric Statistics, 3rd ed., section 3.2), at the
  * error rate alpha = AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET, so that over a run of AB_ROW_BUDGET rows the chance of any
@@ -147,5 +148,12 @@ export async function abSpeedTiming(
   };
 }
 
-/** The line the A/B bounds are compared with: the head may lose this share of the base's speed, as it may lose it against the reference. */
-export const AB_PASS_LINE = 1 - SPEED_PARITY_TOLERANCE;
+/** The regression threshold of a row: its own, recorded with its reason in bench/config.ts, or the default. */
+export function regressionDelta(rowId: string, overrides: Readonly<Record<string, Pick<AbRegressionOverride, 'delta'>>> = AB_ROW_REGRESSION): number {
+  return overrides[rowId]?.delta ?? AB_DEFAULT_REGRESSION;
+}
+
+/** The ratio of base time / head time below which the head took more than the threshold longer than the base. */
+export function slowdownLine(rowId: string, overrides?: Readonly<Record<string, Pick<AbRegressionOverride, 'delta'>>>): number {
+  return 1 / (1 + regressionDelta(rowId, overrides));
+}

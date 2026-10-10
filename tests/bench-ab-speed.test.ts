@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { AB_ROW_ALPHA, abSpeedTiming, oneSidedRank, upperBoundOfMedian } from '../bench/ab-speed';
-import { AB_FAMILYWISE_ALPHA, AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_ROW_BUDGET } from '../bench/config';
+import { AB_ROW_ALPHA, abSpeedTiming, oneSidedRank, regressionDelta, slowdownLine, upperBoundOfMedian } from '../bench/ab-speed';
+import { AB_DEFAULT_REGRESSION, AB_FAMILYWISE_ALPHA, AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_ROW_BUDGET, AB_ROW_REGRESSION } from '../bench/config';
+import fs from 'node:fs';
+import path from 'node:path';
 import { SpeedSampleError } from '../bench/speed-parity';
 
 /**
@@ -15,10 +17,10 @@ describe('the error rate of one row', () => {
     expect(AB_ROW_ALPHA).toBeCloseTo(0.0002, 12);
   });
 
-  it('is met by the pair counts: the light plan reaches rank 4, the heavy plan rank 1', () => {
-    expect([AB_LIGHT_PAIRS, AB_HEAVY_PAIRS]).toEqual([24, 14]);
+  it('is met by the pair counts: the light plan reaches rank 4, the heavy plan rank 2', () => {
+    expect([AB_LIGHT_PAIRS, AB_HEAVY_PAIRS]).toEqual([24, 17]);
     expect(oneSidedRank(AB_LIGHT_PAIRS, AB_ROW_ALPHA)).toBe(4);
-    expect(oneSidedRank(AB_HEAVY_PAIRS, AB_ROW_ALPHA)).toBe(1);
+    expect(oneSidedRank(AB_HEAVY_PAIRS, AB_ROW_ALPHA)).toBe(2);
   });
 });
 
@@ -136,5 +138,26 @@ describe('the A/B timing', () => {
     const run = scripted(() => ({ head: 1, base: 1, reference: 1 }));
     await expect(abSpeedTiming(run.head, run.base, run.reference, { pairs: 0, warmup: 0 }, run.now)).rejects.toThrow(SpeedSampleError);
     await expect(abSpeedTiming(run.head, run.base, run.reference, { pairs: 65, warmup: 0 }, run.now)).rejects.toThrow(SpeedSampleError);
+  });
+});
+
+describe('the regression threshold of a row', () => {
+  it('is 10 percent unless the row has its own, and the line is the base time over the slower head time', () => {
+    expect(AB_DEFAULT_REGRESSION).toBe(0.1);
+    expect(regressionDelta('image/a/throughput')).toBe(0.1);
+    expect(slowdownLine('image/a/throughput')).toBeCloseTo(1 / 1.1, 12);
+    expect(regressionDelta('x/y/throughput', { 'x/y/throughput': { delta: 0.25 } })).toBe(0.25);
+    expect(slowdownLine('x/y/throughput', { 'x/y/throughput': { delta: 0.25 } })).toBeCloseTo(0.8, 12);
+  });
+
+  it('is overridden only with a recorded reason, for a row of the baseline, and only upwards from the default', () => {
+    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
+    for (const [id, override] of Object.entries(AB_ROW_REGRESSION)) {
+      expect(id in baseline.entries, id).toBe(true);
+      expect(override.delta, id).toBeGreaterThan(AB_DEFAULT_REGRESSION);
+      expect(override.delta, id).toBeLessThanOrEqual(0.5);
+      expect(override.reason.length, id).toBeGreaterThan(60);
+      expect(override.reason, id).toMatch(/\d+(\.\d+)?/);
+    }
   });
 });

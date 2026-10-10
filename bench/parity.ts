@@ -3,6 +3,7 @@ import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
+import { slowdownLine } from './ab-speed';
 import { speedGapThreshold } from './speed-history';
 
 /**
@@ -127,21 +128,22 @@ type SpeedJudgement = Omit<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'ga
 
 /**
  * A speed row measured against the base of the change in the same pairs (bench/ab-speed.ts). It fails only on evidence:
- *  - the head is credibly slower than the base (the one-sided upper bound of the median of base time / head time is
- *    below the pass line), or
+ *  - the head is credibly slower than the base by more than the row's regression threshold (the one-sided upper bound of
+ *    the median of base time / head time is below 1 / (1 + threshold)), or
  *  - the base was at or above the reference and the head is credibly below it (the upper bound of reference time /
  *    head time is below the pass line).
  * Otherwise the change did not make the row worse: it passes, and a row below the reference that the base was already
  * below is the standing gap the nightly run reports (bench/parity-gaps.json), not a failure of this change.
  */
-function judgeAgainstBase(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
+function judgeAgainstBase(row: BenchRow, gap: GapEntry | null, regression?: ParityOptions['regression']): SpeedJudgement {
   const line = 1 - SPEED_PARITY_TOLERANCE;
+  const slowerLine = slowdownLine(row.id, regression);
   const none = { worsening: null, allowance: null };
   const pairs = row.abPairs as number;
   const median = row.abMedian ?? row.ratio ?? 0;
   const against = `head against base ${show(median)} over ${pairs} pairs`;
-  if (row.abUpper !== undefined && row.abUpper < line) {
-    return { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(line)}: the change made the row slower than its base`, ...none };
+  if (row.abUpper !== undefined && row.abUpper < slowerLine) {
+    return { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(slowerLine)}: the change made the row more than ${show(100 * (1 / slowerLine - 1))}% slower than its base`, ...none };
   }
   const baseVersusReference = row.abBaseVsReferenceMedian ?? 0;
   if (baseVersusReference >= line && row.abHeadVsReferenceUpper !== undefined && row.abHeadVsReferenceUpper < line) {
@@ -164,8 +166,8 @@ function judgeAgainstBase(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   return { outcome: 'pass', basis: 'speed-unchanged-below-reference', detail: `${against} (${bound}); below the reference on the base as well (${show(baseVersusReference)}), ${tracked}`, ...none };
 }
 
-function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
-  if (row.abPairs !== undefined) return judgeAgainstBase(row, gap);
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, regression?: ParityOptions['regression']): SpeedJudgement {
+  if (row.abPairs !== undefined) return judgeAgainstBase(row, gap, regression);
   if (row.speedVerdict === undefined) {
     throw new ParityInputError(`${row.id} is a throughput row without a speed decision; measure it with --parity`);
   }
@@ -223,6 +225,8 @@ export interface ParityOptions {
    * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
    */
   baseGaps?: GapFile;
+  /** Regression thresholds of rows other than bench/config.ts names; for tests of the verdict. */
+  regression?: Readonly<Record<string, { delta: number }>>;
 }
 
 const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
@@ -276,7 +280,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       continue;
     }
     if (row.kind === 'throughput') {
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null) });
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options.regression) });
       continue;
     }
     const siblings = byCase.get(caseKey(row)) ?? [];

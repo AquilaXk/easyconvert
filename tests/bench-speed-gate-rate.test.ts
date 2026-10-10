@@ -26,8 +26,14 @@ describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
     expect(await ab(truth(0.98, 1, 0.04))).toBeLessThan(0.01);
   });
 
-  it('fails a 20 percent slowdown every time', async () => {
-    expect(await ab(truth(1, 0.8))).toBe(1);
+  it('fails a head 30 percent slower than its base every time, and one 20 percent slower nearly every time', async () => {
+    expect(await ab(truth(1, 1 / 1.3))).toBe(1);
+    expect(await ab(truth(1, 1 / 1.2))).toBeGreaterThanOrEqual(0.98);
+  });
+
+  it('does not fail a head 10 percent slower or less: that is the threshold, not beyond it', async () => {
+    expect(await ab(truth(1, 1 / 1.1))).toBeLessThan(0.02);
+    expect(await ab(truth(1, 0.95))).toBe(0);
   });
 
   it('does not fail a head faster than its base', async () => {
@@ -35,16 +41,21 @@ describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
   });
 });
 
-describe('the injected 10 percent slowdown of a row at parity', () => {
-  it('fails every light row and nearly every heavy row at the noise CI measured', async () => {
-    const light = await failureRate((seed) => abGateFails(truth(1, 0.9), 'light', seed), TRIALS);
-    const heavy = await failureRate((seed) => abGateFails(truth(1, 0.9), 'heavy', seed), TRIALS);
+describe('the injected slowdown of a row at parity', () => {
+  it('fails every light row 20 percent slower and nearly every heavy one, at the noise CI measured', async () => {
+    const light = await failureRate((seed) => abGateFails(truth(1, 1 / 1.2), 'light', seed), TRIALS);
+    const heavy = await failureRate((seed) => abGateFails(truth(1, 1 / 1.2), 'heavy', seed), TRIALS);
     expect(light).toBeGreaterThanOrEqual(0.99);
     expect(heavy).toBeGreaterThanOrEqual(0.95);
   });
 
+  it('fails 15 percent slower on most light rows, and a 10 percent slowdown when the row asks for a 5 percent threshold', async () => {
+    expect(await failureRate((seed) => abGateFails(truth(1, 1 / 1.15), 'light', seed), TRIALS)).toBeGreaterThanOrEqual(0.9);
+    expect(await failureRate((seed) => abGateFails(truth(1, 1 / 1.1), 'light', seed, { delta: 0.05 }), TRIALS)).toBeGreaterThanOrEqual(0.95);
+  });
+
   it('is caught also when the row was already below the reference on the base', async () => {
-    expect(await failureRate((seed) => abGateFails(truth(0.9, 0.9), 'light', seed), TRIALS)).toBeGreaterThanOrEqual(0.99);
+    expect(await failureRate((seed) => abGateFails(truth(0.9, 1 / 1.2), 'light', seed), TRIALS)).toBeGreaterThanOrEqual(0.99);
   });
 });
 
