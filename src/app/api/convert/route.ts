@@ -11,6 +11,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
+  ArchiveInputUnprocessableError,
   EncryptedOfficeDocumentError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -248,8 +249,9 @@ export async function POST(req: NextRequest) {
       // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
       return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
     }
-    if (error instanceof EncryptedOfficeDocumentError) {
-      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
+    if (error instanceof EncryptedOfficeDocumentError || error instanceof ArchiveInputUnprocessableError) {
+      // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
+      // decode (an archive's password and method errors included): 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(error.status, error.message, instanceUri);
     }
     if (error instanceof WorkerOutputMissingError) {

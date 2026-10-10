@@ -50,7 +50,17 @@ import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
-import { listSevenZipArchive, readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder, type SevenZipListing } from './sevenzip-reader';
+import { AesKeyCache, AesKeyMissingError, aesKeyRequestOf } from './archive-sevenzip-aes';
+import { createSevenZipFolderDecoder } from './archive-sevenzip-coders';
+import {
+  classifySevenZipAttributes,
+  collectSevenZipAesProperties,
+  listSevenZipArchive,
+  readSevenZipArchive,
+  type SevenZipEntry,
+  type SevenZipListing,
+  type SevenZipReadLimits,
+} from './sevenzip-reader';
 import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
@@ -2966,80 +2976,102 @@ function assemble7zArchive(plan: SevenZipPlan, packed: SevenZipPackedStream[], a
 // 7z Archive Extraction with Authentic Decompression
 // ============================================================================
 
-function decompress7zFolder(
-  packSlice: Buffer,
-  coder: SevenZipCoder,
-  unpackSize: number
-): Buffer {
-  const id = coder.codecId;
-  if (id.length === 1 && id[0] === 0x00) {
-    // Copy
-    return packSlice.subarray(0, unpackSize);
-  }
-  if (
-    (id.length === 3 && id[0] === 0x04 && id[1] === 0x01 && (id[2] === 0x08 || id[2] === 0x09)) ||
-    (id.length === 1 && id[0] === 0x04)
-  ) {
-    // Deflate
-    try {
-      return zlib.inflateRawSync(packSlice, { maxOutputLength: Math.max(1, unpackSize) });
-    } catch (err) {
-      throw new CorruptStreamError(`Corrupted 7z archive: invalid Deflate stream (${err instanceof Error ? err.message : String(err)})`);
-    }
-  }
-  if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) {
-    // LZMA
-    return decompressLzma(packSlice, coder.properties, unpackSize);
-  }
-  if (id.length === 1 && id[0] === 0x21) {
-    // LZMA2
-    return decompressLzma2(packSlice, coder.properties, unpackSize);
-  }
-  if (id.length === 3 && id[0] === 0x04 && id[1] === 0x02 && id[2] === 0x02) {
-    // BZip2
-    const bzipLimit = unpackSize > 0
-      ? Math.min(unpackSize, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE)
-      : ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-    return decompressBzip2(packSlice, bzipLimit);
-  }
-  throw new ConversionFailedError(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
-}
-
-/** Decodes one 7z folder: a single coder from the codecs this engine carries. */
-const decodeSevenZipFolder: SevenZipFolderDecoder = (folder, packed) =>
-  decompress7zFolder(packed, folder.coders[0], folder.unpackSize);
-
 /**
  * The file table of a 7z archive (names, sizes, checksums, times, attributes) read in process. Only the header is
  * decoded, so the cost does not grow with the archive; a header this engine cannot decode (an encrypted or filtered
  * header) throws, and the caller then lists the archive with 7-Zip itself.
  */
 export function listSevenZipEntries(sevenZipBuffer: Buffer): SevenZipListing {
-  return listSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+  return listSevenZipArchive(
+    sevenZipBuffer,
+    createSevenZipFolderDecoder({ maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE }),
+    sevenZipReadLimits()
+  );
+}
+
+function sevenZipReadLimits(): SevenZipReadLimits {
+  return {
     maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
     maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
     maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
-  });
+  };
 }
 
 /**
  * Extracts the files of a 7z archive in process. A damaged, truncated or mislabelled archive throws a
- * CorruptStreamError; it never yields an empty or partial file list.
+ * CorruptStreamError; it never yields an empty or partial file list. Folders with filter chains (BCJ, BCJ2, Delta,
+ * ARM, PPC, SPARC, IA-64) are decoded, and AES-256 folders are decrypted with `password`; a method the engine does
+ * not decode is an UnsupportedArchiveMethodError. A symbolic link is never extracted: it fails the archive with an
+ * UnsafeArchiveError, or with `skipLinks` is left out and reported through `onSkippedLinks`.
  */
-export function extract7zArchive(
+export function extract7zArchive(sevenZipBuffer: Buffer, options: SevenZipExtractOptions = {}): { filename: string; buffer: Buffer }[] {
+  const entries = readSevenZipArchive(
+    sevenZipBuffer,
+    createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE }),
+    sevenZipReadLimits()
+  );
+  return selectSevenZipFiles(entries, options);
+}
+
+/** The header of an encrypted archive can be encoded at most this deep, and each level may need its own key. */
+const SEVEN_ZIP_MAX_KEY_ROUNDS_OF_DISCOVERY = 8;
+
+/**
+ * `extract7zArchive` for an archive with a password: the AES keys are derived before any data is decoded, large
+ * derivations on a pool thread (stopped by `options.signal`), so a big key derivation never blocks the event loop. The
+ * header is read first to learn which keys the folders need; each distinct key is derived once for the whole archive.
+ */
+export async function extract7zArchiveAsync(
   sevenZipBuffer: Buffer,
-  options: { password?: string; entries?: string[] } = {}
-): { filename: string; buffer: Buffer }[] {
-  const entries = readSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
-    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
-    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
-  });
+  options: SevenZipExtractOptions & { signal?: AbortSignal } = {}
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const keys = new AesKeyCache(options.password);
+  keys.deferred = true;
+  const decoder = createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, keys });
+  const limits = sevenZipReadLimits();
+  let properties: Buffer[] = [];
+  for (let round = 0; ; round += 1) {
+    try {
+      properties = collectSevenZipAesProperties(sevenZipBuffer, decoder, limits);
+      break;
+    } catch (err) {
+      // An encrypted header needs its own key before the folders' keys can be read from it.
+      if (!(err instanceof AesKeyMissingError) || round >= SEVEN_ZIP_MAX_KEY_ROUNDS_OF_DISCOVERY) throw err;
+      await keys.prepare([err.request], options.signal);
+      if (!keys.has(err.request)) throw err;
+    }
+  }
+  await keys.prepare(properties.map(aesKeyRequestOf), options.signal);
+  keys.deferred = false;
+  return selectSevenZipFiles(readSevenZipArchive(sevenZipBuffer, decoder, limits), options);
+}
+
+interface SevenZipExtractOptions {
+  password?: string;
+  entries?: string[];
+  skipLinks?: boolean;
+  onSkippedLinks?: (names: string[]) => void;
+}
+
+function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractOptions): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
+  const skippedLinks: string[] = [];
   for (const entry of entries) {
+    const kind = classifySevenZipAttributes(entry.attributes);
+    if (kind.isSpecial) {
+      throw new UnsafeArchiveError('special-entry', `Archive contains a device, FIFO or socket entry (${entry.name}), which is not extracted.`);
+    }
+    if (kind.isSymlink) {
+      if (!options.skipLinks) {
+        throw new UnsafeArchiveError('link-entry', 'Archive contains a symbolic or hard link entry, which is not extracted.');
+      }
+      skippedLinks.push(entry.name);
+      continue;
+    }
     const filename = sanitizeArchivePath(entry.name);
     if (filename) files.push({ filename, buffer: entry.data });
   }
+  options.onSkippedLinks?.(skippedLinks);
   if (options.entries && options.entries.length > 0) {
     return files.filter((f) => matchArchiveGlob(f.filename, options.entries));
   }
@@ -3601,8 +3633,8 @@ async function inspect7zBuffer(
     return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
   }
 
-  // Pure TS fallback for 7z inspection
-  if (buffer.length >= 32) {
+  // Pure TS fallback for 7z inspection. With a password the in-process AES coder opens an encrypted header itself.
+  if (buffer.length >= 32 && !password) {
     const nextHeaderOffset = Number(buffer.readBigUInt64LE(12));
     const nextHeaderSize = Number(buffer.readBigUInt64LE(20));
     const nhStart = 32 + nextHeaderOffset;
@@ -3618,7 +3650,7 @@ async function inspect7zBuffer(
     }
   }
 
-  const rawExtracted = extract7zArchive(buffer);
+  const rawExtracted = await extract7zArchiveAsync(buffer, { password });
   const entries: ArchiveEntryMetadata[] = rawExtracted.map((f) => ({
     name: f.filename,
     uncompressedSize: f.buffer.length,
@@ -4018,8 +4050,15 @@ export async function convertArchive(
     }
   } else if (src === '7z' || src === 'tar.7z') {
     try {
-      files = extract7zArchive(effectiveBuffer, options);
+      files = await extract7zArchiveAsync(effectiveBuffer, {
+        ...options,
+        onSkippedLinks: (names) => {
+          skippedLinks = names;
+        },
+      });
     } catch (err: any) {
+      // The typed failures (password, unsupported method, size limit, unsafe entry, corrupt stream) keep their class and status.
+      if (err instanceof ConversionFailedError) throw err;
       throw new ConversionFailedError(
         `Failed to extract 7z archive '${effectiveFilename}': ${err?.message || String(err)}`
       );

@@ -56,7 +56,7 @@ export interface CraftedMember {
   mtimeMs?: number;
 }
 
-function number7z(value: number): Buffer {
+export function number7z(value: number): Buffer {
   let remaining = BigInt(value);
   for (let extra = 0; extra < 8; extra++) {
     if (remaining < 1n << BigInt(7 * (extra + 1))) {
