@@ -1107,8 +1107,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -22.35646008495834,
-      "delta": -22.35646008495834,
+      "ours": -17.850514489840762,
+      "delta": -17.850514489840762,
       "ratio": null
     },
     "image/lineart.png->jpg/bd_rate_ssim": {
@@ -1117,8 +1117,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -46.45234689834534,
-      "delta": -46.45234689834534,
+      "ours": -43.525312923307055,
+      "delta": -43.525312923307055,
       "ratio": null
     },
     "image/lineart.png->jpg/bytes": {
@@ -1127,8 +1127,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 53189,
-      "delta": -6127,
+      "ours": 56347,
+      "delta": -2969,
       "ratio": null
     },
     "image/lineart.png->jpg/psnr": {
