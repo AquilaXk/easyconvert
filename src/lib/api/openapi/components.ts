@@ -21,6 +21,7 @@ import {
   PdfReorderOptionsSchema,
   PdfOptimizeOptionsSchema,
   PdfaValidationProblemSchema,
+  ConversionWarningsProperties,
   DroppedStreamsProperties,
   EngineTraceProperties,
 } from '@/lib/api/contracts';
@@ -89,6 +90,7 @@ export const components = {
         expiresAt: { type: 'number' },
         ...EngineTraceProperties,
         ...DroppedStreamsProperties,
+        ...ConversionWarningsProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

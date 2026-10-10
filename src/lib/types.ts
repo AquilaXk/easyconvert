@@ -571,6 +571,8 @@ export interface ConversionJobResult {
   fallbackReason?: string;
   /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
   droppedStreams?: DroppedStream[];
+  /** What the conversion left out of the document, one line each (an HTML image that is not embedded); absent when nothing was. */
+  warnings?: string[];
   /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
   optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
 }

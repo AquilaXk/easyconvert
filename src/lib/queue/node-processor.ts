@@ -22,6 +22,7 @@ import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { deadlineBoundEngine } from './job-deadline';
 import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
+import { conversionWarningsFields } from '../api/conversion-warnings';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 import { openPasswordOption } from './option-secrets';
@@ -372,6 +373,7 @@ export async function processNodeJob(
       ...frameMetadataFields(finalResult),
       ...engineTraceFields(finalResult),
       ...droppedStreamsFields(finalResult),
+      ...conversionWarningsFields(finalResult),
     };
   } catch (err) {
     failure = err;
