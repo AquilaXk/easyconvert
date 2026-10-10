@@ -32,7 +32,7 @@
     },
     {
       "families": ["compression"],
-      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*|optimizers)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
     },
     {
       "families": ["image"],
@@ -76,7 +76,7 @@
     },
     {
       "families": ["pdf-ops"],
-      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range|optimizers)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
+      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
     },
     {
       "families": ["vector"],
