@@ -293,7 +293,8 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
     const parts: Buffer[] = [];
     let total = 0;
     for (let from = 0; from < ranges.length; from += SPLIT_CONCURRENCY) {
-      const batch = await Promise.all(
+      // Batches run one after another so that no more than SPLIT_CONCURRENCY qpdf processes run at once.
+      const batch = await Promise.all( // NOSONAR S9382 sequential
         ranges
           .slice(from, from + SPLIT_CONCURRENCY)
           .map((range) => runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action }))

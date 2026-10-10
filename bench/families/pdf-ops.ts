@@ -675,13 +675,13 @@ async function runSplit(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
     const oursDir = ctx.scratch('split-ours');
     fs.mkdirSync(oursDir);
     const oursFiles: string[] = [];
-    for (const name of Object.keys(archive.files).sort()) {
+    for (const name of Object.keys(archive.files).sort((a, b) => a.localeCompare(b))) {
       const file = path.join(oursDir, name);
-      fs.writeFileSync(file, await archive.files[name].async('nodebuffer'));
+      fs.writeFileSync(file, await archive.files[name].async('nodebuffer')); // NOSONAR S9382 sequential
       oursFiles.push(file);
     }
     reference();
-    const referenceFiles = fs.readdirSync(referenceDir).sort().map((name) => path.join(referenceDir, name));
+    const referenceFiles = fs.readdirSync(referenceDir).sort((a, b) => a.localeCompare(b)).map((name) => path.join(referenceDir, name));
     const truth = facts.texts.map((text) => [text]);
     const partsSsim = (files: string[], label: string): number =>
       mean(files.map((file, index) => (facts.pages[index] === undefined ? 0 : (pageSsims(tools, renderPages(tools, file, ctx.scratch(`${label}-${index}`)), [facts.pages[index]])[0] ?? 0))));
@@ -773,7 +773,7 @@ export const runPdfOps: FamilyRunner = async (ctx) => {
       continue;
     }
     ctx.log(`pdf-ops ${item.name}`);
-    rows.push(...(await item.run(ctx, plan.paths as unknown as PdfTools & { gs: string })));
+    rows.push(...(await item.run(ctx, plan.paths as unknown as PdfTools & { gs: string }))); // NOSONAR S9382 sequential
   }
   return rows;
 };

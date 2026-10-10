@@ -4,12 +4,11 @@ import {
   PdfPostprocessError,
 } from '../../types';
 import { PDF_PASSWORD_UNSAFE_MESSAGE } from '../../../worker/pdf-decrypt';
-import { getQpdfBinaryPath } from './qpdf-path';
 import { requireQpdfBinary, runQpdfToBuffer, withQpdfInputFile } from './qpdf-run';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { PdfStructureError } from '../pdf-document';
 
-export { getQpdfBinaryPath };
+export { getQpdfBinaryPath } from './qpdf-path';
 
 /** The argument file holds one argument per line, so a password with a line break would become several arguments. */
 const ARGUMENT_FILE_UNSAFE_CHARS = /[\r\n\0]/;

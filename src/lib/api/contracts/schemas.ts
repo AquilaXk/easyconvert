@@ -85,7 +85,7 @@ export const PdfAOptionsSchema = {
 } as const;
 
 /** Pages as the `pages` option writes them: `3`, `2-5`, `4-`, `-3`, comma separated. */
-const PAGE_SPEC_PATTERN = '^[0-9,\\-\\s]+$';
+const PAGE_SPEC_PATTERN = String.raw`^[0-9,\-\s]+$`;
 const MAX_PAGE_SPEC_LENGTH = 8192;
 const MAX_SPLIT_RANGES_PARTS = 1000;
 

@@ -96,7 +96,8 @@ function toGhostscriptError(error: unknown, dir: string): unknown {
   }
   if (!(error instanceof SandboxedProcessError)) return error;
   const detail = `${error.stderr}${error.stdout}`.replaceAll(dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '';
-  return new PdfPostprocessError(`Compression failed: Ghostscript could not process the document${detail ? ` (${detail})` : ''}.`);
+  const reason = detail ? ` (${detail})` : '';
+  return new PdfPostprocessError(`Compression failed: Ghostscript could not process the document${reason}.`);
 }
 
 async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompressRun): Promise<Buffer> {

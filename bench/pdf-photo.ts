@@ -57,7 +57,7 @@ export function readJpegInfo(jpeg: Buffer): JpegInfo {
 }
 
 const number = (value: number): string => value.toFixed(NUMBER_DIGITS);
-const escapeText = (text: string): string => text.replace(/[\\()]/g, '\\$&');
+const escapeText = (text: string): string => text.replace(/[\\()]/g, String.raw`\$&`);
 
 /** Pixels per inch of the photograph at the size it is placed. */
 export function photoResolution(info: JpegInfo, photoWidthPoints: number): number {
@@ -73,9 +73,10 @@ export function buildPhotoPdf(spec: PhotoPdfSpec): Buffer {
   // Objects: 1 catalog, 2 page tree, 3 image, 4 font, then a page and a content stream per page.
   const firstPageObject = 5;
   const pageObject = (index: number): number => firstPageObject + index * 2;
+  const pageRefs = spec.pages.map((_, index) => `${pageObject(index)} 0 R`);
   const bodies: Buffer[] = [
     Buffer.from('<< /Type /Catalog /Pages 2 0 R >>', 'latin1'),
-    Buffer.from(`<< /Type /Pages /Kids [${spec.pages.map((_, index) => `${pageObject(index)} 0 R`).join(' ')}] /Count ${pageCount} >>`, 'latin1'),
+    Buffer.from(`<< /Type /Pages /Kids [${pageRefs.join(' ')}] /Count ${pageCount} >>`, 'latin1'),
     Buffer.concat([
       Buffer.from(
         `<< /Type /XObject /Subtype /Image /Width ${info.width} /Height ${info.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${spec.jpeg.length} >>\nstream\n`,

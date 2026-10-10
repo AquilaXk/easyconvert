@@ -106,7 +106,8 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
     return new InvalidPageRangeError(`Page ${outOfRange[1]} is out of range: the document has fewer pages.`);
   }
   const detail = error.stderr.replaceAll(workspace.inputPath, '<input>').replaceAll(workspace.dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '';
-  return new PdfPostprocessError(`${action} failed: qpdf could not process the document${detail ? ` (${detail})` : ''}.`);
+  const reason = detail ? ` (${detail})` : '';
+  return new PdfPostprocessError(`${action} failed: qpdf could not process the document${reason}.`);
 }
 
 export interface QpdfInvocation {
