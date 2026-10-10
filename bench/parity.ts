@@ -61,6 +61,8 @@ export interface RowVerdict {
   allowance: number | null;
   /** The known gap behind a failing row, when bench/parity-gaps.json lists it. */
   gap: GapEntry | null;
+  /** The measured speed ratio of a throughput row with an interval: the numbers `detail` quotes, as data for the acknowledgement rule. */
+  speed?: { median: number; low: number; high: number; pairs: number | null };
 }
 
 export interface ParitySummary {
@@ -295,7 +297,11 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       continue;
     }
     if (row.kind === 'throughput') {
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options.regression) });
+      const measured =
+        row.ratioLow !== undefined && row.ratioHigh !== undefined
+          ? { speed: { median: row.ratioMedian ?? row.ratio ?? Number.NaN, low: row.ratioLow, high: row.ratioHigh, pairs: row.runs ?? null } }
+          : {};
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options.regression), ...measured });
       continue;
     }
     const siblings = byCase.get(caseKey(row)) ?? [];

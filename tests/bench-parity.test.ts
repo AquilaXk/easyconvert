@@ -167,6 +167,7 @@ describe('speed rows', () => {
     const unstable = evaluateParity(report([speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: 0.9, ratioHigh: 1.1, ratioMedian: 1 })]), NO_GAPS).rows[0];
     expect(unstable).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
     expect(unstable.detail).toContain('cap');
+    expect(unstable.speed).toEqual({ median: 1, low: 0.9, high: 1.1, pairs: 9 });
   });
 
   it('fails a row still undecided at its last cap when it has no base to be compared with', () => {

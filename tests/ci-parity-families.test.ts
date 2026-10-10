@@ -26,7 +26,12 @@ import {
 
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
-const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
+const classify = (...paths: string[]) => {
+  const { specific: _specific, ...rest } = classifyPaths(paths, MAP);
+  return rest;
+};
+/** The families of the result that a rule names itself, as opposed to the all-family rules. */
+const specificOf = (...paths: string[]): string[] => classifyPaths(paths, MAP).specific;
 const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
@@ -157,6 +162,24 @@ describe('classifying changed paths', () => {
     }
   });
 
+  it('reports the families a rule names itself apart from those reached only through the all-family rules', () => {
+    // The dispatcher is a shared file: every family is measured, none is specific to the change.
+    expect(specificOf('src/lib/conversions/dispatch.ts')).toEqual([]);
+    expect(specificOf('src/lib/queue/graph/node-executor.ts')).toEqual([]);
+    expect(specificOf('src/lib/conversions/mp4-layout.ts')).toEqual(['video']);
+    // A shared file next to a family file: only the family file is specific.
+    expect(specificOf('src/lib/conversions/dispatch.ts', 'src/lib/conversions/mp4-layout.ts')).toEqual(['video']);
+    expect(classifyPaths(['src/lib/conversions/dispatch.ts', 'src/lib/conversions/mp4-layout.ts'], MAP).benchmarked).toEqual([...BENCH_FAMILIES]);
+    expect(specificOf('README.md')).toEqual([]);
+  });
+
+  it('treats the rows of a row file as specific to the families they name, and a row file it cannot compare as specific to all', () => {
+    const rows = (...ids: string[]) => (file: string, kind: string) => (kind === 'gaps' ? ids : null);
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP, { changedRows: rows('video/clip.mp4->vp9/throughput') }).specific).toEqual(['video']);
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP, { changedRows: rows('mystery/x/throughput') }).specific).toEqual([...BENCH_FAMILIES]);
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP).specific).toEqual([...BENCH_FAMILIES]);
+  });
+
   it('sends the SVG sanitizer to the image family that renders through it', () => {
     expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
   });
@@ -209,16 +232,16 @@ describe('classifying changed paths', () => {
         { families: ['image'], match: '^src/' },
       ],
     });
-    expect(classifyPaths(['src/a.ts'], map)).toEqual({ benchmarked: [], unmapped: ['extra'], unclassified: [] });
-    expect(classifyPaths(['src/b.ts'], map)).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['src/a.ts'], map)).toMatchObject({ benchmarked: [], unmapped: ['extra'], unclassified: [] });
+    expect(classifyPaths(['src/b.ts'], map)).toMatchObject({ benchmarked: ['image'], unmapped: [], unclassified: [] });
   });
 
   it('stops being unmapped, and is measured, once the map benchmarks the family', () => {
     const rules = [{ families: ['cad'], match: '^src/cad\\.ts$' }];
     const before = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: null } }, rules });
-    expect(classifyPaths(['src/cad.ts'], before)).toEqual({ benchmarked: [], unmapped: ['cad'], unclassified: [] });
+    expect(classifyPaths(['src/cad.ts'], before)).toMatchObject({ benchmarked: [], unmapped: ['cad'], unclassified: [] });
     const after = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: 'cad' } }, rules });
-    expect(classifyPaths(['src/cad.ts'], after)).toEqual({ benchmarked: ['cad'], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['src/cad.ts'], after)).toMatchObject({ benchmarked: ['cad'], unmapped: [], unclassified: [] });
     // The family joins "every benchmarked family" too.
     expect(classifyPaths(['src/x.ts'], validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: 'cad' } }, rules: [{ families: ['*'], match: '^src/' }] })).benchmarked).toEqual([...BENCH_FAMILIES, 'cad']);
   });
@@ -255,16 +278,16 @@ describe('the command the changes job runs', () => {
   const run = (input: string): { status: number | null; stdout: string; stderr: string } =>
     spawnSync('node', ['scripts/ci-parity-families.mjs'], { cwd: ROOT, input, encoding: 'utf-8' });
 
-  it('prints the three lists the workflow reads', () => {
+  it('prints the four lists the workflow reads', () => {
     const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/cad-nurbs.ts\nREADME.md\n');
     expect(result.status).toBe(0);
-    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=cad', 'unclassified=']);
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'specific=compression', 'unmapped=cad', 'unclassified=']);
   });
 
   it('prints empty lists for a change outside the conversion code', () => {
     const result = run('docs/guide.md\n');
     expect(result.status).toBe(0);
-    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=', 'unmapped=', 'unclassified=']);
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=', 'specific=', 'unmapped=', 'unclassified=']);
   });
 
   it('exits 1 with an error annotation for an unclassified conversion path', () => {
@@ -341,15 +364,15 @@ describe('the rows of baseline.json and parity-gaps.json', () => {
   const rows = (ids: string[] | null) => ({ changedRows: () => ids });
 
   it('map to the families of the rows that changed', () => {
-    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['image/photo-a.jpg->avif/throughput', 'pdf-ops/merge.pdf->pdf/bytes']))).toEqual({ benchmarked: ['image', 'pdf-ops'], unmapped: [], unclassified: [] });
-    expect(classifyPaths(['bench/parity-gaps.json'], MAP, rows(['image/photo-a.jpg->avif/throughput']))).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['image/photo-a.jpg->avif/throughput', 'pdf-ops/merge.pdf->pdf/bytes']))).toMatchObject({ benchmarked: ['image', 'pdf-ops'], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP, rows(['image/photo-a.jpg->avif/throughput']))).toMatchObject({ benchmarked: ['image'], unmapped: [], unclassified: [] });
   });
 
   it('map to nothing when no row changed, to every family for a row of an unknown family, and to every family when the change cannot be read', () => {
-    expect(classifyPaths(['bench/baseline.json'], MAP, rows([]))).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
-    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['sound/a/b']))).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
-    expect(classifyPaths(['bench/baseline.json'], MAP, rows(null))).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
-    expect(classifyPaths(['bench/parity-gaps.json'], MAP)).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows([]))).toMatchObject({ benchmarked: [], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['sound/a/b']))).toMatchObject({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(null))).toMatchObject({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP)).toMatchObject({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
   });
 
   it('read the ids of the rows that differ', () => {
@@ -389,9 +412,9 @@ describe('the rows of baseline.json and parity-gaps.json', () => {
       const read = gitChangedRows(base, repo);
       expect(read('bench/parity-gaps.json', 'gaps')).toEqual([]);
       write('bench/parity-gaps.json', { schemaVersion: 1, gaps: [gap('compression/mixed.7z->tar/throughput', 0.89), gap('image/photo-a.jpg->avif/throughput', 0.1)] });
-      expect(classifyPaths(['bench/parity-gaps.json'], MAP, { changedRows: read })).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+      expect(classifyPaths(['bench/parity-gaps.json'], MAP, { changedRows: read })).toMatchObject({ benchmarked: ['image'], unmapped: [], unclassified: [] });
       write('bench/baseline.json', { schemaVersion: 1, entries: { 'image/a.jpg->webp/ssim': { ours: 0.9 }, 'audio/a.wav->opus/snr': { ours: 41 } } });
-      expect(classifyPaths(['bench/baseline.json', 'bench/parity-gaps.json'], MAP, { changedRows: read })).toEqual({ benchmarked: ['image', 'audio'], unmapped: [], unclassified: [] });
+      expect(classifyPaths(['bench/baseline.json', 'bench/parity-gaps.json'], MAP, { changedRows: read })).toMatchObject({ benchmarked: ['image', 'audio'], unmapped: [], unclassified: [] });
     });
 
     it('treats a file the base does not have as all new, and an unreadable base as every family', () => {
