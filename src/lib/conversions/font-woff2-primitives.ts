@@ -1,4 +1,4 @@
-import { ConversionFailedError, PayloadLimitError } from '../types';
+import { ConversionFailedError } from '../types';
 
 /**
  * Building blocks of the WOFF2 codec, authored from the W3C WOFF2 Recommendation
@@ -14,8 +14,8 @@ export class Woff2FormatError extends ConversionFailedError {
   }
 }
 
-/** A size or count in a WOFF2 file, or in a font to encode, exceeds the limits of this engine. Maps to HTTP 413. */
-export class Woff2LimitError extends PayloadLimitError {
+/** A size or count in a WOFF2 file, or in a font to encode, exceeds the limits of this engine. */
+export class Woff2LimitError extends Woff2FormatError {
   constructor(message: string) {
     super(message);
     this.name = 'Woff2LimitError';

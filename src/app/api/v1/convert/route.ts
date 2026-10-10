@@ -13,7 +13,7 @@ import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-heade
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
-import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
 import { storageProvider } from '@/lib/storage';
 import {
@@ -29,7 +29,6 @@ import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempoten
 import {
   ArchiveEntryCollisionError,
   ConversionFailedError,
-  PayloadLimitError,
   EncryptedOfficeDocumentError,
   EngineUnavailableError,
   PdfPostprocessError,
@@ -496,9 +495,10 @@ export async function POST(req: NextRequest) {
         rateLimitHeaders
       );
     }
-    if (err instanceof PayloadLimitError || err instanceof InputPixelLimitError) {
-      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
-      return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
+    const limitStatus = payloadLimitStatus(err);
+    if (limitStatus !== null) {
+      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+      return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof EncryptedOfficeDocumentError) {
       // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.

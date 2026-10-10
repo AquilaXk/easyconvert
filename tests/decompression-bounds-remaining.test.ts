@@ -14,11 +14,13 @@ import { userStore } from '../src/lib/auth/user-store';
 import { ARCHIVE_SECURITY_LIMITS, convertArchive, inspectArchive, repairZipArchive } from '../src/lib/conversions/archive';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
-import { Woff2LimitError, WOFF2_MAX_TABLES } from '../src/lib/conversions/font-woff2';
+import { Woff2FormatError, Woff2LimitError, WOFF2_MAX_TABLES } from '../src/lib/conversions/font-woff2';
+import { payloadLimitStatus } from '../src/lib/api/payload-limit';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import {
   ConversionFailedError,
+  CorruptStreamError,
   DecompressionLimitError,
   PayloadLimitError,
   type ConversionJobData,
@@ -394,7 +396,7 @@ describe('7z Deflate folder', () => {
 });
 
 describe('WOFF2 limits answer 413', () => {
-  it('a table count over the engine limit throws a Woff2LimitError that is a payload limit with status 413', () => {
+  it('a table count over the engine limit is a Woff2LimitError that the routes answer with 413', () => {
     const file = buildWoff2({ tables: minimalTransformedFont(), numTables: WOFF2_MAX_TABLES + 1 });
     const failure = (() => {
       try {
@@ -404,7 +406,14 @@ describe('WOFF2 limits answer 413', () => {
       }
     })();
     expect(failure).toBeInstanceOf(Woff2LimitError);
-    expect(failure).toBeInstanceOf(PayloadLimitError);
-    expect((failure as Woff2LimitError).status).toBe(413);
+    expect(payloadLimitStatus(failure)).toBe(413);
+  });
+
+  it('payloadLimitStatus separates size limits from malformed input', () => {
+    expect(payloadLimitStatus(new DecompressionLimitError('bomb'))).toBe(413);
+    expect(payloadLimitStatus(new PayloadLimitError('too many text blocks'))).toBe(413);
+    expect(payloadLimitStatus(new Woff2FormatError('bad magic'))).toBeNull();
+    expect(payloadLimitStatus(new CorruptStreamError('cut short'))).toBeNull();
+    expect(payloadLimitStatus(new Error('plain'))).toBeNull();
   });
 });
