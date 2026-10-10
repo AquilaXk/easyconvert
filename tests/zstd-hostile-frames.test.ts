@@ -521,7 +521,7 @@ describe('encoder boundary cases', () => {
     it('uses a copy at distance == window and refuses one byte further', () => {
       const sizeAt = (distance: number): number => {
         const input = withDistance(distance);
-        const frame = compressZstd(input, { level: 1 });
+        const frame = compressZstd(input, { level: 1, singleJob: true });
         assertFrameChecksum(frame, input);
         expect(Buffer.compare(decompressZstd(frame), input), `distance ${distance}`).toBe(0);
         return frame.length;
@@ -536,7 +536,7 @@ describe('encoder boundary cases', () => {
     oracleTest('CLI decodes copies at window - 1, window and window + 1', ['zstd'], () => {
       for (const distance of [WINDOW - 1, WINDOW, WINDOW + 1]) {
         const input = withDistance(distance);
-        const frame = compressZstd(input, { level: 1 });
+        const frame = compressZstd(input, { level: 1, singleJob: true });
         expect(cliTestsFile(frame), `distance ${distance}: zstd -t`).toBe(true);
         expect(cliDecode(frame)?.equals(input), `distance ${distance}: bytes`).toBe(true);
       }

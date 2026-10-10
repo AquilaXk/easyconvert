@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { ConversionFailedError, DecompressionLimitError } from '../types';
+import { ConversionFailedError, CpuPoolOverloadedError, CpuTaskAbortedError, DecompressionLimitError, EngineUnavailableError } from '../types';
 import {
   ZstdOutputBuffer,
   createFrameDecodeState,
@@ -8,7 +8,8 @@ import {
   type ZstdParsedDictionary,
 } from './zstd-decoder';
 import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
-import { getCpuPool, shareBytes } from '../workers/cpu-pool';
+import { getCpuPool, shareBytes, yieldToEventLoop } from '../workers/cpu-pool';
+import { ZSTD_POOL_MIN_LEVEL, encodeZstdJob, planZstdJobs, zstdFrameWindow, type ZstdJob } from './zstd-jobs';
 import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
 import {
   ZSTD_BLOCK_SIZE_MAX,
@@ -18,6 +19,8 @@ import {
   ZSTD_LEVEL_MIN,
   ZSTD_WINDOW_LOG_MIN,
 } from './zstd-tables';
+
+export { ZSTD_POOL_MIN_LEVEL, planZstdJobs, type ZstdJob };
 
 /**
  * Pure TypeScript RFC 8878 Zstandard (zstd) Compression and Decompression Engine
@@ -717,6 +720,12 @@ export interface ZstdCompressOptions {
   level?: number;
   /** Append the XXH64 content checksum (default true). */
   checksum?: boolean;
+  /**
+   * Encode the whole input as one job (default false). An input of more than two blocks at a level below
+   * ZSTD_POOL_MIN_LEVEL is otherwise cut into jobs (zstd-jobs.ts) whose matches reach back one block before the cut, so
+   * matches across the whole window are only found as one job.
+   */
+  singleJob?: boolean;
 }
 
 /** Spare output capacity above 1/8 of the result triggers a right-sizing copy. */
@@ -778,6 +787,24 @@ function resolveZstdLevel(options: ZstdCompressOptions): number {
  * Blocks are Raw, RLE or Compressed (Huffman literals + FSE sequences), whichever is smallest.
  */
 export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions = {}): Buffer {
+  const frame = prepareFrame(inputBuffer, options);
+  if (frame.jobs === null) return finishSingleJobFrame(inputBuffer, frame);
+  const parts = frame.jobs.map((_, index) => encodeZstdJob(inputBuffer, frame.level, frame.jobs!, index));
+  return joinJobFrame(inputBuffer, frame, parts);
+}
+
+interface PreparedFrame {
+  level: number;
+  checksum: boolean;
+  windowSize: number;
+  /** Magic number and frame header. */
+  prefix: Buffer;
+  /** The jobs of a split frame; null for a frame of one job. */
+  jobs: ZstdJob[] | null;
+}
+
+/** Validates the request and builds what every job of the frame shares: the frame header and the job layout. */
+function prepareFrame(inputBuffer: Buffer, options: ZstdCompressOptions): PreparedFrame {
   const level = resolveZstdLevel(options);
   const checksum = options.checksum ?? true;
   const inputLen = inputBuffer.length;
@@ -786,18 +813,23 @@ export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions =
       `Zstandard input of ${inputLen} bytes exceeds the encoder limit of ${ZSTD_ENCODER_INPUT_MAX} bytes.`
     );
   }
+  const { windowLog, singleSegment, windowSize } = zstdFrameWindow(inputLen, level);
+  const header = encodeZstdFrameHeader(inputLen, singleSegment ? null : windowLog, checksum);
+  return {
+    level,
+    checksum,
+    windowSize,
+    prefix: Buffer.concat([ZSTD_MAGIC_LE, header]),
+    jobs: options.singleJob ? null : planZstdJobs(inputLen, level),
+  };
+}
 
-  const params = getZstdLevelParams(level);
-  const declaredWindow = 2 ** params.windowLog;
-  const singleSegment = inputLen <= declaredWindow;
-  const windowSize = singleSegment ? inputLen : declaredWindow;
-  const header = encodeZstdFrameHeader(inputLen, singleSegment ? null : params.windowLog, checksum);
-
-  const prefix = Buffer.concat([ZSTD_MAGIC_LE, header]);
-  const trailerBytes = checksum ? CONTENT_CHECKSUM_BYTES : 0;
-  const encoded = new ZstdBlockEncoder(inputBuffer, params, windowSize).encodeAll(prefix, trailerBytes);
+function finishSingleJobFrame(inputBuffer: Buffer, frame: PreparedFrame): Buffer {
+  const trailerBytes = frame.checksum ? CONTENT_CHECKSUM_BYTES : 0;
+  const params = getZstdLevelParams(frame.level);
+  const encoded = new ZstdBlockEncoder(inputBuffer, params, frame.windowSize).encodeAll(frame.prefix, trailerBytes);
   let end = encoded.length;
-  if (checksum) {
+  if (frame.checksum) {
     new DataView(encoded.data.buffer, encoded.data.byteOffset, encoded.data.byteLength).setUint32(
       end,
       computeZstdChecksum(inputBuffer),
@@ -812,23 +844,82 @@ export function compressZstd(inputBuffer: Buffer, options: ZstdCompressOptions =
   return Buffer.from(encoded.data.buffer, encoded.data.byteOffset, end);
 }
 
-/** Levels from here on use the lazy and optimal parsers, slow enough to hold the event loop for tens of milliseconds per slice. */
-export const ZSTD_POOL_MIN_LEVEL = 10;
-/** Smallest input worth a pool thread at those levels (the optimal parser runs at about 1 MB/s). */
+/** The frame header, the blocks of every job in order and the content checksum, in one buffer of exactly their size. */
+function joinJobFrame(inputBuffer: Buffer, frame: PreparedFrame, parts: readonly Uint8Array[], checksum?: number): Buffer {
+  const trailerBytes = frame.checksum ? CONTENT_CHECKSUM_BYTES : 0;
+  let total = frame.prefix.length + trailerBytes;
+  for (const part of parts) total += part.length;
+  const out = Buffer.allocUnsafe(total);
+  let at = frame.prefix.copy(out, 0);
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  if (frame.checksum) out.writeUInt32LE(checksum ?? computeZstdChecksum(inputBuffer), at);
+  return out;
+}
+
+/**
+ * Smallest input worth a pool thread at the levels of the optimal parser (it runs at about 1 MB/s). The faster levels
+ * split an input of more than two blocks into jobs instead (zstd-jobs.ts).
+ */
 export const ZSTD_POOL_MIN_BYTES = 32 * 1024;
 
 /**
- * `compressZstd` for callers that must keep the event loop free: levels of ZSTD_POOL_MIN_LEVEL and above run on a pool
- * thread (the frame is the same bytes), faster levels and small inputs run inline.
+ * `compressZstd` for callers that must keep the event loop free. The frame is the same bytes: a level of the optimal
+ * parser runs on one pool thread; a faster level with more than one job spreads the jobs over the pool threads and the
+ * calling thread, which also takes its share between turns of the event loop; short inputs run inline.
  */
 export async function compressZstdAsync(
   inputBuffer: Buffer,
   options: ZstdCompressOptions & { signal?: AbortSignal } = {}
 ): Promise<Buffer> {
   const { signal, ...encoderOptions } = options;
-  const level = resolveZstdLevel(encoderOptions);
-  if (level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return compressZstd(inputBuffer, encoderOptions);
+  const frame = prepareFrame(inputBuffer, encoderOptions);
+  if (frame.jobs !== null) return compressJobsAsync(inputBuffer, frame, frame.jobs, signal);
+  if (frame.level < ZSTD_POOL_MIN_LEVEL || inputBuffer.length < ZSTD_POOL_MIN_BYTES) return finishSingleJobFrame(inputBuffer, frame);
   const data = await shareBytes(inputBuffer);
   const reply = await getCpuPool().submit<Uint8Array>('zstd', { data, options: encoderOptions }, { signal });
   return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
+}
+
+/**
+ * Pool threads and the calling thread take the next job of the frame as they finish one; the parts join in job order.
+ * The frame is the same bytes wherever a job runs, so a pool that cannot take a job (no thread entry on this deployment,
+ * a full queue) only means the calling thread runs it: this level never needed the pool before jobs existed.
+ */
+async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs: readonly ZstdJob[], signal: AbortSignal | undefined): Promise<Buffer> {
+  const parts = new Array<Uint8Array>(jobs.length);
+  const pool = getCpuPool();
+  const data = await shareBytes(inputBuffer);
+  let next = 0;
+  let poolRefused = false;
+  const takeJob = (): number => (next < jobs.length ? next++ : -1);
+  const runHere = async (index: number): Promise<void> => {
+    if (signal?.aborted) throw new CpuTaskAbortedError('zstd');
+    parts[index] = encodeZstdJob(data, frame.level, jobs, index);
+    await yieldToEventLoop();
+  };
+  const poolWorker = async (): Promise<void> => {
+    for (let index = takeJob(); index >= 0; index = takeJob()) {
+      if (poolRefused) {
+        await runHere(index);
+        continue;
+      }
+      try {
+        parts[index] = await pool.submit<Uint8Array>('zstdJob', { data, level: frame.level, index }, { signal });
+      } catch (error) {
+        if (!(error instanceof EngineUnavailableError || error instanceof CpuPoolOverloadedError)) throw error;
+        poolRefused = true;
+        await runHere(index);
+      }
+    }
+  };
+  const callerWorker = async (): Promise<void> => {
+    for (let index = takeJob(); index >= 0; index = takeJob()) await runHere(index);
+  };
+  const poolWorkers = Array.from({ length: Math.min(pool.threadLimit, jobs.length - 1) }, poolWorker);
+  const checksum = frame.checksum ? computeZstdChecksum(inputBuffer) : undefined;
+  await Promise.all([...poolWorkers, callerWorker()]);
+  return joinJobFrame(inputBuffer, frame, parts, checksum);
 }

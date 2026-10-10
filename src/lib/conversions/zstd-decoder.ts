@@ -55,6 +55,9 @@ const SEQ_RESERVED_MODE_MASK = 0x03;
 const COMPRESSED_LITERALS_SIZE_BITS: readonly number[] = [10, 10, 14, 18];
 const COMPRESSED_LITERALS_HEADER_BYTES: readonly number[] = [3, 3, 4, 5];
 const SHORT_COPY_LIMIT = 32;
+/** Matches at least this long that do not overlap themselves are moved with one native copy. */
+const LONG_COPY_LIMIT = 64;
+const WORD_BYTES = 4;
 const LITERAL_HEADER_TYPE_MASK = 0x03;
 const LITERAL_HEADER_FORMAT_SHIFT = 2;
 const LITERAL_HEADER_FORMAT_MASK = 0x03;
@@ -487,6 +490,9 @@ export function decodeCompressedBlock(
   let bitsLeft = reader.bitsLeft;
 
   const data = out.data;
+  const dataLength = data.length;
+  const dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const literalView = new DataView(literals.buffer, literals.byteOffset, literals.byteLength);
   let outLen = out.length;
   let litPos = 0;
   let rep1 = state.rep1;
@@ -583,7 +589,12 @@ export function decodeCompressedBlock(
     }
     if (litPos + litLen > litTotal) zstdFail('Corrupt Zstandard sequence: literal length exceeds available literals.');
     if (litLen < SHORT_COPY_LIMIT) {
-      for (let k = 0; k < litLen; k++) data[outLen + k] = literals[litPos + k];
+      if (litPos + litLen + WORD_BYTES <= litTotal && outLen + litLen + WORD_BYTES <= dataLength) {
+        // Whole words: the bytes written past the run are overwritten by what follows.
+        for (let k = 0; k < litLen; k += WORD_BYTES) dataView.setUint32(outLen + k, literalView.getUint32(litPos + k, true), true);
+      } else {
+        for (let k = 0; k < litLen; k++) data[outLen + k] = literals[litPos + k];
+      }
     } else {
       data.set(literals.subarray(litPos, litPos + litLen), outLen);
     }
@@ -594,8 +605,12 @@ export function decodeCompressedBlock(
       zstdFail(`Corrupt Zstandard sequence: offset ${offset} exceeds the available window.`);
     }
     const from = outLen - offset;
-    if (offset >= matchLen && matchLen >= SHORT_COPY_LIMIT) {
+    if (offset >= matchLen && matchLen >= LONG_COPY_LIMIT) {
       data.copyWithin(outLen, from, from + matchLen);
+    } else if (offset >= WORD_BYTES && outLen + matchLen + WORD_BYTES <= dataLength) {
+      // A chunk of four bytes reads only bytes that are final once the chunk before it is written, also when the match
+      // overlaps itself; the bytes written past the match are overwritten by what follows.
+      for (let k = 0; k < matchLen; k += WORD_BYTES) dataView.setUint32(outLen + k, dataView.getUint32(from + k, true), true);
     } else {
       for (let k = 0; k < matchLen; k++) data[outLen + k] = data[from + k];
     }
