@@ -69,6 +69,13 @@ export const SPEED_LIGHT_MAX_PAIRS = 25;
 /** The same for video, OCR and office rows, which take seconds per run. */
 export const SPEED_HEAVY_INITIAL_PAIRS = 6;
 export const SPEED_HEAVY_MAX_PAIRS = 12;
+/**
+ * A row still undecided at its cap collects pairs up to this second cap (sequential sampling that stops as soon as the
+ * interval decides). It is at most the 64 pairs the sign-test interval is exact for. Only rows whose interval straddles
+ * the pass line at the first cap reach it, so a row that decides early costs nothing.
+ */
+export const SPEED_LIGHT_EXTENDED_MAX_PAIRS = 50;
+export const SPEED_HEAVY_EXTENDED_MAX_PAIRS = 36;
 /** Paired runs added each time the interval straddles the pass line. */
 export const SPEED_PAIRS_STEP = 4;
 /**

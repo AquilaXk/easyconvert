@@ -1,6 +1,10 @@
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
+import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS } from './ab-config';
+import type { AbHost } from './ab-host';
+import { BaseRowError } from './ab-host';
+import { abSpeedTiming, type ExtraBudget, localSide } from './ab-speed';
 import { CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
@@ -84,6 +88,10 @@ export interface ContextInit {
   refCache: ReferenceCache;
   work: string;
   log: (message: string) => void;
+  /** Speed rows are measured against the base of the change too, in a second process (bench/ab-host.ts); needs a speed-only parity run. */
+  ab?: { host: AbHost; extra: ExtraBudget } | null;
+  /** Replaces the timing of a row altogether: the process that measures the base answers the benchmark's requests with it (bench/ab-child.ts). */
+  timer?: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats: number) => Promise<InterleavedTiming | AdaptiveTiming>;
 }
 
 /** `action` followed by a busy wait that makes the whole call INJECTED_SLOWDOWN_FACTOR times as long. */
@@ -106,13 +114,38 @@ export function createContext(init: ContextInit): FamilyContext {
     ...rest,
     inScope: (family, caseName) => caseInScope(quick, family, caseName),
     time: async (rawOurs, reference, weight, oursRepeats = 1) => {
+      if (init.timer) return init.timer(rawOurs, reference, weight, oursRepeats);
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
+      let abFallback: string | undefined;
+      if (init.parity && init.ab) {
+        // The head and the reference run here, the base in its own process; a row the base cannot run is measured against the reference alone.
+        const { host, extra } = init.ab;
+        await host.row();
+        const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
+        try {
+          const timing = await abSpeedTiming(localSide(ours), host.side(), localSide(reference), {
+            pairs: weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS,
+            warmup: plan.warmup,
+            oursRepeats,
+            minSampleMs: plan.minSampleMs,
+            extra,
+          });
+          init.log(`A/B against the base, ${timing.runs} pairs (${timing.ab.extraPairs} extra), noise ${timing.ab.noise.toFixed(3)}: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample`);
+          return timing;
+        } catch (error) {
+          if (!(error instanceof BaseRowError)) throw error;
+          abFallback = error.message.slice(0, 200);
+          init.log(`the base cannot run this row (${abFallback}); it is measured against the reference alone`);
+        } finally {
+          host.next();
+        }
+      }
       if (init.parity) {
         const timing = await adaptiveSpeedTiming(ours, reference, { ...(weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN), oursRepeats });
         if (timing.repeats.ours > 1 || timing.repeats.reference > 1) {
           init.log(`samples of at least ${SPEED_MIN_SAMPLE_MS} ms: ours ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) each`);
         }
-        return timing;
+        return abFallback === undefined ? timing : { ...timing, abFallback };
       }
       return interleavedTiming(ours, reference, weight === 'heavy' ? init.heavyRuns : init.runs, init.warmup, oursRepeats);
     },

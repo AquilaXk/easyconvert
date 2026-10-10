@@ -139,12 +139,41 @@ describe('parity-speed', () => {
     }
   });
 
+  it('measures the pull request against its base in the same pairs: the first parent of the tested merge, with its own dependencies', () => {
+    const base = stepNamed(speed, 'base');
+    expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
+    expect(base.run).toContain('git worktree add --detach ab-base "$parent"');
+    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    const install = stepNamed(speed, 'Install the dependencies of the base');
+    expect(install.run).toContain('cmp -s package-lock.json ab-base/package-lock.json');
+    expect(install.run).toContain('cd ab-base && npm ci --ignore-scripts');
+    const restore = speed.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
+    expect(String(restore?.with?.key)).toContain("hashFiles('ab-base/package-lock.json')");
+    expect(stepNamed(speed, 'bench').env?.BENCH_BASE_ROOT).toBe('ab-base');
+    expect(speed['timeout-minutes']).toBe(60);
+    const order = ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'bench'].map((name) => speed.steps.indexOf(stepNamed(speed, name)));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    for (const name of ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'Save the dependencies of the base']) {
+      expect(String(stepNamed(speed, name).if), name).toMatch(/env\.BENCH_CHANGED == 'true'/);
+    }
+  });
+
+  it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
+    const gate = stepNamed(speed, 'Use the gate of the base');
+    expect(gate.run).toContain('node ab-base/scripts/ci-base-gate.mjs ab-base');
+    expect(gate.run).toContain('npx tsc --noEmit -p .');
+    expect(gate.run).toContain('the gate of the base does not fit this change');
+  });
+
   it('measures every case of the changed families, speed only, and never reads or writes a cache', () => {
     const bench = runOf(speed, 'bench');
     expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"');
     expect(bench).not.toContain('--quick');
     expect(bench).not.toContain('--quality-only');
-    expect(JSON.stringify(speed)).not.toMatch(/actions\/cache|\.bench-cache|bench-ref-/);
+    expect(JSON.stringify(speed)).not.toMatch(/\.bench-cache|bench-ref-/);
+    // The only cache of the job holds the dependencies of the base, keyed by its lock file; no measurement is cached.
+    const caches = speed.steps.filter((step) => step.uses?.startsWith('actions/cache'));
+    expect(caches.map((step) => step.with?.path)).toEqual(['ab-base/node_modules', 'ab-base/node_modules']);
     expect(speed.env?.ORACLE_STRICT_MODE).toBe('1');
   });
 
@@ -392,6 +421,21 @@ describe('the nightly run', () => {
       expect(step.run).not.toContain('--quick');
       expect(step.run).not.toContain('--family');
     }
+  });
+
+  it('can measure the speed rows against another commit in the same pairs, by hand: the commit under test as its own base gives the noise of the comparison', () => {
+    const inputs = (nightly.on as { workflow_dispatch?: { inputs?: Record<string, { default?: string }> } }).workflow_dispatch?.inputs;
+    expect(Object.keys(inputs ?? {})).toEqual(['ab_base_ref', 'ab_families', 'ab_repeats']);
+    expect(inputs?.ab_base_ref?.default).toBe('');
+    const plain = stepNamed(speedJob, 'Run the speed parity benchmark');
+    expect(plain.if).toBe("inputs.ab_base_ref == ''");
+    const checkout = stepNamed(speedJob, 'Check out the commit to compare with');
+    expect(checkout.if).toBe("inputs.ab_base_ref != ''");
+    expect(checkout.run).toContain('cd ab-base && npm ci --ignore-scripts');
+    const measure = stepNamed(speedJob, 'Measure the speed rows against that commit');
+    expect(measure.if).toBe("inputs.ab_base_ref != ''");
+    expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base' });
+    expect(measure.run).toContain('--parity --speed-only');
   });
 
   it('is the writer of the reference cache, saved even when the benchmark fails', () => {

@@ -9,6 +9,7 @@ import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import { readDocxStructure } from '../../tests/helpers/docx-structure';
 import { aggregate, scoreStructure, type StructureTruth } from '../../tests/helpers/structure-metrics';
+import { importProduct } from '../product';
 
 /**
  * PDF cases of the document family, measured on the committed golden sets (tests/fixtures/pdf-text and
@@ -47,7 +48,7 @@ const mean = (values: number[]): number => values.reduce((a, b) => a + b, 0) / v
 
 async function oursText(pdf: Buffer, name: string): Promise<string> {
   // The in-process engine, not the dispatcher: the dispatcher answers pdf -> txt with Poppler when it is installed.
-  const { convertFile } = await import('../../src/lib/conversions/index');
+  const { convertFile } = await importProduct<typeof import('../../src/lib/conversions/index')>('lib/conversions/index');
   return (await convertFile(pdf, 'pdf', 'txt', {}, `${name}.pdf`)).buffer.toString('utf8');
 }
 

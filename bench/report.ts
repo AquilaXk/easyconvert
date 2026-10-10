@@ -63,6 +63,22 @@ export interface BenchRow {
   speedVerdict?: RowSpeedVerdict;
   /** The interval still straddled the pass line at the cap on pairs, which counts as a failure. */
   unstableAtCap?: boolean;
+  /**
+   * A/B comparison with the base of the change, measured in the same pairs (bench/ab-speed.ts): the number of pairs, the
+   * median of base time / head time, its upper bound and the upper bound of reference time / head time at the per-row
+   * error rate (absent when too few pairs exist for a bound: the row cannot fail on it), the standard deviation of the
+   * log of the pair ratios (the noise of the comparison), the median of reference time / base time and the pairs added
+   * for a bound that was too wide. All absent when the row was not compared with a base.
+   */
+  abPairs?: number;
+  abMedian?: number;
+  abUpper?: number;
+  abHeadVsReferenceUpper?: number;
+  abNoise?: number;
+  abBaseVsReferenceMedian?: number;
+  abExtraPairs?: number;
+  /** Why a row of a run with a base was measured against the reference alone (the base could not run it). */
+  abFallback?: string;
   skipKind?: SkipKind;
   skipReason?: string;
 }
@@ -172,9 +188,10 @@ function validateRow(value: unknown, index: number): BenchRow {
     parsed.skipKind = member<SkipKind>(row.skipKind, SKIP_KIND_SET, `${path}.skipKind`);
     parsed.skipReason = str(row.skipReason, `${path}.skipReason`);
   }
-  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian'] as const) {
+  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian', 'abPairs', 'abMedian', 'abUpper', 'abHeadVsReferenceUpper', 'abNoise', 'abBaseVsReferenceMedian', 'abExtraPairs'] as const) {
     if (row[key] !== undefined) parsed[key] = finiteNumber(row[key], `${path}.${key}`);
   }
+  if (row.abFallback !== undefined) parsed.abFallback = str(row.abFallback, `${path}.abFallback`);
   if (row.speedVerdict !== undefined) parsed.speedVerdict = member<RowSpeedVerdict>(row.speedVerdict, SPEED_VERDICT_SET, `${path}.speedVerdict`);
   if (row.unstableAtCap !== undefined) {
     if (typeof row.unstableAtCap !== 'boolean') fail(`${path}.unstableAtCap`, 'a boolean');

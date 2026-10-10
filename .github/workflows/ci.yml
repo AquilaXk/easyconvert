@@ -597,7 +597,7 @@ jobs:
       github.event_name == 'pull_request' &&
       (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
@@ -641,9 +641,65 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
 
+      # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts). The base is the first
+      # parent of the merge commit this job tested, not the event's base sha, which can be older than the merge. It is
+      # checked out beside this tree, with its own dependencies, and measured by a process of its own.
+      - name: Check out the base of the tested merge
+        id: base
+        if: env.BENCH_CHANGED == 'true'
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+          parent="${parent:-$EVENT_BASE_SHA}"
+          git fetch --no-tags --depth=1 origin "$parent"
+          git worktree add --detach ab-base "$parent"
+          echo "sha=$parent" >> "$GITHUB_OUTPUT"
+          echo "the base is $parent"
+
+      # A change cannot loosen the gate that judges it: the speed verdict, its thresholds and the A/B machinery come from the
+      # base (scripts/ci-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
+      - name: Use the gate of the base
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          if [ -f ab-base/scripts/ci-base-gate.mjs ]; then
+            node ab-base/scripts/ci-base-gate.mjs ab-base
+            npx tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change"; exit 1; } || true
+          else
+            echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
+          fi
+
+      - name: Restore the dependencies of the base
+        id: base-modules
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ab-base/node_modules
+          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
+
+      # The base runs on its own dependencies, so a change of a dependency shows in the comparison. An identical lock file
+      # shares this tree's node_modules.
+      - name: Install the dependencies of the base
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          if cmp -s package-lock.json ab-base/package-lock.json; then
+            ln -s "$PWD/node_modules" ab-base/node_modules
+          elif [ "${{ steps.base-modules.outputs.cache-hit }}" != "true" ]; then
+            (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund)
+          fi
+
+      - name: Save the dependencies of the base
+        if: env.BENCH_CHANGED == 'true' && steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ab-base/node_modules
+          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
+
       - name: Measure speed against the reference tools
         id: bench
         if: env.BENCH_CHANGED == 'true'
+        env:
+          BENCH_BASE_ROOT: ab-base
         run: |
           set +e
           npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"
