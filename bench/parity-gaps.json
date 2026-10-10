@@ -415,22 +415,6 @@
       ]
     },
     {
-      "id": "video/clip.mp4->vp9/throughput",
-      "issue": 643,
-      "ratio": 0.73,
-      "note": "speed ratio 0.73 or below when recorded on the CI runner (previous record 0.72): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.7255,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.7384,
-          "at": "2026-10-09T11:26:27.370Z"
-        }
-      ]
-    },
-    {
       "id": "document/pdf-text->txt/throughput",
       "issue": 672,
       "ratio": 1.2,
@@ -440,6 +424,73 @@
           "ratio": 1.2079,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/watermark.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.78,
+      "note": "speed ratio 0.78 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.8318,
+          "at": "2026-10-10T02:16:29.414Z",
+          "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.7823,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/protect.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.91,
+      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.8975,
+          "at": "2026-10-10T02:16:29.414Z",
+          "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.9183,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        }
+      ]
+    },
+    {
+      "id": "pdf-ops/decrypt.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.89,
+      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.92): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.9255,
+          "at": "2026-10-10T02:16:29.414Z",
+          "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.898,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        }
+      ]
+    },
+    {
+      "id": "video/clip.mp4->hevc/throughput",
+      "issue": 643,
+      "ratio": 0.97,
+      "note": "speed ratio 0.97 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.9741,
+          "at": "2026-10-10T05:52:36.145Z",
+          "commit": "467616a13794421adc9d744e38fd288235201e5a"
         }
       ]
     }

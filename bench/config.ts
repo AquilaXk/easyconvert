@@ -125,6 +125,13 @@ export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.11;
  * archive streaming, OCR in bands) were 1.65 times or more.
  */
 export const SPEED_STEP_FACTOR = 1.6;
+/**
+ * A gap entry a pull request adds or changes must be backed by that pull request's own speed measurement: the recorded
+ * ratio, and every history point the change adds, lie inside the measured interval of the row widened by this log
+ * margin on each side (twice the run-to-run spread of a runner, SPEED_HISTORY_MIN_LOG_SPREAD, since the entry was
+ * recorded in another run). A made-up entry far from what the pull request measures is refused.
+ */
+export const GAP_BACKING_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
 /** Branch whose nightly and push runs may extend a speed history. */
 export const DEFAULT_BRANCH = 'main';
 /** Workflow events of the default branch that may extend a speed history. */
@@ -148,8 +155,8 @@ export const MAX_GAP_ENTRIES = 500;
  * subsets reach every target format and every encoder path once (tests/bench-quick-subset.test.ts keeps it so). Image: a
  * photographic JPEG to WebP, a lossless photographic PNG to AVIF (4:2:0, the hardest AVIF input), graphics to AVIF at
  * 4:4:4 and grey line art to AVIF at 4:0:0, and a graphic source to JPEG. Audio: both sources with one lossy and the
- * lossless target. Video: two of the three codecs (HEVC differs only in the encoder binary). Compression, OCR and
- * document: every case, which are seconds each. The nightly run measures all of them.
+ * lossless target. Video: two of the three codecs (HEVC differs only in the encoder binary). Compression, OCR, PDF
+ * operations and document: every case, which are seconds each. The nightly run measures all of them.
  */
 export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = {
   image: ['photo-a.jpg->webp', 'photo-b.png->avif', 'screenshot.png->avif', 'lineart.png->avif', 'lineart.png->jpg', 'lineart.png->webp'],
@@ -158,4 +165,5 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
   ocr: null,
   document: null,
   compression: null,
+  'pdf-ops': null,
 };

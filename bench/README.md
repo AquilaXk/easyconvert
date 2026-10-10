@@ -12,11 +12,11 @@ parity" below).
 |---|---|
 | `npm run bench:quality` | Run every family, write `bench-results/<date>.json` and `.md`, gate against the baseline. Exit 0 pass, 1 regression, 2 run failure. |
 | `npm run bench:quality:update-baseline` | Run, then rewrite `bench/baseline.json` from the measured rows. Review the diff before committing. |
-| `npm run bench:quality -- --family image,audio --runs 3` | A subset of families (`image video audio ocr document compression`) and the number of interleaved timing runs (default 5, at most 25; video, OCR and office use at most 3). |
+| `npm run bench:quality -- --family image,audio --runs 3` | A subset of families (`image video audio ocr document compression pdf-ops`) and the number of interleaved timing runs (default 5, at most 25; video, OCR and office use at most 3). |
 | `npm run bench:quality -- --no-gate` | Measure and report without gating. |
 | `npm run bench:quality -- --inject-regression webp-quality` | Degrade our side on purpose to show the gate fails and names the metric. `webp-quality` lowers the WebP quality setting (a regression against our baseline; it stays on the same rate-distortion curve, so it is not behind the reference at equal size). `webp-reencode` encodes WebP twice (a worse curve, which BD-rate sees). `x264-ultrafast` switches H.264 to the ultrafast preset. `slow-ours` makes every timed run of our side twice as long (a speed regression). |
 | `npm run bench:quality -- --compare-report <file>` | Gate an existing report without measuring. |
-| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
+| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
 
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure.
 `ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
@@ -33,6 +33,7 @@ The document family reads its inputs from `tests/fixtures/document` and `tests/f
 | ocr | scanned png to searchable pdf | CER and word F1 of the pdftotext text layer against ground truth | `tesseract` |
 | document | docx to pdf (`report.docx`); an authored DOCX with nested lists, merged table cells, pictures and notes to html, odt, epub and pdf; an EPUB to docx; an HWP 5.0 file to html and txt | word F1 and CER of the text against the authored text; per structure category (headings, list items with level, table cells with spans, pictures by hash, notes) precision and recall against the structure written by hand; EPUBCheck error count; end-to-end time per document | `soffice` for the DOCX cases. It cannot open EPUB or HWP, so those rows use the hand-written structure or an independent OLE2 reader (`tests/fixtures/hwp/reference-extract.py`) as the reference, and the HWP time is compared with that reader |
 | compression | tar to zst and 7z; zst, xz and 7z back to tar | size ratio, compress and decompress MB/s; every output is decoded by the reference tool and compared with the original bytes | `zstd`, `7z`, `xz` |
+| pdf-ops | merge of three PDFs, a text watermark on pages 2 and 3 of three, AES-256 protection and decryption of a PDF (sources: `tests/fixtures/pdf-text`); split, rotate and compress are listed as unsupported because the product has no such operation | `qpdf --check` failures, page-count error, per-page word F1 of the `pdftotext` text against the source pages, SSIM of the `pdftoppm` pages against the source pages (merge; pages the watermark leaves alone), watermark render equal to the reference render in the central square (SSIM at least 0.97), `qpdf --show-encryption` equal to the reference's, output bytes, end-to-end time per operation | `qpdf` (`--pages`, `--overlay` of a stamp PDF written in `bench/pdf-stamp.ts`, `--encrypt`, `--decrypt`) |
 
 Throughput rows time ours and the reference alternately in one window (the order flips every run) and report the
 median of N runs per side, the coefficient of variation, MB/s of input and the speed ratio. A conversion of milliseconds is timed over five back-to-back calls per sample (the mean per call), so scheduler jitter does not decide it. Only the ratio is
@@ -119,18 +120,29 @@ never a stale hit; an entry that fails its checksum or schema is reported, measu
 cases `photo-a.jpg->webp`, `photo-b.png->avif` (photographs, 4:2:0), `screenshot.png->avif` (graphics, 4:4:4),
 `lineart.png->avif` (grey, 4:0:0), `lineart.png->jpg` and `lineart.png->webp`, so every target format and AVIF chroma path
 has a quality row (`tests/bench-quick-subset.test.ts`); the video cases for H.264 and VP9; the audio
-cases `music.wav->opus`, `speech.wav->aac` and `music.wav->flac`; and every case of OCR, office and compression, which
+cases `music.wav->opus`, `speech.wav->aac` and `music.wav->flac`; and every case of OCR, office, compression and PDF operations, which
 are one case or seconds each. The per-push quality gate uses it; the nightly run measures everything.
 
 **Which families a pull request runs** is decided by `bench/family-map.json`: each path under `src/lib/conversions/`,
-`src/lib/workers/` and `src/worker/` maps to a family (`scripts/ci-parity-families.mjs`, which the `changes` job of
+`src/lib/workers/` and `src/worker/`, and the two graph files `src/lib/jobs/artifact-helpers.ts` (PDF merge, pdf-ops) and `src/lib/queue/graph/node-executor.ts` (dispatches every node, so every family), maps to a family (`scripts/ci-parity-families.mjs`, which the `changes` job of
 `ci.yml` runs). Shared code (the dispatcher, the worker pool, the sandbox) maps to every benchmarked family, and so does what every
 conversion runs on: the tool runner `src/lib/security/process-sandbox.ts`, `package.json` and `package-lock.json`, the
 Dockerfiles, the seccomp profiles and `.github/actions/ci-setup/` (the SVG sanitizer maps to image). A path in
 that scope that no rule covers fails the `changes` job, so a new file cannot escape the gate. A path that maps to a
-family with `"bench": null` (cad, font, raw, data, ebook, pdf-ops, vector, hdr-image) fails with "add reference-compared
+family with `"bench": null` (cad, font, raw, data, ebook, vector, hdr-image) fails with "add reference-compared
 bench rows for <family>" until the same change adds a runner in `bench/families/` and sets the family's `bench` to its
 own name.
+
+The benchmark's own files are mapped too, so a change to what measures or judges cannot skip the measurement: a family's
+runner and helpers (`bench/families/<family>.ts`, `bench/pdf-stamp.ts`, `bench/structure-*.ts`, `bench/bd-rate.ts`, ...) map to
+that family; the harness, the gate, the map, the corpus, `scripts/ci-parity-*.mjs` and `ci.yml` map to every family;
+`bench/baseline.json` and `bench/parity-gaps.json` map to the families of the rows whose entries changed against the base
+(`PR_BASE_SHA`; every family when the base cannot be read or a row names an unknown family).
+
+A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
+passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
+carry the commit of a CI run) have to lie within the speed-ratio interval the job measured for the row, widened by
+`GAP_BACKING_LOG_MARGIN`. A made-up entry fails with `gap-not-backed`; an entry the base already holds is not rechecked.
 
 **Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
 
