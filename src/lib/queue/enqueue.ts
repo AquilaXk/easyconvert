@@ -47,8 +47,8 @@ export function enqueueConversionJob(
   const jobId = opts.jobId ?? generateJobId();
   return queue.add(name, sealJobDataSecrets(data, jobId), {
     ...opts,
-    jobId,
     timeout,
+    jobId,
     ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
   });
 }

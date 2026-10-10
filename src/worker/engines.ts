@@ -1276,14 +1276,15 @@ async function countPagesOfReadablePdf(
   // Fallback via pdf-lib. A password was already applied through qpdf, so an encrypted buffer here is one nobody
   // opened: it is refused, never read with its encryption ignored.
   const buf = inputBuffer ?? fs.readFileSync(inputPath);
-  if (inspectPdfEncryption(buf).encrypted) {
-    throw new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
-  }
   try {
+    if (inspectPdfEncryption(buf).encrypted) {
+      throw new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
+    }
     const pdfDoc = await PDFDocument.load(buf);
     const count = pdfDoc.getPageCount();
     if (count > 0) return count;
-  } catch {
+  } catch (err) {
+    if (err instanceof PdfPasswordRequiredError) throw err;
     // Fall-through to the typed error
   }
   throw new PdfStructureError('Unable to determine PDF page count: invalid or corrupted PDF structure.');
