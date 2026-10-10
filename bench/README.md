@@ -115,7 +115,8 @@ benchmark's own process the ratio of two copies of one code was 0.97 on most ima
 samples of a pair (this runner, this minute) cancels in the head-to-base ratio. A row **fails** when
 
 - the head is credibly more than `delta` slower than the base, `delta` being the row's own threshold from `AB_ROW_REGRESSION`
-  (each with the noise that justifies it) and 10 percent (`AB_DEFAULT_REGRESSION`) for the rows that have none: the one-sided
+  (each with the noise that justifies it, none above the cap of 50 percent, `AB_REGRESSION_CAP`) and 10 percent
+  (`AB_DEFAULT_REGRESSION`) for the rows that have none: the one-sided
   upper confidence bound of the median of base time / head time is below `1 / (1 + delta)`, and a second set of fresh
   pairs (as many as the first, taken after it) shows it too; or
 - the base was at the reference (median reference time / base time at least 0.97) and the head is credibly below it (that
@@ -172,7 +173,7 @@ bench/replay-speed-reports.ts --noise-out bench/ab-noise-samples.json <artifact>
   <artifact>`; the run before, with the earlier design, 0 of 80 as well). The bias of the comparison is nil: the mean of
   the log of the head-to-base median over the rows is +0.009 (run 38038913260; -0.006 and +0.002 in the two runs before),
   except `document/rich-structure.docx->odt`, which two copies of one code differ on by +0.17 in log terms, which is why that row
-  has the 125 percent threshold. The earlier design, the head in the benchmark's process, gave -0.020 and failed
+  is nightly-only. The earlier design, the head in the benchmark's process, gave -0.020 and failed
   `document/rich-structure.docx->odt` once with a median of 0.664; that is why the head runs in its own process and a failure
   needs a second set of pairs.
 - The noise of the comparison (standard deviation of the log of the pair ratios): median 0.039, 90th percentile 0.136, worst
@@ -190,12 +191,30 @@ bench/replay-speed-reports.ts --noise-out bench/ab-noise-samples.json <artifact>
   extended: image 6.9, document 10.9 minutes per job for two measurements; the whole job before sharding took 19.7 minutes
   per measurement.)
 
-Detection by simulation, per row, with the measured noise of that row, one extra budget per family shared by its rows in the
-order of the benchmark, 300 trials per row (`npx tsx bench/simulate-speed-gate.ts --noise bench/ab-noise-samples.json
---row-trials 300`; `--derive` finds the thresholds below). The threshold of a row is the smallest at which a head 1.5 times
-that much slower fails in at least 95 percent of the trials; a row whose noise is too large for that at 125 percent keeps
-125 percent, which only fails a slowdown of 2.25 times or more, and stays guarded by the nightly run. A row with the default
-threshold had a noise small enough for 10 percent. Unchanged code fails 0 percent on every row.
+**Nightly-only rows.** A threshold above 50 percent says little about a change (a row that must get 1.5 times slower to
+be noticed is not guarded by a pull request), so no row has one: a row whose noise needs more than the cap
+(`AB_NIGHTLY_ONLY` in `bench/ab-config.ts`, each with its noise, the run that measured it and why) is not judged on a pull
+request. The `parity speed` job times it with one cycle of six pairs for the report, gives it no extra pairs and no
+confirmation set, and its verdict passes it as `speed-nightly-only`; the nightly run, which judges every row against the
+reference alone, still guards it (and so does the tracked-gap history of `compression/mixed.tar->7z`). 7 of the 40 speed
+rows are nightly-only and 33 are gated on a pull request:
+
+| Nightly-only row | Noise | Threshold it would need |
+|---|---|---|
+| document/rich-structure.docx->html/throughput | 0.196 | more than 125% |
+| document/rich-structure.docx->odt/throughput | 0.136 | more than 125% (biased by +0.17 in log terms: two copies of one code differ systematically on it) |
+| document/rich-structure.docx->epub/throughput | 0.197 | more than 125% |
+| document/noori.hwp->txt/throughput | 0.181 | 106.3% |
+| document/pdf-structure->docx/throughput | 0.187 | 125% |
+| compression/mixed.tar->7z/throughput | 0.315 | more than 125% |
+| compression/mixed.zst->tar/throughput | 0.122 | 56.3% |
+
+Detection by simulation, per gated row, with the measured noise of that row, one extra budget per family shared by the gated
+rows of the family in the order of the benchmark (a nightly-only row takes none), 300 trials per row (`npx tsx
+bench/simulate-speed-gate.ts --noise bench/ab-noise-samples.json --row-trials 300`; `--derive` finds the thresholds below).
+The threshold of a row is the smallest at which a head 1.5 times that much slower fails in at least 95 percent of the
+trials; a row with the default threshold had a noise small enough for 10 percent. Unchanged code fails 0 percent on every
+row.
 
 | Row | Noise | Threshold | Unchanged fails | At the threshold fails | At 1.5 times the threshold fails |
 |---|---|---|---|---|---|
@@ -222,30 +241,20 @@ threshold had a noise small enough for 10 percent. Unchanged code fails 0 percen
 | audio/speech.wav->flac/throughput | 0.045 | 10.0% | 0.0% | 0.0% | 96.0% |
 | ocr/scan.png->pdf/throughput | 0.039 | 15.0% | 0.0% | 0.0% | 97.7% |
 | document/report.docx->pdf/throughput | 0.057 | 20.0% | 0.0% | 0.0% | 96.3% |
-| document/rich-structure.docx->html/throughput | 0.196 | 125.0% | 0.0% | 0.0% | 92.7% |
-| document/rich-structure.docx->odt/throughput | 0.136 | 125.0% | 0.0% | 0.0% | 78.3% |
-| document/rich-structure.docx->epub/throughput | 0.197 | 125.0% | 0.0% | 0.0% | 92.3% |
-| document/rich-structure.docx->pdf/throughput | 0.048 | 25.0% | 0.0% | 0.0% | 100.0% |
-| document/noori.hwp->txt/throughput | 0.181 | 106.3% | 0.0% | 0.0% | 98.7% |
-| document/pdf-text->txt/throughput | 0.029 | 12.5% | 0.0% | 0.0% | 99.7% |
-| document/pdf-structure->docx/throughput | 0.187 | 125.0% | 0.0% | 0.0% | 95.0% |
-| document/complex-script txt->pdf/throughput | 0.056 | 37.5% | 0.0% | 0.0% | 99.7% |
+| document/rich-structure.docx->pdf/throughput | 0.048 | 17.5% | 0.0% | 0.0% | 96.7% |
+| document/pdf-text->txt/throughput | 0.029 | 10.0% | 0.0% | 0.0% | 98.3% |
+| document/complex-script txt->pdf/throughput | 0.056 | 22.5% | 0.0% | 0.0% | 96.3% |
 | compression/mixed.tar->zst/throughput | 0.054 | 15.0% | 0.0% | 0.0% | 95.0% |
-| compression/mixed.tar->7z/throughput | 0.315 | 125.0% | 0.0% | 0.0% | 85.3% |
-| compression/mixed.zst->tar/throughput | 0.122 | 56.3% | 0.0% | 0.0% | 95.3% |
-| compression/mixed.xz->tar/throughput | 0.074 | 20.0% | 0.0% | 0.3% | 95.7% |
-| compression/mixed.7z->tar/throughput | 0.116 | 35.0% | 0.0% | 0.0% | 95.0% |
+| compression/mixed.xz->tar/throughput | 0.074 | 20.0% | 0.0% | 0.7% | 96.3% |
+| compression/mixed.7z->tar/throughput | 0.116 | 42.5% | 0.0% | 0.0% | 95.3% |
 | pdf-ops/merge.pdf->pdf/throughput | 0.105 | 22.5% | 0.0% | 43.7% | 95.0% |
 | pdf-ops/watermark.pdf->pdf/throughput | 0.079 | 30.0% | 0.0% | 0.0% | 96.7% |
 | pdf-ops/protect.pdf->pdf/throughput | 0.061 | 20.0% | 0.0% | 0.0% | 96.0% |
 | pdf-ops/decrypt.pdf->pdf/throughput | 0.079 | 22.5% | 0.0% | 0.7% | 96.3% |
 
-36 of the 40 rows fail a head 1.5 times their threshold slower in at least 95 percent of the trials; the four others are
-`document/rich-structure.docx->html` (92.7 percent), `document/rich-structure.docx->odt` (78.3 percent; its comparison is
-biased by +0.17 in log terms, two copies of one code differ systematically on it), `document/rich-structure.docx->epub` (92.3
-percent) and `compression/mixed.tar->7z` (85.3 percent): their noise (0.14 to 0.32) is larger than a 125 percent threshold
-can overcome with the pairs a shard's budget buys. `pdf-ops/merge.pdf->pdf` fails 43.7 percent at exactly its threshold: a
-head at the threshold is what the bound cannot decide, which is why the table also gives 1.5 times.
+All 33 gated rows fail a head 1.5 times their threshold slower in at least 95 percent of the trials, and none fails
+unchanged code in more than 1 percent (0 percent on every row). `pdf-ops/merge.pdf->pdf` fails 43.7 percent at exactly its
+threshold: a head at the threshold is what the bound cannot decide, which is why the table also gives 1.5 times.
 
 Detection by size, from the simulation with a quiet row (2 percent noise per sample, 1000 trials; the percentages are the
 head's extra time over the base's):
