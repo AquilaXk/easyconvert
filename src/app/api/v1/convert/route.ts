@@ -29,6 +29,7 @@ import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempoten
 import {
   ArchiveEntryCollisionError,
   ConversionFailedError,
+  ArchiveInputUnprocessableError,
   EncryptedOfficeDocumentError,
   EngineUnavailableError,
   PdfPostprocessError,
@@ -500,8 +501,9 @@ export async function POST(req: NextRequest) {
       // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
       return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
     }
-    if (err instanceof EncryptedOfficeDocumentError) {
-      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
+    if (err instanceof EncryptedOfficeDocumentError || err instanceof ArchiveInputUnprocessableError) {
+      // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
+      // decode (an archive's password and method errors included): 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof WorkerOutputMissingError) {

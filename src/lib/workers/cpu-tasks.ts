@@ -5,6 +5,7 @@ import { compressZstd, type ZstdCompressOptions } from '../conversions/zstd';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
+import { deriveSevenZipKey, SEVENZIP_KDF_TASK, type AesKeyRequest } from '../conversions/archive-sevenzip-aes';
 import zlib from 'node:zlib';
 
 /**
@@ -74,7 +75,16 @@ function lzmaTaskResult(encoded: { buffer: Buffer; props: Buffer; uncompressedSi
   return { result, transfer: stream.transfer };
 }
 
+export interface SevenZipKdfPayload extends AesKeyRequest {
+  password: string;
+}
+
 export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
+  [SEVENZIP_KDF_TASK]: (raw): HandlerResult => {
+    const payload = raw as SevenZipKdfPayload;
+    return transferableBytes(deriveSevenZipKey(payload.password, { cyclesPower: payload.cyclesPower, salt: Buffer.from(payload.salt) }));
+  },
+
   demosaicTiles: (raw): HandlerResult => {
     runDemosaicTiles(raw as DemosaicTilesPayload);
     return { result: null, silent: true };
