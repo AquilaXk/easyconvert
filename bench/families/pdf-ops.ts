@@ -227,9 +227,35 @@ function source(name: string): { file: string; bytes: Buffer } {
   return { file, bytes: fs.readFileSync(file) };
 }
 
-/** What a tool prints about the encryption of a document: equal text means the same algorithm, key length and permissions. */
+/** What qpdf prints about the encryption of a document under a password (an unaccepted password is part of the text). */
 function encryptionReport(tools: PdfTools, file: string, password?: string): string {
-  return runTool(tools.qpdf, [...passwordArgs('--password=', password), '--show-encryption', file]).stdout.toString('utf8');
+  const run = runTool(tools.qpdf, [...passwordArgs('--password=', password), '--show-encryption', file]);
+  return `${run.stdout.toString('utf8')}${run.stderr}`;
+}
+
+/**
+ * What the requested protection (AES-256, print allowed, no modification, no extraction) must report, whoever wrote the
+ * file: the user password opens it with exactly these rights and the owner password is the owner password.
+ */
+const PROTECTION_RIGHTS = [
+  'R = 6',
+  'extract for any purpose: not allowed',
+  'print low resolution: allowed',
+  'print high resolution: allowed',
+  'modify anything: not allowed',
+  'stream encryption method: AESv3',
+  'string encryption method: AESv3',
+  'file encryption method: AESv3',
+] as const;
+
+function reportHolds(report: string, password: 'user' | 'owner'): boolean {
+  const lines = new Set(report.split('\n').map((line) => line.trim()));
+  return [...PROTECTION_RIGHTS, `Supplied password is ${password} password`].every((line) => lines.has(line));
+}
+
+/** Both passwords are honoured with the requested rights; true for a file that reports as the spec says under each. */
+function protectionHolds(tools: PdfTools, file: string): boolean {
+  return reportHolds(encryptionReport(tools, file, USER_PASSWORD), 'user') && reportHolds(encryptionReport(tools, file, OWNER_PASSWORD), 'owner');
 }
 
 function encryptWithReference(tools: PdfTools, input: string, output: string): void {
@@ -352,10 +378,12 @@ async function runProtect(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
 
   const rows: BenchRow[] = [];
   if (ctx.quality) {
-    const same = encryptionReport(tools, oursFile, USER_PASSWORD) === encryptionReport(tools, referenceFile, USER_PASSWORD) ? 1 : 0;
+    // Under each password the report equals the reference's, and it is the spec's: a file that ignores the owner password or grants the user more differs on both counts.
+    const reportsEqual = [USER_PASSWORD, OWNER_PASSWORD].every((password) => encryptionReport(tools, oursFile, password) === encryptionReport(tools, referenceFile, password));
+    const same = reportsEqual && protectionHolds(tools, oursFile) ? 1 : 0;
     rows.push(
       ...qualityRows(PROTECT_CASE, scoreOutput(tools, oursFile, truth, USER_PASSWORD), scoreOutput(tools, referenceFile, truth, USER_PASSWORD), [
-        measuredRow(FAMILY, PROTECT_CASE, SPEC.encryptionMatchesReference, same, 1, REFERENCE_TOOL),
+        measuredRow(FAMILY, PROTECT_CASE, SPEC.encryptionMatchesReference, same, protectionHolds(tools, referenceFile) ? 1 : 0, REFERENCE_TOOL),
       ])
     );
   }
@@ -387,10 +415,11 @@ async function runDecrypt(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
 
   const rows: BenchRow[] = [];
   if (ctx.quality) {
-    const same = encryptionReport(tools, oursFile) === encryptionReport(tools, referenceFile) ? 1 : 0;
+    const decrypted = (file: string): boolean => encryptionReport(tools, file).trim() === 'File is not encrypted';
+    const same = encryptionReport(tools, oursFile) === encryptionReport(tools, referenceFile) && decrypted(oursFile) ? 1 : 0;
     rows.push(
       ...qualityRows(DECRYPT_CASE, scoreOutput(tools, oursFile, truth), scoreOutput(tools, referenceFile, truth), [
-        measuredRow(FAMILY, DECRYPT_CASE, SPEC.encryptionMatchesReference, same, 1, REFERENCE_TOOL),
+        measuredRow(FAMILY, DECRYPT_CASE, SPEC.encryptionMatchesReference, same, decrypted(referenceFile) ? 1 : 0, REFERENCE_TOOL),
       ])
     );
   }
