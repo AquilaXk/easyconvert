@@ -1,9 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { EncryptedPDFError, PDFDocument } from 'pdf-lib';
-import { cleanupWorkerSandboxDir, createWorkerSandboxDir } from '../../worker/sandbox';
-import { readPdfAccess, withQpdfDecryptedPdf } from '../../worker/pdf-decrypt';
+import { decryptPdfToBuffer, readPdfAccess } from '../../worker/pdf-decrypt';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../types';
+import { withQpdfInputFile } from './pdf-postprocess/qpdf-run';
 import { inspectPdfEncryption } from './pdf-encryption';
 
 /**
@@ -29,7 +27,17 @@ const PDF_ACCESS_TIMEOUT_MS = 60_000;
 const REQUIRED_MESSAGE =
   'The PDF is encrypted. Supply the document password to edit it; encrypted PDFs are never edited without one.';
 
-export type PdfEditOperation = 'watermark' | 'merge' | 'unlock' | 'protect';
+export type PdfEditOperation =
+  | 'watermark'
+  | 'merge'
+  | 'unlock'
+  | 'protect'
+  | 'split'
+  | 'extract'
+  | 'delete'
+  | 'reorder'
+  | 'rotate'
+  | 'compress';
 
 /** Plain-language names of the rights qpdf reports, used in the message that tells the caller what is forbidden. */
 const RIGHT_LABELS: Readonly<Record<string, string>> = {
@@ -49,6 +57,12 @@ const OPERATION_VERBS: Readonly<Record<PdfEditOperation, string>> = {
   merge: 'merge',
   unlock: 'unlock',
   protect: 'protection',
+  split: 'split',
+  extract: 'page extraction',
+  delete: 'page deletion',
+  reorder: 'page reordering',
+  rotate: 'rotation',
+  compress: 'compression',
 };
 
 export interface PdfAccess {
@@ -64,7 +78,14 @@ function neededRights(operation: PdfEditOperation, capabilities: Readonly<Record
     case 'watermark':
       return [['modifyother'], ['modifyannotations']];
     case 'merge':
+    case 'split':
+    case 'extract':
+    case 'delete':
+    case 'reorder':
+    case 'rotate':
       return [['modifyassembly', 'modifyother']];
+    case 'compress':
+      return [['modifyother']];
     case 'unlock':
     case 'protect':
       return Object.keys(capabilities).filter((key) => key !== 'modify').map((key) => [key]);
@@ -79,28 +100,35 @@ function forbiddenRights(operation: PdfEditOperation, capabilities: Readonly<Rec
 }
 
 async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess): Promise<Buffer> {
-  const tempDir = createWorkerSandboxDir('easyconvert-pdf-access_');
-  try {
-    const inputPath = path.join(tempDir, 'input.pdf');
-    fs.writeFileSync(inputPath, pdf, { mode: 0o600 });
-    const request = { inputPath, tempDir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS };
+  return withQpdfInputFile(pdf, async ({ inputPath, dir }) => {
+    const request = { inputPath, tempDir: dir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS };
 
-    // A confirmed edit needs no verdict: the confirmation lifts every restriction, and a wrong password still fails the
-    // decryption below. Only an unconfirmed request asks qpdf which rights the password grants.
-    if (access.confirmEditRights !== true) {
-      const verdict = await readPdfAccess(request);
-      const forbidden = forbiddenRights(operation, verdict.capabilities);
-      if (forbidden.length > 0 && !verdict.ownerPasswordMatched) {
-        throw new PdfPermissionDeniedError(
-          `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
-            'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
-        );
-      }
+    // The plain bytes are printed by qpdf on standard output, so no decrypted copy is written to disk. A confirmed
+    // edit needs no verdict: the confirmation lifts every restriction, and a wrong password still fails the
+    // decryption. Only an unconfirmed request asks qpdf which rights the password grants, and it asks beside the
+    // decryption: the two read the same file, so the check costs no wall time.
+    if (access.confirmEditRights === true) return decryptPdfToBuffer(request);
+    const stopDecrypting = new AbortController();
+    const decrypting = decryptPdfToBuffer({ ...request, signal: stopDecrypting.signal });
+    // A decryption that fails while the verdict is awaited must not surface as an unhandled rejection.
+    decrypting.catch(() => undefined);
+    let verdict: Awaited<ReturnType<typeof readPdfAccess>>;
+    try {
+      verdict = await readPdfAccess(request);
+    } catch (error) {
+      stopDecrypting.abort();
+      throw error;
     }
-    return await withQpdfDecryptedPdf(request, (plainPath) => Promise.resolve(fs.readFileSync(plainPath)));
-  } finally {
-    cleanupWorkerSandboxDir(tempDir);
-  }
+    const forbidden = forbiddenRights(operation, verdict.capabilities);
+    if (forbidden.length > 0 && !verdict.ownerPasswordMatched) {
+      stopDecrypting.abort();
+      throw new PdfPermissionDeniedError(
+        `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
+          'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
+      );
+    }
+    return decrypting;
+  });
 }
 
 /**

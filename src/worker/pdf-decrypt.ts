@@ -32,6 +32,8 @@ const POPPLER_INCORRECT_PASSWORD_PATTERN = /incorrect password/i;
  */
 const QPDF_OUTPUT_SIZE_FACTOR = 4;
 const QPDF_MIN_OUTPUT_BYTES = 1024 * 1024;
+/** How often the size of the decrypted copy is checked while qpdf writes it. */
+const OUTPUT_WATCH_INTERVAL_MS = 50;
 /** `--password-file` uses only the first line, so a line break would silently shorten the password. */
 const PASSWORD_FILE_UNSAFE_CHARS = /[\r\n\0]/;
 
@@ -103,24 +105,60 @@ async function runQpdfWithPassword(
   password: string,
   nonce: string,
   buildArgs: (passwordFile: string) => string[],
-  maxFileSize: number
+  output: { path: string; maxBytes: number }
 ): Promise<SandboxedExecutionResult> {
   const passwordFile = path.join(request.tempDir, `qpdf-password-${nonce}.txt`);
+  // The size of the decrypted copy is watched from here and qpdf is stopped when it passes the limit. A file size limit on
+  // the process (prlimit) would hold it exactly, but needs a wrapper process to be started before qpdf is.
+  const overrun = new AbortController();
+  const watch = setInterval(() => {
+    try {
+      if (fs.statSync(output.path).size > output.maxBytes) overrun.abort(new SandboxedBufferLimitError(output.maxBytes));
+    } catch {
+      // The copy is not there yet, or already removed: nothing to measure.
+    }
+  }, OUTPUT_WATCH_INTERVAL_MS);
   try {
     fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
     return await executeSandboxedBinary(qpdf, buildArgs(passwordFile), {
       cwd: request.tempDir,
       timeoutMs: request.timeoutMs,
       maxBuffer: QPDF_MAX_OUTPUT_BYTES,
-      maxFileSize,
       networkIsolated: true,
-      signal: request.signal,
+      signal: request.signal ? AbortSignal.any([request.signal, overrun.signal]) : overrun.signal,
     });
   } catch (err) {
     throw toDecryptError(err);
   } finally {
+    clearInterval(watch);
     // The credential must not outlive qpdf, even while the rendering step still runs.
     removeQuietly(passwordFile);
+  }
+}
+
+/**
+ * Like runQpdfWithPassword, with the password handed over on standard input (`--password-file=-`): the credential
+ * exists only in the pipe between this process and qpdf, with no file to create, protect and remove, and `args` end
+ * in an output of `-` so qpdf prints the document instead of writing a file. The edit gate (pdf-access) uses it.
+ */
+async function runQpdfWithStdinPassword(
+  qpdf: string,
+  request: PdfDecryptRequest,
+  password: string,
+  args: string[],
+  maxOutputBytes: number
+): Promise<SandboxedExecutionResult> {
+  try {
+    return await executeSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
+      cwd: request.tempDir,
+      timeoutMs: request.timeoutMs,
+      maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
+      networkIsolated: true,
+      stdin: Buffer.from(password, 'utf8'),
+      signal: request.signal,
+    });
+  } catch (err) {
+    throw toDecryptError(err);
   }
 }
 
@@ -132,9 +170,14 @@ async function decryptIntoFile(qpdf: string, request: PdfDecryptRequest, passwor
     password,
     nonce,
     (passwordFile) => [`--password-file=${passwordFile}`, '--warning-exit-0', '--decrypt', path.resolve(request.inputPath), decryptedPath],
-    maxFileSize
+    { path: decryptedPath, maxBytes: maxFileSize }
   );
-  if (fs.statSync(decryptedPath).size === 0) {
+  const decryptedBytes = fs.statSync(decryptedPath).size;
+  // A copy that grew past the limit between two checks of the watcher is refused the same way.
+  if (decryptedBytes > maxFileSize) {
+    throw new ConversionFailedError(PDF_DECRYPT_TOO_LARGE_MESSAGE);
+  }
+  if (decryptedBytes === 0) {
     throw new ConversionFailedError(PDF_DECRYPT_FAILED_MESSAGE);
   }
 }
@@ -167,21 +210,37 @@ export interface PdfAccessVerdict {
  */
 export async function readPdfAccess(request: PdfDecryptRequest & { password: string }): Promise<PdfAccessVerdict> {
   const qpdf = requireQpdf(request.password);
-  const result = await runQpdfWithPassword(
+  const result = await runQpdfWithStdinPassword(
     qpdf,
     request,
     request.password,
-    crypto.randomUUID(),
-    (passwordFile) => [
-      `--password-file=${passwordFile}`,
-      '--warning-exit-0',
-      '--json=2',
-      '--json-key=encrypt',
-      path.resolve(request.inputPath),
-    ],
+    ['--json=2', '--json-key=encrypt', path.resolve(request.inputPath)],
     QPDF_MIN_OUTPUT_BYTES
   );
   return parseAccessVerdict(result.stdout.toString('utf-8'));
+}
+
+/**
+ * The decrypted bytes of the PDF, printed by qpdf on standard output: no plaintext copy is written to disk, and the
+ * output limit is the size the stdout buffer may reach. The password goes in on standard input.
+ *
+ * @throws PdfPasswordRequiredError when qpdf rejects the password.
+ * @throws EngineUnavailableError when qpdf is not installed.
+ */
+export async function decryptPdfToBuffer(request: PdfDecryptRequest & { password: string }): Promise<Buffer> {
+  const qpdf = requireQpdf(request.password);
+  const maxOutputBytes = Math.max(fs.statSync(request.inputPath).size * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
+  const result = await runQpdfWithStdinPassword(
+    qpdf,
+    request,
+    request.password,
+    ['--decrypt', path.resolve(request.inputPath), '-'],
+    maxOutputBytes
+  );
+  if (result.stdout.length === 0) {
+    throw new ConversionFailedError(PDF_DECRYPT_FAILED_MESSAGE);
+  }
+  return result.stdout;
 }
 
 function parseAccessVerdict(json: string): PdfAccessVerdict {
