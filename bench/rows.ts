@@ -1,18 +1,11 @@
-import { BYTES_PER_MB, PSNR_CAP_DB, SSIM_DISTANCE_FLOOR } from './config';
-import type { BenchRow, Direction, Family, RowKind, SkipKind, Tolerance } from './report';
-import type { AdaptiveTiming } from './speed-parity';
-import { megabytesPerSecond, type InterleavedTiming } from './stats';
+import { PSNR_CAP_DB, SSIM_DISTANCE_FLOOR } from './config';
+import type { BenchRow, Family, SkipKind, Tolerance } from './report';
+import { type MetricSpec, THROUGHPUT_SPEC } from './speed-rows';
 import type { ToolPlanSkipped } from './tools';
 
-/** Row construction shared by every family: metric specs with their gate tolerances, and the row builders. */
+export { measuredRow, type MetricSpec, speedRowId, THROUGHPUT_SPEC, throughputRow } from './speed-rows';
 
-export interface MetricSpec {
-  metric: string;
-  unit: string;
-  direction: Direction;
-  kind: RowKind;
-  tolerance: Tolerance;
-}
+/** Row construction shared by every family: metric specs with their gate tolerances, and the row builders. */
 
 const tol = (abs: number, rel: number): Tolerance => ({ abs, rel });
 
@@ -49,43 +42,8 @@ export const SPEC = {
   stampGeometryMatchesSpec: { metric: 'stamp_geometry_matches_spec', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   encryptionMatchesReference: { metric: 'encryption_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
-  throughput: { metric: 'throughput', unit: 'MB/s', direction: 'higher', kind: 'throughput', tolerance: tol(0, 0.35) },
+  throughput: THROUGHPUT_SPEC,
 } as const satisfies Record<string, MetricSpec>;
-
-export function measuredRow(
-  family: Family,
-  caseName: string,
-  spec: MetricSpec,
-  ours: number,
-  reference: number,
-  referenceTool: string,
-  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap'>> = {}
-): BenchRow {
-  return {
-    id: `${family}/${caseName}/${spec.metric}`,
-    family,
-    case: caseName,
-    metric: spec.metric,
-    unit: spec.unit,
-    direction: spec.direction,
-    kind: spec.kind,
-    status: 'measured',
-    ours,
-    reference,
-    delta: ours - reference,
-    ratio: extra.ratio ?? null,
-    referenceTool,
-    tolerance: spec.tolerance,
-    ...(extra.oursCv === undefined ? {} : { oursCv: extra.oursCv }),
-    ...(extra.referenceCv === undefined ? {} : { referenceCv: extra.referenceCv }),
-    ...(extra.runs === undefined ? {} : { runs: extra.runs }),
-    ...(extra.ratioLow === undefined ? {} : { ratioLow: extra.ratioLow }),
-    ...(extra.ratioHigh === undefined ? {} : { ratioHigh: extra.ratioHigh }),
-    ...(extra.ratioMedian === undefined ? {} : { ratioMedian: extra.ratioMedian }),
-    ...(extra.speedVerdict === undefined ? {} : { speedVerdict: extra.speedVerdict }),
-    ...(extra.unstableAtCap === undefined ? {} : { unstableAtCap: extra.unstableAtCap }),
-  };
-}
 
 export function skippedRow(
   family: Family,
@@ -135,28 +93,4 @@ export function capPsnr(psnr: number): number {
 /** SSIM in decibels, -10 log10(1 - SSIM): the scale on which SSIM differences are comparable across the range. */
 export function ssimDb(ssim: number): number {
   return -10 * Math.log10(Math.max(1 - ssim, SSIM_DISTANCE_FLOOR));
-}
-
-/** Throughput row from an interleaved timing: MB/s of `inputBytes` for each side, and the speed ratio. */
-export function throughputRow(
-  family: Family,
-  caseName: string,
-  inputBytes: number,
-  timing: InterleavedTiming | AdaptiveTiming,
-  referenceTool: string
-): BenchRow {
-  const ours = megabytesPerSecond(inputBytes, timing.oursMedianMs, BYTES_PER_MB);
-  const reference = megabytesPerSecond(inputBytes, timing.referenceMedianMs, BYTES_PER_MB);
-  const decided = 'decision' in timing ? timing : null;
-  const interval = decided && decided.decision.lower !== null && decided.decision.upper !== null ? { ratioLow: decided.decision.lower, ratioHigh: decided.decision.upper } : {};
-  return measuredRow(family, caseName, SPEC.throughput, ours, reference, referenceTool, {
-    ratio: ours / reference,
-    oursCv: timing.oursCv,
-    referenceCv: timing.referenceCv,
-    runs: timing.runs,
-    ...interval,
-    ...(decided
-      ? { ratioMedian: decided.decision.median, speedVerdict: decided.decision.verdict === 'pass' ? ('pass' as const) : ('fail' as const), unstableAtCap: decided.unstableAtCap }
-      : {}),
-  });
 }

@@ -41,6 +41,8 @@ jobs:
       # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
       # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
       bench_families: ${{ steps.families.outputs.families }}
+      # The same families as a JSON list, for the matrix of the speed job (one shard per family).
+      bench_families_json: ${{ steps.families.outputs.families_json }}
       bench_unmapped: ${{ steps.families.outputs.unmapped }}
       bench_changed: ${{ steps.families.outputs.changed }}
 
@@ -110,6 +112,7 @@ jobs:
           if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
           {
             echo "families=$families"
+            echo "families_json=$(printf '%s\n' "$families" | jq -Rc 'split(",") | map(select(. != ""))')"
             echo "unmapped=$unmapped"
             echo "changed=$changed"
           } >> "$GITHUB_OUTPUT"
@@ -590,14 +593,23 @@ jobs:
   #   - a conversion family changed and the label is on: the job measures;
   #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
   #     added, so automerge cannot merge before this job has run on the current head.
+  #
+  # One shard per changed family, in parallel: the comparison with the base takes several times the time of the reference alone,
+  # and the families are independent. Every shard judges its own rows at the per-row error rate of the whole benchmark
+  # (bench/ab-config.ts: 0.01 over AB_ROW_BUDGET rows, more than the rows of all the families together) and has its own share of
+  # the extra pairs. A change with nothing to measure runs one shard that says so.
   parity-speed:
-    name: parity speed
+    name: parity speed (${{ matrix.family }})
     needs: changes
     if: >-
       github.event_name == 'pull_request' &&
       (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        family: ${{ fromJSON(needs.changes.outputs.bench_families_json != '[]' && needs.changes.outputs.bench_families_json || '["none"]') }}
     permissions:
       contents: read
       issues: write
@@ -606,7 +618,7 @@ jobs:
     env:
       ORACLE_STRICT_MODE: "1"
       BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
-      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_FAMILIES: ${{ matrix.family == 'none' && '' || matrix.family }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
 
     steps:
@@ -641,26 +653,68 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
 
-      # A known-gap entry this pull request adds or changes is judged against the speed this job measures, so it needs
-      # the gap file of the base (bench/parity.ts). Without it the entries could not be checked, so the job fails.
-      - name: Take the gap file of the base
-        id: base-gaps
+      # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts). The base is the first
+      # parent of the merge commit this job tested, not the event's base sha, which can be older than the merge. It is
+      # checked out beside this tree, with its own dependencies, and measured by a process of its own.
+      - name: Check out the base of the tested merge
+        id: base
         if: env.BENCH_CHANGED == 'true'
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
-          git show "$PR_BASE_SHA:bench/parity-gaps.json" > "$RUNNER_TEMP/base-parity-gaps.json"
-          echo "path=$RUNNER_TEMP/base-parity-gaps.json" >> "$GITHUB_OUTPUT"
+          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+          parent="${parent:-$EVENT_BASE_SHA}"
+          git fetch --no-tags --depth=1 origin "$parent"
+          git worktree add --detach ab-base "$parent"
+          echo "sha=$parent" >> "$GITHUB_OUTPUT"
+          echo "the base is $parent"
+
+      # A change cannot loosen the gate that judges it: the speed verdict, its thresholds and the A/B machinery come from the
+      # base (scripts/ci-parity-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
+      - name: Use the gate of the base
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
+            node ab-base/scripts/ci-parity-base-gate.mjs ab-base
+            node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change: a change that needs another interface of the gate files lands in two steps, the gate files first (bench/README.md, A change cannot loosen the gate that judges it)"; exit 1; } || true
+          else
+            echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
+          fi
+
+      - name: Restore the dependencies of the base
+        id: base-modules
+        if: env.BENCH_CHANGED == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ab-base/node_modules
+          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
+
+      # The base runs on its own dependencies, so a change of a dependency shows in the comparison. An identical lock file
+      # shares this tree's node_modules.
+      - name: Install the dependencies of the base
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          if cmp -s package-lock.json ab-base/package-lock.json; then
+            ln -s "$PWD/node_modules" ab-base/node_modules
+          elif [ "${{ steps.base-modules.outputs.cache-hit }}" != "true" ]; then
+            (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund)
+          fi
+
+      - name: Save the dependencies of the base
+        if: env.BENCH_CHANGED == 'true' && steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ab-base/node_modules
+          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
 
       - name: Measure speed against the reference tools
         id: bench
         if: env.BENCH_CHANGED == 'true'
         env:
-          BASE_GAPS: ${{ steps.base-gaps.outputs.path }}
+          BENCH_BASE_ROOT: ab-base
         run: |
           set +e
-          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps "$BASE_GAPS"
+          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "benchmark exit code: $code"
@@ -677,7 +731,7 @@ jobs:
         if: always() && env.BENCH_CHANGED == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: parity-speed-results
+          name: parity-speed-results-${{ matrix.family }}
           path: bench-results/
           if-no-files-found: ignore
           retention-days: 7
@@ -694,7 +748,7 @@ jobs:
               core,
               fs: require('node:fs'),
               runFilePath: 'bench-results/parity-verdict.json',
-              scope: 'speed',
+              scope: `speed-${process.env.BENCH_FAMILIES}`,
             });
 
   # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
@@ -706,93 +760,7 @@ jobs:
     needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
     steps:
-      # Temporary, until the speed rows are compared against the base inside one job (#700): a maintainer can acknowledge
-      # a failed `parity speed` whose every failing row is undecided noise (scripts/ci-parity-ack.mjs states the rule).
-      # The label counts only when its latest `labeled` event was made by someone with the admin or maintain role, and
-      # only for the head it was put on: a push removes it (the first step below), and a run for a push never counts it.
-      # The rule, the family mapper and the family map are taken from the BASE commit, and the rule refuses a pull request
-      # that changes the harness, the gate, the corpus, the parity scripts, the workflows or the actions, because the
-      # verdict is written by the pull request's own code. Limit: on `pull_request` this workflow file itself comes from the
-      # head, so a pull request that rewrites this step is not stopped by the step; the rule refuses to acknowledge it, a
-      # workflow change must pass the speed gate on its own, and a reviewer has to read any change to this file.
-      - name: Drop an acknowledgement that predates the head
-        if: github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/parity-ack" > /dev/null
-          echo "removed the parity-ack label: a new push needs a new decision"
-
-      - name: Checkout repository
-        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Fetch the speed verdict
-        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: parity-speed-results
-          path: parity-speed-results
-
-      - name: Decide whether a failed speed parity is acknowledged
-        id: ack
-        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          acknowledged=false
-          refuse() {
-            echo "::error::parity-ack refused: $1"
-            echo "acknowledged=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-          # The tools of the base commit, never the pull request's own copies.
-          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA" || refuse "the base commit cannot be fetched"
-          for file in scripts/ci-parity-families.mjs bench/family-map.json; do
-            git show "$PR_BASE_SHA:$file" > "$RUNNER_TEMP/base-file" 2> /dev/null || refuse "the base commit has no $file"
-            cp "$RUNNER_TEMP/base-file" "$file"
-          done
-          git show "$PR_BASE_SHA:scripts/ci-parity-ack.mjs" > "$RUNNER_TEMP/ci-parity-ack.mjs" 2> /dev/null || refuse "the base commit has no scripts/ci-parity-ack.mjs"
-          # Renames are listed with both names, so moving a protected file away is seen.
-          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
-          mapped="$(node scripts/ci-parity-families.mjs < "$RUNNER_TEMP/changed-files.txt")" || refuse "the family mapper failed"
-          printf '%s\n' "$mapped" | grep -q '^specific=' || refuse "the base family mapper does not report the specific families"
-          specific="$(printf '%s\n' "$mapped" | sed -n 's/^specific=//p')"
-          actor="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/events" --jq '.[] | select(.event == "labeled" and .label.name == "parity-ack") | .actor.login' | tail -n 1)" || actor=""
-          role=""
-          if [ -n "$actor" ]; then
-            role="$(gh api "repos/$REPOSITORY/collaborators/$actor/permission" --jq '.role_name' || true)"
-          fi
-          echo "parity-ack label added by: ${actor:-unknown} (${role:-no role})"
-          result="$(node "$RUNNER_TEMP/ci-parity-ack.mjs" --verdict parity-speed-results/parity-verdict.json --specific "$specific" --changed-files "$RUNNER_TEMP/changed-files.txt" --role "$role" --actor "$actor" --run-url "$RUN_URL" --comment-file "$RUNNER_TEMP/parity-ack-comment.md")"
-          printf '%s\n' "$result"
-          if [ "$(printf '%s\n' "$result" | sed -n 's/^acknowledged=//p')" = true ]; then
-            acknowledged=true
-            # One comment per pull request, updated in place, so the record of what was acknowledged stays on it.
-            comment_id="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- parity-ack -->"))) | .id' | head -n 1)"
-            if [ -n "$comment_id" ]; then
-              gh api --method PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --field "body=@$RUNNER_TEMP/parity-ack-comment.md" > /dev/null
-            else
-              gh api --method POST "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --field "body=@$RUNNER_TEMP/parity-ack-comment.md" > /dev/null
-            fi
-          else
-            printf '%s\n' "$result" | sed -n 's/^reason=/::error::parity-ack refused: /p'
-          fi
-          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
-
       - name: Require every job to pass, or to be skipped for a documentation-only change
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -807,7 +775,6 @@ jobs:
           CONTAINER_RESULT: ${{ needs.container.result }}
           PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
           PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
-          SPEED_ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged }}
         run: |
           echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
           echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
@@ -837,8 +804,6 @@ jobs:
               failed=1
             fi
           fi
-          # A failed speed run is accepted only when the acknowledgement step passed it (parity-ack label, see above).
-          if [ "$PARITY_SPEED_RESULT" = failure ] && [ "$SPEED_ACKNOWLEDGED" = true ] && [ "$speed_expected" = success ]; then speed_expected=failure; fi
           if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"

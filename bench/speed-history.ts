@@ -5,7 +5,7 @@ import {
   SPEED_HISTORY_MIN_LOG_SPREAD,
   SPEED_HISTORY_MIN_POINTS,
   SPEED_STEP_FACTOR,
-} from './config';
+} from './speed-config';
 import { BenchArgumentError } from './errors';
 
 /**

@@ -7,7 +7,7 @@ import { OutputIntegrityError } from '../errors';
 import { decodedPcmHash, fileSize, measureAudioSnr, measureLoudness, probeFile } from '../measure';
 import type { BenchRow } from '../report';
 import { numberRecord } from '../ref-cache';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { runTool } from '../tools';
 
 /**
@@ -131,6 +131,7 @@ export const runAudio: FamilyRunner = async (ctx) => {
         const timingOut = ctx.scratch(`timing.${lossy.target}`);
         const headlineKbps = source.bitratesK[HEADLINE_INDEX];
         const timing = await ctx.time(
+          speedRowId('audio', caseName),
           async () => {
             await oursEncode(headlineKbps);
           },
@@ -176,6 +177,7 @@ export const runAudio: FamilyRunner = async (ctx) => {
     if (ctx.speed) {
       const timingOut = ctx.scratch('timing.flac');
       const timing = await ctx.time(
+        speedRowId('audio', flacCase),
         async () => {
           await oursEncode();
         },

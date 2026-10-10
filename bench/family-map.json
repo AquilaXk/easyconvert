@@ -20,7 +20,7 @@
   "rules": [
     {
       "families": ["*"],
-      "match": "^bench/(family-map\\.json|(gate|parity|parity-gaps|speed-history|speed-parity|config|run|context|rows|report|tools|stats|measure|ref-cache|harness-hash|scope|convert|errors|refresh-speed|families/index)\\.ts)$|^bench/corpus/|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$"
+      "match": "^bench/(family-map\\.json|ab-noise-samples\\.json|(gate|parity|parity-gaps|speed-history|speed-parity|ab-speed|ab-config|ab-host|ab-child|ab-child-core|ab-protocol|product|judge|speed-config|speed-timing|speed-rows|report-schema|simulate-speed-gate|replay-speed-reports|config|run|context|rows|report|tools|stats|measure|ref-cache|harness-hash|scope|convert|errors|refresh-speed|families/index)\\.ts)$|^bench/corpus/|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$"
     },
     {
       "families": ["*"],

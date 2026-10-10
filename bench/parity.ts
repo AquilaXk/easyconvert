@@ -1,8 +1,10 @@
-import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
+import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './speed-config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
+import { AB_NIGHTLY_ONLY, type AbNightlyOnly } from './ab-config';
+import { slowdownLine } from './ab-speed';
 import { speedGapThreshold } from './speed-history';
 
 /**
@@ -38,6 +40,11 @@ export type ParityBasis =
   | 'tracked-short-history'
   | 'tracked-now-at-parity'
   | 'tracked-slower-than-gap'
+  | 'speed-slower-than-base'
+  | 'speed-lost-parity'
+  | 'speed-not-slower-than-base'
+  | 'speed-unchanged-below-reference'
+  | 'speed-nightly-only'
   | 'gap-not-backed'
   | 'unsupported'
   | 'skipped';
@@ -56,8 +63,6 @@ export interface RowVerdict {
   allowance: number | null;
   /** The known gap behind a failing row, when bench/parity-gaps.json lists it. */
   gap: GapEntry | null;
-  /** The measured speed ratio of a throughput row with an interval: the numbers `detail` quotes, as data for the acknowledgement rule. */
-  speed?: { median: number; low: number; high: number; pairs: number | null };
 }
 
 export interface ParitySummary {
@@ -123,7 +128,7 @@ function describeDirect(row: BenchRow, d: Direct): string {
 
 type SpeedJudgement = Omit<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'gap'>;
 
-function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
+function judgeAbsolute(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   if (row.speedVerdict === undefined) {
     throw new ParityInputError(`${row.id} is a throughput row without a speed decision; measure it with --parity`);
   }
@@ -175,7 +180,28 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   return { outcome: 'fail', basis: 'speed-below-reference', detail: `${interval}; the upper bound is below ${show(line)}, so ours is slower than the reference`, ...none };
 }
 
+/**
+ * The history rule of a tracked gap in a run that measures the head and the base in processes of their own. The history
+ * holds ratios measured with ours in the benchmark's own process; here the benchmark is a light coordinator, so the
+ * reference (a spawned tool) is timed from a smaller process and its ratio is not the same number, for the rows whose
+ * time is mostly the spawn. The comparison with the history is therefore made on what this change did to the row: the
+ * level of the history (its median, or the recorded ratio) times the median head-to-base ratio is the ratio the history
+ * would have measured, and the history's floor and prediction bound apply to that.
+ */
+function judgeTrackedAgainstBase(row: BenchRow, gap: GapEntry, headVsBaseMedian: number): SpeedJudgement {
+  const recorded = gap.ratio ?? 1;
+  const history = (gap.history ?? []).map((point) => point.ratio);
+  const level = speedGapThreshold(history, recorded).level;
+  const adjusted = level * headVsBaseMedian;
+  const judged = judgeAbsolute({ ...row, ratio: adjusted, ratioMedian: adjusted, ratioLow: undefined, ratioHigh: undefined, speedVerdict: adjusted >= 1 - SPEED_PARITY_TOLERANCE ? 'pass' : 'fail', unstableAtCap: false }, gap);
+  return { ...judged, detail: `its history level ${show(level)} times the head-to-base ratio ${show(headVsBaseMedian)}: ${judged.detail}` };
+}
+
 export interface ParityOptions {
+  /** Regression thresholds of rows other than bench/ab-config.ts names; for tests of the verdict. */
+  regression?: Readonly<Record<string, { delta: number }>>;
+  /** Nightly-only rows other than bench/ab-config.ts names; for tests of the verdict. */
+  nightlyOnly?: Readonly<Record<string, Pick<AbNightlyOnly, 'reason'>>>;
   /**
    * The gap file of the base the change is measured against. When given, every gap entry that is new or changed
    * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
@@ -190,9 +216,11 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
   if (row === undefined || row.status !== 'measured' || row.kind !== 'throughput') return `the entry is new or changed, but this run did not measure ${gap.id}`;
   const centre = row.ratioMedian ?? row.ratio;
   if (centre === null || centre === undefined) return 'the entry is new or changed, but the measured row has no speed ratio';
+  // A row measured against the base was timed from another process than the history, so its ratio is not the one the entry records; only the form of the entry can be checked then.
+  const comparable = row.abPairs === undefined;
   const margin = Math.exp(GAP_BACKING_LOG_MARGIN);
-  const low = (row.ratioLow ?? centre) / margin;
-  const high = (row.ratioHigh ?? centre) * margin;
+  const low = comparable ? (row.ratioLow ?? centre) / margin : 0;
+  const high = comparable ? (row.ratioHigh ?? centre) * margin : Number.POSITIVE_INFINITY;
   const range = `[${show(low)}, ${show(high)}]`;
   if (gap.ratio === null || gap.ratio < low || gap.ratio > high) return `the recorded ratio ${gap.ratio === null ? 'none' : show(gap.ratio)} is outside ${range}, the speed ratio interval this run measured for the row`;
   const known = new Set((base?.history ?? []).map((point) => JSON.stringify(point)));
@@ -202,6 +230,48 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
     if (point.ratio < low || point.ratio > high) return `the new history point ${show(point.ratio)} of ${point.at} is outside ${range}, the speed ratio interval this run measured for the row`;
   }
   return null;
+}
+
+/**
+ * A speed row measured against the base of the change in the same pairs (bench/ab-speed.ts). It fails only on evidence:
+ *  - the head is credibly slower than the base by more than the row's regression threshold (the one-sided upper bound of
+ *    the median of base time / head time is below 1 / (1 + threshold)) and a second set of fresh pairs shows it too, or
+ *  - the base was at or above the reference and the head is credibly below it (the upper bound of reference time /
+ *    head time is below the pass line) and the second set shows it too, or
+ *  - the row is a tracked gap and its median fell under what its history predicts (bench/parity-gaps.json): a change
+ *    that makes a known gap worse by less than the threshold still may not walk it down run after run.
+ * Otherwise the change did not make the row worse and it passes; a row below the reference that the base was already
+ * below is the standing gap the nightly run reports (the absolute rule), not a failure of this change.
+ */
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions): SpeedJudgement {
+  const comparedWithBase = row.abPairs !== undefined || row.abFallback !== undefined;
+  const nightly = (options.nightlyOnly ?? AB_NIGHTLY_ONLY)[row.id];
+  if (nightly !== undefined && comparedWithBase) {
+    return { outcome: 'pass', basis: 'speed-nightly-only', detail: `not judged on a pull request: ${nightly.reason}`, worsening: null, allowance: null };
+  }
+  if (row.abPairs === undefined) return judgeAbsolute(row, gap);
+  const line = 1 - SPEED_PARITY_TOLERANCE;
+  const slowerLine = slowdownLine(row.id, options.regression);
+  const none = { worsening: null, allowance: null };
+  const median = row.abMedian ?? row.ratio ?? 0;
+  const against = `head against base ${show(median)} over ${row.abPairs} pairs`;
+  if (row.abUpper !== undefined && row.abUpper < slowerLine && row.abSlowerConfirmed !== false) {
+    return { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(slowerLine)}: the change made the row more than ${show(100 * (1 / slowerLine - 1))}% slower than its base`, ...none };
+  }
+  const baseVersusReference = row.abBaseVsReferenceMedian ?? 0;
+  if (baseVersusReference >= line && row.abHeadVsReferenceUpper !== undefined && row.abHeadVsReferenceUpper < line && row.abLostConfirmed !== false) {
+    return {
+      outcome: 'fail',
+      basis: 'speed-lost-parity',
+      detail: `${against}; the base was at the reference (${show(baseVersusReference)}), the head is credibly below it: the upper bound ${show(row.abHeadVsReferenceUpper)} is below ${show(line)}`,
+      ...none,
+    };
+  }
+  if (gap !== null) return judgeTrackedAgainstBase(row, gap, median);
+  const bound = row.abUpper === undefined ? 'too few pairs for a bound' : `upper bound ${show(row.abUpper)}`;
+  if (row.speedVerdict === 'pass') return { outcome: 'pass', basis: 'speed-pass', detail: `${against} (${bound}); at the reference`, ...none };
+  if (baseVersusReference >= line) return { outcome: 'pass', basis: 'speed-not-slower-than-base', detail: `${against} (${bound}); not credibly below the reference`, ...none };
+  return { outcome: 'pass', basis: 'speed-unchanged-below-reference', detail: `${against} (${bound}); below the reference on the base as well (${show(baseVersusReference)}): the standing gap the nightly run reports`, ...none };
 }
 
 export function evaluateParity(report: BenchReport, gaps: GapFile, options: ParityOptions = {}): ParityVerdict {
@@ -234,11 +304,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       continue;
     }
     if (row.kind === 'throughput') {
-      const measured =
-        row.ratioLow !== undefined && row.ratioHigh !== undefined
-          ? { speed: { median: row.ratioMedian ?? row.ratio ?? Number.NaN, low: row.ratioLow, high: row.ratioHigh, pairs: row.runs ?? null } }
-          : {};
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null), ...measured });
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options) });
       continue;
     }
     const siblings = byCase.get(caseKey(row)) ?? [];
