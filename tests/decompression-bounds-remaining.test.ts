@@ -9,12 +9,15 @@ import JSZip from 'jszip';
 import { NextRequest } from 'next/server';
 import type { Job } from '@/lib/queue/bullmq-engine';
 import { POST as inspectRoute } from '../src/app/api/v1/archives/inspect/route';
+import crypto from 'node:crypto';
+import sharp from 'sharp';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import { ARCHIVE_SECURITY_LIMITS, convertArchive, inspectArchive, repairZipArchive } from '../src/lib/conversions/archive';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { decodeWoff2 } from '../src/lib/conversions/font';
-import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
+import { generateHtmlFromSlides, parseAllXlsxWorksheets } from '../src/lib/conversions/office';
+import { HTML_MAX_EMBEDDED_BASE64_CHARS } from '../src/lib/conversions/office/pptx-media';
 import { Woff2FormatError, Woff2LimitError, WOFF2_MAX_TABLES } from '../src/lib/conversions/font-woff2';
 import { payloadLimitStatus } from '../src/lib/api/payload-limit';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
@@ -30,6 +33,7 @@ import {
 import {
   BOMB_BYTES,
   MIB,
+  compressPadded,
   compressZeros,
   compressibleText,
   craftZip,
@@ -64,6 +68,7 @@ interface Outcome {
   elapsedMs: number;
   rssGrowthBytes: number;
   size: number | null;
+  pictures: string[];
 }
 
 let workDir = '';
@@ -422,34 +427,130 @@ describe('WOFF2 limits answer 413', () => {
   });
 });
 
-describe('embedded media is not held to the cap of parsed parts', () => {
-  const MEDIA_BYTES = 70 * MIB;
+describe('embedded media: read once per part, only where it is drawn, under a per-document budget', () => {
+  const sha256 = (bytes: Buffer): string => crypto.createHash('sha256').update(bytes).digest('hex');
   const SLIDE_TEXT = 'Quarterly results';
+  const BUDGET_ENV = { EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES: String(64 * MIB) };
 
-  /** The deck from the office fixtures with its picture part replaced by `media`. */
-  async function deckWithPicture(media: Buffer, compression: 'STORE' | 'DEFLATE'): Promise<Buffer> {
+  /** A JPEG that is also `padBytes` of filler: the picture part of the office fixture, grown. */
+  async function pictureOf(padBytes: number, filler: number): Promise<Buffer> {
+    return Buffer.concat([await makeNoisyJpeg(), Buffer.alloc(padBytes, filler)]);
+  }
+
+  /** The fixture deck with `parts` as its media, each picture of the slide drawn `refs` times. */
+  async function deckWith(parts: Buffer[], refs: number, compression: 'STORE' | 'DEFLATE' = 'DEFLATE'): Promise<Buffer> {
     const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
-    zip.file('ppt/media/image1.jpg', media, { compression });
+    zip.remove('ppt/media/image1.jpg');
+    const slideRels = await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('text');
+    const slide = await zip.file('ppt/slides/slide1.xml')!.async('text');
+    const picture = slide.match(/<p:pic>[\s\S]*?<\/p:pic>/)![0];
+    let pictures = '';
+    let relationships = '';
+    parts.forEach((part, index) => {
+      zip.file(`ppt/media/image${index + 1}.jpg`, part, { compression });
+      relationships += `<Relationship Id="rIdM${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${index + 1}.jpg"/>`;
+      pictures += picture.replace('r:embed="rId2"', `r:embed="rIdM${index}"`).repeat(refs);
+    });
+    zip.file('ppt/slides/slide1.xml', slide.replace(picture, pictures));
+    zip.file('ppt/slides/_rels/slide1.xml.rels', slideRels.replace('</Relationships>', `${relationships}</Relationships>`));
     return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
   }
 
-  it('converts a deck with a 70 MiB picture part to text and HTML, as it did before the entry cap', async () => {
-    const jpeg = await makeNoisyJpeg();
-    const deck = await deckWithPicture(Buffer.concat([jpeg, Buffer.alloc(MEDIA_BYTES, 0x5a)]), 'STORE');
+  function deckFixture(name: string, deck: Buffer): void {
+    fixture(name, deck);
+  }
+
+  it('converts a deck with a 70 MiB picture to text, and to HTML with the picture bytes intact', async () => {
+    const part = await pictureOf(70 * MIB, 0x5a);
+    const deck = await deckWith([part], 1, 'STORE');
     const text = await dispatchConversion(deck, 'pptx', 'txt', {}, 'media.pptx');
-    expect(text.buffer.toString('utf-8')).toContain(SLIDE_TEXT);
-    const html = await dispatchConversion(deck, 'pptx', 'html', {}, 'media.pptx');
-    const markup = html.buffer.toString('utf-8');
-    expect(markup).toContain(SLIDE_TEXT);
-    expect(markup).toContain('data:image/jpeg;base64,');
+    expect(text.buffer.toString('utf-8')).toBe(`--- Slide 1 ---\n${SLIDE_TEXT}`);
+    const html = (await dispatchConversion(deck, 'pptx', 'html', {}, 'media.pptx')).buffer.toString('utf-8');
+    const uris = [...html.matchAll(/data:image\/jpeg;base64,([A-Za-z0-9+/=]+)/g)];
+    expect(uris.map((uri) => sha256(Buffer.from(uri[1], 'base64')))).toEqual([sha256(part)]);
   });
 
-  it('still refuses a picture part that inflates past 100 times its compressed size', async () => {
-    const bomb = await deckWithPicture(Buffer.concat([await makeNoisyJpeg(), Buffer.alloc(150 * MIB)]), 'DEFLATE');
-    expect(bomb.length * 100).toBeLessThan(150 * MIB);
-    const failure = await dispatchConversion(bomb, 'pptx', 'txt', {}, 'bomb.pptx').catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(DecompressionLimitError);
-    expect((failure as DecompressionLimitError).message).toMatch(/times its \d+ compressed bytes/);
+  it('converts a deck with a 3840x2160 uncompressed TIFF that deflates past 100:1', async () => {
+    const tiff = await sharp({ create: { width: 3840, height: 2160, channels: 3, background: { r: 30, g: 90, b: 160 } } })
+      .tiff({ compression: 'none' })
+      .toBuffer();
+    expect(tiff.length / zlib.deflateRawSync(tiff).length).toBeGreaterThan(100);
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
+    zip.remove('ppt/media/image1.jpg');
+    zip.file('ppt/media/image1.tif', tiff);
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('text');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', rels.replace('image1.jpg', 'image1.tif'));
+    const deck = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const html = (await dispatchConversion(deck, 'pptx', 'html', {}, 'tiff.pptx')).buffer.toString('utf-8');
+    const uri = html.match(/data:image\/png;base64,([A-Za-z0-9+/=]+)/);
+    const meta = await sharp(Buffer.from(uri![1], 'base64')).metadata();
+    expect([meta.format, meta.width, meta.height]).toEqual(['png', 3840, 2160]);
+  });
+
+  it('reads a part used by six pictures once, and none at all for text', async () => {
+    deckFixture('refs-one-part.pptx', await deckWith([await pictureOf(40 * MIB, 0x5a)], 6));
+    const source = sha256(await pictureOf(40 * MIB, 0x5a));
+    // 6 reads of 40 MiB would pass the 64 MiB document budget; one read does not.
+    const html = await outcomeOf('pptx-html', 'refs-one-part.pptx', BUDGET_ENV);
+    expect(html.error).toBeNull();
+    expect(html.pictures).toEqual(Array(6).fill(source));
+    const text = await outcomeOf('pptx-txt', 'refs-one-part.pptx', BUDGET_ENV);
+    expect(text.error).toBeNull();
+    expect(text.size).toBe(`--- Slide 1 ---\n${SLIDE_TEXT}`.length);
+    // The first conversion in a process loads converter code; a deck without media shows what that costs.
+    deckFixture('refs-control.pptx', await deckWith([await makeNoisyJpeg()], 1));
+    const control = await outcomeOf('pptx-txt', 'refs-control.pptx', BUDGET_ENV);
+    // Reading the 40 MiB part would raise the peak by at least that much.
+    expect(text.rssGrowthBytes - control.rssGrowthBytes).toBeLessThan(24 * MIB);
+  });
+
+  it('charges the media of a whole document to one budget, and only where the target draws it', async () => {
+    deckFixture('two-parts.pptx', await deckWith([await pictureOf(40 * MIB, 0x5a), await pictureOf(40 * MIB, 0x5b)], 1));
+    const html = await outcomeOf('pptx-html', 'two-parts.pptx', BUDGET_ENV);
+    expect(html.error?.name).toBe('DecompressionLimitError');
+    expect(html.error?.status).toBe(413);
+    expect(html.error?.message).toMatch(/would exceed the decoded-byte budget of 67108864 bytes/);
+    const text = await outcomeOf('pptx-txt', 'two-parts.pptx', BUDGET_ENV);
+    expect(text.error).toBeNull();
+  });
+
+  it('refuses a media part past the limit of one part before inflating it', async () => {
+    const zeros = await compressZeros(BOMB_BYTES, 'rawDeflate');
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
+    const base = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const entries = await Promise.all(
+      Object.values(zip.files)
+        .filter((entry) => !entry.dir)
+        .map(async (entry) =>
+          entry.name === 'ppt/media/image1.jpg'
+            ? { name: entry.name, deflated: zeros, declaredSize: 1536 * MIB }
+            : { name: entry.name, deflated: zlib.deflateRawSync(await entry.async('nodebuffer')), declaredSize: (await entry.async('nodebuffer')).length }
+        )
+    );
+    expect(base.length).toBeGreaterThan(0);
+    deckFixture('bomb-media.pptx', craftZip(entries));
+    const html = await outcomeOf('pptx-html', 'bomb-media.pptx');
+    expect(html.error?.name).toBe('DecompressionLimitError');
+    expect(html.error?.status).toBe(413);
+    expect(html.error?.message).toMatch(/decodes to more than the limit of \d+ bytes/);
+    expect(html.elapsedMs).toBeLessThan(REFUSAL_MS);
+    expect(html.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
+  });
+
+  it('answers a typed 413 for pictures an HTML page cannot hold, whichever way they add up', () => {
+    const picture = Buffer.alloc(200 * MIB);
+    const shape = { x: 0, y: 0, width: 10, height: 10, shapeType: 'picture', imageData: picture, imageMimeType: 'image/png' };
+    const slides = [{ number: 1, texts: [], shapes: [shape, shape, shape] }];
+    const failure = (() => {
+      try {
+        return generateHtmlFromSlides(slides as never, 'deck');
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect((failure as Error).message).toContain(`more than ${HTML_MAX_EMBEDDED_BASE64_CHARS} base64 characters`);
   });
 
   it('keeps the 128 MiB cap of a DOCX XML part and the 64 MiB cap of its pictures', async () => {
@@ -461,7 +562,7 @@ describe('embedded media is not held to the cap of parsed parts', () => {
     const result = await dispatchConversion(docx, 'docx', 'txt', {}, 'styles.docx');
     expect(result.buffer.toString('utf-8')).toContain('Findings');
 
-    zip.file('word/media/image1.jpg', Buffer.concat([jpeg, Buffer.alloc(MEDIA_BYTES, 0x5a)]), { compression: 'STORE' });
+    zip.file('word/media/image1.jpg', Buffer.concat([jpeg, Buffer.alloc(70 * MIB, 0x5a)]), { compression: 'STORE' });
     const oversized = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
     const failure = await dispatchConversion(oversized, 'docx', 'txt', {}, 'picture.docx').catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PayloadLimitError);
@@ -534,6 +635,44 @@ describe('large parsed parts: worksheets take the workbook budget, content XML 1
     expect(failure).toBeInstanceOf(DecompressionLimitError);
     expect((failure as DecompressionLimitError).status).toBe(413);
     expect((failure as Error).message).toMatch(/ZIP entry 'xl\/worksheets\/sheet1\.xml' decodes to more than the limit of 268435456 bytes/);
+  });
+
+  /** A workbook of two sheets, each a part of `sheetBytes` bytes (one row and a comment of spaces). */
+  async function workbookOfTwoSheets(sheetBytes: number): Promise<Buffer> {
+    const head = '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData><!--';
+    const tail = '--></worksheet>';
+    const sheet = await compressPadded(head, sheetBytes - head.length - tail.length, tail);
+    const text = (content: string) => ({ deflated: zlib.deflateRawSync(content), declaredSize: Buffer.byteLength(content) });
+    return craftZip([
+      { name: '[Content_Types].xml', ...text('<Types/>') },
+      {
+        name: 'xl/workbook.xml',
+        ...text(
+          '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/></sheets></workbook>'
+        ),
+      },
+      {
+        name: 'xl/_rels/workbook.xml.rels',
+        ...text(
+          '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="worksheet" Target="worksheets/sheet2.xml"/></Relationships>'
+        ),
+      },
+      { name: 'xl/sharedStrings.xml', ...text('<sst><si><t>shared text</t></si></sst>') },
+      { name: 'xl/worksheets/sheet1.xml', deflated: sheet, declaredSize: sheetBytes },
+      { name: 'xl/worksheets/sheet2.xml', deflated: sheet, declaredSize: sheetBytes },
+    ]);
+  }
+
+  it('shares the 256 MiB workbook budget between the sheets', async () => {
+    fixture('two-sheets-150.xlsx', await workbookOfTwoSheets(150 * MIB));
+    fixture('two-sheets-120.xlsx', await workbookOfTwoSheets(120 * MIB));
+    const over = await outcomeOf('xlsx-csv', 'two-sheets-150.xlsx');
+    expect(over.error?.name).toBe('DecompressionLimitError');
+    expect(over.error?.status).toBe(413);
+    expect(over.error?.message).toMatch(/ZIP entry 'xl\/worksheets\/sheet2\.xml' would exceed the decoded-byte budget of 268435456 bytes/);
+    const within = await outcomeOf('xlsx-csv', 'two-sheets-120.xlsx');
+    expect(within.error).toBeNull();
+    expect(within.size).toBeGreaterThan(0);
   });
 
   it('converts a deck whose slide XML is 100 MiB', async () => {
