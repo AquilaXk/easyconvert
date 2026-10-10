@@ -76,23 +76,77 @@ function everySampleIs(samples: Uint8Array | Uint16Array, first: number, stride:
  * The pipeline over the decoded pixels of `pipeline` when its source is a plain PNG, or null when it is not (the caller
  * keeps `pipeline`). The decode runs under the input pixel limit the pipeline was opened with; a decode failure
  * reaches the caller as the library's own error, as it would from the first read of the picture.
+ *
+ * An encoder that writes 8 bits per sample (`eightBit`) is given a 16-bit colour picture reduced to 8 bits by the decode
+ * itself, the high byte of every sample, which is what the encoder would take from the 16-bit samples: the samples held are
+ * half as many bytes, the alpha check reads bytes, and the encoder has no reduction left to do. A grey picture keeps its
+ * 16 bits (the library's grey reduction is not the high byte, and drops a grey picture's alpha band).
  */
-export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DECODED_SOURCE_MAX_BYTES): Promise<DecodedPng | null> {
+export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DECODED_SOURCE_MAX_BYTES, eightBit = false): Promise<DecodedPng | null> {
   const meta = await pipeline.metadata();
   if (!isPlainPng(meta, maxBytes)) return null;
   const deep = meta.depth === SIXTEEN_BIT_DEPTH;
+  const narrow = deep && eightBit && meta.space === 'rgb16';
   // Written in the colourspace the PNG is in: left to itself the raw output turns a grey picture into three colour bands.
   const { data, info } = await pipeline
     .clone()
-    .toColourspace(meta.space)
-    .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
+    .toColourspace(narrow ? 'srgb' : meta.space)
+    .raw({ depth: deep && !narrow ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
     .toBuffer({ resolveWithObject: true });
   // The library takes the sample depth of a raw input from the typed array that holds it.
-  const samples = deep ? samples16Of(data) : data;
-  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? everySampleIs(samples, info.channels - 1, info.channels, deep ? MAX_16_BIT_SAMPLE : MAX_8_BIT_SAMPLE) : undefined;
+  const wide = deep && !narrow;
+  const samples = wide ? samples16Of(data) : data;
+  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? everySampleIs(samples, info.channels - 1, info.channels, wide ? MAX_16_BIT_SAMPLE : MAX_8_BIT_SAMPLE) : undefined;
   return {
     pipeline: sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() }),
     alphaIsOpaque,
     raster: { samples, width: info.width, height: info.height, channels: info.channels },
   };
 }
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_CHUNK_OVERHEAD_BYTES = 12;
+const PNG_CHUNK_TYPE_OFFSET = 4;
+const PNG_CHUNK_DATA_OFFSET = 8;
+const PNG_HEADER_DATA_BYTES = 13;
+const PNG_BIT_DEPTH_AT = 8;
+const PNG_COLOUR_TYPE_AT = 9;
+/** Grey, colour, grey with alpha and colour with alpha: the layouts that are sample rows (palette is colour type 3). */
+const SAMPLE_COLOUR_TYPES: ReadonlySet<number> = new Set([0, 2, 4, 6]);
+const SAMPLE_BIT_DEPTHS: ReadonlySet<number> = new Set([8, 16]);
+/**
+ * Chunks a PNG may hold and still be read by the AVIF encoder as nothing but pixels. Colour (`cHRM`, `gAMA`, `sRGB`,
+ * `iCCP`, `cICP`), transparency (`tRNS`) and text blocks are read by it as tags of the picture and move the file it writes;
+ * the density and the time stamp do not.
+ */
+const BARE_PNG_CHUNKS: ReadonlySet<string> = new Set(['IHDR', 'IDAT', 'IEND', 'pHYs', 'tIME']);
+
+/**
+ * True when `png` is a PNG of 8 or 16 bits per sample in grey or colour, with or without alpha, that holds its image data
+ * and nothing the AVIF encoder reads as a tag of the picture. Such a file means to the encoder what it means to this
+ * module, so it can be handed over as it is instead of being decoded and written again.
+ */
+export function isBarePng(png: Buffer): boolean {
+  if (png.length < PNG_SIGNATURE.length || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return false;
+  let at = PNG_SIGNATURE.length;
+  let first = true;
+  let imageData = false;
+  while (at + PNG_CHUNK_OVERHEAD_BYTES <= png.length) {
+    const length = png.readUInt32BE(at);
+    const type = png.toString('latin1', at + PNG_CHUNK_TYPE_OFFSET, at + PNG_CHUNK_DATA_OFFSET);
+    const next = at + PNG_CHUNK_OVERHEAD_BYTES + length;
+    if (next > png.length || !BARE_PNG_CHUNKS.has(type)) return false;
+    if (first !== (type === 'IHDR')) return false;
+    if (type === 'IHDR') {
+      if (length !== PNG_HEADER_DATA_BYTES) return false;
+      const data = at + PNG_CHUNK_DATA_OFFSET;
+      if (!SAMPLE_BIT_DEPTHS.has(png[data + PNG_BIT_DEPTH_AT]) || !SAMPLE_COLOUR_TYPES.has(png[data + PNG_COLOUR_TYPE_AT])) return false;
+    }
+    if (type === 'IDAT') imageData = true;
+    first = false;
+    if (type === 'IEND') return imageData && next === png.length;
+    at = next;
+  }
+  return false;
+}
+

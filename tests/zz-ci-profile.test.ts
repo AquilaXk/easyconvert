@@ -7,11 +7,12 @@ import { it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { decodePlainPngOnce } from '../src/lib/conversions/image-decoded-source';
 import { classifyRaster } from '../src/lib/conversions/image-content';
+import { encodeAvifWithCli, findAvifenc } from '../src/lib/conversions/avif-cli';
 
 const CORPUS = path.join(__dirname, '..', 'bench', 'corpus');
 const median = (values: number[]): number => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
-async function time(label: string, run: () => unknown, count = 15): Promise<void> {
+async function time(label: string, run: () => unknown, count = 25): Promise<void> {
   for (let i = 0; i < 3; i += 1) await run();
   const spent: number[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -19,7 +20,7 @@ async function time(label: string, run: () => unknown, count = 15): Promise<void
     await run();
     spent.push(Number(process.hrtime.bigint() - start) / 1e6);
   }
-  console.log(`PROFILE ${label.padEnd(58)} ${median(spent).toFixed(2)} ms`);
+  console.log(`PROFILE ${label.padEnd(58)} min ${Math.min(...spent).toFixed(2)}  med ${median(spent).toFixed(2)} ms`);
 }
 
 it('profiles the image rows on the CI machine', async () => {
@@ -43,6 +44,18 @@ it('profiles the image rows on the CI machine', async () => {
     await time('sharp png -> webp q70 e4 direct', () => sharp(source).webp({ quality: 70, effort: 4, smartSubsample: false }).toBuffer());
     await time('sharp png -> removeAlpha -> webp', () => sharp(source).removeAlpha().webp({ quality: 70, effort: 4, smartSubsample: false }).toBuffer());
     await time('sharp png -> jpeg direct (graphic opts)', () => sharp(source).removeAlpha().jpeg({ quality: 70, chromaSubsampling: '4:2:0', optimiseCoding: true, trellisQuantisation: false, quantisationTable: 2, overshootDeringing: true }).toBuffer());
+    const narrow = await decodePlainPngOnce(sharp(source), undefined, true);
+    await time('decodePlainPngOnce eight-bit', () => decodePlainPngOnce(sharp(source), undefined, true));
+    if (narrow) await time('jpeg from the eight-bit raster', () => narrow.pipeline.removeAlpha().jpeg({ quality: 70, chromaSubsampling: '4:2:0', optimiseCoding: true, trellisQuantisation: false, quantisationTable: 2, overshootDeringing: true }).toBuffer());
+    const avifenc = await findAvifenc();
+    if (avifenc && decoded) {
+      const grey = name === 'lineart.png';
+      const png1 = await decoded.pipeline.removeAlpha().toColourspace(grey ? 'grey16' : deep ? 'rgb16' : 'srgb').png({ compressionLevel: 1 }).toBuffer();
+      const request = (png: Buffer) => ({ png, width: decoded.raster.width, height: decoded.raster.height, quality: 70, effort: 3, bitdepth: (deep ? 10 : 8) as 8 | 10, layout: (grey ? '4:0:0' : '4:4:4') as '4:0:0' | '4:4:4' });
+      await time('avif: raster -> png level 1', () => decoded.pipeline.removeAlpha().toColourspace(grey ? 'grey16' : deep ? 'rgb16' : 'srgb').png({ compressionLevel: 1 }).toBuffer());
+      await time('avif: cli on the re-encoded png', () => encodeAvifWithCli(avifenc, request(png1)), 5);
+      await time('avif: cli on the original png', () => encodeAvifWithCli(avifenc, request(source)), 5);
+    }
     await time('convertImage png->webp', () => convertImage(source, 'webp', { quality: 70 }, name, 'png'));
     await time('convertImage png->jpg', () => convertImage(source, 'jpg', { quality: 70 }, name, 'png'));
     await time('convertImage png->avif', () => convertImage(source, 'avif', { quality: 70 }, name, 'png'), 5);

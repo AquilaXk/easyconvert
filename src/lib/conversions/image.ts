@@ -71,7 +71,7 @@ import {
 import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
-import { decodePlainPngOnce } from './image-decoded-source';
+import { decodePlainPngOnce, isBarePng } from './image-decoded-source';
 import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
@@ -1730,9 +1730,11 @@ function isNeutralColour(colour: { r: number; g: number; b: number } | undefined
   return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
 }
 
-/** Lossy targets whose pixels the analyses and the encoder read from one decode of a plain PNG. */
-const LOSSY_CONTENT_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
-/** Targets whose encoder choices (chroma, effort, scan search) follow the content of the picture; WebP's follow the quality alone. */
+/**
+ * Targets whose encoder choices (chroma, effort, scan search) follow the content of the picture, and whose analyses and
+ * encoder read the pixels from one decode of a plain PNG. WebP's choices follow the quality alone and its encoder drops an
+ * opaque alpha plane itself, so a WebP is the PNG handed straight to the encoder.
+ */
 const CONTENT_CLASSIFIED_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'avif']);
 
 /** zlib level of the PNG handed to the AVIF encoder: it is read once and thrown away, so speed matters and size does not. */
@@ -1750,7 +1752,9 @@ interface EncodedAvif {
  * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits, the most the AV1 Main
  * profile carries (the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
  * that is fully opaque is dropped instead of encoded as a second plane. The reference library's encoder writes the
- * file when it is installed (grey sources as monochrome); without it the image library does.
+ * file when it is installed (grey sources as monochrome); without it the image library does. `pngFile`, when there is
+ * one, is the source PNG that the pipeline has not changed in any pixel: the library's encoder reads that file itself,
+ * where otherwise the pipeline is written as a PNG for it.
  */
 async function encodeAvifFromPipeline(
   pipeline: Sharp,
@@ -1758,7 +1762,8 @@ async function encodeAvifFromPipeline(
   content: ContentClass,
   keepsGrey: boolean,
   cicp: AvifCicp | undefined,
-  alphaIsOpaque: boolean | undefined
+  alphaIsOpaque: boolean | undefined,
+  pngFile: Buffer | undefined
 ): Promise<EncodedAvif> {
   const source = await pipeline.metadata();
   const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
@@ -1774,7 +1779,7 @@ async function encodeAvifFromPipeline(
   const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
-    const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();
+    const png = pngFile ?? (await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer());
     const buffer = await encodeAvifWithCli(avifenc, {
       png,
       width: target.width,
@@ -1939,6 +1944,8 @@ export async function convertImage(
   // Whether the alpha plane of a PNG decoded once is fully opaque; unknown (undefined) for any other source.
   let decodedAlphaIsOpaque: boolean | undefined;
   let decodedRaster: Raster | undefined;
+  // The PNG itself when it is a plain one the AVIF encoder can read as it is (see `isBarePng`).
+  let decodedPngFile: Buffer | undefined;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
   const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
@@ -2093,13 +2100,14 @@ export async function convertImage(
         if (hdr.radiance) hdrRadiance = { rgb: hdr.radiance, width: hdr.width, height: hdr.height };
         // The pipeline now holds the rendition (sRGB, or PQ for HDR output): the input's tag no longer describes it.
         inputCicp = null;
-      } else if (inputCicp === null && LOSSY_CONTENT_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
+      } else if (inputCicp === null && CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
         // The content class, the alpha check and the encoder would each decode the PNG again: decode it once.
-        const decoded = await decodePlainPngOnce(pipeline);
+        const decoded = await decodePlainPngOnce(pipeline, undefined, fmt === 'jpg' || fmt === 'jpeg');
         if (decoded !== null) {
           pipeline = decoded.pipeline;
           decodedAlphaIsOpaque = decoded.alphaIsOpaque;
           decodedRaster = decoded.raster;
+          if (fmt === 'avif' && isBarePng(frameSelection.source)) decodedPngFile = frameSelection.source;
         }
       }
     }
@@ -2277,12 +2285,14 @@ export async function convertImage(
       }
 
       case 'webp':
-        outputBuffer = await (await withoutOpaqueAlpha(pipeline, alphaIsOpaqueAfterResize)).webp(webpOptionsFor(options.quality)).toBuffer();
+        outputBuffer = await pipeline.webp(webpOptionsFor(options.quality)).toBuffer();
         mimeType = 'image/webp';
         break;
 
       case 'avif': {
-        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize);
+        // The encoder reads the plain PNG itself only while nothing changes its pixels: a resize or a background does.
+        const pngFile = resizeOptions || background !== undefined ? undefined : decodedPngFile;
+        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize, pngFile);
         // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
         // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
         // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
