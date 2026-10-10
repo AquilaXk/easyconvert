@@ -37,6 +37,7 @@ export const SPEC = {
   readingOrderTau: { metric: 'reading_order_tau', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
   pdfCheckFailures: { metric: 'pdf_check_failures', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   pageCountError: { metric: 'page_count_error', unit: 'pages', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  rotationErrors: { metric: 'rotation_errors', unit: 'pages', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   renderMatchesReference: { metric: 'render_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   stampInkMatchesReference: { metric: 'stamp_ink_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   stampGeometryMatchesSpec: { metric: 'stamp_geometry_matches_spec', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
