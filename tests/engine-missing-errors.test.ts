@@ -26,6 +26,7 @@ const MISSING_TOOL_NAME = /(Unavailable|Required|NotInstalled)\w*Error$|^Missing
 const NOT_ABOUT_THE_WORKER = new Set([
   'StorageProviderUnavailableError',
   'ArchivePasswordRequiredError',
+  'PdfPasswordRequiredError',
   // A webhook secret request that names no target: a 400 about the caller, not a missing tool.
   'WebhookTargetRequiredError',
   // The browser offers no OPFS sync access handle: an internal signal to use the in-memory route.

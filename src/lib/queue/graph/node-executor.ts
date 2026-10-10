@@ -28,13 +28,18 @@ import {
   isSplitArchive,
   applyPdfWatermark,
   protectPdf,
+  unlockPdf,
 } from '../../conversions';
+import type { PdfAccess } from '../../conversions/pdf-access';
+import { openPasswordOption } from '../option-secrets';
+import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
   GraphExportError,
   JobTimeoutError,
   MediaPackagingOptions,
+  PdfPasswordListError,
   UnknownArtifactFormatError,
   WorkerOutputMissingError,
 } from '../../types';
@@ -48,8 +53,8 @@ import {
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
-import { deadlineBoundEngine } from '../job-deadline';
-import { stripEngineControls } from '../../conversions/job-time';
+import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
+import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
 const INTERMEDIATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** A node without any output artifact has no bytes to describe: the generic binary type with size 0. */
@@ -168,10 +173,45 @@ function requireTargetFormat(node: { op?: string; targetFormat?: unknown; option
   return target;
 }
 
+/**
+ * The password of each merged artifact. `options.passwords` lists one entry per input node of the merge, in the order
+ * of `input`; every artifact an input node produced takes that node's entry.
+ *
+ * @throws PdfPasswordListError (422) when the list does not have one entry per input node, or an artifact belongs to none.
+ */
+async function mergePasswordsFor(
+  graphId: string,
+  node: { input?: string | string[]; options?: { passwords?: unknown } },
+  artifacts: string[]
+): Promise<Array<string | null> | undefined> {
+  const passwords = node.options?.passwords;
+  if (passwords === undefined) return undefined;
+  let inputs: string[] = [];
+  if (Array.isArray(node.input)) inputs = node.input;
+  else if (node.input) inputs = [node.input];
+  if (!Array.isArray(passwords) || passwords.length !== inputs.length) {
+    throw new PdfPasswordListError(
+      `The merge node lists ${Array.isArray(passwords) ? passwords.length : 'no list of'} passwords for ${inputs.length} input node(s); give one entry per input, in input order, with null for an input that has none.`
+    );
+  }
+  const produced = await Promise.all(inputs.map((inputId) => graphScheduler.getNodeOutputs(graphId, inputId)));
+  return artifacts.map((key) => {
+    const owner = produced.findIndex((outputs) => outputs.includes(key));
+    if (owner === -1) throw new PdfPasswordListError('A merged PDF is not an output of any input node, so its password cannot be matched.');
+    return passwords[owner] as string | null;
+  });
+}
+
+/** The password and the rights confirmation a PDF node's options carry. */
+function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean } | undefined): PdfAccess {
+  return { password: options?.password, confirmEditRights: options?.confirmEditRights };
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
-  storage?: IStorageBackend
+  storage?: IStorageBackend,
+  optimizers: OptimizerRegistry = OPTIMIZERS
 ): Promise<ConversionJobResult> {
   // Scratch files a remote backend stages for this node's inputs are removed when the node ends.
   const scope = scopeStorageObjects(storage || storageProvider);
@@ -181,8 +221,9 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const submittedNode = job.data.graphNode as any;
   // Node options come from the request body: they cannot carry the signal, a timeout or a deadline into an engine.
+  // Passwords sealed for the queue are opened here, in memory, and never stored back anywhere.
   const node = submittedNode?.options && typeof submittedNode.options === 'object'
-    ? { ...submittedNode, options: stripEngineControls(submittedNode.options) }
+    ? { ...submittedNode, options: openPasswordOption(stripEngineControls(submittedNode.options), graphNodeJobId(graphId, nodeId)) }
     : submittedNode;
   const effectiveStorage: IStorageBackend = scope.storage;
   const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
@@ -195,6 +236,7 @@ export async function processGraphNodeJob(
   await graphScheduler.onNodeStarted(graphId, nodeId);
 
   let outputKeys: string[] = [];
+  const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
 
   try {
     attemptSignal.throwIfAborted();
@@ -276,16 +318,28 @@ export async function processGraphNodeJob(
             throw new Error(`Input artifact "${inputKey}" not found in storage`);
           }
           const srcExt = artifactExtension(stored.filename, inputKey);
-          const convRes = await effectiveEngine.convert(
-            stored.buffer,
-            srcExt,
-            srcExt,
-            node.options || {},
-            stored.filename
-          );
-          const outKey = `intermediate/${graphId}/${nodeId}/${convRes.filename}`;
-          await effectiveStorage.saveObject(outKey, convRes.buffer, convRes.mimeType, convRes.filename, INTERMEDIATE_TTL_MS);
+          const optimizer = getOptimizer(srcExt, optimizers);
+          const deadlineAt = jobDeadlineAt(job);
+          const optRes = await raceAbort(
+            optimizer(stored.buffer, node.options || {}, {
+              signal: attemptSignal,
+              remainingMs: remainingJobMs({ [JOB_DEADLINE_AT]: deadlineAt }),
+            }),
+            attemptSignal
+          ); // NOSONAR S9382 sequential: one artifact in memory at a time
+          // An output that is not smaller is not an optimisation: the input is kept and said to be unchanged.
+          const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
+          const outBuffer = gained ? optRes.buffer : stored.buffer;
+          const outFilename = stored.filename || path.basename(inputKey);
+          const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
+          await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
           outputKeys.push(outKey);
+          optimizations.push({ key: outKey, optimized: gained, inputBytes: stored.buffer.length, outputBytes: optRes.buffer.length });
+          await job.log(
+            gained
+              ? `Node "${nodeId}" optimized "${outFilename}" from ${stored.buffer.length} to ${optRes.buffer.length} bytes`
+              : `Node "${nodeId}" kept "${outFilename}" unchanged: the optimiser produced ${optRes.buffer.length} bytes from ${stored.buffer.length} and did not make it smaller`
+          );
         }
         break;
       }
@@ -371,7 +425,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => applyPdfWatermark(buf, watermarkOpts)
+          (buf) => applyPdfWatermark(buf, watermarkOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
@@ -390,10 +444,28 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => protectPdf(buf, protectOpts)
+          (buf) => protectPdf(buf, protectOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.unlock': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const processedKeys = await processIntermediatePdfArtifacts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          (buf) => unlockPdf(buf, pdfAccessOf(node.options))
+        );
+        outputKeys.push(...processedKeys);
+        await job.log(`Node "${nodeId}" unlocked ${inputArtifacts.length} artifact(s)`);
         break;
       }
 
@@ -423,7 +495,10 @@ export async function processGraphNodeJob(
         }));
         if (targetFmt === 'pdf') {
           const pdfBuffers = inputs.map((stored) => stored.buffer);
-          const mergedBuf = await mergePdfBuffers(pdfBuffers);
+          const mergedBuf = await mergePdfBuffers(pdfBuffers, {
+            passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
+            confirmEditRights: node.options?.confirmEditRights,
+          });
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);
@@ -624,7 +699,9 @@ export async function processGraphNodeJob(
     // An engine that ignored the abort and returned late has no say: the queue already failed this attempt (deadline,
     // cancel or takeover), so the node is never recorded as completed.
     attemptSignal.throwIfAborted();
-    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, 1);
+    // Quota is charged for work that produced a result: an optimize node that gained nothing costs no unit.
+    const chargedUnits = optimizations.length > 0 && optimizations.every((o) => !o.optimized) ? 0 : 1;
+    await graphScheduler.onNodeCompleted(graphId, nodeId, outputKeys, chargedUnits);
 
     return {
       jobId: job.id,
@@ -635,6 +712,7 @@ export async function processGraphNodeJob(
       mimeType: primaryOutput.mimeType,
       size: primaryOutput.size,
       durationMs,
+      ...(optimizations.length > 0 ? { optimizations } : {}),
     };
   } catch (err: any) {
     // Whatever an SDK or a remote quoted into the error, it leaves this node run masked.
@@ -654,6 +732,19 @@ export async function processGraphNodeJob(
   } finally {
     await scope.releaseAll();
   }
+}
+
+/** `work`, or the abort reason as soon as `signal` fires, so an optimiser that ignores the signal cannot hold the job past its deadline. */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 /** Largest body an import.url node accepts; override with GRAPH_URL_IMPORT_MAX_BYTES. */

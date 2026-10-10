@@ -87,6 +87,13 @@ export interface PdfProtectNode {
   options?: ConversionOptions;
 }
 
+/** Removes the encryption and owner restrictions of PDFs (`options.password`, `options.confirmEditRights`). */
+export interface PdfUnlockNode {
+  op: 'pdf.unlock';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
 export interface ThumbnailNode {
   op: 'thumbnail';
   input: NodeId;
@@ -106,6 +113,8 @@ export interface MergeNode {
   op: 'merge';
   input: NodeId[];
   targetFormat: 'pdf' | 'txt';
+  /** `passwords` (open password of each input, in order) and `confirmEditRights` for encrypted PDF inputs. */
+  options?: ConversionOptions;
 }
 
 export interface MetadataNode {
@@ -131,6 +140,7 @@ export type GraphNode =
   | WatermarkNode
   | PdfWatermarkNode
   | PdfProtectNode
+  | PdfUnlockNode
   | ArchiveCreateNode
   | ArchiveExtractNode
   | ExportUrlNode

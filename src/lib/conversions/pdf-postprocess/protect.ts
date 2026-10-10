@@ -12,29 +12,25 @@ import {
   resolveSandboxedCommand,
   getSanitizedEnvironment,
 } from '../../security/process-sandbox';
-import { resolveBinaryPath } from './utils';
+import { getQpdfBinaryPath } from './qpdf-path';
+import { openPdfForEditing, type PdfAccess } from '../pdf-access';
+import { PdfStructureError } from '../pdf-document';
 
-/**
- * Locate the qpdf binary on the system or return null if unavailable.
- */
-export function getQpdfBinaryPath(): string | null {
-  const candidates = [
-    '/usr/bin/qpdf',
-    '/usr/local/bin/qpdf',
-    '/opt/homebrew/bin/qpdf',
-    '/opt/homebrew/opt/qpdf/bin/qpdf',
-  ];
-  return resolveBinaryPath('QPDF_PATH', candidates, 'qpdf');
-}
+export { getQpdfBinaryPath };
 
 /**
  * Protect a PDF document using AES-256 encryption and fine-grained permission controls
  * via qpdf CLI. Passwords are securely passed via an @argfile with mode 0600
  * to prevent leaking credentials in the process argument list.
+ *
+ * An encrypted input is decrypted first, through the same gate as every other PDF edit (see pdf-access): the open
+ * password it needs comes from `access.password`, and a file whose owner restricts any right is only re-protected with
+ * `access.confirmEditRights` or the owner password, because the new protection replaces the old restrictions.
  */
 export async function protectPdf(
   pdfBuffer: Buffer,
-  options: PdfProtectOptions = {}
+  options: PdfProtectOptions = {},
+  access: PdfAccess = {}
 ): Promise<Buffer> {
   await Promise.resolve();
   if (!pdfBuffer || pdfBuffer.length === 0) {
@@ -54,6 +50,15 @@ export async function protectPdf(
     throw new PdfPostprocessError(`Unsupported key length: ${keyLength}. Supported lengths are 128 and 256.`);
   }
 
+  let plain: Buffer;
+  try {
+    plain = await openPdfForEditing(pdfBuffer, 'protect', access);
+  } catch (err) {
+    // A file whose trailer cannot be read is a protection failure of this step, as it always was.
+    if (err instanceof PdfStructureError) throw new PdfPostprocessError(`PDF protection failed: ${err.message}`);
+    throw err;
+  }
+
   const perms = options.permissions || {};
   const printPerm = perms.print ?? 'full';
   const modifyPerm = perms.modify ?? 'none';
@@ -69,7 +74,7 @@ export async function protectPdf(
   const argFile = path.join(workDir, 'args.txt');
 
   try {
-    fs.writeFileSync(inputPdf, pdfBuffer);
+    fs.writeFileSync(inputPdf, plain);
 
     // Build argument lines for @argfile
     const args: string[] = [

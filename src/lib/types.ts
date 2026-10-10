@@ -133,6 +133,13 @@ export interface ConversionOptions {
   multiPageOutput?: 'zip' | 'first';
   pageCount?: number;
   password?: string;
+  /**
+   * PDF editing (watermark, merge, unlock): the caller states that they may edit the document, which lifts the owner
+   * restrictions of a PDF that has no open password or is opened with its user password. Only `true` counts.
+   */
+  confirmEditRights?: boolean;
+  /** Merge: the open password of each input, by position (`null` for an input that has none). */
+  passwords?: Array<string | null>;
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
   /** BCP 47 language of the document content, written to the language metadata of targets that carry it (EPUB). */
@@ -550,6 +557,8 @@ export interface ConversionJobResult {
   fallbackReason?: string;
   /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
   droppedStreams?: DroppedStream[];
+  /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
+  optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
 }
 
 export class ConversionFailedError extends Error {
@@ -917,6 +926,39 @@ export class EncryptedOfficeDocumentError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'EncryptedOfficeDocumentError';
+  }
+}
+
+/**
+ * A PDF is encrypted and the request carried no password, or a password that does not open it. Maps to HTTP 422 and,
+ * like every typed conversion failure, is never retried by the queue.
+ */
+export class PdfPasswordRequiredError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPasswordRequiredError';
+  }
+}
+
+/**
+ * The `passwords` of a merge node do not line up with its inputs (a different number of entries, or an artifact that
+ * no input produced). Maps to HTTP 422, like the other errors about the passwords of a PDF.
+ */
+export class PdfPasswordListError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPasswordListError';
+  }
+}
+
+/**
+ * A PDF's permissions forbid the requested edit and the request did not carry the owner password that lifts them.
+ * Maps to HTTP 422.
+ */
+export class PdfPermissionDeniedError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPermissionDeniedError';
   }
 }
 

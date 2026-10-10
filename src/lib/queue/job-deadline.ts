@@ -259,13 +259,22 @@ export interface DeadlinedJob {
  * in the request options are dropped (job data comes from request bodies); only a genuine `AbortSignal` that
  * server code passed in is combined with the job's.
  */
+export function jobDeadlineAt(job: DeadlinedJob): number | undefined {
+  const timeoutMs = job.opts?.timeout;
+  return job.opts?.deadlineAt ?? (timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
+}
+
 export function deadlineBoundEngine(engine: ConversionEnginePort, job: DeadlinedJob): ConversionEnginePort {
   return {
     name: engine.name,
     convert: (input, sourceFormat, targetFormat, options, originalFilename) => {
-      const timeoutMs = job.opts?.timeout;
-      const deadlineAt = job.opts?.deadlineAt ?? (timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
-      return engine.convert(input, sourceFormat, targetFormat, bindJobLimits(options, { signal: job.signal, deadlineAt }), originalFilename);
+      return engine.convert(
+        input,
+        sourceFormat,
+        targetFormat,
+        bindJobLimits(options, { signal: job.signal, deadlineAt: jobDeadlineAt(job) }),
+        originalFilename
+      );
     },
   };
 }

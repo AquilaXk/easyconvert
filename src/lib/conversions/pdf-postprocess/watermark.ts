@@ -9,6 +9,7 @@ import {
   type PDFImage,
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
+import { loadPdfDocument, openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { parsePageRanges } from '../page-range';
 import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
 import { attachWinAnsiToUnicode } from '../pdf-winansi-tounicode';
@@ -16,6 +17,7 @@ import {
   PdfWatermarkOptions,
   PdfWatermarkPosition,
   PdfWatermarkLayer,
+  PdfPasswordRequiredError,
   PdfPostprocessError,
   UnsupportedOptionError,
   WatermarkFontError,
@@ -244,20 +246,23 @@ function renderTextWatermarkOnPage({ page, text, position, rotationDegrees }: Re
 }
 
 async function loadAndPrepareDocument(
-  pdfBuffer: Buffer
+  pdfBuffer: Buffer,
+  access: PdfAccess
 ): Promise<{ doc: PDFDocument; pageCount: number }> {
   if (!pdfBuffer || pdfBuffer.length === 0) {
     throw new PdfPostprocessError('PDF buffer is empty.');
   }
+  // Encrypted input is decrypted (or refused with a typed 422) before pdf-lib sees a byte of it.
+  const plain = await openPdfForEditing(pdfBuffer, 'watermark', access);
   try {
-    const doc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+    const doc = await loadPdfDocument(plain);
     const pageCount = doc.getPageCount();
     if (pageCount === 0) {
       throw new PdfPostprocessError('PDF document contains 0 pages.');
     }
     return { doc, pageCount };
   } catch (err: any) {
-    if (err instanceof PdfPostprocessError) {
+    if (err instanceof PdfPostprocessError || err instanceof PdfPasswordRequiredError) {
       throw err;
     }
     throw new PdfPostprocessError(`Failed to parse PDF document for watermarking: ${err.message}`);
@@ -388,12 +393,18 @@ async function prepareWatermarkAsset(
 /**
  * Apply text or image watermarking to a PDF document with configurable positioning,
  * rotation, opacity, page range selection, and over/under layering.
+ *
+ * An encrypted PDF that needs an open password answers PdfPasswordRequiredError (422) without `access.password` or
+ * with a wrong one. The result is written without encryption, so a PDF whose owner forbids modifying it is only
+ * watermarked when the caller confirms the right to edit (`access.confirmEditRights`) or supplies the owner password;
+ * otherwise the call answers PdfPermissionDeniedError (422).
  */
 export async function applyPdfWatermark(
   pdfBuffer: Buffer,
-  options: PdfWatermarkOptions = {}
+  options: PdfWatermarkOptions = {},
+  access: PdfAccess = {}
 ): Promise<Buffer> {
-  const { doc, pageCount } = await loadAndPrepareDocument(pdfBuffer);
+  const { doc, pageCount } = await loadAndPrepareDocument(pdfBuffer, access);
 
   const targetPages = options.pages
     ? parsePageRanges(options.pages, pageCount)

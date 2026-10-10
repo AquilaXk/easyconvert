@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
+import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,
@@ -568,6 +569,14 @@ export function validateJobGraph(
         code: 'MERGE_INPUTS_INSUFFICIENT',
       });
     }
+    const mergePasswords = op === 'merge' ? (node as { options?: { passwords?: unknown } }).options?.passwords : undefined;
+    if (mergePasswords !== undefined && (!Array.isArray(mergePasswords) || mergePasswords.length !== mergeInputListed(node))) {
+      errors.push({
+        path: `nodes.${nodeId}.options.passwords`,
+        message: `Merge node "${nodeId}" needs one password entry (null for none) per input, in input order; found ${Array.isArray(mergePasswords) ? mergePasswords.length : 'no list'} for ${mergeInputListed(node)} input(s).`,
+        code: 'MERGE_PASSWORDS_MISMATCH',
+      });
+    }
     if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
       for (const inputId of getTaskDependencies(node)) {
         const inputFormat = inferredFormats[inputId];
@@ -638,8 +647,37 @@ export function validateJobGraph(
         inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
         break;
       }
+      case 'optimize': {
+        const inputId = getTaskDependencies(node)[0];
+        const srcFmt = firstInputFormat(node);
+        if (srcFmt === UNKNOWN_FORMAT) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
+            code: 'SOURCE_FORMAT_UNKNOWN',
+          });
+        } else if (srcFmt === DYNAMIC_FORMAT) {
+          // With no optimiser at all, a source known only at run time is certain to fail there, after the
+          // job was queued, charged for and its upstream nodes ran.
+          if (OPTIMIZABLE_FORMATS.length === 0) {
+            errors.push({
+              path: `nodes.${nodeId}`,
+              message: optimizeUnavailableMessage('a source whose format is only known at run time'),
+              code: 'UNSUPPORTED_TARGET_FORMAT',
+            });
+          }
+        } else if (!hasOptimizer(srcFmt)) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: optimizeUnavailableMessage(srcFmt),
+            code: 'UNSUPPORTED_TARGET_FORMAT',
+          });
+        }
+        inferredFormats[nodeId] = srcFmt;
+        break;
+      }
       default: {
-        // Pass-through operations (optimize, watermark, protect, export) keep their input format.
+        // Pass-through operations (watermark, protect, export) keep their input format.
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }
@@ -655,6 +693,12 @@ export function validateJobGraph(
     inferredOutputFormats: inferredFormats,
     normalizedNodes: valid ? nodes : undefined,
   };
+}
+
+/** Inputs a node lists in `input`, counting a repeated one each time. */
+function mergeInputListed(node: { input?: unknown }): number {
+  if (Array.isArray(node.input)) return node.input.length;
+  return node.input ? 1 : 0;
 }
 
 /** Records why a convert node cannot run on its input format, if it cannot. */

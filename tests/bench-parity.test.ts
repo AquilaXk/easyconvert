@@ -424,7 +424,7 @@ describe('the known gaps', () => {
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     expect(issuesOf('image/', false)).toEqual([]);
     expect(issuesOf('image/', true)).toEqual([641]);
-    expect(issuesOf('audio/', true)).toEqual([]);
+    expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
     expect(issuesOf('document/', true)).toEqual([672]);

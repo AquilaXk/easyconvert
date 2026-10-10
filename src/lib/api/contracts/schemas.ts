@@ -49,12 +49,19 @@ export const PdfWatermarkOptionsSchema = {
   },
 } as const;
 
+/**
+ * Longest password the API accepts, in characters. A password is sealed for the queue, and a blob holds 64 KiB: the
+ * longest list of passwords (MAX_PASSWORD_LIST_ITEMS of them, each written with six-byte escapes) stays below that.
+ */
+export const MAX_PASSWORD_LENGTH = 256;
+export const MAX_PASSWORD_LIST_ITEMS = 32;
+
 export const PdfProtectOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/pdf-protect-options.json',
   type: 'object',
   properties: {
-    userPassword: { type: 'string', description: 'Password required to open the PDF.' },
-    ownerPassword: { type: 'string', description: 'Master password required to modify permissions.' },
+    userPassword: { type: 'string', maxLength: MAX_PASSWORD_LENGTH, description: 'Password required to open the PDF.' },
+    ownerPassword: { type: 'string', maxLength: MAX_PASSWORD_LENGTH, description: 'Master password required to modify permissions.' },
     keyLength: { type: 'integer', enum: [128, 256], description: 'Encryption key bit length (default 256).' },
     permissions: {
       type: 'object',
@@ -290,7 +297,19 @@ export const ConversionOptionsSchema = {
     },
     password: {
       type: 'string',
-      description: 'Decryption or protection password.',
+      maxLength: MAX_PASSWORD_LENGTH,
+      description: `Decryption or protection password, at most ${MAX_PASSWORD_LENGTH} characters. For an encrypted PDF it is the open password, or the owner password, which also lifts the owner restrictions on a PDF edit.`,
+    },
+    confirmEditRights: {
+      type: 'boolean',
+      description:
+        'PDF watermark, merge, protect and unlock, in a graph node or in the watermark and protect options of a PDF output: set to true to confirm that you may edit the document. This lifts the owner restrictions of an encrypted PDF that the operation receives, when it has no open password or is opened with its user password; without it, or the owner password, such a request answers 422. The result is written without those restrictions. A pdf to pdf conversion reads the text of its source, which an encrypted source does not allow.',
+    },
+    passwords: {
+      type: 'array',
+      maxItems: MAX_PASSWORD_LIST_ITEMS,
+      items: { type: ['string', 'null'], maxLength: MAX_PASSWORD_LENGTH },
+      description: `Merge node: one entry per input node, in the order of \`input\` (null for an input that has none), at most ${MAX_PASSWORD_LIST_ITEMS} entries. Every PDF an input node produces takes that node's entry. A list of another length answers 422.`,
     },
     orientation: {
       type: 'string',
