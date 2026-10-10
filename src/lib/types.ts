@@ -778,6 +778,8 @@ export class EngineUnavailableError extends EngineMissingError {
 
 /** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
 const WORKER_OUTPUT_MISSING_STATUS = 500;
+const NO_CONVERTIBLE_CONTENT_STATUS = 422;
+const INVALID_CONVERSION_OUTPUT_STATUS = 500;
 
 /** What an API answers for a vanished output; the worker's file name stays in the server log. */
 export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
@@ -794,6 +796,32 @@ export class WorkerOutputMissingError extends ConversionFailedError {
   constructor(outputName: string) {
     super(`The persisted conversion output "${outputName}" is no longer available`);
     this.name = 'WorkerOutputMissingError';
+  }
+}
+
+/**
+ * The input holds no content the target format can carry (an empty workbook written as CSV, a document without text
+ * written as plain text). It answers 422 with the reason; an empty file is never returned as a successful conversion.
+ */
+export class NoConvertibleContentError extends ConversionFailedError {
+  readonly status = NO_CONVERTIBLE_CONTENT_STATUS;
+
+  constructor(source: string, target: string) {
+    super(`The .${source} file holds no content to write as .${target}.`);
+    this.name = 'NoConvertibleContentError';
+  }
+}
+
+/**
+ * An engine returned bytes that are not of the format the job asked for (container bytes for a text target). It is a
+ * server fault: the job fails with 500 and the message names the formats, never the bytes.
+ */
+export class InvalidConversionOutputError extends ConversionFailedError {
+  readonly status = INVALID_CONVERSION_OUTPUT_STATUS;
+
+  constructor(source: string, target: string) {
+    super(`The conversion of the .${source} file to .${target} produced bytes that are not a .${target} file.`);
+    this.name = 'InvalidConversionOutputError';
   }
 }
 

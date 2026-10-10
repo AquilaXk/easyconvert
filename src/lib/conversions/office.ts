@@ -53,6 +53,7 @@ import type { DocumentModel } from './document-model/model';
 import { renderModelTarget } from './document-targets';
 import { htmlToDocumentModel } from './html-model';
 import { markdownToDocumentModel, readEpubModel } from './source-model';
+import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
 
 export { buildOpenXpsPackage };
 
@@ -72,6 +73,13 @@ export async function convertOffice(
   const tgt = targetFormat.toLowerCase();
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();
+
+  // 0. Macro-enabled, template and slideshow variants: read by the reader of their plain format, macros never run.
+  const ooxmlFamily = OOXML_VARIANT_FAMILY[src];
+  if (ooxmlFamily !== undefined) {
+    if (tgt === ooxmlFamily) return ooxmlVariantToPlainFormat(inputBuffer, src, ooxmlFamily, baseName);
+    return convertOffice(inputBuffer, ooxmlFamily, tgt, options, originalFilename);
+  }
 
   // 1. DOCX Source
   if (src === 'docx') {

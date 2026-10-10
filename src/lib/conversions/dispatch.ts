@@ -2,13 +2,16 @@ import fs from 'node:fs';
 import { FORMAT_REGISTRY } from '../registry';
 import {
   ComplexScriptRequiresNativeEngineError,
+  CpuTaskTimeoutError,
   EngineUnavailableError,
   OcrEngineUnavailableError,
   OcrLanguageUnavailableError,
   RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
+import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { requiresNativeEngine } from './native-engine-pairs';
+import { assertUsableOutput } from './output-check';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
 import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
@@ -20,6 +23,10 @@ import {
 } from '../../worker/engines';
 
 const PDF_FORMAT = 'pdf';
+/** Sources of the office suite, PDF and PostScript tools, whose time-limit failures are typed. */
+const TIMEOUT_TYPED_SOURCES: ReadonlySet<string> = new Set([
+  'pdf', 'ps', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp',
+]);
 const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';
 
 function normalizeFormat(format: string): string {
@@ -59,7 +66,11 @@ function assertAdvertised(src: string, tgt: string, options: WorkerEngineOptions
  * EngineUnavailableError (HTTP 503): complex-script rendering needs LibreOffice, OCR needs
  * Tesseract, camera RAW sensor decoding needs LibRaw (`dcraw_emu`). A missing OCR language stays a client error.
  */
-function toEngineUnavailable(err: unknown): unknown {
+function toEngineUnavailable(err: unknown, src: string, tgt: string): unknown {
+  // A render of a document or PDF that outruns its tool's limit is deterministic: a typed refusal, not a retried crash.
+  if (err instanceof SandboxedTimeoutError && TIMEOUT_TYPED_SOURCES.has(src)) {
+    return new CpuTaskTimeoutError(`.${src} to .${tgt} conversion`, err.timeoutMs);
+  }
   if (err instanceof ComplexScriptRequiresNativeEngineError) {
     return new EngineUnavailableError('soffice', err.message);
   }
@@ -147,9 +158,10 @@ export async function dispatchConversion(
   try {
     converted = await executeWorkerConversion(input, src, tgt, workerOptions, originalFilename);
   } catch (err) {
-    throw toEngineUnavailable(err);
+    throw toEngineUnavailable(err, src, tgt);
   }
   const result = await postProcessNativePdf(converted, tgt, options);
+  assertUsableOutput(result, src, tgt);
 
   const keepOnDisk = !Buffer.isBuffer(input) || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
   return keepOnDisk ? result : materialize(result);

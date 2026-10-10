@@ -11,6 +11,7 @@ import { planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
 import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
+import { outputProblem } from '../bench/realworld/output-check';
 import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { captureError } from './helpers/capture-error';
@@ -312,6 +313,34 @@ describe('job deadline by size', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('output check', () => {
+  const NO_READERS = { pdfinfo: '', identify: '' };
+  const ZIP_MIME = 'application/zip';
+  const check = (buffer: Buffer, target: string, mimeType?: string) => outputProblem(buffer, target, os.tmpdir(), { ...NO_READERS, mimeType });
+
+  it('accepts the ZIP of page images a multi-page document converts to, and nothing else dressed as an image', async () => {
+    const pages = await zipOf({ 'doc-1.png': PNG_1X1, 'doc-2.png': PNG_1X1 }, 'DEFLATE');
+    expect(await check(pages, 'png', ZIP_MIME)).toBeNull();
+    expect(await check(pages, 'png')).toBe('output bytes do not match png');
+    expect(await check(PNG_1X1, 'png')).toBeNull();
+    const eps = Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n');
+    expect(await check(await zipOf({ 'doc-1.eps': eps, 'doc-2.eps': eps }, 'DEFLATE'), 'eps', ZIP_MIME)).toBeNull();
+  });
+
+  it('rejects a page archive that is empty, holds a page of another type, or is not a ZIP', async () => {
+    expect(await check(await zipOf({}, 'STORE'), 'png', ZIP_MIME)).toBe('png page archive has no pages');
+    const mixed = await zipOf({ 'doc-1.png': PNG_1X1, 'doc-2.png': Buffer.from('not an image') }, 'DEFLATE');
+    expect(await check(mixed, 'png', ZIP_MIME)).toBe('page doc-2.png: output bytes do not match png');
+    expect(await check(Buffer.from('plain text, no archive'), 'png', ZIP_MIME)).toBe('png page archive is not a readable ZIP');
+    expect(await check(Buffer.alloc(0), 'png', ZIP_MIME)).toBe('empty output');
+  });
+
+  it('does not take a ZIP for a target that is not delivered page by page', async () => {
+    const archive = await zipOf({ 'a.txt': Buffer.from('x') }, 'STORE');
+    expect(await check(archive, 'pdf', ZIP_MIME)).toBe('output bytes do not match pdf');
+  });
 });
 
 describe('production conversion path', () => {
