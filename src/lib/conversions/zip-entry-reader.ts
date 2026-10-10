@@ -9,8 +9,23 @@ import { InflateBudget, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
  * directory. The caps never rely on a declared size: a lying header is refused as soon as the stream passes it.
  */
 
-/** Most bytes one package entry may decode to (64 MiB). */
-export const MAX_ZIP_ENTRY_BYTES = MAX_STREAM_INFLATE_BYTES;
+/**
+ * Most bytes one package entry that is parsed (XML, text, relationships) may decode to (128 MiB, the cap of a DOCX XML
+ * part). A reader that parses a part holds it as a string or a tree, so the cap sits far above any real document
+ * part. A worksheet may be larger: a sheet of a million rows is hundreds of MB, so sheets are held to the 256 MiB
+ * budget of the workbook instead.
+ */
+export const MAX_ZIP_ENTRY_BYTES = 2 * MAX_STREAM_INFLATE_BYTES;
+
+/**
+ * Most bytes one embedded media part (a picture or a video in a deck or document) may decode to: the 1 GiB of the
+ * largest upload, and a ceiling for the per-document media budget. Media is copied or handed to an image decoder
+ * rather than parsed, and a presentation with a 100 MiB video or photograph is ordinary, so the parsed-part cap
+ * (`MAX_ZIP_ENTRY_BYTES`) does not apply to it. No ratio to the compressed size is applied either, because
+ * uncompressed TIFF and BMP pictures deflate far past 100:1; a reader bounds the media of a whole document with a
+ * budget instead, counting each part once.
+ */
+export const MAX_ZIP_MEDIA_BYTES = 1024 * 1024 * 1024;
 
 export interface ZipEntryReadOptions {
   /** What is being read, for error messages. Defaults to the entry name. */
@@ -45,12 +60,15 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
   return new Promise<Buffer>((resolve, reject) => {
     const stream = entry.nodeStream('nodebuffer');
     const chunks: Buffer[] = [];
+    // With a declared size the bytes go straight into one buffer, so a large part is not held twice while it is joined.
+    let target: Buffer | undefined;
     let total = 0;
     let settled = false;
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
       chunks.length = 0;
+      target = undefined;
       stream.pause();
       (stream as unknown as { destroy?: () => void }).destroy?.();
       reject(error);
@@ -62,6 +80,9 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
         fail(overLimit());
       } else if (declared !== undefined && total > declared) {
         fail(new CorruptStreamError(`${label} decodes to more than the ${declared} bytes it declares.`));
+      } else if (declared !== undefined) {
+        target ??= Buffer.allocUnsafe(declared);
+        chunk.copy(target, total - chunk.length);
       } else {
         chunks.push(chunk);
       }
@@ -72,7 +93,7 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
     stream.on('end', () => {
       if (settled) return;
       settled = true;
-      const bytes = Buffer.concat(chunks);
+      const bytes = target ? target.subarray(0, total) : Buffer.concat(chunks);
       if (declared !== undefined && bytes.length !== declared) {
         reject(new CorruptStreamError(`${label} decodes to ${bytes.length} bytes but declares ${declared}.`));
         return;

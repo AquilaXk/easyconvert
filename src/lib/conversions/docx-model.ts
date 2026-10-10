@@ -130,9 +130,7 @@ async function readPart(zip: JSZip, partPath: string, limit: number): Promise<Bu
   if (declared !== undefined && declared > limit) {
     throw new PayloadLimitError(`"${partPath}" declares ${declared} bytes, more than the ${limit} byte limit.`);
   }
-  const bytes = await readZipEntryBytes(entry);
-  if (bytes.length > limit) throw new PayloadLimitError(`"${partPath}" holds ${bytes.length} bytes, more than the ${limit} byte limit.`);
-  return bytes;
+  return readZipEntryBytes(entry, { maxBytes: limit, label: `"${partPath}"` });
 }
 
 async function readXmlPart(zip: JSZip, partPath: string): Promise<XmlElement | undefined> {

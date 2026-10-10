@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
@@ -84,6 +85,18 @@ const SCENARIOS: Record<string, Scenario> = {
       return readPackageEntry(zip, 'word/document.xml', PACKAGE_ENTRY_LIMIT_BYTES, 'test package');
     };
   },
+  'pptx-txt': async (fixture) => {
+    const { dispatchConversion } = await import('../src/lib/conversions/dispatch');
+    return () => dispatchConversion(fixture, 'pptx', 'txt', {}, 'deck.pptx');
+  },
+  'pptx-html': async (fixture) => {
+    const { dispatchConversion } = await import('../src/lib/conversions/dispatch');
+    return () => dispatchConversion(fixture, 'pptx', 'html', {}, 'deck.pptx');
+  },
+  'xlsx-csv': async (fixture) => {
+    const { dispatchConversion } = await import('../src/lib/conversions/dispatch');
+    return () => dispatchConversion(fixture, 'xlsx', 'csv', {}, 'book.xlsx');
+  },
   sevenzip: async (fixture) => {
     const { extract7zArchive } = await import('../src/lib/conversions/archive');
     return async () => extract7zArchive(fixture);
@@ -100,16 +113,25 @@ async function main(): Promise<void> {
   const started = Date.now();
   let error: { name: string; status?: number; message: string } | null = null;
   let size: number | null = null;
+  let pictures: string[] = [];
   try {
     const value = await run();
-    if (Buffer.isBuffer(value)) size = value.length;
+    const output = Buffer.isBuffer(value) ? value : (value as { buffer?: Buffer } | undefined)?.buffer;
+    if (Buffer.isBuffer(output)) size = output.length;
+    if (name === 'pptx-html' && Buffer.isBuffer(output)) {
+      // sha256 of every picture the page embeds, decoded from its data URI.
+      const html = output.toString('utf-8');
+      pictures = [...html.matchAll(/data:image\/[a-z]+;base64,([A-Za-z0-9+/=]+)/g)].map((match) =>
+        crypto.createHash('sha256').update(Buffer.from(match[1], 'base64')).digest('hex')
+      );
+    }
   } catch (caught) {
     const failure = caught as { name?: string; status?: number; message?: string };
     error = { name: String(failure.name), status: failure.status, message: String(failure.message).slice(0, 200) };
   }
   const elapsedMs = Date.now() - started;
   const rssGrowthBytes = process.resourceUsage().maxRSS * KIB - rssBefore;
-  process.stdout.write(`RESULT:${JSON.stringify({ error, elapsedMs, rssGrowthBytes, size })}\n`);
+  process.stdout.write(`RESULT:${JSON.stringify({ error, elapsedMs, rssGrowthBytes, size, pictures })}\n`);
   process.exit(0);
 }
 
