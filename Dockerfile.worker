@@ -100,6 +100,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         tesseract-ocr-kor \
         tesseract-ocr-jpn \
         qpdf \
+        ghostscript \
         default-jre-headless \
         unzip \
     && apt-get clean \

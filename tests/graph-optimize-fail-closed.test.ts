@@ -17,11 +17,10 @@ import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
  * `optimize` must never report an unchanged file or a default re-encode as optimised. Until a format
- * has a registered optimiser, a graph that optimises it is refused with a 422 problem before any
+ * has a registered optimiser (PDF has one), a graph that optimises it is refused with a 422 problem before any
  * job is enqueued, and the executor refuses the node too if validation was bypassed.
  */
 const ARTIFACT_TTL_MS = 60 * 60 * 1000;
-const PDF_BYTES = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 function nodeJob(
@@ -98,7 +97,6 @@ describe('optimize fails closed for formats without an optimiser', () => {
   }
 
   it.each([
-    ['pdf', 'doc.pdf', PDF_BYTES, 'application/pdf'],
     ['png', 'pic.png', PNG_SIGNATURE, 'image/png'],
     ['jpg', 'pic.jpg', Buffer.from([0xff, 0xd8, 0xff, 0xd9]), 'image/jpeg'],
   ])('answers a 422 problem for %s at submission and enqueues nothing', async (format, filename, bytes, mime) => {
@@ -109,7 +107,7 @@ describe('optimize fails closed for formats without an optimiser', () => {
     expect(json.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
     expect(json.status).toBe(422);
     expect(json.detail).toContain(`optimize is not available for ${format}`);
-    expect(json.detail).toContain('No format has an optimiser yet');
+    expect(json.detail).toContain('Supported formats: pdf.');
     expect(json.detail).toContain('conversion options');
     expect(json.invalidParams).toEqual([
       { name: 'nodes.opt', reason: expect.stringContaining(`optimize is not available for ${format}`) },
@@ -119,8 +117,8 @@ describe('optimize fails closed for formats without an optimiser', () => {
   });
 
   it('refuses the node in the executor when validation is bypassed and stores no output', async () => {
-    const artifactPath = 'intermediate/g_opt_bypass/src.pdf';
-    s3Storage.saveObject(artifactPath, PDF_BYTES, 'application/pdf', 'src.pdf', ARTIFACT_TTL_MS);
+    const artifactPath = 'intermediate/g_opt_bypass/src.png';
+    s3Storage.saveObject(artifactPath, PNG_SIGNATURE, 'image/png', 'src.png', ARTIFACT_TTL_MS);
     const job = nodeJob([artifactPath]);
 
     const error = await processGraphNodeJob(job, undefined, s3Storage).then(
@@ -129,22 +127,22 @@ describe('optimize fails closed for formats without an optimiser', () => {
     );
 
     expect(error).toBeInstanceOf(UnsupportedOptionError);
-    expect((error as Error).message).toContain('optimize is not available for pdf');
-    expect((error as Error).message).toContain('No format has an optimiser yet');
+    expect((error as Error).message).toContain('optimize is not available for png');
+    expect((error as Error).message).toContain('Supported formats: pdf.');
     const stored = await s3Storage.getObject(artifactPath);
-    expect(createHash('sha256').update(stored!.buffer).digest('hex')).toBe(createHash('sha256').update(PDF_BYTES).digest('hex'));
-    expect(await s3Storage.getObject(`intermediate/${job.data.graphId}/n1/src.pdf`)).toBeUndefined();
+    expect(createHash('sha256').update(stored!.buffer).digest('hex')).toBe(createHash('sha256').update(PNG_SIGNATURE).digest('hex'));
+    expect(await s3Storage.getObject(`intermediate/${job.data.graphId}/n1/src.png`)).toBeUndefined();
   });
 
-  it('keeps the registry empty and in step with the formats validation accepts', () => {
-    expect([...OPTIMIZERS.keys()]).toEqual([]);
+  it('registers exactly the formats validation accepts', () => {
+    expect([...OPTIMIZERS.keys()]).toEqual(['pdf']);
     expect([...OPTIMIZERS.keys()]).toEqual([...OPTIMIZABLE_FORMATS]);
   });
 
   it.each([
     ['an import.url without an extension', { op: 'import.url', url: 'https://files.example.com/download' }],
     ['an archive.extract', { op: 'archive.extract', input: 'up' }],
-  ])('refuses at submission an optimize node fed by %s, whose format is known only at run time', (_label, source) => {
+  ])('leaves an optimize node fed by %s to the run, whose format is known only then and is checked against the optimisers', (_label, source) => {
     const result = validateJobGraph({
       nodes: {
         up: { op: 'import.upload', storageKey: 'uploads/u/bundle.zip' },
@@ -154,10 +152,7 @@ describe('optimize fails closed for formats without an optimiser', () => {
       },
     } as never);
 
-    expect(result.valid).toBe(false);
-    const error = result.errors.find((e) => e.path === 'nodes.opt');
-    expect(error?.message).toContain('optimize is not available');
-    expect(error?.message).toContain('No format has an optimiser yet');
+    expect(result.errors.find((e) => e.path === 'nodes.opt')).toBeUndefined();
   });
 });
 

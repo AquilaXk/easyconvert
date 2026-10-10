@@ -1,11 +1,11 @@
 /**
  * The formats whose `optimize` node has a real optimiser behind it. Re-encoding with default settings or
  * returning the input is not optimisation, so a format is listed only once its optimiser measurably shrinks
- * the file or reports `optimized: false`. No format qualifies yet; the optimisers tracked in the compress
- * work register here and in `conversions/optimizers.ts`. This module has no runtime dependencies so graph
- * validation, which also runs on the edge, can consult it.
+ * the file or reports `optimized: false`. PDF qualifies (profiles `web`, `print`, `archive` and `max`); the other
+ * optimisers register here and in `conversions/optimizers.ts` as they are built. This module has no runtime
+ * dependencies so graph validation, which also runs on the edge, can consult it.
  */
-export const OPTIMIZABLE_FORMATS: readonly string[] = [];
+export const OPTIMIZABLE_FORMATS: readonly string[] = ['pdf'];
 
 function normalizeFormat(format: string): string {
   return (format || '').trim().replace(/^\./, '').toLowerCase();

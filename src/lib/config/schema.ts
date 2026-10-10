@@ -1317,6 +1317,7 @@ const SCHEMA_ENTRIES = [
   toolPath('PDFTOTEXT_PATH', 'Path of the poppler `pdftotext` executable.', BOTH),
   toolPath('PDFTOPS_PATH', 'Path of the poppler `pdftops` executable.', BOTH),
   toolPath('PS2PDF_PATH', 'Path of the Ghostscript `ps2pdf` executable.', BOTH),
+  toolPath('GS_PATH', 'Path of the Ghostscript `gs` executable that the PDF optimize operation runs.', BOTH),
   toolPath('DCRAW_EMU_PATH', 'Path of the LibRaw `dcraw_emu` executable.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   {
