@@ -458,27 +458,21 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         expect(crc32(extFile2!.buffer)).toBe(crc2Expected);
       });
 
-      it('prevents directory traversal attacks (zip-slip) by sanitizing paths', async () => {
+      it('prevents directory traversal attacks (zip-slip) by refusing the archive', async () => {
         const hostileZip = new JSZip();
         hostileZip.file('../../etc/shadow', 'root:x:0:0:root:/root:/bin/bash');
         hostileZip.file('..\\..\\windows\\system32\\calc.exe', 'MZ...');
         hostileZip.file('safe.txt', 'Safe content');
         const hostileBuf = await hostileZip.generateAsync({ type: 'nodebuffer' });
 
-        const extracted = await extractZipArchive(hostileBuf);
-        // Each traversal name is cut down to the path below the root, with both separator styles honoured,
-        // and the content stays attached to its sanitized name.
-        expect(extracted.map((file) => [file.filename, file.buffer.toString('utf-8')])).toEqual([
-          ['etc/shadow', 'root:x:0:0:root:/root:/bin/bash'],
-          ['windows/system32/calc.exe', 'MZ...'],
-          ['safe.txt', 'Safe content'],
-        ]);
-        // Independent check of the property that matters: joined to an extraction root, no entry leaves it.
-        const extractionRoot = path.resolve('/srv/extract-root');
-        for (const file of extracted) {
-          const target = path.resolve(extractionRoot, file.filename);
-          expect(path.relative(extractionRoot, target).startsWith('..'), file.filename).toBe(false);
-        }
+        // A traversing name is never cut down to a path below the root: the archive is refused as a whole, so
+        // no file of it is written under a name its author did not give it.
+        await expect(extractZipArchive(hostileBuf)).rejects.toMatchObject({ name: 'UnsafeArchiveError', reason: 'path-traversal' });
+
+        const safeZip = new JSZip();
+        safeZip.file('docs/readme.txt', 'Safe content');
+        const extracted = await extractZipArchive(await safeZip.generateAsync({ type: 'nodebuffer' }));
+        expect(extracted.map((file) => [file.filename, file.buffer.toString('utf-8')])).toEqual([['docs/readme.txt', 'Safe content']]);
       });
     });
   });

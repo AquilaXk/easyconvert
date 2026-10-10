@@ -436,6 +436,18 @@ function assertSafeEntryPath(rawPath: string): void {
   }
 }
 
+/**
+ * Throws for an entry name that is not a plain relative path: empty or holding NUL or a line break, absolute, a drive
+ * path, climbing out with `..`, or nested deeper than the cap. The name is also checked after Unicode compatibility
+ * folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer that normalises (a Windows code page,
+ * macOS, a search index). A name is only ever accepted or refused here, never rewritten.
+ */
+export function assertSafeArchiveEntryName(rawPath: string): void {
+  assertSafeEntryPath(rawPath);
+  const folded = rawPath.normalize('NFKC');
+  if (folded !== rawPath) assertSafeEntryPath(folded);
+}
+
 /** The running total with one entry's declared size added; a size that is not a safe integer, or a total over the cap, is refused. */
 function addDeclaredBytes(total: number, entry: ListedArchiveEntry, limits: ArchiveExtractionLimits): number {
   if (entry.sizeBytes === null || !Number.isSafeInteger(entry.sizeBytes) || entry.sizeBytes < 0) {
