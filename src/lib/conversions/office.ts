@@ -5524,7 +5524,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const allSheets: OfficeWorksheet[] = [];
   let expandedTextChars = 0;
   const maxCellTextChars = xlsxMaxCellTextChars();
-  // The sheets of one workbook share a decoded-byte budget, so many large sheets cannot add up past it.
+  // The sheets of one workbook share a decoded-byte budget, so many large sheets cannot add up past it; one sheet may
+  // take all of it, because a sheet of a million rows is hundreds of MB of XML.
   const sheetBudget = new InflateBudget();
 
   for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
@@ -5533,7 +5534,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     const sFile = zip.file(entry.path);
     if (!sFile) continue;
 
-    const sheetXml = await readZipEntryText(sFile, { budget: sheetBudget });
+    const sheetXml = await readZipEntryText(sFile, { budget: sheetBudget, maxBytes: sheetBudget.limit });
     assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];

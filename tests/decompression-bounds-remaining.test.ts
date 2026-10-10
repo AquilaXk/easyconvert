@@ -52,8 +52,8 @@ const CHILD = path.join(__dirname, 'decompression-bomb-child.ts');
 const REFUSAL_MS = 500;
 /** Peak RSS a bounded decoder may add while it refuses a bomb; an unbounded one adds the whole bomb. */
 const MAX_RSS_GROWTH_BYTES = 100 * MIB;
-/** A package part may be held up to its 64 MiB cap before the stream is stopped. */
-const XLSX_MAX_RSS_GROWTH_BYTES = 192 * MIB;
+/** A parsed package part may be held up to its 128 MiB cap before the stream is stopped. */
+const XLSX_MAX_RSS_GROWTH_BYTES = 384 * MIB;
 /** One-process-per-scenario runs share the machine; two at a time keep the timings honest. */
 const CHILD_CONCURRENCY = 2;
 const CHILD_TIMEOUT_MS = 120_000;
@@ -133,7 +133,7 @@ beforeAll(async () => {
   fixture('repair-ratio.zip', localEntryOnly('zeros.bin', await compressZeros(40 * MIB, 'rawDeflate')));
   fixture('repair-cpu.zip', localEntryOnly('a.bin', await unterminatedDeflate(32 * MIB)));
   // The central directory declares exactly the per-entry cap, so only the byte count of the running stream can stop it.
-  fixture('xlsx-at-cap.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: 64 * MIB }]));
+  fixture('xlsx-at-cap.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: 128 * MIB }]));
   fixture('xlsx-honest.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: BOMB_BYTES }]));
   fixture('xlsx-lying.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: 4096 }]));
   fixture('package-at-cap.docx', craftZip([{ name: 'word/document.xml', deflated: zeros, declaredSize: MIB }]));
@@ -299,8 +299,8 @@ describe('JSZip package readers inflate under a byte cap', () => {
     const outcome = await outcomeOf('xlsx', 'xlsx-at-cap.xlsx');
     expect(outcome.error?.name).toBe('DecompressionLimitError');
     expect(outcome.error?.status).toBe(413);
-    expect(outcome.elapsedMs).toBeLessThan(3000);
-    // The 64 MiB of decoded bytes held when the cap is hit; inflating the whole bomb adds more than 300 MiB.
+    expect(outcome.elapsedMs).toBeLessThan(5000);
+    // The 128 MiB of decoded bytes held when the cap is hit; inflating the whole bomb adds more than 600 MiB.
     expect(outcome.rssGrowthBytes).toBeLessThan(XLSX_MAX_RSS_GROWTH_BYTES);
   });
 
@@ -466,5 +466,82 @@ describe('embedded media is not held to the cap of parsed parts', () => {
     const failure = await dispatchConversion(oversized, 'docx', 'txt', {}, 'picture.docx').catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toMatch(/"word\/media\/image1\.jpg" declares \d+ bytes, more than the 67108864 byte limit/);
+  });
+});
+
+describe('large parsed parts: worksheets take the workbook budget, content XML 128 MiB', () => {
+  const ROWS = 2000;
+  const WORKBOOK_XML =
+    '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>';
+  const RELS = '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>';
+
+  /** A workbook whose one sheet holds `ROWS` rows (a number and a shared string each) inside a part padded with a comment to `partBytes`. */
+  async function workbookWithSheetOf(partBytes: number): Promise<Buffer> {
+    const rows = Array.from(
+      { length: ROWS },
+      (_, index) => `<row r="${index + 1}"><c r="A${index + 1}"><v>${index + 1}</v></c><c r="B${index + 1}" t="s"><v>0</v></c></row>`
+    ).join('');
+    const head = `<worksheet><sheetData>${rows}</sheetData><!--`;
+    const tail = '--></worksheet>';
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', '<Types/>');
+    zip.file('xl/workbook.xml', WORKBOOK_XML);
+    zip.file('xl/_rels/workbook.xml.rels', RELS);
+    zip.file('xl/sharedStrings.xml', '<sst><si><t>shared text</t></si></sst>');
+    zip.file('xl/worksheets/sheet1.xml', head + ' '.repeat(partBytes - head.length - tail.length) + tail);
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  function pythonReads(script: string, file: string): string {
+    return execFileSync('python3', ['-c', script, file], { encoding: 'utf-8' }).trim();
+  }
+
+  it('converts a workbook with a 70 MiB sheet part to csv, html and json, as it did before the part cap', async () => {
+    const workbook = await workbookWithSheetOf(70 * MIB);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'big-sheet-'));
+    try {
+      const csv = await dispatchConversion(workbook, 'xlsx', 'csv', {}, 'big.xlsx');
+      const csvFile = path.join(dir, 'out.csv');
+      fs.writeFileSync(csvFile, csv.buffer);
+      expect(
+        pythonReads(
+          'import csv,sys\nrows=list(csv.reader(open(sys.argv[1],newline="",encoding="utf-8")))\nprint(len(rows),rows[0],rows[-1])',
+          csvFile
+        )
+      ).toBe(`${ROWS} ['1', 'shared text'] ['${ROWS}', 'shared text']`);
+
+      const json = await dispatchConversion(workbook, 'xlsx', 'json', {}, 'big.xlsx');
+      const jsonFile = path.join(dir, 'out.json');
+      fs.writeFileSync(jsonFile, json.buffer);
+      expect(pythonReads('import json,sys\nd=json.load(open(sys.argv[1],encoding="utf-8"))\nprint(len(d))', jsonFile)).toBe(String(ROWS - 1)); // the first row names the columns
+
+      const html = await dispatchConversion(workbook, 'xlsx', 'html', {}, 'big.xlsx');
+      expect(html.buffer.toString('utf-8').split('shared text').length - 1).toBe(ROWS);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers a typed 413 for a sheet part of 300 MiB', async () => {
+    const zeros = await compressZeros(300 * MIB, 'rawDeflate');
+    const workbook = craftZip([
+      { name: '[Content_Types].xml', deflated: zlib.deflateRawSync('<Types/>'), declaredSize: 8 },
+      { name: 'xl/workbook.xml', deflated: zlib.deflateRawSync(WORKBOOK_XML), declaredSize: WORKBOOK_XML.length },
+      { name: 'xl/_rels/workbook.xml.rels', deflated: zlib.deflateRawSync(RELS), declaredSize: RELS.length },
+      { name: 'xl/worksheets/sheet1.xml', deflated: zeros, declaredSize: 300 * MIB },
+    ]);
+    const failure = await dispatchConversion(workbook, 'xlsx', 'csv', {}, 'huge.xlsx').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DecompressionLimitError);
+    expect((failure as DecompressionLimitError).status).toBe(413);
+    expect((failure as Error).message).toMatch(/ZIP entry 'xl\/worksheets\/sheet1\.xml' decodes to more than the limit of 268435456 bytes/);
+  });
+
+  it('converts a deck whose slide XML is 100 MiB', async () => {
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
+    const slide = await zip.file('ppt/slides/slide1.xml')!.async('text');
+    zip.file('ppt/slides/slide1.xml', slide.replace('</p:sld>', `<!--${' '.repeat(100 * MIB)}--></p:sld>`));
+    const deck = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const result = await dispatchConversion(deck, 'pptx', 'txt', {}, 'slide.pptx');
+    expect(result.buffer.toString('utf-8')).toBe('--- Slide 1 ---\nQuarterly results');
   });
 });

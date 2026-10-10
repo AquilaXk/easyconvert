@@ -10,10 +10,12 @@ import { InflateBudget, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
  */
 
 /**
- * Most bytes one package entry that is parsed (XML, text, relationships) may decode to (64 MiB). A reader that
- * parses a part holds it as a string or a tree, so the cap sits far above any real document part.
+ * Most bytes one package entry that is parsed (XML, text, relationships) may decode to (128 MiB, the cap of a DOCX XML
+ * part). A reader that parses a part holds it as a string or a tree, so the cap sits far above any real document
+ * part. A worksheet may be larger: a sheet of a million rows is hundreds of MB, so sheets are held to the 256 MiB
+ * budget of the workbook instead.
  */
-export const MAX_ZIP_ENTRY_BYTES = MAX_STREAM_INFLATE_BYTES;
+export const MAX_ZIP_ENTRY_BYTES = 2 * MAX_STREAM_INFLATE_BYTES;
 
 /**
  * Most bytes one embedded media part (a picture or a video in a deck or document) may decode to: the 1 GiB of the
