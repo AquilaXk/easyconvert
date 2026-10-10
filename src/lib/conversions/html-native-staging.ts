@@ -10,7 +10,16 @@ import {
   type HtmlElement,
   type HtmlNode,
 } from './html-blocks';
-import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
+import {
+  findExternalImages,
+  leaveOutImages,
+  normalizeUrl,
+  OmittedExternalImages,
+  srcsetUrls,
+  stripControls,
+  trimUrl,
+  type HtmlResourcePolicy,
+} from './html-omitted-resources';
 
 /**
  * Rebuilds HTML bound for LibreOffice from the parsed tree, so LibreOffice reads exactly what was
@@ -110,7 +119,6 @@ const FRAGMENT_PREFIX = '#';
 const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
 /** Tab and newlines, which URL parsers drop from anywhere inside a URL. */
 const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
-const LAST_C0_OR_SPACE = 0x20;
 const URL_LIST_SEPARATOR = /[ \t\n\f\r]+/;
 const ASCII_WHITESPACE = /[ \t\n\f\r]+/g;
 
@@ -128,54 +136,8 @@ const MAX_REFERENCE_PREVIEW = 80;
 
 type UrlKind = 'anchor' | 'image' | 'other';
 
-function stripControls(text: string): string {
-  return text.replace(CONTROL_CHARACTERS, '');
-}
-
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function isHtmlSpace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
-}
-
-/** Strips leading and trailing C0 controls and spaces, as URL parsers do. */
-function trimUrl(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value.charCodeAt(start) <= LAST_C0_OR_SPACE) start++;
-  while (end > start && value.charCodeAt(end - 1) <= LAST_C0_OR_SPACE) end--;
-  return value.slice(start, end);
-}
-
-/** The URL a parser reads from an attribute value: no control characters, trimmed, without tabs or newlines. */
-function normalizeUrl(value: string): string {
-  return trimUrl(stripControls(value)).replace(URL_IGNORED_CHARACTERS, '');
-}
-
-/** The URLs of a srcset: each candidate's URL, skipping its descriptors (data: URIs may contain commas). */
-function srcsetUrls(value: string): string[] {
-  const urls: string[] = [];
-  const length = value.length;
-  let i = 0;
-  while (i < length) {
-    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
-    const start = i;
-    while (i < length && !isHtmlSpace(value[i])) i++;
-    let end = i;
-    if (end > start && value[end - 1] === ',') {
-      while (end > start && value[end - 1] === ',') end--;
-    } else {
-      let depth = 0;
-      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
-        if (value[i] === '(') depth++;
-        else if (value[i] === ')' && depth > 0) depth--;
-      }
-    }
-    if (end > start) urls.push(value.slice(start, end));
-  }
-  return urls;
 }
 
 function isUrlAttribute(name: string): boolean {
@@ -381,35 +343,6 @@ export interface StagedHtml {
   warnings: string[];
 }
 
-/** Whether an `<img>` names something other than an embedded data: image, in `src` or `srcset`. */
-function isExternalImage(element: HtmlElement): boolean {
-  const sources = [element.attrs.get(SRC_ATTRIBUTE), ...attributeUrls(SRCSET_ATTRIBUTE, element.attrs.get(SRCSET_ATTRIBUTE) ?? '')];
-  return sources.some((source) => {
-    const url = source === undefined ? '' : normalizeUrl(source);
-    return url.length > 0 && !DATA_URI_PREFIX.test(url) && !url.startsWith(FRAGMENT_PREFIX);
-  });
-}
-
-/**
- * Removes every `<img>` that is not embedded from the tree, with its content (an image has none), and records it.
- * Nothing is fetched for them, so LibreOffice never sees the reference; the rest of the page is kept.
- */
-function leaveOutExternalImages(root: HtmlElement, omitted: OmittedExternalImages): void {
-  const pending: HtmlElement[] = [root];
-  while (pending.length > 0) {
-    const parent = pending.pop() as HtmlElement;
-    parent.children.forEach((child, index) => {
-      if (typeof child === 'string') return;
-      if (child.tag === IMAGE_ELEMENT && isExternalImage(child)) {
-        omitted.add(child.attrs.get(SRC_ATTRIBUTE) ?? child.attrs.get(SRCSET_ATTRIBUTE) ?? '');
-        parent.children[index] = '';
-      } else {
-        pending.push(child);
-      }
-    });
-  }
-}
-
 /** Checks every element of the tree, written or not, so a refused reference is a 400 wherever it is. */
 function assertTreeStaysInDocument(root: HtmlElement): void {
   const pending: HtmlNode[] = [...root.children];
@@ -509,7 +442,7 @@ class StagedHtmlWriter {
 export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourcePolicy = {}): Promise<StagedHtml> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
   const omitted = new OmittedExternalImages();
-  if (!policy.requireResources) leaveOutExternalImages(document.root, omitted);
+  if (!policy.requireResources) leaveOutImages(findExternalImages(document.root), omitted);
   assertTreeStaysInDocument(document.root);
   const writer = new StagedHtmlWriter(document.title);
   const staged = writer.write(document.root);

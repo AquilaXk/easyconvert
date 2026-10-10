@@ -117,6 +117,43 @@ describe('HTML to PDF with images that are not embedded', () => {
   });
 });
 
+describe('both routes treat srcset images and picture sources alike', () => {
+  const REMOTE_SOURCE = 'https://example.com/wide.webp 2x, https://example.com/narrow.webp 1x';
+  const cases: Array<[string, (png: string) => string, string[]]> = [
+    [
+      'a picture whose source is remote',
+      (png) => `<picture><source srcset="${REMOTE_SOURCE}"><img src="${png}"></picture>`,
+      [`Left out the image "${REMOTE_SOURCE}": external resources are not fetched.`],
+    ],
+    [
+      'an img that only has a remote srcset',
+      () => `<img srcset="${REMOTE_SOURCE}" alt="chart">`,
+      [`Left out the image "${REMOTE_SOURCE}": external resources are not fetched.`],
+    ],
+  ];
+
+  it.each(cases)('%s: converts in process, leaving it out and warning', async (_name, markup, warnings) => {
+    const png = await embeddedPngDataUri();
+    const result = await withMissingBinary('SOFFICE_PATH', () =>
+      convertFile(html(`<p>${PAGE_TEXT}</p>${markup(png)}`), 'html', 'pdf', {}, 'srcset.html')
+    );
+    expect(result.metadata?.warnings).toEqual(warnings);
+  });
+
+  it.each(cases)('%s: stages for the native engine with the same warning', async (_name, markup, warnings) => {
+    const staged = await stageHtmlForNativeEngine(`<p>${PAGE_TEXT}</p>${markup(await embeddedPngDataUri())}`);
+    expect(staged.warnings).toEqual(warnings);
+    expect(staged.html).not.toMatch(/example\.com|srcset|<source/);
+  });
+
+  it('refuses both when every resource is required', async () => {
+    const markup = `<p>text</p><picture><source srcset="${REMOTE_SOURCE}"></picture>`;
+    await expect(stageHtmlForNativeEngine(markup, { requireResources: true })).rejects.toThrow('https://example.com/wide.webp');
+    const inProcess = withMissingBinary('SOFFICE_PATH', () => convertFile(html(markup), 'html', 'pdf', { requireResources: true }, 'strict.html'));
+    await expect(inProcess).rejects.toThrow('is an external reference');
+  });
+});
+
 describe('HTML staged for the native engine with images that are not embedded', () => {
   it('writes a document without the external images and reports them', async () => {
     const staged = await stageHtmlForNativeEngine(

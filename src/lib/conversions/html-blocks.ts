@@ -2,7 +2,7 @@ import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
-import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
+import { findExternalImages, leaveOutImages, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
@@ -437,13 +437,15 @@ function unsupported(what: string): EngineUnavailableError {
   );
 }
 
+function externalImageRefusal(src: string): ConversionFailedError {
+  return new ConversionFailedError(
+    `HTML image "${src}" is an external reference; external resources are not fetched, so embed the image as a data: URI`
+  );
+}
+
 function decodeImageSource(src: string): Buffer {
   const match = DATA_URI.exec(src.trim());
-  if (!match) {
-    throw new ConversionFailedError(
-      `HTML image "${src}" is an external reference; external resources are not fetched, so embed the image as a data: URI`
-    );
-  }
+  if (!match) throw externalImageRefusal(src);
   const body = match[2].replace(/\s+/g, '');
   if (!/;base64$/i.test(match[1]) || !BASE64_BODY.test(body)) {
     throw new ConversionFailedError('HTML data: URI image must be base64-encoded PNG or JPEG data');
@@ -489,9 +491,6 @@ interface PendingImage {
 
 class HtmlBlockBuilder {
   readonly images: PendingImage[] = [];
-  readonly omitted = new OmittedExternalImages();
-
-  constructor(private readonly policy: HtmlResourcePolicy) {}
 
 
   private isBlock(node: HtmlNode): node is HtmlElement {
@@ -713,14 +712,10 @@ class HtmlBlockBuilder {
     return segments;
   }
 
-  /** The image block of an `<img>`; none when its source is external and the policy leaves such images out. */
+  /** The image block of an `<img>`. External images are already out of the tree (see parseHtmlToPdfBlocks). */
   private imageBlocks(node: HtmlElement): PdfBlock[] {
     const src = node.attrs.get('src');
     if (!src) throw new ConversionFailedError('HTML <img> has no src attribute');
-    if (!this.policy.requireResources && !DATA_URI.test(src.trim())) {
-      this.omitted.add(src);
-      return [];
-    }
     return [this.image(node, src)];
   }
 
@@ -887,8 +882,12 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
  */
 export async function parseHtmlToPdfBlocks(html: string, policy: HtmlResourcePolicy = {}): Promise<HtmlDocumentBlocks> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
-  const builder = new HtmlBlockBuilder(policy);
+  const external = findExternalImages(tree.root);
+  if (policy.requireResources && external.length > 0) throw externalImageRefusal(external[0].reference);
+  const omitted = new OmittedExternalImages();
+  leaveOutImages(external, omitted);
+  const builder = new HtmlBlockBuilder();
   const blocks = builder.blocks(tree.root.children);
   await verifyImages(builder.images);
-  return { title: tree.title || undefined, blocks, warnings: builder.omitted.warnings() };
+  return { title: tree.title || undefined, blocks, warnings: omitted.warnings() };
 }
