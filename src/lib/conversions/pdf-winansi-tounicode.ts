@@ -63,5 +63,5 @@ export async function attachWinAnsiToUnicode(doc: PDFDocument, font: PDFFont): P
   await font.embed();
   const dict = doc.context.lookup(font.ref);
   if (!(dict instanceof PDFDict)) throw new Error('The standard font has no dictionary to attach /ToUnicode to.');
-  dict.set(TO_UNICODE_KEY, doc.context.register(doc.context.stream(createWinAnsiToUnicodeCMap())));
+  dict.set(TO_UNICODE_KEY, doc.context.register(doc.context.flateStream(createWinAnsiToUnicodeCMap())));
 }

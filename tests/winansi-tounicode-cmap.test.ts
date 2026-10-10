@@ -1,3 +1,4 @@
+import { inflateSync } from 'node:zlib';
 import { describe, it, expect } from 'vitest';
 import iconv from 'iconv-lite';
 import { PDFDict, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
@@ -82,7 +83,8 @@ describe('a text watermark carries the WinAnsi ToUnicode CMap', () => {
     expect(font.lookup(PDFName.of('BaseFont'))).toBe(PDFName.of('Helvetica-Bold'));
     const stream = font.lookup(PDFName.of('ToUnicode'));
     if (!(stream instanceof PDFRawStream)) throw new Error('the watermark font has no /ToUnicode stream');
-    const cmap = readToUnicodeCMap(Buffer.from(stream.getContents()).toString('latin1'));
+    expect(stream.dict.lookup(PDFName.of('Filter'))).toBe(PDFName.of('FlateDecode'));
+    const cmap = readToUnicodeCMap(inflateSync(stream.getContents()).toString('latin1'));
     // The bytes the watermark is drawn with, per the Windows 1252 tables of iconv-lite (an independent source).
     const bytes = iconv.encode(WATERMARK, 'win1252');
     const decoded = [...bytes].map((code) => lookupCode(cmap, code)).join('');

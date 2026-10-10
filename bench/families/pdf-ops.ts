@@ -50,6 +50,9 @@ const MERGE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCoun
 const WATERMARK_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.stampInkMatchesReference, SPEC.stampGeometryMatchesSpec, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
 const ENCRYPTION_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.encryptionMatchesReference, SPEC.bytes, SPEC.throughput];
 
+/** How qpdf is asked to write the files a user keeps: compressed streams and the objects packed into object streams, its smallest ordinary output. */
+const COMPACT_OUTPUT = ['--object-streams=generate', '--compress-streams=y'] as const;
+
 const USER_PASSWORD = 'bench-user-secret';
 const OWNER_PASSWORD = 'bench-owner-secret';
 const AES_256_KEY_BITS = 256;
@@ -273,7 +276,7 @@ async function runMerge(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
   fs.writeFileSync(oursFile, await mergePdfBuffers(inputs.map((input) => input.bytes)));
   const referenceFile = ctx.scratch('merge-reference.pdf');
   const mergeReference = (): void => {
-    runTool(tools.qpdf, ['--empty', '--pages', ...inputs.map((input) => input.file), '--', referenceFile]);
+    runTool(tools.qpdf, [...COMPACT_OUTPUT, '--empty', '--pages', ...inputs.map((input) => input.file), '--', referenceFile]);
   };
   mergeReference();
 
@@ -324,7 +327,7 @@ async function runWatermark(ctx: FamilyContext, tools: PdfTools): Promise<BenchR
   const crop = { x: Math.floor((pageWidth - cropSize) / 2), y: Math.floor((pageHeight - cropSize) / 2), size: cropSize };
   const referenceFile = ctx.scratch('watermark-reference.pdf');
   const watermarkReference = (): void => {
-    runTool(tools.qpdf, [input.file, '--overlay', stampFile, `--to=${WATERMARK_PAGES}`, '--repeat=1', '--', referenceFile]);
+    runTool(tools.qpdf, [...COMPACT_OUTPUT, input.file, '--overlay', stampFile, `--to=${WATERMARK_PAGES}`, '--repeat=1', '--', referenceFile]);
   };
   watermarkReference();
 
