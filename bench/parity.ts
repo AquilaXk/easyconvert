@@ -1,7 +1,7 @@
-import { GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
+import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
-import { describeGap, type GapEntry, type GapFile, gapIndex } from './parity-gaps';
+import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
 import { speedGapThreshold } from './speed-history';
 
@@ -38,6 +38,7 @@ export type ParityBasis =
   | 'tracked-short-history'
   | 'tracked-now-at-parity'
   | 'tracked-slower-than-gap'
+  | 'gap-not-backed'
   | 'unsupported'
   | 'skipped';
 
@@ -172,7 +173,36 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   return { outcome: 'fail', basis: 'speed-below-reference', detail: `${interval}; the upper bound is below ${show(line)}, so ours is slower than the reference`, ...none };
 }
 
-export function evaluateParity(report: BenchReport, gaps: GapFile): ParityVerdict {
+export interface ParityOptions {
+  /**
+   * The gap file of the base the change is measured against. When given, every gap entry that is new or changed
+   * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
+   */
+  baseGaps?: GapFile;
+}
+
+const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
+
+/** Why a new or changed gap entry is not backed by the measured row, or null when it is. */
+function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: BenchRow | undefined): string | null {
+  if (row === undefined || row.status !== 'measured' || row.kind !== 'throughput') return `the entry is new or changed, but this run did not measure ${gap.id}`;
+  const centre = row.ratioMedian ?? row.ratio;
+  if (centre === null || centre === undefined) return 'the entry is new or changed, but the measured row has no speed ratio';
+  const margin = Math.exp(GAP_BACKING_LOG_MARGIN);
+  const low = (row.ratioLow ?? centre) / margin;
+  const high = (row.ratioHigh ?? centre) * margin;
+  const range = `[${show(low)}, ${show(high)}]`;
+  if (gap.ratio === null || gap.ratio < low || gap.ratio > high) return `the recorded ratio ${gap.ratio === null ? 'none' : show(gap.ratio)} is outside ${range}, the speed ratio interval this run measured for the row`;
+  const known = new Set((base?.history ?? []).map((point) => JSON.stringify(point)));
+  for (const point of gap.history ?? []) {
+    if (known.has(JSON.stringify(point))) continue;
+    if (point.commit === undefined) return `the history point ${show(point.ratio)} of ${point.at} is new and has no commit: only bench:refresh-speed writes history, from a CI report`;
+    if (point.ratio < low || point.ratio > high) return `the new history point ${show(point.ratio)} of ${point.at} is outside ${range}, the speed ratio interval this run measured for the row`;
+  }
+  return null;
+}
+
+export function evaluateParity(report: BenchReport, gaps: GapFile, options: ParityOptions = {}): ParityVerdict {
   const gapById = gapIndex(gaps);
   const verdicts: RowVerdict[] = [];
   const caseKey = (row: BenchRow): string => `${row.family}/${row.case}`;
@@ -245,6 +275,25 @@ export function evaluateParity(report: BenchReport, gaps: GapFile): ParityVerdic
       worsening: own.worsening,
       allowance: own.allowance,
     });
+  }
+
+  if (options.baseGaps) {
+    const baseById = gapIndex(options.baseGaps);
+    const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
+    for (const gap of gaps.gaps) {
+      const base = baseById.get(gap.id);
+      if (!isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
+      const failure = gapBackingFailure(gap, base, measuredById.get(gap.id));
+      if (failure === null) continue;
+      const detail = `known-gap entry not backed by this run: ${failure}`;
+      const index = verdicts.findIndex((verdict) => verdict.id === gap.id);
+      if (index >= 0) {
+        verdicts[index] = { ...verdicts[index], outcome: 'fail', basis: 'gap-not-backed', detail: `${detail}; ${verdicts[index].detail}`, gap };
+      } else {
+        const [family, caseName, metric] = gap.id.split('/');
+        verdicts.push({ id: gap.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'gap-not-backed', detail, worsening: null, allowance: null, gap });
+      }
+    }
   }
 
   const evaluated = verdicts.filter((row) => row.outcome !== 'not-evaluated');
