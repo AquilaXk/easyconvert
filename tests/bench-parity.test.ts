@@ -535,9 +535,9 @@ describe('a parity run on a saved report', () => {
   ];
 
   /** Writes the report, baseline and gaps files, runs the command and returns the printed lines and the verdict file. */
-  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[] } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
+  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[]; families?: BenchReport['families'] } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
     const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json'), baseGaps: path.join(dir, 'base-gaps.json') };
-    fs.writeFileSync(files.report, JSON.stringify(report(rows)));
+    fs.writeFileSync(files.report, JSON.stringify(report(rows, options.families)));
     fs.writeFileSync(files.baseline, JSON.stringify({ schemaVersion: 1, entries: options.baseline ?? baselineEntries(1.1) }));
     fs.writeFileSync(files.gaps, JSON.stringify({ schemaVersion: 1, gaps: options.gaps ?? [] }));
     if (options.baseGaps) fs.writeFileSync(files.baseGaps, JSON.stringify({ schemaVersion: 1, gaps: options.baseGaps }));
@@ -587,6 +587,28 @@ describe('a parity run on a saved report', () => {
       expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45)], baseGaps: [] })).code).toBe(0);
       // The quality job cannot back an entry; the speed job of the same change does (the changed family is mapped to it).
       expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [], flags: ['--quality-only'] })).code).toBe(0);
+    });
+
+    it('checks only the entries of the families the run measures: a shard of another family leaves them to its own shard', async () => {
+      const pdf = { id: 'pdf-ops/split.pdf->pdf/throughput', issue: 695, ratio: 0.3, note: 'PDF speed', history: FLAT_HISTORY(0.3).map((point) => ({ ...point, commit: 'b'.repeat(40) })) };
+      // The image shard does not measure pdf-ops, so the new pdf-ops entry is not its to back; its own entry is.
+      expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45), pdf], baseGaps: [entry(0.45)] })).code).toBe(0);
+      // The bypass stays closed in the shard that measures the family, even with another family's entry present.
+      const bypass = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1), pdf], baseGaps: [] });
+      expect(bypass.code).toBe(3);
+      expect(bypass.verdict.parity.rows.filter((candidate) => candidate.basis === 'gap-not-backed').map((candidate) => candidate.id)).toEqual([SPEED_ID]);
+      // A shard that measures pdf-ops, and does not measure the entry, still refuses it.
+      const pdfRow = row({ id: 'pdf-ops/extract.pdf->pdf/throughput', direction: 'higher', kind: 'throughput', ours: 10, reference: 20, ratio: 0.5, runs: 9, speedVerdict: 'fail', ratioLow: 0.4, ratioHigh: 0.6, ratioMedian: 0.5, tolerance: { abs: 0, rel: 0.35 } });
+      const measuredElsewhere = await run([...slow(), pdfRow], { baseline: baselineEntries(0.5), gaps: [pdf], baseGaps: [], families: ['image', 'pdf-ops'] });
+      expect(measuredElsewhere.code).toBe(3);
+      expect(measuredElsewhere.lines.some((line) => line.includes('this run did not measure pdf-ops/split.pdf->pdf/throughput'))).toBe(true);
+    });
+
+    it('takes the measured families from the rows, not from the families the report claims', async () => {
+      // The head writes report.families; an empty list there must not switch the check off for the rows that were measured.
+      const bypass = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [], families: [] });
+      expect(bypass.code).toBe(3);
+      expect(bypass.verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
     });
 
     it('checks an edit of a ratio, and leaves an entry the base already has as it is recorded', async () => {
