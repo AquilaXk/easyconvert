@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Side } from './ab-speed';
 import type { ChildMessage, HostMessage } from './ab-protocol';
 import { REPO_ROOT } from './config';
@@ -25,6 +26,10 @@ export interface AbHostOptions {
   quick: boolean;
   /** A regression injected into this version (a test of the gate), passed to the process. */
   injection?: string | null;
+  /** How long the process may take to end after it is told to, before it is killed. */
+  stopGraceMs?: number;
+  /** How long the process may take to say hello. */
+  helloTimeoutMs?: number;
   /** The script the child runs; bench/ab-child.ts unless a test supplies its own. */
   script?: string;
   log?: (message: string) => void;
@@ -32,6 +37,8 @@ export interface AbHostOptions {
 
 const HELLO_TIMEOUT_MS = 120_000;
 const ROW_TIMEOUT_MS = 20 * 60_000;
+/** How long a process may take to end after it is told to; then it is killed. */
+const STOP_GRACE_MS = 10_000;
 
 export class AbHost {
   private readonly queue: ChildMessage[] = [];
@@ -39,7 +46,10 @@ export class AbHost {
   private lost: string | null = null;
   private nextRow = 0;
 
-  private constructor(private readonly child: ChildProcess) {
+  private constructor(
+    private readonly child: ChildProcess,
+    private readonly stopGraceMs: number
+  ) {
     child.on('message', (message) => this.deliver(message as ChildMessage));
     child.on('exit', (code, signal) => this.fail(`the base process ended (${signal ?? `exit ${code}`})`));
     child.on('error', (error) => this.fail(`the base process could not run: ${error.message}`));
@@ -47,16 +57,24 @@ export class AbHost {
 
   static async start(options: AbHostOptions): Promise<AbHost> {
     const script = options.script ?? path.join(REPO_ROOT, 'bench', 'ab-child.ts');
-    const tsx = require.resolve('tsx/cli');
-    const args = [tsx, script, '--families', options.families.join(','), ...(options.quick ? ['--quick'] : []), ...(options.injection ? ['--inject-regression', options.injection] : [])];
+    // One process that runs the script itself (node with tsx's loader), so killing it ends the measuring: the tsx CLI is a wrapper that
+    // starts the script in a second process, which a kill of the wrapper leaves running.
+    const loader = pathToFileURL(path.join(path.dirname(require.resolve('tsx/package.json')), 'dist', 'loader.mjs')).href;
+    const args = ['--import', loader, script, '--families', options.families.join(','), ...(options.quick ? ['--quick'] : []), ...(options.injection ? ['--inject-regression', options.injection] : [])];
     const child = spawn(process.execPath, args, {
       cwd: options.root,
       env: { ...process.env, BENCH_PRODUCT_ROOT: options.root },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
-    const host = new AbHost(child);
-    const hello = await host.receive(HELLO_TIMEOUT_MS);
-    if (hello.type !== 'hello') throw new AbHostError(`the base process answered ${hello.type} instead of hello`);
+    const host = new AbHost(child, options.stopGraceMs ?? STOP_GRACE_MS);
+    try {
+      const hello = await host.receive(options.helloTimeoutMs ?? HELLO_TIMEOUT_MS);
+      if (hello.type !== 'hello') throw new AbHostError(`the process answered ${hello.type} instead of hello`);
+    } catch (error) {
+      // A process that did not say hello is not left running.
+      await host.stop(true);
+      throw error;
+    }
     options.log?.(`${options.root} is measured by a process of its own`);
     return host;
   }
@@ -122,8 +140,14 @@ export class AbHost {
     this.send({ type: 'next' });
   }
 
-  async stop(): Promise<void> {
-    if (this.lost === null) {
+  /** The process id, for a test that the process is gone. */
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
+  async stop(immediately = false): Promise<void> {
+    if (immediately) this.child.kill('SIGKILL');
+    else if (this.lost === null) {
       try {
         this.send({ type: 'exit' });
       } catch {
@@ -132,7 +156,7 @@ export class AbHost {
     }
     await new Promise<void>((resolve) => {
       if (this.child.exitCode !== null || this.child.signalCode !== null) return resolve();
-      const timer = setTimeout(() => this.child.kill('SIGKILL'), 10_000);
+      const timer = setTimeout(() => this.child.kill('SIGKILL'), this.stopGraceMs);
       this.child.once('exit', () => {
         clearTimeout(timer);
         resolve();
