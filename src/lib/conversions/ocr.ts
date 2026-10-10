@@ -1,3 +1,4 @@
+import { remainingJobMs } from './job-time';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -157,6 +158,8 @@ export interface RenderedPdfOcrOptions {
   parallelBands?: boolean;
   /** The job's own deadline in milliseconds, when it has one: the OCR stops before it (see ocr-work-budget.ts). */
   jobDeadlineMs?: number;
+  /** The job's signal: when it fires (deadline, cancel) the pages in flight stop and their processes are killed. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -179,15 +182,15 @@ export async function recognizeRenderedPdfPages(
     const indices = renderer.plan.pageNumbers.map((_, index) => index);
     // With several pages the pages run side by side and each is read whole; bands are for a lone page.
     const bandsAllowed = indices.length < 2 && options.parallelBands !== false;
-    const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs);
+    const budget = new OcrWorkBudget(indices.length, options.jobDeadlineMs, options.signal);
     const recognized = await mapWithConcurrency(indices, ocrPageConcurrency(), (index) =>
       budget.guardPage(renderer.plan.pageNumbers[index], async (signal) => {
-        const rendered = await renderer.render(index);
+        const rendered = await renderer.render(index, signal);
         // A page that was refused while it was being drawn costs no reading.
         signal.throwIfAborted();
         const result = await performOcr(rendered.image, options.language, OCR_PREPROCESS_STEPS, options.detectOrientation, bandsAllowed, signal);
         signal.throwIfAborted();
-        const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup) : undefined;
+        const engineMarkup = options.engineMarkup ? await readEngineMarkup(rendered.image, options.language, options.engineMarkup, signal) : undefined;
         return { pageNumber: rendered.pageNumber, result: { ...result, pageRender: rendered.page, ...(engineMarkup ? { engineMarkup } : {}) } };
       })
     );
@@ -206,7 +209,8 @@ export async function recognizeRenderedPdfPages(
 export async function readEngineMarkup(
   imageBuffer: Buffer,
   language: string | undefined,
-  format: OcrEngineMarkupFormat
+  format: OcrEngineMarkupFormat,
+  signal?: AbortSignal
 ): Promise<{ format: OcrEngineMarkupFormat; content: string }> {
   const requested = resolveOcrLanguages(language);
   const data = locateLanguagesData(language || OCR_AUTO_LANGUAGE, requested.traineddata);
@@ -224,6 +228,7 @@ export async function readEngineMarkup(
     imageHeight: orientedSize(asSubmitted.geometry)[1],
     textRows: asSubmitted.textRows,
     engineMarkup: format,
+    signal,
   });
   if (!read.engineMarkup) throw new OcrEngineUnavailableError('The tesseract command line wrote no markup.');
   return read.engineMarkup;
@@ -277,7 +282,8 @@ function findTesseractCli(): string | undefined {
  */
 async function detectPageOrientation(
   imageBuffer: Buffer,
-  demanded: boolean
+  demanded: boolean,
+  signal?: AbortSignal
 ): Promise<{ orientation: OcrOrientation; quarterTurn: OcrQuarterTurn }> {
   const unavailable = { orientation: { status: 'unavailable', rotationApplied: 0 } as OcrOrientation, quarterTurn: 0 as OcrQuarterTurn };
   const data = locateLanguageData(OSD_LANGUAGE);
@@ -290,7 +296,7 @@ async function detectPageOrientation(
     return unavailable;
   }
   try {
-    const reading = await readOrientation(imageBuffer, { tessdataDir: data.dir, gzip: data.gzip, cliPath: findTesseractCli() });
+    const reading = await readOrientation(imageBuffer, { tessdataDir: data.dir, gzip: data.gzip, cliPath: findTesseractCli() }, signal);
     return decideOrientation(reading);
   } catch (err) {
     rethrowSandboxUnavailable(err);
@@ -332,7 +338,7 @@ export async function recognizePage(
   // engine's turn is kept only when reading again scores better, so a doubtful reading costs
   // time and never a page that was read correctly.
   signal?.throwIfAborted();
-  const detection = await detectPageOrientation(imageBuffer, detectOrientation === true);
+  const detection = await detectPageOrientation(imageBuffer, detectOrientation === true, signal);
   signal?.throwIfAborted();
   const scriptLanguage = requested.auto ? languageForScript(detection.orientation) : null;
   const scriptData = scriptLanguage === null ? undefined : locateLanguageData(scriptLanguage);
@@ -560,6 +566,7 @@ async function readPreparedPage(
           image: ocrInput,
           imageHeight: inputHeight,
           textRows: inputTextRows,
+          signal,
         }),
         prepared.geometry
       )
@@ -831,7 +838,8 @@ export async function performSmartMultiPagePdfOcr(
           dpi: options.dpi,
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
-          jobDeadlineMs: options.timeoutMs,
+          jobDeadlineMs: remainingJobMs(options),
+          signal: options.signal,
         })
       : new Map<number, OcrResult>();
 

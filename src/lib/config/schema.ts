@@ -1065,6 +1065,138 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'JOB_DEADLINE_BASE_MS_FREE',
+    area: 'limits',
+    description:
+      'Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_FREE.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 60_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_BASE_MS_PRO',
+    area: 'limits',
+    description:
+      'Wall-clock milliseconds every conversion job of the pro tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_PRO.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 120_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_BASE_MS_ENTERPRISE',
+    area: 'limits',
+    description:
+      'Wall-clock milliseconds every conversion job of the enterprise tier starts with, before the allowance for its pages, media seconds and input size. Must not exceed JOB_DEADLINE_MAX_MS_ENTERPRISE.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 180_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_MAX_MS_FREE',
+    area: 'limits',
+    description:
+      'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 300_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_MAX_MS_PRO',
+    area: 'limits',
+    description:
+      'Most wall-clock milliseconds a conversion job of the pro tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 1_800_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_MAX_MS_ENTERPRISE',
+    area: 'limits',
+    description:
+      'Most wall-clock milliseconds a conversion job of the enterprise tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 3_600_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_PER_PAGE_MS',
+    area: 'limits',
+    description:
+      'Milliseconds added to a job deadline for each page of a document (the page limit of the tier when the count is unknown). The default is the OCR page budget.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 10_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_PER_MIB_MS',
+    area: 'limits',
+    description:
+      'Milliseconds added to a job deadline for each started MiB of input.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 2_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_DEADLINE_PER_MEDIA_SECOND_MS',
+    area: 'limits',
+    description:
+      'Milliseconds added to a job deadline for each second of audio or video, when the length is known.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 3_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'SYNC_DEADLINE_MAX_MS',
+    area: 'limits',
+    description:
+      'Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 120_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'CONVERSION_CONCURRENCY_FREE',
+    area: 'limits',
+    description:
+      'Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota. Paid tiers have no such limit.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 5,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'JOB_STUCK_RECYCLE_MS',
+    area: 'worker',
+    description:
+      'Milliseconds a conversion that ignored its abort at the job deadline may stay unfinished before the worker drains and exits to be restarted (a processor that does not look at its signal cannot be stopped otherwise). The aborted conversion keeps its concurrency slot until it finishes.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 30_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: ['worker'],
+  },
+  {
     name: 'EASYCONVERT_XLS_MAX_GRID_CELLS',
     area: 'limits',
     description:

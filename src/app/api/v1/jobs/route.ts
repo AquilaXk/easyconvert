@@ -5,6 +5,10 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { JobDeadlineError } from '@/lib/queue/job-deadline';
+import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -118,6 +122,13 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    // At most five conversions in flight (queued plus running) for an anonymous or free caller. A refusal is not
+    // stored as the answer of the idempotency key: the same request may succeed once a job has finished.
+    const room = await mayEnqueue(auth.user.id, auth.user.tier);
+    if (!room.allowed) {
+      if (idempotencyCtx) await idempotencyCtx.abort();
+      return concurrencyLimitResponse(room.limit, instanceUri);
+    }
     const contentType = req.headers.get('content-type') || '';
     let originalFilename = '';
     let targetFormat = '';
@@ -655,7 +666,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Enqueue conversion job to the appropriate resource-class queue
-    const job = await targetQueue.add(
+    const job = await enqueueConversionJob(
+      targetQueue,
       'convert',
       {
         jobId: '',
@@ -665,7 +677,7 @@ export async function POST(req: NextRequest) {
         fileSize,
         storageKey,
         inputBufferBase64,
-        options,
+        options: stripEngineControls(options),
         webhookUrl: effectiveWebhookUrl,
         webhookSecret: effectiveWebhookSecret,
         userId: auth.user.id,
@@ -676,7 +688,8 @@ export async function POST(req: NextRequest) {
         attempts: 3,
         backoff: { type: 'exponential', delay: 1000 },
         priority,
-      }
+      },
+      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, s3Storage) }
     );
 
     const successRes = NextResponse.json(
@@ -717,6 +730,11 @@ export async function POST(req: NextRequest) {
     const storageProblem = describeStorageError(error);
     if (storageProblem) {
       return failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);
+    }
+    if (error instanceof JobDeadlineError) {
+      // The detail names a deadline setting, so it stays in the server log.
+      console.error('[Jobs] Invalid deadline setting or input:', error);
+      return failWithRollback(500, 'Internal server error', 'Internal Server Error');
     }
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');

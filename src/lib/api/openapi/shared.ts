@@ -160,3 +160,15 @@ export const CONVERT_FORM_PROPERTIES = {
   sourceFormat: { type: 'string', description: 'Explicit source format override. If omitted, inferred from filename.' },
   options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
 };
+
+/** The 504 of a synchronous conversion that ran past its wall-clock deadline (JOB_DEADLINE_* and SYNC_DEADLINE_MAX_MS settings). */
+export const JOB_TIMEOUT_DESCRIPTION =
+  'The conversion did not finish within its wall-clock limit (problem type `https://api.easyconvert.io/problems/job-timeout`, with the limit in `timeoutMs` and the asynchronous endpoint in `asyncEndpoint`). A synchronous request is held to 120 s by default, below the limit of the account tier; use `POST /api/v1/jobs` for conversions that need longer. The conversion was stopped, its processes were killed and the quota unit is refunded (only successful conversions are charged); the request still counts toward the rate limit. A queued job that hits its limit fails with `failedCode` "JobTimeoutError" and `failedStatus` 504, is refunded the same way and is not retried.';
+
+/** The 499 of a synchronous conversion whose client closed the connection. */
+export const CLIENT_CLOSED_DESCRIPTION =
+  'The client closed the connection before the conversion finished (problem type `https://api.easyconvert.io/problems/client-closed-request`). The conversion was aborted and the quota reservation is rolled back; the request still counts toward the rate limit. No client is left to read this answer.';
+
+/** Appended to the 429 of a conversion endpoint: the other reason for a 429 besides the rate limit and the quota. */
+export const CONCURRENCY_LIMIT_NOTE =
+  ' Or: the account already has the most conversions in flight (queued and running) its tier allows, 5 for anonymous and free callers (problem type `https://api.easyconvert.io/problems/concurrency-limit`, with `Retry-After`); the request takes no quota.';

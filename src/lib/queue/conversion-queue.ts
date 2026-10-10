@@ -8,6 +8,9 @@ import { processNodeJob } from './node-processor';
 import { isFinalFailure } from './job-failure';
 import { dispatchEngine } from './dispatch-engine';
 import { resolveResourceClass } from './resource-class';
+import { JobTimeoutError } from '../types';
+import { legacyJobTimeoutMs } from './enqueue';
+import { graphScheduler } from './graph/scheduler';
 
 // 1. Initialize Conversion Queue (Pluggable In-Memory or Distributed Redis/BullMQ Engine)
 export const conversionQueue: IQueueEngine<ConversionJobData, ConversionJobResult> =
@@ -119,7 +122,9 @@ export function attachJobLifecycleListeners(
   worker.on(
     'failed',
     async (job: Job<ConversionJobData, ConversionJobResult>, err: any) => {
-      // 2-Phase Quota: Rollback quota reservation upon unrecoverable job failure
+      // Only a successful conversion is charged: every unrecoverable failure, a job past its deadline included, rolls
+      // the reservation back (QA decision 2026-10-10).
+      const pastDeadline = err instanceof JobTimeoutError;
       if (job.data?.reservationId) {
         try {
           await redisKeyStore.rollbackQuota(job.data.reservationId);
@@ -128,6 +133,16 @@ export function attachJobLifecycleListeners(
             `[ConversionQueue] Failed to rollback quota for reservation ${job.data.reservationId}:`,
             rollbackErr
           );
+        }
+      }
+
+      // A graph node past its deadline is failed in the graph from here as well: a processor that never settles
+      // would otherwise leave the node running and the graph unsettled. The scheduler ignores a second report.
+      if (pastDeadline && job.data?.graphId && job.data.graphNodeId) {
+        try {
+          await graphScheduler.onNodeFailed(job.data.graphId, job.data.graphNodeId, err.message);
+        } catch (graphErr) {
+          console.error(`[ConversionQueue] Failed to fail graph node ${job.data.graphNodeId} of ${job.data.graphId}:`, graphErr);
         }
       }
 
@@ -368,6 +383,23 @@ if (origConversionQueueOnJobFailed) {
   };
 }
 
+// The default queue is popped from on behalf of the resource queues (above), so a job it hands out lives in one of
+// them: the deadline is claimed where the job is, and never written to a queue that does not hold it.
+const origConversionQueueClaimDeadline = conversionQueue._claimDeadline?.bind(conversionQueue);
+if (origConversionQueueClaimDeadline) {
+  conversionQueue._claimDeadline = async (job, candidateAt) => {
+    const direct = await origConversionQueueClaimDeadline(job, candidateAt);
+    if (direct !== undefined) return direct;
+    for (const q of Object.values(resourceQueues)) {
+      if (q._claimDeadline) {
+        const recorded = await q._claimDeadline(job, candidateAt);
+        if (recorded !== undefined) return recorded;
+      }
+    }
+    return undefined;
+  };
+}
+
 const origConversionQueueRequeue = conversionQueue._requeue?.bind(conversionQueue);
 if (origConversionQueueRequeue) {
   conversionQueue._requeue = async (job, delayMs) => {
@@ -448,7 +480,7 @@ export function startConversionWorker(
   const worker = new Worker<ConversionJobData, ConversionJobResult>(
     queuesToSubscribe,
     processConversionJob,
-    { concurrency: opts.concurrency || 5 }
+    { concurrency: opts.concurrency || 5, defaultTimeoutMs: legacyJobTimeoutMs }
   );
   attachJobLifecycleListeners(worker);
   attachInputCleanupOnCompletion(worker);

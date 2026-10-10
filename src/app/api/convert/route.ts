@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
@@ -62,7 +66,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error }, { status });
   };
 
+  // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
+  let releaseSlot: (() => void) | undefined;
   try {
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      if (reservationId) await rollbackQuota(reservationId);
+      return concurrencyLimitResponse(slot.limit, instanceUri);
+    }
+    releaseSlot = slot.release;
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const targetFormat = formData.get('targetFormat') as string | null;
@@ -178,12 +190,22 @@ export async function POST(req: NextRequest) {
     }
 
     // Perform conversion via the shared dispatcher (native engines first, in-process where valid)
-    const result = await dispatchConversion(
-      inputBuffer,
-      detectedDef.extension,
-      tgt,
-      withTierPageCap(options, tierMaxPages(auth.user?.tier)),
-      file.name
+    const deadlineMs = syncDeadlineMs(
+      conversionDeadlineMs({
+        tier: auth.user?.tier,
+        sourceFormat: detectedDef.extension,
+        targetFormat: tgt,
+        inputBytes: inputBuffer.length,
+      })
+    );
+    const result = await runUnderDeadline(req, deadlineMs, (limits) =>
+      dispatchConversion(
+        inputBuffer,
+        detectedDef.extension,
+        tgt,
+        bindJobLimits(withTierPageCap(options, tierMaxPages(auth.user?.tier)), limits),
+        file.name
+      )
     );
 
     const duration = Date.now() - startTime;
@@ -208,8 +230,11 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (reservationId) {
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
       await rollbackQuota(reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
     }
@@ -247,5 +272,7 @@ export async function POST(req: NextRequest) {
       { success: false, error: message },
       { status: isValidationError ? 400 : 500 }
     );
+  } finally {
+    releaseSlot?.();
   }
 }

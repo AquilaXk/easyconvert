@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
+import { bindJobLimits } from '@/lib/conversions/job-time';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
@@ -176,7 +182,16 @@ export async function POST(req: NextRequest) {
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
 
+  // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
+  // the request ends; an asynchronous handoff stays counted through the job it queues.
+  let releaseSlot: (() => void) | undefined;
   try {
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      if (idempotencyCtx) await idempotencyCtx.abort();
+      return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
+    }
+    releaseSlot = slot.release;
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
@@ -287,7 +302,8 @@ export async function POST(req: NextRequest) {
         ));
       }
 
-      const job = await conversionQueue.add(
+      const job = await enqueueConversionJob(
+        conversionQueue,
         'convert',
         {
           jobId: '',
@@ -296,7 +312,7 @@ export async function POST(req: NextRequest) {
           targetFormat: targetDef.id,
           fileSize: file.size,
           storageKey: uploadedStorageKey,
-          options,
+          options: stripEngineControls(options),
           webhookUrl: effectiveWebhookUrl,
           webhookSecret: effectiveWebhookSecret,
           userId: auth.user.id,
@@ -305,7 +321,8 @@ export async function POST(req: NextRequest) {
         {
           attempts: 3,
           backoff: { type: 'exponential', delay: 1000 },
-        }
+        },
+        { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider) }
       );
 
       return reply(NextResponse.json(
@@ -355,12 +372,23 @@ export async function POST(req: NextRequest) {
     }
 
     // Convert through the shared dispatcher (native engines first, in-process where valid)
-    const conversionResult = await dispatchConversion(
-      inputBuffer,
-      sourceDef.id,
-      targetDef.id,
-      withTierPageCap(options, tierMaxPages(auth.user.tier)),
-      file.name
+    const ownerTier = auth.user.tier;
+    const deadlineMs = syncDeadlineMs(
+      conversionDeadlineMs({
+        tier: ownerTier,
+        sourceFormat: sourceDef.id,
+        targetFormat: targetDef.id,
+        inputBytes: inputBuffer.length,
+      })
+    );
+    const conversionResult = await runUnderDeadline(req, deadlineMs, (limits) =>
+      dispatchConversion(
+        inputBuffer,
+        sourceDef.id,
+        targetDef.id,
+        bindJobLimits(withTierPageCap(options, tierMaxPages(ownerTier)), limits),
+        file.name
+      )
     );
 
     const durationMs = Date.now() - startTime;
@@ -445,8 +473,11 @@ export async function POST(req: NextRequest) {
       await idempotencyCtx.abort();
     }
     if (reservation?.reservationId) {
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
       await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
+    const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
+    if (deadlineProblem) return deadlineProblem;
     if (err instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(err, instanceUri, rateLimitHeaders);
     }
@@ -499,5 +530,7 @@ export async function POST(req: NextRequest) {
       undefined,
       rateLimitHeaders
     );
+  } finally {
+    releaseSlot?.();
   }
 }

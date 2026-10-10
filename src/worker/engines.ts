@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import { readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import path from 'node:path';
@@ -523,7 +524,7 @@ export async function convertWithHeadlessOffice(
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
 
-      const timeout = Math.min(options.timeoutMs || 45000, 120000);
+      const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
       await executeSandboxedBinary(
@@ -606,7 +607,7 @@ export async function convertWithNativeFfmpeg(
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
       const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
-      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS);
+      const timeout = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
         const parts: { filename: string; buffer: Buffer }[] = [];
@@ -658,7 +659,7 @@ export async function convertWithNativeFfmpeg(
           timeoutMs: computePackagingTimeoutMs(
             source.geometry.durationSec,
             plannedRungCount(packaging, source),
-            options.timeoutMs || DEFAULT_MEDIA_TIER_MAX_MS
+            stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)
           ),
           maxBuffer,
           networkIsolated: true,
@@ -1110,7 +1111,7 @@ export async function convertWithNative7z(
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || 60000, 180000);
+  const timeout = Math.min(stageTimeoutMs(options, 60000), 180000);
   const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
 
@@ -1697,7 +1698,7 @@ export async function convertWithNativePoppler(
   if (src !== 'pdf') return null;
 
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || 45000, 120000);
+  const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
   const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
   // 1. Text extraction via pdftotext
@@ -1873,7 +1874,7 @@ async function convertPdfToPostScript(
     }
     return null;
   }
-  const timeout = Math.min(options.timeoutMs || POPPLER_DEFAULT_TIMEOUT_MS, POPPLER_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
   const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
   const isEps = tgt === EPS_TARGET;
   const run = (tempDir: string, args: string[]) =>
@@ -1986,7 +1987,7 @@ export async function convertWithNativeRaw(
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
 
   return withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
@@ -2079,7 +2080,7 @@ export async function convertWithNativePostScript(
   }
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || POSTSCRIPT_DEFAULT_TIMEOUT_MS, POSTSCRIPT_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, POSTSCRIPT_DEFAULT_TIMEOUT_MS), POSTSCRIPT_MAX_TIMEOUT_MS);
 
   const pdf = await withSandboxDir('easyconvert-postscript-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
@@ -2165,7 +2166,7 @@ export async function convertWithInProcessRawSensor(
   if (!recognized) return null;
 
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
   const decoded = await decodeRawInThread(src as 'x3f' | 'raw', file, timeout, options.signal);
   const intermediate = encode16BitTiff(decoded.width, decoded.height, decoded.rgb16);
   const converted = await convertImage(intermediate, tgt, options, originalFilename, 'tiff');
@@ -2433,6 +2434,8 @@ export async function executeWorkerConversion(
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
   assertConversionOptionsObject(options);
+  // An aborted job (deadline, cancel) starts no further stage: work that cannot be interrupted must not begin.
+  options.signal?.throwIfAborted();
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
@@ -2727,6 +2730,8 @@ export async function executeWorkerConversion(
   }
   let internalRes: ConversionResult;
   try {
+    // The in-process engine cannot be interrupted once it runs: it must not start for an aborted job.
+    options.signal?.throwIfAborted();
     internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
   } catch (err) {
     // The in-process engine cannot decode this camera data, yet the native RAW engine could have.

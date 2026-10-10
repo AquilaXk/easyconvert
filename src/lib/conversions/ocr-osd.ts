@@ -278,7 +278,7 @@ async function readWithWasm(pgm: Buffer, engines: OsdEngines): Promise<OsdReadin
  * when that fails (the same order recognition uses). Returns null when the page holds too little
  * text, and throws OcrEngineUnavailableError (503) when neither engine could read it.
  */
-export async function readOrientation(source: Buffer, engines: OsdEngines): Promise<OsdReading | null> {
+export async function readOrientation(source: Buffer, engines: OsdEngines, signal?: AbortSignal): Promise<OsdReading | null> {
   const window = await densestTextWindow(source);
   if (window === null) return null;
   try {
@@ -292,6 +292,7 @@ export async function readOrientation(source: Buffer, engines: OsdEngines): Prom
     tessdataDir: engines.tessdataDir,
     image: window.pgm,
     timeoutMs: OSD_TIMEOUT_MS,
+    signal,
   });
   return output === null ? null : parseOsdOutput(output);
 }

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import Redis from 'ioredis';
 import { redactForOutput, redactText, scrubError } from '../security/redact';
 import { classifyJobFailure } from './job-failure';
-import { QueueUnavailableError } from '../types';
+import { JobTimeoutError, QueueUnavailableError } from '../types';
 
 export interface JobOptions {
   jobId?: string;
@@ -16,7 +16,15 @@ export interface JobOptions {
   };
   removeOnComplete?: boolean | number;
   removeOnFail?: boolean | number;
+  /** Wall-clock limit of one attempt in milliseconds. */
   timeout?: number;
+  /**
+   * Absolute time the job must be finished by. The worker sets it when the first attempt starts (start plus
+   * `timeout`, the time spent waiting in the queue does not count) unless the producer set an earlier one, and a
+   * retry or a requeue after a stall runs with `min(timeout, deadlineAt - now)`: it fails at once when that is not
+   * positive. A job therefore never runs longer than its deadline across attempts.
+   */
+  deadlineAt?: number;
 }
 
 export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'cancelled';
@@ -54,16 +62,8 @@ export class JobCancelledError extends Error {
   }
 }
 
-/** Abort reason for an attempt that exceeded `JobOptions.timeout`. The attempt fails and may retry. */
-export class JobTimeoutError extends Error {
-  readonly timeoutMs: number;
-
-  constructor(timeoutMs: number) {
-    super(`Job timed out after ${timeoutMs}ms`);
-    this.name = 'TimeoutError';
-    this.timeoutMs = timeoutMs;
-  }
-}
+/** Abort reason for an attempt that exceeded `JobOptions.timeout`. A typed 504 failure that is not retried. */
+export { JobTimeoutError };
 
 /** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
 export class JobOwnershipLostError extends Error {
@@ -251,6 +251,14 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   _onJobFailed?(job: Job<T, R>, err: any): Promise<boolean> | boolean;
   /** Supervises an attempt the worker just started (heartbeat, remote cancel). Returns a stop function. */
   _monitorActiveJob?(job: Job<T, R>): () => void;
+  /**
+   * @internal Distributed engines: records `candidateAt` as the job's absolute deadline unless one is already
+   * recorded, and returns the recorded one. The deadline outlives the attempt (a retry or a stall requeue loads the
+   * job from the store, where `opts` is the original), so every attempt of a job shares one deadline. Resolves
+   * undefined, writing nothing, when this queue holds no record of the job (it lives in another queue, or was removed):
+   * a claim never creates a job record.
+   */
+  _claimDeadline?(job: Job<T, R>, candidateAt: number): Promise<number | undefined>;
   /** Recovers active jobs whose worker stopped heartbeating. Returns the jobs it moved to failed. */
   _recoverStalledJobs?(): Promise<Job<T, R>[]>;
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
@@ -588,7 +596,20 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
 export interface WorkerOptions {
   concurrency?: number;
+  /**
+   * Timeout for a job that carries none (queued before deadlines existed), resolved when the attempt starts. A
+   * worker of conversion jobs sets it to the maximum deadline of the job owner's tier.
+   */
+  defaultTimeoutMs?: (job: Job<any, any>) => Promise<number | undefined> | number | undefined;
+  /**
+   * Milliseconds an aborted processor may stay unsettled before the worker emits `stuck`; the owner of the process
+   * is expected to recycle it, since nothing else can stop work that ignores its signal. Default 30 000.
+   */
+  stuckProcessorMs?: number;
 }
+
+/** Default for `WorkerOptions.stuckProcessorMs`. */
+export const DEFAULT_STUCK_PROCESSOR_MS = 30_000;
 
 export type Processor<T, R> = (job: Job<T, R>) => Promise<R>;
 
@@ -622,6 +643,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private pollingTimer?: NodeJS.Timeout;
   private stalledSweepTimer?: NodeJS.Timeout;
   private waitingListeners: Map<IQueueEngine<T, R>, () => void> = new Map();
+  private readonly defaultTimeoutMs?: WorkerOptions['defaultTimeoutMs'];
+  private readonly stuckProcessorMs: number;
+  /** Processors that were aborted at their deadline and have not settled yet; each keeps its concurrency slot. */
+  private readonly unsettledProcessors = new WeakMap<Job<T, R>, Promise<void>>();
 
   get queue(): IQueueEngine<T, R> {
     return this.queues[0];
@@ -641,6 +666,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     this.name = queueList[0].name;
     this.processor = processor;
     this.concurrency = opts.concurrency || 5;
+    this.defaultTimeoutMs = opts.defaultTimeoutMs;
+    this.stuckProcessorMs = opts.stuckProcessorMs ?? DEFAULT_STUCK_PROCESSOR_MS;
 
     // Listen for new jobs arriving in any of the subscribed queues
     for (const q of this.queues) {
@@ -711,11 +738,14 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
           if (!poppedJob || !sourceQueue) break;
 
           this.activeCount++;
-          void this.executeJob(poppedJob, sourceQueue)
+          const running = poppedJob;
+          void this.executeJob(running, sourceQueue)
             .catch((err) => {
               console.error(`[Worker:${this.name}] Unhandled executeJob error:`, err);
             })
-            .finally(() => {
+            .finally(async () => {
+              // A processor that ignored its abort is still running: its slot is free only when it settles.
+              await this.unsettledProcessors.get(running);
               this.activeCount--;
               this.checkAndProcess();
             });
@@ -745,7 +775,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     try {
       let result: R;
       try {
-        result = await this.runAttempt(job);
+        result = await this.runAttempt(job, queue);
       } catch (err: any) {
         // A cancelled or superseded attempt never retries, never reaches the DLQ, and never emits `failed`.
         if (isAttemptDiscarded(job)) {
@@ -761,28 +791,65 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   /**
-   * Runs the processor for one attempt. With `opts.timeout`, the attempt's signal is aborted with a
-   * JobTimeoutError once the timeout elapses and the attempt fails even if the processor ignores it.
+   * Runs the processor for one attempt. With a timeout, the attempt's signal is aborted with a JobTimeoutError once
+   * it elapses and the attempt fails even if the processor ignores the signal. The timeout is held to the job's
+   * absolute deadline, so a retry gets only the time that is left and a job whose deadline passed fails at once.
    */
-  private async runAttempt(job: Job<T, R>): Promise<R> {
-    const timeoutMs = job.opts.timeout;
-    if (!timeoutMs || timeoutMs <= 0) {
+  private async runAttempt(job: Job<T, R>, queue: IQueueEngine<T, R>): Promise<R> {
+    if (job.opts.timeout === undefined && this.defaultTimeoutMs) {
+      const resolved = await this.defaultTimeoutMs(job);
+      if (resolved !== undefined) job.opts.timeout = resolved;
+    }
+    const budgetMs = job.opts.timeout;
+    if (!budgetMs || budgetMs <= 0) {
       return this.processor(job);
     }
 
+    const startedAt = Date.now();
+    const claimedAt = (await queue._claimDeadline?.(job, startedAt + budgetMs)) ?? startedAt + budgetMs;
+    job.opts.deadlineAt = Math.min(job.opts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedAt);
+    const timeoutMs = Math.min(budgetMs, job.opts.deadlineAt - startedAt);
+    if (timeoutMs <= 0) {
+      const expired = new JobTimeoutError(budgetMs);
+      job._abortAttempt(expired);
+      throw expired;
+    }
+
+    const processing = Promise.resolve(this.processor(job));
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         const timeoutError = new JobTimeoutError(timeoutMs);
         job._abortAttempt(timeoutError);
+        this.keepSlotUntilSettled(job, processing);
         reject(timeoutError);
       }, timeoutMs);
     });
     try {
-      return await Promise.race([this.processor(job), timedOut]);
+      return await Promise.race([processing, timedOut]);
+    } catch (err) {
+      // A processor that wraps the abort into another error must not turn the deadline into a different failure.
+      if (job.signal.reason instanceof JobTimeoutError) throw job.signal.reason;
+      throw err;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * An aborted processor may keep running (it ignored the signal, or is in a loop that does not look at it). Its
+   * slot stays taken until it settles, so work that cannot be stopped does not pile up beyond the concurrency, and
+   * `stuck` is emitted if it is still unsettled after `stuckProcessorMs`.
+   */
+  private keepSlotUntilSettled(job: Job<T, R>, processing: Promise<R>): void {
+    const settled = processing.then(
+      () => undefined,
+      () => undefined
+    );
+    this.unsettledProcessors.set(job, settled);
+    const stuckTimer = setTimeout(() => this.emit('stuck', job), this.stuckProcessorMs);
+    if (typeof stuckTimer.unref === 'function') stuckTimer.unref();
+    void settled.then(() => clearTimeout(stuckTimer));
   }
 
   private async completeJob(job: Job<T, R>, queue: IQueueEngine<T, R>, result: R): Promise<void> {
@@ -1136,6 +1203,21 @@ else
   redis.call('HSET', KEYS[1], 'state', 'waiting', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
 end
 return 1
+`;
+
+/** Reply of CLAIM_DEADLINE_LUA_SCRIPT for a job hash that does not exist. */
+export const CLAIM_DEADLINE_NO_JOB = -1;
+
+export const CLAIM_DEADLINE_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: candidate deadline (absolute time in milliseconds)
+-- Records the deadline on an existing job hash only if none is recorded, and returns the recorded one. A job hash
+-- that does not exist is never created (HSETNX alone would write a hash holding only this field): returns -1.
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return -1
+end
+redis.call('HSETNX', KEYS[1], 'deadlineAt', ARGV[1])
+return redis.call('HGET', KEYS[1], 'deadlineAt')
 `;
 
 export const COMPLETE_JOB_LUA_SCRIPT = `
@@ -1728,6 +1810,11 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       parsedOpts = JSON.parse(raw.opts || '{}');
     } catch {}
+    // The deadline claimed by the job's first attempt: a later attempt does not get a fresh one.
+    const claimedDeadline = Number(raw.deadlineAt);
+    if (Number.isFinite(claimedDeadline) && claimedDeadline > 0) {
+      parsedOpts.deadlineAt = Math.min(parsedOpts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedDeadline);
+    }
 
     const job = new Job<T, R>(
       raw.id,
@@ -2330,6 +2417,22 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         })
       );
     } catch {}
+  }
+
+  async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number | undefined> {
+    if (!this.redisClient || !this.redisConnected) {
+      return candidateAt;
+    }
+    try {
+      const recorded = Number(await this.redisClient.eval(CLAIM_DEADLINE_LUA_SCRIPT, 1, this.getJobKey(job.id), String(candidateAt)));
+      if (recorded === CLAIM_DEADLINE_NO_JOB) return undefined;
+      return Number.isFinite(recorded) && recorded > 0 ? recorded : candidateAt;
+    } catch (err) {
+      // The store is unreachable: this attempt runs under its own timer, and the completion write will fail or
+      // succeed on its own terms.
+      console.warn(`[Queue:${this.name}] Could not record the deadline of job ${job.id}:`, err);
+      return candidateAt;
+    }
   }
 
   async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<boolean> {

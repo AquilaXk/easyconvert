@@ -19,6 +19,7 @@ import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
 import { pageCappedEngine, pageLimitForOwner } from './page-cap';
+import { deadlineBoundEngine } from './job-deadline';
 import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
 import { droppedStreamsFields } from '../api/dropped-streams';
@@ -57,6 +58,8 @@ export const tsEngine: ConversionEnginePort = {
       throw new Error('Invalid input payload: neither Buffer nor inputPath available.');
     }
 
+    // The in-process engine cannot be interrupted once it runs: it must not start for an aborted job.
+    options.signal?.throwIfAborted();
     const res: ConversionResult = await convertFile(
       buf,
       sourceFormat,
@@ -129,8 +132,8 @@ export async function processNodeJob(
   if (job.data?.graphId && job.data?.graphNodeId && job.data?.graphNode) {
     return processGraphNodeJob(job, baseEngine, rootStorage);
   }
-  // Every conversion of the job runs under the page limit of its owner's tier.
-  const engine = pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId));
+  // Every conversion of the job runs under the page limit of its owner's tier and under the job's deadline.
+  const engine = deadlineBoundEngine(pageCappedEngine(baseEngine, await pageLimitForOwner(job.data.userId)), job);
 
   // Scratch files a remote backend stages for this job's input are removed when the job ends.
   const scope = scopeStorageObjects(rootStorage);

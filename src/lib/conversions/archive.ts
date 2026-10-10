@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
 import { readZipEntryBytes } from './zip-entry-reader';
 import { promisify } from 'node:util';
@@ -2492,7 +2493,7 @@ export async function extractWithSpannedStream7z(
       archivePath: tempDiskFile,
       extractDir: resolvedExtractDir,
       cwd: resolvedExtractDir,
-      timeoutMs: options.timeoutMs ?? 60000,
+      timeoutMs: stageTimeoutMs(options, 60000),
       maxBuffer: options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
       limits: ARCHIVE_SECURITY_LIMITS,
       label: 'archive',

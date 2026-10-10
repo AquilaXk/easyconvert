@@ -12,6 +12,7 @@ import {
   attachInputCleanupOnCompletion,
 } from '../lib/queue/conversion-queue';
 import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullmq-engine';
+import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
@@ -215,8 +216,22 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       }
     }
   },
-  { concurrency: config.concurrency }
+  { concurrency: config.concurrency, defaultTimeoutMs: legacyJobTimeoutMs, stuckProcessorMs: workerConfig.JOB_STUCK_RECYCLE_MS }
 );
+
+// A conversion that ignored its abort at the job deadline cannot be stopped from inside the process: the worker
+// drains and exits through the recycle path, and the supervisor starts a fresh one.
+ociWorker.on('stuck', (job: Job<ConversionJobData, ConversionJobResult>) => {
+  console.error(
+    `[EasyConvert OCI Worker] Job ${job.id} ignored its abort for ${workerConfig.JOB_STUCK_RECYCLE_MS}ms. Recycling the worker...`
+  );
+  if (isDraining) return;
+  void drainWorker('RECYCLE').then(() => {
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(0);
+    }
+  });
+});
 
 // Attach 2-phase quota accounting, webhook dispatch listeners, and input cleanup
 attachJobLifecycleListeners(ociWorker);
