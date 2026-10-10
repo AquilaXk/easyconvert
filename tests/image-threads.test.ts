@@ -2,25 +2,54 @@ import os from 'node:os';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { IMAGE_MAX_THREADS, IMAGE_THREADS_ENV, imageThreadsFor, withImageThreads } from '../src/lib/conversions/image-threads';
+import '../src/lib/conversions/image';
+import { baseImageThreads, IMAGE_BASE_THREADS, IMAGE_MAX_THREADS, IMAGE_THREADS_ENV, IMAGE_UNBOUNDED_HEAP_THREADS, MALLOC_ARENA_ENV, imageThreadsFor, memoryLimitBytes, withImageThreads } from '../src/lib/conversions/image-threads';
+
+const GIB = 1024 * 1024 * 1024;
 
 describe('imageThreadsFor', () => {
-  it('uses the available cores up to the bound, and at least one', () => {
-    expect([imageThreadsFor(1, {}), imageThreadsFor(4, {}), imageThreadsFor(IMAGE_MAX_THREADS, {}), imageThreadsFor(64, {}), imageThreadsFor(0, {})]).toEqual([1, 4, IMAGE_MAX_THREADS, IMAGE_MAX_THREADS, 1]);
+  const bounded = { [MALLOC_ARENA_ENV]: '2' };
+
+  it('with the heap bounded uses the available cores up to the bound, and at least one', () => {
+    expect([1, 4, IMAGE_MAX_THREADS, 64, 0].map((cores) => imageThreadsFor(cores, GIB * 64, bounded))).toEqual([1, 4, IMAGE_MAX_THREADS, IMAGE_MAX_THREADS, 1]);
   });
 
-  it('takes a positive whole number from the environment over the cores, above the bound too', () => {
-    expect([imageThreadsFor(4, { [IMAGE_THREADS_ENV]: '1' }), imageThreadsFor(4, { [IMAGE_THREADS_ENV]: '16' })]).toEqual([1, 16]);
+  it('with the heap not bounded leases two threads, which is most of the speed at the memory of the single thread plus a tenth', () => {
+    expect([1, 2, 4, 64].map((cores) => imageThreadsFor(cores, GIB * 64, {}))).toEqual([1, IMAGE_UNBOUNDED_HEAP_THREADS, IMAGE_UNBOUNDED_HEAP_THREADS, IMAGE_UNBOUNDED_HEAP_THREADS]);
+    expect(imageThreadsFor(4, GIB * 64, { [MALLOC_ARENA_ENV]: '' })).toBe(IMAGE_UNBOUNDED_HEAP_THREADS);
+  });
+
+  it('leases only the threads the memory limit pays for: 256 MB each, at least one', () => {
+    expect([4 * GIB, GIB, GIB / 2, GIB / 8].map((memory) => imageThreadsFor(8, memory, bounded))).toEqual([8, 4, 2, 1]);
+  });
+
+  it('takes a positive whole number from the environment over the cores, the heap and the memory, above the bound too', () => {
+    expect([imageThreadsFor(4, GIB, { [IMAGE_THREADS_ENV]: '1' }), imageThreadsFor(4, GIB / 8, { [IMAGE_THREADS_ENV]: '16' })]).toEqual([1, 16]);
   });
 
   it.each(['0', '-2', '1.5', 'many', ''])('ignores the environment value %j', (value) => {
-    expect(imageThreadsFor(4, { [IMAGE_THREADS_ENV]: value })).toBe(4);
+    expect(imageThreadsFor(4, GIB * 64, { ...bounded, [IMAGE_THREADS_ENV]: value })).toBe(4);
+  });
+});
+
+describe('baseImageThreads', () => {
+  it('is one thread unless the operator names a count', () => {
+    expect([baseImageThreads({}), baseImageThreads({ [IMAGE_THREADS_ENV]: '3' }), baseImageThreads({ [IMAGE_THREADS_ENV]: 'x' })]).toEqual([IMAGE_BASE_THREADS, 3, IMAGE_BASE_THREADS]);
+  });
+
+  it('is what the image library runs on once the conversion module is loaded, whatever its own default is', () => {
+    expect(sharp.concurrency()).toBe(baseImageThreads());
+  });
+
+  it('reads a memory limit that is a positive number of bytes no larger than the machine', () => {
+    expect(memoryLimitBytes()).toBeGreaterThan(0);
+    expect(memoryLimitBytes()).toBeLessThanOrEqual(os.totalmem());
   });
 });
 
 describe('withImageThreads', () => {
   const before = sharp.concurrency();
-  const leased = imageThreadsFor(os.availableParallelism());
+  const leased = imageThreadsFor(os.availableParallelism(), memoryLimitBytes());
   afterEach(() => {
     sharp.concurrency(before);
   });
@@ -82,7 +111,7 @@ describe('the AVIF encode of the image library', () => {
 
   it('runs a photograph on the leased threads and puts the previous count back', async () => {
     const before = sharp.concurrency();
-    expect(await threadsAsked(await picture(false))).toEqual([imageThreadsFor(os.availableParallelism()), before]);
+    expect(await threadsAsked(await picture(false))).toEqual([imageThreadsFor(os.availableParallelism(), memoryLimitBytes()), before]);
   });
 
   it('keeps a graphic on the single thread it had: the tiles that threads bring moved an interface from -14.4% to +1.6% BD-rate in PSNR', async () => {

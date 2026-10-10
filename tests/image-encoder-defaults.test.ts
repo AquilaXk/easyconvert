@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent, classifyRaster, type Raster } from '../src/lib/conversions/image-content';
-import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
+import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor, jpegOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -128,9 +128,28 @@ describe('content classification of decoded samples', () => {
 });
 
 describe('encoder choices', () => {
-  it('uses full chroma from JPEG quality 90 and from AVIF quality 80, and for graphic content at any quality', () => {
-    expect([jpegChromaFor(89, 'photo'), jpegChromaFor(90, 'photo'), jpegChromaFor(40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+  it('uses full chroma from JPEG quality 90 and from AVIF quality 80, and for graphic AVIF at any quality', () => {
+    expect([jpegChromaFor(89), jpegChromaFor(90)]).toEqual(['4:2:0', '4:4:4']);
     expect([avifChromaFor(79, 'photo'), avifChromaFor(80, 'photo'), avifChromaFor(40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+  });
+
+  it('keeps trellis quantisation and the scan search out of the JPEG encode below the full-chroma quality, whatever the content', () => {
+    for (const [content, grey] of [['photo', false], ['graphic', false], ['graphic', true]] as const) {
+      const options = jpegOptionsFor(85, content, grey);
+      expect(options, `${content} grey=${grey}`).toMatchObject({ quality: 85, progressive: false, trellisQuantisation: false, optimiseCoding: true, overshootDeringing: true });
+      expect(options.optimiseScans, `${content} grey=${grey}`).toBeUndefined();
+    }
+    expect([jpegOptionsFor(85, 'graphic').chromaSubsampling, jpegOptionsFor(85, 'photo').chromaSubsampling]).toEqual(['4:2:0', '4:2:0']);
+  });
+
+  it('chooses the quantisation table by content: 3 for photographs, 2 for graphics', () => {
+    expect([jpegOptionsFor(70, 'photo').quantisationTable, jpegOptionsFor(70, 'graphic').quantisationTable]).toEqual([3, 2]);
+  });
+
+  it('spends the progressive scan search only on a colour graphic at the full-chroma quality', () => {
+    expect(jpegOptionsFor(92, 'graphic')).toMatchObject({ chromaSubsampling: '4:4:4', progressive: true, optimiseScans: true });
+    expect(jpegOptionsFor(92, 'graphic', true)).toMatchObject({ progressive: false });
+    expect(jpegOptionsFor(92, 'photo')).toMatchObject({ chromaSubsampling: '4:4:4', progressive: false });
   });
 
   it('writes a grey AVIF as monochrome at any quality and content, and a colour one by the chroma rule', () => {
@@ -188,10 +207,14 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('JPEG chroma subsampling', () => {
     expect(await sampling(await photoPng(), { quality: 92 })).toBe('1x1,1x1,1x1');
   });
 
-  it('subsamples the chroma of a photograph below quality 90, but not of a screenshot', async () => {
+  it('subsamples the chroma of a photograph and of a screenshot below quality 90, as the reference encoder does', async () => {
     expect(await sampling(await photoPng(), { quality: 85 })).toBe('2x2,1x1,1x1');
     expect(await sampling(await photoPng(), {})).toBe('2x2,1x1,1x1');
-    expect(await sampling(await svgPng(textBody), { quality: 85 })).toBe('1x1,1x1,1x1');
+    expect(await sampling(await svgPng(textBody), { quality: 85 })).toBe('2x2,1x1,1x1');
+  });
+
+  it('keeps the chroma of a screenshot at full resolution from quality 90', async () => {
+    expect(await sampling(await svgPng(textBody), { quality: 90 })).toBe('1x1,1x1,1x1');
   });
 });
 
@@ -350,7 +373,8 @@ describe.skipIf(skipWithoutTools('cwebp', 'dwebp', 'ffmpeg'))('WebP default qual
 /**
  * Equal-size quality of the new encoder settings against the previous ones (the library defaults at a quality
  * matched by bisection to the new file size). SSIM is ffmpeg's; ssimulacra2 is reported by `npm run bench:quality`
- * when installed.
+ * when installed. Graphic JPEG is judged against the reference encoder by BD-rate in image-graphic-jpeg-parity.test.ts: its
+ * settings no longer try to beat the library's heaviest preset (progressive scans searched, trellis) at equal size.
  */
 describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size quality against the previous settings', () => {
   const ffmpeg = (): string => requireOracleTool('ffmpeg');
@@ -385,16 +409,17 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
     return best;
   }
 
-  const fixtures: Array<[string, () => Promise<Buffer>]> = [
-    ['photo', photoPng],
-    ['text', () => svgPng(textBody)],
-    ['line art', () => svgPng(lineBody)],
-    ['interface', () => svgPng(uiBody)],
-    ['photo, rotated gradient', async () => sharp(await photoPng()).rotate(90).resize(WIDTH, HEIGHT, { fit: 'cover' }).png().toBuffer()],
+  const fixtures: Array<[string, () => Promise<Buffer>, boolean]> = [
+    ['photo', photoPng, false],
+    ['text', () => svgPng(textBody), true],
+    ['line art', () => svgPng(lineBody), true],
+    ['interface', () => svgPng(uiBody), true],
+    ['photo, rotated gradient', async () => sharp(await photoPng()).rotate(90).resize(WIDTH, HEIGHT, { fit: 'cover' }).png().toBuffer(), false],
   ];
 
   it.each(['jpg', 'webp', 'avif'])('%s: SSIM at equal file size is not worse than the previous settings on 5 fixtures', async (target) => {
-    for (const [label, make] of fixtures) {
+    for (const [label, make, graphic] of fixtures) {
+      if (target === 'jpg' && graphic) continue;
       const png = await make();
       const reference = writeIn(`ref-${target}.png`, png);
       const ours = (await convertImage(png, target, { quality: 70 }, 'f.png', 'png')).buffer;

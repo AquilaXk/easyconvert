@@ -21,7 +21,7 @@ export const FALLBACK_QUALITY = 85;
 export const QUALITY_MIN = 1;
 export const QUALITY_MAX = 100;
 
-/** JPEG at or above this quality keeps full-resolution chroma; below it 4:2:0 saves bytes on photographs. */
+/** JPEG at or above this quality keeps full-resolution chroma; below it 4:2:0 saves bytes, as in the reference encoders. */
 export const JPEG_FULL_CHROMA_QUALITY = 90;
 /** AVIF at or above this quality keeps full-resolution chroma. */
 export const AVIF_FULL_CHROMA_QUALITY = 80;
@@ -136,9 +136,8 @@ export function clampQuality(quality: number | undefined, fallback: number): num
   return Math.max(QUALITY_MIN, Math.min(QUALITY_MAX, quality));
 }
 
-export function jpegChromaFor(quality: number, content: ContentClass): ChromaSubsampling {
-  if (quality >= JPEG_FULL_CHROMA_QUALITY) return '4:4:4';
-  return content === 'graphic' ? '4:4:4' : '4:2:0';
+export function jpegChromaFor(quality: number): ChromaSubsampling {
+  return quality >= JPEG_FULL_CHROMA_QUALITY ? '4:4:4' : '4:2:0';
 }
 
 export function avifChromaFor(quality: number, content: ContentClass): ChromaSubsampling {
@@ -175,7 +174,7 @@ export const GRAPHIC_JPEG_QUANTISATION_TABLE = 2;
 export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
 
 /**
- * What the JPEG encoder is asked for, by the picture's content. All three keep the encoder's optimal Huffman tables and
+ * What the JPEG encoder is asked for, by the picture's content. All of them keep the encoder's optimal Huffman tables and
  * its overshoot deringing; they differ in the searches that cost the most time (benchmark corpus, 4 quality points,
  * BD-rate against ImageMagick's encoder; encode times are those of the 768 x 512 photograph, the 640 x 640 line art and
  * the 1024 x 640 interface, measured on Linux with the prebuilt image library):
@@ -186,20 +185,24 @@ export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
  * - Grey graphics (one component): baseline scan, table 2, no trellis. The scan search costs 7 ms of 11 on a picture that
  *   has a single plane and still saves under 5% of the bytes (BD-rate -18.8% PSNR / -45.3% SSIM with the search; the
  *   difference stays far below the reference).
- * - Colour graphics (three planes at full resolution): progressive with the scan search, table 2, no trellis. The search
- *   is worth 12% of the bytes on an interface (29.9 kB against 33.9 kB); without it the BD-rate in PSNR is 4.9% behind the
- *   reference encoder's, so it stays.
+ * - Colour graphics below the full-chroma quality: baseline scan, 4:2:0 like the reference encoder, table 2, no trellis. The
+ *   scan search with 4:4:4 that kept the row ahead of the reference took 21 ms of a 28 ms conversion the reference does in
+ *   11; 4:2:0 in a baseline scan encodes in 2.9 ms and is ahead by -5.7% PSNR and -9.2% SSIM BD-rate (4:4:4 in a baseline
+ *   scan is 16.5% behind in PSNR).
+ * - Colour graphics at the full-chroma quality (90 and above): 4:4:4, progressive with the scan search, table 2, no trellis.
+ *   A request for that quality asks for full chroma and the smallest file for it; the search is worth 12% of the bytes on an
+ *   interface (29.9 kB against 33.9 kB).
  */
 export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass, grey: boolean = false): JpegOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
-  const chromaSubsampling = jpegChromaFor(quality, content);
+  const chromaSubsampling = jpegChromaFor(quality);
   const common = { quality, chromaSubsampling, optimiseCoding: true, overshootDeringing: true } satisfies JpegOptions;
   if (content === 'photo') return { ...common, progressive: false, trellisQuantisation: false, quantisationTable: PHOTO_JPEG_QUANTISATION_TABLE };
   // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,
   // with table 2, the file is 10% smaller than the reference encoder's at equal PSNR, where it was 9% larger.
   // Overshoot deringing stays on: switching it off costs 1.5 dB on text and rules.
   const graphic = { ...common, trellisQuantisation: false, quantisationTable: GRAPHIC_JPEG_QUANTISATION_TABLE } satisfies JpegOptions;
-  if (grey) return { ...graphic, progressive: false };
+  if (grey || chromaSubsampling === '4:2:0') return { ...graphic, progressive: false };
   return { ...graphic, progressive: true, optimiseScans: true };
 }
 

@@ -72,7 +72,7 @@ import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { decodePlainPngOnce } from './image-decoded-source';
-import { withImageThreads } from './image-threads';
+import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
@@ -103,6 +103,8 @@ import {
   float32ToFloat16,
   float16ToFloat32,
 } from './raw-hdr';
+
+pinBaseImageThreads();
 
 export {
   decodeBmp,
