@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -1795,7 +1796,7 @@ async function reencodeRenderedPages(
     const renderedSuffix = `.${renderedExtension}`;
     for (const entryName of entryNames) {
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
-      const page = await pages.files[entryName].async('nodebuffer');
+      const page = await readZipEntryBytes(pages.files[entryName]);
       encoded.file(`${stem}.${targetExtension}`, await encode(page, entryName));
     }
     const zipBuffer = await encoded.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
