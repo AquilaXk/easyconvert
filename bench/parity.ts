@@ -178,6 +178,23 @@ function judgeAbsolute(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
   return { outcome: 'fail', basis: 'speed-below-reference', detail: `${interval}; the upper bound is below ${show(line)}, so ours is slower than the reference`, ...none };
 }
 
+/**
+ * The history rule of a tracked gap in a run that measures the head and the base in processes of their own. The history
+ * holds ratios measured with ours in the benchmark's own process; here the benchmark is a light coordinator, so the
+ * reference (a spawned tool) is timed from a smaller process and its ratio is not the same number, for the rows whose
+ * time is mostly the spawn. The comparison with the history is therefore made on what this change did to the row: the
+ * level of the history (its median, or the recorded ratio) times the median head-to-base ratio is the ratio the history
+ * would have measured, and the history's floor and prediction bound apply to that.
+ */
+function judgeTrackedAgainstBase(row: BenchRow, gap: GapEntry, headVsBaseMedian: number): SpeedJudgement {
+  const recorded = gap.ratio ?? 1;
+  const history = (gap.history ?? []).map((point) => point.ratio);
+  const level = speedGapThreshold(history, recorded).level;
+  const adjusted = level * headVsBaseMedian;
+  const judged = judgeAbsolute({ ...row, ratio: adjusted, ratioMedian: adjusted, ratioLow: undefined, ratioHigh: undefined, speedVerdict: adjusted >= 1 - SPEED_PARITY_TOLERANCE ? 'pass' : 'fail', unstableAtCap: false }, gap);
+  return { ...judged, detail: `its history level ${show(level)} times the head-to-base ratio ${show(headVsBaseMedian)}: ${judged.detail}` };
+}
+
 export interface ParityOptions {
   /** Regression thresholds of rows other than bench/ab-config.ts names; for tests of the verdict. */
   regression?: Readonly<Record<string, { delta: number }>>;
@@ -195,9 +212,11 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
   if (row === undefined || row.status !== 'measured' || row.kind !== 'throughput') return `the entry is new or changed, but this run did not measure ${gap.id}`;
   const centre = row.ratioMedian ?? row.ratio;
   if (centre === null || centre === undefined) return 'the entry is new or changed, but the measured row has no speed ratio';
+  // A row measured against the base was timed from another process than the history, so its ratio is not the one the entry records; only the form of the entry can be checked then.
+  const comparable = row.abPairs === undefined;
   const margin = Math.exp(GAP_BACKING_LOG_MARGIN);
-  const low = (row.ratioLow ?? centre) / margin;
-  const high = (row.ratioHigh ?? centre) * margin;
+  const low = comparable ? (row.ratioLow ?? centre) / margin : 0;
+  const high = comparable ? (row.ratioHigh ?? centre) * margin : Number.POSITIVE_INFINITY;
   const range = `[${show(low)}, ${show(high)}]`;
   if (gap.ratio === null || gap.ratio < low || gap.ratio > high) return `the recorded ratio ${gap.ratio === null ? 'none' : show(gap.ratio)} is outside ${range}, the speed ratio interval this run measured for the row`;
   const known = new Set((base?.history ?? []).map((point) => JSON.stringify(point)));
@@ -221,8 +240,7 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
  * below is the standing gap the nightly run reports (the absolute rule), not a failure of this change.
  */
 function judgeSpeed(row: BenchRow, gap: GapEntry | null, regression?: ParityOptions['regression']): SpeedJudgement {
-  const absolute = judgeAbsolute(row, gap);
-  if (row.abPairs === undefined) return absolute;
+  if (row.abPairs === undefined) return judgeAbsolute(row, gap);
   const line = 1 - SPEED_PARITY_TOLERANCE;
   const slowerLine = slowdownLine(row.id, regression);
   const none = { worsening: null, allowance: null };
@@ -240,7 +258,7 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null, regression?: ParityOpti
       ...none,
     };
   }
-  if (gap !== null) return absolute;
+  if (gap !== null) return judgeTrackedAgainstBase(row, gap, median);
   const bound = row.abUpper === undefined ? 'too few pairs for a bound' : `upper bound ${show(row.abUpper)}`;
   if (row.speedVerdict === 'pass') return { outcome: 'pass', basis: 'speed-pass', detail: `${against} (${bound}); at the reference`, ...none };
   if (baseVersusReference >= line) return { outcome: 'pass', basis: 'speed-not-slower-than-base', detail: `${against} (${bound}); not credibly below the reference`, ...none };

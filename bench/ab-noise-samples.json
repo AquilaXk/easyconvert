@@ -1,0 +1,257 @@
+{
+  "reports": 2,
+  "rows": [
+    {
+      "id": "image/photo-a.jpg->webp/throughput",
+      "weight": "light",
+      "noise": 0.0438,
+      "bias": -0.0047,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-a.jpg->avif/throughput",
+      "weight": "light",
+      "noise": 0.0389,
+      "bias": 0.0059,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-a.jpg->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0303,
+      "bias": -0.0032,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0365,
+      "bias": 0.0009,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0371,
+      "bias": 0.0055,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0368,
+      "bias": 0.004,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0305,
+      "bias": 0,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0312,
+      "bias": 0.0005,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0441,
+      "bias": 0.0027,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0446,
+      "bias": 0.0011,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0505,
+      "bias": 0.0057,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0427,
+      "bias": 0.0008,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->h264/throughput",
+      "weight": "heavy",
+      "noise": 0.0364,
+      "bias": 0.0079,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->hevc/throughput",
+      "weight": "heavy",
+      "noise": 0.0703,
+      "bias": 0.0052,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->vp9/throughput",
+      "weight": "heavy",
+      "noise": 0.0273,
+      "bias": -0.0024,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->opus/throughput",
+      "weight": "light",
+      "noise": 0.0377,
+      "bias": -0.0005,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->aac/throughput",
+      "weight": "light",
+      "noise": 0.028,
+      "bias": -0.0011,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->flac/throughput",
+      "weight": "light",
+      "noise": 0.0467,
+      "bias": -0.0056,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->opus/throughput",
+      "weight": "light",
+      "noise": 0.0237,
+      "bias": 0.004,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->aac/throughput",
+      "weight": "light",
+      "noise": 0.0387,
+      "bias": -0.0065,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->flac/throughput",
+      "weight": "light",
+      "noise": 0.0499,
+      "bias": 0.0014,
+      "reports": 2
+    },
+    {
+      "id": "ocr/scan.png->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0377,
+      "bias": 0.0042,
+      "reports": 2
+    },
+    {
+      "id": "document/report.docx->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0882,
+      "bias": 0.0102,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->html/throughput",
+      "weight": "heavy",
+      "noise": 0.1364,
+      "bias": -0.0014,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->odt/throughput",
+      "weight": "heavy",
+      "noise": 0.2144,
+      "bias": -0.0223,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->epub/throughput",
+      "weight": "heavy",
+      "noise": 0.2381,
+      "bias": -0.2146,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0699,
+      "bias": -0.0002,
+      "reports": 2
+    },
+    {
+      "id": "document/noori.hwp->txt/throughput",
+      "weight": "heavy",
+      "noise": 0.3142,
+      "bias": 0.0123,
+      "reports": 2
+    },
+    {
+      "id": "document/pdf-text->txt/throughput",
+      "weight": "heavy",
+      "noise": 0.0318,
+      "bias": 0.0001,
+      "reports": 2
+    },
+    {
+      "id": "document/pdf-structure->docx/throughput",
+      "weight": "heavy",
+      "noise": 0.2401,
+      "bias": -0.0203,
+      "reports": 2
+    },
+    {
+      "id": "document/complex-script txt->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.1087,
+      "bias": 0.0155,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.tar->zst/throughput",
+      "weight": "light",
+      "noise": 0.1202,
+      "bias": 0.0015,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.tar->7z/throughput",
+      "weight": "light",
+      "noise": 0.0608,
+      "bias": 0.003,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.zst->tar/throughput",
+      "weight": "light",
+      "noise": 0.153,
+      "bias": -0.0536,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.xz->tar/throughput",
+      "weight": "light",
+      "noise": 0.1234,
+      "bias": 0.0317,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.7z->tar/throughput",
+      "weight": "light",
+      "noise": 0.1126,
+      "bias": 0.0008,
+      "reports": 2
+    }
+  ]
+}

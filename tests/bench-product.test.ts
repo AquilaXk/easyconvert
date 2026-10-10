@@ -6,7 +6,7 @@ import { SCHEMA_VERSION } from '../bench/config';
 import { BenchArgumentError } from '../bench/errors';
 import { REPO_ROOT } from '../bench/config';
 import { importProduct, productRoot } from '../bench/product';
-import { replay } from '../bench/replay-speed-reports';
+import { noiseSamples, replay } from '../bench/replay-speed-reports';
 import type { BenchReport } from '../bench/report';
 import { throughputRow } from '../bench/rows';
 import { parseArgs } from '../bench/run';
@@ -99,5 +99,45 @@ describe('the replay of a recorded report', () => {
     const summary = replay(slower, gaps);
     expect(summary.failures).toHaveLength(1);
     expect(summary.failures[0]).toContain('speed-slower-than-base');
+  });
+});
+
+describe('the noise summary of reports of a commit compared with itself', () => {
+  const rowFor = (id: string, noise: number, median: number) => {
+    const [family, caseName] = id.split('/');
+    const base = throughputRow(family as 'compression', caseName, 1e6, { ...timing(false) }, 'tool');
+    return { ...base, id: `${family}/${caseName}/throughput`, abNoise: noise, abMedian: median };
+  };
+  const timing = (headSlower: boolean) => ({
+    runs: 1,
+    repeats: { ours: 1, reference: 1 },
+    oursMs: [100],
+    referenceMs: [100],
+    baseMs: [headSlower ? 80 : 100],
+    oursMedianMs: 100,
+    referenceMedianMs: 100,
+    oursCv: 0,
+    referenceCv: 0,
+    decision: { verdict: 'pass' as const, pairs: 1, median: 1, lower: null, upper: null, confidence: null, passLine: 0.97 },
+    unstableAtCap: false,
+    ab: { pairs: 24, headVsBaseMedian: 1, headVsBaseUpper: 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: 1, extraPairs: 0, confirmed: {} },
+  });
+
+  it('takes the median noise and the mean log bias of each row, and marks the rows of the slow families heavy', () => {
+    const report = (noise: number, median: number): BenchReport => ({
+      schemaVersion: SCHEMA_VERSION,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      strictMode: true,
+      families: ['compression'],
+      host: { platform: 'linux', arch: 'x64', node: 'v20.0.0', cpus: 4 },
+      tools: {},
+      settings: { runs: 1, injectedRegression: null },
+      rows: [rowFor('compression/a', noise, median), rowFor('video/b', noise * 2, median)],
+    });
+    const rows = noiseSamples([report(0.02, 0.98), report(0.04, 0.98), report(0.03, 0.98)]);
+    expect(rows).toEqual([
+      { id: 'compression/a/throughput', weight: 'light', noise: 0.03, bias: Number(Math.log(0.98).toFixed(4)), reports: 3 },
+      { id: 'video/b/throughput', weight: 'heavy', noise: 0.06, bias: Number(Math.log(0.98).toFixed(4)), reports: 3 },
+    ]);
   });
 });

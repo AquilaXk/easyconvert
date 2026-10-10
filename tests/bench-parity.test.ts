@@ -218,20 +218,32 @@ describe('speed rows', () => {
       expect(verdictOf(measured({ abBaseVsReferenceMedian: 0.9, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'pass', basis: 'speed-unchanged-below-reference' });
     });
 
-    it('passes a row at the reference, and names a tracked entry that now has no reason to be there', () => {
+    it('passes a row at the reference', () => {
       const atReference = measured({ abBaseVsReferenceMedian: 1.1, abHeadVsReferenceUpper: 1.2, ratioLow: 1.05, ratioHigh: 1.2, ratioMedian: 1.1 }, 'pass');
       expect(verdictOf(atReference)).toMatchObject({ outcome: 'pass', basis: 'speed-pass' });
-      const tracked: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: ID, issue: 695, ratio: 0.8, note: 'n', history: flat(0.8) }] };
-      expect(verdictOf(atReference, tracked)).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
-      expect(verdictOf(measured({ ratioMedian: 0.8 }), tracked)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
     });
 
-    it('keeps the history floor of a tracked gap next to the comparison: a row that is not slower than its base still may not fall under its history', () => {
-      const tracked: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: ID, issue: 695, ratio: 0.9, note: 'n', history: flat(0.9) }] };
-      // Not slower than the base (upper bound 1.05), yet its median fell to 0.4 against a history of 0.9: the floor fails it.
-      const walked = verdictOf(measured({ ratioMedian: 0.4, ratioLow: 0.3, ratioHigh: 0.5 }), tracked);
-      expect(walked).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-      expect(verdictOf(measured({ ratioMedian: 0.91, ratioLow: 0.85, ratioHigh: 0.95 }), tracked).outcome).toBe('pass');
+    describe('a tracked gap: its history applies to what the change did to the row', () => {
+      const tracked = (level: number): GapFile => ({ schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: ID, issue: 695, ratio: level, note: 'n', history: flat(level) }] });
+
+      it('names the entry that has no reason to be there once its history level times the head-to-base ratio is at the reference', () => {
+        const found = verdictOf(measured({ abMedian: 1.02 }), tracked(1.1));
+        expect(found).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+        expect(found.detail).toContain('history level 1.1 times the head-to-base ratio 1.02');
+      });
+
+      it('passes a row below the reference that the change left as it was, tracked', () => {
+        expect(verdictOf(measured({ abMedian: 1 }), tracked(0.9))).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+        // The ratio the child measured against the reference does not enter: only the head-to-base ratio does.
+        expect(verdictOf(measured({ abMedian: 1, ratioMedian: 0.3, ratioLow: 0.2, ratioHigh: 0.4 }), tracked(0.9)).outcome).toBe('pass');
+      });
+
+      it('fails a change that walks a tracked gap under its history, though it is not credibly slower than the base', () => {
+        // A noisy row: its median fell to 0.6 of the base, yet its upper bound (1.05) does not show a slowdown beyond 10 percent.
+        const walked = verdictOf(measured({ abMedian: 0.6, abUpper: 1.05 }), tracked(0.9));
+        expect(walked).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+        expect(verdictOf(measured({ abMedian: 0.95, abUpper: 1.05 }), tracked(0.9)).outcome).toBe('fail');
+      });
     });
 
     it('reports the rows that fell back to the reference alone, with the reason', () => {
