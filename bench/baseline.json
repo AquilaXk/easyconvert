@@ -1839,7 +1839,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8959095565575452
+      "ratio": 0.8723269209756412
     },
     "pdf-ops/decrypt.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -1850,6 +1850,26 @@
       "ours": 1,
       "delta": 0,
       "ratio": null
+    },
+    "pdf-ops/delete.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8096034972870454
+    },
+    "pdf-ops/extract.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8012938126681298
     },
     "pdf-ops/merge.pdf->pdf/bytes": {
       "direction": "lower",
@@ -1899,7 +1919,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 3.5233350730081896
+      "ratio": 3.2260059619798507
     },
     "pdf-ops/merge.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -1959,7 +1979,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9232641153634213
+      "ratio": 0.8327065395200318
     },
     "pdf-ops/protect.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -1970,6 +1990,36 @@
       "ours": 1,
       "delta": 0,
       "ratio": null
+    },
+    "pdf-ops/reorder.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8389626421676013
+    },
+    "pdf-ops/rotate.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.824232201077638
+    },
+    "pdf-ops/split.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8362389271049451
     },
     "pdf-ops/unlock.pdf->pdf/bytes": {
       "direction": "lower",
@@ -2019,7 +2069,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9033080497228588
+      "ratio": 0.8537909812110582
     },
     "pdf-ops/unlock.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -2109,7 +2159,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.782323909675114
+      "ratio": 2.5389886509090975
     },
     "pdf-ops/watermark.pdf->pdf/word_f1": {
       "direction": "higher",
