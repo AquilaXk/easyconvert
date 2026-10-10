@@ -77,6 +77,10 @@
       "match": "^src/lib/queue/graph/node-executor\\.ts$"
     },
     {
+      "families": ["pdf-ops", "image"],
+      "match": "^src/lib/conversions/optimizers\\.ts$"
+    },
+    {
       "families": ["pdf-ops"],
       "match": "^src/lib/jobs/artifact-helpers\\.ts$"
     },

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
+import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,
@@ -646,8 +647,37 @@ export function validateJobGraph(
         inferredFormats[nodeId] = target ?? UNKNOWN_FORMAT;
         break;
       }
+      case 'optimize': {
+        const inputId = getTaskDependencies(node)[0];
+        const srcFmt = firstInputFormat(node);
+        if (srcFmt === UNKNOWN_FORMAT) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
+            code: 'SOURCE_FORMAT_UNKNOWN',
+          });
+        } else if (srcFmt === DYNAMIC_FORMAT) {
+          // With no optimiser at all, a source known only at run time is certain to fail there, after the
+          // job was queued, charged for and its upstream nodes ran.
+          if (OPTIMIZABLE_FORMATS.length === 0) {
+            errors.push({
+              path: `nodes.${nodeId}`,
+              message: optimizeUnavailableMessage('a source whose format is only known at run time'),
+              code: 'UNSUPPORTED_TARGET_FORMAT',
+            });
+          }
+        } else if (!hasOptimizer(srcFmt)) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: optimizeUnavailableMessage(srcFmt),
+            code: 'UNSUPPORTED_TARGET_FORMAT',
+          });
+        }
+        inferredFormats[nodeId] = srcFmt;
+        break;
+      }
       default: {
-        // Pass-through operations (optimize, watermark, protect, export) keep their input format.
+        // Pass-through operations (watermark, protect, export) keep their input format.
         inferredFormats[nodeId] = firstInputFormat(node);
         break;
       }

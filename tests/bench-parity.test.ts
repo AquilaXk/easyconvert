@@ -167,6 +167,7 @@ describe('speed rows', () => {
     const unstable = evaluateParity(report([speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: 0.9, ratioHigh: 1.1, ratioMedian: 1 })]), NO_GAPS).rows[0];
     expect(unstable).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
     expect(unstable.detail).toContain('cap');
+    expect(unstable.speed).toEqual({ median: 1, low: 0.9, high: 1.1, pairs: 9 });
   });
 
   it('refuses a throughput row that carries no speed decision', () => {
@@ -328,7 +329,7 @@ describe('the known gaps', () => {
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     expect(issuesOf('image/', false)).toEqual([]);
     expect(issuesOf('image/', true)).toEqual([641]);
-    expect(issuesOf('audio/', true)).toEqual([]);
+    expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
     expect(issuesOf('document/', true)).toEqual([672]);
