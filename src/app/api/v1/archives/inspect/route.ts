@@ -11,6 +11,7 @@ import {
   ArchiveEncryptedHeaderError,
   MissingVolumeError,
   ConversionFailedError,
+  PayloadLimitError,
 } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -152,6 +153,11 @@ export async function POST(req: NextRequest) {
         'Missing Archive Volume',
         'https://api.easyconvert.io/problems/missing-archive-volume'
       );
+    }
+
+    if (err instanceof PayloadLimitError) {
+      // A stream decodes past a size or ratio limit: 413, ahead of the 422 every other ConversionFailedError gets.
+      return createProblemDetailsResponse(err.status, err.message, instanceUri);
     }
 
     if (err instanceof ConversionFailedError) {
