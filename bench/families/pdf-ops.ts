@@ -1,15 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { convertWithProject } from '../convert';
 import { importProduct } from '../product';
 import { REPO_ROOT } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError, ToolRunError } from '../errors';
 import { measureSsimPsnr } from '../measure';
 import { type GrayRaster, lineAngleDifference, measureInk, type InkMeasure, parsePgm } from '../pdf-ink';
+import { buildPhotoPdf } from '../pdf-photo';
 import { buildStampPdf } from '../pdf-stamp';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow, speedRowId } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 
@@ -24,7 +24,14 @@ import { runTool } from '../tools';
  *    request confirming the right to edit, against `qpdf --decrypt`. The input is checked with `qpdf --show-encryption`
  *    to carry the restrictions under both passwords, and the copy unlocked with the owner password, with no
  *    confirmation, must report as the reference's does.
- * The product has no split, rotate or compress operation, so those cases are listed as unsupported rather than measured.
+ *  - split (the pdf.split-pages node): one file per page as a ZIP, against `qpdf --split-pages=1`;
+ *  - extract, delete and reorder pages (the pdf.extract-pages, pdf.delete-pages and pdf.reorder-pages nodes), against
+ *    `qpdf --pages`;
+ *  - rotate (the pdf.rotate-pages node): pages 2 and 3 turned 90 degrees, against `qpdf --rotate`; the rotation of every
+ *    page is read back with `pdfinfo`;
+ *  - compress (the optimize node on a PDF, profile `web`): a PDF with a photograph on every page, against Ghostscript's
+ *    pdfwrite `/ebook` preset. The result must be no larger than the reference's, render as close to the source, and keep
+ *    the text of every page.
  *
  * Per output: `qpdf --check` passes, the page count equals the expected one, the text of every page read by `pdftotext`
  * matches the text of the same page of the source (word F1, so a wrong page order or a lost page scores low), and the
@@ -36,6 +43,24 @@ import { runTool } from '../tools';
  * repository, as the document family uses them).
  */
 
+/**
+ * A module of the product, resolved on the first call and reused after it: the timed calls measure the operation, not the
+ * resolution of its module. A version of the product without the module fails the closure that calls it (the row is then
+ * measured against the reference alone), not the whole runner.
+ */
+function lazyModule<T>(relative: string): () => Promise<T> {
+  let loaded: Promise<T> | undefined;
+  return () => (loaded ??= importProduct<T>(relative));
+}
+
+const artifactHelpers = lazyModule<typeof import('../../src/lib/jobs/artifact-helpers')>('lib/jobs/artifact-helpers');
+const watermarkModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/watermark')>('lib/conversions/pdf-postprocess/watermark');
+const protectModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/protect')>('lib/conversions/pdf-postprocess/protect');
+const decryptModule = lazyModule<typeof import('../../src/worker/pdf-decrypt')>('worker/pdf-decrypt');
+const unlockModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/unlock')>('lib/conversions/pdf-postprocess/unlock');
+const pageOpsModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/page-ops')>('lib/conversions/pdf-postprocess/page-ops');
+const compressModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/compress')>('lib/conversions/pdf-postprocess/compress');
+
 const FIXTURE_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'pdf-text');
 const MERGE_SOURCES = ['latin', 'multipage', 'two-column'] as const;
 const SINGLE_SOURCE = 'multipage';
@@ -45,12 +70,14 @@ const WATERMARK_CASE = 'watermark.pdf->pdf';
 const PROTECT_CASE = 'protect.pdf->pdf';
 const DECRYPT_CASE = 'decrypt.pdf->pdf';
 const UNLOCK_CASE = 'unlock.pdf->pdf';
-const UNSUPPORTED_CASES = [
-  { name: 'split.pdf->pdf', reason: 'the product has no PDF split operation: a page range selects pages of a conversion to text or images, and a PDF output keeps every page' },
-  { name: 'rotate.pdf->pdf', reason: 'the product has no PDF rotate operation: the orientation option sets the page shape of a PDF written from text, not the rotation of an existing page' },
-  { name: 'compress.pdf->pdf', reason: 'the product has no PDF compress operation: a PDF to PDF conversion returns the document unchanged' },
-] as const;
+const SPLIT_CASE = 'split.pdf->pdf';
+const EXTRACT_CASE = 'extract.pdf->pdf';
+const DELETE_CASE = 'delete.pdf->pdf';
+const REORDER_CASE = 'reorder.pdf->pdf';
+const ROTATE_CASE = 'rotate.pdf->pdf';
+const COMPRESS_CASE = 'compress.pdf->pdf';
 const REFERENCE_TOOL = 'qpdf';
+const GHOSTSCRIPT_TOOL = 'ghostscript';
 
 const MERGE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
 const WATERMARK_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.stampInkMatchesReference, SPEC.stampGeometryMatchesSpec, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
@@ -209,13 +236,13 @@ function scoreOutput(tools: PdfTools, file: string, truth: string[], password?: 
   };
 }
 
-function qualityRows(caseName: string, ours: OutputScore, reference: OutputScore, extra: BenchRow[]): BenchRow[] {
+function qualityRows(caseName: string, ours: OutputScore, reference: OutputScore, extra: BenchRow[], referenceTool = REFERENCE_TOOL): BenchRow[] {
   return [
-    measuredRow(FAMILY, caseName, SPEC.pdfCheckFailures, ours.checkFailures, reference.checkFailures, REFERENCE_TOOL),
-    measuredRow(FAMILY, caseName, SPEC.pageCountError, ours.pageCountError, reference.pageCountError, REFERENCE_TOOL),
-    measuredRow(FAMILY, caseName, SPEC.wordF1, ours.textF1, reference.textF1, REFERENCE_TOOL),
+    measuredRow(FAMILY, caseName, SPEC.pdfCheckFailures, ours.checkFailures, reference.checkFailures, referenceTool),
+    measuredRow(FAMILY, caseName, SPEC.pageCountError, ours.pageCountError, reference.pageCountError, referenceTool),
+    measuredRow(FAMILY, caseName, SPEC.wordF1, ours.textF1, reference.textF1, referenceTool),
     ...extra,
-    measuredRow(FAMILY, caseName, SPEC.bytes, ours.bytes, reference.bytes, REFERENCE_TOOL),
+    measuredRow(FAMILY, caseName, SPEC.bytes, ours.bytes, reference.bytes, referenceTool),
   ];
 }
 
@@ -280,7 +307,7 @@ async function runMerge(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
 
   // Resolved at every call: the product is the one of the checkout this process measures (bench/product.ts).
   const mergeOurs = async (): Promise<Buffer> => {
-    const { mergePdfBuffers } = await importProduct<typeof import('../../src/lib/jobs/artifact-helpers')>('lib/jobs/artifact-helpers');
+    const { mergePdfBuffers } = await artifactHelpers();
     return mergePdfBuffers(inputs.map((input) => input.bytes));
   };
   const oursFile = ctx.scratch('merge-ours.pdf');
@@ -316,8 +343,14 @@ async function runWatermark(ctx: FamilyContext, tools: PdfTools): Promise<BenchR
   const untouched = sourcePages.map((_, index) => index).filter((index) => !WATERMARK_PAGE_NUMBERS.has(index + 1));
   if (untouched.length === 0) throw new OutputIntegrityError('the watermark case needs a page the watermark leaves alone');
 
-  const oursOptions = { watermark: { text: WATERMARK_TEXT, fontSize: WATERMARK_FONT_SIZE, rotation: WATERMARK_ROTATION, opacity: WATERMARK_OPACITY, position: 'center' as const, pages: WATERMARK_PAGES } };
-  const watermarkOurs = async (): Promise<Buffer> => (await convertWithProject(input.bytes, 'pdf', 'pdf', oursOptions, `${SINGLE_SOURCE}.pdf`)).buffer;
+  // The operation of the pdf.watermark node, as the protect and unlock rows time the code of their nodes. (A PDF to PDF
+  // conversion with the watermark option first reads the document's text to decide whether it needs OCR, which is not
+  // part of watermarking.)
+  const oursOptions = { text: WATERMARK_TEXT, fontSize: WATERMARK_FONT_SIZE, rotation: WATERMARK_ROTATION, opacity: WATERMARK_OPACITY, position: 'center' as const, pages: WATERMARK_PAGES };
+  const watermarkOurs = async (): Promise<Buffer> => {
+    const { applyPdfWatermark } = await watermarkModule();
+    return applyPdfWatermark(input.bytes, oursOptions);
+  };
   const oursFile = ctx.scratch('watermark-ours.pdf');
   fs.writeFileSync(oursFile, await watermarkOurs());
 
@@ -379,7 +412,7 @@ async function runProtect(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
   const input = source(SINGLE_SOURCE);
   const truth = pageTexts(tools, input.file, pageCount(tools, input.file));
   const protectOurs = async (): Promise<Buffer> => {
-    const { protectPdf } = await importProduct<typeof import('../../src/lib/conversions/pdf-postprocess/protect')>('lib/conversions/pdf-postprocess/protect');
+    const { protectPdf } = await protectModule();
     return protectPdf(input.bytes, { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: AES_256_KEY_BITS });
   };
   const oursFile = ctx.scratch('protect-ours.pdf');
@@ -415,7 +448,7 @@ async function runDecrypt(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
   const tempDir = ctx.scratch('decrypt-temp');
   fs.mkdirSync(tempDir);
   const decryptOurs = async (): Promise<Buffer> => {
-    const { withDecryptedPdf } = await importProduct<typeof import('../../src/worker/pdf-decrypt')>('worker/pdf-decrypt');
+    const { withDecryptedPdf } = await decryptModule();
     return withDecryptedPdf({ inputPath: encryptedFile, tempDir, password: USER_PASSWORD, timeoutMs: 60_000 }, (readable) => Promise.resolve(fs.readFileSync(readable)));
   };
   const oursFile = ctx.scratch('decrypt-ours.pdf');
@@ -449,7 +482,7 @@ async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
   encryptWithReference(tools, plain.file, encryptedFile);
   const encrypted = fs.readFileSync(encryptedFile);
 
-  const { unlockPdf } = await importProduct<typeof import('../../src/lib/conversions/pdf-postprocess/unlock')>('lib/conversions/pdf-postprocess/unlock');
+  const { unlockPdf } = await unlockModule();
   const unlockOurs = (): Promise<Buffer> => unlockPdf(encrypted, { password: USER_PASSWORD, confirmEditRights: true });
   const oursFile = ctx.scratch('unlock-ours.pdf');
   fs.writeFileSync(oursFile, await unlockOurs());
@@ -480,31 +513,258 @@ async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
   return rows;
 }
 
+type PageOps = typeof import('../../src/lib/conversions/pdf-postprocess/page-ops');
+
+const PAGE_OP_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
+const ROTATE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.rotationErrors, SPEC.renderMatchesReference, SPEC.bytes];
+const SPLIT_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
+const COMPRESS_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
+
+/** Pages of the source (1-based) the page operations keep, in the order they must come out. */
+const EXTRACT_PAGES = '3,1';
+const EXTRACT_EXPECTED = [3, 1] as const;
+const DELETE_PAGES = '2';
+const DELETE_EXPECTED = [1, 3] as const;
+const REORDER_ORDER = '3,1,2';
+const REORDER_EXPECTED = [3, 1, 2] as const;
+const ROTATE_PAGES = '2-3';
+const ROTATE_DEGREES = 90;
+const ROTATED_PAGE_NUMBERS: ReadonlySet<number> = new Set([2, 3]);
+/** SSIM of a rendered page of ours against the same page of the reference at or above which the two render alike. */
+const ROTATE_MATCH_FLOOR = 0.999;
+
+const GHOSTSCRIPT_REFERENCE_ARGS = ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/ebook'] as const;
+const PHOTO_PAGE_COUNT = 3;
+const PHOTO_PAGE_WIDTH = 612;
+const PHOTO_PAGE_HEIGHT = 792;
+/** Widths of the photograph on its pages in points; at 768 pixels each is above 250 dpi, so the 150 dpi preset downsamples. */
+const PHOTO_WIDTHS_POINTS = [180, 200, 220] as const;
+
+interface SourceFacts {
+  file: string;
+  bytes: Buffer;
+  texts: string[];
+  /** The source pages rendered at 72 dpi. */
+  pages: string[];
+}
+
+function sourceFacts(ctx: FamilyContext, tools: PdfTools, label: string): SourceFacts {
+  const input = source(SINGLE_SOURCE);
+  return {
+    file: input.file,
+    bytes: input.bytes,
+    texts: pageTexts(tools, input.file, pageCount(tools, input.file)),
+    pages: renderPages(tools, input.file, ctx.scratch(`${label}-source`)),
+  };
+}
+
+/** Mean SSIM of the pages of `file` against the source pages that should have come out in their place. */
+function orderedSsim(ctx: FamilyContext, tools: PdfTools, file: string, label: string, sourcePages: string[], expected: readonly number[]): number {
+  const rendered = renderPages(tools, file, ctx.scratch(label));
+  return mean(pageSsims(tools, rendered, expected.map((page) => sourcePages[page - 1])));
+}
+
+/** Extract, delete and reorder: pages of the source in a new selection or order, against `qpdf --pages`. */
+async function runPageSelection(
+  ctx: FamilyContext,
+  tools: PdfTools,
+  caseName: string,
+  expected: readonly number[],
+  oursOf: (ops: PageOps, bytes: Buffer) => Promise<Buffer>,
+  selection: string
+): Promise<BenchRow[]> {
+  const facts = sourceFacts(ctx, tools, caseName);
+  const truth = expected.map((page) => facts.texts[page - 1]);
+  const ours = async (): Promise<Buffer> => oursOf(await pageOpsModule(), facts.bytes);
+  const referenceFile = ctx.scratch(`${caseName}-reference.pdf`);
+  const reference = (): void => {
+    runTool(tools.qpdf, [...COMPACT_OUTPUT, facts.file, '--pages', '.', selection, '--', referenceFile]);
+  };
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const oursFile = ctx.scratch(`${caseName}-ours.pdf`);
+    fs.writeFileSync(oursFile, await ours());
+    reference();
+    rows.push(
+      ...qualityRows(caseName, scoreOutput(tools, oursFile, truth), scoreOutput(tools, referenceFile, truth), [
+        measuredRow(FAMILY, caseName, SPEC.ssim, orderedSsim(ctx, tools, oursFile, `${caseName}-ours-pages`, facts.pages, expected), orderedSsim(ctx, tools, referenceFile, `${caseName}-reference-pages`, facts.pages, expected), REFERENCE_TOOL),
+      ])
+    );
+  }
+  return rows;
+}
+
+const runExtract = (ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> =>
+  runPageSelection(ctx, tools, EXTRACT_CASE, EXTRACT_EXPECTED, (ops, bytes) => ops.extractPdfPages(bytes, EXTRACT_PAGES), EXTRACT_PAGES);
+
+/** qpdf spells "every page but 2" as the whole range minus it. */
+const runDelete = (ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> =>
+  runPageSelection(ctx, tools, DELETE_CASE, DELETE_EXPECTED, (ops, bytes) => ops.deletePdfPages(bytes, DELETE_PAGES), `1-z,x${DELETE_PAGES}`);
+
+const runReorder = (ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> =>
+  runPageSelection(ctx, tools, REORDER_CASE, REORDER_EXPECTED, (ops, bytes) => ops.reorderPdfPages(bytes, { order: REORDER_ORDER }), REORDER_ORDER);
+
+/** The rotation of each page of `file` as `pdfinfo` reports it. */
+function pageRotations(tools: PdfTools, file: string, count: number): number[] {
+  const out = attempt(() => runTool(tools.pdfinfo, ['-f', '1', '-l', String(count), file]).stdout);
+  if (out === null) return [];
+  return [...out.toString('utf8').matchAll(/Page\s+\d+ rot:\s+(\d+)/g)].map((match) => Number.parseInt(match[1], 10));
+}
+
+async function runRotate(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> {
+  const facts = sourceFacts(ctx, tools, ROTATE_CASE);
+  const ours = async (): Promise<Buffer> => (await pageOpsModule()).rotatePdfPages(facts.bytes, { rotation: ROTATE_DEGREES, pages: ROTATE_PAGES });
+  const referenceFile = ctx.scratch('rotate-reference.pdf');
+  const reference = (): void => {
+    runTool(tools.qpdf, [...COMPACT_OUTPUT, `--rotate=+${ROTATE_DEGREES}:${ROTATE_PAGES}`, facts.file, '--', referenceFile]);
+  };
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const oursFile = ctx.scratch('rotate-ours.pdf');
+    fs.writeFileSync(oursFile, await ours());
+    reference();
+    const count = facts.texts.length;
+    const expectedRotations = facts.texts.map((_, index) => (ROTATED_PAGE_NUMBERS.has(index + 1) ? ROTATE_DEGREES : 0));
+    const rotationErrors = (file: string): number => {
+      const actual = pageRotations(tools, file, count);
+      return actual.length !== count ? count : actual.filter((degrees, index) => degrees !== expectedRotations[index]).length;
+    };
+    const againstReference = pageSsims(tools, renderPages(tools, oursFile, ctx.scratch('rotate-ours-pages')), renderPages(tools, referenceFile, ctx.scratch('rotate-reference-pages')));
+    ctx.log(`rotate render SSIM against the reference, per page: ${againstReference.map((value) => value.toFixed(4)).join(', ')} (floor ${ROTATE_MATCH_FLOOR})`);
+    rows.push(
+      ...qualityRows(ROTATE_CASE, scoreOutput(tools, oursFile, facts.texts), scoreOutput(tools, referenceFile, facts.texts), [
+        measuredRow(FAMILY, ROTATE_CASE, SPEC.rotationErrors, rotationErrors(oursFile), rotationErrors(referenceFile), REFERENCE_TOOL),
+        measuredRow(FAMILY, ROTATE_CASE, SPEC.renderMatchesReference, againstReference.length === count && Math.min(...againstReference) >= ROTATE_MATCH_FLOOR ? 1 : 0, 1, REFERENCE_TOOL),
+      ])
+    );
+  }
+  return rows;
+}
+
+/** Aggregate of a set of output files (the parts of a split): failures and page-count errors add up, text is the mean, bytes add up. */
+function scoreParts(tools: PdfTools, files: string[], truth: string[][]): OutputScore {
+  const scores = truth.map((pages, index) => (files[index] === undefined ? null : scoreOutput(tools, files[index], pages)));
+  const present = scores.filter((score): score is OutputScore => score !== null);
+  const missing = truth.length - present.length;
+  return {
+    checkFailures: present.reduce((sum, score) => sum + score.checkFailures, 0) + missing + Math.max(0, files.length - truth.length),
+    pageCountError: present.reduce((sum, score) => sum + score.pageCountError, 0) + missing + Math.max(0, files.length - truth.length),
+    textF1: scores.reduce((sum, score) => sum + (score?.textF1 ?? 0), 0) / truth.length,
+    bytes: present.reduce((sum, score) => sum + score.bytes, 0),
+  };
+}
+
+async function runSplit(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> {
+  const facts = sourceFacts(ctx, tools, SPLIT_CASE);
+  const ours = async (): Promise<Buffer> => (await pageOpsModule()).splitPdfPages(facts.bytes, {}, {}, SINGLE_SOURCE);
+  const referenceDir = ctx.scratch('split-reference');
+  fs.mkdirSync(referenceDir);
+  const reference = (): void => {
+    runTool(tools.qpdf, [...COMPACT_OUTPUT, '--split-pages=1', facts.file, path.join(referenceDir, 'part-%d.pdf')]);
+  };
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const { default: JSZip } = await import('jszip');
+    const archive = await JSZip.loadAsync(await ours());
+    const oursDir = ctx.scratch('split-ours');
+    fs.mkdirSync(oursDir);
+    const oursFiles: string[] = [];
+    for (const name of Object.keys(archive.files).sort((a, b) => a.localeCompare(b))) {
+      const file = path.join(oursDir, name);
+      fs.writeFileSync(file, await archive.files[name].async('nodebuffer')); // NOSONAR S9382 sequential
+      oursFiles.push(file);
+    }
+    reference();
+    const referenceFiles = fs.readdirSync(referenceDir).sort((a, b) => a.localeCompare(b)).map((name) => path.join(referenceDir, name));
+    const truth = facts.texts.map((text) => [text]);
+    const partsSsim = (files: string[], label: string): number =>
+      mean(files.map((file, index) => (facts.pages[index] === undefined ? 0 : (pageSsims(tools, renderPages(tools, file, ctx.scratch(`${label}-${index}`)), [facts.pages[index]])[0] ?? 0))));
+    rows.push(
+      ...qualityRows(SPLIT_CASE, scoreParts(tools, oursFiles, truth), scoreParts(tools, referenceFiles, truth), [
+        measuredRow(FAMILY, SPLIT_CASE, SPEC.ssim, partsSsim(oursFiles, 'split-ours-pages'), partsSsim(referenceFiles, 'split-reference-pages'), REFERENCE_TOOL),
+      ])
+    );
+  }
+  return rows;
+}
+
+async function runCompress(ctx: FamilyContext, tools: PdfTools & { gs: string }): Promise<BenchRow[]> {
+  const photo = fs.readFileSync(path.join(REPO_ROOT, 'bench', 'corpus', 'photo-a.jpg'));
+  const input = buildPhotoPdf({
+    jpeg: photo,
+    pageWidth: PHOTO_PAGE_WIDTH,
+    pageHeight: PHOTO_PAGE_HEIGHT,
+    pages: PHOTO_WIDTHS_POINTS.slice(0, PHOTO_PAGE_COUNT).map((width, index) => ({ text: `Photograph page ${index + 1} of ${PHOTO_PAGE_COUNT}`, photoWidthPoints: width })),
+  });
+  const inputFile = ctx.scratch('compress-input.pdf');
+  fs.writeFileSync(inputFile, input);
+  const ours = async (): Promise<Buffer> => {
+    const { compressPdf } = await compressModule();
+    return (await compressPdf(input, { profile: 'web' })).buffer;
+  };
+  const referenceFile = ctx.scratch('compress-reference.pdf');
+  const reference = (): void => {
+    runTool(tools.gs, [...GHOSTSCRIPT_REFERENCE_ARGS, `-sOutputFile=${referenceFile}`, inputFile]);
+  };
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const count = pageCount(tools, inputFile);
+    const truth = pageTexts(tools, inputFile, count);
+    const sourcePages = renderPages(tools, inputFile, ctx.scratch('compress-source'));
+    const oursFile = ctx.scratch('compress-ours.pdf');
+    fs.writeFileSync(oursFile, await ours());
+    reference();
+    const ssim = (file: string, label: string): number => mean(pageSsims(tools, renderPages(tools, file, ctx.scratch(label)), sourcePages));
+    rows.push(
+      ...qualityRows(
+        COMPRESS_CASE,
+        scoreOutput(tools, oursFile, truth),
+        scoreOutput(tools, referenceFile, truth),
+        [measuredRow(FAMILY, COMPRESS_CASE, SPEC.ssim, ssim(oursFile, 'compress-ours-pages'), ssim(referenceFile, 'compress-reference-pages'), GHOSTSCRIPT_TOOL)],
+        GHOSTSCRIPT_TOOL
+      )
+    );
+  }
+  return rows;
+}
+
+interface PdfOpsCase {
+  name: string;
+  specs: readonly MetricSpec[];
+  /** Tools beyond those every case needs. */
+  extraTools?: readonly string[];
+  /** The case has quality rows only, so a speed-only run leaves it out. */
+  qualityOnly?: boolean;
+  run: (ctx: FamilyContext, tools: PdfTools & { gs: string }) => Promise<BenchRow[]>;
+}
+
+const COMMON_TOOLS = ['qpdf', 'pdftotext', 'pdftoppm', 'pdfinfo', 'ffmpeg'] as const;
+
 export const runPdfOps: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
-  const cases = [
+  const cases: PdfOpsCase[] = [
     { name: MERGE_CASE, specs: MERGE_SPECS, run: runMerge },
     { name: WATERMARK_CASE, specs: WATERMARK_SPECS, run: runWatermark },
     { name: PROTECT_CASE, specs: ENCRYPTION_SPECS, run: runProtect },
     { name: DECRYPT_CASE, specs: ENCRYPTION_SPECS, run: runDecrypt },
     { name: UNLOCK_CASE, specs: ENCRYPTION_SPECS, run: runUnlock },
-  ].filter((item) => ctx.inScope(FAMILY, item.name));
-  if (cases.length > 0) {
-    const plan = ctx.plan(['qpdf', 'pdftotext', 'pdftoppm', 'pdfinfo', 'ffmpeg'], FAMILY);
+    // The page operations come last. They have quality rows only for now: their speed rows are added with the gap entries
+    // that the CI runner's measurement calls for (bench/parity-gaps.json), in a change that touches the bench alone.
+    { name: SPLIT_CASE, specs: SPLIT_SPECS, qualityOnly: true, run: runSplit },
+    { name: EXTRACT_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runExtract },
+    { name: DELETE_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runDelete },
+    { name: REORDER_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runReorder },
+    { name: ROTATE_CASE, specs: ROTATE_SPECS, qualityOnly: true, run: runRotate },
+    { name: COMPRESS_CASE, specs: COMPRESS_SPECS, extraTools: ['gs'], qualityOnly: true, run: runCompress },
+  ].filter((item) => ctx.inScope(FAMILY, item.name) && (ctx.quality || item.qualityOnly !== true));
+  for (const item of cases) {
+    const plan = ctx.plan([...COMMON_TOOLS, ...(item.extraTools ?? [])], FAMILY);
     if (!plan.ok) {
-      for (const item of cases) rows.push(...skippedGroup(FAMILY, item.name, item.specs, REFERENCE_TOOL, plan));
-    } else {
-      const tools = plan.paths as unknown as PdfTools;
-      for (const item of cases) {
-        ctx.log(`pdf-ops ${item.name}`);
-        rows.push(...(await item.run(ctx, tools)));
-      }
+      rows.push(...skippedGroup(FAMILY, item.name, item.specs, item.extraTools ? GHOSTSCRIPT_TOOL : REFERENCE_TOOL, plan));
+      continue;
     }
-  }
-  for (const item of UNSUPPORTED_CASES) {
-    if (!ctx.inScope(FAMILY, item.name)) continue;
-    if (ctx.quality) rows.push(skippedRow(FAMILY, item.name, SPEC.pdfCheckFailures, REFERENCE_TOOL, 'unsupported', item.reason));
-    if (ctx.speed) rows.push(skippedRow(FAMILY, item.name, SPEC.throughput, REFERENCE_TOOL, 'unsupported', item.reason));
+    ctx.log(`pdf-ops ${item.name}`);
+    rows.push(...(await item.run(ctx, plan.paths as unknown as PdfTools & { gs: string }))); // NOSONAR S9382 sequential
   }
   return rows;
 };

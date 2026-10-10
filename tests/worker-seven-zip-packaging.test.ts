@@ -51,8 +51,15 @@ describe('7-Zip binary resolution', () => {
     expect(findSevenZipBinary(installedAt())).toBeNull();
   });
 
+  it('runs the executable of the Debian and Ubuntu package, not the shell script that starts it', () => {
+    expect(findSevenZipBinary(installedAt('/usr/bin/7z', '/usr/lib/7zip/7z'))).toBe('/usr/lib/7zip/7z');
+    expect(findSevenZipBinary(installedAt('/usr/bin/7z', '/usr/bin/7za', '/usr/lib/7zip/7za'))).toBe('/usr/bin/7z');
+    expect(findSevenZipBinary(installedAt('/usr/lib/7zip/7z', '/usr/local/bin/7zz'))).toBe('/usr/local/bin/7zz');
+  });
+
   it('lists 7zz first in the shared candidate table the worker also reads', () => {
-    expect(SEVEN_ZIP_BINARY_CANDIDATES.slice(0, 3)).toEqual([
+    expect(SEVEN_ZIP_BINARY_CANDIDATES.slice(0, 4)).toEqual([
+      '/usr/lib/7zip/7zz',
       '/usr/bin/7zz',
       '/usr/local/bin/7zz',
       '/opt/homebrew/bin/7zz',

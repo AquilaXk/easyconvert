@@ -29,6 +29,11 @@ import {
   applyPdfWatermark,
   protectPdf,
   unlockPdf,
+  splitPdfPages,
+  extractPdfPages,
+  deletePdfPages,
+  reorderPdfPages,
+  rotatePdfPages,
 } from '../../conversions';
 import type { PdfAccess } from '../../conversions/pdf-access';
 import { openPasswordOption } from '../option-secrets';
@@ -37,6 +42,7 @@ import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
   GraphExportError,
+  InvalidPageRangeError,
   JobTimeoutError,
   MediaPackagingOptions,
   PdfPasswordListError,
@@ -49,6 +55,7 @@ import {
   ARCHIVE_CREATE_FORMATS,
   MEDIA_PACKAGE_OUTPUT_FORMAT,
   MERGE_FORMATS,
+  PDF_SPLIT_OUTPUT_FORMAT,
   THUMBNAIL_FORMATS,
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
@@ -149,6 +156,45 @@ async function processIntermediatePdfArtifacts(
       return outKey;
     })
   );
+}
+
+/** A PDF node's result when it is not the input's document under the input's name (a split returns a ZIP). */
+interface PdfNodeOutput {
+  buffer: Buffer;
+  filename: string;
+  formatId: string;
+}
+
+/** Like processIntermediatePdfArtifacts for a node that names its own output file. */
+async function processIntermediatePdfParts(
+  graphId: string,
+  nodeId: string,
+  inputKeys: string[],
+  storage: IStorageBackend,
+  attemptSignal: AbortSignal,
+  transformFn: (buf: Buffer, inputFilename: string) => Promise<PdfNodeOutput>
+): Promise<string[]> {
+  return Promise.all(
+    inputKeys.map(async (inputKey) => {
+      attemptSignal.throwIfAborted();
+      const stored = await storage.getObject(inputKey);
+      if (!stored) {
+        throw new Error(`Input artifact "${inputKey}" not found in storage`);
+      }
+      const output = await transformFn(stored.buffer, stored.filename || path.basename(inputKey));
+      const outKey = `intermediate/${graphId}/${nodeId}/${output.filename}`;
+      await storage.saveObject(outKey, output.buffer, registryMimeType(output.formatId), output.filename, INTERMEDIATE_TTL_MS);
+      return outKey;
+    })
+  );
+}
+
+/** The `pages` a page-selecting PDF node needs; a node without them has nothing to select. */
+function requiredPagesOption(options: { pages?: unknown } | undefined, nodeId: string, op: string): string {
+  if (typeof options?.pages !== 'string' || options.pages.trim() === '') {
+    throw new InvalidPageRangeError(`Node "${nodeId}" (${op}) needs "options.pages", for example "1-3,5".`);
+  }
+  return options.pages;
 }
 
 const DEFAULT_THUMBNAIL_EDGE_PX = 256;
@@ -466,6 +512,59 @@ export async function processGraphNodeJob(
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" unlocked ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.split-pages': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const processedKeys = await processIntermediatePdfParts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          async (buf, inputFilename) => {
+            const baseName = path.basename(inputFilename, path.extname(inputFilename));
+            return {
+              buffer: await splitPdfPages(buf, node.options?.split, pdfAccessOf(node.options), baseName),
+              filename: `${baseName}-split.${PDF_SPLIT_OUTPUT_FORMAT}`,
+              formatId: PDF_SPLIT_OUTPUT_FORMAT,
+            };
+          }
+        );
+        outputKeys.push(...processedKeys);
+        await job.log(`Node "${nodeId}" split ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.extract-pages':
+      case 'pdf.delete-pages':
+      case 'pdf.reorder-pages':
+      case 'pdf.rotate-pages': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const access = pdfAccessOf(node.options);
+        const options = node.options;
+        const edit = (buf: Buffer): Promise<Buffer> => {
+          switch (node.op) {
+            case 'pdf.extract-pages':
+              return extractPdfPages(buf, requiredPagesOption(options, nodeId, node.op), access);
+            case 'pdf.delete-pages':
+              return deletePdfPages(buf, requiredPagesOption(options, nodeId, node.op), access);
+            case 'pdf.reorder-pages':
+              return reorderPdfPages(buf, options?.reorder as never, access);
+            default:
+              return rotatePdfPages(buf, options?.rotate as never, access);
+          }
+        };
+        const processedKeys = await processIntermediatePdfArtifacts(graphId, nodeId, inputArtifacts, effectiveStorage, attemptSignal, edit);
+        outputKeys.push(...processedKeys);
+        await job.log(`Node "${nodeId}" applied ${node.op} to ${inputArtifacts.length} artifact(s)`);
         break;
       }
 

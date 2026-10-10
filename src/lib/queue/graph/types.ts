@@ -94,6 +94,41 @@ export interface PdfUnlockNode {
   options?: ConversionOptions;
 }
 
+/** Cuts PDFs into parts, returned as one ZIP per input (`options.split`). */
+export interface PdfSplitPagesNode {
+  op: 'pdf.split-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Keeps the pages of `options.pages`, in the order listed. */
+export interface PdfExtractPagesNode {
+  op: 'pdf.extract-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Removes the pages of `options.pages`. */
+export interface PdfDeletePagesNode {
+  op: 'pdf.delete-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Puts the pages of `options.reorder.order` first, in that order; the others follow. */
+export interface PdfReorderPagesNode {
+  op: 'pdf.reorder-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Turns pages clockwise (`options.rotate`). */
+export interface PdfRotatePagesNode {
+  op: 'pdf.rotate-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
 export interface ThumbnailNode {
   op: 'thumbnail';
   input: NodeId;
@@ -141,6 +176,11 @@ export type GraphNode =
   | PdfWatermarkNode
   | PdfProtectNode
   | PdfUnlockNode
+  | PdfSplitPagesNode
+  | PdfExtractPagesNode
+  | PdfDeletePagesNode
+  | PdfReorderPagesNode
+  | PdfRotatePagesNode
   | ArchiveCreateNode
   | ArchiveExtractNode
   | ExportUrlNode

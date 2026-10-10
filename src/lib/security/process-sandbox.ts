@@ -33,10 +33,18 @@ export interface SandboxedExecutionOptions {
   rlimits?: SandboxedRlimitsOptions;
   stdin?: NodeJS.ReadableStream | Buffer | null;
   signal?: AbortSignal;
+  /**
+   * Bytes to leave free before and after the output in the buffer it is collected into. A caller that wraps the output
+   * in a container format (a header before, padding after) writes them in place instead of copying the output again.
+   */
+  stdoutHeadroomBytes?: number;
+  stdoutTailroomBytes?: number;
 }
 
 export interface SandboxedExecutionResult {
   stdout: Buffer;
+  /** With headroom or tailroom: the whole buffer the output sits in, `stdout` being the part between the two rooms. */
+  stdoutFrame?: Buffer;
   stderr: Buffer;
   exitCode: number;
   durationMs: number;
@@ -583,6 +591,16 @@ function spawnFailureError(err: Error): Error {
   return err;
 }
 
+/** The chunks in one buffer with `headroom` bytes before them and `tailroom` after (both left as the allocator gave them). */
+function collectFramed(chunks: Buffer[], headroom: number, tailroom: number): Buffer {
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length;
+  const frame = Buffer.allocUnsafe(headroom + total + tailroom);
+  let at = headroom;
+  for (const chunk of chunks) at += chunk.copy(frame, at);
+  return frame;
+}
+
 /**
  * Executes a binary under defensive process guards:
  * - Environment sanitization (credential purging)
@@ -812,7 +830,11 @@ export async function executeSandboxedBinary(
     proc.on('close', (code, signal) => {
       settle(() => {
         const durationMs = Date.now() - startTime;
-        const stdout = Buffer.concat(stdoutChunks);
+        const headroom = options.stdoutHeadroomBytes ?? 0;
+        const tailroom = options.stdoutTailroomBytes ?? 0;
+        const framed = headroom > 0 || tailroom > 0;
+        const frame = framed ? collectFramed(stdoutChunks, headroom, tailroom) : undefined;
+        const stdout = frame ? frame.subarray(headroom, frame.length - tailroom) : Buffer.concat(stdoutChunks);
         const stderr = Buffer.concat(stderrChunks);
 
         if (signal !== null || code === null || code !== 0) {
@@ -843,6 +865,7 @@ export async function executeSandboxedBinary(
 
         resolve({
           stdout,
+          stdoutFrame: frame,
           stderr,
           exitCode: 0,
           durationMs,
