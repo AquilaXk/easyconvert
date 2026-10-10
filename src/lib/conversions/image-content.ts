@@ -50,10 +50,12 @@ export async function classifyContent(pipeline: Sharp): Promise<ContentClass> {
  * keep alpha as a separate plane (AVIF, lossy WebP) spend a few hundred bytes on it. A picture with any
  * transparent or translucent pixel keeps its channel untouched.
  */
-export async function withoutOpaqueAlpha(pipeline: Sharp): Promise<Sharp> {
+export async function withoutOpaqueAlpha(pipeline: Sharp, alphaIsOpaque?: boolean): Promise<Sharp> {
   const meta = await pipeline.metadata();
   if (!meta.hasAlpha) return pipeline;
-  return (await alphaIsOpaque(pipeline, meta.depth === SIXTEEN_BIT_DEPTH)) ? pipeline.removeAlpha() : pipeline;
+  // A caller that has seen every alpha sample says so; otherwise the plane is read and scanned.
+  const opaque = alphaIsOpaque ?? (await alphaIsOpaquePlane(pipeline, meta.depth === SIXTEEN_BIT_DEPTH));
+  return opaque ? pipeline.removeAlpha() : pipeline;
 }
 
 const SIXTEEN_BIT_DEPTH = 'ushort';
@@ -80,7 +82,7 @@ function isAllOpaqueBytes(data: Buffer): boolean {
  * (reducing 16 bits to 8 could turn 65534 into 255) and scanned for any other value; this costs one decode of the
  * picture, where the library's full statistics pass costs ten times that.
  */
-async function alphaIsOpaque(pipeline: Sharp, deep: boolean): Promise<boolean> {
+async function alphaIsOpaquePlane(pipeline: Sharp, deep: boolean): Promise<boolean> {
   // A single extracted 16-bit band is reinterpreted as 8-bit unless it is declared grey16 first.
   const plane = pipeline.clone().extractChannel('alpha');
   const { data } = await (deep ? plane.toColourspace('grey16') : plane)
