@@ -133,7 +133,10 @@ export class AesKeyCache {
   private spentRounds = 0;
   deferred = false;
 
-  constructor(readonly password: string | undefined) {}
+  constructor(
+    readonly password: string | undefined,
+    private readonly totalRoundsBudget: number = SEVENZIP_MAX_KDF_TOTAL_ROUNDS
+  ) {}
 
   private static idOf(request: AesKeyRequest): string {
     return `${request.cyclesPower}:${request.salt.toString('hex')}`;
@@ -145,9 +148,9 @@ export class AesKeyCache {
 
   private reserve(requests: AesKeyRequest[]): void {
     const rounds = requests.reduce((sum, request) => sum + roundsOf(request), 0);
-    if (this.spentRounds + rounds > SEVENZIP_MAX_KDF_TOTAL_ROUNDS) {
+    if (this.spentRounds + rounds > this.totalRoundsBudget) {
       throw new UnsupportedArchiveMethodError(
-        `Unsupported 7z encryption: the archive's keys need more than 2^${Math.log2(SEVENZIP_MAX_KDF_TOTAL_ROUNDS)} rounds of key derivation in total.`
+        `Unsupported 7z encryption: the archive's keys need more than ${this.totalRoundsBudget} rounds of key derivation in total.`
       );
     }
     this.spentRounds += rounds;

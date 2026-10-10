@@ -158,14 +158,20 @@ describe('one key per salt for the whole archive', () => {
 
 describe('the rounds of all keys of an archive share one budget', () => {
   it('refuses the key that passes the budget, typed 422, on the calling thread', () => {
-    const cache = new AesKeyCache(PASSWORD);
-    const power = 22;
-    const keysInBudget = SEVENZIP_MAX_KDF_TOTAL_ROUNDS / 2 ** power;
-    distinctSalts(keysInBudget).forEach((salt) => cache.keyFor({ cyclesPower: power, salt }));
+    // A budget of three keys of 2^18 rounds keeps the test to a fraction of a second on a slow runner.
+    const power = 18;
+    const cache = new AesKeyCache(PASSWORD, 3 * 2 ** power);
+    distinctSalts(3).forEach((salt) => cache.keyFor({ cyclesPower: power, salt }));
     const failure = failureOf(() => cache.keyFor({ cyclesPower: power, salt: Buffer.from([9, 9, 9, 9]) }));
     expect(failure).toBeInstanceOf(UnsupportedArchiveMethodError);
     expect((failure as UnsupportedArchiveMethodError).status).toBe(HTTP_UNPROCESSABLE);
-    expect((failure as Error).message).toMatch(/more than 2\^26 rounds of key derivation in total/);
+    expect((failure as Error).message).toMatch(/more than 786432 rounds of key derivation in total/);
+    // A key already derived stays available after the budget is spent.
+    expect(cache.keyFor({ cyclesPower: power, salt: distinctSalts(1)[0] })).toHaveLength(32);
+  });
+
+  it('the default budget is four keys at the top power', () => {
+    expect(SEVENZIP_MAX_KDF_TOTAL_ROUNDS).toBe(4 * 2 ** 24);
   });
 
   it('refuses 64 folders with distinct salts at the top power before hashing anything, without stalling the loop', async () => {
@@ -173,7 +179,7 @@ describe('the rounds of all keys of an archive share one budget', () => {
     const { value, maxDelayMs, elapsedMs } = await maxLoopDelayDuring(() => rejectionOf(() => extract7zArchiveAsync(archive, { password: PASSWORD })));
     expect(value).toBeInstanceOf(UnsupportedArchiveMethodError);
     expect((value as UnsupportedArchiveMethodError).status).toBe(HTTP_UNPROCESSABLE);
-    expect((value as Error).message).toMatch(/more than 2\^26 rounds of key derivation in total/);
+    expect((value as Error).message).toMatch(/more than 67108864 rounds of key derivation in total/);
     expect(elapsedMs, 'refused from the header alone').toBeLessThan(2000);
     expect(maxDelayMs).toBeLessThan(EVENT_LOOP_BLOCK_BUDGET_MS);
   });
