@@ -1,5 +1,6 @@
 import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
+import { readZipEntryBytes } from './zip-entry-reader';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -43,6 +44,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
@@ -721,7 +723,7 @@ export async function extractZipArchive(
         });
       });
     } else {
-      const buffer = await file.async('nodebuffer');
+      const buffer = await readZipEntryBytes(file, { maxBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE });
       totalUncompressedSize += buffer.length;
 
       if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
@@ -3069,7 +3071,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
           )
         );
@@ -3085,7 +3087,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3103,7 +3105,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
       ) {
         cleanup();
         return reject(
-          new Error(
+          new DecompressionLimitError(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3200,6 +3202,14 @@ export async function repairZipArchive(
   // Scans for Local File Header magic bytes (0x04034b50 / PK\x03\x04),
   // salvages recoverable uncompressed or deflated streams, and rebuilds Central Directory.
   const salvagedFiles: { filename: string; buffer: Buffer }[] = [];
+  // The salvaged entries share the limits extraction applies: the size cap and the ratio to the damaged archive.
+  const salvageBudget = new InflateBudget(
+    Math.min(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, ARCHIVE_SECURITY_LIMITS.MAX_RATIO * zipBuffer.length)
+  );
+  const salvageDeflate = async (data: Buffer, entryName: string): Promise<Buffer | null> => {
+    const salvage = await inflateRawSalvage(data, { label: `ZIP entry '${entryName}'`, budget: salvageBudget });
+    return salvage.endedCleanly || salvage.data.length > 0 ? salvage.data : null;
+  };
   let pos = 0;
   while (pos + 30 <= zipBuffer.length) {
     if (
@@ -3234,15 +3244,7 @@ export async function repairZipArchive(
             if (compMethod === 0) {
               uncompressed = Buffer.from(rawChunk);
             } else if (compMethod === 8) {
-              try {
-                uncompressed = zlib.inflateRawSync(rawChunk);
-              } catch {
-                for (let offset = rawChunk.length - 1; offset > 0 && !uncompressed; offset--) {
-                  try {
-                    uncompressed = zlib.inflateRawSync(rawChunk.subarray(0, offset));
-                  } catch {}
-                }
-              }
+              uncompressed = await salvageDeflate(rawChunk, cleanName);
             }
             if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
               salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
@@ -3251,7 +3253,9 @@ export async function repairZipArchive(
             }
           }
         }
-      } catch {}
+      } catch (err) {
+        if (err instanceof DecompressionLimitError) throw err;
+      }
     }
     pos++;
   }
@@ -3825,9 +3829,10 @@ async function inspectArchiveEntries(
   // 4. Compressed TAR wrappers: GZ, BZ2, ZST, XZ
   if (archiveBuffer.length >= 2 && archiveBuffer[0] === 0x1f && archiveBuffer[1] === 0x8b) {
     try {
-      const decompressed = zlib.gunzipSync(archiveBuffer);
+      const decompressed = await gunzipStreamingWithLimits(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.gz');
-    } catch {
+    } catch (err) {
+      if (err instanceof DecompressionLimitError) throw err;
       throw new ConversionFailedError('Failed to decompress gzip archive.');
     }
   }
@@ -3971,6 +3976,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (err instanceof DecompressionLimitError) throw err;
       throw new ConversionFailedError(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );

@@ -4,14 +4,13 @@ import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
-import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
-  PayloadLimitError,
   EncryptedOfficeDocumentError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -244,9 +243,10 @@ export async function POST(req: NextRequest) {
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
-      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
-      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    const limitStatus = payloadLimitStatus(error);
+    if (limitStatus !== null) {
+      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri);
     }
     if (error instanceof EncryptedOfficeDocumentError) {
       // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.

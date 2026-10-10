@@ -89,6 +89,7 @@ export const conversionPaths = {
         '400': createProblemResponse('Bad request or missing required parameters.'),
         '401': createProblemResponse('Unauthorized: API key or session required.'),
         '403': createProblemResponse('Forbidden: Insufficient scope or quota exhausted.'),
+        '413': createProblemResponse(PAYLOAD_LIMIT_DESCRIPTION),
         '422': createProblemResponse('Unprocessable Entity: Header encrypted, missing volume, or invalid archive.'),
         '500': createProblemResponse('Internal server error.'),
       },

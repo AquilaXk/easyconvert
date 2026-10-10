@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { inspectArchive } from '@/lib/conversions';
@@ -152,6 +153,12 @@ export async function POST(req: NextRequest) {
         'Missing Archive Volume',
         'https://api.easyconvert.io/problems/missing-archive-volume'
       );
+    }
+
+    const limitStatus = payloadLimitStatus(err);
+    if (limitStatus !== null) {
+      // A stream decodes past a size or ratio limit: 413, ahead of the 422 every other ConversionFailedError gets.
+      return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri);
     }
 
     if (err instanceof ConversionFailedError) {

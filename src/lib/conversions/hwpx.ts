@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { readZipEntryText } from './zip-entry-reader';
 import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
@@ -26,7 +27,7 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
     const zip = await JSZip.loadAsync(buffer);
     const mimeFile = zip.file('mimetype');
     if (mimeFile) {
-      const mime = (await mimeFile.async('text')).trim();
+      const mime = (await readZipEntryText(mimeFile)).trim();
       if (mime === 'application/hwp+zip') return true;
     }
     const hasSection = Object.keys(zip.files).some((name) => /(?:Contents\/)?section\d*\.xml$/i.test(name));
@@ -35,7 +36,7 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
     const containerFile = zip.file('META-INF/container.xml');
     let hasHwpxContainerXml = false;
     if (containerFile) {
-      const cXml = await containerFile.async('text');
+      const cXml = await readZipEntryText(containerFile);
       hasHwpxContainerXml = cXml.includes('content.hpf') || cXml.includes('application/hwp+zip');
     }
     return (hasSection && (hasVersion || hasHpf)) || hasHpf || hasHwpxContainerXml;
@@ -64,7 +65,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   let version = '1.0.0.0';
   const versionFile = zip.file('version.xml') || zip.file('Contents/version.xml');
   if (versionFile) {
-    const versionXml = await versionFile.async('text');
+    const versionXml = await readZipEntryText(versionFile);
     const verMatch = versionXml.match(/version="([^"]+)"/i);
     if (verMatch) {
       version = verMatch[1];
@@ -78,7 +79,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
 
   const hpfFile = zip.file('Contents/content.hpf') || zip.file('content.hpf');
   if (hpfFile) {
-    const hpfXml = await hpfFile.async('text');
+    const hpfXml = await readZipEntryText(hpfFile);
     const titleMatch = hpfXml.match(/<(?:dc:|opf:)?title[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?title>/i);
     if (titleMatch) title = titleMatch[1].trim();
 
@@ -115,7 +116,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   const tables: HwpTable[] = [];
 
   for (const sFile of sectionFiles) {
-    const secXml = await zip.files[sFile].async('text');
+    const secXml = await readZipEntryText(zip.files[sFile]);
     assertWellFormedXml(sFile, secXml, 'HWPX');
 
     // Extract tables (<hp:tbl> ... </hp:tbl>)

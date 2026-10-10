@@ -29,6 +29,7 @@ import {
   applyPdfWatermark,
   protectPdf,
 } from '../../conversions';
+import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
   GraphExportError,
@@ -546,7 +547,7 @@ export async function processGraphNodeJob(
         let extracted: { filename: string; buffer: Buffer }[] = [];
 
         if (ext === 'tar' || ext === 'tar.gz' || ext === 'tgz') {
-          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? zlib.gunzipSync(archiveBuffer) : archiveBuffer;
+          const uncompressed = (ext === 'tar.gz' || ext === 'tgz') ? await gunzipStreamingWithLimits(archiveBuffer) : archiveBuffer;
           extracted = extractTarArchive(uncompressed, { entries: node.entries });
         } else if (ext === '7z') {
           extracted = extract7zArchive(archiveBuffer, { entries: node.entries });
