@@ -1730,9 +1730,11 @@ function isNeutralColour(colour: { r: number; g: number; b: number } | undefined
   return colour === undefined || (colour.r === colour.g && colour.g === colour.b);
 }
 
-/** Lossy targets whose pixels the analyses and the encoder read from one decode of a plain PNG. */
-const LOSSY_CONTENT_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
-/** Targets whose encoder choices (chroma, effort, scan search) follow the content of the picture; WebP's follow the quality alone. */
+/**
+ * Targets whose encoder choices (chroma, effort, scan search) follow the content of the picture, and whose analyses and
+ * encoder read the pixels from one decode of a plain PNG. WebP's choices follow the quality alone and its encoder drops an
+ * opaque alpha plane itself, so a WebP is the PNG handed straight to the encoder.
+ */
 const CONTENT_CLASSIFIED_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'avif']);
 
 /** zlib level of the PNG handed to the AVIF encoder: it is read once and thrown away, so speed matters and size does not. */
@@ -2093,9 +2095,9 @@ export async function convertImage(
         if (hdr.radiance) hdrRadiance = { rgb: hdr.radiance, width: hdr.width, height: hdr.height };
         // The pipeline now holds the rendition (sRGB, or PQ for HDR output): the input's tag no longer describes it.
         inputCicp = null;
-      } else if (inputCicp === null && LOSSY_CONTENT_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
+      } else if (inputCicp === null && CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
         // The content class, the alpha check and the encoder would each decode the PNG again: decode it once.
-        const decoded = await decodePlainPngOnce(pipeline);
+        const decoded = await decodePlainPngOnce(pipeline, undefined, fmt === 'jpg' || fmt === 'jpeg');
         if (decoded !== null) {
           pipeline = decoded.pipeline;
           decodedAlphaIsOpaque = decoded.alphaIsOpaque;
@@ -2277,7 +2279,7 @@ export async function convertImage(
       }
 
       case 'webp':
-        outputBuffer = await (await withoutOpaqueAlpha(pipeline, alphaIsOpaqueAfterResize)).webp(webpOptionsFor(options.quality)).toBuffer();
+        outputBuffer = await pipeline.webp(webpOptionsFor(options.quality)).toBuffer();
         mimeType = 'image/webp';
         break;
 

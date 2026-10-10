@@ -1099,7 +1099,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8045762188904677
+      "ratio": 0.8890678238618421
     },
     "image/lineart.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1159,7 +1159,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.30046079474008897
+      "ratio": 1.1090745025411892
     },
     "image/lineart.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1219,7 +1219,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.41637344781822255
+      "ratio": 0.9082368459698208
     },
     "image/photo-a.jpg->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1279,7 +1279,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.8450182167321806
+      "ratio": 1.4277821201658192
     },
     "image/photo-a.jpg->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1339,7 +1339,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.551393855532912
+      "ratio": 1.304545442040109
     },
     "image/photo-a.jpg->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1399,7 +1399,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9919481853766741
+      "ratio": 1.1414644394046978
     },
     "image/photo-b.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1459,7 +1459,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7064265884657055
+      "ratio": 1.279744719924046
     },
     "image/photo-b.png->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -1519,7 +1519,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.49220604322519584
+      "ratio": 1.6017947101627554
     },
     "image/photo-b.png->webp/bd_rate_psnr": {
       "direction": "lower",
@@ -1579,7 +1579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7979705519190888
+      "ratio": 1.1055102287242204
     },
     "image/screenshot.png->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -1759,7 +1759,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.3048619648204828
+      "ratio": 0.9880167065542158
     },
     "ocr/scan.png->pdf/cer": {
       "direction": "lower",
