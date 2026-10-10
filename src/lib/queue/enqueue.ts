@@ -1,6 +1,7 @@
 import type { ConversionJobData, ConversionJobResult } from '../types';
 import type { IStorageBackend } from '../storage/oci-storage';
-import type { IQueueEngine, Job, JobOptions } from './bullmq-engine';
+import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './bullmq-engine';
+import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
 import { tierForOwner } from './page-cap';
 
@@ -26,7 +27,10 @@ export interface JobDeadlineOwner {
 
 export type ConversionJobOptions = Omit<JobOptions, 'timeout'>;
 
-/** Puts a conversion job on `queue` with the deadline of its tier and input as the job timeout. */
+/**
+ * Puts a conversion job on `queue` with the deadline of its tier and input as the job timeout. The open password of a
+ * protected input is sealed under the job id first, so the stored job never holds it (see option-secrets).
+ */
 export function enqueueConversionJob(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>,
   name: string,
@@ -40,8 +44,10 @@ export function enqueueConversionJob(
     targetFormat: data.targetFormat,
     inputBytes: owner.inputBytes,
   });
-  return queue.add(name, data, {
+  const jobId = opts.jobId ?? generateJobId();
+  return queue.add(name, sealJobDataSecrets(data, jobId), {
     ...opts,
+    jobId,
     timeout,
     ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
   });
