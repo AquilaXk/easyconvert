@@ -283,7 +283,10 @@ describe('the filter that keeps a picture size even', () => {
     () => {
       const out = path.join(workDir, 'o.mp4');
       expect(filterOf(buildFfmpegArguments(plainMp4(), out, 'mp4', 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBeUndefined();
-      // An odd picture is cut to an even size.
+      // An odd picture is cut to an even size. The oracle first: the source really is odd.
+      const odd = oddMkv();
+      const oddFacts = probeFile(tool('ffprobe'), odd).streams[0];
+      expect([oddFacts.width, oddFacts.height, oddFacts.pix_fmt]).toEqual([161, 121, 'yuv444p']);
       expect(filterOf(buildFfmpegArguments(oddMkv(), out, 'mkv', 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
       // A resize, a crop or a display aspect may produce an odd size from an even one: the filter stays after them.
       const even = plainMp4();
