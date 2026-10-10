@@ -10,6 +10,10 @@ import { buildCompoundFile } from './cfb-craft';
 const REC_VER_CONTAINER = 0xf;
 const RT_DOCUMENT = 0x03e8;
 const RT_DOCUMENT_ATOM = 0x03e9;
+const RT_ENVIRONMENT = 0x03f2;
+const RT_FONT_COLLECTION = 0x07d5;
+const RT_FONT_ENTITY_ATOM = 0x0fb7;
+const RT_STYLE_TEXT_PROP_ATOM = 0x0fa1;
 const RT_SLIDE = 0x03ee;
 const RT_SLIDE_ATOM = 0x03ef;
 const RT_NOTES = 0x03f0;
@@ -46,15 +50,27 @@ const FIRST_SLIDE_ID = 256;
 /** Windows-1252 bytes of the characters above U+007F the tests store in TextBytesAtoms, from the code page chart. */
 const CP1252_EXTRA: Readonly<Record<string, number>> = { '“': 0x93, '”': 0x94, '–': 0x96, '—': 0x97, '€': 0x80, '…': 0x85 };
 
+/** Characters of one stretch of text and the fonts its character formatting names. */
+export interface PptFontRun {
+  count: number;
+  /** Face used for ordinary characters (TextCFException typeface). */
+  font?: string;
+  /** Face used for symbol-range characters (TextCFException symbolTypeface). */
+  symbolFont?: string;
+}
+
 export type PptShape =
-  | { chars: string; fieldAt?: number }
+  | { chars: string; fieldAt?: number; fontRuns?: PptFontRun[] }
   | { bytes: string }
   | { outlineIndex: number };
 
 export interface PptSlideSpec {
   shapes: PptShape[];
-  /** Text blocks of the slide in the SlideListWithText; shapes reach them through `outlineIndex`. */
-  outline?: string[];
+  /**
+   * Text blocks of the slide in the SlideListWithText; shapes reach them through `outlineIndex`. A `null` block is
+   * a TextHeaderAtom that carries only a slide number field and no text atom, as real files store a footer placeholder.
+   */
+  outline?: (string | null)[];
 }
 
 export interface PptBuildOptions {
@@ -110,11 +126,42 @@ function textHeader(type: number): Buffer {
   return record(0, 0, RT_TEXT_HEADER_ATOM, u32(type));
 }
 
+function fontIndex(fonts: string[], name: string): number {
+  const found = fonts.indexOf(name);
+  if (found >= 0) return found;
+  fonts.push(name);
+  return fonts.length - 1;
+}
+
+/** One paragraph run over the whole text, then one character run per entry; both cover the text plus its closing paragraph mark. */
+function styleTextPropAtom(length: number, runs: PptFontRun[], fonts: string[]): Buffer {
+  const covered = runs.reduce((sum, run) => sum + run.count, 0);
+  if (covered !== length) throw new Error(`font runs cover ${covered} characters of ${length}`);
+  const parts: Buffer[] = [u32(length + 1), u16(0), u32(0)];
+  runs.forEach((run, i) => {
+    const count = run.count + (i === runs.length - 1 ? 1 : 0);
+    const masks = (run.font === undefined ? 0 : 0x10000) | (run.symbolFont === undefined ? 0 : 0x800000);
+    parts.push(u32(count), u32(masks));
+    if (run.font !== undefined) parts.push(u16(fontIndex(fonts, run.font)));
+    if (run.symbolFont !== undefined) parts.push(u16(fontIndex(fonts, run.symbolFont)));
+  });
+  return record(0, 0, RT_STYLE_TEXT_PROP_ATOM, Buffer.concat(parts));
+}
+
+function fontCollection(fonts: string[]): Buffer {
+  const entities = fonts.map((name) => {
+    const face = Buffer.alloc(64);
+    face.write(name, 'utf16le');
+    return record(0, 0, RT_FONT_ENTITY_ATOM, Buffer.concat([face, Buffer.alloc(4)]));
+  });
+  return container(0, RT_ENVIRONMENT, [container(0, RT_FONT_COLLECTION, entities)]);
+}
+
 function charsAtom(text: string): Buffer {
   return record(0, 0, RT_TEXT_CHARS_ATOM, Buffer.from(text, 'utf16le'));
 }
 
-function shapeContainer(shape: PptShape): Buffer {
+function shapeContainer(shape: PptShape, fonts: string[]): Buffer {
   let textbox: Buffer[];
   if ('outlineIndex' in shape) {
     textbox = [textHeader(TEXT_TYPE_BODY), record(0, 0, RT_OUTLINE_TEXT_REF_ATOM, u32(shape.outlineIndex))];
@@ -122,6 +169,7 @@ function shapeContainer(shape: PptShape): Buffer {
     textbox = [textHeader(TEXT_TYPE_OTHER), record(0, 0, RT_TEXT_BYTES_ATOM, encodeBytes(shape.bytes))];
   } else {
     textbox = [textHeader(TEXT_TYPE_OTHER), charsAtom(shape.chars)];
+    if (shape.fontRuns) textbox.push(styleTextPropAtom(shape.chars.length, shape.fontRuns, fonts));
     if (shape.fieldAt !== undefined) textbox.push(record(0, 0, RT_SLIDE_NUMBER_META_ATOM, u32(shape.fieldAt)));
   }
   // A shape property table sits before the text box, as in real files; its content is not interpreted.
@@ -134,8 +182,8 @@ function drawing(shapes: Buffer[], extraNesting = 0): Buffer {
   return container(0, RT_PP_DRAWING, [container(0, ESCHER_DG_CONTAINER, [group])]);
 }
 
-function slideContainer(spec: PptSlideSpec, extraNesting = 0): Buffer {
-  return container(0, RT_SLIDE, [record(2, 0, RT_SLIDE_ATOM, Buffer.alloc(24)), drawing(spec.shapes.map(shapeContainer), extraNesting)]);
+function slideContainer(spec: PptSlideSpec, fonts: string[], extraNesting = 0): Buffer {
+  return container(0, RT_SLIDE, [record(2, 0, RT_SLIDE_ATOM, Buffer.alloc(24)), drawing(spec.shapes.map((shape) => shapeContainer(shape, fonts)), extraNesting)]);
 }
 
 function slideListEntries(slides: PptSlideSpec[]): Buffer[] {
@@ -145,7 +193,10 @@ function slideListEntries(slides: PptSlideSpec[]): Buffer[] {
     out.push(
       record(0, 0, RT_SLIDE_PERSIST_ATOM, Buffer.concat([u32(FIRST_SLIDE_PERSIST_ID + i), u32(0), u32(blocks.length), u32(FIRST_SLIDE_ID + i), u32(0)]))
     );
-    for (const block of blocks) out.push(textHeader(TEXT_TYPE_BODY), charsAtom(block));
+    for (const block of blocks) {
+      if (block === null) out.push(textHeader(TEXT_TYPE_OTHER), record(0, 0, RT_SLIDE_NUMBER_META_ATOM, u32(0)));
+      else out.push(textHeader(TEXT_TYPE_BODY), charsAtom(block));
+    }
   });
   return out;
 }
@@ -163,8 +214,12 @@ export function buildPptBinary(options: PptBuildOptions): Buffer {
   const slideCount = options.slides.length;
   const masterId = MASTER_PERSIST_ID;
   const notesId = FIRST_SLIDE_PERSIST_ID + slideCount;
+  const fonts: string[] = [];
+  const slideBuffers = options.slides.map((spec) => slideContainer(spec, fonts, options.extraNesting));
+  const revisedBuffers = Object.entries(options.revisedSlides ?? {}).map(([index, spec]): [number, Buffer] => [Number(index), slideContainer(spec, fonts)]);
   const documentChildren = [
     record(1, 0, RT_DOCUMENT_ATOM, Buffer.alloc(40)),
+    fontCollection(fonts),
     container(SLWT_MASTERS, RT_SLIDE_LIST_WITH_TEXT, [
       record(0, 0, RT_SLIDE_PERSIST_ATOM, Buffer.concat([u32(masterId), u32(0), u32(0), u32(0x80000000), u32(0)])),
     ]),
@@ -175,15 +230,15 @@ export function buildPptBinary(options: PptBuildOptions): Buffer {
   ];
   const offsets = new Map<number, number>();
   offsets.set(DOCUMENT_PERSIST_ID, append(container(0, RT_DOCUMENT, documentChildren)));
-  offsets.set(masterId, append(container(0, RT_MAIN_MASTER, [drawing([shapeContainer({ chars: options.masterText ?? 'Click to edit the master title style' })])])));
+  offsets.set(masterId, append(container(0, RT_MAIN_MASTER, [drawing([shapeContainer({ chars: options.masterText ?? 'Click to edit the master title style' }, fonts)])])));
   const storageOrder = options.slides.map((_, i) => i);
   if (options.reverseSlideStorage) storageOrder.reverse();
   for (const i of storageOrder) {
-    offsets.set(FIRST_SLIDE_PERSIST_ID + i, append(slideContainer(options.slides[i], options.extraNesting)));
+    offsets.set(FIRST_SLIDE_PERSIST_ID + i, append(slideBuffers[i]));
   }
   offsets.set(
     notesId,
-    append(container(0, RT_NOTES, [drawing([shapeContainer({ chars: options.notesText ?? 'Speaker notes that are not slide text' })])]))
+    append(container(0, RT_NOTES, [drawing([shapeContainer({ chars: options.notesText ?? 'Speaker notes that are not slide text' }, fonts)])]))
   );
 
   const persistDirectory = (entries: Map<number, number>): Buffer => {
@@ -212,9 +267,7 @@ export function buildPptBinary(options: PptBuildOptions): Buffer {
 
   if (options.revisedSlides) {
     const revised = new Map<number, number>();
-    for (const [index, spec] of Object.entries(options.revisedSlides)) {
-      revised.set(FIRST_SLIDE_PERSIST_ID + Number(index), append(slideContainer(spec)));
-    }
+    for (const [index, buffer] of revisedBuffers) revised.set(FIRST_SLIDE_PERSIST_ID + index, append(buffer));
     directoryAt = append(persistDirectory(revised));
     editAt = append(userEdit(directoryAt, editAt));
   }

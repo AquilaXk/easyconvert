@@ -7,10 +7,10 @@ import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { readPptSlides, PPT_MAX_RECORD_DEPTH } from '../src/lib/conversions/office/ppt-reader';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
-import { EngineUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { oracleTest } from './helpers/oracle-test';
-import { extractTextWithExternalPdftotext, requireOracleTool } from './helpers/differential-oracle';
+import { extractFontsWithExternalPdffonts, extractTextWithExternalPdftotext, requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { buildCompoundFile } from './helpers/cfb-craft';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
@@ -62,6 +62,16 @@ describe('PowerPoint 97-2003 text extraction from hand-written presentations', (
       ],
     });
     expect(texts(readPptSlides(ppt))).toEqual([['Title from outline', 'Inline box', 'Bullet A', 'Bullet B', 'Never referenced']]);
+  });
+
+  it('counts a text block without a text atom when numbering the outline text a shape refers to', () => {
+    const ppt = buildPptBinary({
+      slides: [
+        { outline: [null, 'Body behind a slide number block'], shapes: [{ outlineIndex: 1 }] },
+        { outline: ['Only block'], shapes: [{ outlineIndex: 0 }] },
+      ],
+    });
+    expect(texts(readPptSlides(ppt))).toEqual([['Body behind a slide number block'], ['Only block']]);
   });
 
   it('reads neither master nor notes text, and drops field placeholder characters', () => {
@@ -177,6 +187,11 @@ describe('PowerPoint 97-2003 fail-closed behaviour', () => {
     expect((thrown as Error).message).toMatch(/outline text 3/);
   });
 
+  it('refuses an outline reference equal to the number of text blocks, which are numbered from zero', () => {
+    const thrown = failure(buildPptBinary({ slides: [{ outline: [null, 'Second block'], shapes: [{ outlineIndex: 2 }] }] }));
+    expect((thrown as Error).message).toMatch(/outline text 2, but the slide has 2/);
+  });
+
   it('fails a malformed .ppt conversion with a typed 400 error and no UTF-8 slide', async () => {
     const run = convertFile(Buffer.from('plain text pretending to be a deck', 'utf-8'), 'ppt', 'txt', {}, 'bad.ppt');
     await expect(run).rejects.toBeInstanceOf(LegacyOfficeFormatError);
@@ -210,6 +225,74 @@ describe('PowerPoint 97-2003 text extraction against LibreOffice', () => {
     const result = await convertFile(ppt, 'ppt', 'txt', {}, 'deck.ppt');
     expect(result.buffer.toString('utf-8')).toBe(AUTHORED_SLIDES.map((lines) => lines.join('\n')).join('\n\n'));
   }, 180_000);
+});
+
+describe('PowerPoint 97-2003 symbol-font characters', () => {
+  /** Symbol and Wingdings keep bullets and arrows at U+F020-U+F0FF; the font named on the run says which glyph that is. */
+  const SYMBOL_DECK = buildPptBinary({
+    slides: [
+      {
+        shapes: [
+          {
+            chars: 'Gain \uF061 \uF0B7 ok \uF0FC \uF0A7 end',
+            fontRuns: [
+              { count: 5, font: 'Arial' },
+              { count: 1, font: 'Arial', symbolFont: 'Symbol' },
+              { count: 1, font: 'Arial' },
+              { count: 1, font: 'Arial', symbolFont: 'Symbol' },
+              { count: 4, font: 'Arial' },
+              { count: 1, font: 'Arial', symbolFont: 'Wingdings' },
+              { count: 1, font: 'Arial' },
+              { count: 1, font: 'Arial', symbolFont: 'Wingdings' },
+              { count: 4, font: 'Arial' },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  it('maps private-use characters to the Unicode characters their symbol font draws', () => {
+    expect(texts(readPptSlides(SYMBOL_DECK))).toEqual([['Gain \u03B1 \u2022 ok \u2713 \u25AA end']]);
+  });
+
+  it('uses the typeface of a run that sets no symbol typeface', () => {
+    const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: '\uF0FC Done', fontRuns: [{ count: 1, font: 'Wingdings' }, { count: 5, font: 'Arial' }] }] }] });
+    expect(texts(readPptSlides(ppt))).toEqual([['\u2713 Done']]);
+  });
+
+  it('keeps private-use characters of fonts that are not symbol fonts, so that no glyph is invented for them', () => {
+    const ppt = buildPptBinary({
+      slides: [{ shapes: [{ chars: '\uF0FC\uF0FC', fontRuns: [{ count: 1, font: 'Arial' }, { count: 1, symbolFont: 'Math1' }] }] }],
+    });
+    expect(texts(readPptSlides(ppt))).toEqual([['\uF0FC\uF0FC']]);
+  });
+
+  it('keeps a private-use character whose symbol font has no counterpart for its code', () => {
+    const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: '\uF0FF', fontRuns: [{ count: 1, symbolFont: 'Wingdings' }] }] }] });
+    expect(texts(readPptSlides(ppt))).toEqual([['\uF0FF']]);
+  });
+
+  it('keeps private-use characters when the block has no character formatting', () => {
+    const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: 'Bullet \uF0FC' }] }] });
+    expect(texts(readPptSlides(ppt))).toEqual([['Bullet \uF0FC']]);
+  });
+
+  oracleTest('writes the mapped characters into a PDF whose text and embedded fonts a separate PDF reader confirms', ['pdftotext', 'pdffonts'], async () => {
+    const result = await convertFile(SYMBOL_DECK, 'ppt', 'pdf', {}, 'symbols.ppt');
+    const extracted = normalizeWhitespace(extractTextWithExternalPdftotext(result.buffer) ?? '');
+    expect(extracted).toBe('Gain \u03B1 \u2022 ok \u2713 \u25AA end');
+    const fonts = extractFontsWithExternalPdffonts(result.buffer);
+    expect(fonts.length).toBeGreaterThan(0);
+    expect(fonts.every((font) => font.emb)).toBe(true);
+  });
+
+  it('still refuses a private-use character of a font it has no table for, with a typed 400 error', async () => {
+    const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: 'Sum \uF073', fontRuns: [{ count: 4, font: 'Arial' }, { count: 1, symbolFont: 'Mathematica1' }] }] }] });
+    const run = convertFile(ppt, 'ppt', 'pdf', {}, 'math.ppt');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toMatchObject({ message: expect.stringContaining('U+F073') });
+  });
 });
 
 describe('PowerPoint templates and Keynote', () => {
