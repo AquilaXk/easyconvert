@@ -15,7 +15,7 @@
 //      specifically to that family.
 // Anything else (no verdict, a verdict that is not a strict speed run, a baseline regression, no failing row, a missing
 // number) is refused, so the rule fails closed.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -124,6 +124,6 @@ function main(args) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main(process.argv.slice(2));
 }

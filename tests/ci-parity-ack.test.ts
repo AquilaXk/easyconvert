@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -291,10 +291,156 @@ describe('the verify job', () => {
     expect(decide.if).toBe("needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')");
     expect(decide.run).toContain('collaborators/$actor/permission');
     expect(decide.run).toContain('.event == "labeled" and .label.name == "parity-ack"');
-    expect(decide.env?.SPECIFIC_FAMILIES).toBe('${{ needs.changes.outputs.bench_specific_families }}');
+    expect(decide.env?.PR_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
   });
 
   it('may comment on the pull request and read the repository', () => {
     expect(verify.permissions).toEqual({ contents: 'read', issues: 'write', 'pull-requests': 'write' });
+  });
+});
+
+describe('the rule and the mapper come from the base commit', () => {
+  const ci = parse(readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8')) as { jobs: Record<string, { steps: Array<{ id?: string; run?: string }> }> };
+  const script = ci.jobs.verify.steps.find((step) => step.id === 'ack')!.run!;
+  const tools = spawnSync('bash', ['--version'], { encoding: 'utf-8' }).status === 0 && spawnSync('git', ['--version'], { encoding: 'utf-8' }).status === 0;
+  const only = it.skipIf(skipUnless('bash and git', tools));
+
+  it('reads the rule, the mapper and the family map with git show from the base, and never runs the pull request copy', () => {
+    expect(script).toContain('for file in scripts/ci-parity-families.mjs bench/family-map.json; do');
+    expect(script).toContain('git show "$PR_BASE_SHA:$file"');
+    expect(script).toContain('git show "$PR_BASE_SHA:scripts/ci-parity-ack.mjs"');
+    expect(script).toContain('node "$RUNNER_TEMP/ci-parity-ack.mjs"');
+    expect(script).not.toMatch(/node scripts\/ci-parity-ack\.mjs/);
+    expect(script).toContain('refuse "the base commit has no');
+  });
+
+  function sh(args: string[], cwd: string, env: Record<string, string> = {}) {
+    const result = spawnSync(args[0], args.slice(1), { cwd, encoding: 'utf-8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', ...env } });
+    return { status: result.status ?? -1, stdout: result.stdout.trim(), stderr: result.stderr };
+  }
+
+  /** A checkout whose base commit holds `baseFiles`; the head commit then replaces the rule with `headAck`. Runs the verify step with a stub `gh`. */
+  function runStep(baseFiles: string[], headAck: string | null, role: string) {
+    const root = mkdtempSync(path.join(tmpdir(), 'parity-ack-step-'));
+    temps.push(root);
+    const repo = path.join(root, 'repo');
+    const bin = path.join(root, 'bin');
+    const runner = path.join(root, 'runner');
+    for (const dir of [repo, bin, runner, path.join(repo, 'scripts'), path.join(repo, 'bench'), path.join(repo, 'parity-speed-results')]) mkdirSync(dir, { recursive: true });
+    const identity = ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid'];
+    sh(['git', 'init', '-q', '-b', 'main'], repo);
+    sh(['git', 'config', 'uploadpack.allowAnySHA1InWant', 'true'], repo);
+    sh(['git', 'remote', 'add', 'origin', repo], repo);
+    for (const file of baseFiles) cpSync(path.join(ROOT, file), path.join(repo, file));
+    writeFileSync(path.join(repo, 'README.md'), 'base\n');
+    sh(['git', 'add', '.'], repo);
+    sh(['git', ...identity, 'commit', '-q', '-m', 'base'], repo);
+    const baseSha = sh(['git', 'rev-parse', 'HEAD'], repo).stdout;
+    // The pull request: a conversion-neutral change, and a rule that accepts anything.
+    if (headAck !== null) writeFileSync(path.join(repo, 'scripts', 'ci-parity-ack.mjs'), headAck);
+    writeFileSync(path.join(repo, 'NOTES.md'), 'change\n');
+    sh(['git', 'add', '.'], repo);
+    sh(['git', ...identity, 'commit', '-q', '-m', 'change'], repo);
+    writeFileSync(path.join(repo, 'parity-speed-results', 'parity-verdict.json'), JSON.stringify(verdict([undecided('video/clip.mp4->vp9/throughput', 0.5)])));
+    // A stub gh: the label event, the actor's role, and recording of the comment calls.
+    writeFileSync(
+      path.join(bin, 'gh'),
+      `#!/bin/sh
+case "$*" in
+  *"/events"*) echo aquila ;;
+  *"/permission"*) echo ${role} ;;
+  *"/comments"*"--method"*|*"--method"*"/comments"*) echo "$*" >> "${runner}/comments.log" ;;
+  *"/comments"*) ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    const output = path.join(runner, 'github-output.txt');
+    writeFileSync(output, '');
+    const result = sh(['bash', '-eo', 'pipefail', '-c', script], repo, {
+      PATH: `${bin}:${process.env.PATH}`,
+      GH_TOKEN: 'x',
+      REPOSITORY: 'o/r',
+      PR_NUMBER: '1',
+      PR_BASE_SHA: baseSha,
+      RUN_URL: 'https://example.invalid/run',
+      RUNNER_TEMP: runner,
+      GITHUB_OUTPUT: output,
+    });
+    return { ...result, output: readFileSync(output, 'utf-8').trim(), commented: existsSync(path.join(runner, 'comments.log')) };
+  }
+
+  const acceptAnything = "console.log('acknowledged=true');\n";
+  const baseTools = ['scripts/ci-parity-ack.mjs', 'scripts/ci-parity-families.mjs', 'bench/family-map.json'];
+
+  only('refuses when the base has no rule, so the pull request that adds it cannot acknowledge its own run', () => {
+    const result = runStep(['scripts/ci-parity-families.mjs', 'bench/family-map.json'], acceptAnything, 'admin');
+    expect(result.output).toBe('acknowledged=false');
+    expect(result.stdout + result.stderr).toContain('the base commit has no scripts/ci-parity-ack.mjs');
+    expect(result.commented).toBe(false);
+  });
+
+  only('refuses when the base has no family mapper or map', () => {
+    expect(runStep(['scripts/ci-parity-ack.mjs', 'bench/family-map.json'], null, 'admin').output).toBe('acknowledged=false');
+    expect(runStep(['scripts/ci-parity-ack.mjs', 'scripts/ci-parity-families.mjs'], null, 'admin').output).toBe('acknowledged=false');
+  });
+
+  only('applies the rule of the base to a pull request that replaced it with one that accepts anything', () => {
+    // The head copy would say acknowledged=true; the base rule sees a median of 0.5 and refuses.
+    const result = runStep(baseTools, acceptAnything, 'admin');
+    expect(result.output).toBe('acknowledged=false');
+    expect(result.stdout + result.stderr).toContain('the median ratio 0.5 is below 0.97');
+    expect(result.commented).toBe(false);
+  });
+});
+
+describe('the rule tests detect a broken rule', () => {
+  const source = readFileSync(path.join(ROOT, 'scripts', 'ci-parity-ack.mjs'), 'utf-8');
+
+  /** Cases every correct rule satisfies; each mutant below must fail at least one. */
+  const cases: Array<{ name: string; verdict: unknown; options: { specific: string[]; role?: string }; acknowledged: boolean }> = [
+    { name: 'allows an undecided row', verdict: verdict([vp9()]), options: { specific: [], role: 'admin' }, acknowledged: true },
+    { name: 'refuses a low median', verdict: verdict([undecided('video/clip.mp4->vp9/throughput', 0.9)]), options: { specific: [], role: 'admin' }, acknowledged: false },
+    { name: 'refuses a non-maintainer', verdict: verdict([vp9()]), options: { specific: [], role: 'write' }, acknowledged: false },
+    { name: 'refuses a specific family', verdict: verdict([vp9()]), options: { specific: ['video'], role: 'admin' }, acknowledged: false },
+    {
+      name: 'refuses a credible slowdown',
+      verdict: verdict([undecided('video/clip.mp4->vp9/throughput', 1, { basis: 'speed-below-reference' })]),
+      options: { specific: [], role: 'admin' },
+      acknowledged: false,
+    },
+    {
+      name: 'refuses a quality row',
+      verdict: verdict([undecided('image/a.png->webp/ssim', 1, { metric: 'ssim' })]),
+      options: { specific: [], role: 'admin' },
+      acknowledged: false,
+    },
+    { name: 'refuses a baseline regression', verdict: verdict([vp9()], { baseline: { compared: 1, regressions: [{ id: 'x' }] } }), options: { specific: [], role: 'admin' }, acknowledged: false },
+  ];
+
+  const mutants: Array<[string, string, string]> = [
+    ['the median threshold removed', 'speed.median < PARITY_LINE', 'false'],
+    ['the role check removed', "if (!mayAcknowledge(role)) reasons.push(", 'if (false) reasons.push('],
+    ['the specific-family check removed', 'blocked.has(row.family)', 'false'],
+    ['the basis check removed', "row.basis !== UNDECIDED_BASIS || row.metric !== 'throughput'", 'false'],
+    ['the baseline regression check removed', 'verdict.baseline.regressions.length > 0', 'false'],
+  ];
+
+  async function failures(file: string): Promise<string[]> {
+    const mod = (await import(/* @vite-ignore */ `${file}?t=${Math.random()}`)) as { judgeAcknowledgement: typeof judgeAcknowledgement };
+    return cases.filter((c) => mod.judgeAcknowledgement(c.verdict, c.options).acknowledged !== c.acknowledged).map((c) => c.name);
+  }
+
+  it('passes every case on the real rule', async () => {
+    expect(await failures(path.join(ROOT, 'scripts', 'ci-parity-ack.mjs'))).toEqual([]);
+  });
+
+  it.each(mutants)('fails at least one case on a copy with %s', async (_label, from, to) => {
+    expect(source).toContain(from);
+    const dir = mkdtempSync(path.join(tmpdir(), 'parity-ack-mutant-'));
+    temps.push(dir);
+    const file = path.join(dir, 'mutant.mjs');
+    writeFileSync(file, source.replace(from, to));
+    expect((await failures(file)).length).toBeGreaterThan(0);
   });
 });

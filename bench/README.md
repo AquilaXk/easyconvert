@@ -151,7 +151,7 @@ compared against the base inside one job (#700), a maintainer can acknowledge su
    `tracked-slower-than-gap`) and never a quality row;
 2. its median ratio is at least 0.97 (the parity line);
 3. its family is in the pull request's family set only through the all-family rules (`"*"`): the change maps no file
-   specifically to that family (the `specific` list of `scripts/ci-parity-families.mjs`, `bench_specific_families` of the
+   specifically to that family (the `specific` list of `scripts/ci-parity-families.mjs`, computed in `verify`
    `changes` job). A row file maps by the rows that changed, and by every family when it cannot tell.
 
 The verdict must also be a strict, full speed run with no injected regression, no baseline regression and at least one
