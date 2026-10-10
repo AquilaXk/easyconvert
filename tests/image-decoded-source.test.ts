@@ -173,6 +173,38 @@ describe('convertImage on a plain PNG', () => {
     expect((await pipelineRuns(await png(4, false), target)).pngReads).toBe(1);
   });
 
+  /** Sample depths asked of the raw output by a conversion: the decode of the PNG is the first raw read, and the WebP path makes none. */
+  async function rawDepths(source: Buffer, target: string): Promise<unknown[]> {
+    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
+    const raw = proto.raw;
+    const depths: unknown[] = [];
+    vi.spyOn(proto, 'raw').mockImplementation(function (this: Sharp, ...args: unknown[]) {
+      depths.push((args[0] as { depth?: unknown } | undefined)?.depth);
+      return (raw as (...a: unknown[]) => Sharp).apply(this, args);
+    } as never);
+    try {
+      await convertImage(source, target, { quality: 70 }, 'plain.png', 'png');
+    } finally {
+      vi.restoreAllMocks();
+    }
+    return depths;
+  }
+
+  it.each([
+    ['jpg', 'uchar'],
+    ['jpeg', 'uchar'],
+    ['avif', 'ushort'],
+  ] as const)('decodes a 16-bit colour PNG once at %s samples for %s: only an 8-bit encoder takes the high byte', async (target, depth) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    const depths = await rawDepths(source, target);
+    expect(depths[0]).toBe(depth);
+  });
+
+  it('decodes a 16-bit colour PNG for WebP without a raw read: the encoder reads the PNG itself', async () => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    expect(await rawDepths(source, 'webp')).toEqual([]);
+  });
+
   it.each([
     ['jpg', (image: Sharp, content: ContentClass) => image.pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) }).jpeg(jpegOptionsFor(70, content))],
     ['webp', (image: Sharp) => image.webp(webpOptionsFor(70))],
