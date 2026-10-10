@@ -1,6 +1,17 @@
 import type { ConversionOptions } from '../src/lib/types';
 import { importProduct } from './product';
 
+type DispatchModule = typeof import('../src/lib/conversions/dispatch');
+type ConversionsModule = typeof import('../src/lib/conversions');
+
+/**
+ * The product modules are loaded once per process: a dynamic import resolves through the module loader hooks on every
+ * call (0.2 to 0.5 ms under tsx), which is time of the benchmark and not of the conversion, and which the reference
+ * tool never pays.
+ */
+let dispatchModule: Promise<DispatchModule> | undefined;
+let conversionsModule: Promise<ConversionsModule> | undefined;
+
 /**
  * Our side of every comparison goes through the project's single public conversion dispatcher, the entry point
  * every API route, batch job and queue worker uses: it picks the in-process engine or the native worker engine
@@ -18,7 +29,8 @@ export async function convertWithProject(
   options: ConversionOptions,
   filename: string
 ): Promise<ConvertedOutput> {
-  const { dispatchConversion } = await importProduct<typeof import('../src/lib/conversions/dispatch')>('lib/conversions/dispatch');
+  dispatchModule ??= importProduct<DispatchModule>('lib/conversions/dispatch');
+  const { dispatchConversion } = await dispatchModule;
   const result = await dispatchConversion(input, sourceFormat, targetFormat, options, filename);
   return { buffer: result.buffer, engineUsed: result.engineUsed };
 }
@@ -35,6 +47,7 @@ export async function convertInProcess(
   options: ConversionOptions,
   filename: string
 ): Promise<Buffer> {
-  const { convertFile } = await importProduct<typeof import('../src/lib/conversions')>('lib/conversions');
+  conversionsModule ??= importProduct<ConversionsModule>('lib/conversions');
+  const { convertFile } = await conversionsModule;
   return (await convertFile(input, sourceFormat, targetFormat, options, filename)).buffer;
 }
