@@ -337,6 +337,13 @@ describe('the known gaps', () => {
     expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
+    expect(issuesOf('pdf-ops/', true)).toEqual([695]);
+    expect(issuesOf('pdf-ops/', false)).toEqual([]);
+  });
+
+  it('accepts a family name with a hyphen in a row id', () => {
+    const gaps = validateGaps({ schemaVersion: 1, gaps: [{ id: 'pdf-ops/watermark.pdf->pdf/throughput', issue: 695, ratio: 0.83, note: 'n' }] });
+    expect(gaps.gaps.map((gap) => gap.id)).toEqual(['pdf-ops/watermark.pdf->pdf/throughput']);
   });
 });
 

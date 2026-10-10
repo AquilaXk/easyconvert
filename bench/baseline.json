@@ -1839,7 +1839,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9462021661991196
+      "ratio": 0.9159162996112455
     },
     "pdf-ops/decrypt.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -1899,7 +1899,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 2.341993066004709
+      "ratio": 3.716227985212423
     },
     "pdf-ops/merge.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -1959,7 +1959,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.9678230747166325
+      "ratio": 0.8918408314964582
     },
     "pdf-ops/protect.pdf->pdf/word_f1": {
       "direction": "higher",
@@ -2029,7 +2029,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.7476435192872121
+      "ratio": 0.8602453424467948
     },
     "pdf-ops/watermark.pdf->pdf/word_f1": {
       "direction": "higher",
