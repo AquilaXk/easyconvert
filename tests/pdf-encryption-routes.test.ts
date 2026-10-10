@@ -9,7 +9,7 @@ import { conversionQueue, processConversionJob } from '../src/lib/queue/conversi
 import { graphScheduler } from '../src/lib/queue/graph';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData } from '../src/lib/types';
-import { AES_256, RC4_128, plainPdf, qpdfEncrypt, pdftotext } from './helpers/encrypted-pdf-fixtures';
+import { AES_256, RC4_128, pdfinfoPages, plainPdf, qpdfEncrypt, pdftotext } from './helpers/encrypted-pdf-fixtures';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -174,9 +174,9 @@ describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted 
       updateProgress: async () => {},
     } as never;
     const result = await processGraphNodeJob(job, undefined, s3Storage);
-    const merged = s3Storage.getObject(result.resultKey)?.buffer;
-    expect(merged).toBeDefined();
-    const text = pdftotext(merged as Buffer);
+    const merged = s3Storage.getObject(result.resultKey)?.buffer as Buffer;
+    expect(pdfinfoPages(merged)).toBe(2);
+    const text = pdftotext(merged);
     expect(text).toContain('Alpha body');
     expect(text).toContain('Beta body');
   });

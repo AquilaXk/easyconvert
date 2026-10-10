@@ -127,6 +127,8 @@ describe.skipIf(toolsMissing)('watermark of an encrypted PDF', () => {
         const restricted = (await fixtures())['empty user password, owner password, modify none'];
         const error = await rejection(applyPdfWatermark(restricted, WATERMARK, { password: '' }));
         expect(error).toBeInstanceOf(PdfPermissionDeniedError);
+        expect((error as PdfPermissionDeniedError).status).toBe(HTTP_UNPROCESSABLE);
+        expect((error as Error).message).toMatch(/forbid .*modifying content/);
       });
 
       it('watermarks a modify-restricted file when the owner password is supplied and verified by qpdf', async () => {
@@ -166,6 +168,8 @@ describe.skipIf(toolsMissing)('watermark of an encrypted PDF', () => {
   it('refuses a PDF whose structure cannot be inspected with a typed 400 instead of loading it', async () => {
     const error = await rejection(applyPdfWatermark(Buffer.from('%PDF-1.7\nnot a real file\n'), WATERMARK));
     expect(error).toBeInstanceOf(PdfStructureError);
+    expect((error as Error).message).toMatch(/no startxref/);
+    expect(classifyJobFailure(error)).toMatchObject({ code: 'PdfStructureError', status: 400, retryable: false });
   });
 });
 
@@ -317,13 +321,26 @@ describe('ignoreEncryption stays out of the source tree', () => {
     });
   }
 
+  function filesIgnoringEncryption(dir: string): string[] {
+    return sourceFiles(dir)
+      .filter((file) => /ignoreEncryption\s*:\s*true/.test(fs.readFileSync(file, 'utf-8')))
+      .map((file) => path.relative(dir, file));
+  }
+
   it('finds no `ignoreEncryption: true` under src', () => {
-    const offenders = sourceFiles(SRC_DIR).filter((file) => /ignoreEncryption\s*:\s*true/.test(fs.readFileSync(file, 'utf-8')));
-    expect(offenders.map((file) => path.relative(SRC_DIR, file))).toEqual([]);
+    expect(filesIgnoringEncryption(SRC_DIR)).toEqual([]);
   });
 
-  it('keeps the scan itself honest: it sees the pdf-lib loads under src', () => {
-    const loads = sourceFiles(SRC_DIR).filter((file) => fs.readFileSync(file, 'utf-8').includes('PDFDocument.load('));
-    expect(loads.length).toBeGreaterThan(0);
+  it('would catch it: the scan reports a planted offender and ignores `ignoreEncryption: false`', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-571-scan-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'nested'));
+      fs.writeFileSync(path.join(dir, 'nested', 'bad.ts'), 'await PDFDocument.load(bytes, {ignoreEncryption:true});');
+      fs.writeFileSync(path.join(dir, 'bad-spaced.ts'), 'PDFDocument.load(bytes, { ignoreEncryption : true })');
+      fs.writeFileSync(path.join(dir, 'good.ts'), 'PDFDocument.load(bytes, { ignoreEncryption: false })');
+      expect(filesIgnoringEncryption(dir).sort()).toEqual(['bad-spaced.ts', path.join('nested', 'bad.ts')]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
