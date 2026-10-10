@@ -13,7 +13,7 @@
     "raw": { "bench": null },
     "data": { "bench": null },
     "ebook": { "bench": null },
-    "pdf-ops": { "bench": null },
+    "pdf-ops": { "bench": "pdf-ops" },
     "vector": { "bench": null },
     "hdr-image": { "bench": null }
   },

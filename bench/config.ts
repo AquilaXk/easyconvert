@@ -148,8 +148,8 @@ export const MAX_GAP_ENTRIES = 500;
  * subsets reach every target format and every encoder path once (tests/bench-quick-subset.test.ts keeps it so). Image: a
  * photographic JPEG to WebP, a lossless photographic PNG to AVIF (4:2:0, the hardest AVIF input), graphics to AVIF at
  * 4:4:4 and grey line art to AVIF at 4:0:0, and a graphic source to JPEG. Audio: both sources with one lossy and the
- * lossless target. Video: two of the three codecs (HEVC differs only in the encoder binary). Compression, OCR and
- * document: every case, which are seconds each. The nightly run measures all of them.
+ * lossless target. Video: two of the three codecs (HEVC differs only in the encoder binary). Compression, OCR, PDF
+ * operations and document: every case, which are seconds each. The nightly run measures all of them.
  */
 export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = {
   image: ['photo-a.jpg->webp', 'photo-b.png->avif', 'screenshot.png->avif', 'lineart.png->avif', 'lineart.png->jpg', 'lineart.png->webp'],
@@ -158,4 +158,5 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
   ocr: null,
   document: null,
   compression: null,
+  'pdf-ops': null,
 };

@@ -43,5 +43,6 @@ describe('the quick subsets', () => {
     expect(QUICK_SUBSET.ocr).toBeNull();
     expect(QUICK_SUBSET.document).toBeNull();
     expect(QUICK_SUBSET.compression).toBeNull();
+    expect(QUICK_SUBSET['pdf-ops']).toBeNull();
   });
 });

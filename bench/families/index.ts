@@ -5,6 +5,7 @@ import { runCompression } from './compression';
 import { runDocument } from './document';
 import { runImage } from './image';
 import { runOcr } from './ocr';
+import { runPdfOps } from './pdf-ops';
 import { runVideo } from './video';
 
 export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
@@ -14,4 +15,5 @@ export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   ocr: runOcr,
   document: runDocument,
   compression: runCompression,
+  'pdf-ops': runPdfOps,
 };

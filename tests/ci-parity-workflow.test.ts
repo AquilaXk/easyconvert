@@ -340,7 +340,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {
@@ -348,7 +348,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression', unmapped: '', changed: 'true' });
+    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', unmapped: '', changed: 'true' });
     expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
   });
 

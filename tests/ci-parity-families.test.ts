@@ -24,7 +24,7 @@ import {
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
 const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
-const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression'];
+const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
 describe('the map', () => {
@@ -46,7 +46,7 @@ describe('the map', () => {
 
   it('lists the conversion families that still have no reference-compared rows', () => {
     const unbenchmarked = [...MAP.families].filter(([, bench]) => bench === null).map(([name]) => name).sort();
-    expect(unbenchmarked).toEqual(['cad', 'data', 'ebook', 'font', 'hdr-image', 'pdf-ops', 'raw', 'vector']);
+    expect(unbenchmarked).toEqual(['cad', 'data', 'ebook', 'font', 'hdr-image', 'raw', 'vector']);
   });
 
   it('has a quick subset for every family, and every named case exists in the recorded baseline', () => {
@@ -117,7 +117,8 @@ describe('classifying changed paths', () => {
     ['the RAW decode worker', 'src/worker/raw-decode-worker.ts', [], ['raw']],
     ['a data file', 'src/lib/conversions/parquet-writer.ts', [], ['data']],
     ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', [], ['ebook']],
-    ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', [], ['pdf-ops']],
+    ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', ['pdf-ops'], []],
+    ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
     ['a vector file', 'src/lib/conversions/svg-geometry.ts', [], ['vector']],
     ['an HDR file', 'src/lib/conversions/openexr-decode.ts', [], ['hdr-image']],
   ])('maps %s', (_name, file, benchmarked, unmapped) => {
