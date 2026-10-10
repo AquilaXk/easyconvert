@@ -139,6 +139,29 @@ that family; the harness, the gate, the map, the corpus, `scripts/ci-parity-*.mj
 `bench/baseline.json` and `bench/parity-gaps.json` map to the families of the rows whose entries changed against the base
 (`PR_BASE_SHA`; every family when the base cannot be read or a row names an unknown family).
 
+### Acknowledging a speed run the harness could not decide (temporary)
+
+Speed is measured in the pull request's run against a reference that runs on a shared runner, so a row whose interval
+straddles the parity line even at the cap on pairs can fail a change that never touched it. Until the speed rows are
+compared against the base inside one job (#700), a maintainer can acknowledge such a run with the `parity-ack` label. The
+`verify` job then passes a failed `parity speed` only when the label counts and **every** failing row of that run's
+`parity-verdict.json` meets all of:
+
+1. its basis is `speed-unstable-at-cap` on a throughput row: never a credible slowdown (`speed-below-reference`,
+   `tracked-slower-than-gap`) and never a quality row;
+2. its median ratio is at least 0.97 (the parity line);
+3. its family is in the pull request's family set only through the all-family rules (`"*"`): the change maps no file
+   specifically to that family (the `specific` list of `scripts/ci-parity-families.mjs`, `bench_specific_families` of the
+   `changes` job). A row file maps by the rows that changed, and by every family when it cannot tell.
+
+The verdict must also be a strict, full speed run with no injected regression, no baseline regression and at least one
+failing row; otherwise `verify` fails as before, label or not. The label counts only when its latest `labeled` event was
+made by a user whose repository role is `admin` or `maintain` (read through the API in `verify`); a label from anyone else
+changes nothing. `verify` posts one comment per pull request (updated in place, marked `<!-- parity-ack -->`) that lists the
+acknowledged rows with ratio, interval and pairs, and the rule, so the record stays on the pull request. A new push or label
+event starts a new run, and the rule is applied to that run's verdict. The rule is `scripts/ci-parity-ack.mjs`; remove it
+and the label step of `verify` when #700 lands.
+
 A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
 passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
 carry the commit of a CI run) have to lie within the speed-ratio interval the job measured for the row, widened by

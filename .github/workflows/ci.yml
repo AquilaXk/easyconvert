@@ -42,6 +42,9 @@ jobs:
       # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
       bench_families: ${{ steps.families.outputs.families }}
       bench_unmapped: ${{ steps.families.outputs.unmapped }}
+      # The part of bench_families that the pull request maps files to specifically (not only through the all-family
+      # rules): the `parity-ack` label never acknowledges a speed row of these families.
+      bench_specific_families: ${{ steps.families.outputs.specific }}
       bench_changed: ${{ steps.families.outputs.changed }}
 
     env:
@@ -94,22 +97,26 @@ jobs:
           ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops
         run: |
           families=""
+          specific=""
           unmapped=""
           if [ "$EVENT_NAME" = pull_request ]; then
             if [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
               mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)"
               printf '%s\n' "$mapped"
               families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
+              specific="$(printf '%s\n' "$mapped" | sed -n 's/^specific=//p')"
               unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
             else
               # Fail open: without a comparable base, measure every family.
               families="$ALL_BENCH_FAMILIES"
+              specific="$ALL_BENCH_FAMILIES"
             fi
           fi
           changed=false
           if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
           {
             echo "families=$families"
+            echo "specific=$specific"
             echo "unmapped=$unmapped"
             echo "changed=$changed"
           } >> "$GITHUB_OUTPUT"
@@ -706,7 +713,60 @@ jobs:
     needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
+      # Temporary, until the speed rows are compared against the base inside one job (#700): a maintainer can acknowledge
+      # a failed `parity speed` whose every failing row is undecided noise (scripts/ci-parity-ack.mjs states the rule).
+      # The label counts only when its latest `labeled` event was made by someone with the admin or maintain role.
+      - name: Checkout repository
+        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Fetch the speed verdict
+        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: parity-speed-results
+          path: parity-speed-results
+
+      - name: Decide whether a failed speed parity is acknowledged
+        id: ack
+        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SPECIFIC_FAMILIES: ${{ needs.changes.outputs.bench_specific_families }}
+        run: |
+          acknowledged=false
+          actor="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/events" --jq '.[] | select(.event == "labeled" and .label.name == "parity-ack") | .actor.login' | tail -n 1)" || actor=""
+          role=""
+          if [ -n "$actor" ]; then
+            role="$(gh api "repos/$REPOSITORY/collaborators/$actor/permission" --jq '.role_name' || true)"
+          fi
+          echo "parity-ack label added by: ${actor:-unknown} (${role:-no role})"
+          result="$(node scripts/ci-parity-ack.mjs --verdict parity-speed-results/parity-verdict.json --specific "$SPECIFIC_FAMILIES" --role "$role" --actor "$actor" --run-url "$RUN_URL" --comment-file "$RUNNER_TEMP/parity-ack-comment.md")"
+          printf '%s\n' "$result"
+          if [ "$(printf '%s\n' "$result" | sed -n 's/^acknowledged=//p')" = true ]; then
+            acknowledged=true
+            # One comment per pull request, updated in place, so the record of what was acknowledged stays on it.
+            comment_id="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --jq '.[] | select(.body | startswith("<!-- parity-ack -->")) | .id' | head -n 1)"
+            if [ -n "$comment_id" ]; then
+              gh api --method PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --field "body=@$RUNNER_TEMP/parity-ack-comment.md" > /dev/null
+            else
+              gh api --method POST "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --field "body=@$RUNNER_TEMP/parity-ack-comment.md" > /dev/null
+            fi
+          else
+            printf '%s\n' "$result" | sed -n 's/^reason=/::error::parity-ack refused: /p'
+          fi
+          echo "acknowledged=$acknowledged" >> "$GITHUB_OUTPUT"
+
       - name: Require every job to pass, or to be skipped for a documentation-only change
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -721,6 +781,7 @@ jobs:
           CONTAINER_RESULT: ${{ needs.container.result }}
           PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
           PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
+          SPEED_ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged }}
         run: |
           echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
           echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
@@ -750,6 +811,8 @@ jobs:
               failed=1
             fi
           fi
+          # A failed speed run is accepted only when the acknowledgement step passed it (parity-ack label, see above).
+          if [ "$PARITY_SPEED_RESULT" = failure ] && [ "$SPEED_ACKNOWLEDGED" = true ] && [ "$speed_expected" = success ]; then speed_expected=failure; fi
           if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"

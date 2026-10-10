@@ -337,14 +337,14 @@ describe('the step that maps changed paths to families', () => {
   const only = it.skipIf(skipUnless('git, bash and node', available));
 
   only('measures the family of a changed conversion file, and nothing for a change outside the conversion code', () => {
-    expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video', unmapped: '', changed: 'true' });
-    expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+    expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', specific: 'compression', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video', specific: 'image,video', unmapped: '', changed: 'true' });
+    expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', specific: '', unmapped: '', changed: 'false' });
   });
 
   only('reports a changed family with no bench rows, so the parity jobs can fail it', () => {
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', unmapped: 'cad', changed: 'true' });
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', unmapped: 'cad,font', changed: 'true' });
+    expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', specific: '', unmapped: 'cad', changed: 'true' });
+    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', specific: 'ocr', unmapped: 'cad,font', changed: 'true' });
   });
 
   only('measures every family when the dispatcher changes', () => {
@@ -356,8 +356,8 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', specific: 'image,video,audio,ocr,document,compression,pdf-ops', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', specific: '', unmapped: '', changed: 'false' });
   });
 
   it('is exposed as outputs of the changes job', () => {
