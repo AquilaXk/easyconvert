@@ -6,6 +6,7 @@ import {
   UnsupportedArchiveMethodError,
 } from '../types';
 import {
+  ARCHIVE_RATIO_BASELINE_BYTES,
   assertSafeArchiveEntryName,
   assertSafeArchiveListing,
   UnsafeArchiveError,
@@ -107,6 +108,11 @@ function toSafeNumber(value: bigint, what: string): number {
   return Number(value);
 }
 
+/** A declared size past what a JavaScript number holds is far over any cap; it is kept as the largest safe integer so the cap check, not the parse, answers it. */
+function clampedSize(value: bigint): number {
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value);
+}
+
 interface EndRecord {
   position: number;
   entryCount: number;
@@ -117,24 +123,55 @@ interface EndRecord {
   directoryEnd: number;
 }
 
-/** The one end-of-central-directory record of the archive; two candidates are ambiguous and refused. */
+const END_SIGNATURE_BYTES = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+
+interface EndCandidate {
+  position: number;
+  /** First byte after the record and its comment. */
+  end: number;
+}
+
+/**
+ * Whether an end record could belong to a real archive: a ZIP64 locator precedes it, or the directory it describes
+ * starts with a central directory record right before it (or is empty). Four bytes of compressed data that happen to
+ * spell the signature fail this.
+ */
+function isPlausibleEndRecord(buf: Buffer, position: number): boolean {
+  if (position >= ZIP64_LOCATOR_BYTES && buf.readUInt32LE(position - ZIP64_LOCATOR_BYTES) === ZIP64_LOCATOR_SIGNATURE) return true;
+  const entries = buf.readUInt16LE(position + 10);
+  const size = buf.readUInt32LE(position + 12);
+  if (size === 0) return entries === 0;
+  return entries > 0 && size <= position && buf.readUInt32LE(position - size) === CENTRAL_SIGNATURE;
+}
+
+/**
+ * The one end-of-central-directory record of the archive. Readers disagree about which signature to trust when a
+ * second archive sits in the first one's comment (`unzip` and Python take the last, 7-Zip the one the file ends
+ * with), so an archive where a plausible end record lies inside another plausible end record's comment is refused,
+ * whether or not the inner one ends the file. A plausible record before the directory it belongs to (a stored ZIP
+ * inside an entry) is data and does not count.
+ */
 function findEndRecord(buf: Buffer): number {
   const windowStart = Math.max(0, buf.length - END_RECORD_BYTES - MAX_END_COMMENT_BYTES);
-  const exact: number[] = [];
-  const loose: number[] = [];
-  let at = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]), buf.length - END_RECORD_BYTES);
+  const candidates: EndCandidate[] = [];
+  let at = buf.lastIndexOf(END_SIGNATURE_BYTES, buf.length - END_RECORD_BYTES);
   while (at >= windowStart) {
-    const commentLength = buf.readUInt16LE(at + 20);
-    const end = at + END_RECORD_BYTES + commentLength;
-    if (end === buf.length) exact.push(at);
-    else if (end < buf.length) loose.push(at);
+    const end = at + END_RECORD_BYTES + buf.readUInt16LE(at + 20);
+    if (end <= buf.length) candidates.push({ position: at, end });
     if (at === 0) break;
-    at = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]), at - 1);
+    at = buf.lastIndexOf(END_SIGNATURE_BYTES, at - 1);
   }
-  const candidates = exact.length > 0 ? exact : loose;
   if (candidates.length === 0) throw malformed('end of central directory record not found');
-  if (candidates.length > 1) throw malformed('more than one end of central directory record; the archive is ambiguous');
-  return candidates[0];
+  candidates.reverse();
+  const plausible = candidates.filter((candidate) => isPlausibleEndRecord(buf, candidate.position));
+  const pool = plausible.length > 0 ? plausible : candidates;
+  let reach = -1;
+  for (const candidate of pool) {
+    if (candidate.position < reach) throw malformed('more than one end of central directory record; the archive is ambiguous');
+    reach = Math.max(reach, candidate.end);
+  }
+  const ending = pool.filter((candidate) => candidate.end === buf.length);
+  return (ending.length > 0 ? ending[ending.length - 1] : pool[pool.length - 1]).position;
 }
 
 function readEndRecord(buf: Buffer): EndRecord {
@@ -261,8 +298,7 @@ function parseCentralEntry(buf: Buffer, at: number, directoryEnd: number): { ent
     };
     if (uncompressedSize === MAX_U32) {
       const big = take('uncompressed size');
-      // A size past what a JavaScript number holds is far over any cap; the caller turns it into a 413.
-      uncompressedSize = big > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(big);
+      uncompressedSize = clampedSize(big);
     }
     if (compressedSize === MAX_U32) compressedSize = toSafeNumber(take('compressed size'), 'the compressed size');
     if (storedOffset === MAX_U32) storedOffset = toSafeNumber(take('local header offset'), 'the local header offset');
@@ -350,7 +386,7 @@ function locateEntryData(buf: Buffer, entry: ZipDirectoryEntry, directoryStart: 
       const field = zip64Field(fields, 'a local header size');
       let cursor = field.start;
       if (localUncompressed === MAX_U32 && cursor + ZIP64_FIELD_BYTES <= field.end) {
-        localUncompressed = toSafeNumber(buf.readBigUInt64LE(cursor), 'the uncompressed size');
+        localUncompressed = clampedSize(buf.readBigUInt64LE(cursor));
         cursor += ZIP64_FIELD_BYTES;
       }
       if (localCompressed === MAX_U32 && cursor + ZIP64_FIELD_BYTES <= field.end) {
@@ -463,8 +499,12 @@ export async function readZipFiles(
     throw new ArchivePasswordRequiredError('ZIP archive is password protected. A password is required to extract.');
   }
 
-  // Names, links and counts of every entry. The byte caps follow below for the selected entries only.
-  const listing = entries.map(listedEntryOf);
+  // Names, links and counts of every entry. The byte caps follow below for the selected entries only, against the real
+  // limits, so the listing is not given file sizes (a directory keeps its size: it must declare none).
+  const listing = entries.map((entry) => {
+    const listed = listedEntryOf(entry);
+    return listed.isDirectory ? listed : { ...listed, sizeBytes: 0 };
+  });
   for (const listed of listing) assertSafeArchiveEntryName(listed.path);
   let skippedLinks: string[];
   try {
@@ -501,7 +541,7 @@ export async function readZipFiles(
     }
     selected.push({ entry, data: ranges[index], filename });
   });
-  if (buf.length > 0 && declaredTotal / buf.length > limits.MAX_RATIO) {
+  if (declaredTotal > ARCHIVE_RATIO_BASELINE_BYTES && buf.length > 0 && declaredTotal / buf.length > limits.MAX_RATIO) {
     throw new DecompressionLimitError(
       `Archive bomb detected: compression ratio (${(declaredTotal / buf.length).toFixed(1)}:1) exceeds ${limits.MAX_RATIO}:1 limit`
     );

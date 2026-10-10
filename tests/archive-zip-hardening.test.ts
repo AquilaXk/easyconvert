@@ -394,6 +394,23 @@ describe('ZIP64 fields that lie are refused', () => {
     expect(statusOf(error)).toBe(413);
   });
 
+  const hugeEntry = (name: string): CraftedEntry =>
+    stored(name, 'small', {
+      compressedSize: 0xffffffff,
+      uncompressedSize: 0xffffffff,
+      centralExtra: zip64Extra({ uncompressed: 1n << 60n, compressed: 5n }),
+      localExtra: zip64Extra({ uncompressed: 1n << 60n, compressed: 5n }),
+    });
+
+  for (const [label, names] of [['one entry', ['huge.bin']], ['several entries', ['h1.bin', 'h2.bin', 'h3.bin']]] as const) {
+    it(`${label} declaring 2^60 bytes is a 413 that names the real limit`, async () => {
+      const error = await rejection(() => extractZipArchive(craftZip(names.map(hugeEntry))));
+      expect(error).toBeInstanceOf(DecompressionLimitError);
+      expect(statusOf(error)).toBe(413);
+      expect((error as Error).message).toMatch(/exceeds limit of 524288000 bytes/);
+    });
+  }
+
   it('a ZIP64 compressed size beyond the file is malformed', async () => {
     const archive = saturated(zip64Extra({ uncompressed: 5n, compressed: 1n << 40n }));
     const error = await rejection(() => extractZipArchive(archive));
@@ -440,6 +457,69 @@ describe('a second end record hidden in the archive comment is ambiguous', () =>
     const error = await rejection(() => extractZipArchive(archive));
     expect(error).toBeInstanceOf(CorruptStreamError);
     expect((error as Error).message).toMatch(/end of central directory/i);
+  });
+});
+
+describe('an end record hidden whose comment stops short of the end of the file is ambiguous too', () => {
+  const hiddenArchive = (): Buffer => {
+    const inner = craftZip([stored('evil.txt', 'evil')]);
+    return craftZip([stored('good.txt', 'good')], { comment: Buffer.concat([inner, Buffer.from('JUNK')]) });
+  };
+
+  oracleTest(
+    'unzip lists the hidden archive while the real directory lists another file, so the reader refuses it',
+    ['unzip'],
+    async () => {
+      const archive = hiddenArchive();
+      // unzip warns about the extra bytes (exit 1) and lists the archive hidden in the comment.
+      const listing = spawnSync(getOracleToolPath('unzip') as string, ['-Z1', writeFixture('hidden-loose.zip', archive)], { encoding: 'utf8' });
+      expect(listing.stdout.trim()).toBe('evil.txt');
+      const error = await rejection(() => extractZipArchive(archive));
+      expect(error).toBeInstanceOf(CorruptStreamError);
+      expect(statusOf(error)).toBe(400);
+      expect((error as Error).message).toMatch(/more than one end of central directory record/);
+    }
+  );
+
+  it('a stored ZIP inside the last entry is data, not a second archive', async () => {
+    const nested = craftZip([stored('inner.txt', 'nested content')]);
+    const outer = craftZip([stored('a.txt', 'first'), { name: 'inner.zip', data: nested, method: 0 }]);
+    const files = await extractZipArchive(outer);
+    expect(files.map((f) => f.filename)).toEqual(['a.txt', 'inner.zip']);
+    expect(sha256(files[1].buffer)).toBe(sha256(nested));
+  });
+
+  it('trailing bytes after a single end record are tolerated', async () => {
+    const files = await extractZipArchive(Buffer.concat([craftZip([stored('only.txt', 'one')]), Buffer.from('trailer')]));
+    expect(files.map((f) => f.filename)).toEqual(['only.txt']);
+  });
+});
+
+describe('the compression ratio counts once the output passes the small-entry baseline', () => {
+  const repetitive = (bytes: number): Buffer => craftZip([{ name: 'text.txt', data: Buffer.alloc(bytes, 0x61) }]);
+
+  oracleTest(
+    'a 64 KiB text entry in a few hundred bytes is read, as unzip and 7z read it',
+    ['unzip', '7z'],
+    async () => {
+      const archive = repetitive(64 * 1024);
+      expect(archive.length).toBeLessThan(300);
+      const file = writeFixture('small-ratio.zip', archive);
+      expect(unzipTest(file).status).toBe(0);
+      expect(sevenZipTest(file)).toBe(0);
+      const files = await extractZipArchive(archive);
+      expect(files[0].buffer.length).toBe(64 * 1024);
+      expect(files[0].buffer.every((byte) => byte === 0x61)).toBe(true);
+      const tar = await convertArchive(archive, 'zip', 'tar', {}, 'small-ratio.zip');
+      expect(tar.size).toBeGreaterThan(64 * 1024);
+    }
+  );
+
+  it('the same repetition past the baseline is a 413 naming the ratio', async () => {
+    const error = await rejection(() => extractZipArchive(repetitive(4 * MIB)));
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect(statusOf(error)).toBe(413);
+    expect((error as Error).message).toMatch(/compression ratio \(\d+\.\d:1\) exceeds 100:1/);
   });
 });
 

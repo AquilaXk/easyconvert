@@ -40,6 +40,7 @@ import {
   cleanupDirectoryTree,
   sanitizeLeafFilename,
   summarizeInspectionSafety,
+  ARCHIVE_RATIO_BASELINE_BYTES,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
@@ -2159,6 +2160,8 @@ export function decompressXz(inputBuffer: Buffer): Buffer {
       return execFileSync(xzBin, ['-d', '-c', '-q', `--memlimit-decompress=${NATIVE_XZ_MEMLIMIT_BYTES}`], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        // Its diagnostics are captured, not inherited: the in-process reader names the defect.
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOBUFS') {
@@ -3028,7 +3031,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
       // 2. Guard against compression ratio bomb (evaluated beyond 1MB threshold)
       if (
         inputBuffer.length > 0 &&
-        totalBytes > 1024 * 1024 &&
+        totalBytes > ARCHIVE_RATIO_BASELINE_BYTES &&
         totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
       ) {
         destroyed = true;

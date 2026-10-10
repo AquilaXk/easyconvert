@@ -181,6 +181,13 @@ const KNOWN_LISTING_KEYS = new Set([
 
 /** Deepest entry path (in segments) an archive may contain or an extraction may produce. */
 export const MAX_ENTRY_PATH_DEPTH = 256;
+
+/**
+ * Decoded output below which the compression ratio is not judged (1 MiB). A few kilobytes of repetitive text deflate
+ * past 100:1 without being a bomb, and the absolute caps already bound what a small output can cost. The gzip reader
+ * and the ZIP reader share this floor.
+ */
+export const ARCHIVE_RATIO_BASELINE_BYTES = 1024 * 1024;
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;

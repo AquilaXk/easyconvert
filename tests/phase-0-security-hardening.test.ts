@@ -85,7 +85,7 @@ describe('Phase 0: Emergency Security Hardening & Fail-Closed Enforcement', () =
     });
 
     it('rejects extreme zip bombs that exceed 100:1 ratio', async () => {
-      const hugeZeroes = Buffer.alloc(150000, 0); // 150KB
+      const hugeZeroes = Buffer.alloc(4 * 1024 * 1024, 0); // 4 MiB, past the 1 MiB output the ratio is judged from
       const zip = new JSZip();
       zip.file('bomb.bin', hugeZeroes, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
       const bombBuffer = await zip.generateAsync({ type: 'nodebuffer' });
