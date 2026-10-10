@@ -17,7 +17,10 @@ import {
   processConversionJob,
   attachJobLifecycleListeners,
   attachInputCleanupOnCompletion,
+  allConversionQueues,
+  resourceQueues,
 } from '../src/lib/queue/conversion-queue';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
@@ -364,6 +367,62 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       await worker.close();
       expect(err.name).toBe('JobTimeoutError');
       expect(runs).toBe(1);
+    }, 15000);
+
+    it('never creates a job record when it claims the deadline of a job its queue does not hold', async () => {
+      const queue = connect('claim-missing');
+      const ghost = { id: 'ghost-job' } as never;
+      expect(await queue._claimDeadline(ghost, Date.now() + 60_000)).toBeUndefined();
+      expect(await admin.exists(keyOf('claim-missing', 'job:ghost-job'))).toBe(0);
+
+      const job = await queue.add('convert', { payload: 'removed' }, { timeout: 60_000 });
+      await queue._popNextWaiting();
+      await admin.del(keyOf('claim-missing', `job:${job.id}`));
+      expect(await queue._claimDeadline(job, Date.now() + 60_000)).toBeUndefined();
+      expect(await admin.exists(keyOf('claim-missing', `job:${job.id}`))).toBe(0);
+    });
+
+    it('records the deadline on the job it belongs to, once, and returns the recorded one to a later claim', async () => {
+      const queue = connect('claim-once');
+      const job = await queue.add('convert', { payload: 'claimed' }, { timeout: 60_000 });
+      const first = Date.now() + 60_000;
+      expect(await queue._claimDeadline(job, first)).toBe(first);
+      expect(await queue._claimDeadline(job, first + 5_000)).toBe(first);
+      const hash = await admin.hgetall(keyOf('claim-once', `job:${job.id}`));
+      expect(hash.deadlineAt).toBe(String(first));
+      expect(hash.state).toBe('waiting');
+    });
+
+    it('claims on the queue that holds the job when a worker takes it through the default queue, and leaves no stub record elsewhere', async () => {
+      const worker = new Worker([...allConversionQueues], async (job) => ({ jobId: job.id, status: 'completed' }) as never, { concurrency: 1 });
+      try {
+        const completed = nextEvent(worker, 'completed');
+        const job = await enqueueConversionJob(
+          resourceQueues.light,
+          'convert',
+          {
+            jobId: '',
+            originalFilename: 'a.csv',
+            sourceFormat: 'csv',
+            targetFormat: 'json',
+            fileSize: 1,
+            options: {},
+            inputBufferBase64: Buffer.from('a\n1\n').toString('base64'),
+          },
+          { attempts: 1 },
+          { tier: 'free', inputBytes: 8 }
+        );
+        await completed;
+        const keys = await admin.keys(`*:job:${job.id}`);
+        expect(keys).toHaveLength(1);
+        expect(keys[0]).toContain('easyconvert-jobs:light');
+        const hash = await admin.hgetall(keys[0]);
+        expect(hash.state).toBe('completed');
+        expect(Number(hash.deadlineAt)).toBeGreaterThan(Date.now());
+        await admin.del(...keys);
+      } finally {
+        await worker.close();
+      }
     }, 15000);
 
     it('does not recover a stalled id twice when two sweepers race', async () => {

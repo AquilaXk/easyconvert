@@ -383,6 +383,23 @@ if (origConversionQueueOnJobFailed) {
   };
 }
 
+// The default queue is popped from on behalf of the resource queues (above), so a job it hands out lives in one of
+// them: the deadline is claimed where the job is, and never written to a queue that does not hold it.
+const origConversionQueueClaimDeadline = conversionQueue._claimDeadline?.bind(conversionQueue);
+if (origConversionQueueClaimDeadline) {
+  conversionQueue._claimDeadline = async (job, candidateAt) => {
+    const direct = await origConversionQueueClaimDeadline(job, candidateAt);
+    if (direct !== undefined) return direct;
+    for (const q of Object.values(resourceQueues)) {
+      if (q._claimDeadline) {
+        const recorded = await q._claimDeadline(job, candidateAt);
+        if (recorded !== undefined) return recorded;
+      }
+    }
+    return undefined;
+  };
+}
+
 const origConversionQueueRequeue = conversionQueue._requeue?.bind(conversionQueue);
 if (origConversionQueueRequeue) {
   conversionQueue._requeue = async (job, delayMs) => {

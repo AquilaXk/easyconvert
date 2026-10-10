@@ -254,9 +254,11 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   /**
    * @internal Distributed engines: records `candidateAt` as the job's absolute deadline unless one is already
    * recorded, and returns the recorded one. The deadline outlives the attempt (a retry or a stall requeue loads the
-   * job from the store, where `opts` is the original), so every attempt of a job shares one deadline.
+   * job from the store, where `opts` is the original), so every attempt of a job shares one deadline. Resolves
+   * undefined, writing nothing, when this queue holds no record of the job (it lives in another queue, or was removed):
+   * a claim never creates a job record.
    */
-  _claimDeadline?(job: Job<T, R>, candidateAt: number): Promise<number>;
+  _claimDeadline?(job: Job<T, R>, candidateAt: number): Promise<number | undefined>;
   /** Recovers active jobs whose worker stopped heartbeating. Returns the jobs it moved to failed. */
   _recoverStalledJobs?(): Promise<Job<T, R>[]>;
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
@@ -804,7 +806,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
 
     const startedAt = Date.now();
-    const claimedAt = queue._claimDeadline ? await queue._claimDeadline(job, startedAt + budgetMs) : startedAt + budgetMs;
+    const claimedAt = (await queue._claimDeadline?.(job, startedAt + budgetMs)) ?? startedAt + budgetMs;
     job.opts.deadlineAt = Math.min(job.opts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedAt);
     const timeoutMs = Math.min(budgetMs, job.opts.deadlineAt - startedAt);
     if (timeoutMs <= 0) {
@@ -1201,6 +1203,21 @@ else
   redis.call('HSET', KEYS[1], 'state', 'waiting', 'attemptsMade', ARGV[2], 'failedReason', ARGV[3])
 end
 return 1
+`;
+
+/** Reply of CLAIM_DEADLINE_LUA_SCRIPT for a job hash that does not exist. */
+export const CLAIM_DEADLINE_NO_JOB = -1;
+
+export const CLAIM_DEADLINE_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: candidate deadline (absolute time in milliseconds)
+-- Records the deadline on an existing job hash only if none is recorded, and returns the recorded one. A job hash
+-- that does not exist is never created (HSETNX alone would write a hash holding only this field): returns -1.
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return -1
+end
+redis.call('HSETNX', KEYS[1], 'deadlineAt', ARGV[1])
+return redis.call('HGET', KEYS[1], 'deadlineAt')
 `;
 
 export const COMPLETE_JOB_LUA_SCRIPT = `
@@ -2402,13 +2419,13 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     } catch {}
   }
 
-  async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number> {
+  async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number | undefined> {
     if (!this.redisClient || !this.redisConnected) {
       return candidateAt;
     }
     try {
-      await this.redisClient.hsetnx(this.getJobKey(job.id), 'deadlineAt', String(candidateAt));
-      const recorded = Number(await this.redisClient.hget(this.getJobKey(job.id), 'deadlineAt'));
+      const recorded = Number(await this.redisClient.eval(CLAIM_DEADLINE_LUA_SCRIPT, 1, this.getJobKey(job.id), String(candidateAt)));
+      if (recorded === CLAIM_DEADLINE_NO_JOB) return undefined;
       return Number.isFinite(recorded) && recorded > 0 ? recorded : candidateAt;
     } catch (err) {
       // The store is unreachable: this attempt runs under its own timer, and the completion write will fail or
