@@ -439,6 +439,150 @@ describe('AES-256 7z archives', () => {
   });
 });
 
+describe('structural defects of an encrypted folder are malformed input, not a wrong password', () => {
+  const AES_PROPERTIES = Buffer.concat([Buffer.from([0xc0, 0x00]), Buffer.alloc(1, 0x5a), Buffer.alloc(1, 0xa5)]);
+  const DECLARED_BLOCKS = 16;
+
+  function aesStream(packLength: number, declared: number): Buffer {
+    return craftFolderArchive([
+      {
+        name: 'locked.bin',
+        coders: [{ id: ID_AES, properties: AES_PROPERTIES }],
+        bindPairs: [],
+        packStreams: [Buffer.alloc(packLength, 0x42)],
+        outSizes: [declared],
+        crc: 0x12345678,
+      },
+    ]);
+  }
+
+  it.each([
+    ['a pack stream of 17 bytes, which is not whole AES blocks', 17, DECLARED_BLOCKS],
+    ['a pack stream of 16 bytes under a declared size of 32', 16, 2 * DECLARED_BLOCKS],
+    ['a pack stream of 32 bytes under a declared size of 33', 32, 33],
+  ])('%s', (_label, packLength, declared) => {
+    const failure = failureOf(() => extract7zArchive(aesStream(packLength, declared), { password: PASSWORD }));
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect(failure).not.toBeInstanceOf(InvalidArchivePasswordError);
+    expect((failure as CorruptStreamError).status).toBe(HTTP_BAD_REQUEST);
+    expect((failure as Error).message).toMatch(/not a whole number of AES blocks or is shorter than its declared size/);
+  });
+
+  it('AES properties that do not parse are malformed input as well', () => {
+    const archive = craftFolderArchive([
+      { name: 'locked.bin', coders: [{ id: ID_AES, properties: Buffer.from([0xc0]) }], bindPairs: [], packStreams: [Buffer.alloc(16)], outSizes: [16], crc: 1 },
+    ]);
+    const failure = failureOf(() => extract7zArchive(archive, { password: PASSWORD }));
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect(failure).not.toBeInstanceOf(InvalidArchivePasswordError);
+    expect((failure as Error).message).toMatch(/the AES properties are truncated/);
+  });
+
+  it('a coder graph that loops in an encrypted folder is a 400, not a 422 wrong password', () => {
+    // The AES coder and a stored coder feed each other; a third coder reads the pack stream and nothing reads the first two.
+    const folder: CraftedFolder = {
+      name: 'a',
+      coders: [{ id: ID_AES, properties: AES_PROPERTIES }, { id: ID_COPY }, { id: ID_COPY }],
+      bindPairs: [
+        [0, 1],
+        [1, 0],
+      ],
+      packStreams: [Buffer.alloc(16)],
+      outSizes: [16, 16, 16],
+      crc: 0x12345678,
+    };
+    const failure = failureOf(() => extract7zArchive(craftFolderArchive([folder]), { password: PASSWORD }));
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect(failure).not.toBeInstanceOf(InvalidArchivePasswordError);
+    expect((failure as CorruptStreamError).status).toBe(HTTP_BAD_REQUEST);
+    expect((failure as Error).message).toMatch(/a coder of the folder feeds nothing/);
+  });
+});
+
+describe('every coder stops at the size it declares', () => {
+  const ID_LZMA2 = [0x21];
+  const LZMA2_DICTIONARY_PROPERTY = Buffer.from([0x18]);
+  const ZEROS_BYTES = 100 * MIB;
+  const DECLARED_BYTES = 1000;
+  const RSS_BUDGET_BYTES = 60 * MIB;
+
+  /** An LZMA2 stream of 100 MB of zeros (about 14 KB), written by the reference 7-Zip and read back out of its archive. */
+  function zerosLzma2Stream(): Buffer {
+    const dir = path.join(workDir, 'zeros');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'zeros.bin'), Buffer.alloc(ZEROS_BYTES));
+    const archivePath = path.join(dir, 'zeros.7z');
+    // An uncompressed header and no filter: the pack stream is the bytes right after the 32-byte start header.
+    sevenZip(['a', '-t7z', '-y', '-m0=LZMA2', '-mhc=off', '-mf=off', archivePath, 'zeros.bin'], dir);
+    const packedSize = Number(/Packed Size = (\d+)/.exec(sevenZip(['l', '-slt', archivePath]))?.[1]);
+    expect(packedSize).toBeGreaterThan(0);
+    return fs.readFileSync(archivePath).subarray(32, 32 + packedSize);
+  }
+
+  oracleTest(
+    'an LZMA2 stream of 100 MB under a declared size of 1000 bytes stops at 1000 bytes',
+    ['7z'],
+    () => {
+      const stream = zerosLzma2Stream();
+      const archive = craftFolderArchive([
+        { name: 'z', coders: [{ id: ID_LZMA2, properties: LZMA2_DICTIONARY_PROPERTY }], bindPairs: [], packStreams: [stream], outSizes: [DECLARED_BYTES] },
+      ]);
+      const before = process.memoryUsage().rss;
+      const failure = failureOf(() => extract7zArchive(archive));
+      expect(failure).toBeInstanceOf(CorruptStreamError);
+      expect((failure as Error).message).toMatch(/an LZMA2 stream holds more than the 1000 bytes its coder declares/);
+      expect(process.memoryUsage().rss - before).toBeLessThan(RSS_BUDGET_BYTES);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'the three LZMA2 inputs of a BCJ2 coder are bounded by their own declared sizes',
+    ['7z'],
+    () => {
+      const stream = zerosLzma2Stream();
+      const lzma2 = { id: ID_LZMA2, properties: LZMA2_DICTIONARY_PROPERTY };
+      const folder: CraftedFolder = {
+        name: 'code.bin',
+        coders: [{ id: ID_BCJ2, inStreams: 4, outStreams: 1 }, lzma2, lzma2, lzma2],
+        // BCJ2 inputs 0, 1 and 2 (main, call, jump) read the outputs of the three LZMA2 coders; input 3 is the range coder.
+        bindPairs: [
+          [0, 1],
+          [1, 2],
+          [2, 3],
+        ],
+        packedInStreams: [4, 5, 6, 3],
+        packStreams: [stream, stream, stream, Buffer.alloc(5)],
+        outSizes: [4096, DECLARED_BYTES, DECLARED_BYTES, DECLARED_BYTES],
+      };
+      const before = process.memoryUsage().rss;
+      const failure = failureOf(() => extract7zArchive(craftFolderArchive([folder])));
+      expect(failure).toBeInstanceOf(CorruptStreamError);
+      expect((failure as Error).message).toMatch(/holds more than the 1000 bytes its coder declares/);
+      expect(process.memoryUsage().rss - before).toBeLessThan(RSS_BUDGET_BYTES);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('a coder that declares two output streams is malformed input, not a crash', () => {
+    // The first coder has two outputs, so the unbound output (index 2) is not the index of any coder.
+    const folder: CraftedFolder = {
+      name: 'a',
+      coders: [{ id: ID_COPY, inStreams: 2, outStreams: 2 }, { id: ID_COPY }],
+      bindPairs: [
+        [0, 1],
+        [1, 0],
+      ],
+      packStreams: [Buffer.alloc(8)],
+      outSizes: [8, 8, 8],
+    };
+    const failure = failureOf(() => extract7zArchive(craftFolderArchive([folder])));
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect((failure as CorruptStreamError).status).toBe(HTTP_BAD_REQUEST);
+    expect((failure as Error).message).toMatch(/a coder with 2 output streams/);
+  });
+});
+
 describe('hostile folders end in a typed error', () => {
   it('more coders than a folder may hold is a corrupt header', async () => {
     const coders = Array.from({ length: 33 }, () => ({ id: ID_COPY }));

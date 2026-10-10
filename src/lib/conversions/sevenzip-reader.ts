@@ -159,6 +159,18 @@ export function classifySevenZipAttributes(attributes: number | undefined): Seve
   };
 }
 
+/**
+ * A folder whose structure cannot be decoded whatever the key (a coder graph that loops, an input that reads nothing,
+ * properties that do not parse, an encrypted stream that is not whole blocks). It stays a plain malformed-input error
+ * when the folder is encrypted; only a failure of the decoded data reads as a wrong password.
+ */
+export class SevenZipStructureError extends CorruptStreamError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SevenZipStructureError';
+  }
+}
+
 function corrupt(detail: string): CorruptStreamError {
   return new CorruptStreamError(`Corrupted 7z archive: ${detail}`);
 }
@@ -532,6 +544,7 @@ function usesAes(folder: SevenZipFolder): boolean {
 function isDecodeFailureOfDataAlone(err: unknown): boolean {
   return (
     err instanceof ConversionFailedError &&
+    !(err instanceof SevenZipStructureError) &&
     !(err instanceof ArchivePasswordRequiredError) &&
     !(err instanceof InvalidArchivePasswordError) &&
     !(err instanceof UnsupportedArchiveMethodError) &&
@@ -684,6 +697,16 @@ export function readSevenZipArchive(
   }
   if (pieceIndex !== pieces.length) throw corrupt(`${pieces.length} data streams for ${pieceIndex} files`);
   return entries;
+}
+
+/**
+ * The properties of every AES coder of the archive's data folders, read from the header alone (the header itself is
+ * decoded through `decode`). An async reader derives the keys they name before it decodes any data.
+ */
+export function collectSevenZipAesProperties(archive: Buffer, decode: SevenZipFolderDecoder, limits: SevenZipReadLimits): Buffer[] {
+  const header = loadHeader(archive, decode, limits);
+  if (header === null) return [];
+  return header.streams.folders.flatMap((folder) => folder.coders.filter((coder) => coder.codecId.equals(AES_CODEC_ID)).map((coder) => coder.properties));
 }
 
 /** One item of a 7z file table, as 7-Zip would list it, without decoding any file data. */

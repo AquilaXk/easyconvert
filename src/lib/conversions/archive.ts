@@ -50,8 +50,17 @@ import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
+import { AesKeyCache, AesKeyMissingError, aesKeyRequestOf } from './archive-sevenzip-aes';
 import { createSevenZipFolderDecoder } from './archive-sevenzip-coders';
-import { classifySevenZipAttributes, listSevenZipArchive, readSevenZipArchive, type SevenZipListing, type SevenZipReadLimits } from './sevenzip-reader';
+import {
+  classifySevenZipAttributes,
+  collectSevenZipAesProperties,
+  listSevenZipArchive,
+  readSevenZipArchive,
+  type SevenZipEntry,
+  type SevenZipListing,
+  type SevenZipReadLimits,
+} from './sevenzip-reader';
 import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
@@ -2995,15 +3004,56 @@ function sevenZipReadLimits(): SevenZipReadLimits {
  * not decode is an UnsupportedArchiveMethodError. A symbolic link is never extracted: it fails the archive with an
  * UnsafeArchiveError, or with `skipLinks` is left out and reported through `onSkippedLinks`.
  */
-export function extract7zArchive(
-  sevenZipBuffer: Buffer,
-  options: { password?: string; entries?: string[]; skipLinks?: boolean; onSkippedLinks?: (names: string[]) => void } = {}
-): { filename: string; buffer: Buffer }[] {
+export function extract7zArchive(sevenZipBuffer: Buffer, options: SevenZipExtractOptions = {}): { filename: string; buffer: Buffer }[] {
   const entries = readSevenZipArchive(
     sevenZipBuffer,
     createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE }),
     sevenZipReadLimits()
   );
+  return selectSevenZipFiles(entries, options);
+}
+
+/** The header of an encrypted archive can be encoded at most this deep, and each level may need its own key. */
+const SEVEN_ZIP_MAX_KEY_ROUNDS_OF_DISCOVERY = 8;
+
+/**
+ * `extract7zArchive` for an archive with a password: the AES keys are derived before any data is decoded, large
+ * derivations on a pool thread (stopped by `options.signal`), so a big key derivation never blocks the event loop. The
+ * header is read first to learn which keys the folders need; each distinct key is derived once for the whole archive.
+ */
+export async function extract7zArchiveAsync(
+  sevenZipBuffer: Buffer,
+  options: SevenZipExtractOptions & { signal?: AbortSignal } = {}
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const keys = new AesKeyCache(options.password);
+  keys.deferred = true;
+  const decoder = createSevenZipFolderDecoder({ password: options.password, maxOutputBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, keys });
+  const limits = sevenZipReadLimits();
+  let properties: Buffer[] = [];
+  for (let round = 0; ; round += 1) {
+    try {
+      properties = collectSevenZipAesProperties(sevenZipBuffer, decoder, limits);
+      break;
+    } catch (err) {
+      // An encrypted header needs its own key before the folders' keys can be read from it.
+      if (!(err instanceof AesKeyMissingError) || round >= SEVEN_ZIP_MAX_KEY_ROUNDS_OF_DISCOVERY) throw err;
+      await keys.prepare([err.request], options.signal);
+      if (!keys.has(err.request)) throw err;
+    }
+  }
+  await keys.prepare(properties.map(aesKeyRequestOf), options.signal);
+  keys.deferred = false;
+  return selectSevenZipFiles(readSevenZipArchive(sevenZipBuffer, decoder, limits), options);
+}
+
+interface SevenZipExtractOptions {
+  password?: string;
+  entries?: string[];
+  skipLinks?: boolean;
+  onSkippedLinks?: (names: string[]) => void;
+}
+
+function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractOptions): { filename: string; buffer: Buffer }[] {
   const files: { filename: string; buffer: Buffer }[] = [];
   const skippedLinks: string[] = [];
   for (const entry of entries) {
@@ -3600,7 +3650,7 @@ async function inspect7zBuffer(
     }
   }
 
-  const rawExtracted = extract7zArchive(buffer, { password });
+  const rawExtracted = await extract7zArchiveAsync(buffer, { password });
   const entries: ArchiveEntryMetadata[] = rawExtracted.map((f) => ({
     name: f.filename,
     uncompressedSize: f.buffer.length,
@@ -4000,7 +4050,7 @@ export async function convertArchive(
     }
   } else if (src === '7z' || src === 'tar.7z') {
     try {
-      files = extract7zArchive(effectiveBuffer, {
+      files = await extract7zArchiveAsync(effectiveBuffer, {
         ...options,
         onSkippedLinks: (names) => {
           skippedLinks = names;
