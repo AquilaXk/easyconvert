@@ -2,7 +2,6 @@ import { performance } from 'node:perf_hooks';
 import {
   AB_CONFIRM_ALPHA,
   AB_DEFAULT_REGRESSION,
-  AB_DETECTABLE_FACTOR,
   AB_EXTRA_STEP_PAIRS,
   AB_FAMILYWISE_ALPHA,
   AB_MAX_PAIRS,
@@ -53,6 +52,13 @@ export function upperBoundOfMedian(ratios: readonly number[], alpha: number): nu
   return sorted[sorted.length - rank];
 }
 
+/** One-sided lower confidence bound of the median of `ratios` at error rate `alpha`; 0 when there are too few pairs. */
+export function lowerBoundOfMedian(ratios: readonly number[], alpha: number): number {
+  const rank = oneSidedRank(ratios.length, alpha);
+  if (rank === 0) return 0;
+  return [...ratios].sort((a, b) => a - b)[rank - 1];
+}
+
 /** The regression threshold of a row: its own, recorded with its reason in bench/ab-config.ts, or the default. */
 export function regressionDelta(rowId: string, overrides: Readonly<Record<string, Pick<AbRegressionOverride, 'delta'>>> = AB_ROW_REGRESSION): number {
   return overrides[rowId]?.delta ?? AB_DEFAULT_REGRESSION;
@@ -94,8 +100,10 @@ export interface AbSummary {
   noise: number;
   /** Median of reference time / base time: the speed of the base against the reference, in the same pairs. */
   baseVsReferenceMedian: number;
-  /** Pairs added beyond the fixed number because the bound was too wide to show a slowdown of 1.25 times the threshold. */
+  /** Pairs added beyond the fixed number because the first pairs left the row undecided. */
   extraPairs: number;
+  /** Mean milliseconds one pair (the head, the base and the reference once each) took: what the simulation spends a budget with. */
+  pairMs: number;
   /**
    * Set when the first pairs showed the head credibly slower than the base (`slower`) or credibly below the reference
    * while the base was at it (`lost`), and a second set of fresh pairs was taken: whether that set shows it too. Absent
@@ -109,7 +117,7 @@ export interface AbTiming extends AdaptiveTiming {
   baseMs: number[];
 }
 
-/** Measuring time the extra pairs of a job may use together; the pairs of every row after it is spent stay the fixed number. */
+/** Measuring time the extra pairs and the confirmation sets of a shard may use together; once it is spent, the rows after stay at the fixed pairs. */
 export interface ExtraBudget {
   remainingMs: number;
 }
@@ -146,15 +154,6 @@ function standardDeviation(values: readonly number[]): number {
 }
 
 /**
- * The widest bound, as a multiple of the median, that still shows a slowdown of AB_DETECTABLE_FACTOR times the threshold:
- * a head slowed by s has a bound near (1 + s)^-1 times that width, and fails when it is under 1 / (1 + delta); at exactly
- * that width the row fails half of the time at that slowdown, so the factor is below the 1.5 times the gate promises.
- */
-export function widestUsefulBound(delta: number): number {
-  return (1 + AB_DETECTABLE_FACTOR * delta) / (1 + delta);
-}
-
-/**
  * Times `head`, `base` and `reference` for `plan.pairs` pairs, then six more at a time while the bound is too wide to be
  * useful and the extra budget lasts. `head` and `base` are two versions of one action: they run the same number of
  * back-to-back calls per sample, set from the fastest warm-up call of either.
@@ -185,13 +184,15 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   };
   const ratio = (numerator: number[], denominator: number[]): number[] => numerator.map((value, index) => value / denominator[index]);
   await collect(plan.pairs);
-  const tooWide = (): boolean => {
+  const slowerLine = 1 / (1 + delta);
+  // Undecided: the pairs so far neither show the head slower than the threshold nor rule it out.
+  const undecided = (): boolean => {
     const headVsBase = ratio(times.base, times.head);
-    return upperBoundOfMedian(headVsBase, AB_ROW_ALPHA) / median(headVsBase) > widestUsefulBound(delta);
+    return lowerBoundOfMedian(headVsBase, AB_ROW_ALPHA) < slowerLine && upperBoundOfMedian(headVsBase, AB_ROW_ALPHA) >= slowerLine;
   };
   let extraPairs = 0;
   if (plan.extra) {
-    while (times.head.length + AB_EXTRA_STEP_PAIRS <= AB_MAX_PAIRS && plan.extra.remainingMs > 0 && tooWide()) {
+    while (times.head.length + AB_EXTRA_STEP_PAIRS <= AB_MAX_PAIRS && plan.extra.remainingMs > 0 && undecided()) {
       const start = now();
       await collect(AB_EXTRA_STEP_PAIRS);
       plan.extra.remainingMs -= now() - start;
@@ -203,15 +204,16 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   const baseVsReference = ratio(times.reference, times.base);
   const headVsBaseUpper = upperBoundOfMedian(headVsBase, AB_ROW_ALPHA);
   const headVsReferenceUpper = upperBoundOfMedian(headVsReference, AB_ROW_ALPHA);
-  const slowerLine = 1 / (1 + delta);
   const parityLine = 1 - (plan.tolerance ?? SPEED_PARITY_TOLERANCE);
   const confirmed: AbSummary['confirmed'] = {};
   const slower = headVsBaseUpper < slowerLine;
   const lost = median(baseVsReference) >= parityLine && headVsReferenceUpper < parityLine;
   if ((slower || lost) && plan.confirm !== false) {
-    // Fresh pairs, taken after the first set: a burst of noise in the first is not in them.
+    // Fresh pairs, taken after the first set: a burst of noise in the first is not in them. Their time counts against the extra budget.
     const first = { head: times.head.length, base: times.base.length, reference: times.reference.length };
+    const start = now();
     await collect(plan.pairs);
+    if (plan.extra) plan.extra.remainingMs -= now() - start;
     const again = {
       head: times.head.slice(first.head),
       base: times.base.slice(first.base),
@@ -243,6 +245,7 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
       noise: standardDeviation(headVsBase.map((value) => Math.log(value))),
       baseVsReferenceMedian: median(baseVsReference),
       extraPairs,
+      pairMs: (times.head.reduce((a, b) => a + b, 0) + times.base.reduce((a, b) => a + b, 0) + times.reference.reduce((a, b) => a + b, 0)) / times.head.length,
       confirmed,
     },
   };

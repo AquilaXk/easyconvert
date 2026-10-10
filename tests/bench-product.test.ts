@@ -74,7 +74,7 @@ describe('the replay of a recorded report', () => {
       referenceCv: 0,
       decision: { verdict: 'pass' as const, pairs, median: 1, lower: 1, upper: 1, confidence: 0.99, passLine: 0.97 },
       unstableAtCap: false,
-      ab: { pairs, headVsBaseMedian: headSlower ? 0.8 : 1, headVsBaseUpper: headSlower ? 0.8 : 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: headSlower ? 1.25 : 1, extraPairs: 0, confirmed: { slower: headSlower, lost: false } },
+      ab: { pairs, headVsBaseMedian: headSlower ? 0.8 : 1, headVsBaseUpper: headSlower ? 0.8 : 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: headSlower ? 1.25 : 1, extraPairs: 0, pairMs: 300, confirmed: { slower: headSlower, lost: false } },
     };
   };
   const reportWith = (headSlower: boolean): BenchReport => ({
@@ -120,7 +120,7 @@ describe('the noise summary of reports of a commit compared with itself', () => 
     referenceCv: 0,
     decision: { verdict: 'pass' as const, pairs: 1, median: 1, lower: null, upper: null, confidence: null, passLine: 0.97 },
     unstableAtCap: false,
-    ab: { pairs: 24, headVsBaseMedian: 1, headVsBaseUpper: 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: 1, extraPairs: 0, confirmed: {} },
+    ab: { pairs: 24, headVsBaseMedian: 1, headVsBaseUpper: 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: 1, extraPairs: 0, pairMs: 300, confirmed: {} },
   });
 
   it('takes the median noise and the mean log bias of each row, and marks the rows of the slow families heavy', () => {

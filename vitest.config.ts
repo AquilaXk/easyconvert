@@ -22,6 +22,6 @@ export default defineConfig({
       S3_SIGNING_SECRET: 'test-secure-s3-signing-secret',
     },
     include: ['tests/**/*.test.ts'],
-    exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**'],
+    exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**', 'ab-base/**'],
   },
 });

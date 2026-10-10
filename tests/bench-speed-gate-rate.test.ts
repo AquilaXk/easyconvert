@@ -15,7 +15,7 @@ const truth = (headVsReference: number, headVsBase: number, sigma = 0.02): Truth
 
 describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
   // The extra pairs a job may spend (bench/ab-config.ts) are on, as they are in the gate.
-  const ab = (t: Truth, options = {}): Promise<number> => failureRate((seed) => abGateFails(t, weight, seed, { extraBudgetMs: AB_EXTRA_BUDGET_MS, ...options }), TRIALS);
+  const ab = (t: Truth, options = {}): Promise<number> => failureRate((seed) => abGateFails(t, weight, seed, { extra: { remainingMs: AB_EXTRA_BUDGET_MS }, ...options }), TRIALS);
 
   it('never fails unchanged code, whatever the row sits at against the reference', async () => {
     for (const headVsReference of [1.1, 1, 0.99, 0.98, 0.97, 0.96, 0.9]) {
@@ -25,7 +25,7 @@ describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
 
   it('keeps that for noisier rows, and with extra pairs', async () => {
     expect(await ab(truth(1, 1, 0.04))).toBeLessThan(0.01);
-    expect(await ab(truth(0.98, 1, 0.04), { extraBudgetMs: 1e9 })).toBeLessThan(0.01);
+    expect(await ab(truth(0.98, 1, 0.04), { extra: { remainingMs: 1e9 } })).toBeLessThan(0.01);
   });
 
   it('does not fail a head 5 percent slower or less: that is below the threshold', async () => {

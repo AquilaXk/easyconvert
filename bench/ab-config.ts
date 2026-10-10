@@ -40,13 +40,14 @@ export interface AbRegressionOverride {
 export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> = {};
 
 /**
- * A row whose bound is too wide to show, with margin, a slowdown of 1.25 times its threshold (a bound at that width fails the row half of the time at 1.25 times and almost always at 1.5 times) gets more pairs, six at a time up to
- * AB_MAX_PAIRS, while the extra measuring time of the job lasts. The width of the bound does not depend on whether the
- * head is slower, so extending on it does not change the error rate of the verdict.
+ * A row whose first pairs leave it undecided (the lower bound of its median under the row's slowdown line and the upper bound
+ * over it: it could still turn out slower than the threshold, or not) gets more pairs, six at a time up to AB_MAX_PAIRS, while
+ * the extra measuring time of its shard lasts. A row the first pairs decide (not slower than the threshold with confidence)
+ * gets none: more pairs cannot make it fail. The confirmation set of a failure counts against the same time. The time is
+ * a share of the job: the speed job runs one shard per family, each with this much.
  */
 export const AB_EXTRA_STEP_PAIRS = 6;
-export const AB_DETECTABLE_FACTOR = 1.25;
-export const AB_EXTRA_BUDGET_MS = 12 * 60 * 1000;
+export const AB_EXTRA_BUDGET_MS = 4 * 60 * 1000;
 
 /**
  * A row whose first pairs show it credibly slower is measured once more with as many fresh pairs, and fails only when

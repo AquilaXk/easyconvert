@@ -13,10 +13,6 @@ on:
         description: 'A commit to measure the speed rows against in the same pairs, by a process of its own (bench/ab-speed.ts); empty: against the reference tools alone. The commit under test itself gives the noise and the bias of the comparison.'
         required: false
         default: ''
-      ab_families:
-        description: 'With ab_base_ref: the benchmark families to measure, comma separated (empty: all)'
-        required: false
-        default: ''
       ab_repeats:
         description: 'With ab_base_ref: how many times to measure'
         required: false
@@ -190,6 +186,7 @@ jobs:
           retention-days: 30
 
   bench-parity-speed:
+    if: inputs.ab_base_ref == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -221,35 +218,9 @@ jobs:
         uses: ./.github/actions/ci-setup
 
       - name: Run the speed parity benchmark
-        if: inputs.ab_base_ref == ''
         env:
           ORACLE_STRICT_MODE: "1"
         run: npm run bench:quality -- --parity --speed-only
-
-      # By hand only: the speed rows against another commit. The commit is checked out beside this tree with its own
-      # dependencies; the commit under test as its own base measures the noise and the bias of the comparison.
-      - name: Check out the commit to compare with
-        if: inputs.ab_base_ref != ''
-        run: |
-          git fetch --no-tags --depth=1 origin "$AB_BASE_REF"
-          git worktree add --detach ab-base FETCH_HEAD
-          if cmp -s package-lock.json ab-base/package-lock.json; then ln -s "$PWD/node_modules" ab-base/node_modules; else (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund); fi
-        env:
-          AB_BASE_REF: ${{ inputs.ab_base_ref }}
-
-      - name: Measure the speed rows against that commit
-        if: inputs.ab_base_ref != ''
-        env:
-          ORACLE_STRICT_MODE: "1"
-          BENCH_BASE_ROOT: ab-base
-          AB_FAMILIES: ${{ inputs.ab_families }}
-          AB_REPEATS: ${{ inputs.ab_repeats }}
-        run: |
-          set +e
-          for run in $(seq 1 "$AB_REPEATS"); do
-            npm run bench:quality -- --parity --speed-only ${AB_FAMILIES:+--family "$AB_FAMILIES"} --out "bench-results/run-$run"
-          done
-          exit 0
 
       # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This
       # step lists what refreshing them from this run would change; the refresh itself is a reviewed commit:
@@ -270,6 +241,76 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bench-speed-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # By hand only (`ab_base_ref`): the speed rows against another commit in the same pairs (bench/ab-speed.ts), one shard per
+  # family like the pull request job. With the commit under test as its own base it measures the noise and the bias of the
+  # comparison (bench/ab-noise-samples.json) and the time the shards take.
+  bench-ab-speed:
+    if: inputs.ab_base_ref != ''
+    name: bench-ab-speed (${{ matrix.family }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [image, video, audio, ocr, document, compression, pdf-ops]
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      - name: Check out the commit to compare with
+        run: |
+          git fetch --no-tags --depth=1 origin "$AB_BASE_REF"
+          git worktree add --detach ab-base FETCH_HEAD
+          if cmp -s package-lock.json ab-base/package-lock.json; then ln -s "$PWD/node_modules" ab-base/node_modules; else (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund); fi
+        env:
+          AB_BASE_REF: ${{ inputs.ab_base_ref }}
+
+      - name: Measure the speed rows against that commit
+        env:
+          ORACLE_STRICT_MODE: "1"
+          BENCH_BASE_ROOT: ab-base
+          FAMILY: ${{ matrix.family }}
+          AB_REPEATS: ${{ inputs.ab_repeats }}
+        run: |
+          set +e
+          for run in $(seq 1 "$AB_REPEATS"); do
+            npm run bench:quality -- --parity --speed-only --family "$FAMILY" --out "bench-results/run-$run"
+          done
+          exit 0
+
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-ab-results-${{ matrix.family }}
           path: bench-results/
           if-no-files-found: ignore
           retention-days: 30

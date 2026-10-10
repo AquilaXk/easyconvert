@@ -3,7 +3,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AB_DEFAULT_REGRESSION,
-  AB_DETECTABLE_FACTOR,
   AB_EXTRA_BUDGET_MS,
   AB_EXTRA_STEP_PAIRS,
   AB_FAMILYWISE_ALPHA,
@@ -13,7 +12,7 @@ import {
   AB_ROW_BUDGET,
   AB_ROW_REGRESSION,
 } from '../bench/ab-config';
-import { AB_ROW_ALPHA, abSpeedTiming, localSide, oneSidedRank, regressionDelta, type Side, slowdownLine, upperBoundOfMedian, widestUsefulBound } from '../bench/ab-speed';
+import { AB_ROW_ALPHA, abSpeedTiming, localSide, lowerBoundOfMedian, oneSidedRank, regressionDelta, type Side, slowdownLine, upperBoundOfMedian } from '../bench/ab-speed';
 import { SpeedSampleError } from '../bench/speed-parity';
 
 /**
@@ -172,28 +171,38 @@ describe('the A/B timing', () => {
   });
 });
 
-describe('extra pairs for a row whose bound is too wide', () => {
-  /** The head's time alternates around the base's by the given spread, so the bound sits that far above the median. */
+describe('the lower bound of the median', () => {
+  it('is the order statistic x(k) of the sorted ratios, and 0 with too few pairs', () => {
+    const more = Array.from({ length: 24 }, (_, index) => 0.9 + index * 0.01);
+    expect(lowerBoundOfMedian(more, 0.0002)).toBeCloseTo(0.93, 12); // k = 4: x(4)
+    expect(lowerBoundOfMedian([1, 1, 1, 1, 1, 1], 0.0002)).toBe(0);
+  });
+});
+
+describe('extra pairs for a row the first pairs leave undecided', () => {
+  /** The head's time alternates around the base's by the given spread. */
   const noisy = (spread: number) => sides((call) => (call % 2 === 0 ? 100 * (1 - spread) : 100 * (1 + spread)), () => 100, () => 100);
 
-  it('is the width that still shows, with margin, a slowdown of 1.25 times the threshold', () => {
-    expect(AB_DETECTABLE_FACTOR).toBe(1.25);
-    expect(widestUsefulBound(0.1)).toBeCloseTo(1.125 / 1.1, 12);
-    expect(widestUsefulBound(0.05)).toBeCloseTo(1.0625 / 1.05, 12);
-  });
-
-  it('adds pairs six at a time up to the limit while a budget lasts, and none to a row with a narrow bound', async () => {
+  it('are added six at a time up to the limit while a budget lasts, to a row whose bounds straddle its line', async () => {
+    // 30 percent either way: the lower bound is under 1 / 1.1 and the upper bound over it.
     const wide = noisy(0.3);
     const timing = await abSpeedTiming(wide.head, wide.base, wide.reference, { pairs: 24, warmup: 0, extra: { remainingMs: 1e9 } }, wide.now);
     expect(timing.ab.extraPairs).toBe(AB_MAX_PAIRS - 24);
     expect(timing.runs).toBe(AB_MAX_PAIRS);
     expect(AB_EXTRA_STEP_PAIRS).toBe(6);
-    const narrow = noisy(0.005);
-    const kept = await abSpeedTiming(narrow.head, narrow.base, narrow.reference, { pairs: 24, warmup: 0, extra: { remainingMs: 1e9 } }, narrow.now);
-    expect(kept.ab.extraPairs).toBe(0);
   });
 
-  it('stops when the budget is spent, and spends it by the time the extra pairs took', async () => {
+  it('are not added to a row the first pairs decide: the lower bound is over its line, so more pairs cannot make it fail', async () => {
+    const quiet = noisy(0.03);
+    const timing = await abSpeedTiming(quiet.head, quiet.base, quiet.reference, { pairs: 24, warmup: 0, extra: { remainingMs: 1e9 } }, quiet.now);
+    expect(timing.ab.extraPairs).toBe(0);
+    // Nor to a row clearly slower: its upper bound is under the line.
+    const slow = sides(() => 150, () => 100, () => 100);
+    const slower = await abSpeedTiming(slow.head, slow.base, slow.reference, { pairs: 24, warmup: 0, confirm: false, extra: { remainingMs: 1e9 } }, slow.now);
+    expect(slower.ab.extraPairs).toBe(0);
+  });
+
+  it('stop when the budget is spent, and the budget is spent by the time they took, the confirmation set included', async () => {
     const wide = noisy(0.3);
     const extra = { remainingMs: 1 };
     const timing = await abSpeedTiming(wide.head, wide.base, wide.reference, { pairs: 24, warmup: 0, extra }, wide.now);
@@ -202,15 +211,23 @@ describe('extra pairs for a row whose bound is too wide', () => {
     expect(extra.remainingMs).toBeLessThan(0);
     const none = await abSpeedTiming(wide.head, wide.base, wide.reference, { pairs: 24, warmup: 0, extra: { remainingMs: 0 } }, wide.now);
     expect(none.ab.extraPairs).toBe(0);
-    expect(AB_EXTRA_BUDGET_MS).toBe(12 * 60 * 1000);
+    expect(AB_EXTRA_BUDGET_MS).toBe(4 * 60 * 1000);
+    // A failure's confirmation set is charged to the budget, though it is taken whatever is left.
+    const steady = sides(() => 150, () => 100, () => 100);
+    const charged = { remainingMs: 1e9 };
+    const confirmed = await abSpeedTiming(steady.head, steady.base, steady.reference, { pairs: 24, warmup: 0, extra: charged }, steady.now);
+    expect(confirmed.ab.confirmed.slower).toBe(true);
+    expect(1e9 - charged.remainingMs).toBeCloseTo(24 * (150 + 100 + 100), 6);
   });
 
-  it('is the row with a narrower threshold that needs a narrower bound', async () => {
-    const run = noisy(0.06);
+  it('follow the threshold of the row: a narrower one leaves a row undecided that the default decides', async () => {
+    // The head is 4 to 8 percent slower: surely not more than 10 percent slower, but possibly more than 5.
+    const run = sides((call) => (call % 2 === 0 ? 104 : 108), () => 100, () => 100);
     const defaultPlan = await abSpeedTiming(run.head, run.base, run.reference, { pairs: 24, warmup: 0, extra: { remainingMs: 1e9 } }, run.now);
-    const strict = noisy(0.06);
+    expect(defaultPlan.ab.extraPairs).toBe(0);
+    const strict = sides((call) => (call % 2 === 0 ? 104 : 108), () => 100, () => 100);
     const strictPlan = await abSpeedTiming(strict.head, strict.base, strict.reference, { pairs: 24, warmup: 0, delta: 0.05, extra: { remainingMs: 1e9 } }, strict.now);
-    expect(strictPlan.ab.extraPairs).toBeGreaterThanOrEqual(defaultPlan.ab.extraPairs);
+    expect(strictPlan.ab.extraPairs).toBeGreaterThan(0);
   });
 });
 

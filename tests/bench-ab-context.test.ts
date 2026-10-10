@@ -92,9 +92,9 @@ describe('the threshold of a row in the job path', () => {
     expect(strictRow.ab.confirmed.slower).toBe(true);
   });
 
-  it('sizes the extra pairs on the threshold of the row: a narrower threshold needs a narrower bound', async () => {
-    // The head's time alternates around the base's by 2 percent: a bound too wide for a 5 percent threshold, narrow enough for 10.
-    const alternating = (k: number): number => (k % 2 === 0 ? 98 : 102);
+  it('gives extra pairs to a row the threshold of the row leaves undecided', async () => {
+    // The head is 4 to 8 percent slower than the base: surely not more than 10 percent slower, but possibly more than 5.
+    const alternating = (k: number): number => (k % 2 === 0 ? 104 : 108);
     const extraPairs = async (regression?: Record<string, { delta: number }>): Promise<number> => {
       const { ctx } = contextWith(process(alternating), process(() => 100), regression);
       const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;

@@ -27,7 +27,7 @@ export function measuredRow(
   ours: number,
   reference: number,
   referenceTool: string,
-  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap' | 'abPairs' | 'abMedian' | 'abUpper' | 'abHeadVsReferenceUpper' | 'abNoise' | 'abBaseVsReferenceMedian' | 'abExtraPairs' | 'abSlowerConfirmed' | 'abLostConfirmed' | 'abFallback'>> = {}
+  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap' | 'abPairs' | 'abMedian' | 'abUpper' | 'abHeadVsReferenceUpper' | 'abNoise' | 'abPairMs' | 'abBaseVsReferenceMedian' | 'abExtraPairs' | 'abSlowerConfirmed' | 'abLostConfirmed' | 'abFallback'>> = {}
 ): BenchRow {
   return {
     id: `${family}/${caseName}/${spec.metric}`,
@@ -57,6 +57,7 @@ export function measuredRow(
     ...(extra.abUpper === undefined ? {} : { abUpper: extra.abUpper }),
     ...(extra.abHeadVsReferenceUpper === undefined ? {} : { abHeadVsReferenceUpper: extra.abHeadVsReferenceUpper }),
     ...(extra.abNoise === undefined ? {} : { abNoise: extra.abNoise }),
+    ...(extra.abPairMs === undefined ? {} : { abPairMs: extra.abPairMs }),
     ...(extra.abBaseVsReferenceMedian === undefined ? {} : { abBaseVsReferenceMedian: extra.abBaseVsReferenceMedian }),
     ...(extra.abExtraPairs === undefined ? {} : { abExtraPairs: extra.abExtraPairs }),
     ...(extra.abSlowerConfirmed === undefined ? {} : { abSlowerConfirmed: extra.abSlowerConfirmed }),
@@ -101,6 +102,7 @@ function abFields(timing: InterleavedTiming | AdaptiveTiming | AbTiming): Partia
     ...(Number.isFinite(ab.headVsBaseUpper) ? { abUpper: ab.headVsBaseUpper } : {}),
     ...(Number.isFinite(ab.headVsReferenceUpper) ? { abHeadVsReferenceUpper: ab.headVsReferenceUpper } : {}),
     abNoise: ab.noise,
+    abPairMs: ab.pairMs,
     abBaseVsReferenceMedian: ab.baseVsReferenceMedian,
     abExtraPairs: ab.extraPairs,
     ...(ab.confirmed.slower === undefined ? {} : { abSlowerConfirmed: ab.confirmed.slower }),

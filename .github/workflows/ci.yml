@@ -41,6 +41,8 @@ jobs:
       # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
       # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
       bench_families: ${{ steps.families.outputs.families }}
+      # The same families as a JSON list, for the matrix of the speed job (one shard per family).
+      bench_families_json: ${{ steps.families.outputs.families_json }}
       bench_unmapped: ${{ steps.families.outputs.unmapped }}
       bench_changed: ${{ steps.families.outputs.changed }}
 
@@ -110,6 +112,7 @@ jobs:
           if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
           {
             echo "families=$families"
+            echo "families_json=$(printf '%s\n' "$families" | jq -Rc 'split(",") | map(select(. != ""))')"
             echo "unmapped=$unmapped"
             echo "changed=$changed"
           } >> "$GITHUB_OUTPUT"
@@ -590,14 +593,23 @@ jobs:
   #   - a conversion family changed and the label is on: the job measures;
   #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
   #     added, so automerge cannot merge before this job has run on the current head.
+  #
+  # One shard per changed family, in parallel: the comparison with the base takes several times the time of the reference alone,
+  # and the families are independent. Every shard judges its own rows at the per-row error rate of the whole benchmark
+  # (bench/ab-config.ts: 0.01 over AB_ROW_BUDGET rows, more than the rows of all the families together) and has its own share of
+  # the extra pairs. A change with nothing to measure runs one shard that says so.
   parity-speed:
-    name: parity speed
+    name: parity speed (${{ matrix.family }})
     needs: changes
     if: >-
       github.event_name == 'pull_request' &&
       (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        family: ${{ fromJSON(needs.changes.outputs.bench_families_json != '[]' && needs.changes.outputs.bench_families_json || '["none"]') }}
     permissions:
       contents: read
       issues: write
@@ -606,7 +618,7 @@ jobs:
     env:
       ORACLE_STRICT_MODE: "1"
       BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
-      BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
+      BENCH_FAMILIES: ${{ matrix.family == 'none' && '' || matrix.family }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
 
     steps:
@@ -664,7 +676,7 @@ jobs:
         run: |
           if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
             node ab-base/scripts/ci-parity-base-gate.mjs ab-base
-            node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change"; exit 1; } || true
+            node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change: a change that needs another interface of the gate files lands in two steps, the gate files first (bench/README.md, A change cannot loosen the gate that judges it)"; exit 1; } || true
           else
             echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
           fi
@@ -736,7 +748,7 @@ jobs:
               core,
               fs: require('node:fs'),
               runFilePath: 'bench-results/parity-verdict.json',
-              scope: 'speed',
+              scope: `speed-${process.env.BENCH_FAMILIES}`,
             });
 
   # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any

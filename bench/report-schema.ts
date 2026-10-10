@@ -75,6 +75,8 @@ export interface BenchRow {
   abUpper?: number;
   abHeadVsReferenceUpper?: number;
   abNoise?: number;
+  /** Mean milliseconds of one pair (the head, the base and the reference timed once each): what the simulation of the gate spends its extra budget with. */
+  abPairMs?: number;
   abBaseVsReferenceMedian?: number;
   abExtraPairs?: number;
   /** A second set of fresh pairs was taken because the first showed the head credibly slower than the base / below the reference the base was at: whether it showed it too. */
@@ -162,7 +164,7 @@ export function validateRow(value: unknown, index: number, familySet: ReadonlySe
     parsed.skipKind = member<SkipKind>(row.skipKind, SKIP_KIND_SET, `${path}.skipKind`);
     parsed.skipReason = str(row.skipReason, `${path}.skipReason`);
   }
-  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian', 'abPairs', 'abMedian', 'abUpper', 'abHeadVsReferenceUpper', 'abNoise', 'abBaseVsReferenceMedian', 'abExtraPairs'] as const) {
+  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian', 'abPairs', 'abMedian', 'abUpper', 'abHeadVsReferenceUpper', 'abNoise', 'abPairMs', 'abBaseVsReferenceMedian', 'abExtraPairs'] as const) {
     if (row[key] !== undefined) parsed[key] = finiteNumber(row[key], `${path}.${key}`);
   }
   for (const key of ['abSlowerConfirmed', 'abLostConfirmed'] as const) {
