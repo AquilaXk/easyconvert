@@ -34,6 +34,12 @@ export const CPU_POOL_TASK_TIMEOUT_MS = 10 * 60 * 1000;
 export const CPU_POOL_MIN_BYTES = 256 * 1024;
 /** The longest a single conversion may occupy the event loop (the budget the routed encoders are tested against). */
 export const EVENT_LOOP_BLOCK_BUDGET_MS = 100;
+/**
+ * A thread that has had no task for this long is stopped, and the pool starts a new one when work comes. An idle thread
+ * holds an isolate of tens of megabytes, which every child process the host starts afterwards pays for (fork copies the
+ * page tables of everything mapped): a burst of encodes should not leave the process that much slower to start 7-Zip.
+ */
+export const CPU_POOL_IDLE_MS = 5000;
 /** V8 heap ceiling of a pool thread; typed-array payloads live outside the heap and are bounded by their callers. */
 const THREAD_HEAP_LIMIT_MB = 1024;
 const THREAD_YOUNG_LIMIT_MB = 64;
@@ -52,6 +58,8 @@ export interface CpuTaskOptions {
 
 export interface CpuPoolOptions {
   size?: number;
+  /** Idle time after which a thread is stopped; 0 keeps threads for the life of the pool. */
+  idleMs?: number;
   queueMax?: number;
   taskTimeoutMs?: number;
   /** Where the thread code lives; defaults to the bundled or source `cpu-worker` entry. */
@@ -87,6 +95,8 @@ interface Slot {
   worker: Worker;
   task: Task | null;
   timer: NodeJS.Timeout | null;
+  /** Stops the thread once it has been idle for the pool's idle time. */
+  idleTimer: NodeJS.Timeout | null;
 }
 
 /** Typed errors that cross the thread boundary keep their class so that routes map them to the same status. */
@@ -150,6 +160,7 @@ export class CpuPool {
   private readonly size: number;
   private readonly queueMax: number;
   private readonly taskTimeoutMs: number;
+  private readonly idleMs: number;
   private readonly entry: WorkerEntry | (() => WorkerEntry);
   private readonly slots: Slot[] = [];
   private readonly queue: Task[] = [];
@@ -160,6 +171,7 @@ export class CpuPool {
     this.size = options.size ?? defaultPoolSize();
     this.queueMax = options.queueMax ?? CPU_POOL_QUEUE_MAX;
     this.taskTimeoutMs = options.taskTimeoutMs ?? CPU_POOL_TASK_TIMEOUT_MS;
+    this.idleMs = options.idleMs ?? CPU_POOL_IDLE_MS;
     this.entry = options.entry ?? resolveCpuWorkerEntry;
   }
 
@@ -171,6 +183,21 @@ export class CpuPool {
   /** Threads running a task, and tasks waiting for one. */
   get stats(): { threads: number; busy: number; queued: number } {
     return { threads: this.slots.length, busy: this.slots.filter((slot) => slot.task !== null).length, queued: this.queue.length };
+  }
+
+  /**
+   * Starts threads, without giving them work, until `count` of them (at most the pool's size) are running. A caller that
+   * does not want to wait for a thread to start asks for them here and uses the pool from its next request on.
+   */
+  warm(count: number = this.size): void {
+    if (this.closed) return;
+    while (this.slots.length < Math.min(count, this.size)) {
+      try {
+        this.armIdle(this.startWorker());
+      } catch {
+        return;
+      }
+    }
   }
 
   submit<T>(kind: string, payload: unknown, options: CpuTaskOptions = {}): Promise<T> {
@@ -207,6 +234,7 @@ export class CpuPool {
     await Promise.all(
       slots.map(async (slot) => {
         if (slot.timer) clearTimeout(slot.timer);
+        if (slot.idleTimer) clearTimeout(slot.idleTimer);
         if (slot.task) {
           const { task } = slot;
           slot.task = null;
@@ -237,7 +265,9 @@ export class CpuPool {
   private retire(slot: Slot, settleTask: () => void): void {
     const { task } = slot;
     if (slot.timer) clearTimeout(slot.timer);
+    if (slot.idleTimer) clearTimeout(slot.idleTimer);
     slot.timer = null;
+    slot.idleTimer = null;
     slot.task = null;
     const at = this.slots.indexOf(slot);
     if (at >= 0) this.slots.splice(at, 1);
@@ -248,7 +278,7 @@ export class CpuPool {
 
   private startWorker(): Slot {
     const worker = spawnCpuWorker(typeof this.entry === 'function' ? this.entry() : this.entry);
-    const slot: Slot = { worker, task: null, timer: null };
+    const slot: Slot = { worker, task: null, timer: null, idleTimer: null };
     worker.on('message', (reply: WorkerReply) => this.onReply(slot, reply));
     worker.on('error', (error: Error & { code?: string }) => {
       if (slot.task) {
@@ -288,7 +318,21 @@ export class CpuPool {
     }
   }
 
+  /** Arms the timer that stops an idle thread. */
+  private armIdle(slot: Slot): void {
+    if (slot.idleTimer) clearTimeout(slot.idleTimer);
+    slot.idleTimer = null;
+    if (this.idleMs <= 0) return;
+    slot.idleTimer = setTimeout(() => {
+      slot.idleTimer = null;
+      if (slot.task === null) this.retire(slot, () => undefined);
+    }, this.idleMs);
+    slot.idleTimer.unref();
+  }
+
   private run(slot: Slot, task: Task): void {
+    if (slot.idleTimer) clearTimeout(slot.idleTimer);
+    slot.idleTimer = null;
     slot.task = task;
     slot.timer = setTimeout(() => this.retire(slot, () => task.reject(new CpuTaskTimeoutError(task.kind, task.timeoutMs))), task.timeoutMs);
     slot.timer.unref();
@@ -305,6 +349,7 @@ export class CpuPool {
     if (slot.timer) clearTimeout(slot.timer);
     slot.timer = null;
     slot.task = null;
+    this.armIdle(slot);
     this.settle(task, () => (reply.ok ? task.resolve(reply.result) : task.reject(rehydrate(reply.error!))));
     this.dispatch();
   }

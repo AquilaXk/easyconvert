@@ -32,6 +32,48 @@ export function flatPairShare(rgb: Uint8Array, width: number, height: number): n
   return flat / ((width - 1) * height);
 }
 
+/** Decoded samples of a picture: interleaved, 8 or 16 bits per sample, with an alpha band last when `channels` is 2 or 4. */
+export interface Raster {
+  samples: Uint8Array | Uint16Array;
+  width: number;
+  height: number;
+  channels: number;
+}
+
+const BYTE_MAX = 255;
+const SIXTEEN_BIT_MAX = 65535;
+
+/**
+ * Classifies decoded samples the way `classifyContent` classifies a pipeline, without a native call: the thumbnail is the
+ * nearest sample of a grid no larger than `CLASSIFIER_SIDE` on a side, 16-bit samples are scaled to 8 bits, grey is the
+ * three equal channels it would be in sRGB and alpha is left out. A native thumbnail of a 16-bit grey picture costs 2 ms,
+ * about a quarter of converting a 640 x 640 line drawing to JPEG.
+ */
+export function classifyRaster(raster: Raster): ContentClass {
+  const { samples, width, height, channels } = raster;
+  const scale = Math.min(1, CLASSIFIER_SIDE / width, CLASSIFIER_SIDE / height);
+  const thumbWidth = Math.max(1, Math.round(width * scale));
+  const thumbHeight = Math.max(1, Math.round(height * scale));
+  if (thumbWidth < 2) return 'photo';
+  const colour = channels >= RGB_CHANNELS;
+  const bands = colour ? RGB_CHANNELS : 1;
+  const wide = samples instanceof Uint16Array;
+  const level = (at: number): number => (wide ? Math.round((samples[at] * BYTE_MAX) / SIXTEEN_BIT_MAX) : samples[at]);
+  const columns = Array.from({ length: thumbWidth }, (_, x) => Math.min(width - 1, Math.floor(((x + 0.5) * width) / thumbWidth)));
+  let flat = 0;
+  for (let y = 0; y < thumbHeight; y += 1) {
+    const row = Math.min(height - 1, Math.floor(((y + 0.5) * height) / thumbHeight)) * width;
+    for (let x = 1; x < thumbWidth; x += 1) {
+      const a = (row + columns[x]) * channels;
+      const b = (row + columns[x - 1]) * channels;
+      let same = true;
+      for (let band = 0; band < bands && same; band += 1) same = level(a + band) === level(b + band);
+      if (same) flat += 1;
+    }
+  }
+  return flat / ((thumbWidth - 1) * thumbHeight) >= GRAPHIC_FLAT_PAIR_SHARE ? 'graphic' : 'photo';
+}
+
 /** Classifies the picture the pipeline will encode from a nearest-neighbour thumbnail of it. */
 export async function classifyContent(pipeline: Sharp): Promise<ContentClass> {
   const { data, info } = await pipeline

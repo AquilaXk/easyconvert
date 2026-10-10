@@ -172,6 +172,42 @@ const ML_BITS_TABLE = seqCodes.ML_BITS_TABLE;
 const llCodeOf = seqCodes.llCodeOf;
 const mlCodeOf = seqCodes.mlCodeOf;
 
+/** Runs at least this long are copied with one `set`; shorter ones cost less as a loop than as a call. */
+const BULK_COPY_MIN = 24;
+
+/** Copies source[from, from + length) to target at `at`; returns the position after the copy. */
+function appendBytes(target: Uint8Array, at: number, source: Uint8Array, from: number, length: number): number {
+  if (length >= BULK_COPY_MIN) {
+    target.set(source.subarray(from, from + length), at);
+  } else {
+    for (let k = 0; k < length; k++) target[at + k] = source[from + k];
+  }
+  return at + length;
+}
+
+/** Counters beyond the output histogram that `countBytes` interleaves with it. */
+const COUNT_LANES = 4;
+const COUNT_LANES_SCRATCH = (COUNT_LANES - 1) * 256;
+
+/**
+ * Fills `histogram` with the byte counts of bytes[start, end). The bytes are counted into four interleaved histograms
+ * and added up: a run of equal bytes would otherwise wait on each increment of one counter before the next.
+ */
+function countBytes(bytes: Uint8Array, start: number, end: number, histogram: Uint32Array, scratch: Uint32Array): Uint32Array {
+  histogram.fill(0);
+  scratch.fill(0);
+  let i = start;
+  for (; i + COUNT_LANES <= end; i += COUNT_LANES) {
+    histogram[bytes[i]]++;
+    scratch[bytes[i + 1]]++;
+    scratch[256 + bytes[i + 2]]++;
+    scratch[512 + bytes[i + 3]]++;
+  }
+  for (; i < end; i++) histogram[bytes[i]]++;
+  for (let s = 0; s < 256; s++) histogram[s] += scratch[s] + scratch[256 + s] + scratch[512 + s];
+  return histogram;
+}
+
 /** Worst-case compressed size of `inputLength` bytes (raw blocks plus framing). */
 export function zstdBlocksBound(inputLength: number): number {
   const blocks = Math.max(1, Math.ceil(inputLength / ZSTD_BLOCK_SIZE_MAX));
@@ -193,6 +229,56 @@ class SequenceStore {
     this.matchLen = new Uint32Array(capacity);
     this.offBase = new Uint32Array(capacity);
   }
+}
+
+/**
+ * Where a job of a split frame starts. Its matches may reach back to `historyFrom` (data the earlier jobs encoded), and
+ * unless it is the first job the repeat offsets it starts from are unknown to it: it begins with all three invalid
+ * (zero), so it never emits a repeat code before it has written real offsets of its own.
+ */
+export interface ZstdJobStart {
+  historyFrom: number;
+  /** With `sparseStride`: the window before `historyFrom` is indexed from here, every `sparseStride` positions. */
+  sparseFrom?: number;
+  sparseStride?: number;
+  firstJob: boolean;
+}
+
+/** The repeat offsets a job starts with: the format's initial values for the first job, none for any later one. */
+function initialRepeatOffsets(job: ZstdJobStart | undefined): readonly [number, number, number] {
+  if (job === undefined || job.firstJob) return ZSTD_REP_OFFSET_INITIAL;
+  return [0, 0, 0];
+}
+
+/**
+ * Working arrays kept for the next encoder on the same thread. One job allocates about 1.5 MB of them (the hash and chain
+ * tables, the sequence store, the literal buffer); a pool thread that left them to the garbage collector would hold tens of
+ * megabytes of dead arrays between collections, which makes every process this one starts slower to start (fork copies the
+ * page tables of everything mapped). Every array is written before it is read, except the hash table, which is refilled.
+ */
+interface EncoderScratch {
+  store: SequenceStore;
+  literals: Uint8Array;
+  llCodes: Uint8Array;
+  mlCodes: Uint8Array;
+  ofCodes: Uint8Array;
+}
+
+let spareScratch: EncoderScratch | null = null;
+/** Hash and chain tables by length; a few sizes at most (the log of the region), one table of each. */
+const spareTables = new Map<number, Int32Array>();
+const SPARE_TABLES_MAX = 6;
+
+function takeTable(length: number): Int32Array {
+  const spare = spareTables.get(length);
+  if (spare === undefined) return new Int32Array(length);
+  spareTables.delete(length);
+  return spare;
+}
+
+function giveTable(table: Int32Array): void {
+  if (spareTables.size >= SPARE_TABLES_MAX && !spareTables.has(table.length)) spareTables.delete(spareTables.keys().next().value as number);
+  spareTables.set(table.length, table);
 }
 
 class MatchFinder {
@@ -219,20 +305,26 @@ class MatchFinder {
   /** Estimated cost in bits of one literal byte in the block being parsed. */
   public literalBits = LITERAL_BITS_MAX;
 
-  constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
+  constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number, regionEnd: number, job?: ZstdJobStart) {
     this.data = data;
     this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     this.dataLength = data.length;
     this.params = params;
     this.windowSize = windowSize;
-    // Tables never need more slots than roughly two per input byte.
-    const inputLog = Math.max(MIN_TABLE_LOG, 32 - Math.clz32(data.length) + 1);
+    const historyFrom = job?.historyFrom ?? 0;
+    [this.rep1, this.rep2, this.rep3] = initialRepeatOffsets(job);
+    this.nextInsert = historyFrom;
+    // Tables never need more slots than roughly two per byte of the region this finder sees (the sparse part counted by its positions).
+    const sparseFrom = job?.sparseFrom ?? historyFrom;
+    const sparseStride = job?.sparseStride ?? 1;
+    const indexed = regionEnd - historyFrom + Math.ceil((historyFrom - sparseFrom) / sparseStride);
+    const inputLog = Math.max(MIN_TABLE_LOG, 32 - Math.clz32(indexed) + 1);
     const hashLog = Math.min(params.hashLog, inputLog);
     const chainLog = Math.min(params.chainLog, inputLog);
-    this.head = new Int32Array(1 << hashLog).fill(NO_POSITION);
+    this.head = takeTable(1 << hashLog).fill(NO_POSITION);
     this.hashShift = 32 - hashLog;
     if (chainLog > 0 && params.searchDepth > 1) {
-      this.chain = new Int32Array(1 << chainLog);
+      this.chain = takeTable(1 << chainLog);
       this.chainMask = (1 << chainLog) - 1;
     } else {
       this.chain = null;
@@ -240,6 +332,27 @@ class MatchFinder {
     }
     this.chainReach = this.chainMask - HASH_READ_BYTES;
     this.insertEnd = data.length - HASH_READ_BYTES;
+    this.insertSparse(sparseFrom, historyFrom, sparseStride);
+  }
+
+  /** Indexes every `stride`-th position of [from, to): the far part of a job's window, where a repeat only needs to be found, not found at its first byte. */
+  private insertSparse(from: number, to: number, stride: number): void {
+    const d = this.data;
+    const head = this.head;
+    const chain = this.chain;
+    const chainMask = this.chainMask;
+    const stop = Math.min(to, this.insertEnd + 1);
+    for (let p = from; p < stop; p += stride) {
+      const h = this.hashOfWord(d[p] | (d[p + 1] << 8) | (d[p + 2] << 16) | (d[p + 3] << 24), p);
+      if (chain !== null) chain[p & chainMask] = head[h];
+      head[h] = p;
+    }
+  }
+
+  /** Hands the tables back for the next finder on this thread; the finder is not used afterwards. */
+  public release(): void {
+    giveTable(this.head);
+    if (this.chain !== null) giveTable(this.chain);
   }
 
   /** Hash of the minMatch bytes at p, given the little-endian word of the first four. */
@@ -283,13 +396,21 @@ class MatchFinder {
     this.nextInsert = next;
   }
 
-  /** Length of the common prefix of the data at a and b, up to max; compares four bytes per step while it can. */
+  /**
+   * Length of the common prefix of the data at a and b, up to max. It compares four bytes per step; the first word
+   * that differs is located inside by counting the trailing zero bits of the XOR (little-endian: the lowest differing
+   * bit belongs to the first differing byte), so only the final three bytes of a run to `max` are compared one by one.
+   */
   private matchLength(a: number, b: number, max: number): number {
-    const d = this.data;
     const view = this.view;
     let n = 0;
     const wordEnd = max - 3;
-    while (n < wordEnd && view.getUint32(a + n, true) === view.getUint32(b + n, true)) n += 4;
+    while (n < wordEnd) {
+      const diff = view.getUint32(a + n, true) ^ view.getUint32(b + n, true);
+      if (diff !== 0) return n + ((31 - Math.clz32(diff & -diff)) >> 3);
+      n += 4;
+    }
+    const d = this.data;
     while (n < max && d[a + n] === d[b + n]) n++;
     return n;
   }
@@ -305,7 +426,7 @@ class MatchFinder {
       let offset = this.rep3;
       if (r === 0) offset = this.rep1;
       else if (r === 1) offset = this.rep2;
-      if (offset > p || offset > this.windowSize) continue;
+      if (offset === 0 || offset > p || offset > this.windowSize) continue;
       const len = this.matchLength(p - offset, p, maxLen);
       if (len < REP_MIN_MATCH) continue;
       const score = len * this.literalBits - MATCH_OVERHEAD_BITS - REP_SYMBOL_BITS;
@@ -580,12 +701,23 @@ function chooseSymbolMode(
   return { mode: MODE_PREDEFINED, table: predefined.table, rleSymbol: 0, description: new Uint8Array(0) };
 }
 
+function newEncoderScratch(): EncoderScratch {
+  const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
+  return {
+    store: new SequenceStore(capacity),
+    literals: new Uint8Array(ZSTD_BLOCK_SIZE_MAX),
+    llCodes: new Uint8Array(capacity),
+    mlCodes: new Uint8Array(capacity),
+    ofCodes: new Uint8Array(capacity),
+  };
+}
+
 export class ZstdBlockEncoder {
   private readonly data: Uint8Array;
   private readonly finder: MatchFinder | null;
   private readonly optimal: ZstdOptimalParser | null;
   private readonly store: SequenceStore;
-  private readonly literals = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
+  private readonly literals: Uint8Array;
   private readonly llCodes: Uint8Array;
   private readonly mlCodes: Uint8Array;
   private readonly ofCodes: Uint8Array;
@@ -594,21 +726,32 @@ export class ZstdBlockEncoder {
   private readonly ofHistogram = new Uint32Array(ZSTD_OF_MAX_CODE + 1);
   private readonly literalHistogram = new Uint32Array(256);
   private readonly blockHistogram = new Uint32Array(256);
+  private readonly countScratch = new Uint32Array(COUNT_LANES_SCRATCH);
   private out = new Uint8Array(0);
   private outBound = 0;
-  private committedRep1: number = ZSTD_REP_OFFSET_INITIAL[0];
-  private committedRep2: number = ZSTD_REP_OFFSET_INITIAL[1];
-  private committedRep3: number = ZSTD_REP_OFFSET_INITIAL[2];
+  private committedRep1: number;
+  private committedRep2: number;
+  private committedRep3: number;
 
-  constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number) {
+  /**
+   * `job` makes this encoder one job of a split frame: it parses [job.historyFrom, regionEnd) only, so a job's
+   * tables are sized to its own span. Without it the encoder sees the whole input as one job. Jobs are only for the
+   * greedy and lazy parsers; the optimal parser of the high levels always runs over the whole input.
+   */
+  constructor(data: Uint8Array, params: ZstdLevelParams, windowSize: number, regionEnd: number = data.length, job?: ZstdJobStart) {
     this.data = data;
     this.optimal = params.optimal ? new ZstdOptimalParser(data, params, windowSize) : null;
-    this.finder = params.optimal ? null : new MatchFinder(data, params, windowSize);
-    const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
-    this.store = new SequenceStore(capacity);
-    this.llCodes = new Uint8Array(capacity);
-    this.mlCodes = new Uint8Array(capacity);
-    this.ofCodes = new Uint8Array(capacity);
+    this.finder = params.optimal ? null : new MatchFinder(data, params, windowSize, regionEnd, job);
+    [this.committedRep1, this.committedRep2, this.committedRep3] = initialRepeatOffsets(job);
+    const scratch = spareScratch ?? newEncoderScratch();
+    spareScratch = null;
+    ({ store: this.store, literals: this.literals, llCodes: this.llCodes, mlCodes: this.mlCodes, ofCodes: this.ofCodes } = scratch);
+  }
+
+  /** Hands the working arrays back for the next encoder on this thread; the encoder is not used afterwards. */
+  public release(): void {
+    this.finder?.release();
+    spareScratch = { store: this.store, literals: this.literals, llCodes: this.llCodes, mlCodes: this.mlCodes, ofCodes: this.ofCodes };
   }
 
   /**
@@ -617,7 +760,16 @@ export class ZstdBlockEncoder {
    * outgrows that) and grows toward the raw-block bound only if the data turns out incompressible.
    */
   public encodeAll(prefix: Uint8Array, trailerBytes: number): { data: Uint8Array; length: number } {
-    const length = this.data.length;
+    return this.encodeRange(0, this.data.length, true, prefix, trailerBytes);
+  }
+
+  /**
+   * Encodes the blocks of data[from, to) after `prefix`, leaving `trailerBytes` of spare room for the caller. Only the
+   * block that ends the frame (`endsFrame` and the last block of the range) carries the last-block flag, so the ranges
+   * of consecutive jobs concatenate into one frame. `from` is a block boundary of the whole input.
+   */
+  public encodeRange(from: number, to: number, endsFrame: boolean, prefix: Uint8Array, trailerBytes: number): { data: Uint8Array; length: number } {
+    const length = to - from;
     const fixed = prefix.length + trailerBytes;
     const bound = fixed + zstdBlocksBound(length);
     const initial = Math.min(bound, fixed + Math.max(OUTPUT_MIN_INITIAL_BYTES, Math.ceil(length / 2)));
@@ -631,10 +783,10 @@ export class ZstdBlockEncoder {
       this.out[pos++] = 0;
       this.out[pos++] = 0;
     }
-    for (let blockStart = 0; blockStart < length; blockStart += ZSTD_BLOCK_SIZE_MAX) {
-      const blockEnd = Math.min(blockStart + ZSTD_BLOCK_SIZE_MAX, length);
+    for (let blockStart = from; blockStart < to; blockStart += ZSTD_BLOCK_SIZE_MAX) {
+      const blockEnd = Math.min(blockStart + ZSTD_BLOCK_SIZE_MAX, to);
       this.reserve(pos, BLOCK_HEADER_BYTES + (blockEnd - blockStart) + trailerBytes);
-      pos = this.encodeBlock(blockStart, blockEnd, blockEnd === length, this.out, pos);
+      pos = this.encodeBlock(blockStart, blockEnd, endsFrame && blockEnd === to, this.out, pos);
     }
     this.reserve(pos, trailerBytes);
     return { data: this.out, length: pos };
@@ -668,9 +820,7 @@ export class ZstdBlockEncoder {
 
   /** Order-0 entropy of the block in bits per byte: the price match finding compares matches against. */
   private estimateLiteralBits(start: number, end: number): number {
-    const histogram = this.blockHistogram.fill(0);
-    const d = this.data;
-    for (let i = start; i < end; i++) histogram[d[i]]++;
+    const histogram = countBytes(this.data, start, end, this.blockHistogram, this.countScratch);
     const total = end - start;
     let weighted = 0;
     for (let s = 0; s < histogram.length; s++) {
@@ -729,10 +879,10 @@ export class ZstdBlockEncoder {
     let cursor = blockStart;
     for (let i = 0; i < store.count; i++) {
       const run = store.litLen[i];
-      for (let k = 0; k < run; k++) lits[litCount++] = d[cursor + k];
+      litCount = appendBytes(lits, litCount, d, cursor, run);
       cursor += run + store.matchLen[i];
     }
-    for (let k = blockEnd - trailing; k < blockEnd; k++) lits[litCount++] = d[k];
+    litCount = appendBytes(lits, litCount, d, blockEnd - trailing, trailing);
 
     const afterLiterals = this.writeLiteralsSection(litCount, out, pos, cap);
     if (afterLiterals < 0) return -1;
@@ -767,9 +917,7 @@ export class ZstdBlockEncoder {
     const rawHeaderBytes = this.rawLiteralsHeaderBytes(count);
     const rawEnd = pos + rawHeaderBytes + count;
 
-    const histogram = this.literalHistogram;
-    histogram.fill(0);
-    for (let i = 0; i < count; i++) histogram[lits[i]]++;
+    const histogram = countBytes(lits, 0, count, this.literalHistogram, this.countScratch);
 
     if (count > 1) {
       let distinct = 0;

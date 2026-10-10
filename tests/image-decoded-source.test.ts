@@ -2,7 +2,7 @@ import sharp, { type Sharp } from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conversions/image-decoded-source';
-import { classifyContent, type ContentClass } from '../src/lib/conversions/image-content';
+import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
 
@@ -154,7 +154,7 @@ describe('convertImage on a plain PNG', () => {
   it('takes whether the alpha plane is opaque from the decoded pixels, and WebP needs no content class: a WebP is the decode and the encode, nothing more', async () => {
     const opaque = await png(4, false, (image) => image, true);
     expect((await pipelineRuns(opaque, 'webp')).all).toBe(2);
-    expect((await pipelineRuns(opaque, 'jpg')).all).toBe(3);
+    expect((await pipelineRuns(opaque, 'jpg')).all).toBe(2);
   });
 
   it('drops an alpha plane that is opaque and keeps one that is not, at 8 and 16 bits and with a resize', async () => {
@@ -172,6 +172,61 @@ describe('convertImage on a plain PNG', () => {
         expect((await sharp(converted).metadata()).hasAlpha, `${name} ${JSON.stringify(options)}`).toBe(keepsAlpha);
       }
     }
+  });
+
+  it.each(PLAIN_PNGS)('%s: the raster is the decoded samples the pipeline reads', async (_name, make) => {
+    const source = await make();
+    const decoded = (await decodePlainPngOnce(sharp(source))) as DecodedPng;
+    const meta = await sharp(source).metadata();
+    const { raster } = decoded;
+    expect([raster.width, raster.height, raster.channels]).toEqual([meta.width, meta.height, meta.channels]);
+    expect(raster.samples.length).toBe(raster.width * raster.height * raster.channels);
+    expect(raster.samples instanceof Uint16Array).toBe(meta.depth === 'ushort');
+    const reread = await decoded.pipeline.toColourspace(meta.space as string).raw({ depth: meta.depth === 'ushort' ? 'ushort' : 'uchar' }).toBuffer();
+    expect(Buffer.from(reread).equals(Buffer.from(raster.samples.buffer, raster.samples.byteOffset, raster.samples.byteLength))).toBe(true);
+  });
+
+  /** Pixels of a JPEG as the library decodes it. */
+  const pixelsOf = async (jpeg: Buffer): Promise<Buffer> => sharp(jpeg).raw().toBuffer();
+
+  it.each([
+    ['8-bit colour with opaque alpha', () => png(4, false, (image) => image, true), 0],
+    ['16-bit colour with opaque alpha', () => png(4, true, (image) => image.toColourspace('rgb16'), true), 0],
+    ['8-bit grey with opaque alpha', () => png(2, false, (image) => image, true), 1],
+    ['16-bit grey with opaque alpha', () => png(2, true, (image) => image.toColourspace('grey16'), true), 1],
+  ] as const)('%s: dropping the alpha band writes the pixels flattening onto white writes (within %i step)', async (_name, make, tolerance) => {
+    const source = await make();
+    const converted = (await convertImage(source, 'jpg', { quality: 70 }, 'opaque.png', 'png')).buffer;
+    const content = await classifyContent(sharp(source));
+    const grey = (await sharp(source).metadata()).channels === 2;
+    const flattened = sharp(source).pipelineColourspace('srgb').flatten({ background: flattenColour(undefined) });
+    const direct = await (grey ? flattened.toColourspace('b-w') : flattened).jpeg(jpegOptionsFor(70, content, grey)).toBuffer();
+    const [a, b] = [await pixelsOf(converted), await pixelsOf(direct)];
+    expect(a.length).toBe(b.length);
+    let largest = 0;
+    for (let i = 0; i < a.length; i += 1) largest = Math.max(largest, Math.abs(a[i] - b[i]));
+    expect(largest).toBeLessThanOrEqual(tolerance);
+  });
+
+  it('drops the alpha band of an unresized picture without a background, and flattens one that is resized or given a background', async () => {
+    const source = await png(4, false, (image) => image, true);
+    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
+    const calls = async (options: Record<string, unknown>): Promise<{ flatten: number; removeAlpha: number }> => {
+      const counts = { flatten: 0, removeAlpha: 0 };
+      for (const name of ['flatten', 'removeAlpha'] as const) {
+        const original = proto[name] as (...args: unknown[]) => Sharp;
+        vi.spyOn(proto, name).mockImplementation(function (this: Sharp, ...args: unknown[]) {
+          counts[name] += 1;
+          return original.apply(this, args);
+        } as never);
+      }
+      await convertImage(source, 'jpg', { quality: 70, ...options }, 'opaque.png', 'png');
+      vi.restoreAllMocks();
+      return counts;
+    };
+    expect(await calls({})).toEqual({ flatten: 0, removeAlpha: 1 });
+    expect(await calls({ width: 48 })).toEqual({ flatten: 1, removeAlpha: 0 });
+    expect(await calls({ background: '#ff0000' })).toEqual({ flatten: 1, removeAlpha: 0 });
   });
 
   it('reports a truncated PNG as an undecodable image', async () => {

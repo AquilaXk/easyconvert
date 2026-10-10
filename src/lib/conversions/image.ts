@@ -10,7 +10,7 @@ import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
-import { classifyContent, withoutOpaqueAlpha, type ContentClass } from './image-content';
+import { classifyContent, classifyRaster, withoutOpaqueAlpha, type ContentClass, type Raster } from './image-content';
 import {
   AVIF_EFFORT,
   AVIF_TUNE,
@@ -72,6 +72,7 @@ import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { decodePlainPngOnce } from './image-decoded-source';
+import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
@@ -102,6 +103,8 @@ import {
   float32ToFloat16,
   float16ToFloat32,
 } from './raw-hdr';
+
+pinBaseImageThreads();
 
 export {
   decodeBmp,
@@ -1787,7 +1790,10 @@ async function encodeAvifFromPipeline(
     return { buffer, encoder };
   }
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
-  return { buffer: await prepared.avif(avifLibraryOptionsOf(policy)).toBuffer(), encoder };
+  const encode = (): Promise<Buffer> => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer();
+  // With threads the encoder splits the picture into tiles, which costs a little compression: affordable on a photograph
+  // (BD-rate in PSNR -14.0% against the reference, -13.1% with threads), not on an interface, which went from -14.4% to +1.6%, past the allowance.
+  return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
 }
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
@@ -1932,6 +1938,7 @@ export async function convertImage(
   let hdrRadiance: { rgb: Float32Array; width: number; height: number } | undefined;
   // Whether the alpha plane of a PNG decoded once is fully opaque; unknown (undefined) for any other source.
   let decodedAlphaIsOpaque: boolean | undefined;
+  let decodedRaster: Raster | undefined;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
   const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
@@ -2092,6 +2099,7 @@ export async function convertImage(
         if (decoded !== null) {
           pipeline = decoded.pipeline;
           decodedAlphaIsOpaque = decoded.alphaIsOpaque;
+          decodedRaster = decoded.raster;
         }
       }
     }
@@ -2124,9 +2132,14 @@ export async function convertImage(
     }
   }
 
+  // A picture whose alpha samples are all at the maximum has nothing to flatten: the alpha band is dropped, which writes the
+  // very pixels flattening onto any background would, without the arithmetic or the detour through sRGB it needs for a grey one.
+  // Only an unresized picture with no background of the request's own qualifies (a resize filters the alpha samples).
+  const dropsOpaqueAlpha = isOpaqueTarget && decodedAlphaIsOpaque === true && background === undefined && options.width === undefined && options.height === undefined;
+
   // libvips uses only the first component of a background colour for 1 and 2 band (gray) images; work in
   // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
-  if (background !== undefined || isOpaqueTarget) {
+  if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
     pipeline = pipeline.pipelineColourspace('srgb');
   }
 
@@ -2140,7 +2153,10 @@ export async function convertImage(
   const deepColourspace = deepColourspaceOf(inputMeta, options);
 
   // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline.
-  const content: ContentClass = CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection?.keepsAnimation ? await classifyContent(pipeline) : 'photo';
+  let content: ContentClass = 'photo';
+  if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection?.keepsAnimation) {
+    content = decodedRaster ? classifyRaster(decodedRaster) : await classifyContent(pipeline);
+  }
 
   // Resize options
   const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
@@ -2169,7 +2185,7 @@ export async function convertImage(
 
   // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
   if (isOpaqueTarget) {
-    pipeline = pipeline.flatten({ background: flattenColour(background) });
+    pipeline = dropsOpaqueAlpha ? pipeline.removeAlpha() : pipeline.flatten({ background: flattenColour(background) });
   }
 
 
