@@ -1,4 +1,5 @@
 import sharp, { type Metadata, type Sharp } from 'sharp';
+import type { Raster } from './image-content';
 import { maxInputPixels } from './image-input-limits';
 
 /**
@@ -59,6 +60,8 @@ export interface DecodedPng {
    * Valid for the pipeline as decoded: a resize can move a sample off the maximum, so it does not describe a resized one.
    */
   alphaIsOpaque: boolean | undefined;
+  /** The decoded samples the pipeline reads, for analyses that need no native call. */
+  raster: Raster;
 }
 
 /** True when every `stride`-th sample from `first` is `maximum`; the alpha plane of interleaved samples. */
@@ -90,5 +93,6 @@ export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DEC
   return {
     pipeline: sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() }),
     alphaIsOpaque,
+    raster: { samples, width: info.width, height: info.height, channels: info.channels },
   };
 }
