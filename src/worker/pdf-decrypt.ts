@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
-import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/protect';
+import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import {
   executeSandboxedBinary,
   SandboxedBufferLimitError,

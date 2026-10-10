@@ -31,7 +31,7 @@ export type ConversionJobOptions = Omit<JobOptions, 'timeout'>;
  * Puts a conversion job on `queue` with the deadline of its tier and input as the job timeout. The open password of a
  * protected input is sealed under the job id first, so the stored job never holds it (see option-secrets).
  */
-export function enqueueConversionJob(
+export async function enqueueConversionJob(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>,
   name: string,
   data: ConversionJobData,

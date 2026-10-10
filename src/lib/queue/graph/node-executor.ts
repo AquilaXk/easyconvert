@@ -38,6 +38,7 @@ import {
   GraphExportError,
   JobTimeoutError,
   MediaPackagingOptions,
+  PdfPasswordListError,
   UnknownArtifactFormatError,
   WorkerOutputMissingError,
 } from '../../types';
@@ -169,6 +170,33 @@ function requireTargetFormat(node: { op?: string; targetFormat?: unknown; option
     throw new ConversionFailedError(`Node "${nodeId}" (${node.op}) has no targetFormat`);
   }
   return target;
+}
+
+/**
+ * The password of each merged artifact. `options.passwords` lists one entry per input node of the merge, in the order
+ * of `input`; every artifact an input node produced takes that node's entry.
+ *
+ * @throws PdfPasswordListError (422) when the list does not have one entry per input node, or an artifact belongs to none.
+ */
+async function mergePasswordsFor(
+  graphId: string,
+  node: { input?: string | string[]; options?: { passwords?: unknown } },
+  artifacts: string[]
+): Promise<Array<string | null> | undefined> {
+  const passwords = node.options?.passwords;
+  if (passwords === undefined) return undefined;
+  const inputs = Array.isArray(node.input) ? node.input : node.input ? [node.input] : [];
+  if (!Array.isArray(passwords) || passwords.length !== inputs.length) {
+    throw new PdfPasswordListError(
+      `The merge node lists ${Array.isArray(passwords) ? passwords.length : 'no list of'} passwords for ${inputs.length} input node(s); give one entry per input, in input order, with null for an input that has none.`
+    );
+  }
+  const produced = await Promise.all(inputs.map((inputId) => graphScheduler.getNodeOutputs(graphId, inputId)));
+  return artifacts.map((key) => {
+    const owner = produced.findIndex((outputs) => outputs.includes(key));
+    if (owner === -1) throw new PdfPasswordListError('A merged PDF is not an output of any input node, so its password cannot be matched.');
+    return passwords[owner] as string | null;
+  });
 }
 
 /** The password and the rights confirmation a PDF node's options carry. */
@@ -399,7 +427,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => protectPdf(buf, protectOpts)
+          (buf) => protectPdf(buf, protectOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
@@ -451,7 +479,7 @@ export async function processGraphNodeJob(
         if (targetFmt === 'pdf') {
           const pdfBuffers = inputs.map((stored) => stored.buffer);
           const mergedBuf = await mergePdfBuffers(pdfBuffers, {
-            passwords: node.options?.passwords,
+            passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
             confirmEditRights: node.options?.confirmEditRights,
           });
           const outFilename = 'merged.pdf';

@@ -1,5 +1,5 @@
 import { SecretSealError, sealJobSecret, unsealJobSecret } from '../security/job-secret-seal';
-import type { ConversionJobData } from '../types';
+import { ConversionFailedError, type ConversionJobData } from '../types';
 
 /**
  * The open password of a protected input travels through the queue sealed, never as plaintext.
@@ -102,8 +102,23 @@ function parsePasswordList(json: string): Array<string | null> {
   return parsed as Array<string | null>;
 }
 
-/** The job data with the password of its options (and of each task's options) sealed for `jobId`. */
+/**
+ * The job data with the password of its options (and of each task's options) sealed for `jobId`.
+ *
+ * @throws ConversionFailedError (400) when a password is too long to seal, instead of an untyped 500.
+ */
 export function sealJobDataSecrets(data: ConversionJobData, jobId: string): ConversionJobData {
+  try {
+    return sealJobDataSecretsUnchecked(data, jobId);
+  } catch (error) {
+    if (error instanceof SecretSealError && error.code === 'PLAINTEXT_TOO_LARGE') {
+      throw new ConversionFailedError('The passwords of this request are too long to be queued.');
+    }
+    throw error;
+  }
+}
+
+function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): ConversionJobData {
   const tasks = data.tasks?.map((task) => ({ ...task, options: sealPasswordOption(task.options, jobId) }));
   return {
     ...data,

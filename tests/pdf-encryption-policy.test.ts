@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
-import { applyPdfWatermark, unlockPdf } from '../src/lib/conversions/pdf-postprocess';
+import { applyPdfWatermark, protectPdf, unlockPdf } from '../src/lib/conversions/pdf-postprocess';
+import { applyPdfPostProcessing } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { extractArtifactMetadata, mergePdfBuffers } from '../src/lib/jobs';
@@ -318,6 +319,69 @@ describe.skipIf(toolsMissing)('unlock of a PDF', () => {
   it('returns an unencrypted PDF unchanged', async () => {
     const plain = await plainPdf(['Already open']);
     expect(Buffer.compare(await unlockPdf(plain), plain)).toBe(0);
+  });
+});
+
+describe.skipIf(toolsMissing)('protect of an encrypted PDF', () => {
+  const NEW_OWNER = 'new-owner-secret';
+  const newProtection = { ownerPassword: NEW_OWNER, keyLength: 256 as const, permissions: { modify: 'all' as const, extract: true } };
+  const restricted = async (): Promise<Buffer> =>
+    qpdfEncrypt(await plainPdf(['Restricted body']), { variant: AES_256, userPassword: '', ownerPassword: OWNER_PASSWORD, modify: 'none' });
+
+  it('refuses an owner-restricted file until the rights are confirmed, so protect cannot launder the restrictions', async () => {
+    expectPermissionDenied(await rejection(protectPdf(await restricted(), newProtection)));
+    expectPermissionDenied(await rejection(protectPdf(await restricted(), newProtection, { confirmEditRights: false })));
+  });
+
+  it('the protect then unlock chain on a restricted file fails without the confirmation or the owner password', async () => {
+    const chain = async (): Promise<Buffer> => unlockPdf(await protectPdf(await restricted(), newProtection), { password: NEW_OWNER });
+    expectPermissionDenied(await rejection(chain()));
+  });
+
+  it('re-protects a restricted file with the confirmation, or with the owner password, under the new protection', async () => {
+    for (const access of [{ confirmEditRights: true }, { password: OWNER_PASSWORD }]) {
+      const out = await protectPdf(await restricted(), { userPassword: 'fresh-user', ...newProtection }, access);
+      const report = qpdfEncryptionReport(out, NEW_OWNER);
+      expect(report).toMatchObject({ encrypted: true, ownerPasswordMatched: true, R: 6 });
+      expect(report.capabilities).toMatchObject({ modifyother: true, extract: true });
+      expect(pdftotext(out, 'fresh-user')).toContain('Restricted body');
+    }
+  });
+
+  it('asks for the open password of a protected input and protects an unencrypted input as before', async () => {
+    const userProtected = qpdfEncrypt(await plainPdf(['Needs password']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD });
+    expectPasswordRequired(await rejection(protectPdf(userProtected, newProtection, CONFIRM)));
+    const out = await protectPdf(await plainPdf(['Open body']), newProtection);
+    expect(qpdfEncryptionReport(out, NEW_OWNER)).toMatchObject({ encrypted: true, ownerPasswordMatched: true });
+  });
+});
+
+describe.skipIf(toolsMissing)('the post-processing of a conversion result carries the password and the confirmation', () => {
+  const resultOf = (buffer: Buffer) => ({ buffer, size: buffer.length, filename: 'out.pdf', mimeType: 'application/pdf' }) as never;
+  const restricted = async (): Promise<Buffer> =>
+    qpdfEncrypt(await plainPdf(['Post body']), { variant: AES_256, userPassword: '', ownerPassword: OWNER_PASSWORD, modify: 'none' });
+
+  it('refuses a watermark on a restricted PDF without the confirmation', async () => {
+    expectPermissionDenied(await rejection(applyPdfPostProcessing(resultOf(await restricted()), { watermark: WATERMARK })));
+  });
+
+  it('watermarks it when the request confirms the rights, and re-protects it through the same gate', async () => {
+    const result = resultOf(await restricted()) as { buffer: Buffer; size: number };
+    await applyPdfPostProcessing(result as never, { watermark: WATERMARK, confirmEditRights: true });
+    expect(qpdfCheckPasses(result.buffer)).toBe(true);
+    expect(pdftotext(result.buffer)).toContain(MARK);
+    expect(result.size).toBe(result.buffer.length);
+
+    const guarded = resultOf(await restricted());
+    expectPermissionDenied(await rejection(applyPdfPostProcessing(guarded, { protect: { ownerPassword: 'x-owner-secret' } })));
+  });
+
+  it('opens a PDF that needs an open password with the password of the request', async () => {
+    const locked = qpdfEncrypt(await plainPdf(['Post body']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD });
+    expectPasswordRequired(await rejection(applyPdfPostProcessing(resultOf(locked), { watermark: WATERMARK })));
+    const result = resultOf(locked) as { buffer: Buffer };
+    await applyPdfPostProcessing(result as never, { watermark: WATERMARK, password: USER_PASSWORD });
+    expect(pdftotext(result.buffer)).toContain(MARK);
   });
 });
 

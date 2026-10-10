@@ -939,6 +939,17 @@ export class PdfPasswordRequiredError extends EncryptedOfficeDocumentError {
 }
 
 /**
+ * The `passwords` of a merge node do not line up with its inputs (a different number of entries, or an artifact that
+ * no input produced). Maps to HTTP 422, like the other errors about the passwords of a PDF.
+ */
+export class PdfPasswordListError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPasswordListError';
+  }
+}
+
+/**
  * A PDF's permissions forbid the requested edit and the request did not carry the owner password that lifts them.
  * Maps to HTTP 422.
  */

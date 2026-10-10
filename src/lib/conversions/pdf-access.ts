@@ -14,7 +14,7 @@ import { inspectPdfEncryption } from './pdf-encryption';
  *
  *  - a file that needs an open (user) password and gets none, or a wrong one: PdfPasswordRequiredError (422). A file
  *    with no open password opens with the empty password, so a request that carries none is enough for it;
- *  - the owner restricts a right the edit needs (modifying, annotating, assembling; unlocking needs every right):
+ *  - the owner restricts a right the edit needs (modifying, annotating, assembling; unlocking and re-protecting need every right, because the new file replaces the old restrictions):
  *    PdfPermissionDeniedError (422), unless the request confirms the caller may edit the document
  *    (`confirmEditRights: true`) or supplies the owner password, which qpdf verifies;
  *  - otherwise qpdf decrypts the PDF into a private directory and the plain bytes are returned.
@@ -29,7 +29,7 @@ const PDF_ACCESS_TIMEOUT_MS = 60_000;
 const REQUIRED_MESSAGE =
   'The PDF is encrypted. Supply the document password to edit it; encrypted PDFs are never edited without one.';
 
-export type PdfEditOperation = 'watermark' | 'merge' | 'unlock';
+export type PdfEditOperation = 'watermark' | 'merge' | 'unlock' | 'protect';
 
 /** Plain-language names of the rights qpdf reports, used in the message that tells the caller what is forbidden. */
 const RIGHT_LABELS: Readonly<Record<string, string>> = {
@@ -48,6 +48,7 @@ const OPERATION_VERBS: Readonly<Record<PdfEditOperation, string>> = {
   watermark: 'watermark',
   merge: 'merge',
   unlock: 'unlock',
+  protect: 'protection',
 };
 
 export interface PdfAccess {
@@ -65,6 +66,7 @@ function neededRights(operation: PdfEditOperation, capabilities: Readonly<Record
     case 'merge':
       return [['modifyassembly', 'modifyother']];
     case 'unlock':
+    case 'protect':
       return Object.keys(capabilities).filter((key) => key !== 'modify').map((key) => [key]);
   }
 }

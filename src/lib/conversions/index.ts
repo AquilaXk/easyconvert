@@ -680,9 +680,11 @@ export async function applyPdfPostProcessing(
   const pdfaLevel = state.pdfaExported ? null : resolvePdfAConformance(options);
   if (!options.watermark && !pdfaLevel && !options.protect) return;
   let pdf = result.buffer;
+  // The password and the rights confirmation of the request reach the edits, in case the PDF being edited is encrypted.
+  const access = { password: options.password, confirmEditRights: options.confirmEditRights };
   // Watermark first: any edit after the PDF/A conversion would break conformance.
   if (options.watermark) {
-    pdf = await applyPdfWatermark(pdf, options.watermark);
+    pdf = await applyPdfWatermark(pdf, options.watermark, access);
   }
   if (pdfaLevel) {
     const pdfaRes = await convertToPdfA(pdf, { ...options.pdfa, conformance: pdfaLevel });
@@ -690,7 +692,7 @@ export async function applyPdfPostProcessing(
     result.metadata = { ...result.metadata, ...pdfaMetadata(pdfaRes.pdfaValidated, pdfaRes.conformanceLevel) };
   }
   if (options.protect) {
-    pdf = await protectPdf(pdf, options.protect);
+    pdf = await protectPdf(pdf, options.protect, access);
   }
   result.buffer = pdf;
   result.size = pdf.length;
