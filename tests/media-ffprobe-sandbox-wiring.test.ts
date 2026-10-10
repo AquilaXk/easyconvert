@@ -10,6 +10,7 @@ import path from 'node:path';
  */
 const host = vi.hoisted(() => ({
   linuxHost: false,
+  prlimitInstalled: true,
   spawns: [] as Array<{ file: string; args: string[]; options: Record<string, unknown> }>,
   stdout: '',
   sandboxTools: ['/usr/bin/unshare', '/usr/bin/prlimit'],
@@ -18,6 +19,7 @@ const host = vi.hoisted(() => ({
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   const existsSync = ((target: unknown) => {
+    if (target === '/usr/bin/prlimit') return host.linuxHost && host.prlimitInstalled;
     if (typeof target === 'string' && host.sandboxTools.includes(target)) return host.linuxHost;
     return (actual.existsSync as (t: unknown) => boolean)(target);
   }) as typeof actual.existsSync;
@@ -54,7 +56,7 @@ import {
 } from '../src/lib/conversions/media-ffprobe';
 import { probeVideoMaxLightLevel } from '../src/lib/conversions/media-hdr';
 import { probeMediaDuration } from '../src/lib/conversions/media';
-import { resetPrlimitCapabilityCache, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
+import { resetPrlimitCapabilityCache, resetUnshareCapabilityCache, resolveSandboxedCommand } from '../src/lib/security/process-sandbox';
 import { SandboxUnavailableError } from '../src/lib/types';
 
 const FFPROBE = '/opt/test-tools/ffprobe' as FfprobePath;
@@ -90,6 +92,7 @@ beforeEach(() => {
   host.spawns.length = 0;
   host.stdout = STREAMS_JSON;
   host.linuxHost = false;
+  host.prlimitInstalled = true;
   resetInputProbeCache();
   resetUnshareCapabilityCache();
   resetPrlimitCapabilityCache();
@@ -210,6 +213,14 @@ describe('ffprobe under STRICT_SANDBOX on a host with namespaces', () => {
   });
 });
 
+describe('a command with only an open-file limit', () => {
+  it('is wrapped in prlimit', () => {
+    linuxHostWithNamespaces();
+    const resolved = resolveSandboxedCommand('/opt/test-tools/tool', ['x'], { networkIsolated: false, rlimits: { nofile: 64 } });
+    expect(resolved).toEqual({ binary: PRLIMIT, args: ['--nofile=64', '--', '/opt/test-tools/tool', 'x'], wrapped: true });
+  });
+});
+
 describe('ffprobe under STRICT_SANDBOX when the sandbox is unavailable', () => {
   it('refuses every probe with a SandboxUnavailableError and starts nothing', () => {
     sandboxDenied();
@@ -247,6 +258,24 @@ describe('ffprobe under STRICT_SANDBOX when the sandbox is unavailable', () => {
     const run = dispatchConversion(OPAQUE_MEDIA, 'mp3', 'ogg', {}, 'input.mp3');
     await expect(run).rejects.toBeInstanceOf(SandboxUnavailableError);
     expect(host.spawns.filter((spawn) => /ffmpeg|ffprobe/.test(spawn.file))).toEqual([]);
+  });
+
+  it('refuses to probe without resource limits when prlimit is missing, instead of running ffprobe unlimited', () => {
+    linuxHostWithNamespaces();
+    host.prlimitInstalled = false;
+    expect(() => probeInput(mediaFile, FFPROBE)).toThrow(SandboxUnavailableError);
+    expect(() => probeAudioChannels(mediaFile, FFPROBE)).toThrow(/prlimit/);
+    expect(host.spawns).toEqual([]);
+  });
+
+  it('still probes without prlimit when the sandbox is not strict, as other tools do on a development host', () => {
+    stubPlatform('linux');
+    host.linuxHost = true;
+    host.prlimitInstalled = false;
+    probeInput(mediaFile, FFPROBE);
+    const [spawn] = ffprobeSpawns();
+    expect(spawn.file).toBe(UNSHARE);
+    expect(spawn.args).not.toContain(PRLIMIT);
   });
 
   it('only refuses under STRICT_SANDBOX: a development host without namespaces still probes', () => {

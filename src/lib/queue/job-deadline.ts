@@ -272,7 +272,7 @@ export function deadlineBoundEngine(engine: ConversionEnginePort, job: Deadlined
         input,
         sourceFormat,
         targetFormat,
-        bindJobLimits(options, { signal: job.signal, deadlineAt: jobDeadlineAt(job) }),
+        bindJobLimits(options, { signal: job.signal, deadlineAt: jobDeadlineAt(job), timeoutMs: job.opts?.timeout }),
         originalFilename
       );
     },

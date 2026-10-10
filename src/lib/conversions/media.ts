@@ -11,6 +11,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   InvalidMediaOptionError,
+  JobTimeoutError,
   MediaPackagingOptions,
 } from '../types';
 export { ConversionFailedError };
@@ -148,9 +149,9 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
     if (!ffprobe) return 0;
     return probeInput(filePath, ffprobe as FfprobePath, options).durationSec ?? 0;
   } catch (err) {
-    // An unreadable file has no known duration; a host that cannot confine ffprobe, or a job that was stopped, has no answer.
+    // An unreadable file has no known duration; a host that cannot confine ffprobe, or a job that was stopped or ran past its deadline, has no answer.
     rethrowSandboxUnavailable(err);
-    if (options?.signal?.aborted) throw err;
+    if (options?.signal?.aborted || err instanceof JobTimeoutError) throw err;
     return 0;
   }
 }

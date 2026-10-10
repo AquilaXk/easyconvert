@@ -5,12 +5,16 @@ import path from 'node:path';
 import {
   probeAudioChannels,
   probeInput,
+  probeInputDuration,
   resetInputProbeCache,
   type FfprobePath,
 } from '../src/lib/conversions/media-ffprobe';
-import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
+import { runUnderDeadline } from '../src/lib/api/sync-deadline';
+import { JOB_DEADLINE_AT, bindJobLimits } from '../src/lib/conversions/job-time';
+import { probeMediaDuration } from '../src/lib/conversions/media';
+import { probeVideoMaxLightLevel } from '../src/lib/conversions/media-hdr';
 import { getUnshareCapability } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError } from '../src/lib/types';
+import { ConversionFailedError, JobTimeoutError } from '../src/lib/types';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -22,6 +26,7 @@ const SPY_MODE = 0o755;
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const HANG_SECONDS = 30;
 const DEADLINE_MS = 300;
+const ROUTE_DEADLINE_MS = 500;
 /** A probe cut at a 300 ms deadline returns long before the 30 s the spy would otherwise run. */
 const PROMPT_RETURN_MS = 5_000;
 const OPAQUE_MEDIA = Buffer.from('ID3\u0004\u0000\u0000\u0000\u0000\u0000\u0000'.padEnd(512, '\u0000'), 'latin1');
@@ -102,9 +107,52 @@ describe('the job limits reach the probe', () => {
   it('stops a hanging probe at the time the job has left, not at the 10 s probe limit', () => {
     const hanging = spy('hanging', `echo started >> '${log}'\nexec sleep ${HANG_SECONDS}`);
     const begun = Date.now();
-    expect(() => probeInput(mediaFile, hanging, { [JOB_DEADLINE_AT]: Date.now() + DEADLINE_MS })).toThrow(ConversionFailedError);
+    expect(() => probeInput(mediaFile, hanging, { [JOB_DEADLINE_AT]: Date.now() + DEADLINE_MS })).toThrow(JobTimeoutError);
     expect(Date.now() - begun).toBeLessThan(PROMPT_RETURN_MS);
     expect(started()).toEqual(['started']);
+  });
+
+  it('answers a probe cut by the deadline of a route as the job timeout, not as unreadable media', async () => {
+    const hanging = spy('hanging-route', `echo started >> '${log}'\nexec sleep 2`);
+    const request = { signal: new AbortController().signal };
+    const run = runUnderDeadline(request, ROUTE_DEADLINE_MS, async (limits) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return probeInputDuration(mediaFile, hanging, bindJobLimits({}, limits));
+    });
+    const failure = await run.then(
+      () => null,
+      (err: unknown) => err
+    );
+    expect(failure).toBeInstanceOf(JobTimeoutError);
+    expect((failure as JobTimeoutError).timeoutMs).toBe(ROUTE_DEADLINE_MS);
+    expect(started()).toEqual(['started']);
+  });
+
+  it('starts no further probe once the deadline has passed', () => {
+    const never = spy('after-deadline', `echo started >> '${log}'\nexec sleep ${HANG_SECONDS}`);
+    const passed = { [JOB_DEADLINE_AT]: Date.now() - 1 };
+    expect(() => probeInput(mediaFile, never, passed)).toThrow(JobTimeoutError);
+    expect(() => probeAudioChannels(mediaFile, never, 0, passed)).toThrow(JobTimeoutError);
+    expect(() => probeVideoMaxLightLevel(mediaFile, never, passed)).toThrow(JobTimeoutError);
+    expect(() => probeMediaDuration(mediaFile, passed as never, never)).toThrow(JobTimeoutError);
+    expect(started()).toEqual([]);
+  });
+
+  it('keeps the unreadable-media error for a probe that fails inside the time the job has left', () => {
+    const failing = spy('fails-in-time', 'exit 1');
+    expect(() => probeInput(mediaFile, failing, { [JOB_DEADLINE_AT]: Date.now() + 60_000 })).toThrow(/could not inspect the input media/);
+  });
+});
+
+describe('the MaxCLL probe', () => {
+  it('keeps its answer when ffprobe logs more than the 4 KiB light-level bound to stderr', () => {
+    const noisy = spy('noisy-hdr', `head -c 5300 /dev/zero | tr '\\0' x >&2\necho 1000`);
+    expect(probeVideoMaxLightLevel(mediaFile, noisy)).toBe(1000);
+  });
+
+  it('still bounds what it reads from stdout', () => {
+    const flood = spy('flood-hdr', `exec head -c 100000 /dev/zero`);
+    expect(probeVideoMaxLightLevel(mediaFile, flood)).toBeUndefined();
   });
 });
 
@@ -120,6 +168,7 @@ describe.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', HAS_NAMESP
           `readlink /proc/self/ns/net > '${seen('net')}'`,
           `cat /proc/self/uid_map > '${seen('uid')}'`,
           `cat /proc/net/dev > '${seen('dev')}'`,
+          `cat /proc/self/limits > '${seen('limits')}'`,
           `echo '{"streams":[{"index":0,"codec_type":"audio","codec_name":"mp3"}]}'`,
         ].join('\n')
       );
@@ -132,6 +181,19 @@ describe.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', HAS_NAMESP
         .filter((line) => line.includes(':'))
         .map((line) => line.split(':')[0].trim());
       expect(devices).toEqual(['lo']);
+
+      // `Max address space  4294967296  4294967296  bytes`: the soft and the hard limit of each resource.
+      const limits = new Map(
+        readFileSync(seen('limits'), 'utf-8')
+          .split('\n')
+          .map((line) => /^(Max [a-z ]+?)\s{2,}(\S+)\s+(\S+)/.exec(line))
+          .filter((match): match is RegExpExecArray => match !== null)
+          .map((match) => [match[1], [match[2], match[3]]])
+      );
+      expect(limits.get('Max address space')).toEqual([String(4096 * 1024 * 1024), String(4096 * 1024 * 1024)]);
+      expect(limits.get('Max cpu time')).toEqual(['10', '10']);
+      expect(limits.get('Max file size')).toEqual([String(1024 * 1024), String(1024 * 1024)]);
+      expect(limits.get('Max open files')).toEqual(['256', '256']);
     } finally {
       vi.unstubAllEnvs();
     }

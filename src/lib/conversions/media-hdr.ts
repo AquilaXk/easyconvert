@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { rethrowSandboxUnavailable } from '../security/process-sandbox';
-import { EngineUnavailableError } from '../types';
+import { EngineUnavailableError, JobTimeoutError } from '../types';
 import { DEFAULT_HDR_PEAK_NITS, HLG_REFERENCE_PEAK_NITS, PQ_PEAK_NITS, SDR_PEAK_NITS, createBt2390Parameters } from './hdr-tonemap';
 import { type FfprobePath, type ProbeJob, runSandboxedFfprobe } from './media-ffprobe';
 
@@ -82,11 +82,12 @@ export function probeVideoMaxLightLevel(filePath: string, ffprobe: FfprobePath, 
       ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1', filePath],
       MAX_LIGHT_LEVEL_OUTPUT_BYTES,
       job,
+      true,
     );
   } catch (err) {
-    // A missing sandbox and an aborted job end the conversion; only a probe that failed to read the file leaves the level unstated.
+    // A missing sandbox and a stopped job (aborted or past its deadline) end the conversion; only a probe that failed to read the file leaves the level unstated.
     rethrowSandboxUnavailable(err);
-    if (job?.signal?.aborted) throw err;
+    if (job?.signal?.aborted || err instanceof JobTimeoutError) throw err;
     return undefined;
   }
   for (const line of out.split('\n')) {

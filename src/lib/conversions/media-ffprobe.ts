@@ -3,12 +3,13 @@ import path from 'node:path';
 import {
   ConversionFailedError,
   EngineUnavailableError,
+  JobTimeoutError,
   MediaProbeError,
   NoVideoStreamError,
   TooManyMediaStreamsError,
 } from '../types';
-import { rethrowSandboxUnavailable, runSandboxedBinarySync } from '../security/process-sandbox';
-import { clampToJobRemaining, type JobDeadlined } from './job-time';
+import { SandboxedTimeoutError, rethrowSandboxUnavailable, runSandboxedBinarySync } from '../security/process-sandbox';
+import { clampToJobRemaining, jobTimeoutMs, remainingJobMs, type JobDeadlined } from './job-time';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 
@@ -84,7 +85,17 @@ export type ProbeJob = JobDeadlined & { signal?: AbortSignal };
  * SandboxUnavailableError before anything starts, and an aborted job throws its reason; every other failure is a
  * ConversionFailedError.
  */
-export function runSandboxedFfprobe(ffprobe: FfprobePath, args: string[], maxBuffer: number, job: ProbeJob | undefined): string {
+export function runSandboxedFfprobe(
+  ffprobe: FfprobePath,
+  args: string[],
+  maxBuffer: number,
+  job: ProbeJob | undefined,
+  discardStderr = false
+): string {
+  // The deadline timer of the job cannot fire while a probe blocks the event loop, so the probe checks it itself:
+  // past it nothing starts, and a probe that the clamp cut is the job's timeout, not an unreadable file.
+  const remaining = remainingJobMs(job);
+  if (remaining !== undefined && remaining <= 0) throw job?.signal?.reason ?? new JobTimeoutError(jobTimeoutMs(job) ?? 0);
   const timeoutMs = clampToJobRemaining(job, FFPROBE_TIMEOUT_MS);
   try {
     const { stdout } = runSandboxedBinarySync(ffprobe, args, {
@@ -92,6 +103,7 @@ export function runSandboxedFfprobe(ffprobe: FfprobePath, args: string[], maxBuf
       maxBuffer,
       networkIsolated: true,
       signal: job?.signal,
+      discardStderr,
       rlimits: {
         asBytes: FFPROBE_ADDRESS_SPACE_BYTES,
         cpuSeconds: Math.ceil(timeoutMs / MS_PER_SECOND),
@@ -103,6 +115,9 @@ export function runSandboxedFfprobe(ffprobe: FfprobePath, args: string[], maxBuf
   } catch (err) {
     rethrowSandboxUnavailable(err);
     if (job?.signal?.aborted) throw job.signal.reason ?? err;
+    if (err instanceof SandboxedTimeoutError && timeoutMs < FFPROBE_TIMEOUT_MS) {
+      throw new JobTimeoutError(jobTimeoutMs(job) ?? 0);
+    }
     const detail = err instanceof Error ? err.message : String(err);
     throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
   }

@@ -515,12 +515,17 @@ export function resolveSandboxedCommand(
     effectiveRlimits.cpuSeconds !== undefined ||
     effectiveRlimits.nofile !== undefined;
 
-  if (process.platform === 'linux' && capPrlimit.available && hasRlimits) {
-    const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
-    if (prlimitArgs.length > 0) {
-      finalArgs = [...prlimitArgs, '--', finalBinary, ...finalArgs];
-      finalBinary = capPrlimit.path;
-      isWrapped = true;
+  if (process.platform === 'linux' && hasRlimits) {
+    if (capPrlimit.available) {
+      const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
+      if (prlimitArgs.length > 0) {
+        finalArgs = [...prlimitArgs, '--', finalBinary, ...finalArgs];
+        finalBinary = capPrlimit.path;
+        isWrapped = true;
+      }
+    } else if (strictIsolation) {
+      // The limits are part of the confinement: a strict host never runs the tool without them.
+      throw new SandboxUnavailableError('Strict resource confinement failed: Linux prlimit is unavailable');
     }
   }
 
@@ -860,7 +865,10 @@ export async function executeSandboxedBinary(
   });
 }
 
-export type SandboxedSyncOptions = Omit<SandboxedExecutionOptions, 'stdin'>;
+export interface SandboxedSyncOptions extends Omit<SandboxedExecutionOptions, 'stdin'> {
+  /** Read nothing from stderr: for a probe whose answer is on stdout and whose log noise must not count against `maxBuffer`. */
+  discardStderr?: boolean;
+}
 
 /**
  * The synchronous counterpart of `executeSandboxedBinary` for short probes whose callers cannot await (the
@@ -907,7 +915,7 @@ export function runSandboxedBinarySync(
   const result = spawnSync(resolvedCmd.binary, resolvedCmd.args, {
     cwd,
     env: getSanitizedEnvironment(customEnv, networkIsolated),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', options.discardStderr ? 'ignore' : 'pipe'],
     shell: false,
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
