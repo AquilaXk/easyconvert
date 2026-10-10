@@ -1,7 +1,13 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { PDF_TRAILER_SCAN_BYTES, inspectPdfEncryption } from '../src/lib/conversions/pdf-encryption';
+import { MAX_CROSS_REFERENCE_SECTIONS, PDF_TRAILER_SCAN_BYTES, inspectPdfEncryption } from '../src/lib/conversions/pdf-encryption';
 import {
   ENCRYPTION_VARIANTS,
   plainPdf,
@@ -150,4 +156,96 @@ describe('inspectPdfEncryption on hostile or malformed input', () => {
     expect(() => inspectPdfEncryption(Buffer.alloc(0))).toThrow(PdfStructureError);
     expect(() => inspectPdfEncryption(Buffer.from('plain text, not a pdf'))).toThrow(PdfStructureError);
   });
+});
+
+/** A file of `count` classic cross-reference sections, each naming the one before it in /Prev. */
+function tableChain(count: number): Buffer {
+  let body = '%PDF-1.4\n';
+  let previous: number | undefined;
+  for (let i = 0; i < count; i++) {
+    const offset = Buffer.byteLength(body, 'latin1');
+    body += `xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1${previous === undefined ? '' : ` /Prev ${previous}`} >>\n`;
+    previous = offset;
+  }
+  return Buffer.from(`${body}startxref\n${previous}\n%%EOF\n`, 'latin1');
+}
+
+describe('the length of the /Prev chain', () => {
+  it('follows a chain of exactly MAX_CROSS_REFERENCE_SECTIONS distinct sections', () => {
+    expect(inspectPdfEncryption(tableChain(MAX_CROSS_REFERENCE_SECTIONS))).toEqual({ encrypted: false });
+  });
+
+  it('refuses a chain of one more distinct section with a typed 400, so a long chain is never followed to its end', () => {
+    const chain = tableChain(MAX_CROSS_REFERENCE_SECTIONS + 1);
+    expect(() => inspectPdfEncryption(chain)).toThrow(PdfStructureError);
+    expect(() => inspectPdfEncryption(chain)).toThrow(/more than 64 sections/);
+  });
+});
+
+const execFileAsync = promisify(execFile);
+const MIB = 1024 * 1024;
+const CHILD = path.join(__dirname, 'pdf-encryption-child.ts');
+const ROOT = path.resolve(__dirname, '..');
+/** Rows of the hostile cross-reference streams: each inflates to about 8 MiB and is a few kilobytes packed. */
+const HOSTILE_STREAM_BYTES = 8 * MIB;
+const HOSTILE_SECTIONS = 64;
+const HOSTILE_COLUMNS = 5;
+/** The decoded bytes one inspection may spend over all its cross-reference streams. */
+const MAX_RSS_GROWTH_BYTES = 96 * MIB;
+const MAX_ELAPSED_MS = 3000;
+
+/** 64 Flate cross-reference streams that each inflate to the limit, with an /Encrypt reference no section lists. */
+function hostileXrefChain(): Buffer {
+  const rowBytes = HOSTILE_COLUMNS + 1;
+  const rows = Math.floor(HOSTILE_STREAM_BYTES / rowBytes);
+  const raw = Buffer.alloc(rows * rowBytes);
+  for (let row = 0; row < rows; row++) raw[row * rowBytes] = 2;
+  const packed = deflateSync(raw, { level: 9 });
+  const parts: Buffer[] = [Buffer.from('%PDF-1.7\n', 'latin1')];
+  let length = parts[0].length;
+  let previous: number | undefined;
+  for (let i = 0; i < HOSTILE_SECTIONS; i++) {
+    const offset = length;
+    const entries = [
+      `/Type /XRef /Size ${rows} /W [1 3 1] /Filter /FlateDecode`,
+      `/DecodeParms << /Predictor 12 /Columns ${HOSTILE_COLUMNS} >> /Length ${packed.length}`,
+      previous === undefined ? '' : `/Prev ${previous}`,
+      i === HOSTILE_SECTIONS - 1 ? '/Encrypt 9999999 0 R' : '',
+    ];
+    const chunk = Buffer.concat([
+      Buffer.from(`${100 + i} 0 obj\n<< ${entries.join(' ')} >>\nstream\n`, 'latin1'),
+      packed,
+      Buffer.from('\nendstream\nendobj\n', 'latin1'),
+    ]);
+    parts.push(chunk);
+    length += chunk.length;
+    previous = offset;
+  }
+  parts.push(Buffer.from(`startxref\n${previous}\n%%EOF\n`, 'latin1'));
+  return Buffer.concat(parts);
+}
+
+describe('a hostile cross-reference stream chain', () => {
+  it('is refused with a typed 413 within a small memory and time budget, in a fresh process', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-571-hostile-'));
+    try {
+      const file = path.join(dir, 'hostile.pdf');
+      const bytes = hostileXrefChain();
+      fs.writeFileSync(file, bytes);
+      expect(bytes.length).toBeLessThan(2 * MIB);
+
+      const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx', CHILD, file], { cwd: ROOT, timeout: 120_000, maxBuffer: 4 * MIB });
+      const line = stdout.split('\n').find((candidate) => candidate.startsWith('RESULT:'));
+      const outcome = JSON.parse((line ?? '').slice('RESULT:'.length)) as {
+        error: { name: string; status?: number } | null;
+        elapsedMs: number;
+        rssGrowthBytes: number;
+      };
+      expect(outcome.error).toMatchObject({ name: 'DecompressionLimitError', status: 413 });
+      expect(outcome.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
+      expect(outcome.elapsedMs).toBeLessThan(MAX_ELAPSED_MS);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

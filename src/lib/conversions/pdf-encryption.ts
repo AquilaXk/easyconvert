@@ -1,4 +1,5 @@
 import { inflateSync } from 'node:zlib';
+import { DecompressionLimitError } from '../types';
 import { PdfStructureError, parseValue, skipWhite, type PdfDict, type PdfValue } from './pdf-document';
 
 /**
@@ -11,8 +12,9 @@ import { PdfStructureError, parseValue, skipWhite, type PdfDict, type PdfValue }
  * object streams and every other object are never read.
  *
  * Hostile input is bounded: the chain is limited to MAX_CROSS_REFERENCE_SECTIONS sections and may not loop, a table
- * may not declare more entries than the file holds, and a cross-reference stream inflates to at most
- * MAX_XREF_STREAM_BYTES. A file whose trailer cannot be read answers a PdfStructureError (HTTP 400), never a guess.
+ * may not declare more entries than the file holds, and the cross-reference streams of one inspection inflate to at
+ * most MAX_XREF_INFLATED_BYTES together (a DecompressionLimitError, HTTP 413, beyond it); decoded rows are dropped
+ * after each lookup. A file whose trailer cannot be read answers a PdfStructureError (HTTP 400), never a guess.
  */
 
 /** Bytes from the end of the file searched for `startxref` (the specification asks for 1024; writers add padding). */
@@ -23,6 +25,8 @@ export const MAX_CROSS_REFERENCE_SECTIONS = 64;
 const MAX_XREF_SUBSECTIONS = 4096;
 /** Largest cross-reference stream, packed or inflated; 8 MiB lists more than a million objects. */
 const MAX_XREF_STREAM_BYTES = 8 * 1024 * 1024;
+/** Bytes all the cross-reference streams of one inspection may inflate to together; a longer chain is refused (413). */
+export const MAX_XREF_INFLATED_BYTES = 16 * 1024 * 1024;
 /** Bytes of the file read at once to parse one dictionary or section header. */
 const PARSE_WINDOW_BYTES = 64 * 1024;
 /** Bytes from the start of the file searched for the `%PDF-` header; offsets count from it. */
@@ -212,8 +216,17 @@ function undoPngPredictor(data: Buffer, columns: number): Buffer | undefined {
   return out;
 }
 
-/** The rows of a cross-reference stream, or undefined when the stream uses anything beyond Flate and PNG predictors. */
-function decodeXrefStream(pdf: Buffer, dict: PdfDict, dataStart: number): Buffer | undefined {
+/** What is left of the inflate budget of one inspection. */
+interface InflateBudget {
+  remaining: number;
+}
+
+/**
+ * The rows of a cross-reference stream, or undefined when the stream uses anything beyond Flate and PNG predictors.
+ *
+ * @throws DecompressionLimitError when the stream inflates past what is left of the inspection's budget.
+ */
+function decodeXrefStream(pdf: Buffer, dict: PdfDict, dataStart: number, budget: InflateBudget): Buffer | undefined {
   const length = dict.entries.get('Length');
   if (typeof length !== 'number' || length > MAX_XREF_STREAM_BYTES || dataStart + length > pdf.length) return undefined;
   const raw = pdf.subarray(dataStart, dataStart + length);
@@ -221,11 +234,14 @@ function decodeXrefStream(pdf: Buffer, dict: PdfDict, dataStart: number): Buffer
   let data = raw;
   if (filters.length > 1 || (filters.length === 1 && !FLATE_FILTER_NAMES.has(filters[0]))) return undefined;
   if (filters.length === 1) {
+    const allowed = Math.min(MAX_XREF_STREAM_BYTES, Math.max(budget.remaining, 1));
     try {
-      data = inflateSync(raw, { maxOutputLength: MAX_XREF_STREAM_BYTES });
-    } catch {
-      return undefined;
+      data = inflateSync(raw, { maxOutputLength: allowed });
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== 'ERR_BUFFER_TOO_LARGE') return undefined;
+      throw new DecompressionLimitError(`PDF cross-reference streams inflate to more than ${MAX_XREF_INFLATED_BYTES} bytes in total.`);
     }
+    budget.remaining -= data.length;
   }
   const parms = firstDecodeParms(dict.entries.get('DecodeParms'));
   const predictor = parms?.entries.get('Predictor');
@@ -235,7 +251,7 @@ function decodeXrefStream(pdf: Buffer, dict: PdfDict, dataStart: number): Buffer
   return undoPngPredictor(data, columns);
 }
 
-function readStreamSection(pdf: Buffer, objectStart: number): CrossReferenceSection {
+function readStreamSection(pdf: Buffer, objectStart: number, budget: InflateBudget): CrossReferenceSection {
   const text = window(pdf, objectStart);
   const header = OBJECT_HEADER.exec(text);
   if (!header) throw new PdfStructureError('PDF cross-reference stream has no object header.');
@@ -250,16 +266,12 @@ function readStreamSection(pdf: Buffer, objectStart: number): CrossReferenceSect
   const streamStart = /^stream(\r\n|\n|\r)/.exec(text.slice(keyword));
   const widths = numberList(trailer.entries.get('W'));
   const unreadable = !streamStart || !widths || widths.length !== 3 || widths.some((w) => w < 0 || w > MAX_FIELD_WIDTH);
-  let rows: Buffer | undefined;
-  let decoded = false;
   return {
     trailer,
     offsetOf(objectNumber) {
       if (unreadable) return undefined;
-      if (!decoded) {
-        rows = decodeXrefStream(pdf, trailer, objectStart + keyword + streamStart[0].length);
-        decoded = true;
-      }
+      // Decoded on each lookup and dropped with it: no section keeps its rows alive.
+      const rows = decodeXrefStream(pdf, trailer, objectStart + keyword + streamStart[0].length, budget);
       return rows ? lookupInRows(rows, widths, trailer, objectNumber) : undefined;
     },
   };
@@ -291,14 +303,14 @@ function lookupInRows(rows: Buffer, widths: number[], trailer: PdfDict, objectNu
   return undefined;
 }
 
-function readSection(pdf: Buffer, start: number): CrossReferenceSection {
+function readSection(pdf: Buffer, start: number, budget: InflateBudget): CrossReferenceSection {
   const head = window(pdf, start, 64);
   const at = skipWhite(head, 0);
   if (head.startsWith('xref', at)) return readTableSection(pdf, start + at + 'xref'.length);
-  return readStreamSection(pdf, start + at);
+  return readStreamSection(pdf, start + at, budget);
 }
 
-function readCrossReferenceChain(pdf: Buffer): { sections: CrossReferenceSection[]; base: number } {
+function readCrossReferenceChain(pdf: Buffer, budget: InflateBudget): { sections: CrossReferenceSection[]; base: number } {
   const startOffset = findStartXref(pdf);
   const base = offsetBase(pdf, startOffset);
   const sections: CrossReferenceSection[] = [];
@@ -314,7 +326,7 @@ function readCrossReferenceChain(pdf: Buffer): { sections: CrossReferenceSection
     if (!looksLikeSectionStart(pdf, base + offset)) {
       throw new PdfStructureError('PDF /Prev does not point at a cross-reference section.');
     }
-    const section = readSection(pdf, base + offset);
+    const section = readSection(pdf, base + offset, budget);
     sections.push(section);
     const previous = section.trailer.entries.get('Prev');
     offset = typeof previous === 'number' ? previous : undefined;
@@ -353,9 +365,11 @@ function numberEntry(dict: PdfDict, key: string): number | undefined {
  * cannot be resolved.
  *
  * @throws PdfStructureError (400) when no cross-reference section can be read from the end of the file.
+ * @throws DecompressionLimitError (413) when the cross-reference streams inflate past MAX_XREF_INFLATED_BYTES.
  */
 export function inspectPdfEncryption(pdf: Buffer): PdfEncryptionInfo {
-  const { sections, base } = readCrossReferenceChain(pdf);
+  const budget: InflateBudget = { remaining: MAX_XREF_INFLATED_BYTES };
+  const { sections, base } = readCrossReferenceChain(pdf, budget);
   const owner = sections.find((section) => section.trailer.entries.has('Encrypt'));
   if (!owner) return { encrypted: false };
 
