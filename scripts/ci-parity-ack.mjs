@@ -3,7 +3,7 @@
 // compared against the base inside one job (#700).
 //
 //   node scripts/ci-parity-ack.mjs --verdict <parity-verdict.json> --specific <families> --role <repository role>
-//        [--actor <login>] [--comment-file <file>]
+//        --changed-files <file with one changed path per line> [--actor <login>] [--comment-file <file>]
 //
 // prints `acknowledged=true|false` and one `reason=` line per refusal, and exits 0 either way (the workflow reads the
 // output). A pull request carrying the `parity-ack` label, added by someone with the admin or maintain role, passes a
@@ -13,6 +13,9 @@
 //   2. its median ratio is at least the parity line (0.97);
 //   3. its family is in the pull request's family set only through the all-family rules: the change maps no file
 //      specifically to that family.
+// The verdict is written by the pull request's own harness, so a change to anything that produces or judges it, or that
+// runs this step, is never acknowledged (PROTECTED_PATHS, fixed here in the base copy of the rule): that change must pass
+// the speed gate on its own.
 // Anything else (no verdict, a verdict that is not a strict speed run, a baseline regression, no failing row, a missing
 // number) is refused, so the rule fails closed.
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -23,6 +26,24 @@ import { fileURLToPath } from 'node:url';
 export const PARITY_LINE = 0.97;
 export const ACK_LABEL = 'parity-ack';
 export const ACK_ROLES = new Set(['admin', 'maintain']);
+/**
+ * Files whose change makes the verdict untrustworthy: the benchmark harness, gate and corpus (all of bench/ but its
+ * notes), the parity scripts, the workflows and actions, and what runs the benchmark (the package scripts, the TypeScript
+ * configuration). The rule runs from the base commit, so a pull request cannot shorten this list.
+ */
+export const PROTECTED_PATHS = [
+  /^bench\/(?!README\.md$)/,
+  /^scripts\/ci-parity-/,
+  /^\.github\/(?:workflows|actions)\//,
+  /^package(?:-lock)?\.json$/,
+  /^tsconfig[^/]*\.json$/,
+];
+
+/** The changed files that make the verdict untrustworthy. */
+export function protectedChanges(files) {
+  return files.filter((file) => PROTECTED_PATHS.some((pattern) => pattern.test(file)));
+}
+
 export const COMMENT_MARKER = '<!-- parity-ack -->';
 const MAX_VERDICT_BYTES = 8 * 1024 * 1024;
 const UNDECIDED_BASIS = 'speed-unstable-at-cap';
@@ -38,8 +59,16 @@ const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
  * Judges a parsed verdict. Returns { acknowledged, rows, reasons }: `rows` are the failing rows that were acknowledged
  * (all of them when `acknowledged`), `reasons` why not.
  */
-export function judgeAcknowledgement(verdict, { specific = [], role } = {}) {
+export function judgeAcknowledgement(verdict, { specific = [], role, changedFiles } = {}) {
   const reasons = [];
+  if (!Array.isArray(changedFiles)) {
+    reasons.push('the files the pull request changes are not known');
+  } else {
+    const touched = protectedChanges(changedFiles);
+    if (touched.length > 0) {
+      reasons.push(`the pull request changes what produces or judges the verdict, or runs this step (${touched.slice(0, 5).join(', ')}${touched.length > 5 ? ', ...' : ''}); it has to pass the speed gate on its own`);
+    }
+  }
   if (!mayAcknowledge(role)) reasons.push(`the label was not added by someone with the admin or maintain role (role: ${role || 'unknown'})`);
   const parity = verdict?.parity;
   if (verdict === null || typeof verdict !== 'object' || parity === null || typeof parity !== 'object' || !Array.isArray(parity.rows)) {
@@ -107,6 +136,14 @@ function readVerdict(file) {
   }
 }
 
+function readLines(file) {
+  try {
+    return readFileSync(file, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return undefined;
+  }
+}
+
 function option(args, name) {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? undefined : args[index + 1];
@@ -115,7 +152,9 @@ function option(args, name) {
 function main(args) {
   const verdict = readVerdict(option(args, 'verdict') ?? 'parity-verdict.json');
   const specific = (option(args, 'specific') ?? '').split(',').map((name) => name.trim()).filter(Boolean);
-  const result = judgeAcknowledgement(verdict, { specific, role: option(args, 'role') });
+  const changedFile = option(args, 'changed-files');
+  const changedFiles = changedFile === undefined ? undefined : readLines(changedFile);
+  const result = judgeAcknowledgement(verdict, { specific, role: option(args, 'role'), changedFiles });
   console.log(`acknowledged=${result.acknowledged}`);
   for (const reason of result.reasons) console.log(`reason=${reason}`);
   const commentFile = option(args, 'comment-file');

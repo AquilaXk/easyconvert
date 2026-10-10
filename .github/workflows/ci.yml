@@ -713,15 +713,29 @@ jobs:
     steps:
       # Temporary, until the speed rows are compared against the base inside one job (#700): a maintainer can acknowledge
       # a failed `parity speed` whose every failing row is undecided noise (scripts/ci-parity-ack.mjs states the rule).
-      # The label counts only when its latest `labeled` event was made by someone with the admin or maintain role.
-      # The rule, the family mapper and the family map are taken from the BASE commit, so a pull request cannot edit
-      # them to accept its own run; a base without them refuses the acknowledgement.
+      # The label counts only when its latest `labeled` event was made by someone with the admin or maintain role, and
+      # only for the head it was put on: a push removes it (the first step below), and a run for a push never counts it.
+      # The rule, the family mapper and the family map are taken from the BASE commit, and the rule refuses a pull request
+      # that changes the harness, the gate, the corpus, the parity scripts, the workflows or the actions, because the
+      # verdict is written by the pull request's own code. Limit: on `pull_request` this workflow file itself comes from the
+      # head, so a pull request that rewrites this step is not stopped by the step; the rule refuses to acknowledge it, a
+      # workflow change must pass the speed gate on its own, and a reviewer has to read any change to this file.
+      - name: Drop an acknowledgement that predates the head
+        if: github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --method DELETE "repos/$REPOSITORY/issues/$PR_NUMBER/labels/parity-ack" > /dev/null
+          echo "removed the parity-ack label: a new push needs a new decision"
+
       - name: Checkout repository
-        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Fetch the speed verdict
-        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
         continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -730,7 +744,7 @@ jobs:
 
       - name: Decide whether a failed speed parity is acknowledged
         id: ack
-        if: needs.parity-speed.result == 'failure' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
+        if: needs.parity-speed.result == 'failure' && github.event.action != 'synchronize' && contains(github.event.pull_request.labels.*.name, 'parity-ack')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -752,7 +766,9 @@ jobs:
             cp "$RUNNER_TEMP/base-file" "$file"
           done
           git show "$PR_BASE_SHA:scripts/ci-parity-ack.mjs" > "$RUNNER_TEMP/ci-parity-ack.mjs" 2> /dev/null || refuse "the base commit has no scripts/ci-parity-ack.mjs"
-          mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)" || refuse "the family mapper failed"
+          # Renames are listed with both names, so moving a protected file away is seen.
+          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
+          mapped="$(node scripts/ci-parity-families.mjs < "$RUNNER_TEMP/changed-files.txt")" || refuse "the family mapper failed"
           printf '%s\n' "$mapped" | grep -q '^specific=' || refuse "the base family mapper does not report the specific families"
           specific="$(printf '%s\n' "$mapped" | sed -n 's/^specific=//p')"
           actor="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/events" --jq '.[] | select(.event == "labeled" and .label.name == "parity-ack") | .actor.login' | tail -n 1)" || actor=""
@@ -761,12 +777,12 @@ jobs:
             role="$(gh api "repos/$REPOSITORY/collaborators/$actor/permission" --jq '.role_name' || true)"
           fi
           echo "parity-ack label added by: ${actor:-unknown} (${role:-no role})"
-          result="$(node "$RUNNER_TEMP/ci-parity-ack.mjs" --verdict parity-speed-results/parity-verdict.json --specific "$specific" --role "$role" --actor "$actor" --run-url "$RUN_URL" --comment-file "$RUNNER_TEMP/parity-ack-comment.md")"
+          result="$(node "$RUNNER_TEMP/ci-parity-ack.mjs" --verdict parity-speed-results/parity-verdict.json --specific "$specific" --changed-files "$RUNNER_TEMP/changed-files.txt" --role "$role" --actor "$actor" --run-url "$RUN_URL" --comment-file "$RUNNER_TEMP/parity-ack-comment.md")"
           printf '%s\n' "$result"
           if [ "$(printf '%s\n' "$result" | sed -n 's/^acknowledged=//p')" = true ]; then
             acknowledged=true
             # One comment per pull request, updated in place, so the record of what was acknowledged stays on it.
-            comment_id="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --jq '.[] | select(.body | startswith("<!-- parity-ack -->")) | .id' | head -n 1)"
+            comment_id="$(gh api --paginate "repos/$REPOSITORY/issues/$PR_NUMBER/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- parity-ack -->"))) | .id' | head -n 1)"
             if [ -n "$comment_id" ]; then
               gh api --method PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --field "body=@$RUNNER_TEMP/parity-ack-comment.md" > /dev/null
             else

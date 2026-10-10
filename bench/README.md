@@ -151,16 +151,29 @@ compared against the base inside one job (#700), a maintainer can acknowledge su
    `tracked-slower-than-gap`) and never a quality row;
 2. its median ratio is at least 0.97 (the parity line);
 3. its family is in the pull request's family set only through the all-family rules (`"*"`): the change maps no file
-   specifically to that family (the `specific` list of `scripts/ci-parity-families.mjs`, computed in `verify`
-   `changes` job). A row file maps by the rows that changed, and by every family when it cannot tell.
+   specifically to that family (the `specific` list that `scripts/ci-parity-families.mjs` prints, which the `verify` step
+   computes with the base commit's copy of the mapper and the family map). A row file maps by the rows that changed, and
+   by every family when it cannot tell.
 
 The verdict must also be a strict, full speed run with no injected regression, no baseline regression and at least one
 failing row; otherwise `verify` fails as before, label or not. The label counts only when its latest `labeled` event was
 made by a user whose repository role is `admin` or `maintain` (read through the API in `verify`); a label from anyone else
-changes nothing. `verify` posts one comment per pull request (updated in place, marked `<!-- parity-ack -->`) that lists the
-acknowledged rows with ratio, interval and pairs, and the rule, so the record stays on the pull request. A new push or label
-event starts a new run, and the rule is applied to that run's verdict. The rule is `scripts/ci-parity-ack.mjs`; remove it
-and the label step of `verify` when #700 lands.
+changes nothing. The label counts only for the head it was put on: a push (the `synchronize` event) removes it, and that
+run never counts it, so the next head needs a new decision. `verify` posts one comment per pull request (updated in place,
+marked `<!-- parity-ack -->`, looked up only among the comments of `github-actions[bot]`) that lists the acknowledged rows
+with ratio, interval and pairs, and the rule, so the record stays on the pull request. The rule is applied to the verdict of
+the run the label event started. The rule is `scripts/ci-parity-ack.mjs`; remove it and the label steps of `verify` when
+#700 lands.
+
+**What the rule cannot trust, and what it refuses.** The verdict is written by the pull request's own benchmark code, so the
+rule acknowledges nothing when the pull request changes a file that produces or judges it, or that runs the step: all of
+`bench/` except this README, `scripts/ci-parity-*.mjs`, `.github/workflows/` and `.github/actions/`, `package.json`, the
+lockfile and `tsconfig*.json` (`PROTECTED_PATHS`, a constant of the rule). The `verify` step takes the rule, the mapper and
+the family map from the **base** commit and refuses when the base lacks them, so a change that adds or edits the rule is
+judged by the old one, and the pull request that introduces the rule can never acknowledge its own run. The limit that
+remains: on `pull_request` the workflow file is the head's own, so a pull request that rewrites the `verify` step is not
+stopped by that step. It is stopped by the rule only in the sense that the unmodified step would refuse it; a change to
+`.github/workflows/` must pass the speed gate on its own, and a reviewer must read it.
 
 A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
 passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
