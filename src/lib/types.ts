@@ -640,6 +640,18 @@ export class InvalidArchivePasswordError extends ConversionFailedError {
   }
 }
 
+/**
+ * An archive names a compression method, filter or key derivation this engine does not decode, or asks for more work
+ * than it accepts. The archive is intact, so the routes answer HTTP 422; the bytes are never passed on undecoded.
+ */
+export class UnsupportedArchiveMethodError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedArchiveMethodError';
+  }
+}
+
 export class UnsupportedOptionError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
