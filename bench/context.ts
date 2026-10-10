@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
-import { CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
+import { abSpeedTiming } from './ab-speed';
+import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
 import { BenchArgumentError } from './errors';
+import { hasBase, inVariant } from './product';
 import type { ReferenceCache } from './ref-cache';
 import type { BenchRow, Family } from './report';
 import { caseInScope } from './scope';
@@ -107,6 +109,24 @@ export function createContext(init: ContextInit): FamilyContext {
     inScope: (family, caseName) => caseInScope(quick, family, caseName),
     time: async (rawOurs, reference, weight, oursRepeats = 1) => {
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
+      if (init.parity && hasBase()) {
+        // The base of the change is measured with the head in the same pairs; a row the base cannot run (a new capability) falls back to the reference alone.
+        const base = (): Promise<void> | void => inVariant('base', rawOurs);
+        try {
+          await base();
+          const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
+          const timing = await abSpeedTiming(() => inVariant('head', ours), base, reference, {
+            pairs: weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS,
+            warmup: plan.warmup,
+            oursRepeats,
+            minSampleMs: plan.minSampleMs,
+          });
+          init.log(`A/B against the base, ${timing.runs} pairs: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample`);
+          return timing;
+        } catch (error) {
+          init.log(`the base cannot run this row (${error instanceof Error ? error.message.slice(0, 120) : String(error)}); it is measured against the reference alone`);
+        }
+      }
       if (init.parity) {
         const timing = await adaptiveSpeedTiming(ours, reference, { ...(weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN), oursRepeats });
         if (timing.repeats.ours > 1 || timing.repeats.reference > 1) {

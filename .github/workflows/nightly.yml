@@ -8,6 +8,11 @@ on:
     # 02:37 UTC every day, off the busy top of the hour.
     - cron: '37 2 * * *'
   workflow_dispatch:
+    inputs:
+      ab_base_ref:
+        description: 'A commit to measure the speed rows against, in the same pairs (bench/ab-speed.ts); empty: against the reference tools alone. Use the commit under test itself to measure the noise of the comparison.'
+        required: false
+        default: ''
 
 concurrency:
   group: nightly
@@ -207,9 +212,23 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # The base of the A/B comparison: a second checkout whose sources are measured next to this one's. Its dependencies
+      # are this checkout's (a link), so only the sources differ.
+      - name: Check out the commit to compare with
+        if: inputs.ab_base_ref != ''
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ab_base_ref }}
+          path: ab-base
+
+      - name: Link its dependencies
+        if: inputs.ab_base_ref != ''
+        run: ln -s "$PWD/node_modules" ab-base/node_modules
+
       - name: Run the speed parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
+          BENCH_BASE_ROOT: ${{ inputs.ab_base_ref != '' && 'ab-base' || '' }}
         run: npm run bench:quality -- --parity --speed-only
 
       # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This

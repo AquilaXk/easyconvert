@@ -6,6 +6,7 @@ import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
 import { characterErrorRatePercent } from '../text-metrics';
 import { runTool } from '../tools';
+import { importProduct } from '../product';
 
 /**
  * Complex-script text to PDF, on the six paragraphs of tests/fixtures/complex-script (Arabic, Hebrew, Hindi, Thai,
@@ -48,17 +49,19 @@ export const runDocumentShaping: FamilyRunner = async (ctx) => {
   const { pdftotext, soffice } = plan.paths;
   const samples = JSON.parse(fs.readFileSync(SAMPLE_FILE, 'utf8')) as Sample[];
   const profile = `file://${path.join(ctx.work, 'soffice-profile-shaping')}`;
-  const { loadFontCoverageIndex } = await import('../../src/lib/conversions/pdf-fonts');
-  const { convertDocument } = await import('../../src/lib/conversions/document');
-  await loadFontCoverageIndex();
 
   const htmlFiles = samples.map((sample) => {
     const file = ctx.scratch(`${sample.name}.html`);
     fs.writeFileSync(file, referenceHtml(sample), 'utf8');
     return file;
   });
-  const oursPdf = async (sample: Sample): Promise<Buffer> =>
-    (await convertDocument(Buffer.from(sample.text, 'utf8'), 'txt', 'pdf', {}, `${sample.name}.txt`)).buffer;
+  // Resolved at every call: a timed run of ours may be on the head or on the base of the change (bench/product.ts).
+  const oursPdf = async (sample: Sample): Promise<Buffer> => {
+    const { loadFontCoverageIndex } = await importProduct<typeof import('../../src/lib/conversions/pdf-fonts')>('lib/conversions/pdf-fonts');
+    const { convertDocument } = await importProduct<typeof import('../../src/lib/conversions/document')>('lib/conversions/document');
+    await loadFontCoverageIndex();
+    return (await convertDocument(Buffer.from(sample.text, 'utf8'), 'txt', 'pdf', {}, `${sample.name}.txt`)).buffer;
+  };
   const referencePdf = (index: number, outDir: string): string => {
     fs.mkdirSync(outDir, { recursive: true });
     runTool(soffice, [`-env:UserInstallation=${profile}`, '--headless', '--convert-to', 'pdf', '--outdir', outDir, htmlFiles[index]]);

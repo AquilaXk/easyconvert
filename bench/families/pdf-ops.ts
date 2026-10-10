@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { convertWithProject } from '../convert';
+import { importProduct } from '../product';
 import { REPO_ROOT } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError, ToolRunError } from '../errors';
@@ -271,9 +272,13 @@ async function runMerge(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
   const truth = inputs.flatMap((input) => pageTexts(tools, input.file, pageCount(tools, input.file)));
   const sourcePages = inputs.flatMap((input, index) => renderPages(tools, input.file, path.join(sourceDir, String(index))));
 
-  const { mergePdfBuffers } = await import('../../src/lib/jobs/artifact-helpers');
+  // Resolved at every call: a timed run of ours may be on the head or on the base of the change (bench/product.ts).
+  const mergeOurs = async (): Promise<Buffer> => {
+    const { mergePdfBuffers } = await importProduct<typeof import('../../src/lib/jobs/artifact-helpers')>('lib/jobs/artifact-helpers');
+    return mergePdfBuffers(inputs.map((input) => input.bytes));
+  };
   const oursFile = ctx.scratch('merge-ours.pdf');
-  fs.writeFileSync(oursFile, await mergePdfBuffers(inputs.map((input) => input.bytes)));
+  fs.writeFileSync(oursFile, await mergeOurs());
   const referenceFile = ctx.scratch('merge-reference.pdf');
   const mergeReference = (): void => {
     runTool(tools.qpdf, [...COMPACT_OUTPUT, '--empty', '--pages', ...inputs.map((input) => input.file), '--', referenceFile]);
@@ -290,11 +295,7 @@ async function runMerge(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
     );
   }
   if (ctx.speed) {
-    const timing = await timeBoth(
-      ctx,
-      () => mergePdfBuffers(inputs.map((input) => input.bytes)),
-      mergeReference
-    );
+    const timing = await timeBoth(ctx, mergeOurs, mergeReference);
     rows.push(throughputRow(FAMILY, MERGE_CASE, inputs.reduce((sum, input) => sum + input.bytes.length, 0), timing, REFERENCE_TOOL));
   }
   return rows;
@@ -371,8 +372,10 @@ async function runWatermark(ctx: FamilyContext, tools: PdfTools): Promise<BenchR
 async function runProtect(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> {
   const input = source(SINGLE_SOURCE);
   const truth = pageTexts(tools, input.file, pageCount(tools, input.file));
-  const { protectPdf } = await import('../../src/lib/conversions/pdf-postprocess/protect');
-  const protectOurs = (): Promise<Buffer> => protectPdf(input.bytes, { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: AES_256_KEY_BITS });
+  const protectOurs = async (): Promise<Buffer> => {
+    const { protectPdf } = await importProduct<typeof import('../../src/lib/conversions/pdf-postprocess/protect')>('lib/conversions/pdf-postprocess/protect');
+    return protectPdf(input.bytes, { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: AES_256_KEY_BITS });
+  };
   const oursFile = ctx.scratch('protect-ours.pdf');
   fs.writeFileSync(oursFile, await protectOurs());
   const referenceFile = ctx.scratch('protect-reference.pdf');
@@ -403,11 +406,12 @@ async function runDecrypt(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
   encryptWithReference(tools, plain.file, encryptedFile);
   const encryptedSize = fs.statSync(encryptedFile).size;
 
-  const { withDecryptedPdf } = await import('../../src/worker/pdf-decrypt');
   const tempDir = ctx.scratch('decrypt-temp');
   fs.mkdirSync(tempDir);
-  const decryptOurs = (): Promise<Buffer> =>
-    withDecryptedPdf({ inputPath: encryptedFile, tempDir, password: USER_PASSWORD, timeoutMs: 60_000 }, (readable) => Promise.resolve(fs.readFileSync(readable)));
+  const decryptOurs = async (): Promise<Buffer> => {
+    const { withDecryptedPdf } = await importProduct<typeof import('../../src/worker/pdf-decrypt')>('worker/pdf-decrypt');
+    return withDecryptedPdf({ inputPath: encryptedFile, tempDir, password: USER_PASSWORD, timeoutMs: 60_000 }, (readable) => Promise.resolve(fs.readFileSync(readable)));
+  };
   const oursFile = ctx.scratch('decrypt-ours.pdf');
   fs.writeFileSync(oursFile, await decryptOurs());
   const referenceFile = ctx.scratch('decrypt-reference.pdf');

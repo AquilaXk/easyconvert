@@ -1,94 +1,57 @@
 import { describe, expect, it } from 'vitest';
-import { PARITY_SCHEMA_VERSION, SCHEMA_VERSION } from '../bench/config';
-import { evaluateParity } from '../bench/parity';
-import { throughputRow } from '../bench/rows';
-import { adaptiveSpeedTiming, HEAVY_SPEED_PLAN, LIGHT_SPEED_PLAN, type SpeedPlan } from '../bench/speed-parity';
+import { abGateFails, absoluteGateFails, failureRate, type Truth, type Weight } from '../bench/simulate-speed-gate';
 
 /**
- * The false-failure rate of the speed rule and its sensitivity, measured on simulated rows: each pair of ours and the
- * reference is drawn with a known true speed ratio and a log-normal noise of 5 percent per pair (the width of the
- * intervals CI recorded for near-parity rows: [0.958, 1.008] at 25 pairs), through the real sequential procedure
- * (adaptiveSpeedTiming: first cap, second cap) and the real verdict (evaluateParity). The random numbers come from a
- * fixed seed, so the rates are reproducible. "Old rule" is the plan without the second cap and with the verdict at the cap
- * taken as a failure.
+ * The failure rates of the speed gate, from the simulation in bench/simulate-speed-gate.ts: simulated rows with a known
+ * truth go through the real sampling procedure and the real verdict, with a fixed seed per trial. The noise is the
+ * 2 to 3 percent per sample (3 to 4 percent per pair ratio) that CI measured for the A/B comparison of unchanged code
+ * (bench/README.md). 400 trials per case.
  */
 
-const TRIALS = 500;
-const NOISE = 0.05;
-const ID = 'compression/c/throughput';
+const TRIALS = 400;
+const WEIGHTS: Weight[] = ['light', 'heavy'];
+const truth = (headVsReference: number, headVsBase: number, sigma = 0.02): Truth => ({ headVsReference, headVsBase, sigma });
 
-/** mulberry32: a small seeded generator, enough for reproducible noise. */
-function random(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
+  const ab = (t: Truth): Promise<number> => failureRate((seed) => abGateFails(t, weight, seed), TRIALS);
 
-const gaussian = (uniform: () => number): number => Math.sqrt(-2 * Math.log(1 - uniform())) * Math.cos(2 * Math.PI * uniform());
-
-async function fails(trueRatio: number, plan: SpeedPlan, seed: number, newRule: boolean, recorded: number): Promise<boolean> {
-  const uniform = random(seed);
-  let clock = 0;
-  const timing = await adaptiveSpeedTiming(
-    () => {
-      clock += 100 / (trueRatio * Math.exp(NOISE * gaussian(uniform)));
-    },
-    () => {
-      clock += 100;
-    },
-    { ...plan, warmup: 0, extendedMaxPairs: newRule ? plan.extendedMaxPairs : undefined },
-    () => clock
-  );
-  const row = throughputRow('compression', 'c', 1e6, timing, 'tool');
-  const report = {
-    schemaVersion: SCHEMA_VERSION,
-    generatedAt: '2026-01-01T00:00:00.000Z',
-    strictMode: true,
-    families: ['compression' as const],
-    host: { platform: 'linux', arch: 'x64', node: 'v20.0.0', cpus: 4 },
-    tools: {},
-    settings: { runs: 1, injectedRegression: null },
-    rows: [row],
-  };
-  const verdict = evaluateParity(report, { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [] }, newRule ? { recordedRatios: new Map([[ID, recorded]]) } : {});
-  // The old rule counted a row undecided at the cap as a failure whatever its median.
-  if (!newRule) return verdict.rows[0].outcome === 'fail' || row.unstableAtCap === true;
-  return verdict.rows[0].outcome === 'fail';
-}
-
-async function rate(trueRatio: number, plan: SpeedPlan, newRule: boolean, recorded = 1): Promise<number> {
-  let failures = 0;
-  for (let trial = 0; trial < TRIALS; trial++) if (await fails(trueRatio, plan, 7000 + trial, newRule, recorded)) failures++;
-  return failures / TRIALS;
-}
-
-describe.each([
-  ['light', LIGHT_SPEED_PLAN],
-  ['heavy', HEAVY_SPEED_PLAN],
-])('the speed rule on %s rows with 5 percent noise per pair', (_name, plan) => {
-  it('fails about one row in a hundred or fewer at true parity, where the old rule failed several', async () => {
-    const before = await rate(1, plan, false);
-    const after = await rate(1, plan, true);
-    // The rates this reproduces, with the replay of recorded CI reports, are in bench/README.md.
-    expect(after).toBeLessThanOrEqual(0.012);
-    expect(after).toBeLessThan(before);
+  it('never fails unchanged code, whatever the row sits at against the reference', async () => {
+    for (const headVsReference of [1.1, 1, 0.99, 0.98, 0.97, 0.96, 0.9]) {
+      expect(await ab(truth(headVsReference, 1)), `at ${headVsReference}`).toBeLessThan(0.01);
+    }
   });
 
-  it('fails a row 1 percent under parity less often than before', async () => {
-    expect(await rate(0.99, plan, true)).toBeLessThan(await rate(0.99, plan, false));
+  it('keeps that at the noisiest rows the CI measured (6 percent per pair, 4 percent per sample)', async () => {
+    expect(await ab(truth(1, 1, 0.04))).toBeLessThan(0.01);
+    expect(await ab(truth(0.98, 1, 0.04))).toBeLessThan(0.01);
   });
 
-  it('still fails an injected 10 percent slowdown of a row at parity, every time', async () => {
-    expect(await rate(0.9, plan, true, 1)).toBe(1);
-    expect(await rate(0.92, plan, true, 1)).toBe(1);
+  it('fails a 20 percent slowdown every time', async () => {
+    expect(await ab(truth(1, 0.8))).toBe(1);
   });
 
-  it('keeps failing a row clearly under the pass line, and passes one clearly above it', async () => {
-    expect(await rate(0.94, plan, true)).toBeGreaterThan(0.99);
-    expect(await rate(1.05, plan, true, 1.05)).toBe(0);
+  it('does not fail a head faster than its base', async () => {
+    expect(await ab(truth(1.2, 1.2))).toBe(0);
+  });
+});
+
+describe('the injected 10 percent slowdown of a row at parity', () => {
+  it('fails every light row and nearly every heavy row at the noise CI measured', async () => {
+    const light = await failureRate((seed) => abGateFails(truth(1, 0.9), 'light', seed), TRIALS);
+    const heavy = await failureRate((seed) => abGateFails(truth(1, 0.9), 'heavy', seed), TRIALS);
+    expect(light).toBeGreaterThanOrEqual(0.99);
+    expect(heavy).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it('is caught also when the row was already below the reference on the base', async () => {
+    expect(await failureRate((seed) => abGateFails(truth(0.9, 0.9), 'light', seed), TRIALS)).toBeGreaterThanOrEqual(0.99);
+  });
+});
+
+describe('the gate without a base, for contrast', () => {
+  it('fails a row at parity by chance on a share of the runs, which is what the A/B comparison removes', async () => {
+    const absolute = await failureRate((seed) => absoluteGateFails(truth(1, 1, 0.03), 'heavy', seed), TRIALS);
+    expect(absolute).toBeGreaterThan(0.2);
+    expect(await failureRate((seed) => abGateFails(truth(1, 1, 0.03), 'heavy', seed), TRIALS)).toBe(0);
   });
 });

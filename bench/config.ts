@@ -126,13 +126,6 @@ export const SPEED_GAP_FLOOR = 0.65;
  */
 export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.11;
 /**
- * A row still undecided at the second cap passes when its median ratio is at or above the pass line and the run shows no
- * credible regression against the ratio recorded for the row in bench/baseline.json: the upper end of its interval is
- * not below the recorded ratio by more than this log margin. The margin is twice SPEED_HISTORY_MIN_LOG_SPREAD, the
- * spread of one row's ratio from one CI run to the next, so the recorded number and this run differ by noise inside it.
- */
-export const SPEED_REGRESSION_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
-/**
  * A run this many times above the geometric mean of a history is a step: a speed-up that landed on main, after which the
  * older points describe code that no longer exists. A run of unchanged code rose by as much as 1.33 times over the run
  * before and 1.53 times over the history it joined; the speed-ups that did land (AVIF through the reference library,
@@ -146,6 +139,19 @@ export const SPEED_STEP_FACTOR = 1.6;
  * recorded in another run). A made-up entry far from what the pull request measures is refused.
  */
 export const GAP_BACKING_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
+/**
+ * A/B speed comparison of a pull request with its base, in the same job (bench/ab-speed.ts). Each pair times the head,
+ * the base and the reference once, in a rotating order; the number of pairs is fixed (no peeking, so no look correction).
+ * A row fails only when the head is credibly slower than the base: the one-sided upper confidence bound of the median
+ * head-to-base speed ratio is below 1 - SPEED_PARITY_TOLERANCE. The bound's error rate is the family-wise level shared
+ * by AB_ROW_BUDGET rows (Bonferroni), so a run of unchanged code fails with a probability under AB_FAMILYWISE_ALPHA.
+ * The pair counts are the fewest at which that bound can fall under the line for a 10 percent slowdown at the noise
+ * CI measured (bench/ab-speed.ts, tests/bench-ab-speed.test.ts).
+ */
+export const AB_LIGHT_PAIRS = 24;
+export const AB_HEAVY_PAIRS = 14;
+export const AB_FAMILYWISE_ALPHA = 0.01;
+export const AB_ROW_BUDGET = 50;
 /** Branch whose nightly and push runs may extend a speed history. */
 export const DEFAULT_BRANCH = 'main';
 /** Workflow events of the default branch that may extend a speed history. */

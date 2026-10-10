@@ -63,7 +63,7 @@ export interface SpeedOptions {
 }
 
 /** P(Binomial(n, 1/2) <= j), exact for n up to MAX_INTERVAL_PAIRS. */
-function binomialCdfHalf(n: number, j: number): number {
+export function binomialCdfHalf(n: number, j: number): number {
   let coefficient = 1;
   let sum = 0;
   for (let i = 0; i <= j; i++) {
