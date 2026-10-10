@@ -272,9 +272,16 @@ describe('the filter that keeps a picture size even', () => {
     return at === -1 ? undefined : args[at + 1];
   }
 
-  /** A picture of an odd size (the H.264 and MPEG-4 encoders of ffmpeg cut it to an even one), in Matroska. */
+  /**
+   * A picture of an odd size, in Matroska. Raw frames written here carry the size, because the ffmpeg sources that
+   * make pictures round it to an even one on some builds and the H.264 and MPEG-4 encoders cut it.
+   */
   function oddMkv(): string {
-    return make('odd.mkv', ['-f', 'lavfi', '-i', `color=c=blue:size=161x121:rate=24:duration=${SECONDS}`, '-c:v', 'ffv1', '-pix_fmt', 'yuv444p']);
+    const width = 161;
+    const height = 121;
+    const raw = path.join(workDir, 'odd.yuv');
+    fs.writeFileSync(raw, Buffer.alloc(width * height * 3 * SECONDS * 24, 0x80));
+    return make('odd.mkv', ['-f', 'rawvideo', '-pixel_format', 'yuv444p', '-video_size', `${width}x${height}`, '-framerate', '24', '-i', raw, '-c:v', 'ffv1']);
   }
 
   oracleTest(
