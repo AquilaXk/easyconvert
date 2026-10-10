@@ -901,7 +901,7 @@ async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs
   const runHere = async (index: number): Promise<void> => {
     if (signal?.aborted) throw new CpuTaskAbortedError('zstdJob');
     parts[index] = encodeZstdJob(data, frame.level, jobs, index);
-    await yieldToEventLoop();
+    if (next < jobs.length) await yieldToEventLoop();
   };
   const poolWorker = async (): Promise<void> => {
     for (let index = takeJob(); index >= 0; index = takeJob()) {
