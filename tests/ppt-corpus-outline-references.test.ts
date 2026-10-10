@@ -1,14 +1,14 @@
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { ensureCached } from '../bench/realworld/fetch';
-import { readManifest } from '../bench/realworld/manifest';
-import { readPptSlides } from '../src/lib/conversions/office/ppt-reader';
-import { requireOracleTool } from './helpers/differential-oracle';
-import { sofficeConvert } from './helpers/soffice-office';
-import { isStrictMode, skipWithoutTools } from './helpers/strict-skip';
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { ensureCached } from "../bench/realworld/fetch";
+import { readManifest } from "../bench/realworld/manifest";
+import { readPptSlides } from "../src/lib/conversions/office/ppt-reader";
+import { requireOracleTool } from "./helpers/differential-oracle";
+import { sofficeConvert } from "./helpers/soffice-office";
+import { isStrictMode, skipWithoutTools } from "./helpers/strict-skip";
 
 /**
  * Real presentations of the public-domain corpus (bench/realworld/manifest.json) that the reader used to refuse with
@@ -18,12 +18,17 @@ import { isStrictMode, skipWithoutTools } from './helpers/strict-skip';
  * every word the reader returns, and the page count must equal the slide count.
  */
 
-const CORPUS_FILES = ['govdocs1-000133.ppt', 'govdocs1-000167.ppt', 'govdocs1-000296.ppt', 'govdocs1-000715.ppt'];
-const CACHE_DIR = path.join(os.homedir(), '.cache', 'easyconvert-realworld');
+const CORPUS_FILES = [
+  "govdocs1-000133.ppt",
+  "govdocs1-000167.ppt",
+  "govdocs1-000296.ppt",
+  "govdocs1-000715.ppt",
+];
+const CACHE_DIR = path.join(os.homedir(), ".cache", "easyconvert-realworld");
 const MIN_WORD_LENGTH = 4;
 const CONVERSION_TIMEOUT_MS = 300_000;
 
-const toolsMissing = skipWithoutTools('soffice', 'pdftotext', 'pdfinfo');
+const toolsMissing = skipWithoutTools("soffice", "pdftotext", "pdfinfo");
 
 /** Letters and digits only: line wraps, hyphens and bullets differ between the two writers. */
 function wordsOf(text: string): string[] {
@@ -45,31 +50,51 @@ async function corpusFile(id: string): Promise<Buffer | null> {
   }
 }
 
-describe.skipIf(toolsMissing)('PowerPoint outline references in real corpus files', () => {
-  it.each(CORPUS_FILES)(
-    '%s: the reader accepts every reference and returns only text the office suite renders',
-    async (id, ctx) => {
-      const ppt = await corpusFile(id);
-      if (!ppt) {
-        if (isStrictMode()) throw new Error(`${id} could not be fetched`);
-        return ctx.skip();
-      }
-      const slides = readPptSlides(ppt);
-      const pdf = sofficeConvert(ppt, 'ppt', 'pdf', 'pdf');
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ppt-corpus-'));
-      try {
-        const pdfPath = path.join(dir, 'render.pdf');
-        fs.writeFileSync(pdfPath, pdf);
-        const pages = Number(/^Pages:\s+(\d+)/m.exec(execFileSync(requireOracleTool('pdfinfo'), [pdfPath], { encoding: 'utf-8' }))?.[1]);
-        const rendered = new Set(wordsOf(execFileSync(requireOracleTool('pdftotext'), [pdfPath, '-'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })));
-        const ours = wordsOf(slides.flatMap((slide) => slide.texts).join(' '));
-        expect(slides).toHaveLength(pages);
-        expect(ours.length).toBeGreaterThan(20);
-        expect(ours.filter((word) => !rendered.has(word))).toEqual([]);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    },
-    CONVERSION_TIMEOUT_MS
-  );
-});
+describe.skipIf(toolsMissing)(
+  "PowerPoint outline references in real corpus files",
+  () => {
+    for (const id of CORPUS_FILES) {
+      it(
+        `${id}: the reader accepts every reference and returns only text the office suite renders`,
+        async (ctx) => {
+          const ppt = await corpusFile(id);
+          if (!ppt) {
+            if (isStrictMode()) throw new Error(`${id} could not be fetched`);
+            return ctx.skip();
+          }
+          const slides = readPptSlides(ppt);
+          const pdf = sofficeConvert(ppt, "ppt", "pdf", "pdf");
+          const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ppt-corpus-"));
+          try {
+            const pdfPath = path.join(dir, "render.pdf");
+            fs.writeFileSync(pdfPath, pdf);
+            const pages = Number(
+              /^Pages:\s+(\d+)/m.exec(
+                execFileSync(requireOracleTool("pdfinfo"), [pdfPath], {
+                  encoding: "utf-8",
+                }),
+              )?.[1],
+            );
+            const rendered = new Set(
+              wordsOf(
+                execFileSync(requireOracleTool("pdftotext"), [pdfPath, "-"], {
+                  encoding: "utf-8",
+                  maxBuffer: 64 * 1024 * 1024,
+                }),
+              ),
+            );
+            const ours = wordsOf(
+              slides.flatMap((slide) => slide.texts).join(" "),
+            );
+            expect(slides).toHaveLength(pages);
+            expect(ours.length).toBeGreaterThan(20);
+            expect(ours.filter((word) => !rendered.has(word))).toEqual([]);
+          } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        },
+        CONVERSION_TIMEOUT_MS,
+      );
+    }
+  },
+);
