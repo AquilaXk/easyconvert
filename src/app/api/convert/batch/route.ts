@@ -1,16 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
-  DecompressionLimitError,
+  PayloadLimitError,
+  EncryptedOfficeDocumentError,
+  PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import {
+  createProblemDetailsResponse,
+  createEngineUnavailableResponse,
+  createPdfPostprocessResponse,
+} from '@/lib/api/problem-details';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 
 export const dynamic = 'force-dynamic';
@@ -130,7 +140,7 @@ export async function POST(req: NextRequest) {
         inputBuffer,
         detected.extension,
         targetFormat,
-        defaultOptions,
+        withTierPageCap(defaultOptions, tierMaxPages(auth.user.tier)),
         file.name
       );
 
@@ -183,12 +193,24 @@ export async function POST(req: NextRequest) {
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
     }
+    if (error instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(error, instanceUri);
+    }
     if (error instanceof ArchiveEntryCollisionError) {
       return createProblemDetailsResponse(error.status, error.message, instanceUri, 'Archive Entry Collision');
     }
-    if (error instanceof DecompressionLimitError || (error as any)?.status === 413) {
-      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
-      return createProblemDetailsResponse(413, (error as any).message, instanceUri);
+    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof EncryptedOfficeDocumentError) {
+      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert/batch] Worker output vanished before it was read:', error);
+      return createProblemDetailsResponse(error.status, WORKER_OUTPUT_MISSING_DETAIL, instanceUri, 'Internal Server Error');
     }
     if (error instanceof ConversionFailedError) {
       // Typed input rejection (spoofed signature, unsupported pair, malformed input): fail closed with 400.

@@ -5,6 +5,10 @@
  * using createImageBitmap, OffscreenCanvas, and a pure TypedArray BMP encoder.
  */
 
+import { canvasToBlob } from '../pipelines/canvas-blob';
+import { assertEncodedBlob, canvasMimeType } from '../canvas-encoding';
+import { EdgeUnsupportedError } from '../workers/worker-errors';
+
 export interface PureCanvasResult {
   data: Uint8Array;
   blob?: Blob;
@@ -132,11 +136,11 @@ export async function convertPureCanvas(
   const tgt = targetFormat.toLowerCase();
 
   if (!isPureCanvasConvertible(src, tgt)) {
-    throw new Error(`Pure canvas engine does not support conversion from '${src}' to '${tgt}'.`);
+    throw new EdgeUnsupportedError(`Pure canvas engine does not support conversion from '${src}' to '${tgt}'.`);
   }
 
   if (!isCanvasSupported() || typeof createImageBitmap === 'undefined') {
-    throw new Error('Canvas 2D image transcoding is only available in browser environments.');
+    throw new EdgeUnsupportedError('Canvas 2D image transcoding is only available in browser environments.');
   }
 
   const srcMime = CANVAS_MIME_MAP[src] || 'application/octet-stream';
@@ -203,7 +207,7 @@ export async function convertPureCanvas(
 
   if (!ctx) {
     bitmap.close();
-    throw new Error('Failed to acquire 2D canvas context.');
+    throw new EdgeUnsupportedError('Failed to acquire 2D canvas context.');
   }
 
   try {
@@ -213,6 +217,9 @@ export async function convertPureCanvas(
       ctx.fillRect(0, 0, canvasW, canvasH);
     }
 
+    // Shrinking with the default (low) filter skips source pixels; the high-quality filter averages them.
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, drawX, drawY, drawW, drawH);
   } finally {
     bitmap.close();
@@ -220,7 +227,6 @@ export async function convertPureCanvas(
 
   const quality = (options.quality ?? 85) / 100;
   const normalizedTgt = tgt === 'jpg' ? 'jpeg' : tgt;
-  const mimeType = CANVAS_MIME_MAP[normalizedTgt] || 'application/octet-stream';
 
   if (normalizedTgt === 'bmp') {
     const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
@@ -237,20 +243,11 @@ export async function convertPureCanvas(
     };
   }
 
-  let outBlob: Blob;
-  if ('convertToBlob' in canvas && typeof canvas.convertToBlob === 'function') {
-    outBlob = await canvas.convertToBlob({ type: mimeType, quality });
-  } else if ('toBlob' in canvas && typeof canvas.toBlob === 'function') {
-    outBlob = await new Promise<Blob>((resolve, reject) => {
-      (canvas as HTMLCanvasElement).toBlob(
-        (b) => (b ? resolve(b) : reject(new Error('Canvas export to blob failed'))),
-        mimeType,
-        quality
-      );
-    });
-  } else {
-    throw new Error('Canvas blob export not supported in this environment.');
-  }
+  // The browser may answer a request for a type it does not encode with a PNG, or with nothing: both are refused
+  // (EdgeUnsupportedError, the server converts the file), and the result carries the type of the blob it holds.
+  const outBlob = await canvasToBlob(canvas, canvasMimeType(normalizedTgt), quality);
+  await assertEncodedBlob(outBlob, normalizedTgt);
+  const mimeType = outBlob.type || canvasMimeType(normalizedTgt);
 
   const arrayBuf = await outBlob.arrayBuffer();
   return {

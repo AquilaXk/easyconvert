@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertFile } from '../src/lib/conversions';
-import { isOracleToolAvailable } from './helpers/differential-oracle';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4, type StoredRarEntry } from './helpers/rar4-stored';
 
 /**
@@ -12,7 +12,7 @@ import { buildStoredRar4, type StoredRarEntry } from './helpers/rar4-stored';
  * input is a stored RAR 4.x archive written by an independent helper and accepted by `unrar t`; each
  * output is unpacked by 7z or tar, never by the engine under test.
  */
-const HAS_TOOLS = isOracleToolAvailable('unrar') && isOracleToolAvailable('7z') && isOracleToolAvailable('tar');
+const SKIP_WITHOUT_TOOLS = skipWithoutTools('unrar', '7z', 'tar');
 const ENTRIES: readonly StoredRarEntry[] = [
   { name: 'notes.txt', data: Buffer.from('stored entry one\n', 'utf-8') },
   { name: 'data/values.csv', data: Buffer.from('id,value\n1,alpha\n2,beta\n', 'utf-8') },
@@ -45,7 +45,7 @@ function unpack(archive: Buffer, target: string): Map<string, Buffer> {
 describe('stored RAR 4.x archive conversion', () => {
   const rar = buildStoredRar4(ENTRIES);
 
-  it.skipIf(!HAS_TOOLS)('builds an input that unrar verifies (needs unrar, 7z, tar)', () => {
+  it.skipIf(SKIP_WITHOUT_TOOLS)('builds an input that unrar verifies (needs unrar, 7z, tar)', () => {
     withTempDir((dir) => {
       const file = path.join(dir, 'input.rar');
       writeFileSync(file, rar);
@@ -54,7 +54,7 @@ describe('stored RAR 4.x archive conversion', () => {
     });
   });
 
-  it.skipIf(!HAS_TOOLS).each(TARGETS)('rar -> %s keeps every entry byte for byte (needs unrar, 7z, tar)', async (target) => {
+  it.skipIf(SKIP_WITHOUT_TOOLS).each(TARGETS)('rar -> %s keeps every entry byte for byte (needs unrar, 7z, tar)', async (target) => {
     const result = await convertFile(rar, 'rar', target, {}, 'input.rar');
     const unpacked = unpack(result.buffer, target);
     for (const entry of ENTRIES) expect(unpacked.get(entry.name)?.equals(entry.data)).toBe(true);

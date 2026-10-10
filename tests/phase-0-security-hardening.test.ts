@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { request } from 'undici';
 import {
   isBlockedIp,
   validateUrlForSsrf,
@@ -38,10 +41,24 @@ describe('Phase 0: Emergency Security Hardening & Fail-Closed Enforcement', () =
     });
 
     it('creates an Undici Custom Agent that pins IP and blocks private destination lookups', async () => {
+      // A real server on the loopback interface, reached by name so that the connect-time lookup runs.
+      const server = http.createServer((_request, response) => response.end('reached'));
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
       const agent = createSsrfSafeAgent();
-      expect(agent).toBeDefined();
-      expect(agent).toBeInstanceOf(Object);
-      await agent.close();
+      try {
+        // Control: an ordinary client reaches the server, so a refusal below is the agent's doing.
+        const control = await request(`http://localhost:${port}/`);
+        expect(await control.body.text()).toBe('reached');
+
+        const blocked = await request(`http://localhost:${port}/`, { dispatcher: agent }).catch((err: unknown) => err);
+        expect(blocked).toBeInstanceOf(Error);
+        expect((blocked as NodeJS.ErrnoException).code ?? (blocked as { cause?: NodeJS.ErrnoException }).cause?.code).toBe('ESSRFBLOCKED');
+        expect(String((blocked as Error).message + (blocked as { cause?: Error }).cause?.message)).toMatch(/SSRF blocked: host localhost is restricted/);
+      } finally {
+        await agent.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     });
   });
 
@@ -111,13 +128,11 @@ describe('Phase 0: Emergency Security Hardening & Fail-Closed Enforcement', () =
       );
     });
 
-    it('allows identity transformation only when formats match or explicitly opted-in', async () => {
-      const sameFormat = resolveChunkTransformer('bin', 'bin');
-      const testChunk = new Uint8Array([1, 2, 3, 4]);
-      expect(await sameFormat(testChunk, 0, 4)).toEqual(testChunk);
-
-      const optedIn = resolveChunkTransformer('raw', 'dat', { allowPassThrough: true });
-      expect(await optedIn(testChunk, 0, 4)).toEqual(testChunk);
+    it('refuses an identity transformation, including an explicit pass-through opt-in', () => {
+      expect(() => resolveChunkTransformer('bin', 'bin')).toThrow(/Unsupported streaming transformation: bin to bin/);
+      expect(() => resolveChunkTransformer('raw', 'dat', { allowPassThrough: true })).toThrow(
+        /Unsupported streaming transformation: raw to dat/
+      );
     });
   });
 });

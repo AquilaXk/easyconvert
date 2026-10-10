@@ -37,9 +37,10 @@ const PAGE_HEIGHT = 320;
 const LINE_HEIGHT = 24;
 const LINE_PITCH = 40;
 const LEFT_MARGIN = 10;
-const WORD_PITCH = 110;
-const WORD_WIDTH = 100;
-const LINE_WIDTH = 440;
+/** Gap between neighbouring words, as the engine would report for a line of this text height. */
+const WORD_GAP = 8;
+/** Width of one em of the line's text, which is its height. */
+const EM = LINE_HEIGHT;
 const BFCHAR_BLOCK_LIMIT = 100;
 const MANY_CODE_POINTS_START = 0x4e00;
 const MANY_CODE_POINTS_COUNT = 250;
@@ -61,25 +62,42 @@ const INPUT_LINES = [
   DECOMPOSED_INPUT,
 ];
 
-function ocrResultFor(lines: string[], firstLine = 0): OcrResult {
+/** How wide a word is set, in ems: a combining mark takes no room, Latin-1 half an em, the rest one. */
+function wordWidthPx(word: string): number {
+  let em = 0;
+  for (const ch of word) {
+    const code = ch.codePointAt(0) as number;
+    if (/\p{M}/u.test(ch)) continue;
+    em += code <= LATIN1_MAX ? 0.5 : 1;
+  }
+  return em * EM;
+}
+
+/** Lines of words laid out the way a recognizer reports them: each box as wide as its text is set. */
+function ocrResultFor(lines: string[], firstLine = 0, pageHeight = PAGE_HEIGHT): OcrResult {
   return {
+    // The boxes are in the pixels of the page image these tests draw them on.
+    imageWidth: PAGE_WIDTH,
+    imageHeight: pageHeight,
     text: lines.join('\n'),
     confidence: 0.9,
     wordCount: lines.join(' ').split(' ').length,
     lines,
-    lineBlocks: lines.map((line, index) => ({
-      text: line,
-      bbox: { x: LEFT_MARGIN, y: 20 + (firstLine + index) * LINE_PITCH, width: LINE_WIDTH, height: LINE_HEIGHT },
-      words: line.split(' ').map((word, i) => ({
-        text: word,
-        bbox: {
-          x: LEFT_MARGIN + i * WORD_PITCH,
-          y: 20 + (firstLine + index) * LINE_PITCH,
-          width: WORD_WIDTH,
-          height: LINE_HEIGHT,
-        },
-      })),
-    })),
+    lineBlocks: lines.map((line, index) => {
+      const y = 20 + (firstLine + index) * LINE_PITCH;
+      let x = LEFT_MARGIN;
+      const words = line.split(' ').map((word) => {
+        const width = Math.max(1, wordWidthPx(word));
+        const box = { x, y, width, height: LINE_HEIGHT };
+        x += width + WORD_GAP;
+        return { text: word, bbox: box };
+      });
+      return {
+        text: line,
+        bbox: { x: LEFT_MARGIN, y, width: x - WORD_GAP - LEFT_MARGIN, height: LINE_HEIGHT },
+        words,
+      };
+    }),
   };
 }
 
@@ -89,7 +107,7 @@ async function sandwichPdf(lines: string[], pageHeight = PAGE_HEIGHT): Promise<B
   })
     .png()
     .toBuffer();
-  return createLosslessSandwichPdfFromImage(png, ocrResultFor(lines), {}, 'tounicode');
+  return createLosslessSandwichPdfFromImage(png, ocrResultFor(lines, 0, pageHeight), {}, 'tounicode');
 }
 
 function withTempPdf<T>(pdf: Buffer, fn: (pdfPath: string) => T): T {
@@ -140,10 +158,9 @@ function pymupdfLines(pdfPath: string, normalize = true): string[] {
 
 // Extraction tools may compose combining marks, so extracted text is compared after NFC.
 const EXPECTED_LINES = INPUT_LINES.map((line) => line.normalize('NFC'));
-// Pure Latin-1 lines stay on the simple Helvetica font; every other line (including the
-// decomposed one, which carries combining marks) goes through the composite font, code point
-// for code point as recognized.
-const COMPOSITE_FONT_LINES = INPUT_LINES.filter((line) => line !== SIMPLE_FONT_LINE);
+// Every word, Latin-1 or not, is shown with the one composite font, code point for code point as
+// recognized (a word with combining marks keeps them).
+const SHOWN_WORDS = INPUT_LINES.flatMap((line) => line.split(' '));
 
 // --- Independent PDF structure readers (no code from the module under test) ---
 
@@ -210,24 +227,23 @@ function parseToUnicode(doc: PDFDocument): ParsedToUnicode {
   return { cmap, blockSizes, map };
 }
 
-/** Decodes every string shown with the composite font through the document's own ToUnicode map. */
+/** Decodes every string shown with the composite font (one per word) through the document's own ToUnicode map. */
 function decodeShownText(content: string, fontKey: string, map: Map<number, string>): string[] {
-  const lines: string[] = [];
-  const showOps = new RegExp(`/${fontKey}\\s+[\\d.]+\\s+Tf[^\\[]*\\[([^\\]]*)\\]\\s*TJ`, 'g');
+  const words: string[] = [];
+  const showOps = new RegExp(`/${fontKey}\\s+[\\d.]+\\s+Tf[^<]*<([0-9A-Fa-f]*)>\\s*Tj`, 'g');
   for (const tj of content.matchAll(showOps)) {
+    const hex = tj[1];
+    expect(hex.length % 4).toBe(0);
     let text = '';
-    for (const hex of tj[1].matchAll(/<([0-9A-Fa-f]*)>/g)) {
-      expect(hex[1].length % 4).toBe(0);
-      for (let i = 0; i < hex[1].length; i += 4) {
-        const cid = parseInt(hex[1].slice(i, i + 4), 16);
-        const unicode = map.get(cid);
-        expect(unicode, `CID ${cid} has no ToUnicode mapping`).toBeDefined();
-        text += unicode;
-      }
+    for (let i = 0; i < hex.length; i += 4) {
+      const cid = parseInt(hex.slice(i, i + 4), 16);
+      const unicode = map.get(cid);
+      expect(unicode, `CID ${cid} has no ToUnicode mapping`).toBeDefined();
+      text += unicode;
     }
-    lines.push(text);
+    words.push(text);
   }
-  return lines;
+  return words;
 }
 
 describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
@@ -240,7 +256,7 @@ describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
     expect(blockSizes.every((n) => n >= 1 && n <= BFCHAR_BLOCK_LIMIT)).toBe(true);
 
     const used = new Set<string>();
-    for (const line of COMPOSITE_FONT_LINES) for (const ch of line) used.add(ch);
+    for (const line of INPUT_LINES) for (const ch of line) used.add(ch);
     used.add(' ');
     const mapped = [...map.values()];
     expect([...mapped].sort()).toEqual([...used].sort());
@@ -255,7 +271,7 @@ describe('OCR text layer ToUnicode (ISO 32000-1 §9.10.3)', () => {
     const doc = await PDFDocument.load(await sandwichPdf(INPUT_LINES));
     const { map } = parseToUnicode(doc);
     const shown = decodeShownText(pageContent(doc), type0FontEntry(doc).key, map);
-    expect(shown.map((l) => l.replace(/\s+/g, ' ').trim()).sort()).toEqual([...COMPOSITE_FONT_LINES].sort());
+    expect(shown.map((word) => word.trim()).sort()).toEqual([...SHOWN_WORDS].sort());
   });
 
   it('advertises one /W width per used CID', async () => {

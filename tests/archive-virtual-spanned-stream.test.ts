@@ -20,6 +20,7 @@ import {
   createTarArchive,
 } from '../src/lib/conversions/archive';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
+import { skipUnless } from './helpers/strict-skip';
 
 describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)', () => {
   // Helper to create temporary directory for file-based tests
@@ -459,7 +460,7 @@ describe('Archive Domain: Virtual Spanned Readable Stream (VFS Pipeline) (#173)'
   describe('7. Native 7-Zip Stdin Streaming Integration', () => {
     const has7z = Boolean(get7zBinaryPath());
 
-    it.skipIf(!has7z)('extracts multi-volume parts directly via 7-Zip stdin or disk spool', async () => {
+    it.skipIf(skipUnless('7z', has7z))('extracts multi-volume parts directly via 7-Zip stdin or disk spool', async () => {
       const tempDir = createTempDir();
       try {
         const extractDir = path.join(tempDir, 'out');

@@ -11,7 +11,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
   });
 
   describe('1. Unified SSOT Storage Provider Interface', () => {
-    it('shares object state between S3 and OCI storage backends without split-brain', () => {
+    it('shares object state between S3 and OCI storage backends without split-brain', async () => {
       const testKey = `test-shared-${Date.now()}.txt`;
       const content = Buffer.from('Enterprise unified storage content');
 
@@ -25,7 +25,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(retrievedViaOci?.size).toBe(content.length);
 
       // Verify retrieval via unified storageProvider
-      const retrievedViaProvider = storageProvider.getObject(testKey);
+      const retrievedViaProvider = await storageProvider.getObject(testKey);
       expect(retrievedViaProvider).toBeDefined();
       expect(retrievedViaProvider?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
     });
@@ -53,10 +53,12 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       // OCI worker saves output
       ociStorage.saveObject(resultKey, resultData, 'application/pdf', 'output.pdf', 3600 * 1000);
 
-      // S3 download route gets object
+      // S3 download route gets the same object: bytes, name and type as the worker stored them.
       const s3Found = s3Storage.getObject(resultKey);
-      expect(s3Found).toBeDefined();
-      expect(s3Found?.buffer.toString()).toContain('%PDF-1.4');
+      expect(s3Found?.buffer.equals(resultData)).toBe(true);
+      expect(s3Found?.size).toBe(resultData.length);
+      expect(s3Found?.filename).toBe('output.pdf');
+      expect(s3Found?.mimeType).toBe('application/pdf');
     });
 
     it('persists 0-byte buffer to disk volume and allows cross-instance retrieval and deletion', async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -17,11 +17,27 @@ import {
 } from '../src/lib/conversions/media';
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { assertDecodedMedia } from './oracles/product/media-oracle';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
+/** AAC priming plus padding: at most two 1024-sample frames. */
+const AAC_PADDING_SAMPLES = 2048;
+/**
+ * lavfi `sine` has a peak of 1/8 full scale (RMS about 2900 of 32768). The ITU-R BS.775 matrix
+ * weights sum to 1 per output channel, so the folded tone keeps that level; a silent or lost
+ * downmix reads 0.
+ */
+const MIN_DOWNMIX_RMS = 1000;
+/** A JPEG thumbnail of the test pattern scored 0.992 against the PNG reference; the floor leaves margin for encoder builds. */
+const THUMBNAIL_MIN_SSIM = 0.98;
 
 describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Thumbnails', () => {
   describe('1. Audio Codec Validation & Container Compatibility Gate', () => {
     it('accepts compliant codecs for MP4, WebM, and Ogg containers', () => {
-      const mp4Args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const mp4Args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { codec: 'aac', bitrateK: 256 },
       });
@@ -32,7 +48,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(bIdx).toBeGreaterThan(0);
       expect(mp4Args[bIdx + 1]).toBe('256k');
 
-      const webmArgs = buildFfmpegArguments('/tmp/in.webm', '/tmp/out.webm', 'webm', 'webm', {
+      const webmArgs = buildFfmpegArguments('/nonexistent/in.webm', '/tmp/out.webm', 'webm', 'webm', {
         disableHwaccel: true,
         audio: { codec: 'opus', bitrateK: 128 },
       });
@@ -48,13 +64,13 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
     it('fails closed when an incompatible audio codec is requested in WebM container', () => {
       expect(() => {
-        buildFfmpegArguments('/tmp/in.webm', '/tmp/out.webm', 'webm', 'webm', {
+        buildFfmpegArguments('/nonexistent/in.webm', '/tmp/out.webm', 'webm', 'webm', {
           audio: { codec: 'aac' },
         });
       }).toThrowError(InvalidMediaOptionError);
 
       expect(() => {
-        buildFfmpegArguments('/tmp/in.webm', '/tmp/out.webm', 'webm', 'webm', {
+        buildFfmpegArguments('/nonexistent/in.webm', '/tmp/out.webm', 'webm', 'webm', {
           audio: { codec: 'mp3' },
         });
       }).toThrowError(InvalidMediaOptionError);
@@ -76,7 +92,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
     it('fails closed when vorbis audio is requested in MP4 container', () => {
       expect(() => {
-        buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+        buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
           audio: { codec: 'vorbis' },
         });
       }).toThrowError(InvalidMediaOptionError);
@@ -94,7 +110,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
   describe('2. Audio Track Selection Gate', () => {
     it('maps all audio tracks when track is set to all', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { track: 'all' },
       });
@@ -109,7 +125,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('maps specific audio track index when a numeric index is provided', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { track: 2 },
       });
@@ -125,7 +141,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
     it('fails closed when a negative track index is provided', () => {
       expect(() => {
-        buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+        buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
           audio: { track: -1 },
         });
       }).toThrowError(InvalidMediaOptionError);
@@ -134,7 +150,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
   describe('3. ITU-R BS.775 Surround Downmixing Gate', () => {
     it('generates normalized 5.1 downmixing pan filter and sets 2 output channels', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775' },
       });
@@ -150,7 +166,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('generates normalized 7.1 downmixing pan filter when 8 channels are specified', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775', channels: 8 },
       });
@@ -166,7 +182,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('combines downmix filter with volume normalization cleanly', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         audio: { downmix: 'itu-r-bs775', volume: 80 },
       });
@@ -174,7 +190,9 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       const afIdx = args.indexOf('-filter:a');
       expect(afIdx).toBeGreaterThan(0);
       const afVal = args[afIdx + 1];
-      expect(afVal).toBe('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR,volume=0.8');
+      expect(afVal).toBe(
+        'aresample=async=1:first_pts=0,pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR,volume=0.8'
+      );
       expect(args[args.indexOf('-ac') + 1]).toBe('2');
     });
   });
@@ -249,7 +267,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('burns subtitles by inserting subtitles filter prior to even dimension scale in videoFilters', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         subtitles: {
           mode: 'burn',
@@ -270,7 +288,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
     it('fails closed when subtitle burn mode lacks an input path or targets non-video', () => {
       expect(() => {
-        buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+        buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
           subtitles: { mode: 'burn' },
         });
       }).toThrowError(InvalidMediaOptionError);
@@ -283,7 +301,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('embeds soft subtitles with stream mapping and container-appropriate codec', () => {
-      const mp4Args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      const mp4Args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         disableHwaccel: true,
         subtitles: {
           mode: 'soft',
@@ -307,7 +325,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(mp4Args[csIdx + 1]).toBe('mov_text');
 
       // WebM soft subtitles use webvtt
-      const webmArgs = buildFfmpegArguments('/tmp/in.webm', '/tmp/out.webm', 'webm', 'webm', {
+      const webmArgs = buildFfmpegArguments('/nonexistent/in.webm', '/tmp/out.webm', 'webm', 'webm', {
         disableHwaccel: true,
         subtitles: {
           mode: 'soft',
@@ -331,7 +349,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('extracts subtitle streams directly into standalone files without video/audio transcoding', () => {
-      const extractSrtArgs = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.srt', 'mp4', 'srt', {
+      const extractSrtArgs = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.srt', 'mp4', 'srt', {
         subtitles: {
           mode: 'extract',
           streamIndex: 0,
@@ -361,7 +379,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
   describe('6. Thumbnail Extraction Gate', () => {
     it('generates fast seek thumbnail arguments with input-seeking before -i', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/thumb.jpg', 'mp4', 'jpg', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/thumb.jpg', 'mp4', 'jpg', {
         thumbnail: {
           at: ['00:00:03.500'],
           accurate: false,
@@ -387,7 +405,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('generates accurate seek thumbnail arguments with output-seeking after -i', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/thumb.png', 'mp4', 'png', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/thumb.png', 'mp4', 'png', {
         thumbnail: {
           at: ['00:00:08.200'],
           accurate: true,
@@ -405,7 +423,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
     });
 
     it('supports overrideTimestamp for multi-frame thumbnail extraction sequencing', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/thumb2.jpg', 'mp4', 'jpg', {
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/thumb2.jpg', 'mp4', 'jpg', {
         thumbnail: {
           at: ['00:00:01.000', '00:00:05.000'],
           format: 'jpg',
@@ -467,6 +485,17 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         expect(audioStream.channels).toBe(2);
         expect(audioStream.channel_layout).toBe('stereo');
         expect(audioStream.codec_name).toBe('aac');
+
+        // Decoded: one second at 48 kHz (plus the AAC priming and padding), not silence. The five equal
+        // channels of the 440 Hz source fold to a stereo tone far above the noise floor.
+        const decoded = assertDecodedMedia(result.buffer, 'mp4', 'audio', {
+          streams: { audio: 1, video: 0 },
+          audio: { sampleRate: 48000, channels: 2, samplesPerChannel: 48000, toleranceSamples: AAC_PADDING_SAMPLES },
+        });
+        let energy = 0;
+        for (let i = 0; i < decoded.audio!.pcm.length; i += 2) energy += decoded.audio!.pcm.readInt16LE(i) ** 2;
+        const rms = Math.sqrt(energy / (decoded.audio!.pcm.length / 2));
+        expect(rms).toBeGreaterThan(MIN_DOWNMIX_RMS);
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -517,6 +546,16 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
         expect(imgStream.width).toBe(320);
         expect(imgStream.height).toBe(240); // 640x480 scaled to width 320 -> height 240
         expect(imgStream.codec_name).toBe('mjpeg');
+
+        // Decoded: the thumbnail is the source frame at 1.000 s, scaled by ffmpeg's own filter.
+        const referencePath = path.join(tmpDir, 'thumb_reference.png');
+        execFileSync(ffmpeg, [
+          '-y', '-ss', '00:00:01.000', '-i', inputPath, '-frames:v', '1', '-vf', 'scale=320:-2', referencePath,
+        ], { stdio: 'ignore' });
+        assertDecodedMedia(result.buffer, 'jpg', 'video', {
+          streams: { video: 1 },
+          video: { frameCount: 1, reference: { bytes: fs.readFileSync(referencePath), extension: 'png' }, minSsim: THUMBNAIL_MIN_SSIM },
+        });
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -568,6 +607,17 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
         expect(subStream).toBeDefined();
         expect(subStream.codec_name).toBe('mov_text');
+
+        // Decoded: every stream decodes, the picture is the source, and the cue text survives the container.
+        assertDecodedMedia(fs.readFileSync(outputPath), 'mp4', 'video', {
+          streams: { video: 1, audio: 1, subtitle: 1 },
+          video: { frameCount: 25, reference: { bytes: fs.readFileSync(videoPath), extension: 'mp4' } },
+        });
+        const cueText = execFileSync(ffmpeg, ['-v', 'error', '-i', outputPath, '-map', '0:s:0', '-f', 'srt', '-'], {
+          encoding: 'utf-8',
+        });
+        expect(cueText).toContain('Hello EasyConvert Subtitles!');
+        expect(cueText).toContain('00:00:00,100 --> 00:00:00,900');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }

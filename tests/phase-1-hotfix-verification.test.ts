@@ -3,6 +3,7 @@ import zlib from 'node:zlib';
 import { PDFDocument, StandardFonts, PDFHexString } from 'pdf-lib';
 import { tryProcessClientEdge, executeItemConversion } from '../src/lib/client-converter';
 import { ConversionQueueItem } from '../src/lib/types';
+import { auditSvgMarkup } from './helpers/svg-dom-audit';
 import {
   resolveConversionTier,
   SUPPORTED_OPFS_STREAMING_CONVERSIONS,
@@ -30,9 +31,6 @@ import {
 } from '../src/lib/conversions/archive';
 import {
   processWebCodecsConversion,
-  buildMp4MoovBox,
-  muxMp4Media,
-  muxWebmVideo,
 } from '../src/lib/edge/workers/webcodecs.worker';
 
 describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', () => {
@@ -132,14 +130,17 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     it('verifies supported OPFS format whitelist and router guard', () => {
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('csv:tsv')).toBe(true);
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('tsv:csv')).toBe(true);
-      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(false); // correctly excluded
+      // Raw PCM to WAV is streamed now that its header is written from the stated rate, channels and bit depth.
+      expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('pcm:wav')).toBe(true);
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('grayscale:rgba')).toBe(false); // correctly excluded
       expect(SUPPORTED_OPFS_STREAMING_CONVERSIONS.has('rgba:grayscale')).toBe(true);
 
       // Verify that every single format pair in SUPPORTED_OPFS_STREAMING_CONVERSIONS is resolvable in worker
+      const rawPcm = { sampleRate: 48_000, channels: 2, bitDepth: 16 };
       for (const pair of SUPPORTED_OPFS_STREAMING_CONVERSIONS) {
         const [s, t] = pair.split(':');
-        expect(() => resolveChunkTransformer(s, t)).not.toThrow();
+        expect(typeof resolveChunkTransformer(s, t, rawPcm)).toBe('function');
+        expect(isOpfsStreamingSupported(s, t, rawPcm)).toBe(true);
       }
 
       // Unsupported formats must return false
@@ -147,8 +148,8 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       expect(isOpfsStreamingSupported('pdf', 'docx')).toBe(false);
       expect(isOpfsStreamingSupported('png', 'svg')).toBe(false);
 
-      // Identity pass-through with explicit flag
-      expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true })).toBe(true);
+      // An identical pair is a copy, not a conversion, whatever the options say.
+      expect(isOpfsStreamingSupported('bin', 'bin', { allowPassThrough: true } as never)).toBe(false);
     });
 
     it('streams TSV -> CSV with the server output rules (BOM, CRLF, quoting, formula escape)', () => {
@@ -438,40 +439,62 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         </svg>
       `;
 
-      const sanitized = sanitizeSvgString(maliciousSvg);
+      // The audit is not vacuous: the untouched input has every kind of active content.
+      expect(auditSvgMarkup(maliciousSvg).activeContent).toEqual([
+        'event handler onload',
+        'element <script>',
+        'element <foreignobject>',
+        'element <script>',
+        'href="javascript:alert(\'XSS4\')"',
+        'event handler onclick',
+      ]);
 
-      expect(sanitized).not.toContain('<script');
-      expect(sanitized).not.toContain('foreignObject');
-      expect(sanitized).not.toContain('onload');
-      expect(sanitized).not.toContain('onclick');
-      expect(sanitized).not.toContain('javascript:');
-      expect(sanitized).toContain('<svg');
-      expect(sanitized).toContain('<circle');
-      expect(sanitized).toContain('yellow');
+      // What survives, read by a browser's parser: no active content, and exactly the svg root, the link
+      // neutralised to "#" and the circle with its drawing attributes.
+      const audit = auditSvgMarkup(sanitizeSvgString(maliciousSvg));
+      expect(audit.activeContent).toEqual([]);
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'a', attributes: { href: '#' } },
+        { name: 'circle', attributes: { cx: '50', cy: '50', r: '40', stroke: 'green', 'stroke-width': '4', fill: 'yellow' } },
+      ]);
+      expect(audit.text.replace(/\s+/g, ' ').trim()).toBe('Click me');
     });
 
     it('strips unclosed <script> tags and prevents nested recursive tag bypasses', () => {
       const unclosed = '<svg><script src="https://evil.com/xss.js"><circle r="10"/></svg>';
-      const cleanUnclosed = sanitizeSvgString(unclosed);
-      expect(cleanUnclosed).not.toContain('<script');
-      expect(cleanUnclosed).toContain('<circle');
+      const unclosedAudit = auditSvgMarkup(sanitizeSvgString(unclosed));
+      expect(unclosedAudit.activeContent).toEqual([]);
+      expect(unclosedAudit.elements).toEqual([
+        { name: 'svg', attributes: {} },
+        { name: 'circle', attributes: { r: '10' } },
+      ]);
 
+      // Removing the inner <script> must not glue the halves of "<scr" + "ipt>" into a new script tag: the
+      // browser's parser finds no script element and no script text in what is left.
       const recursive = '<svg><scr<script>ipt>alert(1)</script><circle r="10"/></svg>';
-      const cleanRecursive = sanitizeSvgString(recursive);
-      expect(cleanRecursive).not.toContain('<script');
-      expect(cleanRecursive).not.toContain('alert');
-      expect(cleanRecursive).toContain('<circle');
+      const recursiveAudit = auditSvgMarkup(sanitizeSvgString(recursive));
+      expect(recursiveAudit.activeContent).toEqual([]);
+      expect(recursiveAudit.elements.map((element) => element.name)).not.toContain('script');
+      expect(recursiveAudit.text).toBe('');
     });
 
     it('sanitizes data:image/svg+xml and animation injection vectors', () => {
       const dataSvg = '<svg><a href="data:image/svg+xml;base64,PHN2Zz4=">test</a></svg>';
-      const cleanDataSvg = sanitizeSvgString(dataSvg);
-      expect(cleanDataSvg).toContain('href="#"');
-      expect(cleanDataSvg).not.toContain('data:image/svg+xml');
+      const dataAudit = auditSvgMarkup(sanitizeSvgString(dataSvg));
+      expect(dataAudit.activeContent).toEqual([]);
+      expect(dataAudit.elements).toEqual([
+        { name: 'svg', attributes: {} },
+        { name: 'a', attributes: { href: '#' } },
+      ]);
+      expect(dataAudit.text).toBe('test');
 
+      // The animation that would rewrite an href at run time is dropped with its payload.
       const animSvg = '<svg><animate attributeName="href" values="javascript:alert(1)"/></svg>';
-      const cleanAnimSvg = sanitizeSvgString(animSvg);
-      expect(cleanAnimSvg).not.toContain('javascript:');
+      expect(auditSvgMarkup(animSvg).activeContent).toEqual(['element <animate>', 'values="javascript:alert(1)"']);
+      const animAudit = auditSvgMarkup(sanitizeSvgString(animSvg));
+      expect(animAudit.activeContent).toEqual([]);
+      expect(animAudit.elements).toEqual([{ name: 'svg', attributes: {} }]);
     });
 
     it('strips DOCTYPE declarations with internal entity subsets and detects valid SVG', () => {
@@ -500,13 +523,21 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
           <rect width="100" height="100" style="background-image: url(http://attacker.com/leak);" />
         </svg>
       `;
-      const clean = sanitizeSvgString(ssrfSvg);
-      expect(clean).not.toContain('http://169.254.169.254');
-      expect(clean).not.toContain('https://attacker.com');
-      expect(clean).not.toContain('//internal.corp.net');
-      expect(clean).not.toContain('@import');
-      expect(clean).toContain('href="#"');
-      expect(clean).toContain('href="#local-symbol"');
+      // The audit sees the fetches in the input: the stylesheet, two <use> targets and the inline style.
+      expect(auditSvgMarkup(ssrfSvg).activeContent).toHaveLength(4);
+
+      const audit = auditSvgMarkup(sanitizeSvgString(ssrfSvg));
+      expect(audit.activeContent).toEqual([]);
+      // External references become "#"; the in-document reference is kept; the style loses only its URLs.
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'style', attributes: {} },
+        { name: 'use', attributes: { href: '#' } },
+        { name: 'use', attributes: { href: '#' } },
+        { name: 'use', attributes: { href: '#local-symbol' } },
+        { name: 'rect', attributes: { width: '100', height: '100', style: 'background-image: none;' } },
+      ]);
+      expect(audit.text.replace(/\s+/g, ' ').trim()).toBe('.badge { background: none; }');
     });
 
     it('keeps script-like XML data verbatim: data XML is not an SVG to sanitize (#455)', async () => {
@@ -569,11 +600,14 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
       `, 'utf-8');
 
       const sanitizedBuffer = sanitizeSvgBuffer(maliciousSvg);
-      const sanitizedText = sanitizedBuffer.toString('utf-8');
+      const audit = auditSvgMarkup(sanitizedBuffer.toString('utf-8'));
 
-      expect(sanitizedText).not.toContain('<script');
-      expect(sanitizedText).toContain('<circle');
-      expect(sanitizedText).toContain('fill="blue"');
+      expect(audit.activeContent).toEqual([]);
+      expect(audit.elements).toEqual([
+        { name: 'svg', attributes: { xmlns: 'http://www.w3.org/2000/svg' } },
+        { name: 'circle', attributes: { cx: '50', cy: '50', r: '40', fill: 'blue' } },
+      ]);
+      expect(audit.text.trim()).toBe('');
     });
   });
 
@@ -757,71 +791,4 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
     });
   });
 
-  // =========================================================================
-  // 9. Dual Audio/Video Track Demuxing, Preservation, and Muxing (Issue #64 Target 4)
-  // =========================================================================
-  describe('9. Dual Audio/Video Track Demuxing, Preservation, and Muxing', () => {
-    const videoChunks = [
-      { data: new Uint8Array([0, 0, 0, 1, 0x65, 1, 2, 3]), timestampMicros: 0, isKeyFrame: true },
-      { data: new Uint8Array([0, 0, 0, 1, 0x41, 4, 5, 6]), timestampMicros: 33333, isKeyFrame: false },
-    ];
-    const audioChunks = [
-      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x00]), timestampMicros: 0, isKeyFrame: true },
-      { data: new Uint8Array([0x21, 0x10, 0x04, 0x60, 0x8c, 0x01]), timestampMicros: 23220, isKeyFrame: true },
-    ];
-
-    it('buildMp4MoovBox creates dual-track moov with vide and soun track descriptors', () => {
-      const moovBox = buildMp4MoovBox(
-        videoChunks,
-        1280,
-        720,
-        40,
-        1000,
-        audioChunks,
-        44100,
-        2
-      );
-
-      const moovStr = String.fromCharCode(...moovBox);
-      expect(moovStr).toContain('moov');
-      expect(moovStr).toContain('mvhd');
-      expect(moovStr).toContain('vide');
-      expect(moovStr).toContain('vmhd');
-      expect(moovStr).toContain('soun');
-      expect(moovStr).toContain('smhd');
-      expect(moovStr).toContain('mp4a');
-      expect(moovStr).toContain('esds');
-    });
-
-    it('muxMp4Media embeds both video and audio tracks in fastStart ISO BMFF container', () => {
-      const mp4Bytes = muxMp4Media(videoChunks, 1280, 720, {
-        includeMoov: true,
-        fastStart: true,
-        audioChunks,
-        sampleRate: 44100,
-        channels: 2,
-      });
-
-      const mp4Str = String.fromCharCode(...mp4Bytes);
-      expect(mp4Str).toContain('ftyp');
-      expect(mp4Str).toContain('moov');
-      expect(mp4Str).toContain('mdat');
-      expect(mp4Str).toContain('soun');
-      expect(mp4Str).toContain('smhd');
-    });
-
-    it('muxWebmVideo builds dual-track EBML container with VP9 video and Opus audio tracks', () => {
-      const webmBytes = muxWebmVideo(videoChunks, 640, 480, audioChunks);
-
-      // Verify EBML Header
-      expect(webmBytes[0]).toBe(0x1a);
-      expect(webmBytes[1]).toBe(0x45);
-      expect(webmBytes[2]).toBe(0xdf);
-      expect(webmBytes[3]).toBe(0xa3);
-
-      const webmStr = String.fromCharCode(...webmBytes);
-      expect(webmStr).toContain('V_VP9');
-      expect(webmStr).toContain('A_OPUS');
-    });
-  });
 });

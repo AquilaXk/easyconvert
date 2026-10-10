@@ -1,3 +1,5 @@
+import { DroppedStreamsProperties, EngineTraceProperties } from '@/lib/api/contracts';
+
 /**
  * Outbound webhook events (OpenAPI 3.1 `webhooks`). Only events the platform actually
  * dispatches are listed; each request carries the signature headers in `webhookHeaders`.
@@ -116,6 +118,10 @@ export const webhookEvents = {
       size: { type: 'integer' },
       durationMs: { type: 'number' },
       ocrExtracted: { type: 'boolean' },
+      ...EngineTraceProperties,
+      ...DroppedStreamsProperties,
+      sourceFrameCount: { type: 'integer', minimum: 2, description: 'Frames or pages of a multi-frame source image.' },
+      frameUsed: { type: 'integer', minimum: 1, description: '1-based frame or page a single-image output was taken from.' },
     },
   }),
   'job.failed': createEvent('job.failed', 'Conversion job failed', {

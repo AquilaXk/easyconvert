@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { parseSvgFontDocument, SvgFontFormatError, type SvgFont } from '../src/lib/conversions/font-svg';
 import { ConversionFailedError } from '../src/lib/types';
+import { expectNoHang, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * SVG 1.1 font document reading (section 20) and XML 1.0 lexical rules for start tags, comments and
- * attributes. Expected values are written by hand from the markup in each test. Every hostile input
- * is about 1 MB: a reader whose cost grows with the square of the input needs minutes for it, so a
- * wall-clock budget well above the linear cost proves the scan is linear without being flaky.
+ * attributes. Expected values are written by hand from the markup in each test. Each hostile input must be read
+ * within the hang guard (tests/helpers/timing.ts); font-svg-document.perf.test.ts builds it at 1 MB and at 4 MB and
+ * checks that a reader's cost grows linearly (a quadratic scan takes 16x as long on the larger one, a linear scan 4x).
  */
 
 const HOSTILE_BYTES = 1_000_000;
-const LINEAR_SCAN_BUDGET_MS = 500;
+/** The unterminated-quote scan is fast enough that 1 MB runs in under a millisecond. */
+const ATTRIBUTE_QUOTE_BASE_BYTES = 4 * HOSTILE_BYTES;
 
 const wrap = (body: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg"><defs><font horiz-adv-x="1000"><font-face units-per-em="1000" ascent="800" descent="200"/>${body}</font></defs></svg>`;
@@ -27,60 +29,75 @@ function timed<T>(run: () => T): { result: T | null; error: unknown; elapsed: nu
   return { result, error, elapsed: performance.now() - started };
 }
 
+type Scan = { result: SvgFont | null; error: unknown };
+
+/** Parses `build(4 * HOSTILE_BYTES)` under the hang guard and returns the outcome; the growth ratio is measured by font-svg-document.perf.test.ts. */
+async function expectLargeScanTerminates(label: string, build: (bytes: number) => string, baseBytes: number = HOSTILE_BYTES): Promise<Scan> {
+  return expectScanDoesNotHang(label, build(baseBytes * SCALING_FACTOR));
+}
+
+function scan(document: string): Scan {
+  const { result, error } = timed(() => parseSvgFontDocument(document));
+  return { result, error };
+}
+
+/**
+ * For hostile inputs the scanner finishes in a fraction of a millisecond even at 1 MB (one pass of `indexOf`),
+ * so two sizes cannot be compared; a quadratic scan of the same input needs minutes, which the hang guard catches.
+ */
+async function expectScanDoesNotHang(label: string, document: string): Promise<Scan> {
+  return expectNoHang(label, () => scan(document));
+}
+
 function expectFormatError(error: unknown, pattern: RegExp): void {
   expect(error).toBeInstanceOf(SvgFontFormatError);
   expect(error).toBeInstanceOf(ConversionFailedError);
   expect((error as Error).message).toMatch(pattern);
 }
 
-describe('SVG font document: start tags, comments and attributes are scanned in linear time', () => {
-  it('rejects a megabyte of unterminated comment openers quickly', () => {
-    const { error, elapsed } = timed(() => parseSvgFontDocument(wrap('<!--'.repeat(HOSTILE_BYTES / 4))));
+describe('SVG font document: start tags, comments and attributes are scanned without hanging', () => {
+  it('rejects a megabyte of unterminated comment openers without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('comment openers', (bytes) => wrap('<!--'.repeat(bytes / 4)));
     expectFormatError(error, /comment/i);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a megabyte of glyph tag openers that never close quickly', () => {
-    const { error, elapsed } = timed(() => parseSvgFontDocument(wrap('<glyph '.repeat(HOSTILE_BYTES / 7))));
+  it('rejects a megabyte of glyph tag openers that never close without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('glyph openers', (bytes) => wrap('<glyph '.repeat(bytes / 7)));
     expectFormatError(error, /<glyph>.*'<'|inside/i);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a megabyte of unterminated attribute quotes quickly', () => {
-    const { error, elapsed } = timed(() => parseSvgFontDocument(wrap('<glyph d="'.repeat(HOSTILE_BYTES / 10))));
+  it('rejects a megabyte of unterminated attribute quotes without hanging', async () => {
+    const { error } = await expectLargeScanTerminates('attribute quotes', (bytes) => wrap('<glyph d="'.repeat(bytes / 10)), ATTRIBUTE_QUOTE_BASE_BYTES);
     expectFormatError(error, /<glyph>|quote|'<'/i);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('reads a glyph whose attribute name is a megabyte of junk without time growing quadratically', () => {
-    const { result, error, elapsed } = timed(() => parseSvgFontDocument(wrap(`<glyph ${'a'.repeat(HOSTILE_BYTES)} />`)));
+  it('reads a glyph whose attribute name is a megabyte of junk without time growing quadratically', async () => {
+    const { result, error } = await expectLargeScanTerminates('junk attribute name', (bytes) => wrap(`<glyph ${'a'.repeat(bytes)} />`));
     expect(error).toBeNull();
     expect((result as SvgFont).glyphs).toHaveLength(1);
     expect((result as SvgFont).glyphs[0].d).toBeNull();
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('reads a glyph followed by a megabyte of attribute names without values quickly', () => {
-    const names = 'abc '.repeat(HOSTILE_BYTES / 4);
-    const { result, error, elapsed } = timed(() => parseSvgFontDocument(wrap(`<glyph ${names}unicode="Q" d="M0 0 H1 V1 Z"/>`)));
+  it('reads a glyph followed by a megabyte of attribute names without values without hanging', async () => {
+    const { result, error } = await expectLargeScanTerminates('valueless attribute names', (bytes) =>
+      wrap(`<glyph ${'abc '.repeat(bytes / 4)}unicode="Q" d="M0 0 H1 V1 Z"/>`)
+    );
     expect(error).toBeNull();
     expect((result as SvgFont).glyphs[0].codePoint).toBe(0x51);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a tag that is never closed, however long it runs', () => {
-    const { error, elapsed } = timed(() => parseSvgFontDocument(`<svg><font><glyph ${'a '.repeat(HOSTILE_BYTES / 2)}`));
+  it('rejects a tag that is never closed, however long it runs', async () => {
+    const { error } = await expectLargeScanTerminates('unclosed tag', (bytes) => `<svg><font><glyph ${'a '.repeat(bytes / 2)}`);
     expectFormatError(error, /not closed|unterminated/i);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects a numeric attribute that is a megabyte of digits followed by junk quickly', () => {
-    const { error, elapsed } = timed(() =>
-      parseSvgFontDocument(`<svg><font><font-face units-per-em="${'1'.repeat(HOSTILE_BYTES)}x"/><glyph unicode="A" d="M0 0"/></font></svg>`)
+  it('rejects a numeric attribute that is a megabyte of digits followed by junk without hanging', async () => {
+    const { error } = await expectLargeScanTerminates(
+      'digit run',
+      (bytes) => `<svg><font><font-face units-per-em="${'1'.repeat(bytes)}x"/><glyph unicode="A" d="M0 0"/></font></svg>`
     );
     expectFormatError(error, /units-per-em.*not a finite number/);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('SVG font document: the linear scanner reads the same documents as before', () => {
@@ -171,28 +188,27 @@ describe('SVG font document: CDATA sections and the DOCTYPE are skipped, not rea
     expectFormatError(error, /DOCTYPE|comment/i);
   });
 
-  it('rejects a megabyte of CDATA openers, DOCTYPE openers and subset declarations quickly', () => {
-    const inputs = [
-      wrap('<![CDATA['.repeat(HOSTILE_BYTES / 9)),
-      '<!DOCTYPE '.repeat(HOSTILE_BYTES / 10),
-      wrap(`<!DOCTYPE svg [${'<!ENTITY a "x"> '.repeat(HOSTILE_BYTES / 16)}`),
-      wrap(`<!DOCTYPE svg [${'"'.repeat(HOSTILE_BYTES)}`),
+  it('rejects a megabyte of CDATA openers, DOCTYPE openers and subset declarations without hanging', async () => {
+    const shapes: Array<[string, string]> = [
+      ['CDATA openers', wrap('<![CDATA['.repeat(HOSTILE_BYTES / 9))],
+      ['DOCTYPE openers', '<!DOCTYPE '.repeat(HOSTILE_BYTES / 10)],
+      ['entity declarations', wrap(`<!DOCTYPE svg [${'<!ENTITY a "x"> '.repeat(HOSTILE_BYTES / 16)}`)],
+      ['subset quotes', wrap(`<!DOCTYPE svg [${'"'.repeat(HOSTILE_BYTES)}`)],
     ];
-    for (const input of inputs) {
-      const { error, elapsed } = timed(() => parseSvgFontDocument(input));
+    for (const [label, document] of shapes) {
+      const { error } = await expectScanDoesNotHang(label, document);
       expectFormatError(error, /CDATA|DOCTYPE|comment/i);
-      expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
     }
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('reads a megabyte of CDATA and of DOCTYPE subset full of comment openers quickly', () => {
+  it('reads a megabyte of CDATA and of DOCTYPE subset full of comment openers without hanging', async () => {
     const cdata = `<![CDATA[${'<!-- <glyph '.repeat(HOSTILE_BYTES / 12)}]]>`;
     const subset = `<!DOCTYPE svg [ <!ENTITY c "${'<!--'.repeat(HOSTILE_BYTES / 4)}"> ]>`;
-    const { result, error, elapsed } = timed(() =>
-      parseSvgFontDocument(`${subset}<svg>${cdata}<font><font-face units-per-em="1000"/>${GLYPH}${cdata}</font></svg>`)
+    const { result, error } = await expectScanDoesNotHang(
+      'CDATA and subset comment openers',
+      `${subset}<svg>${cdata}<font><font-face units-per-em="1000"/>${GLYPH}${cdata}</font></svg>`
     );
     expect(error).toBeNull();
     expect(codePoints(result)).toEqual([0x41]);
-    expect(elapsed).toBeLessThan(LINEAR_SCAN_BUDGET_MS);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 });

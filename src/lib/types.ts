@@ -19,7 +19,11 @@ export interface FormatOptionsSchema {
   dimensions?: boolean;
   fit?: boolean;
   stripMetadata?: boolean;
+  background?: boolean;
   dpi?: boolean;
+  imageDpi?: boolean;
+  jpegQuality?: boolean;
+  layout?: boolean;
   orientation?: boolean;
   delimiter?: boolean;
   hasHeaders?: boolean;
@@ -84,8 +88,14 @@ export interface ConversionOptions {
   width?: number;
   height?: number;
   fit?: 'cover' | 'contain' | 'fill' | 'inside' | 'outside';
+  /** Resampling kernel of a resize; downscales of 2x or more also run in linear light. Defaults to lanczos3. */
+  kernel?: 'lanczos3' | 'lanczos2' | 'mitchell' | 'cubic' | 'nearest' | 'mks2021';
   stripMetadata?: boolean;
+  /** `#rgb` or `#rrggbb`: fills flattened transparency and `fit: 'contain'` bars. Defaults to white for targets without alpha. */
+  background?: string;
   dpi?: number;
+  /** pdf -> txt: keep physical layout so table rows stay on one line (default: reading order). */
+  layout?: boolean;
   colorDepth?: number;
   colors?: number;
   palette?: boolean;
@@ -104,6 +114,13 @@ export interface ConversionOptions {
   targetColorSpace?: 'sRGB' | 'display-p3' | 'rec2020' | 'linear';
   outputDepth?: 8 | 16 | 32;
   gainMap?: boolean;
+  /** TIFF target: `deflate` (default, lossless), `lzw`, `none` or `jpeg` (lossy, only when asked for). */
+  tiffCompression?: 'deflate' | 'lzw' | 'none' | 'jpeg';
+  /**
+   * HDR to SDR rendering of EXR and PQ/HLG tagged pictures and of HDR video: `bt2390` (default, ITU-R BT.2390 EETF),
+   * `clip` (hard clip at SDR white) or `none` (keep HDR, for targets that can carry it).
+   */
+  toneMap?: 'none' | 'clip' | 'bt2390';
   // CAD & NURBS options
   uSamples?: number;
   vSamples?: number;
@@ -118,6 +135,8 @@ export interface ConversionOptions {
   password?: string;
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
+  /** BCP 47 language of the document content, written to the language metadata of targets that carry it (EPUB). */
+  language?: string;
   ocrEnabled?: boolean;
   ocrLanguage?:
     | 'auto'
@@ -147,6 +166,18 @@ export interface ConversionOptions {
     | string;
   ocrMode?: 'skip_text' | 'skip-text' | 'force' | 'redo';
   ocrDensityThreshold?: number;
+  /**
+   * Find a page's orientation and script when it reads badly, and read it again turned (and in the
+   * script's language when `ocrLanguage` is `auto`). Left out it is done when the detection data is
+   * installed and skipped, with the skip recorded, when it is not; `true` demands it and answers 503
+   * when the data is missing; `false` never looks.
+   */
+  ocrDetectOrientation?: boolean;
+  /**
+   * Also return the OCR engine's own hOCR or ALTO of each recognized PDF page in the result metadata
+   * (`metadata.ocrEngineMarkup`). For verification and debugging; it needs the tesseract command line.
+   */
+  ocrEngineMarkup?: 'hocr' | 'alto';
   clientEdgeMode?: boolean;
   margin?: 'normal' | 'narrow' | 'wide';
   validateMagicBytes?: boolean;
@@ -174,6 +205,11 @@ export interface ConversionOptions {
   solid?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   entries?: string[];
+  /**
+   * Opt in to extracting archives that contain symbolic or hard links by leaving those entries out.
+   * Without it such archives are rejected. Skipped names are reported in `ConversionResult.skippedLinks`.
+   */
+  skipLinks?: boolean;
   repair?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
@@ -191,28 +227,49 @@ export interface ConversionOptions {
   videoFps?: 24 | 30 | 60;
   videoCodec?: 'h264' | 'hevc' | 'vp9' | 'av1';
   videoBitrate?: number;
+  /** Longest output in seconds (an output-side limit): more than 0 and at most the input's duration. */
   duration?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
   useFfmpeg?: boolean;
+  /** Place the moov box before the media data of mp4, mov and m4a output (default true there); true elsewhere is an error. */
   fastStart?: boolean;
+  /**
+   * Display aspect ratio as "W:H" (set without touching the pixels), or an object that also reshapes the picture:
+   * `pad` adds black bars, `crop` removes picture, both to the ratio with even sizes.
+   */
+  aspectRatio?: string | AspectRatioOptions;
   disableHwaccel?: boolean;
   disableNativeEngine?: boolean;
-  /** @deprecated No-op. No in-process lossy encoder exists; such targets always require FFmpeg. */
-  allowPureLossyBitstream?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
   pdfVersion?: string;
   libreOfficeFilter?: string;
   losslessImageCompression?: boolean;
+  /** Office to PDF: downsample embedded images to this resolution (72-1200). Default: keep them. */
+  imageDpi?: number;
+  /** Office to PDF: re-encode embedded JPEGs at this quality (1-100). Default: keep the stream. */
+  jpegQuality?: number;
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
 }
 
+export interface AspectRatioOptions {
+  /** "W:H", whole numbers, e.g. "4:3". */
+  ratio: string;
+  /** `dar` sets the display ratio only (default), `pad` adds bars, `crop` removes picture. */
+  mode?: 'dar' | 'pad' | 'crop';
+}
+
 export interface VideoRateControlCrf {
   mode: 'crf';
   crf: number;
+  /**
+   * Caps the peak bitrate of the constant-quality encode (capped CRF): `-maxrate` with a `-bufsize` of twice
+   * that. Left unset, quality alone decides the rate and no bitrate is invented.
+   */
+  maxBitrateK?: number;
 }
 
 export interface VideoRateControlVbr {
@@ -220,6 +277,7 @@ export interface VideoRateControlVbr {
   bitrateK: number;
   maxrateK?: number;
   bufsizeK?: number;
+  /** Run the encode in two passes (h264, hevc, vp9): the second reaches the target bitrate more exactly. */
   twoPass?: boolean;
 }
 
@@ -263,8 +321,31 @@ export interface MediaTrimOptions {
 
 export type AudioCodec = 'aac' | 'mp3' | 'opus' | 'flac' | 'vorbis' | 'pcm_s16le';
 
+/** Named EBU R128 / ITU-R BS.1770-4 loudness targets. */
+export type LoudnessPreset = 'ebu-r128' | 'streaming' | 'podcast';
+
+export interface LoudnessOptions {
+  /** Starting values: `ebu-r128` (-23 LUFS, the default), `streaming` (-14 LUFS) or `podcast` (-16 LUFS). */
+  preset?: LoudnessPreset;
+  /** Integrated loudness target in LUFS (-70 to -5). */
+  integrated?: number;
+  /** Maximum true peak in dBTP (-9 to 0). */
+  truePeak?: number;
+  /** Loudness range target in LU (1 to 50). */
+  lra?: number;
+}
+
+export type AudioResampler = 'soxr' | 'swr';
+export type AudioDither = 'none' | 'rectangular' | 'triangular' | 'triangular_hp';
+
 export interface AudioEncodingOptions {
   codec?: AudioCodec;
+  /** Opt-in two-pass loudness normalisation (a measuring pass, then a linear gain). */
+  loudness?: LoudnessOptions;
+  /** Resampler for rate changes: soxr when the ffmpeg build has it (the default), otherwise swr. */
+  resampler?: AudioResampler;
+  /** Dither for the reduction to 16-bit PCM; defaults to triangular_hp. */
+  dither?: AudioDither;
   bitrateK?: number;
   channels?: 1 | 2 | 6 | 8;
   sampleRate?: number;
@@ -299,9 +380,13 @@ export interface MediaLadderRung {
 
 export type MediaPackagingFormat = 'hls' | 'dash';
 
+/** HLS segment container: MPEG-2 transport stream, or fragmented MP4 (CMAF). MPEG-DASH always uses fmp4. */
+export type MediaPackagingSegmentType = 'ts' | 'fmp4';
+
 export interface MediaPackagingOptions {
   format: MediaPackagingFormat;
   segmentSeconds?: number;
+  segmentType?: MediaPackagingSegmentType;
   ladder?: MediaLadderRung[];
   masterPlaylistName?: string;
   audioCodec?: 'aac' | 'opus';
@@ -332,15 +417,50 @@ export interface ConversionQueueItem {
   edgeTier?: string;
 }
 
+/** What a stream a conversion left out was. `chapters` is the chapter list, which has no stream index. */
+export type DroppedStreamKind = 'video' | 'subtitle' | 'attachment' | 'data' | 'attached_picture' | 'chapters';
+
+/**
+ * Why a stream was left out:
+ * - `container_unsupported`: the target container cannot carry it (subtitles in avi, attachments outside mkv).
+ * - `stream_type_unsupported`: no conversion to a video container carries this kind of stream (data, cover art).
+ * - `additional_video_track`: a video container output holds one video track; only the first was kept.
+ */
+export type DroppedStreamReason = 'container_unsupported' | 'stream_type_unsupported' | 'additional_video_track';
+
+/** A stream of the input that the output does not contain. The conversion itself succeeded. */
+export interface DroppedStream {
+  /** Absolute stream index in the input; absent for the chapter list. */
+  index?: number;
+  kind: DroppedStreamKind;
+  codec?: string;
+  language?: string;
+  title?: string;
+  reason: DroppedStreamReason;
+}
+
 export interface ConversionResult {
   buffer: Buffer;
   mimeType: string;
   filename: string;
   size: number;
   ocrExtractedText?: string;
+  /** The request asked for OCR, but every page already had text (skip_text), so the input was returned unchanged. */
+  ocrSkipped?: boolean;
   ocrConfidence?: number | null;
   isEmbeddedPreview?: boolean;
   parts?: { filename: string; buffer: Buffer }[];
+  /** Frames (animated GIF/WebP/APNG) or pages (multi-page TIFF/HEIF) the source image holds; set only when more than one. */
+  sourceFrameCount?: number;
+  /** 1-based frame or page a still output was taken from: frame 1 by default, or the requested `page`. */
+  frameUsed?: number;
+  /** Link entries left out of an extraction because `skipLinks` was set. */
+  skippedLinks?: string[];
+  /**
+   * Engine and post-processing facts about the result, such as the PDF/A verdict. A media conversion lists the
+   * input streams the output lacks as `droppedStreams` (see DroppedStream).
+   */
+  metadata?: Record<string, unknown>;
 }
 
 // S3 Chunked Upload Types
@@ -422,12 +542,32 @@ export interface ConversionJobResult {
   size: number;
   durationMs: number;
   ocrExtracted?: boolean;
+  sourceFrameCount?: number;
+  frameUsed?: number;
+  /** Engine that produced the output (for example `native-ffmpeg` or `internal-fallback`). */
+  engineUsed?: string;
+  /** Public, redacted reason a fallback happened; absent when the first-choice engine ran. */
+  fallbackReason?: string;
+  /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
+  droppedStreams?: DroppedStream[];
 }
 
 export class ConversionFailedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ConversionFailedError';
+  }
+}
+
+/**
+ * Marker base of every failure that means "this worker lacks the tool" (an engine, binary or codec) rather than
+ * "this input is bad". A worker pool can be mixed, so a queued job that fails with one is retried on another
+ * worker. Every error class named like a missing tool must extend it; a test scans the source tree for that.
+ */
+export class EngineMissingError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EngineMissingError';
   }
 }
 
@@ -438,7 +578,7 @@ export class FileExtensionSpoofError extends ConversionFailedError {
   }
 }
 
-export class OcrEngineUnavailableError extends ConversionFailedError {
+export class OcrEngineUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'OcrEngineUnavailableError';
@@ -460,10 +600,34 @@ export class UnsupportedTargetError extends ConversionFailedError {
   }
 }
 
-export class ArchiveEncryptionUnavailableError extends ConversionFailedError {
+export class ArchiveEncryptionUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'ArchiveEncryptionUnavailableError';
+  }
+}
+
+/** A password-protected archive came out of the archiver without encryption and was discarded. */
+export class ArchiveNotEncryptedError extends ConversionFailedError {
+  constructor(message = 'Archive was written without encryption.') {
+    super(message);
+    this.name = 'ArchiveNotEncryptedError';
+  }
+}
+
+/** The archive is encrypted and the request carried no password. */
+export class ArchivePasswordRequiredError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArchivePasswordRequiredError';
+  }
+}
+
+/** The request carried a password that does not decrypt the archive. */
+export class InvalidArchivePasswordError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidArchivePasswordError';
   }
 }
 
@@ -522,15 +686,21 @@ export class DataRepresentationError extends ConversionFailedError {
   }
 }
 
+/**
+ * The OCR language of a request cannot be used. 400 (the default) when the code names no language of the table
+ * or joins too many; 503 when the language is known but its data is not installed here, which another worker
+ * may have.
+ */
 export class OcrLanguageUnavailableError extends OcrEngineUnavailableError {
-  readonly status = 400;
-  constructor(message: string) {
+  readonly status: number;
+  constructor(message: string, status = 400) {
     super(message);
     this.name = 'OcrLanguageUnavailableError';
+    this.status = status;
   }
 }
 
-export class CadGeometryUnavailableError extends ConversionFailedError {
+export class CadGeometryUnavailableError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'CadGeometryUnavailableError';
@@ -551,7 +721,16 @@ export class CadTopologyError extends ConversionFailedError {
   }
 }
 
-export class EngineUnavailableError extends ConversionFailedError {
+/** CAD input whose geometry data is malformed (a knot vector that decreases, the wrong number of knots). Maps to HTTP 400. */
+export class CadGeometryError extends ConversionFailedError {
+  readonly status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CadGeometryError';
+  }
+}
+
+export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
 
@@ -564,6 +743,108 @@ export class EngineUnavailableError extends ConversionFailedError {
   }
 }
 
+/** HTTP status of a worker output that vanished: a server fault, not a verdict on the request. */
+const WORKER_OUTPUT_MISSING_STATUS = 500;
+
+/** What an API answers for a vanished output; the worker's file name stays in the server log. */
+export const WORKER_OUTPUT_MISSING_DETAIL = 'The conversion output is no longer available';
+
+/**
+ * A conversion produced its output, but the persisted file is gone when the result is read (a swept scratch
+ * directory, a deleted volume). It is a server fault: the job fails with 500, never with an empty artifact.
+ * It is not an `EngineMissingError`, so the queue does not retry it on another worker; a retry would only
+ * redo a conversion whose storage is failing. The message names the output, never its location on disk.
+ */
+export class WorkerOutputMissingError extends ConversionFailedError {
+  readonly status = WORKER_OUTPUT_MISSING_STATUS;
+
+  constructor(outputName: string) {
+    super(`The persisted conversion output "${outputName}" is no longer available`);
+    this.name = 'WorkerOutputMissingError';
+  }
+}
+
+/** A stored artifact has a file extension the format registry does not know, so its MIME type cannot be named. */
+export class UnknownArtifactFormatError extends ConversionFailedError {
+  constructor(artifactName: string) {
+    super(`Artifact "${artifactName}" has no format registered, so its MIME type is unknown`);
+    this.name = 'UnknownArtifactFormatError';
+  }
+}
+
+/** `engineName` of a SandboxUnavailableError: the per-child confinement, not one native tool. */
+export const SANDBOX_ENGINE_NAME = 'sandbox';
+
+/**
+ * STRICT_SANDBOX is on and this host cannot create the namespace sandbox a native child must run in (an
+ * unprivileged `unshare` that a seccomp profile or a kernel setting denies). The conversion is refused before
+ * any process starts: it never runs unsandboxed and never falls back to another engine. It is an
+ * `EngineUnavailableError`, so routes answer 503 and a queue worker retries the job, which another worker
+ * with a working sandbox can serve. The message is fixed text: no tool, path or argument.
+ */
+export class SandboxUnavailableError extends EngineUnavailableError {
+  constructor(reason: string) {
+    super(SANDBOX_ENGINE_NAME, reason);
+    this.name = 'SandboxUnavailableError';
+  }
+}
+
+/**
+ * The bounded queue of the CPU worker pool is full. The caller can retry once running tasks finish, so the routes
+ * answer 503 with `Retry-After`; it is an `EngineUnavailableError`, so a worker that hits it retries the job.
+ */
+export class CpuPoolOverloadedError extends EngineUnavailableError {
+  readonly status = 503;
+
+  constructor(queued: number, limit: number) {
+    super('cpu-pool', `${queued} tasks are already queued (limit ${limit})`);
+    this.name = 'CpuPoolOverloadedError';
+  }
+}
+
+/** A task on the CPU worker pool ran past its time limit and its thread was terminated. */
+export class CpuTaskTimeoutError extends ConversionFailedError {
+  readonly status = 422;
+
+  constructor(kind: string, limitMs: number) {
+    super(`The ${kind} task exceeded its ${limitMs} ms time limit`);
+    this.name = 'CpuTaskTimeoutError';
+  }
+}
+
+/** A task on the CPU worker pool was cancelled by its caller. */
+export class CpuTaskAbortedError extends ConversionFailedError {
+  constructor(kind: string) {
+    super(`The ${kind} task was cancelled`);
+    this.name = 'CpuTaskAbortedError';
+  }
+}
+
+/**
+ * Redis is configured for the job queue but did not answer, so a job cannot be stored or read. Routes
+ * answer it with 503 and `Retry-After`; the in-memory queue is never a stand-in once Redis is configured.
+ * It is an `EngineUnavailableError`, so a worker that hits it retries the job instead of failing it.
+ */
+export class QueueUnavailableError extends EngineUnavailableError {
+  constructor(queueName: string, reason?: string) {
+    super(`queue:${queueName}`, reason ?? 'Redis is configured but not reachable');
+    this.name = 'QueueUnavailableError';
+  }
+}
+
+/**
+ * A persisted graph scheduler record is missing a field or holds a value of the wrong type. The
+ * record is never repaired or defaulted: the graph fails. A retry reads the same record, so it is
+ * not retryable; the status is a server fault (500), not a verdict on the caller's input.
+ */
+export class GraphStateCorruptError extends ConversionFailedError {
+  readonly status = 500;
+  constructor(message: string) {
+    super(message);
+    this.name = 'GraphStateCorruptError';
+  }
+}
+
 /** An `export.url` node could not deliver an artifact to the destination URL. */
 export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {
@@ -573,14 +854,36 @@ export class GraphExportError extends ConversionFailedError {
 }
 
 /**
- * A compressed stream would decode past a per-stream or per-document byte limit. The routes answer
- * it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ * An input asks for more work or memory than the engine allows: a stream that would decode past a
+ * size limit, or a document that would produce more text blocks or character mappings than the caps.
+ * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
  */
-export class DecompressionLimitError extends ConversionFailedError {
+export class PayloadLimitError extends ConversionFailedError {
   readonly status = 413;
   constructor(message: string) {
     super(message);
+    this.name = 'PayloadLimitError';
+  }
+}
+
+/** A compressed stream would decode past a per-stream or per-document byte limit. */
+export class DecompressionLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
     this.name = 'DecompressionLimitError';
+  }
+}
+
+/**
+ * A document is encrypted, password protected or DRM protected, so its text cannot be read. The request was
+ * understood and the file is intact; it is the content that is unavailable, so the routes answer HTTP 422
+ * (through `status`) instead of the generic 400 for a malformed input.
+ */
+export class EncryptedOfficeDocumentError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'EncryptedOfficeDocumentError';
   }
 }
 
@@ -600,12 +903,35 @@ export class InvalidPageRangeError extends ConversionFailedError {
   }
 }
 
-export class ComplexScriptRequiresNativeEngineError extends ConversionFailedError {
+export class ComplexScriptRequiresNativeEngineError extends EngineMissingError {
   constructor(
     message = 'Rendering complex scripts (CTL/RTL) requires the native LibreOffice engine'
   ) {
     super(message);
     this.name = 'ComplexScriptRequiresNativeEngineError';
+  }
+}
+
+/**
+ * Text of a script that needs shaping contains a character no installed font covers. The font set is part of the
+ * request's environment and not a missing engine, so it answers HTTP 400 (through `status`) rather than 503.
+ */
+export class FontCoverageError extends ConversionFailedError {
+  readonly status = 400;
+  /** The first uncovered code point. */
+  readonly codePoint: number;
+  constructor(message: string, codePoint: number) {
+    super(message);
+    this.name = 'FontCoverageError';
+    this.codePoint = codePoint;
+  }
+}
+
+/** Text to shape is longer than the shaping limits allow (one paragraph, or all glyphs of one document). HTTP 413. */
+export class ShapingLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShapingLimitError';
   }
 }
 
@@ -643,7 +969,7 @@ export class RawDecodeError extends ConversionFailedError {
 }
 
 /** The in-process engine cannot decode this camera RAW sensor data; only the native RAW engine can. */
-export class RawEngineRequiredError extends ConversionFailedError {
+export class RawEngineRequiredError extends EngineMissingError {
   constructor(message: string) {
     super(message);
     this.name = 'RawEngineRequiredError';
@@ -658,6 +984,30 @@ export class InvalidMediaOptionError extends UnsupportedOptionError {
   }
 }
 
+/** The input has no video stream, so a video target or an adaptive-bitrate package has nothing to encode. */
+export class NoVideoStreamError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoVideoStreamError';
+  }
+}
+
+/** The input declares more streams than one conversion maps; the limit bounds probing and mapping work. */
+export class TooManyMediaStreamsError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TooManyMediaStreamsError';
+  }
+}
+
+/** ffprobe output that cannot be parsed or lacks a required field; the input is not described reliably. */
+export class MediaProbeError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MediaProbeError';
+  }
+}
+
 export type ArchiveCollisionPolicy = 'rename' | 'error' | 'overwrite';
 
 export interface ArchiveEntryMetadata {
@@ -668,6 +1018,12 @@ export interface ArchiveEntryMetadata {
   isDirectory: boolean;
   modifiedAt?: string;
   crc32?: string;
+  /** Set for entries that are not plain files or directories. Links are reported, never resolved. */
+  kind?: 'symlink' | 'hardlink' | 'special';
+  /** The name is absolute, climbs out with `..`, or is otherwise invalid. `name` is kept verbatim. */
+  unsafePath?: boolean;
+  /** Another entry in the archive has the same path. */
+  duplicate?: boolean;
 }
 
 export interface ArchiveInspectResponse {
@@ -677,6 +1033,10 @@ export interface ArchiveInspectResponse {
   totalCompressedBytes: number;
   isEncrypted: boolean;
   entries: ArchiveEntryMetadata[];
+  /** False when extraction would refuse the archive: links, unsafe paths, special entries or duplicates. */
+  extractable: boolean;
+  /** One line per blocking category, with a count and the first offending entry; empty when extractable. */
+  unextractableReasons: string[];
 }
 
 export class MissingVolumeError extends Error {
@@ -687,7 +1047,7 @@ export class MissingVolumeError extends Error {
   }
 }
 
-export class ArchiveEntryCollisionError extends Error {
+export class ArchiveEntryCollisionError extends ConversionFailedError {
   readonly status = 422;
   readonly entryName: string;
   constructor(entryName: string, message?: string) {
@@ -765,11 +1125,38 @@ export interface PdfAConversionResult {
   conformanceLevel: string;
 }
 
+/**
+ * A text watermark the request cannot get: a font family that is not installed or has no glyph for the text, a
+ * text over the length cap, or a line break. The request is wrong, so it is a client error (400), not a missing
+ * engine (503) and not a post-processing failure of a good document (422).
+ */
+export class WatermarkFontError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WatermarkFontError';
+  }
+}
+
 export class PdfPostprocessError extends Error {
   readonly status = 422;
   constructor(message: string) {
     super(message);
     this.name = 'PdfPostprocessError';
+  }
+}
+
+/**
+ * veraPDF validated a PDF/A output and it failed. `failedRules` lists the rule IDs
+ * (`<clause>-<test number>`, for example `6.2.11.4.1-1`) in the order veraPDF reports them.
+ */
+export class PdfAValidationError extends PdfPostprocessError {
+  constructor(
+    readonly profile: PdfAConformance,
+    readonly failedRules: readonly string[]
+  ) {
+    const rules = failedRules.length > 0 ? ` Failed rules: ${failedRules.join(', ')}.` : '';
+    super(`PDF/A validation failed: the output is not PDF/A compliant (${profile}).${rules}`);
+    this.name = 'PdfAValidationError';
   }
 }
 

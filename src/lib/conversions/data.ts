@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Papa from 'papaparse';
 import iconv from 'iconv-lite';
-import PDFDocument from 'pdfkit';
 import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-toml';
 import {
   Document as YamlDocument,
@@ -15,6 +14,7 @@ import {
 } from 'yaml';
 import {
   ConversionOptions,
+  ConversionFailedError,
   ConversionResult,
   DataEncodingError,
   DataLimitExceededError,
@@ -25,7 +25,7 @@ import {
 } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { assertNoComplexScript } from './ctl';
+import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
@@ -1013,7 +1013,7 @@ async function convertStructured(
     return textResult(generateTableHtml(tableRecords(table), baseName), 'text/html', baseName, 'html');
   }
   if (tgt === 'pdf') {
-    const pdfBuffer = await renderDataToPdf(tableRecords(table), baseName, options);
+    const pdfBuffer = await renderDataToPdf(table, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
   if (tgt === 'ods') {
@@ -1088,102 +1088,17 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * Renders structured tabular dataset into a formatted PDF document with lavender palette
+ * Renders a table into a PDF that draws only its cells: the title is stored in the PDF metadata, every row is
+ * drawn (paginated, with the header row repeated), long cell text wraps, and a table wider than the page
+ * continues in further column groups.
  */
-async function renderDataToPdf(
-  data: Record<string, unknown>[],
-  title: string,
-  options: ConversionOptions
-): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Data to PDF');
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      if (item && typeof item === 'object') {
-        for (const [key, val] of Object.entries(item)) {
-          assertNoComplexScript(key, 'Pure-TS Data to PDF');
-          if (typeof val === 'string') {
-            assertNoComplexScript(val, 'Pure-TS Data to PDF');
-          }
-        }
-      }
-    }
+async function renderDataToPdf(table: DataTable, title: string): Promise<Buffer> {
+  if (table.fields.length === 0 || table.rows.length === 0) {
+    throw new ConversionFailedError('The dataset has no rows to draw in a PDF.');
   }
-
-  return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: 'A4',
-      layout: 'landscape',
-      margin: 30,
-    });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    // Title header
-    doc.fillColor('#5C6BC0').fontSize(16).text(title, 30, 30);
-    doc.fillColor('#8E95AF').fontSize(9).text(`Structured Data Export • ${new Date().toLocaleDateString()}`, 30, 50);
-
-    if (!Array.isArray(data) || data.length === 0) {
-      doc.fillColor('#4D536B').fontSize(11).text('No records found in dataset.', 30, 80);
-      doc.end();
-      return;
-    }
-
-    const headers = Object.keys(data[0] || {}).slice(0, 10);
-    if (headers.length === 0) {
-      doc.end();
-      return;
-    }
-
-    const startX = 30;
-    const startY = 75;
-    const pageWidth = doc.page.width - 60;
-    const colWidth = Math.floor(pageWidth / headers.length);
-    const rowHeight = 22;
-
-    let currY = startY;
-
-    // Header Background
-    doc.rect(startX, currY, pageWidth, rowHeight).fill('#F0F2FE');
-    doc.rect(startX, currY, pageWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(1).stroke();
-
-    headers.forEach((h, idx) => {
-      doc.fillColor('#1F2340').fontSize(10).font('Helvetica-Bold');
-      doc.text(h, startX + idx * colWidth + 6, currY + 6, {
-        width: colWidth - 12,
-        ellipsis: true,
-      });
-    });
-
-    currY += rowHeight;
-
-    // Data rows
-    doc.font('Helvetica');
-    data.slice(0, 200).forEach((row, rIdx) => {
-      if (currY + rowHeight > doc.page.height - 40) {
-        doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
-        currY = 30;
-      }
-
-      if (rIdx % 2 === 1) {
-        doc.rect(startX, currY, pageWidth, rowHeight).fill('#FAFAFE');
-      }
-      doc.rect(startX, currY, pageWidth, rowHeight).strokeColor('#E1E4EE').lineWidth(0.5).stroke();
-
-      headers.forEach((h, idx) => {
-        const val = String(row[h] ?? '');
-        doc.fillColor('#4D536B').fontSize(9);
-        doc.text(val, startX + idx * colWidth + 6, currY + 6, {
-          width: colWidth - 12,
-          ellipsis: true,
-        });
-      });
-
-      currY += rowHeight;
-    });
-
-    doc.end();
-  });
+  const strings = tableStrings(table);
+  return renderPdfTables(
+    [{ rows: strings.map((row) => row.map((text) => ({ text }))), headerRows: 1 }],
+    { title, orientation: 'landscape' }
+  );
 }

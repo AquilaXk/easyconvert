@@ -4,6 +4,16 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
 import { buildTrueTypeFont } from './helpers/mac-font-containers';
 import { CadGeometryUnavailableError } from '../src/lib/types';
+import { zipEntryText } from './helpers/zip-entry';
+import { readDxf } from './helpers/dxf-reader';
+import { oracleTest } from './helpers/oracle-test';
+import { readSvgShapes } from './helpers/svg-dom-audit';
+import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pageFrame, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
+
+/** The attributes of `attributes` named in `names`, in that order. */
+function pick(attributes: Record<string, string>, names: string[]): Record<string, string> {
+  return Object.fromEntries(names.map((name) => [name, attributes[name]]));
+}
 
 describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadsheet, Presentation, Document)', () => {
   // A small TrueType font with real glyf outlines, written by the independent test helper
@@ -92,7 +102,7 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
   // 2. VECTOR & 2D/3D CAD CONVERSIONS (SVG, DXF, DWG, STEP, STL, OBJ, IGES)
   // =========================================================================
   describe('Vector & CAD Conversion Engine', () => {
-    it('converts SVG vector graphics to AutoCAD ASCII DXF with LINE and CIRCLE entities', async () => {
+    it('converts SVG vector graphics to AutoCAD ASCII DXF with a LINE and a circle outline', async () => {
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
         <line x1="10" y1="10" x2="100" y2="100" />
         <circle cx="50" cy="50" r="30" />
@@ -103,12 +113,13 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(result.mimeType).toBe('image/vnd.dxf');
       expect(result.filename).toBe('blueprint.dxf');
 
-      const dxf = result.buffer.toString('utf-8');
-      expect(dxf).toContain('SECTION');
-      expect(dxf).toContain('ENTITIES');
-      expect(dxf).toContain('LINE');
-      expect(dxf).toContain('CIRCLE');
-      expect(dxf).toContain('EOF');
+      // The DXF read back by the hand-written group-code reader: the line, then the circle as a closed outline
+      // whose vertices all lie 30 units from its centre (50, 50), with Y pointing up on the 200 unit page.
+      const { entities } = readDxf(result.buffer.toString('utf-8'));
+      expect(entities.map((entity) => entity.type)).toEqual(['LINE', 'POLYLINE']);
+      expect(entities[0].points.map(({ x, y }) => [x, y])).toEqual([[10, 190], [100, 100]]);
+      expect(entities[1].closed).toBe(true);
+      for (const point of entities[1].points) expect(Math.hypot(point.x - 50, point.y - 150)).toBeCloseTo(30, 3);
     });
 
     it('converts AutoCAD DXF drawing to standard SVG vector document', async () => {
@@ -119,21 +130,40 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(result.mimeType).toBe('image/svg+xml');
       expect(result.filename).toBe('schematic.svg');
 
-      const svg = result.buffer.toString('utf-8');
-      expect(svg).toContain('<svg');
-      expect(svg).toContain('<line');
-      expect(svg).toContain('<circle');
-      expect(svg).toContain('viewBox=');
+      // DXF has Y pointing up and SVG down, so every Y is negated: the line runs (0,0) to (100,-100), the circle is
+      // centred (50,-50) with radius 25, and the view box is the drawing's extent (0..100 by -100..0) plus a margin of 10.
+      const shapes = readSvgShapes(result.buffer.toString('utf-8'), new Set(['svg', 'line', 'circle']));
+      expect(shapes.map((shape) => shape.name)).toEqual(['svg', 'line', 'circle']);
+      expect(shapes[0].attributes.viewBox).toBe('-10 -110 120 120');
+      expect(pick(shapes[1].attributes, ['x1', 'y1', 'x2', 'y2'])).toEqual({ x1: '0', y1: '0', x2: '100', y2: '-100' });
+      expect(pick(shapes[2].attributes, ['cx', 'cy', 'r'])).toEqual({ cx: '50', cy: '-50', r: '25' });
     });
 
-    it('converts DXF drawing to PDF plot layout', async () => {
+    oracleTest('converts DXF drawing to PDF plot layout: the line, scaled uniformly into the page frame', ['pdftocairo', 'pdfinfo'], async () => {
       const dxf = `  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n  8\n0\n 10\n10.0\n 20\n10.0\n 11\n80.0\n 21\n80.0\n  0\nENDSEC\n  0\nEOF\n`;
       const buffer = Buffer.from(dxf, 'utf-8');
 
       const result = await convertFile(buffer, 'dxf', 'pdf', {}, 'floorplan.dxf');
       expect(result.mimeType).toBe('application/pdf');
       expect(result.filename).toBe('floorplan.pdf');
-      expect(result.buffer.toString('ascii', 0, 4)).toBe('%PDF');
+      expect(pdfPageCount(result.buffer)).toBe(1);
+
+      // Poppler draws the page: a frame (four axis-aligned segments) and the one diagonal line. The DXF line rises at
+      // 45 degrees (dx = dy = 70), so the page line has equal run and rise, runs from lower left to upper right (SVG
+      // y grows downward) and lies inside the frame.
+      const drawn = diagonalSegments(svgPathSegments(pdfPageToSvg(result.buffer)));
+      expect(drawn).toHaveLength(1);
+      const [line] = drawn;
+      expect(Math.abs(line.x2 - line.x1)).toBeCloseTo(Math.abs(line.y2 - line.y1), CAIRO_COORDINATE_DIGITS);
+      expect(line.x2).toBeGreaterThan(line.x1);
+      expect(line.y2).toBeLessThan(line.y1);
+      const frame = pageFrame(svgPathSegments(pdfPageToSvg(result.buffer)));
+      for (const [x, y] of [[line.x1, line.y1], [line.x2, line.y2]]) {
+        expect(x).toBeGreaterThan(frame.left);
+        expect(x).toBeLessThan(frame.right);
+        expect(y).toBeGreaterThan(frame.top);
+        expect(y).toBeLessThan(frame.bottom);
+      }
     });
 
     it('rasterizes DXF to crisp PNG image via Sharp rendering pipeline', async () => {
@@ -279,10 +309,10 @@ endsolid Cube`;
 
       // Verify ODS ZIP structure
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.spreadsheet');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<table:table');
       expect(xml).toContain('<table:table-row');
       expect(xml).toContain('Tokyo');
@@ -353,10 +383,10 @@ endsolid Cube`;
       expect(result.filename).toBe('pitch.odp');
 
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.presentation');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<draw:page');
       expect(xml).toContain('EasyConvert Engine');
     });
@@ -370,7 +400,12 @@ endsolid Cube`;
       expect(odpResult.filename).toBe('deck.odp');
 
       const zip = await JSZip.loadAsync(odpResult.buffer);
-      expect(zip.file('content.xml')).toBeDefined();
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.presentation');
+      const content = await zipEntryText(zip, 'content.xml');
+      // Two slides in, two draw:page elements out, with each slide's text.
+      expect(content.match(/<draw:page /g)).toHaveLength(2);
+      expect(content).toContain('Content 1');
+      expect(content).toContain('Content 2');
     });
 
     it('converts Markdown to genuine OpenDocument Text (ODT) archive', async () => {
@@ -382,10 +417,10 @@ endsolid Cube`;
       expect(result.filename).toBe('report.odt');
 
       const zip = await JSZip.loadAsync(result.buffer);
-      expect(zip.file('mimetype')).toBeDefined();
-      expect(zip.file('content.xml')).toBeDefined();
+      // ODF 1.2 section 3.3: the "mimetype" entry holds exactly the media type of the document.
+      expect(await zipEntryText(zip, 'mimetype')).toBe('application/vnd.oasis.opendocument.text');
 
-      const xml = await zip.file('content.xml')!.async('text');
+      const xml = await zipEntryText(zip, 'content.xml');
       expect(xml).toContain('<text:h');
       expect(xml).toContain('Executive Brief');
     });

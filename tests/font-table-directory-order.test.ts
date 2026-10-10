@@ -55,6 +55,7 @@ function uint32Sum(data: Buffer): number {
 }
 
 describe('font checksums', () => {
+  // skip-ok: the ORACLE_STRICT_MODE check at the top of this file throws when the outline font is missing.
   it.skipIf(!OUTLINE_FONT_PRESENT).each(['ttf', 'otf'])('outline font -> %s carries a whole-font checksum and per-table checksums that verify', async (target) => {
     const font = await convertOutlineFont(target);
     expect(uint32Sum(font)).toBe(SFNT_CHECKSUM_MAGIC);
@@ -72,6 +73,7 @@ describe('font checksums', () => {
 });
 
 describe('font table directory order', () => {
+  // skip-ok: the ORACLE_STRICT_MODE check at the top of this file throws when the outline font is missing.
   it.skipIf(!OUTLINE_FONT_PRESENT).each(['ttf', 'otf'])('outline font -> %s lists tables in ascending binary tag order', async (target) => {
     const tags = directoryTags(await convertOutlineFont(target), SFNT_HEADER_BYTES, SFNT_ENTRY_BYTES, 4);
     expect(tags.some((tag) => tag !== tag.toLowerCase())).toBe(true);

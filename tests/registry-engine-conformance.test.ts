@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -15,15 +16,21 @@ import { probeNativeEngines } from '../src/worker/engines';
 import { convertOffice } from '../src/lib/conversions/office';
 import { convertDocument } from '../src/lib/conversions/document';
 import { compressXz, create7zArchive } from '../src/lib/conversions/archive';
-import { EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
-import { OracleToolMissingError, getOracleToolPath, isOracleToolAvailable } from './helpers/differential-oracle';
-import { HAS_PDFTOCAIRO, HAS_PDFTOPPM, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
-const HAS_PDFINFO = isOracleToolAvailable('pdfinfo');
+import { ConversionFailedError, EngineUnavailableError, UnsupportedTargetError } from '../src/lib/types';
+import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
+import { buildWordBinary } from './helpers/word-binary-builder';
+import { buildMobiFromBytes } from './helpers/mobi-builder';
+import { buildAzw4, textPdf } from './helpers/print-replica-builder';
+import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
+import { buildPptBinary } from './helpers/ppt-binary-builder';
 
 /**
  * Registry/engine conformance gate.
@@ -56,6 +63,9 @@ const ROUTING_ERROR_PATTERNS: readonly RegExp[] = [
   /^Unsupported CAD format: DWG binary encoder unavailable/,
 ];
 
+/** The typed error the in-process archive engine raises for a format that only the native 7-Zip engine reads. */
+const SEVEN_ZIP_ENGINE_MESSAGE = /^Engine '7-Zip' is unavailable: reading \.[\w.]+ archives needs the native 7-Zip engine$/;
+
 function isRoutingError(err: unknown): boolean {
   if (err instanceof UnsupportedTargetError) return true;
   const message = err instanceof Error ? err.message : String(err);
@@ -80,9 +90,37 @@ const PROBE_TIMEOUT_MS = 20_000;
 /** Decoding a 39-megapixel RAW sensor and encoding it (AVIF, GIF, PDF) takes far longer than a probe seed. */
 const RAW_PROBE_TIMEOUT_MS = 180_000;
 const RATCHET_TIMEOUT_MS = 1_800_000;
+/** Upper bound on concurrent probes, whatever the machine offers. */
+const MAX_PROBE_CONCURRENCY = 4;
 const CATEGORY_TIMEOUT_MS = 600_000;
 /** Per RAW source: its targets at the probe's per-pair ceiling, with headroom. */
 const RAW_SOURCE_TIMEOUT_MS = 900_000;
+
+/**
+ * CONFORMANCE_PART=i/n runs part i of n: every work key (a registry pair `source->target`, a RAW sensor variant,
+ * an audio target) belongs to exactly one part, and the checks that cover the whole registry run in part 1. The keys
+ * are packed into the parts by their recorded duration (.github/ci/conformance-durations.json, planned by
+ * scripts/ci-conformance-parts.mjs), with part 1 starting with the cost of the registry-wide checks; a key the plan
+ * does not list goes to a part by its hash, so none can fall out. CI runs the parts in parallel jobs; unset, the
+ * single part 1/1 runs everything.
+ *
+ * With CONFORMANCE_DURATIONS_OUT=<file> the run writes what each key cost, for `ci-conformance-parts.mjs --update`.
+ */
+const CONFORMANCE_PART_PATTERN = /^([1-9]\d*)\/([1-9]\d*)$/;
+const [PART_INDEX, PART_COUNT] = ((): [number, number] => {
+  const raw = process.env.CONFORMANCE_PART ?? '1/1';
+  const match = CONFORMANCE_PART_PATTERN.exec(raw);
+  const index = match ? Number(match[1]) : 0;
+  const count = match ? Number(match[2]) : 0;
+  if (!match || index > count) throw new Error(`CONFORMANCE_PART must be i/n with 1 <= i <= n, got "${raw}"`);
+  return [index, count];
+})();
+const IS_FIRST_PART = PART_INDEX === 1;
+
+/** Whether a work key belongs to this part. The plan is built once the RAW variant manifest is loaded, below. */
+function inPart(key: string): boolean {
+  return partOfKey(PART_PLAN, key, PART_COUNT) === PART_INDEX;
+}
 const MEDIA_CATEGORIES = new Set(['audio', 'video']);
 const FIXTURE_ROOT = path.resolve(__dirname, 'fixtures');
 // Real camera-RAW samples are loaded explicitly below from the fetched cache, never by extension.
@@ -130,6 +168,8 @@ const FIXTURES = new Map<string, Buffer[]>();
 collectFixtures(FIXTURE_ROOT, FIXTURES);
 const PNG_SEED = FIXTURES.get('png')![0];
 const TAR_SEED = FIXTURES.get('tar')![0];
+/** A three-block tar small enough for the compress writer's 9-bit codes (tests/helpers/unix-compress.ts). */
+const SMALL_TAR_SEED = readFileSync(path.join(FIXTURE_ROOT, 'sample.tar'));
 const ZIP_SEED = FIXTURES.get('zip')![0];
 const STEP_SEED = FIXTURES.get('step')![0];
 const DXF_SEED = FIXTURES.get('dxf')![0];
@@ -178,6 +218,69 @@ for (const entry of RAW_VARIANT_MANIFEST) {
   if (bytes) RAW_VARIANT_SAMPLES.set(name, bytes);
   else RAW_SAMPLES_MISSING.push(name);
 }
+
+/** Every work key of the gate: the registry pairs, the pairs of each RAW sensor variant, and the audio targets. */
+function conformanceKeys(): string[] {
+  const keys = new Set<string>();
+  for (const [source, def] of Object.entries(FORMAT_REGISTRY)) {
+    for (const target of def.targetFormats) {
+      keys.add(`${source}->${target}`);
+      if (MEDIA_CATEGORIES.has(def.category) && FORMAT_REGISTRY[target].category === 'audio') keys.add(`audio-target:${target}`);
+    }
+  }
+  for (const entry of RAW_VARIANT_MANIFEST) {
+    for (const target of FORMAT_REGISTRY[entry.format].targetFormats) keys.add(`${entry.format}-${entry.variant}->${target}`);
+  }
+  return [...keys];
+}
+const PART_PLAN = planConformanceParts(conformanceKeys(), loadConformanceDurations(), PART_COUNT);
+
+const DURATIONS_OUT = process.env.CONFORMANCE_DURATIONS_OUT;
+const recordedMs = new Map<string, number>();
+/** Adds `ms` to the cost recorded for a work key (only when a recording was asked for). */
+function recordCost(key: string, ms: number): void {
+  if (DURATIONS_OUT) recordedMs.set(key, (recordedMs.get(key) ?? 0) + ms);
+}
+const FIRST_PART_COST_KEY = '@first-part';
+/** Titles of the checks only part 1 runs; their cost is the load part 1 carries besides its share of the keys. */
+const FIRST_PART_ONLY_TESTS: readonly RegExp[] = [
+  /^recognizes engine routing rejections/,
+  /^flags non-media sources/,
+  /^rejects pairs the registry does not advertise/,
+  /advertises none of its withdrawn targets$/,
+  /^converts every toml pair/,
+  /^lists the allowlist sorted/,
+  /^has an intact sample for every RAW/,
+  /^has a validator for every target/,
+  /^lists only pairs the registry advertises/,
+];
+/** A test that converts one pair is named `<source> -> <target> ...`. */
+const PAIR_TEST_NAME = /^(\S+) -> (\S+) /;
+const testStartedAt = new Map<string, number>();
+beforeEach(({ task }) => {
+  if (DURATIONS_OUT) testStartedAt.set(task.id, performance.now());
+});
+afterEach(({ task }) => {
+  const started = testStartedAt.get(task.id);
+  if (!DURATIONS_OUT || started === undefined) return;
+  const ms = performance.now() - started;
+  if (FIRST_PART_ONLY_TESTS.some((pattern) => pattern.test(task.name))) {
+    // The toml probes also count under their pair keys; the check itself is part 1's own work.
+    recordCost(FIRST_PART_COST_KEY, ms);
+    return;
+  }
+  const pair = PAIR_TEST_NAME.exec(task.name);
+  if (pair) recordCost(`${pair[1]}->${pair[2]}`, ms);
+});
+afterAll(() => {
+  if (!DURATIONS_OUT) return;
+  // Every key this part runs is written, the ones that cost nothing as 0, so a key that never runs does not weigh the
+  // median of the keys without an entry. Only part 1 has the registry-wide checks to report.
+  const seconds = Object.fromEntries(conformanceKeys().filter(inPart).map((key) => [key, (recordedMs.get(key) ?? 0) / 1000]));
+  const firstPart = IS_FIRST_PART ? { firstPartSeconds: (recordedMs.get(FIRST_PART_COST_KEY) ?? 0) / 1000 } : {};
+  writeFileSync(DURATIONS_OUT, `${JSON.stringify({ ...firstPart, seconds }, null, 2)}\n`);
+});
+
 const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
 /** Strict mode keeps the RAW checks enabled so that missing samples fail instead of skipping. */
 const RAW_CHECKS_ENABLED = STRICT_MODE || RAW_SAMPLES_MISSING.length === 0;
@@ -231,6 +334,14 @@ const OBJ_TEXT = Buffer.from(
   'utf-8'
 );
 
+/** The golden presentation with the content type of its main part switched to the template type. */
+async function buildProbePotx(): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(readFileSync(path.join(FIXTURE_ROOT, 'golden', 'office', 'drawingml-shapes-presentation.pptx')));
+  const types = await zip.file('[Content_Types].xml')!.async('string');
+  zip.file('[Content_Types].xml', types.replace('presentationml.presentation.main+xml', 'presentationml.template.main+xml'));
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
   zip.file('page-001.png', PNG_SEED);
@@ -238,10 +349,54 @@ async function buildCbz(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
+const FB2_PROBE =
+  '<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><description><title-info><book-title>Probe</book-title></title-info></description>' +
+  '<body><section><title><p>Probe heading</p></title><p>First probe paragraph.</p><p>Second probe paragraph.</p></section></body></FictionBook>';
+
+async function buildProbeZip(name: string, content: string): Promise<Buffer> {
+  const zip = new JSZip();
+  zip.file(name, content);
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+async function buildProbeCbc(): Promise<Buffer> {
+  const volume = new JSZip();
+  volume.file('page-001.png', readFileSync(path.join(FIXTURE_ROOT, 'ocr', 'en_a__clean300.png')));
+  const collection = new JSZip();
+  collection.file('comics.txt', 'volume.cbz:Probe volume\n');
+  collection.file('volume.cbz', await volume.generateAsync({ type: 'nodebuffer' }));
+  return collection.generateAsync({ type: 'nodebuffer' });
+}
+
+/** Bytes of an ICONDIR header and of one ICONDIRENTRY. */
+const ICON_DIR_BYTES = 6;
+const ICON_ENTRY_BYTES = 16;
+/** ICONDIR resource type of a cursor (1 is an icon). */
+const CURSOR_RESOURCE_TYPE = 2;
+
+/**
+ * A one-image cursor wrapping the PNG seed, laid out by hand from the ICO/CUR directory format: ICONDIR (reserved 0,
+ * type 2, count 1), one ICONDIRENTRY (width and height bytes, where 0 means 256, hotspot 0,0, payload size and
+ * offset) and the PNG payload, which the format allows in place of a DIB.
+ */
+async function cursorFromPngSeed(): Promise<Buffer> {
+  const { width, height } = await sharp(PNG_SEED).metadata();
+  const header = Buffer.alloc(ICON_DIR_BYTES + ICON_ENTRY_BYTES);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(CURSOR_RESOURCE_TYPE, 2);
+  header.writeUInt16LE(1, 4);
+  header[ICON_DIR_BYTES] = width! >= 256 ? 0 : width!;
+  header[ICON_DIR_BYTES + 1] = height! >= 256 ? 0 : height!;
+  header.writeUInt32LE(PNG_SEED.length, ICON_DIR_BYTES + 8);
+  header.writeUInt32LE(header.length, ICON_DIR_BYTES + 12);
+  return Buffer.concat([header, PNG_SEED]);
+}
+
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
+  cur: cursorFromPngSeed,
   yaml: () => YAML_MAPPING_TEXT,
   yml: () => YAML_MAPPING_TEXT,
   stl: () => STL_TEXT,
@@ -252,7 +407,32 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   tgz: () => gzipSync(TAR_SEED),
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
+  // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
+  // a MOBI whose text record holds HTML, a Print Replica book around a pdf-lib PDF, a collection of one comic
+  // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
+  // XML, and the HTMLZ and TXTZ ZIP wrappers.
+  azw: () => buildMobiFromBytes(Buffer.from('<html><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>', 'utf-8'), { compress: false }),
+  azw4: async () => buildAzw4([await textPdf(['Probe heading', 'First probe paragraph'])]),
+  cbc: buildProbeCbc,
+  fb2: () => Buffer.from(FB2_PROBE, 'utf-8'),
+  htmlz: () => buildProbeZip('index.html', '<html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>'),
+  txtz: () => buildProbeZip('index.txt', 'Probe heading\n\nFirst probe paragraph.\n'),
+  // Legacy Office sources are read through their own record structure, so the probes are hand-written
+  // documents from tests/helpers (a Word piece table and a PowerPoint record tree), not plain text.
+  doc: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
+  ppt: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
+  // A template is a presentation package whose main part has the template content type.
+  potx: buildProbePotx,
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
+  'tar.bz': () => requireDerived('tar.bz2'),
+  // Java packages are ZIP files; a tar compressed with compress is an LZW stream (the builder is checked against gzip in
+  // archive-seven-zip-only-sources.test.ts).
+  jar: () => ZIP_SEED,
+  war: () => ZIP_SEED,
+  ear: () => ZIP_SEED,
+  'tar.z': () => compressLzw(SMALL_TAR_SEED),
+  tz: () => compressLzw(SMALL_TAR_SEED),
   bz: () => requireDerived('tar.bz2'),
   bz2: () => requireDerived('tar.bz2'),
   tbz: () => requireDerived('tar.bz2'),
@@ -274,6 +454,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   woff2: () => wrapFontSeed('woff2'),
   eot: () => wrapFontSeed('eot'),
   rar: () => buildStoredRar4([{ name: 'probe.txt', data: PLAIN_TEXT }]),
+  // LHA is LZH under its other name. The ISO, CAB, ARJ, RPM, DEB, CPIO, DMG, IMG, LZMA and Z sources are
+  // seeded by the same-extension files in fixtures/archive-sources, all written by tools other than 7-Zip.
+  lha: () => readFileSync(path.join(FIXTURE_ROOT, 'archive-sources', 'probe.lzh')),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
@@ -358,18 +541,24 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 
 /**
  * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
- * for Office-to-Office targets, LibreOffice chained with Poppler pdftoppm for raster targets,
- * Poppler pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
+ * for Office-to-Office targets, LibreOffice (or the PostScript interpreter) chained with Poppler for
+ * page targets (pdftoppm images, the image encoders, pdftops, pdftocairo SVG and DXF), Poppler
+ * pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
  * hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
+  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  key: ['html', 'pdf', 'pptx'],
+  odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
+  odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   ppt: ['jpg', 'odp', 'png'],
+  ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
@@ -405,12 +594,25 @@ async function probePair(source: string, target: string): Promise<{ outcome: Pai
       const message = err instanceof Error ? err.message : String(err);
       if (isRoutingError(err)) return { outcome: 'unrouted', detail: message };
       lastError = message;
+      // An archive that only the native 7-Zip engine reads is left to it by the in-process engine; the dispatcher
+      // hands it over, and the real archives of tests/fixtures/archive-sources are what resolve the pair.
+      if (err instanceof EngineUnavailableError && SEVEN_ZIP_ENGINE_MESSAGE.test(message)) {
+        try {
+          await withTimeout(dispatchConversion(input, source, target, options, `probe.${source}`), PROBE_TIMEOUT_MS);
+          return { outcome: 'routed', detail: '' };
+        } catch (dispatched) {
+          const dispatchedMessage = dispatched instanceof Error ? dispatched.message : String(dispatched);
+          if (isRoutingError(dispatched)) return { outcome: 'unrouted', detail: dispatchedMessage };
+          lastError = dispatchedMessage;
+        }
+      }
     }
   }
   return { outcome: 'inconclusive', detail: lastError };
 }
 
-function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+/** Every advertised pair the predicate selects, across all parts. */
+function allPairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
   const pairs: [string, string][] = [];
   for (const [source, def] of Object.entries(FORMAT_REGISTRY)) {
     for (const target of def.targetFormats) {
@@ -420,33 +622,57 @@ function pairsFor(predicate: (category: string, target: string) => boolean): [st
   return pairs;
 }
 
+/** The selected pairs that belong to this part. */
+function pairsFor(predicate: (category: string, target: string) => boolean): [string, string][] {
+  return allPairsFor(predicate).filter(([source, target]) => inPart(`${source}->${target}`));
+}
+
 const probeCache = new Map<string, Promise<{ outcome: PairOutcome; detail: string }>>();
 
 function probePairCached(source: string, target: string): Promise<{ outcome: PairOutcome; detail: string }> {
   const key = `${source}->${target}`;
   let pending = probeCache.get(key);
   if (!pending) {
-    pending = probePair(source, target);
+    const started = performance.now();
+    pending = probePair(source, target).finally(() => recordCost(key, performance.now() - started));
     probeCache.set(key, pending);
   }
   return pending;
 }
 
+/**
+ * Probes run this many at a time. Each probe mostly waits on an engine process, so a few in flight keep
+ * the CPUs busy without starving any probe of its timeout.
+ */
+const PROBE_CONCURRENCY = Math.max(1, Math.min(os.availableParallelism(), MAX_PROBE_CONCURRENCY));
+
+/** Probes every pair with bounded concurrency; outcomes come back in the order of `pairs`. */
+async function probeAll(pairs: [string, string][]): Promise<{ outcome: PairOutcome; detail: string }[]> {
+  const outcomes: { outcome: PairOutcome; detail: string }[] = new Array(pairs.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    for (let index = next++; index < pairs.length; index = next++) {
+      const [source, target] = pairs[index];
+      outcomes[index] = await probePairCached(source, target);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, pairs.length) }, lane));
+  return outcomes;
+}
+
 async function findUnroutedPairs(pairs: [string, string][]): Promise<string[]> {
-  const unrouted: string[] = [];
-  for (const [source, target] of pairs) {
-    const { outcome, detail } = await probePairCached(source, target);
-    if (outcome === 'unrouted') unrouted.push(`${source} -> ${target}: ${detail}`);
-  }
-  return unrouted;
+  const outcomes = await probeAll(pairs);
+  return pairs.flatMap(([source, target], index) =>
+    outcomes[index].outcome === 'unrouted' ? [`${source} -> ${target}: ${outcomes[index].detail}`] : []
+  );
 }
 
 async function findInconclusivePairs(pairs: [string, string][]): Promise<string[]> {
-  const inconclusive: string[] = [];
-  for (const [source, target] of pairs) {
-    if ((await probePairCached(source, target)).outcome === 'inconclusive') inconclusive.push(`${source}->${target}`);
-  }
-  return inconclusive.sort();
+  const outcomes = await probeAll(pairs);
+  return pairs
+    .filter((_, index) => outcomes[index].outcome === 'inconclusive')
+    .map(([source, target]) => `${source}->${target}`)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /** Media pairs that reach FFmpeg are opt-in; every other advertised pair is always probed. */
@@ -454,6 +680,10 @@ function isTranscoderPair(category: string, target: string): boolean {
   return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
 }
 
+// Besides the font pairs, the list holds every pair of the eight archive sources that no engine reads (ace, alz, arc, lz,
+// lzo, rz, tar.lzo, tzo): the registry advertises them, the converter refuses them with a typed error instead of
+// wrapping the file, and no tool of the CI image can write a sample to prove a route. A reader for one of them removes
+// its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );
@@ -491,9 +721,113 @@ const HAS_OCR_DATA = TESSDATA_DIRS.some(
 /** Whether a pair is decidable depends on the native tools, so the ratchet needs the CI toolchain. */
 const HAS_CI_TOOLCHAIN =
   HAS_FFMPEG && HAS_OCR_DATA && ['7z', 'soffice', 'pdftoppm', 'tesseract', 'dcraw_emu'].every(onPath);
+/** CI has the whole toolchain: under ORACLE_STRICT_MODE=1 a missing tool fails the run instead of skipping the ratchet. */
+const SKIP_WITHOUT_CI_TOOLCHAIN = skipUnless('the CI toolchain (ffmpeg, 7z, soffice, pdftoppm, tesseract, dcraw_emu, eng.traineddata)', HAS_CI_TOOLCHAIN);
 const RUN_MEDIA_TRANSCODER_PAIRS = process.env.REGISTRY_CONFORMANCE_MEDIA === '1';
 
-describe('routing-error classifier', () => {
+const SHORT_CLIP_SECONDS = 0.5;
+const MESSAGE_TAIL_CHARS = 400;
+const FFMPEG_SAMPLE_TIMEOUT_MS = 30_000;
+/**
+ * ffprobe codec name and ffmpeg encoder that every encodable audio target must produce. Authored by
+ * hand from the container specifications; not read from the engine.
+ */
+const AUDIO_TARGET_CODECS: Readonly<Record<string, { codec: string; encoder: string }>> = {
+  mp3: { codec: 'mp3', encoder: 'libmp3lame' },
+  aac: { codec: 'aac', encoder: 'aac' },
+  m4a: { codec: 'aac', encoder: 'aac' },
+  m4b: { codec: 'aac', encoder: 'aac' },
+  ogg: { codec: 'vorbis', encoder: 'libvorbis' },
+  oga: { codec: 'vorbis', encoder: 'libvorbis' },
+  opus: { codec: 'opus', encoder: 'libopus' },
+  weba: { codec: 'opus', encoder: 'libopus' },
+  wma: { codec: 'wmav2', encoder: 'wmav2' },
+  ac3: { codec: 'ac3', encoder: 'ac3' },
+  amr: { codec: 'amr_nb', encoder: 'libopencore_amrnb' },
+  flac: { codec: 'flac', encoder: 'flac' },
+  alac: { codec: 'alac', encoder: 'alac' },
+  wav: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  aiff: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  aif: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  au: { codec: 'pcm_s16be', encoder: 'pcm_s16be' },
+  aifc: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  caf: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+  voc: { codec: 'pcm_s16le', encoder: 'pcm_s16le' },
+};
+/** FFmpeg has a decoder but no encoder or muxer for these advertised audio targets. */
+const UNENCODABLE_AUDIO_TARGET_IDS: ReadonlySet<string> = new Set(['dss']);
+/**
+ * Sources ffmpeg cannot write a 0.5 s clip for (no muxer or encoder, or a build without libopencore
+ * for AMR); a source outside this list that fails to build is a failure, so it may only shrink.
+ */
+const AUDIO_SOURCES_FFMPEG_CANNOT_MUX: ReadonlySet<string> = new Set([
+  'amr', 'ape', 'cavs', 'dss', 'dts', 'dv', 'mid', 'midi', 'mpc', 'rm', 'rmvb',
+]);
+
+/** Muxer and codec arguments for sources whose extension alone does not give ffmpeg a writable container. */
+const SAMPLE_ARGS_BY_SOURCE: Readonly<Record<string, readonly string[]>> = {
+  weba: ['-f', 'webm'],
+  alac: ['-f', 'ipod', '-c:a', 'alac'],
+  '3gp': ['-f', '3gp', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  '3g2': ['-f', '3g2', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  '3gpp': ['-f', '3gp', '-c:v', 'mpeg4', '-c:a', 'aac'],
+  swf: ['-f', 'swf', '-c:a', 'libmp3lame', '-ar', '44100'],
+  mod: ['-f', 'mpeg'],
+  dvr: ['-f', 'mpeg'],
+};
+
+let cachedEncoderNames: Set<string> | null = null;
+
+/** Encoder names reported by `ffmpeg -encoders`, parsed here rather than by the engine's probe. */
+function ffmpegEncoderNames(): Set<string> {
+  if (cachedEncoderNames === null) {
+    const listing = execFileSync('ffmpeg', ['-hide_banner', '-encoders'], { timeout: FFMPEG_SAMPLE_TIMEOUT_MS }).toString('utf-8');
+    cachedEncoderNames = new Set<string>();
+    for (const line of listing.split('\n')) {
+      const match = /^\s*[VAS][A-Za-z.]{5}\s+(\S+)/.exec(line);
+      if (match) cachedEncoderNames.add(match[1]);
+    }
+  }
+  return cachedEncoderNames;
+}
+
+/** `type:codec` of every stream in a file, in stream order. */
+function probeStreamKinds(file: string): string[] {
+  const out = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'csv=p=0', file], {
+    timeout: FFMPEG_SAMPLE_TIMEOUT_MS,
+  }).toString('utf-8');
+  return out
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => {
+      const [codecName, codecType] = line.split(',');
+      return `${codecType}:${codecName}`;
+    });
+}
+
+/**
+ * A 0.5 s sine tone (plus a test pattern for video formats) in the source's own container, or null
+ * when ffmpeg cannot write that container with an audio stream.
+ */
+function buildShortMediaSample(dir: string, source: string): Buffer | null {
+  const file = path.join(dir, `sample.${source}`);
+  const sources = ['-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=48000:duration=${SHORT_CLIP_SECONDS}`];
+  const video = FORMAT_REGISTRY[source].category === 'video';
+  const pattern = ['-f', 'lavfi', '-i', `testsrc2=size=160x120:rate=25:duration=${SHORT_CLIP_SECONDS}`];
+  try {
+    execFileSync('ffmpeg', ['-v', 'error', '-y', ...(video ? pattern : []), ...sources, '-shortest', ...(SAMPLE_ARGS_BY_SOURCE[source] ?? []), file], {
+      stdio: 'ignore',
+      timeout: FFMPEG_SAMPLE_TIMEOUT_MS,
+    });
+    if (!probeStreamKinds(file).some((kind) => kind.startsWith('audio:'))) return null;
+    return readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
+describe.runIf(IS_FIRST_PART)('routing-error classifier', () => {
   it('recognizes engine routing rejections and ignores input errors', async () => {
     const routing = await convertOffice(PLAIN_TEXT, 'pages', 'doc', {}, 'probe.pages').catch((e: unknown) => e);
     expect((routing as Error).message).toMatch(/^Unsupported office conversion from pages to doc$/);
@@ -524,7 +858,8 @@ describe('routing-error classifier', () => {
   });
 });
 
-describe('withdrawn pairs stay withdrawn', () => {
+// skip-ok: part selection: the sharded run executes each of these once, in part 1.
+describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // Recorded list of pairs whose dispatch ended in an engine routing error when this gate was
   // introduced. Kept separately from the live probe so a
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
@@ -644,8 +979,9 @@ describe('every advertised registry pair has an engine path', () => {
     RAW_SOURCE_TIMEOUT_MS
   );
 
-  it('converts every toml pair, as source or target, through a real engine run', async () => {
-    const tomlPairs = pairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART)('converts every toml pair, as source or target, through a real engine run', async () => {
+    const tomlPairs = allPairsFor(() => true).filter(([source, target]) => source === 'toml' || target === 'toml');
     expect(tomlPairs.map(([source, target]) => `${source}->${target}`).sort()).toEqual([
       'json->toml',
       'toml->json',
@@ -665,13 +1001,15 @@ describe('every advertised registry pair has an engine path', () => {
   }, CATEGORY_TIMEOUT_MS);
 
   it('audio and video sources routed outside the media transcoder', async () => {
-    const mediaPairs = pairsFor((c, target) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive');
-    expect(mediaPairs).toContainEqual(['mp3', 'zip']);
+    const isMediaToArchive = (c: string, target: string) => MEDIA_CATEGORIES.has(c) && FORMAT_REGISTRY[target].category === 'archive';
+    expect(allPairsFor(isMediaToArchive)).toContainEqual(['mp3', 'zip']);
+    const mediaPairs = pairsFor(isMediaToArchive);
     expect(await findUnroutedPairs(mediaPairs)).toEqual([]);
   }, CATEGORY_TIMEOUT_MS);
 
   // The media transcoder hands every non-archive target to FFmpeg without a routing table, so
   // these pairs carry no routing signal and cost one FFmpeg spawn each. Opt in explicitly.
+  // skip-ok: opt-in selection: the transcoder pairs run only with RUN_MEDIA_TRANSCODER_PAIRS; the strict-mode test that follows covers the audio pairs.
   it.skipIf(!HAS_FFMPEG || !RUN_MEDIA_TRANSCODER_PAIRS)(
     'audio and video sources routed through the media transcoder (REGISTRY_CONFORMANCE_MEDIA=1, needs ffmpeg)',
     async () => {
@@ -680,21 +1018,86 @@ describe('every advertised registry pair has an engine path', () => {
     },
     CATEGORY_TIMEOUT_MS
   );
+
+  // Audio targets are checked by default: each pair converts a 0.5 s clip in the source's own
+  // format and the output is read back with ffprobe, so a target that keeps the video stream or
+  // encodes another codec fails here. Strict mode requires ffmpeg instead of skipping.
+  it.skipIf(!HAS_FFMPEG && !STRICT_MODE)(
+    'audio targets of audio and video sources write one stream in the target codec (needs ffmpeg)',
+    async () => {
+      if (!HAS_FFMPEG) throw new Error('ORACLE_STRICT_MODE=1 requires ffmpeg for the audio target conformance pairs');
+      const workDir = mkdtempSync(path.join(os.tmpdir(), 'audio-target-conformance-'));
+      try {
+        // Split by target, not by pair: each target's coverage below is decided within one part.
+        const pairs = allPairsFor((category, target) => MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category === 'audio').filter(
+          ([, target]) => inPart(`audio-target:${target}`)
+        );
+        const samples = new Map<string, Buffer | null>();
+        for (const [source] of pairs) {
+          if (!samples.has(source)) samples.set(source, buildShortMediaSample(workDir, source));
+        }
+        const failures: string[] = [];
+        const covered = new Set<string>();
+        const checkPair = async (index: number, [source, target]: [string, string]): Promise<void> => {
+          const sample = samples.get(source);
+          const expected = AUDIO_TARGET_CODECS[target];
+          if (!sample) return;
+          const outcome = await convertFile(sample, source, target, {}, `probe.${source}`).then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error })
+          );
+          if (!expected) {
+            // Only a target FFmpeg cannot encode at all may lack an expectation, and it must be rejected.
+            const rejected = 'error' in outcome && outcome.error instanceof ConversionFailedError;
+            if (!UNENCODABLE_AUDIO_TARGET_IDS.has(target) || !rejected) failures.push(`${source} -> ${target}: no expectation for this target`);
+            return;
+          }
+          if ('error' in outcome) {
+            const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+            const encoderMissing = !ffmpegEncoderNames().has(expected.encoder) && message.includes(`'${expected.encoder}' encoder`);
+            if (!(outcome.error instanceof ConversionFailedError) || !encoderMissing) failures.push(`${source} -> ${target}: ${message.slice(-MESSAGE_TAIL_CHARS)}`);
+            return;
+          }
+          const out = path.join(workDir, `out-${index}.${target}`);
+          writeFileSync(out, outcome.result.buffer);
+          const streams = probeStreamKinds(out);
+          if (streams.join() !== `audio:${expected.codec}`) failures.push(`${source} -> ${target}: ${streams.join() || 'no streams'}`);
+          else covered.add(target);
+        };
+        for (const [index, pair] of pairs.entries()) {
+          const started = performance.now();
+          await checkPair(index, pair);
+          recordCost(`audio-target:${pair[1]}`, performance.now() - started);
+        }
+        expect(failures).toEqual([]);
+        // Every encodable target is proven by at least one source, so a skipped source cannot hide a target.
+        const advertised = new Set(pairs.map(([, target]) => target));
+        const encodable = [...advertised].filter((target) => ffmpegEncoderNames().has(AUDIO_TARGET_CODECS[target]?.encoder));
+        expect(encodable.filter((target) => !covered.has(target))).toEqual([]);
+        const unbuilt = [...samples].filter(([, sample]) => !sample).map(([source]) => source).sort();
+        expect(unbuilt.filter((source) => !AUDIO_SOURCES_FFMPEG_CANNOT_MUX.has(source))).toEqual([]);
+      } finally {
+        rmSync(workDir, { recursive: true, force: true });
+      }
+    },
+    CATEGORY_TIMEOUT_MS
+  );
 });
 
 describe('inconclusive pairs ratchet', () => {
   // Pairs whose every probe input is rejected before the engine's routing step. They are not
   // proven routable, so each one is listed explicitly; the list may only shrink.
-  it('lists the allowlist sorted and without duplicates', () => {
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART)('lists the allowlist sorted and without duplicates', () => {
     expect([...new Set(INCONCLUSIVE_ALLOWLIST)].sort()).toEqual(INCONCLUSIVE_ALLOWLIST);
   });
 
-  it.skipIf(!HAS_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
+  it.skipIf(SKIP_WITHOUT_CI_TOOLCHAIN || !RAW_CHECKS_ENABLED)('allows no new inconclusive pair and keeps no pair that became decidable (needs CI toolchain and RAW samples)', async () => {
     const inconclusive = await findInconclusivePairs(pairsFor((c, t) => !isTranscoderPair(c, t)));
     const allowed = new Set(INCONCLUSIVE_ALLOWLIST);
     const current = new Set(inconclusive);
     expect(inconclusive.filter((pair) => !allowed.has(pair))).toEqual([]);
-    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => !current.has(pair))).toEqual([]);
+    expect(INCONCLUSIVE_ALLOWLIST.filter((pair) => inPart(pair) && !current.has(pair))).toEqual([]);
   }, RATCHET_TIMEOUT_MS);
 });
 
@@ -706,9 +1109,10 @@ describe('real camera RAW samples', () => {
   /** Every target a RAW source advertises needs a validator below; a new target must add one. */
   const VALIDATED_TARGETS = new Set([...SDR_TARGETS, ...HDR_TARGETS, ...PACKAGING_TARGETS]);
   /** Every advertised pair is checked: the real sample must convert to a valid file. */
-  const rawPairs = RAW_SOURCES.flatMap((source) =>
+  const allRawPairs = RAW_SOURCES.flatMap((source) =>
     FORMAT_REGISTRY[source].targetFormats.map((target) => [source, target] as [string, string])
   );
+  const rawPairs = allRawPairs.filter(([source, target]) => inPart(`${source}->${target}`));
 
   const MAX_PLAUSIBLE_SIDE = 20_000;
   const MAX_ICO_SIDE = 256;
@@ -718,6 +1122,8 @@ describe('real camera RAW samples', () => {
   const PSD_WIDTH_OFFSET = 18;
   const PSD_DEPTH_OFFSET = 22;
   const BYTE_DEPTH_8 = 8;
+  /** A flat PSD from an 8-bit source is 8 bits per channel; one from a high-bit source (RAW, 16-bit PNG) keeps 16. */
+  const PSD_CHANNEL_DEPTHS: readonly number[] = [BYTE_DEPTH_8, 16];
   const EXR_MAGIC = Buffer.from([0x76, 0x2f, 0x31, 0x01]);
   const EXR_FIRST_ATTRIBUTE_OFFSET = 8;
   const EXR_BOX2I_BYTES = 16;
@@ -852,7 +1258,7 @@ describe('real camera RAW samples', () => {
       const dims = { width: buffer.readUInt32BE(PSD_WIDTH_OFFSET), height: buffer.readUInt32BE(PSD_HEIGHT_OFFSET) };
       expectPlausible(dims);
       expect(dims).toEqual(reference);
-      expect(buffer.readUInt16BE(PSD_DEPTH_OFFSET)).toBe(BYTE_DEPTH_8);
+      expect(PSD_CHANNEL_DEPTHS).toContain(buffer.readUInt16BE(PSD_DEPTH_OFFSET));
       return;
     }
     if (target === 'eps' || target === 'ps') {
@@ -897,7 +1303,8 @@ describe('real camera RAW samples', () => {
     expect(await zip.file('META-INF/manifest.xml')!.async('string')).toContain(`manifest:full-path="${href![1]}"`);
   }
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW source', () => {
     if (RAW_SAMPLES_MISSING.length > 0) {
       throw new OracleToolMissingError(
         'raw-fixtures',
@@ -908,14 +1315,16 @@ describe('real camera RAW samples', () => {
     expect([...RAW_SAMPLES.keys()].sort()).toEqual(RAW_SOURCES);
   });
 
-  it.skipIf(!RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART && RAW_CHECKS_ENABLED)('has an intact sample for every RAW sensor variant', () => {
     expect(RAW_VARIANT_MANIFEST.length).toBeGreaterThanOrEqual(MIN_VARIANT_SAMPLES);
     expect(RAW_SAMPLES_MISSING).toEqual([]);
     expect([...RAW_VARIANT_SAMPLES.keys()].sort()).toEqual(RAW_VARIANT_MANIFEST.map((entry) => `${entry.format}-${entry.variant}`).sort());
   });
 
-  it('has a validator for every target the RAW sources advertise', () => {
-    expect(rawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART)('has a validator for every target the RAW sources advertise', () => {
+    expect(allRawPairs.filter(([, target]) => !VALIDATED_TARGETS.has(target))).toEqual([]);
   });
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(rawPairs)(
@@ -942,7 +1351,7 @@ describe('real camera RAW samples', () => {
   /** Sigma SD14, Merrill and Quattro generations, Raspberry Pi imx219 and imx477. */
   const variantPairs = RAW_VARIANT_MANIFEST.flatMap((entry) =>
     FORMAT_REGISTRY[entry.format].targetFormats.map((target) => [`${entry.format}-${entry.variant}`, target] as [string, string])
-  );
+  ).filter(([name, target]) => inPart(`${name}->${target}`));
 
   it.skipIf(!RAW_CHECKS_ENABLED).each(variantPairs)(
     '%s -> %s converts the real sample to a valid file',
@@ -971,8 +1380,30 @@ describe('native-engine pairs route through the dispatcher', () => {
   const DARK_CHANNEL_MAX = 128;
   /** The CFB stream that holds the main body of a Word or PowerPoint binary file. */
   const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
-  const ODF_MIMETYPE: Readonly<Record<string, string>> = { odp: 'application/vnd.oasis.opendocument.presentation' };
+  const ODF_MIMETYPE: Readonly<Record<string, string>> = {
+    odp: 'application/vnd.oasis.opendocument.presentation',
+    odg: 'application/vnd.oasis.opendocument.graphics',
+    odd: 'application/vnd.oasis.opendocument.graphics-template',
+  };
+  /** Sources whose real input no installed tool can author (Keynote has no writer); their pairs prove only the missing-engine answer. */
+  const NO_AUTHORABLE_INPUT = new Set(['key']);
+  /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
+  const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
+  const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
+  /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
+  const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
+  const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
+  /** The signature each encoded raster starts with (BMP, ICO, PSD, GIF, TIFF both byte orders, RIFF/WEBP, ISO BMFF 'ftyp'). */
+  const ENCODED_SIGNATURES: Readonly<Record<string, readonly Buffer[]>> = {
+    bmp: [Buffer.from('BM', 'latin1')],
+    ico: [Buffer.from([0, 0, 1, 0])],
+    psd: [Buffer.from('8BPS', 'latin1')],
+    gif: [Buffer.from('GIF8', 'latin1')],
+    tiff: [Buffer.from('II*\0', 'latin1'), Buffer.from('MM\0*', 'latin1')],
+    webp: [Buffer.from('RIFF', 'latin1')],
+    avif: [],
+  };
   const PDF_SOURCE = 'pdf';
   const SVG_TARGET = 'svg';
   /** Resolution requested from the PDF rasterizer, and the PostScript points per inch of PDF page sizes. */
@@ -981,16 +1412,23 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Mean absolute 8-bit difference allowed between two independent rasterizers of the same page. */
   const RENDERER_MEAN_DIFF_MAX = 12;
 
-  const pairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
+  const allNativePairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const officeToOffice = pairs.filter(([source, target]) => source !== PDF_SOURCE && !IMAGE_TARGETS.has(target));
-  const officeToImage = pairs.filter(([source, target]) => source !== PDF_SOURCE && IMAGE_TARGETS.has(target));
+  const pairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source);
+  const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
+  const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
+  const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
+  const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
+    if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
@@ -1002,10 +1440,13 @@ describe('native-engine pairs route through the dispatcher', () => {
     xlsx: 'golden/office/multi-sheet-enterprise.xlsx',
     ods: 'golden/office/multi-sheet-enterprise.ods',
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
+    odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx', odd: 'odg' };
+  /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
+  const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
   /** Converts with the soffice CLI directly, outside the engines under test. */
   function sofficeConvert(input: Buffer, from: string, to: string): Buffer {
@@ -1028,7 +1469,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     let input = realInputs.get(source);
     if (!input) {
       const from = DERIVED_FROM[source];
-      input = from ? sofficeConvert(fixture(SEEDS[from]), from, source) : fixture(SEEDS[source]);
+      input = from ? sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source) : fixture(SEEDS[source]);
       realInputs.set(source, input);
     }
     return input;
@@ -1046,8 +1487,20 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (SEEDS[source]) return fixture(SEEDS[source]);
     if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
-    if (source === 'odp') return headerOnlyOdf(ODF_MIMETYPE.odp);
+    if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
+    if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
+    if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
+  }
+
+  /** A one-page PostScript figure with a stroked path, a filled shape and a line, in a 200 x 100 box. */
+  function postscriptProbe(): Buffer {
+    return Buffer.from(
+      '%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n%%EndComments\n' +
+        '1 0 0 setrgbcolor 2 setlinewidth newpath 20 20 moveto 180 20 lineto stroke\n' +
+        '0 0 0 setrgbcolor 30 60 40 20 rectfill showpage\n',
+      'latin1'
+    );
   }
 
   async function expectPageImage(buffer: Buffer, target: string): Promise<void> {
@@ -1060,6 +1513,15 @@ describe('native-engine pairs route through the dispatcher', () => {
   }
 
   async function expectOfficeDocument(buffer: Buffer, target: string): Promise<void> {
+    if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+      return;
+    }
+    if (target === 'pptx') {
+      const presentation = await JSZip.loadAsync(buffer);
+      expect(presentation.file('ppt/presentation.xml')).not.toBeNull();
+      return;
+    }
     if (target === 'rtf') {
       expect(buffer.subarray(0, 6).toString('latin1')).toBe('{\\rtf1');
       expect(buffer.toString('latin1').replace(/\s+/g, ' ')).toContain(OFFICE_DOC_TEXT);
@@ -1075,8 +1537,31 @@ describe('native-engine pairs route through the dispatcher', () => {
     expect(zip.file('content.xml')).not.toBeNull();
   }
 
-  it('lists only pairs the registry advertises', () => {
-    expect(pairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
+  /** The output of a page target, checked against the signature or first line the format's reference defines. */
+  async function expectPageTargetOutput(buffer: Buffer, target: string): Promise<void> {
+    if (IMAGE_TARGETS.has(target)) {
+      await expectPageImage(buffer, target);
+    } else if (target === 'pdf') {
+      expect(buffer.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)).toBe(true);
+    } else if (target === 'svg') {
+      expect(buffer.toString('utf-8')).toMatch(/<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    } else if (target === 'eps' || target === 'ps') {
+      expect(buffer.toString('latin1').split('\n')[0]).toBe(target === 'eps' ? '%!PS-Adobe-3.0 EPSF-3.0' : '%!PS-Adobe-3.0');
+    } else if (target === 'dxf') {
+      const lines = buffer.toString('utf-8').trimEnd().split('\n');
+      expect(lines.slice(0, 2).map((l) => l.trim())).toEqual(['0', 'SECTION']);
+      expect(lines.slice(-2).map((l) => l.trim())).toEqual(['0', 'EOF']);
+    } else {
+      const signatures = ENCODED_SIGNATURES[target];
+      expect(signatures.length === 0 || signatures.some((sig) => buffer.subarray(0, sig.length).equals(sig))).toBe(true);
+      if (target === 'avif') expect(buffer.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+      if (target === 'webp') expect(buffer.subarray(8, 12).toString('latin1')).toBe('WEBP');
+    }
+  }
+
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART)('lists only pairs the registry advertises', () => {
+    expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
   it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
@@ -1087,7 +1572,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     await expect(run).rejects.toMatchObject({ engineName });
   });
 
-  it.skipIf(!HAS_SOFFICE).each(officeToOffice)(
+  it.skipIf(skipWithoutTools('soffice')).each(officeToOffice)(
     '%s -> %s converts with LibreOffice (needs soffice)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);
@@ -1097,12 +1582,48 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM).each(officeToImage)(
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToImage)(
     '%s -> %s renders with LibreOffice and Poppler (needs soffice, pdftoppm)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
       await expectPageImage(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToEncodedPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('soffice', 'pdftops')).each(officeToPostscriptPage)(
+    '%s -> %s writes the rendered pages with LibreOffice and pdftops (needs soffice, pdftops)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('ps2pdf', 'pdftoppm', 'pdftops', 'pdftocairo')).each(postscriptPairs)(
+    '%s -> %s draws the PostScript page with the interpreter and the page tools (needs ps2pdf; Ghostscript is not in the CI image)',
+    async (source, target) => {
+      if (target === 'pdf') {
+        const pdf = await dispatchConversion(postscriptProbe(), source, target, {}, `probe.${source}`);
+        expect(pdf.engineUsed).toBe('native-postscript');
+        await expectPageTargetOutput(pdf.buffer, target);
+        return;
+      }
+      const result = await dispatchConversion(postscriptProbe(), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
     },
     NATIVE_TIMEOUT_MS
   );
@@ -1134,7 +1655,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     }
   }
 
-  it.skipIf(!HAS_PDFTOPPM || !HAS_PDFTOCAIRO || !HAS_PDFINFO).each(pdfToImage)(
+  it.skipIf(skipWithoutTools('pdftoppm', 'pdftocairo', 'pdfinfo')).each(pdfToImage)(
     '%s -> %s renders the page with Poppler (needs pdftoppm, pdftocairo, pdfinfo)',
     async (source, target) => {
       const pdf = realInput(source);
@@ -1164,7 +1685,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     NATIVE_TIMEOUT_MS
   );
 
-  it.skipIf(!HAS_PDFTOCAIRO).each(pdfToSvg)(
+  it.skipIf(skipWithoutTools('pdftocairo')).each(pdfToSvg)(
     '%s -> %s renders with Poppler (needs pdftocairo)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, {}, `probe.${source}`);

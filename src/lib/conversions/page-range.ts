@@ -240,6 +240,44 @@ function countTokenPages(token: string, maxAllowed: number, userTier: string): n
 /**
  * Validates that requested page ranges do not exceed maximum page limits for the specified tier.
  */
+/** Most pages one request may convert for `userTier`; unknown tiers get the free tier's limit. */
+export function tierMaxPages(userTier = 'free'): number {
+  return TIER_MAX_PAGES[userTier.toLowerCase()] ?? TIER_MAX_PAGES.free;
+}
+
+/** The largest page limit of any tier: no caller-supplied limit can go beyond it. */
+export const MAX_TIER_PAGES = Math.max(...Object.values(TIER_MAX_PAGES));
+
+/**
+ * Key of the page limit a conversion runs under. It is a symbol, so it cannot come out of request JSON:
+ * only server code that knows the caller's tier sets it, with `withTierPageCap`. Options sent by a client
+ * (including a `maxPages` field) never reach it.
+ */
+export const TIER_PAGE_CAP = Symbol.for('easyconvert.tierPageCap');
+
+export interface TierPageCapped {
+  [TIER_PAGE_CAP]?: number;
+}
+
+/** Copy of `options` that carries `maxPages` as the page limit of the conversion; any client `maxPages` is dropped. */
+export function withTierPageCap<T extends object>(options: T | undefined, maxPages: number): T & TierPageCapped {
+  const { maxPages: _clientValue, ...rest } = (options ?? {}) as T & { maxPages?: unknown };
+  return { ...(rest as T), [TIER_PAGE_CAP]: maxPages };
+}
+
+/**
+ * The page limit a conversion runs under: the limit set by server code, held to the largest tier's limit,
+ * or the free tier's limit when none was set. A set limit that is not a positive integer is refused.
+ */
+export function resolvePageLimit(options: TierPageCapped | undefined): number {
+  const set = options?.[TIER_PAGE_CAP];
+  if (set === undefined) return TIER_MAX_PAGES.free;
+  if (typeof set !== 'number' || !Number.isInteger(set) || set <= 0) {
+    throw new InvalidPageRangeError(`Invalid page limit ${String(set)}: expected a positive whole number of pages`);
+  }
+  return Math.min(set, MAX_TIER_PAGES);
+}
+
 export function validateTierPageLimit(spec: string, userTier = 'free'): void {
   const normalizedTier = userTier.toLowerCase();
   const maxAllowed = TIER_MAX_PAGES[normalizedTier] ?? TIER_MAX_PAGES.free;
@@ -257,4 +295,58 @@ export function validateTierPageLimit(spec: string, userTier = 'free'): void {
       `Requested page count (${estimatedTotal}) exceeds maximum allowed pages (${maxAllowed}) for tier '${userTier}'.`
     );
   }
+}
+
+const MIN_PAGE_DIGITS = 3;
+
+/** ZIP entry name for page `pageNumber` of a multi-page output: `<name>-p001.<ext>`, padded to the last page's width. */
+export function pageEntryName(baseName: string, pageNumber: number, lastPage: number, extension: string): string {
+  const padLength = Math.max(MIN_PAGE_DIGITS, String(lastPage).length);
+  return `${baseName}-p${String(pageNumber).padStart(padLength, '0')}.${extension}`;
+}
+
+const WHOLE_NUMBER_TEXT = /^-?[0-9]+$/;
+
+/**
+ * The page number a `page` option names, or undefined when it names none (null, undefined, empty or blank
+ * text). Only whole numbers qualify: a number, or text of decimal digits with optional surrounding
+ * whitespace. Exponent and hexadecimal text, fractions, signs other than a minus and non-scalar values are
+ * refused instead of being coerced.
+ */
+function parsePageNumber(page: unknown): number | undefined {
+  if (page === null || page === undefined) return undefined;
+  if (typeof page === 'number' && Number.isSafeInteger(page)) return page;
+  if (typeof page === 'string') {
+    const text = page.trim();
+    if (text === '') return undefined;
+    if (WHOLE_NUMBER_TEXT.test(text) && Number.isSafeInteger(Number(text))) return Number(text);
+  }
+  throw new InvalidPageRangeError(`Invalid page ${JSON.stringify(page)}: use a whole number written in decimal digits`);
+}
+
+/**
+ * Resolves the pages a request selects from its `page` (one page) and `pages` (ranges) options, or undefined
+ * when it selects none. `null`, an empty or blank string count as absent, and surrounding whitespace is
+ * ignored in both options. When both are given they must select the same single page, otherwise the request
+ * is ambiguous and is refused.
+ */
+export function resolvePageSelection(
+  page: number | string | null | undefined,
+  spec: string | null | undefined,
+  pageCount: number,
+  outOfRange: (page: number | string, pageCount: number) => InvalidPageRangeError
+): number[] | undefined {
+  const single = parsePageNumber(page);
+  const ranges = typeof spec === 'string' && spec.trim() !== '' ? spec.trim() : undefined;
+  if (single === undefined) {
+    return ranges === undefined ? undefined : parsePageRanges(ranges, pageCount);
+  }
+  if (single < 1 || single > pageCount) throw outOfRange(single, pageCount);
+  if (ranges !== undefined) {
+    const listed = parsePageRanges(ranges, pageCount);
+    if (listed.length !== 1 || listed[0] !== single) {
+      throw new InvalidPageRangeError(`The "page" option (${single}) and the "pages" option ("${ranges}") select different pages`);
+    }
+  }
+  return [single];
 }

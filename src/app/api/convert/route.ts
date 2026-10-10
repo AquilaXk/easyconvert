@@ -1,17 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
+import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
 import {
   ConversionOptions,
   ConversionFailedError,
   EngineUnavailableError,
   ArchiveEntryCollisionError,
-  DecompressionLimitError,
+  PayloadLimitError,
+  EncryptedOfficeDocumentError,
+  PdfPostprocessError,
+  WorkerOutputMissingError,
+  WORKER_OUTPUT_MISSING_DETAIL,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { validateTierPageLimit } from '@/lib/conversions';
-import { createProblemDetailsResponse, createEngineUnavailableResponse } from '@/lib/api/problem-details';
+import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
+import {
+  createProblemDetailsResponse,
+  createEngineUnavailableResponse,
+  createPdfPostprocessResponse,
+} from '@/lib/api/problem-details';
+import { frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -129,6 +142,13 @@ export async function POST(req: NextRequest) {
         return await failWithRollback(400, 'The "options" field must be a JSON object.');
       }
       options = parsed;
+      const optionsProblem = legacyOptionsProblem(options, instanceUri);
+      if (optionsProblem) {
+        if (reservationId) {
+          await rollbackQuota(reservationId);
+        }
+        return optionsProblem;
+      }
     }
 
     if (options) {
@@ -162,7 +182,7 @@ export async function POST(req: NextRequest) {
       inputBuffer,
       detectedDef.extension,
       tgt,
-      options,
+      withTierPageCap(options, tierMaxPages(auth.user?.tier)),
       file.name
     );
 
@@ -182,6 +202,8 @@ export async function POST(req: NextRequest) {
         'X-Engine-Used': result.engineUsed,
         'X-Zero-Data-Retention': 'true',
         'X-Storage-Footprint': '0-bytes',
+        ...frameMetadataHeaders(result),
+        ...droppedStreamsHeaders(result),
       },
     });
   } catch (error: unknown) {
@@ -191,12 +213,24 @@ export async function POST(req: NextRequest) {
     if (error instanceof EngineUnavailableError) {
       return createEngineUnavailableResponse(error, instanceUri);
     }
+    if (error instanceof PdfPostprocessError) {
+      return createPdfPostprocessResponse(error, instanceUri);
+    }
     if (error instanceof ArchiveEntryCollisionError) {
       return NextResponse.json({ success: false, error: error.message }, { status: error.status });
     }
-    if (error instanceof DecompressionLimitError || (error as any)?.status === 413) {
-      // A stream decodes past a size limit: refuse with 413 rather than the generic 400.
-      return createProblemDetailsResponse(413, (error as any).message, instanceUri);
+    if (error instanceof PayloadLimitError || error instanceof InputPixelLimitError) {
+      // A stream decodes past a size limit, or an image declares more pixels than allowed: 413.
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof EncryptedOfficeDocumentError) {
+      // The file is intact but encrypted, password protected or DRM protected: 422, not the 400 of a malformed input.
+      return createProblemDetailsResponse(error.status, error.message, instanceUri);
+    }
+    if (error instanceof WorkerOutputMissingError) {
+      // A server fault, not a verdict on the input: answer 500 without the worker's file name.
+      console.error('[convert] Worker output vanished before it was read:', error);
+      return NextResponse.json({ success: false, error: WORKER_OUTPUT_MISSING_DETAIL }, { status: error.status });
     }
     const message = error instanceof Error ? error.message : 'Internal server error during conversion';
     const isValidationError =

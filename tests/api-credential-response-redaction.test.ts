@@ -115,7 +115,7 @@ describe('Credential redaction in API responses (#242)', () => {
     expect(listText).not.toContain(WEBHOOK_SECRET);
 
     const itemRes = await getDlqItemRoute(sessionRequest(owner, `/api/webhooks/dlq/${entryId}`), {
-      params: { id: entryId },
+      params: Promise.resolve({ id: entryId }),
     });
     const itemText = await itemRes.text();
     const itemBody = JSON.parse(itemText);

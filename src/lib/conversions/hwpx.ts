@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult } from '../types';
-import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, parseHwpDocument, convertHwpDocument } from './hwp';
+import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
+import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
   if (!str) return '';
@@ -49,14 +50,14 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
  */
 export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocument> {
   if (!inputBuffer || inputBuffer.length < 30) {
-    throw new Error('Invalid HWPX package: File buffer is too small or empty.');
+    throw new CorruptStreamError('Invalid HWPX package: File buffer is too small or empty.');
   }
 
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(inputBuffer);
   } catch (err: any) {
-    throw new Error(`Invalid HWPX package: Not a valid ZIP archive (${err?.message || 'load error'}).`);
+    throw new CorruptStreamError(`Invalid HWPX package: Not a valid ZIP archive (${err?.message || 'load error'}).`);
   }
 
   // 1. Version Detection
@@ -107,7 +108,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   }
 
   if (sectionFiles.length === 0) {
-    throw new Error('Invalid HWPX package: Missing KS X 6101 Section body XML.');
+    throw new CorruptStreamError('Invalid HWPX package: Missing KS X 6101 Section body XML.');
   }
 
   const paragraphs: HwpParagraph[] = [];
@@ -115,6 +116,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
 
   for (const sFile of sectionFiles) {
     const secXml = await zip.files[sFile].async('text');
+    assertWellFormedXml(sFile, secXml, 'HWPX');
 
     // Extract tables (<hp:tbl> ... </hp:tbl>)
     const tblRegex = /<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi;
@@ -202,6 +204,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     isDistributed: false,
     paragraphs,
     tables,
+    model: legacyHwpModel(paragraphs, tables),
     metadata: {
       title,
       author,

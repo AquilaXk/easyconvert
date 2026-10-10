@@ -1,9 +1,11 @@
 import { execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { FORMAT_REGISTRY } from '../registry';
 import zlib from 'node:zlib';
 import {
   ConversionOptions,
@@ -16,18 +18,46 @@ import {
   ArchiveInspectResponse,
   ArchiveEncryptedHeaderError,
   ArchiveEntryCollisionError,
-  DecompressionLimitError,
+  ArchivePasswordRequiredError,
+  EngineUnavailableError,
   CorruptStreamError,
+  DecompressionLimitError,
+  PayloadLimitError,
 } from '../types';
-import { inflateBounded, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
-import { compressBzip2, decompressBzip2 } from './bzip2';
-import { compressZstd, decompressZstd, ZSTD_MAGIC_LE } from './zstd';
+import {
+  type ListedArchiveEntry,
+  NativeRenameUnsupportedError,
+  UnreadableArchiveError,
+  UnsafeArchiveError,
+  assertListingResourceCaps,
+  extractArchiveContained,
+  extractArchiveContainedSync,
+  hasTarMagic,
+  inspectedKindOf,
+  listingBufferLimit,
+  parse7zTechnicalListing,
+  stripSevenZipPasswordPrompt,
+  cleanupDirectoryTree,
+  sanitizeLeafFilename,
+  summarizeInspectionSafety,
+} from './archive-extraction-safety';
+import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { resolveArchiveCompressionLevel } from './archive-compression-level';
+import { crc32 } from './crc32';
+import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
+import { decodeLzma, decodeLzma2 } from './lzma-decoder';
+import { packXzStream, unpackXzStream } from './xz-format';
+import { listSevenZipArchive, readSevenZipArchive, type SevenZipCoder, type SevenZipFolderDecoder, type SevenZipListing } from './sevenzip-reader';
+import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
+  compressLzma2Async,
+  compressLzmaAsync,
   type LzmaCompressOptions,
   type LzmaCompressResult,
 } from './lzma-encoder';
+import { CPU_POOL_MAX, CPU_POOL_MIN_BYTES, CPU_POOL_TASK_TIMEOUT_MS, getCpuPool } from '../workers/cpu-pool';
 import {
   isSplitArchive,
   parseSplitArchivePart,
@@ -49,8 +79,27 @@ import {
 import {
   executeSandboxedBinary,
   resolveSandboxedCommand,
+  rethrowSandboxUnavailable,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
+  assertZipPasswordSupported,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  SEVEN_ZIP_LISTING_TIMEOUT_MS,
+  walkArchiveTreePaths,
+  execFileSyncWithPasswordStdin,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
+  sevenZipReadPasswordInput,
+  isArchivePasswordFailure,
+} from './archive-password';
 import {
   compressWithZstdDict,
   decompressWithZstdDict,
@@ -61,11 +110,8 @@ import {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 } from './zstd-dict';
 
 export {
@@ -100,38 +146,11 @@ export {
   ZSTD_OFFICE_DICT_MAGIC,
   type ZstdDictOptions,
   ZstdDictionaryStreamCompressor,
-  ZstdDictionaryStreamDecompressor,
   createZstdDictionaryTransformStream,
-  createZstdDictionaryDecompressTransformStream,
   type ZstdDictionaryStreamOptions,
-  type ZstdDictionaryDecompressOptions,
 };
 
-// Standard CRC32 table
-const CRC32_TABLE = new Uint32Array(256);
-for (let i = 0; i < 256; i++) {
-  let c = i;
-  for (let j = 0; j < 8; j++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  CRC32_TABLE[i] = c >>> 0;
-}
-
-export function crc32(buf: Buffer | Uint8Array): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) {
-    c = CRC32_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function rarHeaderCrc(headerWithoutCrc: Buffer): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < headerWithoutCrc.length; i++) {
-    c = CRC32_TABLE[(c ^ headerWithoutCrc[i]) & 0xff] ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) & 0xffff;
-}
+export { crc32 };
 
 const PATH_SLASH_CHAR_CODE = 0x2f;
 
@@ -186,20 +205,23 @@ function rejectDuplicateArchiveEntries<T extends { filename: string }>(files: T[
 }
 
 /** Finds the first free `stem-N.ext` sibling of `key` (directories keep no extension) not yet in `seen`. */
-function nextFreeArchiveEntryName(key: string, isDirectory: boolean, seen: Set<string>): string {
+function nextFreeArchiveEntryName(key: string, isDirectory: boolean, seen: Set<string>, nextSuffix: Map<string, number>): string {
   const ext = isDirectory ? '' : path.extname(key);
   const dir = path.dirname(key);
   const baseStem = path.basename(key, ext);
   const build = (n: number): string =>
     dir === '.' || dir === '' ? `${baseStem}-${n}${ext}` : `${dir}/${baseStem}-${n}${ext}`;
 
-  let counter = 1;
+  let counter = nextSuffix.get(key) ?? 1;
   while (seen.has(build(counter))) counter++;
+  nextSuffix.set(key, counter + 1);
   return build(counter);
 }
 
 function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[]): T[] {
   const seen = new Set<string>();
+  // Next number to try per original name, so n duplicates cost O(n) rather than O(n^2) probing.
+  const nextSuffix = new Map<string, number>();
   const result: T[] = [];
 
   for (const f of files) {
@@ -212,7 +234,7 @@ function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[
     }
 
     const isDirectory = key !== norm;
-    const candidate = nextFreeArchiveEntryName(key, isDirectory, seen);
+    const candidate = nextFreeArchiveEntryName(key, isDirectory, seen, nextSuffix);
     seen.add(candidate);
     result.push({ ...f, filename: isDirectory ? `${candidate}/` : candidate });
   }
@@ -257,6 +279,28 @@ export function matchArchiveGlob(filePath: string, patterns?: string[]): boolean
   return false;
 }
 
+/**
+ * Lists a freshly created password-protected archive without its password and throws
+ * ArchiveNotEncryptedError unless it is encrypted, so a plaintext archive is never returned.
+ */
+function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format: 'zip' | '7z', cwd: string): void {
+  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true });
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+      cwd,
+      env: getSanitizedEnvironment({}, true),
+      timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      input: sevenZipEncryptionCheckInput(),
+    });
+    outcome = { listing: out.toString('utf-8') };
+  } catch (err) {
+    outcome = { failureOutput: archiveFailureStderr(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
+}
+
 function createEncryptedArchiveVia7z(
   files: { filename: string; buffer: Buffer }[],
   archiveName: string,
@@ -267,11 +311,11 @@ function createEncryptedArchiveVia7z(
 ): ConversionResult | null {
   const p7z = get7zBinaryPath();
   if (!p7z || !password) return null;
-  if (/[\r\n\0]/.test(password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(password);
+  if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
+  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => sanitizeArchivePath(f.filename) || path.basename(f.filename)));
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
@@ -286,17 +330,18 @@ function createEncryptedArchiveVia7z(
     }
     const outPath = path.join(workDir, archiveName);
     const extraArgs = archiveType === '7z'
-      ? ['-t7z', '-mhe=on', '-p']
-      : ['-tzip', '-mem=AES256', '-p'];
+      ? ['-t7z', '-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH]
+      : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
     const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
       networkIsolated: true,
     });
-    execFileSync(resolved.binary, resolved.args, {
+    execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
       cwd: stagingDir,
       env: getSanitizedEnvironment({}, true),
       timeout: 60000,
-      input: Buffer.from(`${password}\n${password}\n`),
+      input: sevenZipCreatePasswordInput(password),
     });
+    assertCreatedArchiveEncrypted(p7z, outPath, archiveType, stagingDir);
     const content = fs.readFileSync(outPath);
     return {
       buffer: content,
@@ -314,6 +359,8 @@ export async function createZipArchive(
   options: ConversionOptions = {},
   archiveName = 'converted_files.zip'
 ): Promise<ConversionResult> {
+  // Before the truthiness check below: a falsy non-string such as 0 must not silently skip encryption.
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (options.password) {
     const p7z = get7zBinaryPath();
@@ -334,23 +381,12 @@ export async function createZipArchive(
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
-  const zip = new JSZip();
-
-  for (const f of resolvedFiles) {
-    zip.file(f.filename, f.buffer);
+  if (resolvedFiles.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+    // The extractor refuses archives past this count, so the writer does not produce one.
+    throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
   }
-
-  const compressionLevel = options.compressionLevel
-    ? Math.max(1, Math.min(9, options.compressionLevel))
-    : 6;
-
-  const content = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: {
-      level: compressionLevel,
-    },
-  });
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
+  const content = await createZipBuffer(zipEntriesWithFolders(resolvedFiles, compressionLevel));
 
   return {
     buffer: content,
@@ -360,8 +396,88 @@ export async function createZipArchive(
   };
 }
 
+/**
+ * Entries for the ZIP writer: every file, preceded the first time a folder is met by an entry for that folder, so that
+ * extractors list the directory structure the way they did when the archive was assembled by JSZip.
+ */
+function* zipEntriesWithFolders(
+  files: readonly { filename: string; buffer: Buffer }[],
+  level: number
+): Generator<ZipEntryInput> {
+  const mtime = new Date();
+  const emittedFolders = new Set<string>();
+  for (const f of files) {
+    const parts = f.filename.split('/');
+    let folder = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      folder += `${parts[i]}/`;
+      if (parts[i] !== '' && !emittedFolders.has(folder)) {
+        emittedFolders.add(folder);
+        yield { name: folder, mtime };
+      }
+    }
+    if (f.filename.endsWith('/')) {
+      if (!emittedFolders.has(f.filename)) {
+        emittedFolders.add(f.filename);
+        yield { name: f.filename, mtime };
+      }
+    } else {
+      yield { name: f.filename, data: f.buffer, level, mtime };
+    }
+  }
+}
+
+/**
+ * Decodes a .zst / .tar.zst payload. An explicit `zstdDict` option selects a pre-trained dictionary;
+ * otherwise a frame that names one of the built-in dictionary ids is decoded with that dictionary.
+ */
+function decodeZstdArchivePayload(payload: Buffer, zstdDict: unknown): Buffer {
+  if (zstdDict) {
+    const dict =
+      typeof zstdDict === 'string' && (zstdDict === 'office' || zstdDict === 'data')
+        ? getPretrainedDictionary(zstdDict)
+        : DATA_DICTIONARY_JSON_CSV;
+    return decompressWithZstdDict(payload, dict);
+  }
+  if (payload.length >= ZSTD_MAGIC_LE.length + 1 && payload.subarray(0, ZSTD_MAGIC_LE.length).equals(ZSTD_MAGIC_LE)) {
+    const { dictionaryId } = parseZstdFrameHeader(payload, 0);
+    if (dictionaryId === ZSTD_DICT_MAGIC) return decompressWithZstdDict(payload, DATA_DICTIONARY_JSON_CSV);
+    if (dictionaryId === ZSTD_OFFICE_DICT_MAGIC) return decompressWithZstdDict(payload, OFFICE_XML_DICTIONARY);
+  }
+  return decompressZstd(payload);
+}
+
+/** Longest one unrar extraction may run. */
+const UNRAR_EXTRACT_TIMEOUT_MS = 30_000;
+
+/** unrar restores the Unix mode stored in the archive; the owner needs these bits to read and remove the result. */
+const EXTRACTED_DIRECTORY_MODE = 0o700;
+const EXTRACTED_FILE_MODE = 0o600;
+
+/**
+ * Gives the owner access to everything an extraction wrote. An archive may store any mode, down to
+ * no permission bits; unrar applies it, so a worker that is not root could neither read the entries
+ * nor delete the directory. Walks iteratively and stops at the archive file-count limit.
+ */
+function makeExtractedTreeAccessible(root: string): void {
+  const pending = [root];
+  let visited = 0;
+  for (let dir = pending.pop(); dir !== undefined; dir = pending.pop()) {
+    fs.chmodSync(dir, EXTRACTED_DIRECTORY_MODE);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      visited += 1;
+      if (visited > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) pending.push(fullPath);
+      else if (entry.isFile()) fs.chmodSync(fullPath, EXTRACTED_FILE_MODE);
+    }
+  }
+}
+
 export const ARCHIVE_SECURITY_LIMITS = {
-  MAX_FILES: 1000,
+  MAX_FILES: 50_000,
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
   MAX_RATIO: 100, // 100:1 compression ratio
 };
@@ -451,16 +567,21 @@ export function isZipBufferEncrypted(buffer: Buffer): boolean {
 
 export async function extractZipArchive(
   zipBuffer: Buffer,
-  options: { password?: string; entries?: string[] } = {}
+  options: {
+    password?: string;
+    entries?: string[];
+    /** Encrypted archives only: leave link entries out and report them through `onSkippedLinks`. */
+    skipLinks?: boolean;
+    onSkippedLinks?: (names: string[]) => void;
+    collisionPolicy?: ArchiveCollisionPolicy;
+  } = {}
 ): Promise<{ filename: string; buffer: Buffer }[]> {
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   const isEncrypted = isZipBufferEncrypted(zipBuffer);
   if (isEncrypted) {
     if (!options.password) {
-      throw new ConversionFailedError('ZIP archive is password protected. A password is required to extract.');
+      throw new ArchivePasswordRequiredError('ZIP archive is password protected. A password is required to extract.');
     }
     const p7z = get7zBinaryPath();
     if (p7z) {
@@ -473,65 +594,58 @@ export async function extractZipArchive(
         fs.writeFileSync(zipPath, zipBuffer);
         const extractDir = path.join(workDir, 'out');
         fs.mkdirSync(extractDir, { recursive: true });
-        try {
-          const pwArgs = options.password ? ['-p'] : [];
-          await executeSandboxedBinary(
-            p7z,
-            ['x', '-y', ...pwArgs, `-o${extractDir}`, zipPath],
-            {
-              cwd: workDir,
-              timeoutMs: 60000,
-              maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-              networkIsolated: true,
-              stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
-            }
-          );
-        } catch (err: any) {
-          const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-          if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
-            throw new ConversionFailedError('Invalid password for encrypted ZIP archive.');
+
+        // List, vet, extract and re-verify: traversal, link, entry-count, size and ratio violations
+        // are rejected before or right after extraction, never silently followed.
+        const tree = await extractArchiveContained({
+          p7zBin: p7z,
+          archivePath: zipPath,
+          extractDir,
+          cwd: workDir,
+          timeoutMs: 60000,
+          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+          limits: ARCHIVE_SECURITY_LIMITS,
+          label: 'ZIP archive',
+          password: options.password,
+          skipLinks: options.skipLinks,
+          collisionPolicy: options.collisionPolicy,
+        }).catch((err: unknown) => {
+          // Decryption has no other engine to hand duplicate entries to, so 'rename' cannot be honoured here.
+          if (err instanceof NativeRenameUnsupportedError) {
+            throw new ArchiveEntryCollisionError(
+              err.reason,
+              `${err.message}; use collisionPolicy 'overwrite' or 'error' for password-protected ZIP archives.`
+            );
           }
-          throw new ConversionFailedError(`Failed to decrypt ZIP archive: ${err.message}`);
-        }
+          throw err;
+        });
+        options.onSkippedLinks?.(tree.skippedLinks);
 
         const results: { filename: string; buffer: Buffer }[] = [];
-        let totalSize = 0;
-        const readRec = (dir: string, prefix = '') => {
-          for (const item of fs.readdirSync(dir)) {
-            const full = path.join(dir, item);
-            const rel = prefix ? `${prefix}/${item}` : item;
-            const stat = fs.statSync(full);
-            if (stat.isDirectory()) {
-              readRec(full, rel);
-            } else {
-              if (!matchArchiveGlob(rel, options.entries)) {
-                continue;
-              }
-              totalSize += stat.size;
-              if (totalSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-                throw new ConversionFailedError(
-                  `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-                );
-              }
-              results.push({ filename: rel, buffer: fs.readFileSync(full) });
-            }
+        for (const file of tree.files) {
+          if (matchArchiveGlob(file.relPath, options.entries)) {
+            results.push({ filename: file.relPath, buffer: fs.readFileSync(file.absPath) });
           }
-        };
-        readRec(extractDir);
+        }
         return results;
       } finally {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
+        cleanupDirectoryTree(workDir);
       }
     } else {
       throw new ConversionFailedError('Cannot extract encrypted ZIP archive: 7-Zip binary not available.');
     }
   }
 
-  const zip = await JSZip.loadAsync(zipBuffer);
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(zipBuffer);
+  } catch (err) {
+    throw new CorruptStreamError(`Invalid ZIP archive: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const entries = Object.entries(zip.files).filter(([filename, f]) => !f.dir && matchArchiveGlob(filename, options.entries));
 
   if (entries.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-    throw new Error(
+    throw new DecompressionLimitError(
       `Archive bomb detected: file count (${entries.length}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
     );
   }
@@ -546,7 +660,7 @@ export async function extractZipArchive(
       typeof headerUncompressedSize === 'number' &&
       headerUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE
     ) {
-      throw new Error(
+      throw new DecompressionLimitError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
@@ -610,7 +724,7 @@ export async function extractZipArchive(
       totalUncompressedSize += buffer.length;
 
       if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
@@ -619,7 +733,7 @@ export async function extractZipArchive(
         zipBuffer.length > 0 &&
         totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
       ) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
@@ -777,6 +891,7 @@ export interface TarEntryHeaderSpec {
   size: number | bigint;
   mtime?: Date;
   mode?: number;
+  /** Whether the entry is a directory; when absent, a trailing slash in `filename` decides. A file never ends with a slash. */
   directory?: boolean;
 }
 
@@ -901,7 +1016,10 @@ function normalizeTarWriteName(filename: string, directory: boolean): string {
  * @internal exported so oversized (>= 8 GiB) entries can be verified without allocating their body.
  */
 export function buildTarEntryHeaders(spec: TarEntryHeaderSpec): Buffer {
-  const directory = spec.directory === true || spec.filename.endsWith('/');
+  if (spec.directory === false && spec.filename.endsWith('/')) {
+    throw tarWriteError(`file entry '${spec.filename}' ends with a slash, which names a directory`);
+  }
+  const directory = spec.directory ?? spec.filename.endsWith('/');
   const fullPath = normalizeTarWriteName(spec.filename, directory);
   const size = directory ? 0 : spec.size;
   if (typeof size === 'number' ? !Number.isSafeInteger(size) || size < 0 : size < 0n) {
@@ -1354,7 +1472,15 @@ class TarReader {
   /** 32-bit view for the checksum fast path; null when the buffer start is not word-aligned. */
   private readonly words: Uint32Array | null;
 
-  constructor(private readonly tarBuffer: Buffer) {
+  /** In listing mode every entry is recorded as stored (raw name, declared size) and nothing is sanitized or resolved. */
+  private readonly listing: ListedArchiveEntry[] | null;
+
+  /** Link entries are reported as entries but their targets are neither resolved nor tracked (the caller leaves links out). */
+  private readonly ignoreLinks: boolean;
+
+  constructor(private readonly tarBuffer: Buffer, listing: ListedArchiveEntry[] | null = null, ignoreLinks = false) {
+    this.listing = listing;
+    this.ignoreLinks = ignoreLinks;
     const aligned = tarBuffer.byteOffset % TAR_WORD_BYTES === 0;
     this.words = aligned
       ? new Uint32Array(tarBuffer.buffer, tarBuffer.byteOffset, Math.floor(tarBuffer.length / TAR_WORD_BYTES))
@@ -1365,6 +1491,8 @@ class TarReader {
     while (this.offset < this.tarBuffer.length) {
       if (!this.nextHeader()) break;
       this.processHeader();
+      // A listing past the entry cap is already refused by the policy; reading on would only grow it.
+      if (this.listing !== null && this.listing.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) break;
     }
     if (this.localPax.size > 0 || this.longName !== null || this.longLink !== null) {
       throw tarReadError('extension header is not followed by an entry');
@@ -1565,12 +1693,16 @@ class TarReader {
     }
     let body = type === 'file' ? this.takeBody(bodySize) : EMPTY_TAR_BODY;
 
+    if (this.listing !== null) {
+      this.listing.push(listedTarEntry(rawName, type, bodySize));
+      return;
+    }
     const filename = sanitizeArchivePath(rawName);
     if (!filename) return;
 
     if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
     const isLink = type === 'symlink' || type === 'hardlink';
-    if (isLink) body = this.registerLink(filename, linkName, type) ?? body;
+    if (isLink && !this.ignoreLinks) body = this.registerLink(filename, linkName, type) ?? body;
     if (type === 'file' || type === 'hardlink') this.contentByName.set(filename, body);
 
     this.entries.push({
@@ -1586,6 +1718,31 @@ class TarReader {
   }
 }
 
+const TAR_SPECIAL_ENTRY_TYPES: ReadonlySet<TarEntryType> = new Set(['character-device', 'block-device', 'fifo']);
+
+function listedTarEntry(rawName: string, type: TarEntryType, bodySize: number): ListedArchiveEntry {
+  let linkKind: ListedArchiveEntry['linkKind'] = null;
+  if (type === 'symlink' || type === 'hardlink') linkKind = type;
+  return {
+    path: rawName,
+    isDirectory: type === 'directory',
+    sizeBytes: bodySize,
+    linkKind,
+    isSpecial: TAR_SPECIAL_ENTRY_TYPES.has(type),
+  };
+}
+
+/**
+ * Lists every entry of a TAR archive as stored, for the extraction policy: the names are the raw header names (a
+ * traversing or absolute name is reported, not repaired), sizes are the declared sizes, and links and device entries
+ * are flagged. Header checksums, truncation and the size cap are checked exactly as `readTarEntries` checks them.
+ */
+export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
+  const listing: ListedArchiveEntry[] = [];
+  new TarReader(tarBuffer, listing).read();
+  return listing;
+}
+
 /**
  * Reads every entry of a POSIX ustar/pax (and GNU long-name) TAR archive.
  *
@@ -1597,10 +1754,11 @@ class TarReader {
  *
  * Entry buffers are views into `tarBuffer` (no copy); a hardlink entry shares the buffer of the
  * earlier file it points to. Hardlink content counts against the same uncompressed-size budget as
- * regular files. Entries that would be written through an earlier symlink are rejected.
+ * regular files. Entries that would be written through an earlier symlink are rejected. With `ignoreLinks`, link
+ * entries are returned without their targets being resolved or tracked, for a caller that leaves every link out.
  */
-export function readTarEntries(tarBuffer: Buffer): TarEntry[] {
-  return new TarReader(tarBuffer).read();
+export function readTarEntries(tarBuffer: Buffer, options: { ignoreLinks?: boolean } = {}): TarEntry[] {
+  return new TarReader(tarBuffer, null, options.ignoreLinks === true).read();
 }
 
 /**
@@ -1628,76 +1786,6 @@ export function extractTarArchive(
   }
 
   return files;
-}
-
-/**
- * @internal Creates a synthetic uncompressed RAR v2 archive buffer strictly for testing
- * archive splitting, stitching, and decompression. Production RAR creation is disabled per D8.
- */
-export function buildSyntheticStoredRarBuffer(
-  files: { filename: string; buffer: Buffer }[]
-): Buffer {
-  const blocks: Buffer[] = [];
-
-  // 1. Marker block (7 bytes)
-  blocks.push(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
-
-  // 2. Main archive header (type 0x73)
-  const mainHeadData = Buffer.alloc(11);
-  mainHeadData.writeUInt8(0x73, 0); // HEAD_TYPE
-  mainHeadData.writeUInt16LE(0x0000, 1); // HEAD_FLAGS
-  mainHeadData.writeUInt16LE(13, 3); // HEAD_SIZE = 2 (CRC) + 11 = 13
-  mainHeadData.writeUInt16LE(0, 5); // RESERVED1
-  mainHeadData.writeUInt32LE(0, 7); // RESERVED2
-
-  const mainCrc = rarHeaderCrc(mainHeadData);
-  const mainHead = Buffer.alloc(13);
-  mainHead.writeUInt16LE(mainCrc, 0);
-  mainHeadData.copy(mainHead, 2);
-  blocks.push(mainHead);
-
-  // 3. File headers and data for each file
-  for (const file of files) {
-    const filenameBuf = Buffer.from(file.filename, 'utf-8');
-    const nameSize = filenameBuf.length;
-    const headSize = 7 + 25 + nameSize; // 32 + nameSize
-
-    const fileHeadData = Buffer.alloc(headSize - 2);
-    fileHeadData.writeUInt8(0x74, 0); // HEAD_TYPE (FILE_HEAD)
-    fileHeadData.writeUInt16LE(0x8000, 1); // HEAD_FLAGS (LHD_LONG_BLOCK: file data follows)
-    fileHeadData.writeUInt16LE(headSize, 3); // HEAD_SIZE
-    fileHeadData.writeUInt32LE(file.buffer.length, 5); // PACK_SIZE
-    fileHeadData.writeUInt32LE(file.buffer.length, 9); // UNP_SIZE
-    fileHeadData.writeUInt8(3, 13); // HOST_OS (Unix)
-    fileHeadData.writeUInt32LE(crc32(file.buffer), 14); // FILE_CRC
-    fileHeadData.writeUInt32LE(0x50000000, 18); // FTIME (standard DOS time)
-    fileHeadData.writeUInt8(20, 22); // UNP_VER (2.0)
-    fileHeadData.writeUInt8(0x30, 23); // METHOD (0x30 = STORE / uncompressed)
-    fileHeadData.writeUInt16LE(nameSize, 24); // NAME_SIZE
-    fileHeadData.writeUInt32LE(0x00000020, 26); // ATTR (archive file)
-    filenameBuf.copy(fileHeadData, 30); // FILE_NAME
-
-    const fileCrc = rarHeaderCrc(fileHeadData);
-    const fileHead = Buffer.alloc(headSize);
-    fileHead.writeUInt16LE(fileCrc, 0);
-    fileHeadData.copy(fileHead, 2);
-
-    blocks.push(fileHead);
-    blocks.push(file.buffer);
-  }
-
-  // 4. End of archive block (type 0x7B)
-  const endHeadData = Buffer.alloc(5);
-  endHeadData.writeUInt8(0x7b, 0); // HEAD_TYPE (ENDARC_HEAD)
-  endHeadData.writeUInt16LE(0x4000, 1); // HEAD_FLAGS
-  endHeadData.writeUInt16LE(7, 3); // HEAD_SIZE
-  const endCrc = rarHeaderCrc(endHeadData);
-  const endHead = Buffer.alloc(7);
-  endHead.writeUInt16LE(endCrc, 0);
-  endHeadData.copy(endHead, 2);
-  blocks.push(endHead);
-
-  return Buffer.concat(blocks);
 }
 
 export function createRarArchive(
@@ -1757,7 +1845,7 @@ export function extractRarArchive(
   options: { password?: string; entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
   if (!rarBuffer || rarBuffer.length < 14) {
-    throw new Error('Invalid RAR archive: buffer too small');
+    throw new CorruptStreamError('Invalid RAR archive: buffer too small');
   }
 
   const isRar4 =
@@ -1780,12 +1868,10 @@ export function extractRarArchive(
     rarBuffer[7] === 0x00;
 
   if (!isRar4 && !isRar5) {
-    throw new Error('Invalid RAR archive: signature mismatch');
+    throw new CorruptStreamError('Invalid RAR archive: signature mismatch');
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   // If unrar binary is available on the system, execute under defensive limits
   const unrarBin = getUnrarBinaryPath();
@@ -1800,22 +1886,26 @@ export function extractRarArchive(
     try {
       const pwArgs = options.password ? ['-p'] : ['-p-'];
       try {
-        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-inul', '-y', ...pwArgs, tmpFile, extractDir], {
+        // -idq keeps error text on stderr so a password failure can be told from other failures.
+        const resolved = resolveSandboxedCommand(unrarBin, ['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], {
           networkIsolated: true,
         });
-        execFileSync(resolved.binary, resolved.args, {
+        const unrarOptions = {
           cwd: extractDir,
           env: getSanitizedEnvironment({}, true),
-          timeout: 30000,
+          timeout: UNRAR_EXTRACT_TIMEOUT_MS,
           maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: options.password ? Buffer.from(options.password + '\n') : undefined,
-        });
-      } catch (err: any) {
-        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (msg.includes('password') || msg.includes('CRC error')) {
-          throw new ConversionFailedError('Invalid password for encrypted RAR archive.');
+        };
+        if (options.password) {
+          execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
+            ...unrarOptions,
+            input: Buffer.from(`${options.password}\n`, 'utf-8'),
+          });
+        } else {
+          execFileSync(resolved.binary, resolved.args, unrarOptions);
         }
-        throw err;
+      } catch (err: any) {
+        throw archivePasswordError(err, { password: options.password, label: 'RAR archive', tool: 'unrar' }) ?? err;
       }
 
       const extracted: { filename: string; buffer: Buffer }[] = [];
@@ -1830,15 +1920,15 @@ export function extractRarArchive(
             walkDir(fullPath, relPath);
           } else if (entry.isFile()) {
             if (extracted.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-              throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+              throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
             }
             const buf = fs.readFileSync(fullPath);
             totalUncompressedSize += buf.length;
             if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-              throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+              throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
             }
             if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-              throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+              throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
             const sanitized = sanitizeArchivePath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
@@ -1848,6 +1938,7 @@ export function extractRarArchive(
         }
       }
 
+      makeExtractedTreeAccessible(extractDir);
       walkDir(extractDir, '');
       return extracted;
     } catch (err) {
@@ -1861,14 +1952,21 @@ export function extractRarArchive(
     } finally {
       try {
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
-        if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true, force: true });
+        if (fs.existsSync(extractDir)) {
+          try {
+            makeExtractedTreeAccessible(extractDir);
+          } catch {
+            // Best effort: the removal below runs either way.
+          }
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        }
       } catch {}
     }
   }
 
   // Pure TypeScript parser for stored RAR archives with fail-closed validation
   if (isRar5) {
-    throw new Error('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
+    throw new ConversionFailedError('Unsupported RAR format: RAR5 compressed archives require unrar decompressor');
   }
 
   const files: { filename: string; buffer: Buffer }[] = [];
@@ -1887,7 +1985,7 @@ export function extractRarArchive(
 
     if (headType === 0x74 && offset + 32 <= rarBuffer.length) {
       if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
+        throw new DecompressionLimitError(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
       }
 
       const packSize = rarBuffer.readUInt32LE(offset + 7);
@@ -1897,7 +1995,7 @@ export function extractRarArchive(
       const nameSize = rarBuffer.readUInt16LE(offset + 26);
 
       if (unpSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
@@ -1905,7 +2003,7 @@ export function extractRarArchive(
       // Enforce fail-closed verification: Method 0x30 is STORE (uncompressed)
       // Methods 0x31..0x35 are compressed and MUST NOT be sliced as raw corrupt data!
       if (method !== 0x30) {
-        throw new Error(
+        throw new ConversionFailedError(
           `Unsupported RAR compression method (0x${method.toString(16)}): unrar binary is required for compressed RAR archives`
         );
       }
@@ -1916,7 +2014,7 @@ export function extractRarArchive(
         const dataOffset = offset + headSize;
 
         if (dataOffset + packSize > rarBuffer.length) {
-          throw new Error('Corrupted RAR archive: truncated file data');
+          throw new CorruptStreamError('Corrupted RAR archive: truncated file data');
         }
 
         const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
@@ -1924,15 +2022,15 @@ export function extractRarArchive(
         // Verify CRC32
         const computedCrc = crc32(fileBuf);
         if (computedCrc !== fileCrc) {
-          throw new Error(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+          throw new CorruptStreamError(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
         }
 
         totalUncompressedSize += fileBuf.length;
         if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-          throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
+          throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
         }
         if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-          throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
+          throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
         }
 
         if (sanitizedName && matchArchiveGlob(sanitizedName, options.entries)) {
@@ -1949,7 +2047,7 @@ export function extractRarArchive(
 }
 
 // ============================================================================
-// Pure TypeScript LZMA & LZMA2 Decompression Engine
+// Pure TypeScript LZMA & LZMA2 Decompression Engine (see lzma-decoder.ts)
 // ============================================================================
 
 export function decompressLzma(
@@ -1960,305 +2058,18 @@ export function decompressLzma(
   if (unpackSize === 0) {
     return Buffer.alloc(0);
   }
-
-  if (props.length < 5) {
-    throw new Error('Invalid LZMA properties header: expected at least 5 bytes');
-  }
-
-  const d = props[0];
-  const lc = d % 9;
-  const remainder = Math.floor(d / 9);
-  const lp = remainder % 5;
-  const pb = Math.floor(remainder / 5);
-
-  let dictSize =
-    ((props[1] |
-      (props[2] << 8) |
-      (props[3] << 16) |
-      (props[4] << 24)) >>>
-      0);
-  if (dictSize < 4096) dictSize = 4096;
-
-  if (unpackSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-    throw new Error(`Archive bomb detected: unpack size (${unpackSize}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes`);
-  }
-
-  const outBuf = Buffer.alloc(unpackSize);
-  let outPos = 0;
-  let inPos = 0;
-
-  function readByte(): number {
-    return inPos < input.length ? input[inPos++] : 0;
-  }
-
-  // LZMA range decoder header: first byte is 0 (or ignored), then 4 bytes of initial code
-  readByte();
-  let code =
-    (((readByte() << 24) |
-      (readByte() << 16) |
-      (readByte() << 8) |
-      readByte()) >>>
-      0);
-  let range = 0xffffffff;
-
-  function decodeBit(probs: Uint16Array, index: number): number {
-    const prob = probs[index];
-    const bound = (range >>> 11) * prob;
-    if ((code >>> 0) < (bound >>> 0)) {
-      range = bound >>> 0;
-      probs[index] = (prob + ((2048 - prob) >>> 5)) & 0xffff;
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      return 0;
-    } else {
-      range = ((range - bound) >>> 0);
-      code = ((code - bound) >>> 0);
-      probs[index] = (prob - (prob >>> 5)) & 0xffff;
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      return 1;
-    }
-  }
-
-  function decodeDirectBits(numBits: number): number {
-    let res = 0;
-    for (let i = 0; i < numBits; i++) {
-      range >>>= 1;
-      code = ((code - range) >>> 0);
-      const t = (code >> 31) & 1;
-      if (t !== 0) {
-        code = ((code + range) >>> 0);
-      }
-      if (range < 0x01000000) {
-        code = (((code << 8) | readByte()) >>> 0);
-        range = ((range << 8) >>> 0);
-      }
-      res = (res << 1) | (1 - t);
-    }
-    return res >>> 0;
-  }
-
-  function decodeBitTree(probs: Uint16Array, offset: number, numBits: number): number {
-    let m = 1;
-    for (let i = 0; i < numBits; i++) {
-      m = (m << 1) | decodeBit(probs, offset + m);
-    }
-    return m - (1 << numBits);
-  }
-
-  function decodeReverseBitTree(probs: Uint16Array, offset: number, numBits: number): number {
-    let m = 1;
-    let symbol = 0;
-    for (let i = 0; i < numBits; i++) {
-      const bit = decodeBit(probs, offset + m);
-      m = (m << 1) | bit;
-      symbol |= (bit << i);
-    }
-    return symbol;
-  }
-
-  // Model arrays
-  const isMatch = new Uint16Array(12 * 16).fill(1024);
-  const isRep = new Uint16Array(12).fill(1024);
-  const isRepG0 = new Uint16Array(12).fill(1024);
-  const isRepG1 = new Uint16Array(12).fill(1024);
-  const isRepG2 = new Uint16Array(12).fill(1024);
-  const isRep0Long = new Uint16Array(12 * 16).fill(1024);
-  const posSlot = new Uint16Array(4 * 64).fill(1024);
-  const specPos = new Uint16Array(128).fill(1024);
-  const align = new Uint16Array(16).fill(1024);
-
-  class LenDecoder {
-    choice1 = new Uint16Array(1).fill(1024);
-    choice2 = new Uint16Array(1).fill(1024);
-    low = new Uint16Array(16 * 8).fill(1024);
-    mid = new Uint16Array(16 * 8).fill(1024);
-    high = new Uint16Array(256).fill(1024);
-
-    decode(posState: number): number {
-      if (decodeBit(this.choice1, 0) === 0) {
-        return decodeBitTree(this.low, posState * 8, 3);
-      }
-      if (decodeBit(this.choice2, 0) === 0) {
-        return 8 + decodeBitTree(this.mid, posState * 8, 3);
-      }
-      return 16 + decodeBitTree(this.high, 0, 8);
-    }
-  }
-
-  const lenDecoder = new LenDecoder();
-  const repLenDecoder = new LenDecoder();
-
-  const numLitContexts = 1 << (lc + lp);
-  const litProbs = new Uint16Array(numLitContexts * 0x300).fill(1024);
-
-  let state = 0;
-  let rep0 = 0;
-  let rep1 = 0;
-  let rep2 = 0;
-  let rep3 = 0;
-
-  const posStateMask = (1 << pb) - 1;
-
-  while (outPos < unpackSize) {
-    const posState = outPos & posStateMask;
-    const isMatchIdx = (state << 4) + posState;
-
-    if (decodeBit(isMatch, isMatchIdx) === 0) {
-      // Literal
-      const prevByte = outPos > 0 ? outBuf[outPos - 1] : 0;
-      const litContext = (((outPos & ((1 << lp) - 1)) << lc) | (prevByte >> (8 - lc)));
-      const baseIdx = litContext * 0x300;
-
-      let symbol = 1;
-      if (state >= 7) {
-        let matchByte = outPos > rep0 ? outBuf[outPos - rep0 - 1] : 0;
-        let matchMode = true;
-        while (symbol < 0x100) {
-          matchByte <<= 1;
-          const matchBit = (matchByte >> 8) & 1;
-          const probIdx = matchMode
-            ? baseIdx + 0x100 + (matchBit << 8) + symbol
-            : baseIdx + symbol;
-          const bit = decodeBit(litProbs, probIdx);
-          symbol = (symbol << 1) | bit;
-          if (matchMode && bit !== matchBit) {
-            matchMode = false;
-          }
-        }
-      } else {
-        while (symbol < 0x100) {
-          symbol = (symbol << 1) | decodeBit(litProbs, baseIdx + symbol);
-        }
-      }
-
-      outBuf[outPos++] = (symbol - 0x100) & 0xff;
-      if (state < 4) {
-        state = 0;
-      } else if (state < 10) {
-        state -= 3;
-      } else {
-        state -= 6;
-      }
-    } else {
-      // Match or Rep
-      let len = 0;
-      if (decodeBit(isRep, state) === 1) {
-        if (decodeBit(isRepG0, state) === 0) {
-          if (decodeBit(isRep0Long, (state << 4) + posState) === 0) {
-            // Short Rep
-            state = state < 7 ? 9 : 11;
-            outBuf[outPos] = outBuf[outPos - rep0 - 1];
-            outPos++;
-            continue;
-          }
-        } else {
-          let dist = 0;
-          if (decodeBit(isRepG1, state) === 0) {
-            dist = rep1;
-          } else {
-            if (decodeBit(isRepG2, state) === 0) {
-              dist = rep2;
-            } else {
-              dist = rep3;
-              rep3 = rep2;
-            }
-            rep2 = rep1;
-          }
-          rep1 = rep0;
-          rep0 = dist;
-        }
-        len = repLenDecoder.decode(posState) + 2;
-        state = state < 7 ? 8 : 11;
-      } else {
-        // Simple match
-        rep3 = rep2;
-        rep2 = rep1;
-        rep1 = rep0;
-        len = lenDecoder.decode(posState) + 2;
-        state = state < 7 ? 7 : 10;
-
-        const lenToPosState = Math.min(len - 2, 3);
-        const slot = decodeBitTree(posSlot, lenToPosState * 64, 6);
-        if (slot >= 4) {
-          const numDirectBits = (slot >> 1) - 1;
-          rep0 = ((2 | (slot & 1)) << numDirectBits);
-          if (slot < 14) {
-            rep0 += decodeReverseBitTree(specPos, rep0 - slot - 1, numDirectBits);
-          } else {
-            rep0 += (decodeDirectBits(numDirectBits - 4) << 4);
-            rep0 += decodeReverseBitTree(align, 0, 4);
-          }
-        } else {
-          rep0 = slot;
-        }
-        if (rep0 === 0xffffffff) {
-          break;
-        }
-      }
-
-      if (rep0 >= outPos) {
-        throw new Error(`Corrupted LZMA stream: rep distance ${rep0} exceeds available decoded data (${outPos})`);
-      }
-
-      const copyLen = Math.min(len, unpackSize - outPos);
-      for (let i = 0; i < copyLen; i++) {
-        outBuf[outPos] = outBuf[outPos - rep0 - 1];
-        outPos++;
-      }
-    }
-  }
-
-  return outBuf.subarray(0, outPos);
+  const out = decodeLzma(input, props, unpackSize, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
+/** Decodes an LZMA2 stream; `unpackSize` is the size the container states, which the stream must produce. */
 export function decompressLzma2(
   input: Buffer | Uint8Array,
-  props: Buffer | Uint8Array,
+  _props: Buffer | Uint8Array,
   unpackSize: number
 ): Buffer {
-  const outBuf = Buffer.alloc(unpackSize);
-  let outPos = 0;
-  let inPos = 0;
-  let curProps = Buffer.from([0x5d, 0, 0, 0, 0]);
-
-  while (inPos < input.length && outPos < unpackSize) {
-    const control = input[inPos++];
-    if (control === 0) break; // EOS
-
-    if (control === 1 || control === 2) {
-      // Uncompressed chunk
-      const chunkSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
-      for (let i = 0; i < chunkSize && inPos < input.length && outPos < unpackSize; i++) {
-        outBuf[outPos++] = input[inPos++];
-      }
-    } else if (control >= 0x80) {
-      // LZMA chunk
-      const chunkUnpackSize = (((control & 0x1f) << 16) | (input[inPos++] << 8) | input[inPos++]) + 1;
-      const chunkPackSize = ((input[inPos++] << 8) | input[inPos++]) + 1;
-
-      const mode = (control >> 5) & 3;
-      if (mode === 2 || mode === 3) {
-        const propByte = input[inPos++];
-        curProps = Buffer.from([propByte, 0, 0, 0, 0]);
-      }
-
-      const chunkData = input.subarray(inPos, inPos + chunkPackSize);
-      inPos += chunkPackSize;
-
-      const decoded = decompressLzma(chunkData, curProps, chunkUnpackSize);
-      decoded.copy(outBuf, outPos);
-      outPos += decoded.length;
-    } else {
-      break;
-    }
-  }
-
-  return outBuf.subarray(0, outPos);
+  const out = decodeLzma2(input, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, unpackSize);
+  return Buffer.from(out.buffer, out.byteOffset, out.byteLength);
 }
 
 // ==========================================
@@ -2294,6 +2105,25 @@ export function getXzBinaryPath(): string | null {
   return null;
 }
 
+/**
+ * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip and Homebrew install; Debian and
+ * Ubuntu's `7zip` package installs `7z`, `7za` and `7zr` (`7zr` reads and writes 7z only). `7zz` is
+ * preferred because the worker image ships only the pinned upstream build, and a modern `7zz` also
+ * wins over a legacy `7z` that may sit on the same host.
+ */
+export const SEVEN_ZIP_BINARY_NAMES = ['7zz', '7z', '7za', '7zr'] as const;
+const SEVEN_ZIP_BINARY_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const;
+
+/** Fixed install locations of every 7-Zip name, best name first. */
+export const SEVEN_ZIP_BINARY_CANDIDATES: readonly string[] = SEVEN_ZIP_BINARY_NAMES.flatMap((name) =>
+  SEVEN_ZIP_BINARY_DIRECTORIES.map((directory) => `${directory}/${name}`)
+);
+
+/** First 7-Zip executable among SEVEN_ZIP_BINARY_CANDIDATES, or null. */
+export function findSevenZipBinary(exists: (candidate: string) => boolean = fs.existsSync): string | null {
+  return SEVEN_ZIP_BINARY_CANDIDATES.find((candidate) => exists(candidate)) ?? null;
+}
+
 let resolved7zPath: string | null = null;
 export function get7zBinaryPath(): string | null {
   const envOverride = process.env.P7ZIP_PATH ?? process.env.P7Z_PATH;
@@ -2304,27 +2134,15 @@ export function get7zBinaryPath(): string | null {
     return null;
   }
   if (resolved7zPath !== null) return resolved7zPath || null;
-  const fixedLocations = [
-    '/usr/bin/7z',
-    '/usr/local/bin/7z',
-    '/opt/homebrew/bin/7z',
-    '/usr/bin/7za',
-    '/usr/local/bin/7za',
-    '/opt/homebrew/bin/7za',
-    '/usr/bin/7zr',
-    '/usr/local/bin/7zr',
-    '/opt/homebrew/bin/7zr',
-  ];
-  for (const loc of fixedLocations) {
-    if (fs.existsSync(loc)) {
-      resolved7zPath = loc;
-      return loc;
-    }
+  const fixedLocation = findSevenZipBinary();
+  if (fixedLocation) {
+    resolved7zPath = fixedLocation;
+    return fixedLocation;
   }
   const whichBins = ['/usr/bin/which', '/bin/which'];
   for (const whichBin of whichBins) {
     if (fs.existsSync(whichBin)) {
-      for (const cmd of ['7z', '7za', '7zr']) {
+      for (const cmd of SEVEN_ZIP_BINARY_NAMES) {
         try {
           const out = execFileSync(whichBin, [cmd], { stdio: 'pipe' }).toString().trim();
           if (out && fs.existsSync(out)) {
@@ -2339,162 +2157,78 @@ export function get7zBinaryPath(): string | null {
   return null;
 }
 
-function encodeXzVarint(val: number): Buffer {
-  const bytes: number[] = [];
-  let v = val;
-  while (v >= 0x80) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v & 0x7f);
-  return Buffer.from(bytes);
-}
-
 /**
- * Pure TypeScript Authentic XZ Container Packager (The .xz File Format 1.1.0)
+ * Pure TypeScript .xz packager (The .xz File Format 1.1.0; see xz-format.ts).
  */
-export function packXz(uncompressed: Buffer): Buffer {
-  const chunks: Buffer[] = [];
-  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  const streamFlags = Buffer.from([0x00, 0x01]); // CRC32 check
-  const flagsCrc = Buffer.alloc(4);
-  flagsCrc.writeUInt32LE(crc32(streamFlags), 0);
-  chunks.push(magic, streamFlags, flagsCrc);
+export function packXz(uncompressed: Buffer, options: ConversionOptions = {}): Buffer {
+  return packXzStream(uncompressed, compressLzma2(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel) }));
+}
 
-  const bhNoCrc = Buffer.from([0x02, 0x00, 0x21, 0x01, 0x14, 0x00, 0x00, 0x00]);
-  const bhCrc = Buffer.alloc(4);
-  bhCrc.writeUInt32LE(crc32(bhNoCrc), 0);
-  const blockHeader = Buffer.concat([bhNoCrc, bhCrc]);
-  chunks.push(blockHeader);
-
-  const lzma2 = compressLzma2(uncompressed);
-  chunks.push(lzma2.buffer);
-
-  const padLen = (4 - (lzma2.buffer.length % 4)) % 4;
-  if (padLen > 0) chunks.push(Buffer.alloc(padLen, 0));
-
-  const checkBuf = Buffer.alloc(4);
-  checkBuf.writeUInt32LE(crc32(uncompressed), 0);
-  chunks.push(checkBuf);
-
-  const unpaddedSize = blockHeader.length + lzma2.buffer.length + 4;
-  const idxIndicator = Buffer.from([0x00]);
-  const numRecords = encodeXzVarint(1);
-  const unpaddedVarint = encodeXzVarint(unpaddedSize);
-  const uncompressedVarint = encodeXzVarint(uncompressed.length);
-  const idxBody = Buffer.concat([idxIndicator, numRecords, unpaddedVarint, uncompressedVarint]);
-  const idxPadLen = (4 - (idxBody.length % 4)) % 4;
-  const idxPad = Buffer.alloc(idxPadLen, 0);
-  const idxNoCrc = Buffer.concat([idxBody, idxPad]);
-  const idxCrc = Buffer.alloc(4);
-  idxCrc.writeUInt32LE(crc32(idxNoCrc), 0);
-  const indexTotal = Buffer.concat([idxNoCrc, idxCrc]);
-  chunks.push(indexTotal);
-
-  const backwardSize = (indexTotal.length / 4) - 1;
-  const footerBeforeCrc = Buffer.alloc(6);
-  footerBeforeCrc.writeUInt32LE(backwardSize, 0);
-  footerBeforeCrc[4] = streamFlags[0];
-  footerBeforeCrc[5] = streamFlags[1];
-  const footerCrc = Buffer.alloc(4);
-  footerCrc.writeUInt32LE(crc32(footerBeforeCrc), 0);
-  const footerMagic = Buffer.from([0x59, 0x5a]);
-  chunks.push(footerCrc, footerBeforeCrc, footerMagic);
-
-  return Buffer.concat(chunks);
+/** `packXz` with the LZMA2 stream built on a pool thread, so a large input does not hold the event loop. */
+export async function packXzAsync(
+  uncompressed: Buffer,
+  options: ConversionOptions = {},
+  runtime: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  return packXzStream(
+    uncompressed,
+    await compressLzma2Async(uncompressed, { level: resolveArchiveCompressionLevel(options.compressionLevel), signal: runtime.signal })
+  );
 }
 
 /**
- * Pure TypeScript Authentic XZ Container Unpacker
+ * Pure TypeScript .xz unpacker: any number of blocks and streams, LZMA2 only, every check verified.
  */
 export function unpackXz(buf: Buffer): Buffer {
-  if (buf.length < 32) throw new Error('Invalid XZ archive: buffer too small');
-  const magic = Buffer.from([0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]);
-  if (!buf.subarray(0, 6).equals(magic)) throw new Error('Invalid XZ archive: magic number mismatch');
-
-  const streamFlags = buf.subarray(6, 8);
-  const expectedFlagsCrc = buf.readUInt32LE(8);
-  if (crc32(streamFlags) !== expectedFlagsCrc) throw new Error('Invalid XZ archive: header CRC mismatch');
-
-  const offset = 12;
-  if (offset >= buf.length) throw new Error('Invalid XZ archive: truncated block header');
-  const bhSizeEncoded = buf[offset];
-  const bhSize = (bhSizeEncoded + 1) * 4;
-  if (offset + bhSize > buf.length) throw new Error('Invalid XZ archive: truncated block header');
-  const bhNoCrc = buf.subarray(offset, offset + bhSize - 4);
-  const expectedBhCrc = buf.readUInt32LE(offset + bhSize - 4);
-  if (crc32(bhNoCrc) !== expectedBhCrc) throw new Error('Invalid XZ archive: block header CRC mismatch');
-
-  const lzma2Payload = buf.subarray(offset + bhSize);
-
-  const footerMagic = buf.subarray(buf.length - 2);
-  if (!footerMagic.equals(Buffer.from([0x59, 0x5a]))) throw new Error('Invalid XZ archive: footer magic mismatch');
-
-  const footerBeforeCrc = buf.subarray(buf.length - 8, buf.length - 2);
-  const expectedFooterCrc = buf.readUInt32LE(buf.length - 12);
-  if (crc32(footerBeforeCrc) !== expectedFooterCrc) {
-    throw new Error('Invalid XZ archive: footer CRC mismatch');
-  }
-  if (footerBeforeCrc[4] !== streamFlags[0] || footerBeforeCrc[5] !== streamFlags[1]) {
-    throw new Error('Invalid XZ archive: stream flags mismatch between header and footer');
-  }
-
-  const backwardSize = buf.readUInt32LE(buf.length - 8);
-  const indexSize = (backwardSize + 1) * 4;
-  if (buf.length < 12 + indexSize + 12) throw new Error('Invalid XZ archive: invalid index size');
-  const indexOffset = buf.length - 12 - indexSize;
-  const indexBuf = buf.subarray(indexOffset, indexOffset + indexSize);
-
-  const expectedIndexCrc = indexBuf.readUInt32LE(indexBuf.length - 4);
-  const indexBodyNoCrc = indexBuf.subarray(0, indexBuf.length - 4);
-  if (crc32(indexBodyNoCrc) !== expectedIndexCrc) {
-    throw new Error('Invalid XZ archive: index CRC mismatch');
-  }
-
-  let idxCur = 1;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    if ((b & 0x80) === 0) break;
-  }
-  let uncompressedSize = 0;
-  let shift = 0;
-  while (idxCur < indexBuf.length) {
-    const b = indexBuf[idxCur++];
-    uncompressedSize |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) break;
-    shift += 7;
-  }
-
-  const checkCrc = buf.readUInt32LE(indexOffset - 4);
-  const props = Buffer.from([0x14]);
-  const uncompressed = decompressLzma2(lzma2Payload, props, uncompressedSize || ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
-  if (crc32(uncompressed) !== checkCrc) {
-    throw new Error('Invalid XZ archive: payload CRC32 mismatch');
-  }
-  return uncompressed;
+  return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
 }
 
 export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
   const xzBin = getXzBinaryPath();
   if (xzBin) {
     try {
-      const level = options.compressionLevel ? Math.max(0, Math.min(9, options.compressionLevel)) : 6;
       return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
       });
     } catch {}
   }
-  return packXz(inputBuffer);
+  return packXz(inputBuffer, options);
+}
+
+/**
+ * `compressXz` that keeps the event loop free: the native `xz` runs as a sandboxed child process, the pure encoder on a
+ * pool thread. A native run that fails falls back to the pure encoder, which writes a stream of its own; it never
+ * returns a placeholder.
+ */
+export async function compressXzAsync(
+  inputBuffer: Buffer,
+  options: ConversionOptions = {},
+  runtime: { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const level = resolveArchiveCompressionLevel(options.compressionLevel);
+  const xzBin = getXzBinaryPath();
+  if (xzBin) {
+    try {
+      const run = await executeSandboxedBinary(xzBin, [`-${level}`, '-c', '-q'], {
+        stdin: inputBuffer,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
+        networkIsolated: true,
+        signal: runtime.signal,
+      });
+      return run.stdout;
+    } catch (err) {
+      if (runtime.signal?.aborted) throw err;
+    }
+  }
+  return packXzAsync(inputBuffer, options, runtime);
 }
 
 export function decompressXz(inputBuffer: Buffer): Buffer {
   if (inputBuffer.length < 32) {
-    throw new Error('Invalid XZ archive: buffer too small');
+    throw new CorruptStreamError('Invalid XZ archive: buffer too small');
   }
   const xzBin = getXzBinaryPath();
   if (xzBin) {
@@ -2508,6 +2242,9 @@ export function decompressXz(inputBuffer: Buffer): Buffer {
   return unpackXz(inputBuffer);
 }
 
+/** Names 7-Zip gives the intermediate tar when it unpacks a compressed tarball. */
+const INTERMEDIATE_TAR_NAMES = new Set(['input.tar', 'input']);
+
 export function convertWithNative7z(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -2516,13 +2253,12 @@ export function convertWithNative7z(
   originalFilename = 'file'
 ): ConversionResult | null {
   const tgt = targetFormat.toLowerCase();
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
 
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
@@ -2571,97 +2307,75 @@ export function convertWithNative7z(
     const inputPath = path.join(workDir, `input.${inputExt}`);
     fs.writeFileSync(inputPath, inputBuffer);
 
-    const extractDir = path.join(workDir, 'extracted');
+    let extractDir = path.join(workDir, 'extracted');
     fs.mkdirSync(extractDir, { recursive: true });
 
-    if (options.password && /[\r\n\0]/.test(options.password)) {
-      throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-    }
-
-    const pwExtractArgs = options.password ? ['-p'] : [];
+    let skippedLinks: string[] = [];
+    let entryCount: number;
     if (supportedExtract.has(src)) {
-      try {
-        const resolved = resolveSandboxedCommand(p7zBin, ['x', '-y', ...pwExtractArgs, `-o${extractDir}`, inputPath], {
-          networkIsolated: true,
-        });
-        execFileSync(resolved.binary, resolved.args, {
-          cwd: workDir,
-          env: getSanitizedEnvironment({}, true),
-          timeout: 60000,
-          maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          input: options.password ? Buffer.from(options.password + '\n') : undefined,
-        });
-      } catch (err: any) {
-        const msg = (err?.message || '') + (err?.stderr?.toString() || '');
-        if (msg.includes('Wrong password') || msg.includes('Can not open encrypted') || msg.includes('Data Error')) {
-          throw new ConversionFailedError(`Invalid password for encrypted ${src.toUpperCase()} archive.`);
-        }
-        throw err;
-      }
+      // List, vet, extract and re-verify; unsafe or oversized archives throw before anything is packaged.
+      const outerRequest = {
+        p7zBin,
+        archivePath: inputPath,
+        extractDir,
+        cwd: workDir,
+        timeoutMs: 60000,
+        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        limits: ARCHIVE_SECURITY_LIMITS,
+        label: `${src.toUpperCase()} archive`,
+        password: options.password,
+        skipLinks: options.skipLinks,
+        collisionPolicy: options.collisionPolicy,
+      };
+      let tree = extractArchiveContainedSync(outerRequest);
+      skippedLinks = tree.skippedLinks;
 
-      // If extracting a compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, etc.), 7-Zip produces an intermediate .tar archive
+      // A compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, ...) unpacks to one intermediate .tar, which is
+      // listed, vetted and extracted as its own layer; its ratio is measured against the original upload.
       if (src.startsWith('tar.') || src === 'tgz' || src === 'tbz2' || src === 'tbz' || src === 'txz') {
-        const intermediateTar = path.join(extractDir, 'input.tar');
-        const intermediateNoExt = path.join(extractDir, 'input');
-        const tarToExtract = fs.existsSync(intermediateTar) ? intermediateTar : (fs.existsSync(intermediateNoExt) ? intermediateNoExt : null);
-        if (tarToExtract) {
-          const rTarExt = resolveSandboxedCommand(p7zBin, ['x', '-y', `-o${extractDir}`, tarToExtract], {
-            networkIsolated: true,
+        // gzip headers carry the original file name, so the unpacked tar is recognised by name or by content.
+        const intermediate =
+          tree.files.length === 1 && (INTERMEDIATE_TAR_NAMES.has(tree.files[0].relPath) || hasTarMagic(tree.files[0].absPath))
+            ? tree.files[0]
+            : null;
+        if (intermediate) {
+          const tarDir = path.join(workDir, 'extracted-tar');
+          fs.mkdirSync(tarDir, { recursive: true });
+          tree = extractArchiveContainedSync({
+            ...outerRequest,
+            archivePath: intermediate.absPath,
+            extractDir: tarDir,
+            password: undefined,
+            ratioBaseBytes: inputBuffer.length,
           });
-          execFileSync(rTarExt.binary, rTarExt.args, {
-            cwd: workDir,
-            env: getSanitizedEnvironment({}, true),
-            timeout: 60000,
-            maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-          });
-          try { fs.unlinkSync(tarToExtract); } catch {}
+          skippedLinks = [...skippedLinks, ...tree.skippedLinks];
+          extractDir = tarDir;
         }
       }
+      entryCount = tree.entryCount;
     } else {
-      const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+      // The caller-supplied name becomes a single path component inside the extraction root.
+      const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
       fs.writeFileSync(destPath, inputBuffer);
+      entryCount = 1;
     }
 
-    const extractedFiles = fs.readdirSync(extractDir);
-    if (extractedFiles.length === 0) return null;
+    if (entryCount === 0) return null;
 
-    let totalExtractedSize = 0;
-    const computeDirSize = (dir: string) => {
-      for (const item of fs.readdirSync(dir)) {
-        const full = path.join(dir, item);
-        const stat = fs.statSync(full);
-        if (stat.isDirectory()) {
-          computeDirSize(full);
-        } else {
-          totalExtractedSize += stat.size;
-        }
-      }
-    };
-    computeDirSize(extractDir);
-
-    if (totalExtractedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new ConversionFailedError(
-        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-      );
+    if (options.password && (tgt === 'zip' || tgt === '7z')) {
+      assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
     }
-    if (inputBuffer.length > 0 && totalExtractedSize / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new ConversionFailedError(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-      );
-    }
-
-
     const pwCreateArgs: string[] = [];
     if (options.password) {
       if (tgt === '7z') {
-        pwCreateArgs.push('-mhe=on', '-p');
+        pwCreateArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       } else if (tgt === 'zip') {
-        pwCreateArgs.push('-mem=AES256', '-p');
+        pwCreateArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
       }
     }
     const pwCreateInput =
       options.password && (tgt === 'zip' || tgt === '7z')
-        ? Buffer.from(`${options.password}\n${options.password}\n`)
+        ? sevenZipCreatePasswordInput(options.password)
         : undefined;
     const outputPath = path.join(workDir, `output.${tgt}`);
     if (tgt === 'tar.gz' || tgt === 'tgz') {
@@ -2684,12 +2398,15 @@ export function convertWithNative7z(
       execFileSync(rXz.binary, rXz.args, { cwd: workDir, env: getSanitizedEnvironment({}, true), timeout: 60000 });
     } else if (tgt === '7z' || tgt === 'zip' || tgt === 'tar') {
       const rCreate = resolveSandboxedCommand(p7zBin, ['a', '-y', `-t${tgt}`, ...pwCreateArgs, outputPath, '.'], { networkIsolated: true });
-      execFileSync(rCreate.binary, rCreate.args, {
-        cwd: extractDir,
-        env: getSanitizedEnvironment({}, true),
-        timeout: 60000,
-        input: pwCreateInput,
-      });
+      const createOptions = { cwd: extractDir, env: getSanitizedEnvironment({}, true), timeout: 60000 };
+      if (pwCreateInput) {
+        execFileSyncWithPasswordStdin(rCreate.binary, rCreate.args, { ...createOptions, input: pwCreateInput });
+      } else {
+        execFileSync(rCreate.binary, rCreate.args, createOptions);
+      }
+      if (options.password && (tgt === 'zip' || tgt === '7z')) {
+        assertCreatedArchiveEncrypted(p7zBin, outputPath, tgt, workDir);
+      }
     } else {
       return null;
     }
@@ -2710,23 +2427,27 @@ export function convertWithNative7z(
       mimeType: mime,
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
+      ...(skippedLinks.length > 0 ? { skippedLinks } : {}),
     };
   } catch (err) {
-    if (err instanceof ConversionFailedError) {
+    // A host that cannot sandbox 7-Zip refuses the request: the in-process engines are not a substitute for it.
+    rethrowSandboxUnavailable(err);
+    // A policy violation or bad password must surface; an archive 7-Zip cannot read may still be
+    // handled by the in-process engines, which the null return hands the conversion to.
+    if (err instanceof ConversionFailedError && !(err instanceof UnreadableArchiveError) && !(err instanceof EngineUnavailableError)) {
       throw err;
     }
     return null;
   } finally {
-    try {
-      fs.rmSync(workDir, { recursive: true, force: true });
-    } catch {}
+    cleanupDirectoryTree(workDir);
   }
 }
 
 /**
- * Extracts a multi-volume split archive directly using Virtual Spanned Stream and 7-Zip CLI.
- * Attempts zero-disk stdin streaming extraction via `7z x -si{name}`, falling back to
- * zero-memory disk streaming spooling (`stitchMultiVolumeToDisk`) if seek-heavy container random access is required.
+ * Extracts a multi-volume split archive with the 7-Zip CLI through the contained pipeline.
+ * The parts are spooled to one seekable temporary file in O(1) memory (`stitchMultiVolumeToDisk`) so the
+ * archive can be listed and vetted before anything is extracted; a zero-disk stdin stream cannot be listed first.
+ * Unsafe, oversized or unreadable archives throw a typed error.
  */
 export async function extractWithSpannedStream7z(
   parts: Array<string | VirtualSpannedPartSource | { filename: string; buffer: Buffer }>,
@@ -2735,11 +2456,22 @@ export async function extractWithSpannedStream7z(
     timeoutMs?: number;
     maxBuffer?: number;
     password?: string;
+    /** Leave link entries out of the extraction and report them instead of rejecting the archive. */
+    skipLinks?: boolean;
+    collisionPolicy?: ArchiveCollisionPolicy;
+    signal?: AbortSignal;
   } = {}
-): Promise<{ extractedFiles: string[]; totalBytes: number; baseFilename: string }> {
+): Promise<{
+  extractedFiles: string[];
+  totalBytes: number;
+  baseFilename: string;
+  /** Number of files and directories extracted. */
+  entryCount: number;
+  skippedLinks: string[];
+}> {
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
-    throw new Error('7-Zip binary (7z/7za/7zr) not found on system.');
+    throw new EngineUnavailableError('7-Zip', 'binary (7z/7za/7zr) not found on system');
   }
 
   const { sortedParts, metadata } = validateAndSortSplitParts(parts);
@@ -2748,108 +2480,49 @@ export async function extractWithSpannedStream7z(
     fs.mkdirSync(resolvedExtractDir, { recursive: true });
   }
 
-  const timeoutMs = options.timeoutMs ?? 60000;
-  const maxBuffer = options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
-  const passwordArgs = options.password ? ['-p'] : [];
-  const formatMap: Record<string, string> = {
-    tar: 'tar',
-    zip: 'zip',
-    '7z': '7z',
-    rar: 'rar',
-  };
-  const typeFlag = formatMap[metadata.format] ? [`-t${formatMap[metadata.format]}`] : [];
-
-  const isStreamableFormat = metadata.format === 'tar' || metadata.format === 'numeric';
-  let extractionSuccess = false;
-
-  // Strategy 1: Stdin streaming extraction via 7z x -si{baseFilename} for streamable archive formats
-  if (isStreamableFormat) {
+  const typeSwitch = SPANNED_ARCHIVE_TYPE_SWITCHES[metadata.format];
+  const uniqueSuffix = crypto.randomBytes(6).toString('hex');
+  const tempDiskFile = path.join(os.tmpdir(), `spanned_stitch_${Date.now()}_${uniqueSuffix}`);
+  try {
+    await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
+    const tree = await extractArchiveContained({
+      p7zBin,
+      archivePath: tempDiskFile,
+      extractDir: resolvedExtractDir,
+      cwd: resolvedExtractDir,
+      timeoutMs: options.timeoutMs ?? 60000,
+      maxBuffer: options.maxBuffer ?? ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      limits: ARCHIVE_SECURITY_LIMITS,
+      label: 'archive',
+      password: options.password,
+      typeFlag: typeSwitch,
+      skipLinks: options.skipLinks,
+      collisionPolicy: options.collisionPolicy,
+      signal: options.signal,
+    });
+    return {
+      extractedFiles: tree.files.map((file) => file.relPath),
+      totalBytes: tree.totalBytes,
+      baseFilename: metadata.baseFilename,
+      entryCount: tree.entryCount,
+      skippedLinks: tree.skippedLinks,
+    };
+  } finally {
     try {
-      const { stream } = createVirtualSpannedStream(sortedParts);
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', `-si${metadata.baseFilename}`, ...typeFlag, `-o${resolvedExtractDir}`, ...passwordArgs],
-        {
-          cwd: resolvedExtractDir,
-          stdin: stream,
-          timeoutMs,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-      extractionSuccess = true;
-    } catch {
-      extractionSuccess = false;
-      // Clean partially extracted entries before fallback
-      try {
-        const existing = fs.readdirSync(resolvedExtractDir);
-        for (const item of existing) {
-          fs.rmSync(path.join(resolvedExtractDir, item), { recursive: true, force: true });
-        }
-      } catch {}
-    }
-  }
-
-  // Strategy 2: If stdin streaming is not supported or rejected by container format (e.g. 7z/zip/rar central directories),
-  // spool to temporary disk file in O(1) memory via stitchMultiVolumeToDisk
-  if (!extractionSuccess) {
-    const tmpDir = os.tmpdir();
-    const uniqueSuffix = crypto.randomBytes(6).toString('hex');
-    const tempDiskFile = path.join(tmpDir, `spanned_stitch_${Date.now()}_${uniqueSuffix}_${metadata.baseFilename}`);
-    try {
-      await stitchMultiVolumeToDisk(sortedParts, tempDiskFile);
-      await executeSandboxedBinary(
-        p7zBin,
-        ['x', '-y', ...typeFlag, `-o${resolvedExtractDir}`, tempDiskFile, ...passwordArgs],
-        {
-          cwd: resolvedExtractDir,
-          stdin: options.password ? Buffer.from(options.password + '\n') : undefined,
-          timeoutMs,
-          maxBuffer,
-          networkIsolated: true,
-        }
-      );
-    } finally {
-      try {
-        if (fs.existsSync(tempDiskFile)) {
-          fs.unlinkSync(tempDiskFile);
-        }
-      } catch {}
-    }
-  }
-
-  // Scan extracted files and enforce archive bomb limits
-  const extractedFiles: string[] = [];
-  let totalBytes = 0;
-
-  const scanDir = (dir: string, prefix = '') => {
-    for (const item of fs.readdirSync(dir)) {
-      const fullPath = path.join(dir, item);
-      const relPath = prefix ? `${prefix}/${item}` : item;
-      const stat = fs.statSync(fullPath);
-      if (stat.isDirectory()) {
-        scanDir(fullPath, relPath);
-      } else {
-        extractedFiles.push(relPath);
-        totalBytes += stat.size;
+      if (fs.existsSync(tempDiskFile)) {
+        fs.unlinkSync(tempDiskFile);
       }
-    }
-  };
-
-  scanDir(resolvedExtractDir);
-
-  if (totalBytes > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-    throw new ConversionFailedError(
-      `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-    );
+    } catch {}
   }
-
-  return {
-    extractedFiles,
-    totalBytes,
-    baseFilename: metadata.baseFilename,
-  };
 }
+
+/** 7z `-t` switches for the container types a multi-volume part list can resolve to. */
+const SPANNED_ARCHIVE_TYPE_SWITCHES: Record<string, string | undefined> = {
+  tar: '-ttar',
+  zip: '-tzip',
+  '7z': '-t7z',
+  rar: '-trar',
+};
 
 export function write7zVarint(arr: number[], value: number): void {
   if (value < 0x80) {
@@ -2902,11 +2575,35 @@ export function read7zVarint(
 // 7z Archive Creation with Authentic Compression
 // ============================================================================
 
-export function create7zArchive(
+type SevenZipCoderType = 'lzma' | 'lzma2' | 'deflate' | 'copy';
+
+/** What the archive writer needs to know before any stream is compressed: the streams, their sizes and checksums. */
+interface SevenZipPlan {
+  files: { filename: string; buffer: Buffer }[];
+  coderType: SevenZipCoderType;
+  compressionLevel: number;
+  isSolid: boolean;
+  /** One buffer per pack stream: the concatenation of all files when solid, otherwise one per file. */
+  inputs: Buffer[];
+  unpackSizes: number[];
+  crcs: number[];
+  solidCrc: number;
+  totalUnpackSize: number;
+  totalInputBytes: number;
+}
+
+interface SevenZipPackedStream {
+  buffer: Buffer;
+  props: Buffer;
+}
+
+/** The checks and the plan shared by the synchronous and the pool-backed writers; the encrypted path is complete here. */
+function prepare7zArchive(
   files: { filename: string; buffer: Buffer }[],
-  options: ConversionOptions = {},
-  archiveName = 'converted_files.7z'
-): ConversionResult {
+  options: ConversionOptions,
+  archiveName: string
+): { encrypted: ConversionResult } | { plan: SevenZipPlan } {
+  assertArchivePasswordSafe(options.password);
   const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   files = resolvedFiles;
   if (options.password) {
@@ -2924,14 +2621,14 @@ export function create7zArchive(
       options.password,
       options.collisionPolicy
     );
-    if (encRes) return encRes;
+    if (encRes) return { encrypted: encRes };
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
 
-  const isCompressed = options.compressionLevel === undefined || options.compressionLevel > 0;
-  const compressionLevel = options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6;
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
+  const isCompressed = compressionLevel > 0;
 
-  let coderType: 'lzma' | 'lzma2' | 'deflate' | 'copy';
+  let coderType: SevenZipCoderType;
   if (options.archiveCoder) {
     coderType = options.archiveCoder;
   } else if (!isCompressed) {
@@ -2941,72 +2638,180 @@ export function create7zArchive(
   }
 
   const isSolid = Boolean(options.solid && files.length > 1);
-
-  const packBuffers: Buffer[] = [];
-  const packSizes: number[] = [];
   const unpackSizes: number[] = [];
   const crcs: number[] = [];
-  const fileProps: Buffer[] = [];
+  let totalInputBytes = 0;
+  for (const f of files) {
+    unpackSizes.push(f.buffer.length);
+    crcs.push(crc32(f.buffer));
+    totalInputBytes += f.buffer.length;
+  }
 
+  let inputs: Buffer[];
   let solidCrc = 0;
   let totalUnpackSize = 0;
-
   if (isSolid) {
-    for (const f of files) {
-      unpackSizes.push(f.buffer.length);
-      crcs.push(crc32(f.buffer));
-    }
     const solidBuffer = Buffer.concat(files.map(f => f.buffer));
     totalUnpackSize = solidBuffer.length;
     solidCrc = crc32(solidBuffer);
-
-    if (coderType === 'lzma2') {
-      const res = compressLzma2(solidBuffer, { level: compressionLevel });
-      packBuffers.push(res.buffer);
-      packSizes.push(res.buffer.length);
-      fileProps.push(res.props);
-    } else if (coderType === 'lzma') {
-      const res = compressLzma(solidBuffer, { level: compressionLevel });
-      packBuffers.push(res.buffer);
-      packSizes.push(res.buffer.length);
-      fileProps.push(res.props);
-    } else if (coderType === 'deflate') {
-      const deflated = zlib.deflateRawSync(solidBuffer, { level: compressionLevel });
-      packBuffers.push(deflated);
-      packSizes.push(deflated.length);
-      fileProps.push(Buffer.alloc(0));
-    } else {
-      packBuffers.push(solidBuffer);
-      packSizes.push(solidBuffer.length);
-      fileProps.push(Buffer.alloc(0));
-    }
+    inputs = [solidBuffer];
   } else {
-    for (const f of files) {
-      unpackSizes.push(f.buffer.length);
-      crcs.push(crc32(f.buffer));
+    inputs = files.map(f => f.buffer);
+  }
+  return {
+    plan: { files, coderType, compressionLevel, isSolid, inputs, unpackSizes, crcs, solidCrc, totalUnpackSize, totalInputBytes },
+  };
+}
 
-      if (coderType === 'lzma2') {
-        const res = compressLzma2(f.buffer, { level: compressionLevel });
-        packBuffers.push(res.buffer);
-        packSizes.push(res.buffer.length);
-        fileProps.push(res.props);
-      } else if (coderType === 'lzma') {
-        const res = compressLzma(f.buffer, { level: compressionLevel });
-        packBuffers.push(res.buffer);
-        packSizes.push(res.buffer.length);
-        fileProps.push(res.props);
-      } else if (coderType === 'deflate') {
-        const deflated = zlib.deflateRawSync(f.buffer, { level: compressionLevel });
-        packBuffers.push(deflated);
-        packSizes.push(deflated.length);
-        fileProps.push(Buffer.alloc(0));
-      } else {
-        packBuffers.push(f.buffer);
-        packSizes.push(f.buffer.length);
-        fileProps.push(Buffer.alloc(0));
-      }
+function pack7zStream(plan: SevenZipPlan, input: Buffer): SevenZipPackedStream {
+  if (plan.coderType === 'lzma2') {
+    const res = compressLzma2(input, { level: plan.compressionLevel });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'lzma') {
+    const res = compressLzma(input, { level: plan.compressionLevel });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'deflate') {
+    return { buffer: zlib.deflateRawSync(input, { level: plan.compressionLevel }), props: Buffer.alloc(0) };
+  }
+  return { buffer: input, props: Buffer.alloc(0) };
+}
+
+const deflateRawAsync = promisify(zlib.deflateRaw);
+
+async function pack7zStreamAsync(plan: SevenZipPlan, input: Buffer, signal: AbortSignal | undefined): Promise<SevenZipPackedStream> {
+  if (plan.coderType === 'lzma2') {
+    const res = await compressLzma2Async(input, { level: plan.compressionLevel, signal });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'lzma') {
+    const res = await compressLzmaAsync(input, { level: plan.compressionLevel, signal });
+    return { buffer: res.buffer, props: res.props };
+  }
+  if (plan.coderType === 'deflate') {
+    return { buffer: await deflateRawAsync(input, { level: plan.compressionLevel }), props: Buffer.alloc(0) };
+  }
+  return { buffer: input, props: Buffer.alloc(0) };
+}
+
+export function create7zArchive(
+  files: { filename: string; buffer: Buffer }[],
+  options: ConversionOptions = {},
+  archiveName = 'converted_files.7z'
+): ConversionResult {
+  const prepared = prepare7zArchive(files, options, archiveName);
+  if ('encrypted' in prepared) return prepared.encrypted;
+  const { plan } = prepared;
+  return assemble7zArchive(plan, plan.inputs.map((input) => pack7zStream(plan, input)), archiveName);
+}
+
+/** Input at or above this size goes to 7-Zip itself when it is installed: its encoder is faster than the pure one. */
+const SEVEN_ZIP_NATIVE_MIN_BYTES = CPU_POOL_MIN_BYTES;
+
+/**
+ * Runs `7z a -t7z -m0=lzma2` over the staged files and returns the archive, or null when 7-Zip could not be run (the
+ * caller then uses the pure writer). What 7-Zip wrote is checked before it is returned: `7z t` must pass and the
+ * listing must name exactly the requested entries with their sizes; a mismatch throws.
+ */
+async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: AbortSignal | undefined): Promise<Buffer | null> {
+  const stagedNames = plan.files.map((f) => sanitizeArchivePath(f.filename));
+  // A name the staging area would rewrite cannot be reproduced by 7-Zip; the pure writer stores names as given.
+  if (stagedNames.some((name, i) => name !== plan.files[i].filename)) return null;
+  const workDir = path.join(os.tmpdir(), `easyconvert_7z_native_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
+  const stagingDir = path.join(workDir, 'staging');
+  await fs.promises.mkdir(stagingDir, { recursive: true });
+  try {
+    for (const [i, f] of plan.files.entries()) {
+      const dest = path.join(stagingDir, stagedNames[i]!);
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, f.buffer);
+    }
+    const outPath = path.join(workDir, 'native.7z');
+    const run = (args: string[], cwd: string) =>
+      executeSandboxedBinary(p7z, args, {
+        cwd,
+        timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
+        maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+        networkIsolated: true,
+        signal,
+      });
+    try {
+      await run(
+        [
+          'a', '-y', '-bd', '-t7z', '-m0=lzma2', `-mx=${plan.compressionLevel}`,
+          plan.isSolid ? '-ms=on' : '-ms=off', `-mmt=${CPU_POOL_MAX}`,
+          // Timestamps would record when the staging files were written.
+          '-mtm=off', '-mtc=off', '-mta=off',
+          outPath, '.',
+        ],
+        stagingDir
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      return null;
+    }
+    await run(['t', '-y', outPath], workDir);
+    const listing = parse7zTechnicalListing(
+      stripSevenZipPasswordPrompt((await run(['l', '-slt', '-ba', outPath], workDir)).stdout.toString('utf-8'))
+    );
+    const expected = new Map(plan.files.map((f) => [f.filename, f.buffer.length]));
+    // 7-Zip also stores the directories that hold the files; any other entry is a surprise.
+    const parents = new Set(plan.files.flatMap((f) => f.filename.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))));
+    const fileEntries = listing.filter((e) => !e.isDirectory);
+    const matches =
+      fileEntries.length === expected.size &&
+      fileEntries.every((e) => expected.get(e.path) === e.sizeBytes) &&
+      listing.every((e) => !e.isDirectory || parents.has(e.path));
+    if (!matches) {
+      throw new ConversionFailedError('Native 7z archive creation produced an archive whose entries differ from the requested files.');
+    }
+    return await fs.promises.readFile(outPath);
+  } finally {
+    await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * `create7zArchive` that keeps the event loop free. With 7-Zip installed, input of SEVEN_ZIP_NATIVE_MIN_BYTES or more
+ * with an LZMA2 coder is compressed by `7z a -t7z -m0=lzma2` in the sandbox (the result is tested with `7z t` and its
+ * listing checked); otherwise the pure LZMA, LZMA2 and Deflate streams are built on pool threads. Both give an archive
+ * the reference extractor reads. Encrypted archives take the same path as `create7zArchive`.
+ */
+export async function create7zArchiveAsync(
+  files: { filename: string; buffer: Buffer }[],
+  options: ConversionOptions = {},
+  archiveName = 'converted_files.7z',
+  runtime: { signal?: AbortSignal } = {}
+): Promise<ConversionResult> {
+  const prepared = prepare7zArchive(files, options, archiveName);
+  if ('encrypted' in prepared) return prepared.encrypted;
+  const { plan } = prepared;
+  const p7z = plan.coderType === 'lzma2' ? get7zBinaryPath() : null;
+  if (p7z && plan.totalInputBytes >= SEVEN_ZIP_NATIVE_MIN_BYTES) {
+    const native = await createNative7zArchive(plan, p7z, runtime.signal);
+    if (native) {
+      return { buffer: native, mimeType: 'application/x-7z-compressed', filename: archiveName, size: native.length };
     }
   }
+  const lanes = Math.max(2, getCpuPool().threadLimit * 2);
+  const packed: SevenZipPackedStream[] = new Array(plan.inputs.length);
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    while (next < plan.inputs.length) {
+      const at = next++;
+      packed[at] = await pack7zStreamAsync(plan, plan.inputs[at], runtime.signal);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(lanes, plan.inputs.length) }, () => lane()));
+  return assemble7zArchive(plan, packed, archiveName);
+}
+
+function assemble7zArchive(plan: SevenZipPlan, packed: SevenZipPackedStream[], archiveName: string): ConversionResult {
+  const { files, coderType, isSolid, unpackSizes, crcs, solidCrc, totalUnpackSize } = plan;
+  const packBuffers = packed.map((p) => p.buffer);
+  const packSizes = packed.map((p) => p.buffer.length);
+  const fileProps = packed.map((p) => p.props);
 
   const packData = Buffer.concat(packBuffers);
 
@@ -3101,12 +2906,16 @@ export function create7zArchive(
       write7zVarint(nh, us);
     }
 
+    nh.push(0x00); // kEnd (UnpackInfo)
+
+    // kSubStreamsInfo: one stream per folder, with the file CRC where 7-Zip lists it
+    nh.push(0x08); // kSubStreamsInfo
     nh.push(0x0a); // kCRC
     nh.push(0x01); // allAreDefined = 1
     for (const c of crcs) {
       nh.push(c & 0xff, (c >>> 8) & 0xff, (c >>> 16) & 0xff, (c >>> 24) & 0xff);
     }
-    nh.push(0x00); // kEnd (UnpackInfo)
+    nh.push(0x00); // kEnd (SubStreamsInfo)
     nh.push(0x00); // kEnd (MainStreamsInfo)
   }
 
@@ -3154,20 +2963,6 @@ export function create7zArchive(
 // 7z Archive Extraction with Authentic Decompression
 // ============================================================================
 
-interface SevenZipCoder {
-  codecId: Buffer;
-  properties: Buffer;
-}
-
-interface SevenZipFolder {
-  coders: SevenZipCoder[];
-  unpackSize: number;
-  crc?: number;
-  numUnpackStreams?: number;
-  unpackSizes?: number[];
-  unpackCrcs?: number[];
-}
-
 function decompress7zFolder(
   packSlice: Buffer,
   coder: SevenZipCoder,
@@ -3183,13 +2978,11 @@ function decompress7zFolder(
     (id.length === 1 && id[0] === 0x04)
   ) {
     // Deflate
-    if (unpackSize === 0) return Buffer.alloc(0);
-    return inflateBounded(packSlice, {
-      label: '7z Deflate stream',
-      format: 'raw',
-      expectedLength: unpackSize > 0 ? unpackSize : undefined,
-      maxOutputLength: MAX_STREAM_INFLATE_BYTES,
-    });
+    try {
+      return zlib.inflateRawSync(packSlice, { maxOutputLength: Math.max(1, unpackSize) });
+    } catch (err) {
+      throw new CorruptStreamError(`Corrupted 7z archive: invalid Deflate stream (${err instanceof Error ? err.message : String(err)})`);
+    }
   }
   if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) {
     // LZMA
@@ -3206,422 +2999,44 @@ function decompress7zFolder(
       : ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
     return decompressBzip2(packSlice, bzipLimit);
   }
-  throw new Error(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
+  throw new ConversionFailedError(`Unsupported 7z compression method: 0x${id.toString('hex')}`);
 }
 
-function decode7zEncodedHeader(sevenZipBuffer: Buffer, nh: Buffer): Buffer | null {
-  try {
-    let cur = 1;
-    let packPos = 0;
-    let packSize = 0;
-    let unpackSize = 0;
-    const coder: SevenZipCoder = { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
+/** Decodes one 7z folder: a single coder from the codecs this engine carries. */
+const decodeSevenZipFolder: SevenZipFolderDecoder = (folder, packed) =>
+  decompress7zFolder(packed, folder.coders[0], folder.unpackSize);
 
-    while (cur < nh.length && nh[cur] !== 0x00) {
-      const p = nh[cur++];
-      if (p === 0x06) {
-        // kPackInfo
-        const packPosVar = read7zVarint(nh, cur);
-        packPos = packPosVar.value;
-        cur = packPosVar.nextOffset;
-        const numStreams = read7zVarint(nh, cur);
-        cur = numStreams.nextOffset;
-        if (nh[cur++] === 0x09) {
-          const sz = read7zVarint(nh, cur);
-          packSize = sz.value;
-          cur = sz.nextOffset;
-        }
-        while (cur < nh.length && nh[cur] !== 0x00) cur++;
-        if (cur < nh.length && nh[cur] === 0x00) cur++;
-      } else if (p === 0x07) {
-        // kUnpackInfo
-        while (cur < nh.length && nh[cur] !== 0x00) {
-          const up = nh[cur++];
-          if (up === 0x0b) {
-            // kFolder
-            const numF = read7zVarint(nh, cur);
-            cur = numF.nextOffset;
-            const ext = nh[cur++];
-            if (ext === 0) {
-              const numC = read7zVarint(nh, cur);
-              cur = numC.nextOffset;
-              const flags = nh[cur++];
-              const idSz = flags & 0x0f;
-              coder.codecId = Buffer.from(nh.subarray(cur, cur + idSz));
-              cur += idSz;
-              if ((flags & 0x20) !== 0) {
-                const propSz = read7zVarint(nh, cur);
-                cur = propSz.nextOffset;
-                coder.properties = Buffer.from(nh.subarray(cur, cur + propSz.value));
-                cur += propSz.value;
-              }
-            }
-          } else if (up === 0x0c) {
-            const sz = read7zVarint(nh, cur);
-            unpackSize = sz.value;
-            cur = sz.nextOffset;
-          } else {
-            break;
-          }
-        }
-        if (cur < nh.length && nh[cur] === 0x00) cur++;
-      } else {
-        break;
-      }
-    }
-
-    if (packSize > 0 && unpackSize > 0) {
-      const packSlice = Buffer.from(sevenZipBuffer.subarray(32 + packPos, 32 + packPos + packSize));
-      return decompress7zFolder(packSlice, coder, unpackSize);
-    }
-  } catch {}
-  return null;
+/**
+ * The file table of a 7z archive (names, sizes, checksums, times, attributes) read in process. Only the header is
+ * decoded, so the cost does not grow with the archive; a header this engine cannot decode (an encrypted or filtered
+ * header) throws, and the caller then lists the archive with 7-Zip itself.
+ */
+export function listSevenZipEntries(sevenZipBuffer: Buffer): SevenZipListing {
+  return listSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
+    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+  });
 }
 
+/**
+ * Extracts the files of a 7z archive in process. A damaged, truncated or mislabelled archive throws a
+ * CorruptStreamError; it never yields an empty or partial file list.
+ */
 export function extract7zArchive(
   sevenZipBuffer: Buffer,
   options: { password?: string; entries?: string[] } = {}
 ): { filename: string; buffer: Buffer }[] {
+  const entries = readSevenZipArchive(sevenZipBuffer, decodeSevenZipFolder, {
+    maxFiles: ARCHIVE_SECURITY_LIMITS.MAX_FILES,
+    maxUncompressedBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+    maxRatio: ARCHIVE_SECURITY_LIMITS.MAX_RATIO,
+  });
   const files: { filename: string; buffer: Buffer }[] = [];
-  if (sevenZipBuffer.length < 32) return files;
-
-  if (
-    sevenZipBuffer[0] !== 0x37 ||
-    sevenZipBuffer[1] !== 0x7a ||
-    sevenZipBuffer[2] !== 0xbc ||
-    sevenZipBuffer[3] !== 0xaf ||
-    sevenZipBuffer[4] !== 0x27 ||
-    sevenZipBuffer[5] !== 0x1c
-  ) {
-    return files;
+  for (const entry of entries) {
+    const filename = sanitizeArchivePath(entry.name);
+    if (filename) files.push({ filename, buffer: entry.data });
   }
-
-  const nextHeaderOffset = Number(sevenZipBuffer.readBigUInt64LE(12));
-  const nextHeaderSize = Number(sevenZipBuffer.readBigUInt64LE(20));
-  const nextHeaderCrc = sevenZipBuffer.readUInt32LE(28);
-
-  const startHeaderCrc = crc32(sevenZipBuffer.subarray(12, 32));
-  if (startHeaderCrc !== sevenZipBuffer.readUInt32LE(8)) {
-    return files;
-  }
-
-  const nhStart = 32 + nextHeaderOffset;
-  if (nhStart + nextHeaderSize > sevenZipBuffer.length) {
-    return files;
-  }
-
-  let nh = sevenZipBuffer.subarray(nhStart, nhStart + nextHeaderSize);
-  if (crc32(nh) !== nextHeaderCrc) {
-    return files;
-  }
-
-  // Handle kEncodedHeader (0x17)
-  if (nh.length > 0 && nh[0] === 0x17) {
-    const decodedNh = decode7zEncodedHeader(sevenZipBuffer, nh);
-    if (decodedNh) {
-      nh = decodedNh;
-    }
-  }
-
-  // Parse kHeader
-  let cur = 0;
-  if (cur < nh.length && nh[cur] === 0x01) cur++; // skip kHeader (0x01)
-
-  const folders: SevenZipFolder[] = [];
-  const packSizes: number[] = [];
-  const filenames: string[] = [];
-
-  while (cur < nh.length && nh[cur] !== 0x00) {
-    const propId = nh[cur++];
-
-    if (propId === 0x04) {
-      // kMainStreamsInfo
-      while (cur < nh.length && nh[cur] !== 0x00) {
-        const streamProp = nh[cur++];
-
-        if (streamProp === 0x06) {
-          // kPackInfo
-          const packPosVar = read7zVarint(nh, cur);
-          cur = packPosVar.nextOffset;
-          const numStreamsVar = read7zVarint(nh, cur);
-          cur = numStreamsVar.nextOffset;
-          const streamCount = numStreamsVar.value;
-
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const packSub = nh[cur++];
-            if (packSub === 0x09) {
-              // kSize
-              for (let s = 0; s < streamCount && cur < nh.length; s++) {
-                const sz = read7zVarint(nh, cur);
-                packSizes.push(sz.value);
-                cur = sz.nextOffset;
-              }
-            } else if (packSub === 0x0a) {
-              // kCRC
-              const allDefined = nh[cur++];
-              if (allDefined === 1) {
-                cur += streamCount * 4;
-              } else {
-                cur += Math.ceil(streamCount / 8) + streamCount * 4;
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else if (streamProp === 0x07) {
-          // kUnpackInfo
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const unpackSub = nh[cur++];
-            if (unpackSub === 0x0b) {
-              // kFolder
-              const numFoldersVar = read7zVarint(nh, cur);
-              cur = numFoldersVar.nextOffset;
-              const external = nh[cur++];
-              if (external === 0) {
-                for (let f = 0; f < numFoldersVar.value && cur < nh.length; f++) {
-                  const numCodersVar = read7zVarint(nh, cur);
-                  cur = numCodersVar.nextOffset;
-                  const folderCoders: SevenZipCoder[] = [];
-
-                  for (let c = 0; c < numCodersVar.value && cur < nh.length; c++) {
-                    const flags = nh[cur++];
-                    const idSize = flags & 0x0f;
-                    const codecId = Buffer.from(nh.subarray(cur, cur + idSize));
-                    cur += idSize;
-
-                    if ((flags & 0x10) !== 0) {
-                      const numIn = read7zVarint(nh, cur);
-                      cur = numIn.nextOffset;
-                      const numOut = read7zVarint(nh, cur);
-                      cur = numOut.nextOffset;
-                    }
-
-                    let properties = Buffer.alloc(0);
-                    if ((flags & 0x20) !== 0) {
-                      const propSizeVar = read7zVarint(nh, cur);
-                      cur = propSizeVar.nextOffset;
-                      properties = Buffer.from(nh.subarray(cur, cur + propSizeVar.value));
-                      cur += propSizeVar.value;
-                    }
-
-                    folderCoders.push({ codecId, properties });
-                  }
-
-                  folders.push({ coders: folderCoders, unpackSize: 0 });
-                }
-              }
-            } else if (unpackSub === 0x0c) {
-              // kCodersUnpackSize
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const sz = read7zVarint(nh, cur);
-                folders[f].unpackSize = sz.value;
-                cur = sz.nextOffset;
-              }
-            } else if (unpackSub === 0x0a) {
-              // kCRC
-              const allDefined = nh[cur++];
-              if (allDefined === 1) {
-                for (let f = 0; f < folders.length && cur + 4 <= nh.length; f++) {
-                  folders[f].crc = nh.readUInt32LE(cur);
-                  cur += 4;
-                }
-              } else {
-                const maskBytes = Math.ceil(folders.length / 8);
-                cur += maskBytes + folders.length * 4;
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else if (streamProp === 0x08) {
-          // kSubStreamsInfo
-          while (cur < nh.length && nh[cur] !== 0x00) {
-            const subProp = nh[cur++];
-            if (subProp === 0x0d) {
-              // kNumUnpackStream
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const num = read7zVarint(nh, cur);
-                folders[f].numUnpackStreams = num.value;
-                cur = num.nextOffset;
-              }
-            } else if (subProp === 0x09) {
-              // kSize
-              for (let f = 0; f < folders.length && cur < nh.length; f++) {
-                const numStreams = folders[f].numUnpackStreams || 1;
-                folders[f].unpackSizes = [];
-                let sum = 0;
-                for (let s = 0; s < numStreams - 1 && cur < nh.length; s++) {
-                  const sz = read7zVarint(nh, cur);
-                  folders[f].unpackSizes!.push(sz.value);
-                  sum += sz.value;
-                  cur = sz.nextOffset;
-                }
-                folders[f].unpackSizes!.push(Math.max(0, folders[f].unpackSize - sum));
-              }
-            } else if (subProp === 0x0a) {
-              // kCRC
-              cur++; // skip allDefined flag
-              for (const folder of folders) {
-                const numStreams = folder.numUnpackStreams || 1;
-                folder.unpackCrcs = [];
-                for (let s = 0; s < numStreams && cur + 4 <= nh.length; s++) {
-                  folder.unpackCrcs.push(nh.readUInt32LE(cur));
-                  cur += 4;
-                }
-              }
-            } else {
-              break;
-            }
-          }
-          if (cur < nh.length && nh[cur] === 0x00) cur++;
-        } else {
-          break;
-        }
-      }
-      if (cur < nh.length && nh[cur] === 0x00) cur++;
-    } else if (propId === 0x05) {
-      // kFilesInfo
-      const numFilesVar = read7zVarint(nh, cur);
-      cur = numFilesVar.nextOffset;
-      const fileCount = numFilesVar.value;
-
-      while (cur < nh.length && nh[cur] !== 0x00) {
-        const fileProp = nh[cur++];
-        if (fileProp === 0x11) {
-          // kName (0x11 standard)
-          const nameLen = read7zVarint(nh, cur);
-          cur = nameLen.nextOffset;
-          const external = nh[cur++];
-          if (external === 0) {
-            const rawNames = Buffer.from(nh.subarray(cur, cur + nameLen.value - 1));
-            cur += nameLen.value - 1;
-
-            let nameOffset = 0;
-            while (nameOffset + 2 <= rawNames.length && filenames.length < fileCount) {
-              let end = nameOffset;
-              while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
-                end += 2;
-              }
-              if (end === nameOffset) break;
-              const fn = rawNames.toString('utf16le', nameOffset, end);
-              if (fn) filenames.push(fn);
-              nameOffset = end + 2;
-            }
-          }
-        } else {
-          const propLen = read7zVarint(nh, cur);
-          cur = propLen.nextOffset + propLen.value;
-        }
-      }
-      if (cur < nh.length && nh[cur] === 0x00) cur++;
-    } else {
-      break;
-    }
-  }
-
-  // Fallback: heuristic scan if structural parse yielded no filenames
-  if (filenames.length === 0) {
-    let nameIdx = -1;
-    for (let i = 0; i < nh.length; i++) {
-      if ((nh[i] === 0x11 || nh[i] === 0x05) && i + 2 < nh.length && (nh[i + 2] === 0x0e || nh[i + 2] === 0x11)) {
-        nameIdx = i + 2;
-        break;
-      }
-    }
-    if (nameIdx !== -1) {
-      let idx = nameIdx + 1;
-      while (idx < nh.length && (nh[idx] & 0x80) !== 0) idx++;
-      idx++;
-      idx++;
-      const rawNames = nh.subarray(idx);
-      let nameOffset = 0;
-      while (nameOffset + 2 <= rawNames.length) {
-        let end = nameOffset;
-        while (end + 2 <= rawNames.length && (rawNames[end] !== 0 || rawNames[end + 1] !== 0)) {
-          end += 2;
-        }
-        if (end === nameOffset) break;
-        const fn = rawNames.toString('utf16le', nameOffset, end);
-        if (fn) filenames.push(fn);
-        nameOffset = end + 2;
-      }
-    }
-  }
-
-  // Decompress each folder and extract files
-  let packOffset = 32;
-  let fileIdx = 0;
-  let totalUncompressedSize = 0;
-
-  for (let f = 0; f < folders.length; f++) {
-    const folder = folders[f];
-    const packSize = f < packSizes.length ? packSizes[f] : nextHeaderOffset - (packOffset - 32);
-    if (packOffset + packSize > sevenZipBuffer.length) {
-      throw new Error('Corrupted 7z archive: truncated pack stream');
-    }
-
-    const packSlice = Buffer.from(sevenZipBuffer.subarray(packOffset, packOffset + packSize));
-    packOffset += packSize;
-
-    // Decompress folder stream using primary coder
-    const primaryCoder = folder.coders.length > 0 ? folder.coders[0] : { codecId: Buffer.from([0]), properties: Buffer.alloc(0) };
-    const uncompressedData = decompress7zFolder(packSlice, primaryCoder, folder.unpackSize);
-
-    if (uncompressedData.length !== folder.unpackSize) {
-      throw new Error(`Corrupted 7z archive: unpack size mismatch (expected ${folder.unpackSize}, got ${uncompressedData.length})`);
-    }
-
-    if (folder.crc !== undefined) {
-      const computedCrc = crc32(uncompressedData);
-      if (computedCrc !== folder.crc) {
-        throw new Error(`Corrupted 7z archive: CRC mismatch (expected 0x${folder.crc.toString(16)}, got 0x${computedCrc.toString(16)})`);
-      }
-    }
-
-    totalUncompressedSize += uncompressedData.length;
-    if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new Error(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
-    }
-    if (sevenZipBuffer.length > 0 && totalUncompressedSize / sevenZipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-      throw new Error(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
-    }
-
-    // Distribute uncompressed folder data to files
-    if (folder.unpackSizes && folder.unpackSizes.length > 0) {
-      let subOffset = 0;
-      for (let s = 0; s < folder.unpackSizes.length && fileIdx < filenames.length; s++) {
-        if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-          throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
-        }
-        const sz = folder.unpackSizes[s];
-        const fileBuf = Buffer.from(uncompressedData.subarray(subOffset, subOffset + sz));
-        subOffset += sz;
-
-        if (folder.unpackCrcs?.[s] !== undefined) {
-          if (crc32(fileBuf) !== folder.unpackCrcs[s]) {
-            throw new Error(`Corrupted 7z archive: CRC mismatch for ${filenames[fileIdx]}`);
-          }
-        }
-
-        const sanitizedName = sanitizeArchivePath(filenames[fileIdx++]);
-        if (sanitizedName) {
-          files.push({ filename: sanitizedName, buffer: fileBuf });
-        }
-      }
-    } else {
-      if (files.length >= ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-        throw new Error(`Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`);
-      }
-      const fname = fileIdx < filenames.length ? filenames[fileIdx++] : `file_${f}`;
-      const sanitizedName = sanitizeArchivePath(fname);
-      if (sanitizedName) {
-        files.push({ filename: sanitizedName, buffer: uncompressedData });
-      }
-    }
-  }
-
   if (options.entries && options.entries.length > 0) {
     return files.filter((f) => matchArchiveGlob(f.filename, options.entries));
   }
@@ -3653,7 +3068,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new DecompressionLimitError(
+          new Error(
             `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
           )
         );
@@ -3669,7 +3084,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         cleanup();
         gunzip.destroy();
         return reject(
-          new DecompressionLimitError(
+          new Error(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3687,7 +3102,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
       ) {
         cleanup();
         return reject(
-          new DecompressionLimitError(
+          new Error(
             `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
           )
         );
@@ -3698,7 +3113,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
     gunzip.on('error', (err) => {
       if (!destroyed) {
         cleanup();
-        reject(new CorruptStreamError(err instanceof Error ? err.message : String(err)));
+        reject(err);
       }
     });
 
@@ -3819,25 +3234,12 @@ export async function repairZipArchive(
               uncompressed = Buffer.from(rawChunk);
             } else if (compMethod === 8) {
               try {
-                uncompressed = inflateBounded(rawChunk, {
-                  label: `ZIP entry '${cleanName}'`,
-                  format: 'raw',
-                  expectedLength: uncompSize > 0 ? uncompSize : undefined,
-                  maxOutputLength: MAX_STREAM_INFLATE_BYTES,
-                });
-              } catch (err) {
-                if (err instanceof DecompressionLimitError) throw err;
+                uncompressed = zlib.inflateRawSync(rawChunk);
+              } catch {
                 for (let offset = rawChunk.length - 1; offset > 0 && !uncompressed; offset--) {
                   try {
-                    uncompressed = inflateBounded(rawChunk.subarray(0, offset), {
-                      label: `ZIP entry '${cleanName}'`,
-                      format: 'raw',
-                      expectedLength: uncompSize > 0 ? uncompSize : undefined,
-                      maxOutputLength: MAX_STREAM_INFLATE_BYTES,
-                    });
-                  } catch (offsetErr) {
-                    if (offsetErr instanceof DecompressionLimitError) throw offsetErr;
-                  }
+                    uncompressed = zlib.inflateRawSync(rawChunk.subarray(0, offset));
+                  } catch {}
                 }
               }
             }
@@ -3848,9 +3250,7 @@ export async function repairZipArchive(
             }
           }
         }
-      } catch (err) {
-        if (err instanceof DecompressionLimitError) throw err;
-      }
+      } catch {}
     }
     pos++;
   }
@@ -3859,14 +3259,19 @@ export async function repairZipArchive(
     throw new ConversionFailedError('ZIP archive repair failed: no recoverable file records found in buffer.');
   }
 
-  const zip = new JSZip();
-  for (const f of salvagedFiles) {
-    zip.file(f.filename, f.buffer);
-  }
-  return await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  return await createZipBuffer(zipEntriesWithFolders(salvagedFiles, ZIP_DEFAULT_LEVEL));
 }
 
-function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
+/** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
+type InspectionBody = Omit<ArchiveInspectResponse, 'extractable' | 'unextractableReasons'>;
+
+const UNIX_FILE_TYPE_MASK = 0o170000;
+const UNIX_SYMLINK_TYPE = 0o120000;
+const ZIP_UNIX_HOST = 3;
+const ZIP_EXTERNAL_ATTR_MODE_SHIFT = 16;
+const ZIP_VERSION_MADE_BY_HOST_SHIFT = 8;
+
+function inspectZipBuffer(buffer: Buffer): InspectionBody {
   if (buffer.length < 22) {
     throw new ConversionFailedError('Invalid ZIP archive: buffer too small');
   }
@@ -3968,7 +3373,11 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         }
       }
 
-      const isDirectory = rawName.endsWith('/') || (buffer.readUInt32LE(pos + 38) & 0x10) !== 0;
+      const externalAttributes = buffer.readUInt32LE(pos + 38);
+      const isDirectory = rawName.endsWith('/') || (externalAttributes & 0x10) !== 0;
+      const madeByHost = buffer.readUInt16LE(pos + 4) >>> ZIP_VERSION_MADE_BY_HOST_SHIFT;
+      const unixFileType = (externalAttributes >>> ZIP_EXTERNAL_ATTR_MODE_SHIFT) & UNIX_FILE_TYPE_MASK;
+      const isSymlink = madeByHost === ZIP_UNIX_HOST && unixFileType === UNIX_SYMLINK_TYPE;
 
       entries.push({
         name: rawName,
@@ -3978,6 +3387,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
         isDirectory,
         modifiedAt,
         crc32: crc32Str,
+        ...(isSymlink ? { kind: 'symlink' as const } : {}),
       });
 
       pos += 46 + fnLen + extraLen + commentLen;
@@ -4032,7 +3442,7 @@ function inspectZipBuffer(buffer: Buffer): ArchiveInspectResponse {
   };
 }
 
-function inspectTarBuffer(buffer: Buffer, format = 'tar'): ArchiveInspectResponse {
+function inspectTarBuffer(buffer: Buffer, format = 'tar'): InspectionBody {
   const entries: ArchiveEntryMetadata[] = [];
   let totalUncompressedBytes = 0;
 
@@ -4068,7 +3478,7 @@ async function inspectArchiveVia7zCli(
   format: '7z' | 'rar',
   p7z: string,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${format}_inspect_${Date.now()}_${token}`);
@@ -4077,39 +3487,43 @@ async function inspectArchiveVia7zCli(
     const archivePath = path.join(workDir, `archive.${format}`);
     fs.writeFileSync(archivePath, buffer);
 
-    const pwArgs = password ? ['-p' + password] : ['-p-'];
-    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', ...pwArgs, archivePath], {
+    // A password is answered on stdin (never in argv); without one, 7-Zip's prompt reads an empty answer.
+    const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', '-ba', archivePath], {
       networkIsolated: true,
     });
 
     let stdoutStr = '';
     try {
-      const out = execFileSync(resolved.binary, resolved.args, {
+      const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
         cwd: workDir,
         env: getSanitizedEnvironment({}, true),
-        timeout: 30000,
+        timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
+        input: sevenZipReadPasswordInput(password),
+        maxBuffer: listingBufferLimit(ARCHIVE_SECURITY_LIMITS),
       });
       stdoutStr = out.toString('utf-8');
     } catch (err: any) {
-      const errMsg = (err?.message || '') + (err?.stderr?.toString() || '') + (err?.stdout?.toString() || '');
-      if (
-        errMsg.includes('Enter password') ||
-        errMsg.includes('Can not open encrypted') ||
-        errMsg.includes('Cannot open encrypted') ||
-        errMsg.includes('Data Error in encrypted archive') ||
-        errMsg.includes('Wrong password')
-      ) {
+      if (err?.code === 'ENOBUFS') {
+        throw new UnsafeArchiveError(
+          'entry-count',
+          `Archive bomb detected: file count exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
+        );
+      }
+      // Only 7-Zip's own stderr lines decide: stdout carries the prompt and entry names on every listing.
+      if (isArchivePasswordFailure(archiveFailureStderr(err))) {
         throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
       }
       throw new ConversionFailedError(`Failed to inspect ${format} archive: ${err.message}`);
     }
 
-    if (stdoutStr.includes('Enter password (will not be echoed):')) {
-      throw new ArchiveEncryptedHeaderError('Archive header is encrypted and requires a password to inspect entries.');
-    }
+    // Inspection writes nothing and reports unsafe entries rather than refusing them. Only the resource caps,
+    // which protect this service from an unbounded listing, still refuse.
+    const listingText = stripSevenZipPasswordPrompt(stdoutStr);
+    const listed = parse7zTechnicalListing(listingText);
+    assertListingResourceCaps(listed, buffer.length, ARCHIVE_SECURITY_LIMITS);
 
     const entries: ArchiveEntryMetadata[] = [];
-    const blocks = stdoutStr.split(/\r?\n\r?\n/);
+    const blocks = listingText.split(/\r?\n\r?\n/);
     let isArchiveEncrypted = false;
 
     for (const block of blocks) {
@@ -4132,8 +3546,9 @@ async function inspectArchiveVia7zCli(
       const modTime = record.Modified || undefined;
       const crcHex = record.CRC || undefined;
 
+      // The name stays verbatim so a traversal or absolute path is visible to the caller; it is flagged, not followed.
       entries.push({
-        name: sanitizeArchivePath(record.Path) || record.Path,
+        name: record.Path,
         uncompressedSize: uncompSize,
         compressedSize: compSize,
         isEncrypted: isEnc,
@@ -4142,6 +3557,15 @@ async function inspectArchiveVia7zCli(
         crc32: crcHex ? crcHex.toLowerCase() : undefined,
       });
     }
+
+    // Both parsers read the same blocks, so they agree entry for entry; anything else is a listing we cannot trust.
+    if (listed.length !== entries.length) {
+      throw new UnsafeArchiveError('malformed-listing', 'Archive listing could not be matched entry for entry.');
+    }
+    listed.forEach((item, index) => {
+      const kind = inspectedKindOf(item);
+      if (kind !== undefined) entries[index].kind = kind;
+    });
 
     let totalUncompressedBytes = 0;
     let totalCompressedBytes = 0;
@@ -4166,7 +3590,7 @@ async function inspectArchiveVia7zCli(
 async function inspect7zBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   const p7z = get7zBinaryPath();
   if (p7z) {
     return await inspectArchiveVia7zCli(buffer, '7z', p7z, password);
@@ -4213,7 +3637,7 @@ async function inspect7zBuffer(
 async function inspectRarBuffer(
   buffer: Buffer,
   password?: string
-): Promise<ArchiveInspectResponse> {
+): Promise<InspectionBody> {
   // Fast byte-level inspection for RAR header encryption (MHD_PASSWORD flag)
   if (buffer.length >= 14) {
     const isRar4 =
@@ -4312,10 +3736,51 @@ async function inspectRarBuffer(
   };
 }
 
+/** Archive sources that are ZIP packages with another name: read with the ZIP reader. */
+const ZIP_PACKAGE_SOURCES: ReadonlySet<string> = new Set(['jar', 'war', 'ear']);
+const BZIP2_TAR_SOURCES: ReadonlySet<string> = new Set(['tar.bz2', 'tbz2', 'tbz', 'tar.bz']);
+const BZIP2_SOURCES: ReadonlySet<string> = new Set([...BZIP2_TAR_SOURCES, 'bz2', 'bz']);
+/** Archive sources only the native 7-Zip engine reads. */
+const NATIVE_SEVEN_ZIP_SOURCES: ReadonlySet<string> = new Set([
+  'arj', 'cab', 'cpio', 'deb', 'dmg', 'img', 'iso', 'lha', 'lzma', 'rpm', 'tar.z', 'tz', 'z',
+]);
+
+function unreadableArchiveSource(src: string): ConversionFailedError {
+  if (NATIVE_SEVEN_ZIP_SOURCES.has(src)) {
+    // A worker pool can be mixed: the queue retries an engine error on a worker that has 7-Zip.
+    return new EngineUnavailableError('7-Zip', `reading .${src} archives needs the native 7-Zip engine`);
+  }
+  return new ConversionFailedError(`Cannot read .${src} archives: no engine reads this format.`);
+}
+
+/**
+ * Describes an archive without extracting it. Unsafe entries are reported, not refused: links, absolute or
+ * traversing names and duplicated paths come back as per-entry flags with `extractable: false` and the
+ * reasons. Only resource caps (entry count, declared size, ratio) still reject, in the 7z/RAR listing.
+ * Tar names are normalized by the tar reader, so traversal inside a tar is not visible here.
+ */
 export async function inspectArchive(
   archiveBuffer: Buffer,
   options: { filename?: string; password?: string } = {}
 ): Promise<ArchiveInspectResponse> {
+  const body = await inspectArchiveEntries(archiveBuffer, options);
+  const safety = summarizeInspectionSafety(body.entries);
+  const entries = body.entries.map((entry, index) => {
+    const flag = safety.flags[index];
+    return {
+      ...entry,
+      ...(flag.kind !== undefined ? { kind: flag.kind } : {}),
+      ...(flag.unsafePath ? { unsafePath: true } : {}),
+      ...(flag.duplicate ? { duplicate: true } : {}),
+    };
+  });
+  return { ...body, entries, extractable: safety.extractable, unextractableReasons: safety.unextractableReasons };
+}
+
+async function inspectArchiveEntries(
+  archiveBuffer: Buffer,
+  options: { filename?: string; password?: string } = {}
+): Promise<InspectionBody> {
   if (!archiveBuffer || archiveBuffer.length === 0) {
     throw new ConversionFailedError('Archive buffer is empty.');
   }
@@ -4359,16 +3824,9 @@ export async function inspectArchive(
   // 4. Compressed TAR wrappers: GZ, BZ2, ZST, XZ
   if (archiveBuffer.length >= 2 && archiveBuffer[0] === 0x1f && archiveBuffer[1] === 0x8b) {
     try {
-      const decompressed = inflateBounded(archiveBuffer, {
-        label: 'tar.gz archive',
-        format: 'gzip',
-        maxOutputLength: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
+      const decompressed = zlib.gunzipSync(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.gz');
-    } catch (err) {
-      if (err instanceof DecompressionLimitError || err instanceof CorruptStreamError) {
-        throw err;
-      }
+    } catch {
       throw new ConversionFailedError('Failed to decompress gzip archive.');
     }
   }
@@ -4386,7 +3844,9 @@ export async function inspectArchive(
     try {
       const decompressed = decompressZstd(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.zst');
-    } catch {
+    } catch (err) {
+      // Typed decoder errors (bomb guard, malformed frame) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
       throw new ConversionFailedError('Failed to decompress zstd archive.');
     }
   }
@@ -4450,9 +3910,7 @@ export async function convertArchive(
     };
   }
 
-  if (options.password && /[\r\n\0]/.test(options.password)) {
-    throw new ConversionFailedError('Archive password contains invalid newline or null characters.');
-  }
+  assertArchivePasswordSafe(options.password);
 
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
@@ -4475,14 +3933,21 @@ export async function convertArchive(
 
   // 1. Extract files from source if it is an archive
   let files: { filename: string; buffer: Buffer }[] = [];
-  if (src === 'zip') {
+  let skippedLinks: string[] = [];
+  if (src === 'zip' || ZIP_PACKAGE_SOURCES.has(src)) {
     const hasZipMagic =
       effectiveBuffer.length >= 4 &&
       effectiveBuffer[0] === 0x50 &&
       effectiveBuffer[1] === 0x4b;
     try {
-      files = await extractZipArchive(effectiveBuffer, options);
+      files = await extractZipArchive(effectiveBuffer, {
+        ...options,
+        onSkippedLinks: (names) => {
+          skippedLinks = names;
+        },
+      });
     } catch (err) {
+      if (isArchivePasswordError(err) || err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4491,6 +3956,7 @@ export async function convertArchive(
     try {
       files = extractTarArchive(effectiveBuffer, options);
     } catch (err) {
+      if (err instanceof ArchiveEntryCollisionError) throw err;
       throw new ConversionFailedError(
         `Failed to extract TAR archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4504,27 +3970,24 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (err instanceof DecompressionLimitError || err instanceof CorruptStreamError) {
-        throw err;
-      }
       throw new ConversionFailedError(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
     }
-  } else if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || src === 'bz2' || src === 'bz') {
+  } else if (BZIP2_SOURCES.has(src)) {
     try {
       const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
       if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
-      if (src === 'tar.bz2' || src === 'tbz2' || src === 'tbz' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
+      if (BZIP2_TAR_SOURCES.has(src) || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
         files = extractTarArchive(uncompressed, options);
       } else {
         files = [{ filename: baseName, buffer: uncompressed }];
@@ -4541,6 +4004,7 @@ export async function convertArchive(
         files = files.filter((f) => matchArchiveGlob(f.filename, options.entries));
       }
     } catch (err: any) {
+      if (isArchivePasswordError(err)) throw err;
       throw new ConversionFailedError(
         `Failed to extract RAR archive '${effectiveFilename}': ${err?.message || String(err)}`
       );
@@ -4555,40 +4019,24 @@ export async function convertArchive(
     }
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
-    if (options.zstdDict) {
-      const dict =
-        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
-          ? getPretrainedDictionary(options.zstdDict)
-          : DATA_DICTIONARY_JSON_CSV;
-      uncompressed = decompressWithZstdDict(effectiveBuffer, dict);
-    } else if (
-      effectiveBuffer.length >= 13 &&
-      effectiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE) &&
-      (effectiveBuffer[4] & 0x03) === 3
-    ) {
-      const fcsFlag = (effectiveBuffer[4] >> 6) & 0x03;
-      const fcsBytes = fcsFlag === 0 ? 1 : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
-      if (effectiveBuffer.length >= 5 + fcsBytes + 4) {
-        const dictId = effectiveBuffer.readUInt32LE(5 + fcsBytes);
-        if (dictId === ZSTD_DICT_MAGIC) {
-          uncompressed = decompressWithZstdDict(effectiveBuffer, DATA_DICTIONARY_JSON_CSV);
-        } else {
-          uncompressed = decompressZstd(effectiveBuffer);
-        }
-      } else {
-        uncompressed = decompressZstd(effectiveBuffer);
-      }
-    } else {
-      uncompressed = decompressZstd(effectiveBuffer);
+    try {
+      uncompressed = decodeZstdArchivePayload(effectiveBuffer, options.zstdDict);
+    } catch (err) {
+      // Typed decoder errors (bomb guards, malformed frames) already say what went wrong.
+      if (err instanceof ConversionFailedError) throw err;
+      throw new ConversionFailedError(
+        `Failed to decompress zstd archive: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
       throw new ConversionFailedError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+    // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
+    if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
       throw new ConversionFailedError(
-        `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
+        `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }
     if (src === 'tar.zst' || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
@@ -4600,12 +4048,12 @@ export async function convertArchive(
     try {
       const uncompressed = decompressXz(effectiveBuffer);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
       if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new Error(
+        throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );
       }
@@ -4640,6 +4088,8 @@ export async function convertArchive(
     'xz',
     'txz',
     'tar.xz',
+    ...ZIP_PACKAGE_SOURCES,
+    'tar.bz',
   ]);
   function isValidEmptyArchive(format: string, buffer: Buffer): boolean {
     if (format === 'zip') {
@@ -4658,7 +4108,12 @@ export async function convertArchive(
       throw new ConversionFailedError(
         `Failed to extract any files from source archive '${effectiveFilename}' (corrupt or invalid archive format)`
       );
+    } else if (FORMAT_REGISTRY[src]?.category === 'archive') {
+      // An archive this engine cannot read is never "converted" by packing the archive file into the target as one
+      // entry. 7-Zip reads many of these formats (the native engine does); for the others nothing does.
+      throw unreadableArchiveSource(src);
     } else {
+      // A source that is not an archive (a document, an image) is packed into the target as the one file it is.
       files = [{ filename: effectiveFilename, buffer: effectiveBuffer }];
     }
   }
@@ -4669,7 +4124,7 @@ export async function convertArchive(
   if (tgt === 'tar.gz' || tgt === 'tgz') {
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
     const gzipped = zlib.gzipSync(tarResult.buffer, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,
@@ -4680,7 +4135,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') {
     // 3. Target TAR.BZ2 or TBZ2 or TBZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const bz2Buffer = compressBzip2(tarResult.buffer);
+    const bz2Buffer = await compressBzip2Async(tarResult.buffer);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip-compressed-tar',
@@ -4690,7 +4145,7 @@ export async function convertArchive(
   } else if (tgt === 'bz2' || tgt === 'bz') {
     // 3.1 Target BZ2
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
-    const bz2Buffer = compressBzip2(rawToCompress);
+    const bz2Buffer = await compressBzip2Async(rawToCompress);
     result = {
       buffer: bz2Buffer,
       mimeType: 'application/x-bzip2',
@@ -4699,7 +4154,7 @@ export async function convertArchive(
     };
   } else if (tgt === '7z' || tgt === 'tar.7z') {
     // 4. Target 7Z
-    result = create7zArchive(files, options, `${baseName}.${tgt}`);
+    result = await create7zArchiveAsync(files, options, `${baseName}.${tgt}`);
   } else if (tgt === 'rar') {
     // 5. Target RAR
     throw new ConversionFailedError(
@@ -4712,7 +4167,7 @@ export async function convertArchive(
     // 7. Target GZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     const gzipped = zlib.gzipSync(rawToCompress, {
-      level: options.compressionLevel ? Math.max(1, Math.min(9, options.compressionLevel)) : 6,
+      level: resolveArchiveCompressionLevel(options.compressionLevel),
     });
     result = {
       buffer: gzipped,
@@ -4731,7 +4186,7 @@ export async function convertArchive(
           : DATA_DICTIONARY_JSON_CSV;
       zstdBuffer = compressWithZstdDict(tarResult.buffer, dict);
     } else {
-      zstdBuffer = compressZstd(tarResult.buffer);
+      zstdBuffer = await compressZstdAsync(tarResult.buffer);
     }
     result = {
       buffer: zstdBuffer,
@@ -4750,7 +4205,7 @@ export async function convertArchive(
           : DATA_DICTIONARY_JSON_CSV;
       zstdBuffer = compressWithZstdDict(rawToCompress, dict);
     } else {
-      zstdBuffer = compressZstd(rawToCompress);
+      zstdBuffer = await compressZstdAsync(rawToCompress);
     }
     result = {
       buffer: zstdBuffer,
@@ -4761,7 +4216,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.xz' || tgt === 'txz') {
     // 7.3 Target TAR.XZ / TXZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const xzBuffer = compressXz(tarResult.buffer, options);
+    const xzBuffer = await compressXzAsync(tarResult.buffer, options);
     result = {
       buffer: xzBuffer,
       mimeType: 'application/x-xz-compressed-tar',
@@ -4771,7 +4226,7 @@ export async function convertArchive(
   } else if (tgt === 'xz') {
     // 7.4 Target XZ
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
-    const xzBuffer = compressXz(rawToCompress, options);
+    const xzBuffer = await compressXzAsync(rawToCompress, options);
     result = {
       buffer: xzBuffer,
       mimeType: 'application/x-xz',
@@ -4785,6 +4240,10 @@ export async function convertArchive(
     throw new ConversionFailedError(
       `Unsupported archive target format '${targetFormat}': foreign formats must not silently fall back to ZIP.`
     );
+  }
+
+  if (skippedLinks.length > 0) {
+    result.skippedLinks = skippedLinks;
   }
 
   // 9. Split Archive Volume Generation (Multi-Volume)
@@ -4811,8 +4270,3 @@ export async function convertToArchive(
     `${baseName}.zip`
   );
 }
-
-export const extract7z = extract7zArchive;
-export const extractZip = extractZipArchive;
-export const extractTar = extractTarArchive;
-

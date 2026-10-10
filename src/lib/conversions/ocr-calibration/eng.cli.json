@@ -1,0 +1,44 @@
+{
+  "language": "eng",
+  "enginePath": "cli",
+  "x": [
+    0.645404,
+    0.918823,
+    0.950501,
+    0.963778,
+    0.968836
+  ],
+  "y": [
+    0.659091,
+    0.925,
+    0.985915,
+    0.999285,
+    1
+  ],
+  "provenance": {
+    "method": "Isotonic regression (pool-adjacent-violators) of word correctness on the raw word score; words are labelled by Levenshtein alignment to the drawn text.",
+    "engine": "tesseract 5.3.4",
+    "languageData": "eng.traineddata sha256:7d4322bd2a774972",
+    "fittedOn": {
+      "pages": [
+        "en_a",
+        "en_b",
+        "en_c"
+      ],
+      "degradations": [
+        "clean300",
+        "dpi60",
+        "blur",
+        "noise-1",
+        "noise-2",
+        "heavy-noise-1",
+        "heavy-noise-2",
+        "faded",
+        "dpi100noise"
+      ],
+      "words": 2307,
+      "correctWords": 2287
+    },
+    "generator": "tests/helpers/fit-ocr-calibration.mts"
+  }
+}

@@ -34,7 +34,7 @@ function fileHeader(compressed: boolean): Buffer {
 function hwpWith(sections: Buffer[], compressed = true): Buffer {
   return buildCompoundFile([
     { name: 'FileHeader', data: fileHeader(compressed) },
-    ...sections.map((data, i) => ({ name: `Section${i}`, data })),
+    ...sections.map((data, i) => ({ name: `BodyText/Section${i}`, data })),
   ]);
 }
 

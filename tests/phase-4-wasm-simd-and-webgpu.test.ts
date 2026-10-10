@@ -16,6 +16,10 @@ import {
   isWebGpuComputeSupported,
   executeWebGpuCompute,
 } from '../src/lib/edge/pipelines/webgpu-compute-pipeline';
+import path from 'node:path';
+import ts from 'typescript';
+import { parseSource } from './helpers/ts-source';
+import { parseWgsl, scalarStructByteSize, uniformFieldsUsed } from './helpers/wgsl-lite';
 import {
   checkWasmSimdSupport,
   resolveConversionTier,
@@ -162,18 +166,90 @@ describe('Phase 4: Edge Wasm SIMD Binaries & WebGPU WGSL Compute Pipelines', () 
   // 3. WebGPU WGSL Compute Pipeline
   // ==========================================================================
   describe('WebGPU WGSL Compute Shaders & Pipeline', () => {
-    it('validates syntax and bindings of WGSL compute shaders', () => {
-      expect(COLOR_TRANSFORM_WGSL).toContain('@compute @workgroup_size(16, 16)');
-      expect(COLOR_TRANSFORM_WGSL).toContain('struct Uniforms');
-      expect(COLOR_TRANSFORM_WGSL).toContain('0.299 * r + 0.587 * g + 0.114 * b');
+    // No WGSL validator is available on a test shard, so the shaders are checked against the host code that
+    // drives them: what the host binds, writes and dispatches must be exactly what the shader declares.
+    describe('WGSL shaders against the host that drives them', () => {
+      const HOST_SOURCE = path.join(process.cwd(), 'src/lib/edge/pipelines/webgpu-compute-pipeline.ts');
+      const shaders = [
+        { name: 'color transform', code: COLOR_TRANSFORM_WGSL, uniformStruct: 'Uniforms', fields: ['width', 'height', 'mode', 'param'] },
+        { name: 'gaussian blur', code: GAUSSIAN_BLUR_WGSL, uniformStruct: 'BlurUniforms', fields: ['width', 'height', 'radius', 'sigma'] },
+        { name: 'quantize', code: QUANTIZE_WGSL, uniformStruct: 'QuantizeUniforms', fields: ['width', 'height', 'rLevels', 'gLevels', 'bLevels', 'pad'] },
+      ];
 
-      expect(GAUSSIAN_BLUR_WGSL).toContain('@compute @workgroup_size(16, 16)');
-      expect(GAUSSIAN_BLUR_WGSL).toContain('struct BlurUniforms');
-      expect(GAUSSIAN_BLUR_WGSL).toContain('exp(-distSq / twoSigmaSq)');
+      /** The uniform buffers the host builds, in source order: size and the typed writes into each. */
+      function hostUniformLayouts(): Array<{ size: number; writes: Array<{ method: string; offset: number }> }> {
+        const sf = parseSource(HOST_SOURCE);
+        const layouts: Array<{ position: number; size: number; writes: Array<{ method: string; offset: number }> }> = [];
+        const visit = (node: ts.Node): void => {
+          if (ts.isNewExpression(node) && node.expression.getText(sf) === 'ArrayBuffer' && node.arguments?.length === 1) {
+            layouts.push({ position: node.getStart(sf), size: Number(node.arguments[0].getText(sf)), writes: [] });
+          }
+          if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && /^set(?:Uint32|Int32|Float32)$/.test(node.expression.name.text)) {
+            const owner = layouts[layouts.length - 1];
+            owner.writes.push({ method: node.expression.name.text, offset: Number(node.arguments[0].getText(sf)) });
+          }
+          ts.forEachChild(node, visit);
+        };
+        visit(sf);
+        return layouts.map(({ size, writes }) => ({ size, writes }));
+      }
 
-      expect(QUANTIZE_WGSL).toContain('@compute @workgroup_size(16, 16)');
-      expect(QUANTIZE_WGSL).toContain('struct QuantizeUniforms');
-      expect(QUANTIZE_WGSL).toContain('rStep');
+      const SETTER_FOR_TYPE: Record<string, string> = { u32: 'setUint32', i32: 'setInt32', f32: 'setFloat32' };
+
+      it.each(shaders)('$name: balanced, one 16 x 16 compute entry point and three bindings in group 0', ({ code }) => {
+        const shader = parseWgsl(code);
+        expect(shader.entryPoints).toEqual([{ stage: 'compute', name: 'main', workgroupSize: [16, 16] }]);
+        expect(shader.bindings.map((binding) => [binding.group, binding.binding, binding.addressSpace, binding.access, binding.name, binding.type])).toEqual([
+          [0, 0, 'uniform', '', 'u', expect.stringMatching(/^(?:Uniforms|BlurUniforms|QuantizeUniforms)$/)],
+          [0, 1, 'storage', 'read', 'inPixels', 'array<u32>'],
+          [0, 2, 'storage', 'read_write', 'outPixels', 'array<u32>'],
+        ]);
+      });
+
+      it('the host binds exactly the three bindings every shader declares and dispatches 16 x 16 workgroups', () => {
+        const sf = parseSource(HOST_SOURCE);
+        const text = sf.getFullText();
+        const boundIndices = [...text.matchAll(/\{\s*binding:\s*(\d+),\s*resource:/g)].map((match) => Number(match[1]));
+        expect(boundIndices).toEqual([0, 1, 2]);
+        expect(text).toContain('Math.ceil(width / 16)');
+        expect(text).toContain('Math.ceil(height / 16)');
+      });
+
+      it('each uniform struct matches the buffer the host writes: size, field order, offsets and types', () => {
+        const layouts = hostUniformLayouts();
+        expect(layouts).toHaveLength(shaders.length);
+        shaders.forEach(({ name, code, uniformStruct, fields }, index) => {
+          const shader = parseWgsl(code);
+          const struct = shader.structs.find((candidate) => candidate.name === uniformStruct);
+          expect(struct?.fields.map((field) => field.name), name).toEqual(fields);
+          expect(scalarStructByteSize(struct as NonNullable<typeof struct>), name).toBe(layouts[index].size);
+          // Member i sits at offset 4 * i and is written with the setter of its WGSL type.
+          expect(layouts[index].writes, name).toEqual(
+            (struct as NonNullable<typeof struct>).fields.map((field, fieldIndex) => ({ method: SETTER_FOR_TYPE[field.type], offset: fieldIndex * 4 }))
+          );
+          // Every uniform member the shader reads exists in the struct.
+          for (const used of uniformFieldsUsed(shader.code, 'u')) expect(fields, `${name}: u.${used}`).toContain(used);
+        });
+      });
+
+      it('uses the published luma weights (ITU-R BT.601), the sepia matrix and the quantizer step formula', () => {
+        const color = parseWgsl(COLOR_TRANSFORM_WGSL).code.replace(/\s+/g, ' ');
+        expect(color).toContain('let gray = 0.299 * r + 0.587 * g + 0.114 * b;');
+        // Weights of one channel sum to 1, so a grey stays grey; each sepia row is the usual tone matrix.
+        expect(0.299 + 0.587 + 0.114).toBeCloseTo(1, 12);
+        const sepiaRows = [...color.matchAll(/out([RGB]) = clamp\((\d\.\d+) \* r \+ (\d\.\d+) \* g \+ (\d\.\d+) \* b, 0\.0, 255\.0\);/g)].map((match) =>
+          match.slice(2).map(Number)
+        );
+        expect(sepiaRows).toEqual([
+          [0.393, 0.769, 0.189],
+          [0.349, 0.686, 0.168],
+          [0.272, 0.534, 0.131],
+        ]);
+        const quantize = parseWgsl(QUANTIZE_WGSL).code.replace(/\s+/g, ' ');
+        // Levels L give L - 1 steps over 0..255; a level count of 1 must not divide by zero (max(1u, L - 1u)).
+        expect(quantize).toContain('let rStep = 255.0 / f32(max(1u, u.rLevels - 1u));');
+        expect(quantize).toContain('round(round(r / rStep) * rStep)');
+      });
     });
 
     it('probes WebGPU availability and gracefully handles headless test environment', async () => {

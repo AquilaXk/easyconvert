@@ -1,15 +1,25 @@
 import { JobCreateRequestSchema } from '@/lib/api/contracts';
 import {
   CONVERT_FORM_PROPERTIES,
+  CONVERT_OPTIONS_DESCRIPTION,
   IDEMPOTENCY_KEY_PARAMETER,
   createPathParameter,
+  PDFA_ENGINE_NOTE,
+  PDFA_PROBLEM_DESCRIPTION,
+  createPdfaProblemResponse,
+  INPUT_PIXEL_LIMIT_DESCRIPTION,
   createProblemResponse,
   multipartBody,
   requireScope,
+  FRAME_RESPONSE_HEADERS,
+  ENGINE_RESPONSE_HEADERS,
+  DROPPED_STREAMS_RESPONSE_HEADERS,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
-const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).`;
+const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`; quota reservation rolled back).${PDFA_ENGINE_NOTE}`;
+const PAYLOAD_LIMIT_DESCRIPTION =
+  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows (quota reservation rolled back).';
 
 /** Conversion, archive inspection, job, and format catalog operations. */
 export const conversionPaths = {
@@ -93,6 +103,7 @@ export const conversionPaths = {
       responses: {
         '200': {
           description: 'Successful conversion returning file metadata or raw binary stream.',
+          headers: { ...FRAME_RESPONSE_HEADERS, ...ENGINE_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS },
           content: {
             'application/json': {
               schema: {
@@ -111,10 +122,36 @@ export const conversionPaths = {
         '401': createProblemResponse('Missing, expired, or invalid API key.'),
         '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:write" scope.'),
         '409': createProblemResponse('A request with the same idempotency key is currently in-flight. Retry after delay.'),
-        '422': createProblemResponse('An idempotency key was reused with a different request payload or parameters.'),
+        '422': createPdfaProblemResponse(
+          `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
+        ),
+        '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
         '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
+      },
+    },
+  },
+  '/api/v1/ocr/languages': {
+    get: {
+      summary: 'List OCR Languages',
+      description:
+        'Lists every language the OCR engine has published data for, with its short code, script, text direction and whether this server has the data installed (read from the configured language data directories once at start). Request a language with `ocrLanguage` by its `code` or `traineddata`; join up to `maxLanguagesPerRequest` with `+`. Requires "convert:read" scope. The answer may be cached for a few minutes.',
+      operationId: 'listOcrLanguagesV1',
+      security: requireScope('convert:read'),
+      responses: {
+        '200': {
+          description: 'The OCR languages.',
+          headers: {
+            'Cache-Control': {
+              description: 'Private cache lifetime; the installed set changes only when the server restarts.',
+              schema: { type: 'string', example: 'private, max-age=300' },
+            },
+          },
+          content: { 'application/json': { schema: { $ref: '#/components/schemas/OcrLanguagesResponse' } } },
+        },
+        '401': createProblemResponse('Missing, expired, or invalid API key.'),
+        '403': createProblemResponse('Access denied due to IP address, CIDR whitelist, or missing "convert:read" scope.'),
       },
     },
   },
@@ -148,7 +185,7 @@ export const conversionPaths = {
                   type: 'string',
                   description: 'Key of an object from the multipart upload API (`uploads/...`), or an output owned by the caller (`conversions/{userId}/...`, `results/{jobId}/...`). Any other key returns 404.',
                 },
-                options: { type: 'string', description: 'JSON-serialized conversion options.' },
+                options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
                 tasks: {
                   type: 'string',
                   description: 'JSON-serialized array of sequential pipeline tasks: [{ name, operation, targetFormat, options }].',

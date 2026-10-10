@@ -39,8 +39,25 @@ export interface WasmWorkerStats {
   executionMode: 'isolated-threads' | 'zero-coop-transferable';
 }
 
+import { UnsupportedOptionError } from '../../types';
 import { checkWasmSimdSupport } from '../tier-router';
 import { instantiateSimdEngine, WasmSimdExports } from './simd-bytecode';
+import { deriveQuantizerLevels } from '../quantizer-levels';
+import { EdgeUnsupportedError, serializeWorkerError } from './worker-errors';
+
+const WASM_PAGE_BYTES = 65_536;
+const WASM_INITIAL_PAGES = 512;
+const WASM_MAX_PAGES = 16_384;
+const WASM_ENGINE_INITIAL_PAGES = 64;
+const MAX_CHANNEL_VALUE = 255;
+const DEFAULT_QUANTIZE_COLORS = 256;
+
+/** Largest module a custom task compiles. */
+export const WASM_MAX_MODULE_BYTES = 8 * 1024 * 1024;
+/** Largest input a custom task hands to a module. */
+export const WASM_MAX_INPUT_BYTES = 512 * 1024 * 1024;
+/** Largest linear memory a custom module may have after it is instantiated (the engine's own 1 GiB ceiling). */
+export const WASM_MAX_MEMORY_BYTES = WASM_MAX_PAGES * WASM_PAGE_BYTES;
 
 /**
  * Detects whether the current runtime environment is cross-origin isolated.
@@ -54,8 +71,8 @@ export function isCrossOriginIsolated(): boolean {
  * Initial: 512 pages (32MB), Max: 16,384 pages (1GB).
  */
 export function createBoundedWasmMemory(
-  initialPages: number = 512,
-  maxPages: number = 16384
+  initialPages: number = WASM_INITIAL_PAGES,
+  maxPages: number = WASM_MAX_PAGES
 ): WebAssembly.Memory {
   if (typeof WebAssembly === 'undefined' || typeof WebAssembly.Memory !== 'function') {
     throw new Error('WebAssembly is not supported in this environment');
@@ -122,30 +139,34 @@ export function applyRgbaBrightness(input: Uint8Array, delta: number = 20): Uint
 }
 
 /**
+ * The level of `levels` evenly spaced values over 0..255 that is nearest to `value` (a tie goes to the higher
+ * level), as that level's value (rounded half up). It is integer arithmetic, so every runtime gives the same bytes.
+ */
+function quantizeChannelValue(value: number, levels: number): number {
+  const top = levels - 1;
+  const index = Math.floor((2 * value * top + MAX_CHANNEL_VALUE) / (2 * MAX_CHANNEL_VALUE));
+  return Math.floor((2 * MAX_CHANNEL_VALUE * index + top) / (2 * top));
+}
+
+/**
  * Applies RGBA color quantization and optional error diffusion dithering.
- * Preserves chromatic color channels instead of forcing grayscale.
+ * Preserves chromatic color channels instead of forcing grayscale. Levels come from `maxColors` through
+ * deriveQuantizerLevels, so the output holds at most that many colours.
  */
 export function applyRgbaQuantize(
   input: Uint8Array,
   width: number = 0,
   height: number = 0,
-  maxColors: number = 256,
+  maxColors: number = DEFAULT_QUANTIZE_COLORS,
   dither: boolean = false
 ): Uint8Array {
   const output = new Uint8Array(input.byteLength);
   const len = input.byteLength;
+  const { r: rLevels, g: gLevels, b: bLevels } = deriveQuantizerLevels(maxColors);
 
   if (len === 0) return output;
 
-  // Determine channel bit depths based on maxColors
-  const rLevels = maxColors <= 16 ? 4 : 8;
-  const gLevels = maxColors <= 16 ? 4 : 8;
-  const bLevels = maxColors <= 16 ? 2 : 4;
-
-  const quantizeChannel = (val: number, levels: number) => {
-    const step = 255 / (levels - 1);
-    return Math.max(0, Math.min(255, Math.round(Math.round(val / step) * step)));
-  };
+  const quantizeChannel = quantizeChannelValue;
 
   if (!dither || width <= 0 || height <= 0 || width * height * 4 !== len) {
     for (let i = 0; i < len; i += 4) {
@@ -229,11 +250,13 @@ export class WasmEngine {
   private readonly memory: WebAssembly.Memory | null = null;
   private readonly simdExports: WasmSimdExports | null = null;
   private readonly hasSimd: boolean;
+  /** Whether a SIMD kernel computed the pixels of the task in progress (a JS fallback leaves it false). */
+  private simdKernelRan = false;
 
   constructor() {
     this.hasSimd = checkWasmSimdSupport();
     try {
-      this.memory = createBoundedWasmMemory(64, 16384); // Safe initialization in workers
+      this.memory = createBoundedWasmMemory(WASM_ENGINE_INITIAL_PAGES, WASM_MAX_PAGES); // Safe initialization in workers
       if (this.hasSimd && this.memory) {
         const { exports } = instantiateSimdEngine(this.memory);
         this.simdExports = exports;
@@ -247,7 +270,7 @@ export class WasmEngine {
   public getStats(): WasmWorkerStats {
     let currentHeapPages = 0;
     try {
-      currentHeapPages = this.memory ? this.memory.buffer.byteLength / 65536 : 0;
+      currentHeapPages = this.memory ? this.memory.buffer.byteLength / WASM_PAGE_BYTES : 0;
     } catch {
       currentHeapPages = 0;
     }
@@ -264,7 +287,7 @@ export class WasmEngine {
     if (!this.memory) return false;
     const currentBytes = this.memory.buffer.byteLength;
     if (currentBytes >= byteLength) return true;
-    const neededPages = Math.ceil((byteLength - currentBytes) / 65536);
+    const neededPages = Math.ceil((byteLength - currentBytes) / WASM_PAGE_BYTES);
     try {
       this.memory.grow(neededPages);
       return true;
@@ -277,6 +300,7 @@ export class WasmEngine {
     if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
       const u8 = new Uint8Array(this.memory.buffer);
       u8.set(input, 0);
+      this.simdKernelRan = true;
       this.simdExports.rgba_grayscale(0, input.byteLength);
       return new Uint8Array(u8.subarray(0, input.byteLength));
     }
@@ -287,6 +311,7 @@ export class WasmEngine {
     if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
       const u8 = new Uint8Array(this.memory.buffer);
       u8.set(input, 0);
+      this.simdKernelRan = true;
       this.simdExports.rgba_invert(0, input.byteLength);
       return new Uint8Array(u8.subarray(0, input.byteLength));
     }
@@ -297,28 +322,25 @@ export class WasmEngine {
     if (this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
       const u8 = new Uint8Array(this.memory.buffer);
       u8.set(input, 0);
+      this.simdKernelRan = true;
       this.simdExports.rgba_brightness(0, input.byteLength, delta);
       return new Uint8Array(u8.subarray(0, input.byteLength));
     }
     return applyRgbaBrightness(input, delta);
   }
 
+  /**
+   * Quantises on the JS path only. The SIMD kernel rounds in 32-bit floats and lands one step away from the
+   * exact rounding at the levels where a boundary falls on a half (15 levels, 127.5), so the same file would
+   * come out differently with and without SIMD; one definition keeps the bytes the same on every runtime.
+   */
   public executeQuantize(
     input: Uint8Array,
     width: number = 0,
     height: number = 0,
-    maxColors: number = 256,
+    maxColors: number = DEFAULT_QUANTIZE_COLORS,
     dither: boolean = false
   ): Uint8Array {
-    if (!dither && this.simdExports && this.memory && this.ensureMemoryCapacity(input.byteLength)) {
-      const rLevels = maxColors <= 16 ? 4 : 8;
-      const gLevels = maxColors <= 16 ? 4 : 8;
-      const bLevels = maxColors <= 16 ? 2 : 4;
-      const u8 = new Uint8Array(this.memory.buffer);
-      u8.set(input, 0);
-      this.simdExports.rgba_quantize(0, input.byteLength, rLevels, gLevels, bLevels);
-      return new Uint8Array(u8.subarray(0, input.byteLength));
-    }
     return applyRgbaQuantize(input, width, height, maxColors, dither);
   }
 
@@ -329,6 +351,7 @@ export class WasmEngine {
     onProgress?.(10);
     const inputBytes = new Uint8Array(request.buffer);
     let outputBytes: Uint8Array;
+    this.simdKernelRan = false;
 
     onProgress?.(40);
 
@@ -347,7 +370,7 @@ export class WasmEngine {
           inputBytes,
           request.options?.width || 0,
           request.options?.height || 0,
-          request.options?.colors ?? 256,
+          request.options?.colors ?? DEFAULT_QUANTIZE_COLORS,
           request.options?.dither ?? false
         );
         break;
@@ -372,32 +395,151 @@ export class WasmEngine {
       jobId: request.jobId,
       buffer: outBuffer,
       executionMode: isCrossOriginIsolated() ? 'isolated-threads' : 'zero-coop-transferable',
-      simdUsed: this.hasSimd,
+      simdUsed: this.simdKernelRan,
       bytesProcessed: inputBytes.byteLength,
     };
   }
 
-  private async executeCustomWasm(
-    inputBytes: Uint8Array,
-    customWasmBytes?: ArrayBuffer
-  ): Promise<Uint8Array> {
+  /**
+   * Runs a caller's WebAssembly module over `inputBytes`. The ABI has no imports and three exports:
+   * `memory`, `alloc(len: i32) -> i32` (the address of a region of `len` bytes) and `transform(ptr: i32, len: i32) -> i32`
+   * (rewrites the region in place and returns the number of output bytes, at most `len`). The result is those bytes.
+   * Every address and length is checked against the module's memory; a module that breaks the ABI is refused.
+   *
+   * Nothing here can interrupt a module that never returns: a loop inside alloc or transform is bounded only by
+   * the caller. WasmWorkerManager runs this in a dedicated worker with a timeout and terminates the worker when
+   * it fires, and it refuses to run a custom module anywhere it could not do that.
+   */
+  private async executeCustomWasm(inputBytes: Uint8Array, customWasmBytes?: ArrayBuffer): Promise<Uint8Array> {
     if (!customWasmBytes) {
-      // Invert fallback if no raw bytecode supplied
-      return applyRgbaInvert(inputBytes);
+      throw new UnsupportedOptionError('The custom-module task needs customWasmBytes: the WebAssembly module to run.');
     }
-    const wasmModule = await WebAssembly.compile(customWasmBytes);
-    const instance = await WebAssembly.instantiate(wasmModule);
-    const exportedFn = (instance.exports.transform || instance.exports.run) as Function | undefined;
+    if (customWasmBytes.byteLength > WASM_MAX_MODULE_BYTES) {
+      throw customModuleRefusal(`the module is larger than ${WASM_MAX_MODULE_BYTES} bytes (module limit)`);
+    }
+    if (inputBytes.byteLength === 0) throw customModuleRefusal('there is no input to hand to the module');
+    if (inputBytes.byteLength > WASM_MAX_INPUT_BYTES) {
+      throw customModuleRefusal(`the input is larger than ${WASM_MAX_INPUT_BYTES} bytes (input limit)`);
+    }
 
-    if (typeof exportedFn === 'function') {
-      const res = exportedFn();
-      if (typeof res === 'number') {
-        const out = new Uint8Array(inputBytes.byteLength);
-        out.set(inputBytes);
-        return out;
-      }
+    let wasmModule: WebAssembly.Module;
+    try {
+      wasmModule = await WebAssembly.compile(customWasmBytes);
+    } catch (error) {
+      throw customModuleRefusal(`the bytes are not a valid WebAssembly module (${describeFault(error)})`);
     }
-    return inputBytes;
+    const imports = WebAssembly.Module.imports(wasmModule);
+    if (imports.length > 0) {
+      throw customModuleRefusal(
+        `the module imports ${imports.map((item) => `${item.module}.${item.name}`).join(', ')}, and the ABI has no imports`
+      );
+    }
+    let instance: WebAssembly.Instance;
+    try {
+      instance = await WebAssembly.instantiate(wasmModule);
+    } catch (error) {
+      throw customModuleRefusal(`the module could not be instantiated (${describeFault(error)})`);
+    }
+
+    const { memory, alloc, transform } = instance.exports;
+    if (!(memory instanceof WebAssembly.Memory)) {
+      throw customModuleRefusal('the module does not export its linear memory as "memory"');
+    }
+    if (typeof alloc !== 'function') throw customModuleRefusal('the module does not export "alloc(len) -> ptr"');
+    if (typeof transform !== 'function') {
+      throw customModuleRefusal('the module does not export "transform(ptr, len) -> len"');
+    }
+    // A module can grow its memory while it runs, so the size is checked after instantiation and again after
+    // each call that ran the module's code, before anything is read from or written to that memory.
+    const assertMemoryWithinLimit = (phase: string): void => {
+      if (memory.buffer.byteLength > WASM_MAX_MEMORY_BYTES) {
+        throw customModuleRefusal(
+          `the module memory grew to ${memory.buffer.byteLength} bytes during ${phase}, past ${WASM_MAX_MEMORY_BYTES} bytes (memory limit)`
+        );
+      }
+    };
+    assertMemoryWithinLimit('instantiation');
+
+    const length = inputBytes.byteLength;
+    const pointer = runModuleFunction('alloc', () => alloc(length)) >>> 0;
+    assertMemoryWithinLimit('alloc');
+    if (pointer + length > memory.buffer.byteLength) {
+      throw customModuleRefusal(
+        `alloc returned address ${pointer} for ${length} bytes, outside the module memory of ${memory.buffer.byteLength} bytes`
+      );
+    }
+    new Uint8Array(memory.buffer, pointer, length).set(inputBytes);
+
+    const outputLength = runModuleFunction('transform', () => transform(pointer, length)) >>> 0;
+    assertMemoryWithinLimit('transform');
+    if (outputLength > length) {
+      throw customModuleRefusal(`transform reported ${outputLength} output bytes for a region of ${length}`);
+    }
+    if (outputLength === 0) throw customModuleRefusal('transform reported no output bytes');
+    if (pointer + outputLength > memory.buffer.byteLength) {
+      throw customModuleRefusal('the module memory shrank below its own output');
+    }
+    // A copy: the module's memory is not the caller's to keep.
+    return new Uint8Array(memory.buffer, pointer, outputLength).slice();
+  }
+}
+
+function customModuleRefusal(message: string): EdgeUnsupportedError {
+  return new EdgeUnsupportedError(`The custom Wasm module is refused: ${message}.`);
+}
+
+function describeFault(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Calls one export of a caller's module; a trap inside it becomes a refusal instead of a raw RuntimeError. */
+function runModuleFunction(name: string, call: () => unknown): number {
+  let result: unknown;
+  try {
+    result = call();
+  } catch (error) {
+    throw customModuleRefusal(`${name} trapped (${describeFault(error)})`);
+  }
+  if (typeof result !== 'number') throw customModuleRefusal(`${name} did not return an i32`);
+  return result;
+}
+
+type WasmWorkerPost = (message: Record<string, unknown>, transfer?: Transferable[]) => void;
+
+/**
+ * Runs one worker request and reports through `post`: progress, the result, or the error serialised with its
+ * class name so the main thread can rethrow the same typed error.
+ */
+export async function runWasmWorkerJob(
+  data: Record<string, any>,
+  post: WasmWorkerPost,
+  engine: WasmEngine
+): Promise<void> {
+  if (!data) return;
+  if (data.type === 'EXECUTE') {
+    try {
+      const result = await engine.executeTask(
+        { jobId: data.jobId, task: data.task, buffer: data.buffer, options: data.options },
+        (progress) => post({ type: 'PROGRESS', jobId: data.jobId, progress })
+      );
+      // Zero-copy transfer of output buffer
+      post(
+        {
+          type: 'COMPLETED',
+          jobId: result.jobId,
+          buffer: result.buffer,
+          executionMode: result.executionMode,
+          simdUsed: result.simdUsed,
+          bytesProcessed: result.bytesProcessed,
+        },
+        [result.buffer]
+      );
+    } catch (err) {
+      const error = serializeWorkerError(err);
+      post({ type: 'ERROR', jobId: data.jobId, message: error.message, error });
+    }
+  } else if (data.type === 'GET_STATS') {
+    post({ type: 'STATS', jobId: data.jobId, stats: engine.getStats() });
   }
 }
 
@@ -406,45 +548,6 @@ const workerEngine = new WasmEngine();
 
 if (typeof self !== 'undefined' && typeof (self as any).postMessage === 'function' && typeof window === 'undefined') {
   self.onmessage = async (e: MessageEvent) => {
-    const data = e.data;
-    if (!data) return;
-
-    if (data.type === 'EXECUTE') {
-      try {
-        const result = await workerEngine.executeTask(
-          {
-            jobId: data.jobId,
-            task: data.task,
-            buffer: data.buffer,
-            options: data.options,
-          },
-          (progress) => {
-            (self as any).postMessage({ type: 'PROGRESS', jobId: data.jobId, progress });
-          }
-        );
-
-        // Zero-copy transfer of output buffer
-        (self as any).postMessage(
-          {
-            type: 'COMPLETED',
-            jobId: result.jobId,
-            buffer: result.buffer,
-            executionMode: result.executionMode,
-            simdUsed: result.simdUsed,
-            bytesProcessed: result.bytesProcessed,
-          },
-          [result.buffer]
-        );
-      } catch (err: any) {
-        (self as any).postMessage({
-          type: 'ERROR',
-          jobId: data.jobId,
-          message: err.message || 'Wasm execution failed',
-        });
-      }
-    } else if (data.type === 'GET_STATS') {
-      const stats = workerEngine.getStats();
-      (self as any).postMessage({ type: 'STATS', jobId: data.jobId, stats });
-    }
+    await runWasmWorkerJob(e.data, (message, transfer) => (self as any).postMessage(message, transfer ?? []), workerEngine);
   };
 }

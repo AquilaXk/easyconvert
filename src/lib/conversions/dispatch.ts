@@ -8,7 +8,9 @@ import {
   RawEngineRequiredError,
   UnsupportedTargetError,
 } from '../types';
-import { applyPdfPostProcessing, assertPdfPostProcessOptions } from './index';
+import { requiresNativeEngine } from './native-engine-pairs';
+import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
+import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
 import {
   executeWorkerConversion,
@@ -17,26 +19,6 @@ import {
   type WorkerVfsPayload,
 } from '../../worker/engines';
 
-/**
- * Pairs that only a native engine converts: the in-process engine has no code path for them.
- * LibreOffice converts between Office formats and, chained with Poppler, renders Office
- * documents to raster images; Poppler renders PDF to SVG. When the native engine is missing,
- * these pairs fail with EngineUnavailableError instead of falling back to the in-process engine.
- */
-const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
-  'doc->jpg', 'doc->png', 'doc->rtf',
-  'docx->doc', 'docx->jpg', 'docx->png', 'docx->rtf',
-  'odp->jpg', 'odp->png', 'odp->ppt',
-  'ods->jpg', 'ods->png',
-  'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
-  'pdf->svg',
-  'ppt->jpg', 'ppt->odp', 'ppt->png',
-  'pptx->jpg', 'pptx->png', 'pptx->ppt',
-  'rtf->doc', 'rtf->jpg', 'rtf->png',
-  'xls->jpg', 'xls->png',
-  'xlsx->jpg', 'xlsx->png',
-]);
-
 const PDF_FORMAT = 'pdf';
 const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';
 
@@ -44,16 +26,14 @@ function normalizeFormat(format: string): string {
   return format.toLowerCase().replace(/^\./, '').trim();
 }
 
-/** Whether a pair can only be converted by a native engine. */
-export function requiresNativeEngine(sourceFormat: string, targetFormat: string): boolean {
-  return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`);
-}
+export { requiresNativeEngine };
 
 /**
  * Targets the registry does not list for a video source but the native media engine produces when
  * the request carries the task option that selects them: thumbnails (`thumbnail`), streaming
  * packaging (`packaging`) and subtitle extraction (`subtitles.mode === 'extract'`).
  */
+const SERVER_ERROR_STATUS = 500;
 const THUMBNAIL_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'png']);
 const PACKAGING_TARGETS: ReadonlySet<string> = new Set(['hls', 'dash']);
 const SUBTITLE_EXTRACT_TARGETS: ReadonlySet<string> = new Set(['srt', 'vtt', 'ass']);
@@ -86,7 +66,9 @@ function toEngineUnavailable(err: unknown): unknown {
   if (err instanceof RawEngineRequiredError) {
     return new EngineUnavailableError('dcraw_emu', err.message);
   }
-  if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError)) {
+  // A language the table does not know stays a client error; one whose data is not installed here is a missing
+  // engine part (503), which another worker may have.
+  if (err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError && err.status < SERVER_ERROR_STATUS)) {
     return new EngineUnavailableError('tesseract', err.message);
   }
   return err;
@@ -101,19 +83,31 @@ function materialize(result: WorkerConversionResult): WorkerConversionResult {
   return { ...result, buffer, size: buffer.length, filePath: undefined };
 }
 
+/** Engines that are LibreOffice: their PDF export can write PDF/A in the same pass. */
+const SOFFICE_ENGINES: ReadonlySet<string> = new Set(['native-soffice', 'native-soffice-pool']);
+
 /**
  * Applies watermark, PDF/A and protection to PDF output a native engine produced. The in-process
  * engine already applies them inside convertFile, so its output is never processed twice.
+ *
+ * An Office export LibreOffice already wrote as PDF/A skips the Draw round trip, which re-encodes
+ * images and drops the outline and links; its identification and validation are checked instead.
  */
 async function postProcessNativePdf(
   result: WorkerConversionResult,
   tgt: string,
   options: WorkerEngineOptions
 ): Promise<WorkerConversionResult> {
-  const needsPostProcessing = Boolean(options.watermark || options.pdfa || options.protect);
-  if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE || !needsPostProcessing) return result;
+  if (tgt !== PDF_FORMAT || result.engineUsed === IN_PROCESS_ENGINE) return result;
+  const exportedAs = SOFFICE_ENGINES.has(result.engineUsed) ? directPdfAExportConformance(options) : null;
+  const needsPostProcessing = Boolean(options.watermark || resolvePdfAConformance(options) || options.protect);
+  if (!needsPostProcessing && !exportedAs) return result;
   const processed: WorkerConversionResult = { ...result, buffer: result.buffer };
-  await applyPdfPostProcessing(processed, options);
+  await applyPdfPostProcessing(processed, options, { pdfaExported: exportedAs !== null });
+  if (exportedAs) {
+    const verdict = await verifyPdfA(processed.buffer, exportedAs);
+    processed.metadata = { ...processed.metadata, ...pdfaMetadata(verdict.pdfaValidated, verdict.conformanceLevel) };
+  }
   if (processed.filePath) {
     fs.writeFileSync(processed.filePath, processed.buffer);
   }

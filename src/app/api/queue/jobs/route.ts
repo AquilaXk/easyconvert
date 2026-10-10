@@ -2,11 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
+import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +37,25 @@ export async function POST(req: NextRequest) {
       await rollbackQuota(reservationId);
     }
     return NextResponse.json({ success: false, error }, { status });
+  };
+
+  const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
+
+  /** A 400 problem, after releasing the quota reservation, for a file name the registry has no format for. */
+  const failUnknownSource = async (filename: string) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return createProblemDetailsResponse(400, `Could not identify source format for file "${filename}".`, instanceUri);
+  };
+
+  /** The 400 problem for options that break ConversionOptionsSchema, after releasing the quota reservation. */
+  const rejectInvalidOptions = async (candidate: ConversionOptions) => {
+    const problem = legacyOptionsProblem(candidate, instanceUri);
+    if (problem && reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return problem;
   };
 
   try {
@@ -62,16 +86,19 @@ export async function POST(req: NextRequest) {
           return await failWithRollback(400, 'The "options" field must be a JSON object.');
         }
         options = parsed;
+        const optionsProblem = await rejectInvalidOptions(options);
+        if (optionsProblem) return optionsProblem;
       }
 
       if (file) {
+        if (!detectFormatFromFilename(file.name)) return await failUnknownSource(file.name);
         originalFilename = file.name;
         fileSize = file.size;
         const arrayBuffer = await file.arrayBuffer();
         // Save to S3 chunk storage directly
-        const init = s3Storage.initiateMultipartUpload(file.name, file.type, file.size);
-        s3Storage.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
-        const completed = s3Storage.completeMultipartUpload(init.uploadId);
+        const init = await storageProvider.initiateMultipartUpload(file.name, file.type, file.size);
+        await storageProvider.uploadPart(init.uploadId, 1, Buffer.from(arrayBuffer));
+        const completed = await storageProvider.completeMultipartUpload(init.uploadId);
         storageKey = completed.key;
       }
     } else {
@@ -83,6 +110,8 @@ export async function POST(req: NextRequest) {
         return await failWithRollback(400, 'The "options" field must be a JSON object.');
       }
       options = body.options ?? {};
+      const optionsProblem = await rejectInvalidOptions(options);
+      if (optionsProblem) return optionsProblem;
       storageKey = body.storageKey;
       inputBufferBase64 = body.inputBufferBase64;
       fileSize = body.fileSize || 0;
@@ -105,7 +134,8 @@ export async function POST(req: NextRequest) {
     }
 
     const detected = detectFormatFromFilename(originalFilename);
-    const sourceFormat = detected ? detected.extension : originalFilename.split('.').pop() || 'bin';
+    if (!detected) return await failUnknownSource(originalFilename);
+    const sourceFormat = detected.extension;
 
     // Add conversion task to BullMQ Distributed Queue
     const job = await conversionQueue.add(
@@ -140,6 +170,10 @@ export async function POST(req: NextRequest) {
     if (reservationId) {
       await rollbackQuota(reservationId);
     }
+    const queueProblem = queueErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    if (queueProblem) return queueProblem;
+    const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
+    if (storageProblem) return storageProblem;
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
       { status: 500 }
@@ -160,6 +194,10 @@ function isListableJobState(value: string): value is JobState {
  * anonymous jobs are reachable only through their capability URL and are never listed.
  */
 export async function GET(req: NextRequest) {
+  return withQueueErrors(req.nextUrl?.pathname || '/api/queue/jobs', () => listOwnJobs(req));
+}
+
+async function listOwnJobs(req: NextRequest) {
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:read' });
   if (!auth.authorized || !auth.user) {
     return NextResponse.json(
@@ -192,7 +230,9 @@ export async function GET(req: NextRequest) {
     timestamp: j.timestamp,
     durationMs: j.finishedOn && j.processedOn ? j.finishedOn - j.processedOn : undefined,
     returnvalue: j.returnvalue,
-    failedReason: j.failedReason,
+    failedReason: j.failedReason === undefined ? undefined : redactText(j.failedReason),
+    failedCode: j.failedCode,
+    failedStatus: j.failedStatus,
   }));
 
   return NextResponse.json({

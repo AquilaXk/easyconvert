@@ -1,0 +1,1975 @@
+{
+  "schemaVersion": 1,
+  "entries": {
+    "audio/music.wav->aac/bd_rate_snr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->aac/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 68.89499664888537,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->aac/loudness_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0.09999999999999964,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->aac/snr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.5,
+        "rel": 0
+      },
+      "ours": 13.47955,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->aac/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.0136314256839276
+    },
+    "audio/music.wav->aac/true_peak_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->flac/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 150034,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->flac/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->flac/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.0336994559068817
+    },
+    "audio/music.wav->opus/bd_rate_snr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0.6020296288439031,
+      "delta": 0.6020296288439031,
+      "ratio": null
+    },
+    "audio/music.wav->opus/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 80.1537501559965,
+      "delta": 0.3274678647198357,
+      "ratio": null
+    },
+    "audio/music.wav->opus/loudness_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/music.wav->opus/snr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.5,
+        "rel": 0
+      },
+      "ours": 27.9056,
+      "delta": 0.05655000000000143,
+      "ratio": null
+    },
+    "audio/music.wav->opus/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9859835057000745
+    },
+    "audio/music.wav->opus/true_peak_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0.20000000000000018,
+      "delta": 0.10000000000000053,
+      "ratio": null
+    },
+    "audio/speech.wav->aac/bd_rate_snr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->aac/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 25.489998466801197,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->aac/loudness_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0.09999999999999787,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->aac/snr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.5,
+        "rel": 0
+      },
+      "ours": 20.8348,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->aac/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.0140981663992863
+    },
+    "audio/speech.wav->aac/true_peak_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->flac/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 157541,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->flac/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->flac/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.0449787313843681
+    },
+    "audio/speech.wav->opus/bd_rate_snr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->opus/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 24.390800228093518,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->opus/loudness_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0.09999999999999787,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->opus/snr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.5,
+        "rel": 0
+      },
+      "ours": 25.5092,
+      "delta": 0,
+      "ratio": null
+    },
+    "audio/speech.wav->opus/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9892602685037503
+    },
+    "audio/speech.wav->opus/true_peak_shift": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.7z->tar/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.896879849041572
+    },
+    "compression/mixed.tar->7z/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.32919146712834174,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.tar->7z/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9198632398683276
+    },
+    "compression/mixed.tar->zst/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.37478372816664585,
+      "delta": -0.003828966201264772,
+      "ratio": null
+    },
+    "compression/mixed.tar->zst/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.5988114036597459
+    },
+    "compression/mixed.xz->tar/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.884414807476612
+    },
+    "compression/mixed.zst->tar/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.855239621266776
+    },
+    "document/book.epub->docx:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:listItems/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:listItems/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:tableCells/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/book.epub->docx:tableCells/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/complex-script txt->pdf/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -2.7925822035218952,
+      "ratio": null
+    },
+    "document/complex-script txt->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 12.214197389464976
+    },
+    "document/noori.hwp->html:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/noori.hwp->html:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/noori.hwp->html:tableCells/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/noori.hwp->html:tableCells/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/noori.hwp->txt/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/noori.hwp->txt/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 8.708652116018651
+    },
+    "document/pdf-structure->docx/column_accuracy": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.05,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.25,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/heading_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/list_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/paragraph_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -15.061111111111112,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/reading_order_tau": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9983359133126936,
+      "delta": 0.0965811965811968,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/table_teds": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.03,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/pdf-structure->docx/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 19.67563284759026
+    },
+    "document/pdf-text->txt/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -24.38101963028649,
+      "ratio": null
+    },
+    "document/pdf-text->txt/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.146516279349439
+    },
+    "document/pdf-text->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/report.docx->pdf/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/report.docx->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 11.657898964791004
+    },
+    "document/report.docx->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:listItems/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:listItems/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 1,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:notes/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:notes/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:tableCells/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub:tableCells/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.19999999999999996,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "document/rich-structure.docx->epub/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 59.722609329986014
+    },
+    "document/rich-structure.docx->html:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.16666666666666663,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:listItems/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:listItems/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:notes/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:notes/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:tableCells/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html:tableCells/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->html/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 87.63240935157799
+    },
+    "document/rich-structure.docx->odt:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.16666666666666663,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:listItems/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:listItems/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:notes/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:notes/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:tableCells/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt:tableCells/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->odt/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 73.91271587711651
+    },
+    "document/rich-structure.docx->pdf:images/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->pdf:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "document/rich-structure.docx->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 9.341222099751679
+    },
+    "document/rich-structure.docx->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.7272727272727273,
+      "delta": 0.003868471953578423,
+      "ratio": null
+    },
+    "image/lineart.png->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->avif/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 34262,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->avif/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 49.853933,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->avif/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.998366,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8045762188904677
+    },
+    "image/lineart.png->jpg/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -22.35646008495834,
+      "delta": -22.35646008495834,
+      "ratio": null
+    },
+    "image/lineart.png->jpg/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -46.45234689834534,
+      "delta": -46.45234689834534,
+      "ratio": null
+    },
+    "image/lineart.png->jpg/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 53189,
+      "delta": -6127,
+      "ratio": null
+    },
+    "image/lineart.png->jpg/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 40.583484,
+      "delta": 2.3549429999999987,
+      "ratio": null
+    },
+    "image/lineart.png->jpg/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.996373,
+      "delta": 0.0066589999999999705,
+      "ratio": null
+    },
+    "image/lineart.png->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.30046079474008897
+    },
+    "image/lineart.png->webp/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->webp/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->webp/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 37418,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->webp/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 42.714044,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->webp/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.997339,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/lineart.png->webp/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.41637344781822255
+    },
+    "image/photo-a.jpg->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -14.019243023344984,
+      "delta": -14.019243023344984,
+      "ratio": null
+    },
+    "image/photo-a.jpg->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -15.211250347134264,
+      "delta": -15.211250347134264,
+      "ratio": null
+    },
+    "image/photo-a.jpg->avif/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 16024,
+      "delta": -10430,
+      "ratio": null
+    },
+    "image/photo-a.jpg->avif/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 43.845793,
+      "delta": -0.8065330000000017,
+      "ratio": null
+    },
+    "image/photo-a.jpg->avif/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.965013,
+      "delta": -0.005445999999999951,
+      "ratio": null
+    },
+    "image/photo-a.jpg->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8450182167321806
+    },
+    "image/photo-a.jpg->jpg/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -20.937501242701806,
+      "delta": -20.937501242701806,
+      "ratio": null
+    },
+    "image/photo-a.jpg->jpg/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -17.186346668835604,
+      "delta": -17.186346668835604,
+      "ratio": null
+    },
+    "image/photo-a.jpg->jpg/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 20896,
+      "delta": -7559,
+      "ratio": null
+    },
+    "image/photo-a.jpg->jpg/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 42.957131,
+      "delta": -0.22693500000000455,
+      "ratio": null
+    },
+    "image/photo-a.jpg->jpg/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.961064,
+      "delta": -0.003098999999999963,
+      "ratio": null
+    },
+    "image/photo-a.jpg->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.551393855532912
+    },
+    "image/photo-a.jpg->webp/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -1.1182028644717845,
+      "delta": -1.1182028644717845,
+      "ratio": null
+    },
+    "image/photo-a.jpg->webp/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -0.6928088516903852,
+      "delta": -0.6928088516903852,
+      "ratio": null
+    },
+    "image/photo-a.jpg->webp/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 13706,
+      "delta": -540,
+      "ratio": null
+    },
+    "image/photo-a.jpg->webp/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 42.195147,
+      "delta": -0.09435100000000318,
+      "ratio": null
+    },
+    "image/photo-a.jpg->webp/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.950455,
+      "delta": -0.0010179999999999634,
+      "ratio": null
+    },
+    "image/photo-a.jpg->webp/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9919481853766741
+    },
+    "image/photo-b.png->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -13.518299348308304,
+      "delta": -13.518299348308304,
+      "ratio": null
+    },
+    "image/photo-b.png->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -13.379186590915692,
+      "delta": -13.379186590915692,
+      "ratio": null
+    },
+    "image/photo-b.png->avif/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 12776,
+      "delta": -8467,
+      "ratio": null
+    },
+    "image/photo-b.png->avif/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 43.715488,
+      "delta": -0.864924000000002,
+      "ratio": null
+    },
+    "image/photo-b.png->avif/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.966487,
+      "delta": -0.005662999999999974,
+      "ratio": null
+    },
+    "image/photo-b.png->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7064265884657055
+    },
+    "image/photo-b.png->jpg/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -16.63783533880594,
+      "delta": -16.63783533880594,
+      "ratio": null
+    },
+    "image/photo-b.png->jpg/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -14.965236817645444,
+      "delta": -14.965236817645444,
+      "ratio": null
+    },
+    "image/photo-b.png->jpg/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 16479,
+      "delta": -4741,
+      "ratio": null
+    },
+    "image/photo-b.png->jpg/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 42.586684,
+      "delta": -0.20317100000000465,
+      "ratio": null
+    },
+    "image/photo-b.png->jpg/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.96091,
+      "delta": -0.0023559999999999137,
+      "ratio": null
+    },
+    "image/photo-b.png->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.49220604322519584
+    },
+    "image/photo-b.png->webp/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/photo-b.png->webp/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/photo-b.png->webp/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 10752,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/photo-b.png->webp/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 41.803687,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/photo-b.png->webp/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.949684,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/photo-b.png->webp/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.7979705519190888
+    },
+    "image/screenshot.png->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/screenshot.png->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/screenshot.png->avif/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 8633,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/screenshot.png->avif/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 53.498234,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/screenshot.png->avif/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.998372,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/screenshot.png->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9086680468737
+    },
+    "image/screenshot.png->jpg/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -63.659605226723095,
+      "delta": -63.659605226723095,
+      "ratio": null
+    },
+    "image/screenshot.png->jpg/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -21.461941386992123,
+      "delta": -21.461941386992123,
+      "ratio": null
+    },
+    "image/screenshot.png->jpg/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 29854,
+      "delta": 2486,
+      "ratio": null
+    },
+    "image/screenshot.png->jpg/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 44.894442,
+      "delta": 4.431027,
+      "ratio": null
+    },
+    "image/screenshot.png->jpg/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.995204,
+      "delta": 0.0031010000000000204,
+      "ratio": null
+    },
+    "image/screenshot.png->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.34565198803847136
+    },
+    "image/screenshot.png->webp/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0.44640436704910247,
+      "delta": 0.44640436704910247,
+      "ratio": null
+    },
+    "image/screenshot.png->webp/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -0.6245669643254237,
+      "delta": -0.6245669643254237,
+      "ratio": null
+    },
+    "image/screenshot.png->webp/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 11424,
+      "delta": 198,
+      "ratio": null
+    },
+    "image/screenshot.png->webp/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 45.773729,
+      "delta": 0.2432760000000016,
+      "ratio": null
+    },
+    "image/screenshot.png->webp/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.995251,
+      "delta": 0.00016300000000002424,
+      "ratio": null
+    },
+    "image/screenshot.png->webp/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.3048619648204828
+    },
+    "ocr/scan.png->pdf/cer": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0.75,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -0.1567398119122257,
+      "ratio": null
+    },
+    "ocr/scan.png->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8173564799888119
+    },
+    "ocr/scan.png->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -0.08327161420927931,
+      "delta": -0.08327161420927931,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": -0.03240628577410032,
+      "delta": -0.03240628577410032,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 568.964,
+      "delta": 0.10400000000004184,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 37.575058,
+      "delta": 0.01841299999999535,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.984699,
+      "delta": 0.00003399999999997849,
+      "ratio": null
+    },
+    "video/clip.mp4->h264/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.3767361596472141
+    },
+    "video/clip.mp4->hevc/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->hevc/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->hevc/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 599.136,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->hevc/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 36.673144,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->hevc/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.981997,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->hevc/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.993076027212218
+    },
+    "video/clip.mp4->vp9/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->vp9/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->vp9/bitrate": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 751.06,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->vp9/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 31.584869,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->vp9/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.964277,
+      "delta": 0,
+      "ratio": null
+    },
+    "video/clip.mp4->vp9/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9911625497831871
+    }
+  }
+}

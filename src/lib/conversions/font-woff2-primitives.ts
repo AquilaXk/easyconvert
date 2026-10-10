@@ -14,9 +14,8 @@ export class Woff2FormatError extends ConversionFailedError {
   }
 }
 
-/** A size or count in a WOFF2 file, or in a font to encode, exceeds the limits of this engine. Maps to HTTP 413. */
+/** A size or count in a WOFF2 file, or in a font to encode, exceeds the limits of this engine. */
 export class Woff2LimitError extends Woff2FormatError {
-  readonly status = 413;
   constructor(message: string) {
     super(message);
     this.name = 'Woff2LimitError';

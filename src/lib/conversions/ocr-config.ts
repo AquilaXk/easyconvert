@@ -1,3 +1,5 @@
+import { findOcrLanguage } from './ocr-languages';
+
 /**
  * Tesseract recognition parameters shared by the WebAssembly worker and the native CLI.
  * Values are the numeric constants from the Tesseract API (PageSegMode / OcrEngineMode).
@@ -35,6 +37,8 @@ const TEXT_ROW_MIN_HEIGHT_PX = 2;
 export const OCR_FALLBACK_MIN_WORD_GAIN = 1;
 /** PSM 5: a single uniform block of vertically aligned text, for `_vert` traineddata. */
 export const OCR_PSM_VERTICAL_BLOCK = '5';
+/** OEM 0: the legacy engine, which orientation and script detection needs. */
+export const OCR_OEM_LEGACY_ONLY = 0;
 /** OEM 1: LSTM neural-network engine only. */
 export const OCR_OEM_LSTM_ONLY = 1;
 
@@ -99,4 +103,31 @@ export function ocrFallbackPageSegMode(tesseractLang: string): string | null {
 /** Whether a retry found enough more words than the first reading to replace it. */
 export function fallbackReadsMore(firstWordCount: number, retryWordCount: number): boolean {
   return retryWordCount - firstWordCount >= OCR_FALLBACK_MIN_WORD_GAIN;
+}
+
+/**
+ * A page is read again with another preparation when its character-weighted confidence is below this (the
+ * golden pages score 0.91 to 0.96 when read well; a page the recognizer cannot segment scores 0.82 and less).
+ */
+export const OCR_ALTERNATIVE_TRIGGER_QUALITY = 0.9;
+/**
+ * A second reading replaces the first when it recognizes at least this many times as much confident text. The
+ * first reading is only questioned because it looked poor, so a second one that does as well is as good: the
+ * confident characters of two readings of one page differ by a character or two when the readings are alike, and
+ * any larger loss (binarizing blurred text, enlarging noise) shows as a drop well beyond that.
+ */
+export const OCR_ALTERNATIVE_MIN_EVIDENCE_GAIN = 1;
+
+const LATIN_SCRIPT = 'Latn';
+
+/**
+ * Whether a page in this language set may be cut into bands and read in parts (see ocr-bands.ts): every language is
+ * a left-to-right Latin-script one. The layout analysis of other scripts depends on the page as a whole (a Korean
+ * page cut between two lines is read as characters scattered over several lines), so they are read whole.
+ */
+export function ocrBandsAllowedFor(tesseractLang: string): boolean {
+  return tesseractLang.split(LANGUAGE_SEPARATOR).every((name) => {
+    const language = findOcrLanguage(name);
+    return language !== undefined && language.script === LATIN_SCRIPT && language.direction === 'ltr';
+  });
 }

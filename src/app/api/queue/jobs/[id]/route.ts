@@ -6,23 +6,37 @@ import {
   TERMINAL_TELEMETRY_EVENTS,
 } from '@/lib/queue/bullmq-engine';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
+import { redactText } from '@/lib/security/redact';
+import { withQueueErrors } from '@/lib/api/queue-error-response';
 
 export const dynamic = 'force-dynamic';
+
+const JOB_PATH = '/api/queue/jobs';
+
+// Next.js 15 passes route params as a promise.
+interface JobRouteContext {
+  params: Promise<{ id: string }>;
+}
 
 // Jobs created through the authenticated API carry `userId` and are visible only to that user;
 // jobs without an owner (anonymous uploads) keep capability-URL access by job id.
 
-export async function GET(
+export async function GET(req: NextRequest, context: JobRouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOB_PATH, () => readJob(req, context));
+}
+
+async function readJob(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: JobRouteContext
 ) {
+  const { id: jobId } = await params;
   const notFound = () =>
     NextResponse.json(
-      { success: false, error: `Job with ID "${params.id}" not found.` },
+      { success: false, error: `Job with ID "${jobId}" not found.` },
       { status: 404 }
     );
 
-  const job = await conversionQueue.getJob(params.id);
+  const job = await conversionQueue.getJob(jobId);
   if (!job) {
     return notFound();
   }
@@ -46,7 +60,7 @@ export async function GET(
           state: job.state,
           progress: job.progress,
           result: job.returnvalue,
-          error: job.failedReason,
+          error: job.failedReason === undefined ? undefined : redactText(job.failedReason),
         });
         controller.enqueue(encoder.encode(`event: initial\ndata: ${initialPayload}\n\n`));
 
@@ -55,7 +69,7 @@ export async function GET(
           return;
         }
 
-        const unsubscribe = subscribeToJobTelemetry(conversionQueue, params.id, (event) => {
+        const unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
           try {
             const dataStr = JSON.stringify(event.data);
             controller.enqueue(encoder.encode(`event: ${event.event}\ndata: ${dataStr}\n\n`));
@@ -104,18 +118,25 @@ export async function GET(
       targetFormat: job.data.targetFormat,
     },
     returnvalue: job.returnvalue,
-    failedReason: job.failedReason,
-    logs: job.logs,
+    failedReason: job.failedReason === undefined ? undefined : redactText(job.failedReason),
+    failedCode: job.failedCode,
+    failedStatus: job.failedStatus,
+    logs: job.logs.map(redactText),
   });
 }
 
-export async function DELETE(
+export async function DELETE(req: NextRequest, context: JobRouteContext) {
+  return withQueueErrors(req.nextUrl?.pathname || JOB_PATH, () => cancelJobRequest(req, context));
+}
+
+async function cancelJobRequest(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: JobRouteContext
 ) {
+  const { id: jobId } = await params;
   const notFound = () => NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
 
-  const job = await conversionQueue.getJob(params.id);
+  const job = await conversionQueue.getJob(jobId);
   if (!job) {
     return notFound();
   }
@@ -125,7 +146,7 @@ export async function DELETE(
     return denied;
   }
 
-  const cancelled = await conversionQueue.cancelJob(params.id, 'Job was cancelled by client request.');
+  const cancelled = await conversionQueue.cancelJob(jobId, 'Job was cancelled by client request.');
   if (!cancelled) {
     return NextResponse.json(
       { success: false, error: `Job in state "${job.state}" cannot be cancelled.` },

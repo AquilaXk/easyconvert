@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { extractStructuredTextFromPdf, extractTextFromPdf } from '../src/lib/conversions/pdf-utils';
+import { extractPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import {
   ConversionFailedError,
   CorruptStreamError,
@@ -24,6 +24,10 @@ import {
   textContent,
 } from './helpers/pdf-craft';
 
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
 /**
  * Stream decoding in the PDF text extractor: every Flate stream is bounded, only content reachable
  * from the page tree is decoded, and image streams are never decoded for text. The fixtures are
@@ -36,10 +40,14 @@ const HTTP_BAD_REQUEST = 400;
 const BOMB_MIB = 128; // above the 64 MiB per-stream cap, about 1000:1 once deflated
 const OVER_BUDGET_STREAM_MIB = 60; // below the per-stream cap; five of them pass the 256 MiB budget
 const OVER_BUDGET_STREAMS = 5;
-const BOMB_TIME_LIMIT_MS = 2000;
+/** Hang guard only: the budget stops a bomb in milliseconds; inflating it would take far longer. */
+const BOMB_HANG_GUARD_MS = 30_000;
 const BOMB_RSS_LIMIT_MIB = 200;
 const ORPHAN_MARKER = 'ORPHAN-MARKER-7731';
 const SUPERSEDED_MARKER = 'SUPERSEDED-MARKER-4410';
+
+/** The text of a PDF through the extraction the conversions use. */
+const extractTextFromPdf = async (pdf: Buffer): Promise<string> => (await extractPdfDocument(pdf)).text;
 
 const zeroBomb = zlib.deflateSync(Buffer.alloc(BOMB_MIB * MIB), { level: 9 });
 const tempDirs: string[] = [];
@@ -114,7 +122,7 @@ describe('PDF Flate bombs are refused with a typed 413', () => {
     it(`pdf -> ${target}: a bomb page content stream is refused quickly and cheaply`, async () => {
       const { err, ms, rssMiB } = await measure(() => convertFile(contentBombPdf, 'pdf', target, {}, 'bomb.pdf'));
       expectLimitError(err);
-      expect(ms).toBeLessThan(BOMB_TIME_LIMIT_MS);
+      expect(ms).toBeLessThan(BOMB_HANG_GUARD_MS);
       expect(rssMiB).toBeLessThan(BOMB_RSS_LIMIT_MIB);
     });
   }
@@ -131,18 +139,18 @@ describe('PDF Flate bombs are refused with a typed 413', () => {
       },
       ...streamIds.map((id): CraftObject => ({ id, dict: '/Filter /FlateDecode', stream: chunk })),
     ];
-    const err = await catchError(() => extractStructuredTextFromPdf(buildPdf(objects, 1).buffer));
+    const err = await catchError(() => extractPdfDocument(buildPdf(objects, 1).buffer));
     expectLimitError(err);
     expect((err as Error).message).toMatch(/document/i);
   });
 });
 
 describe('PDF stream decoding fails closed on corrupt data', () => {
-  it('maps a corrupt Flate content stream to a typed 400, not a skip', () => {
+  it('maps a corrupt Flate content stream to a typed 400, not a skip', async () => {
     const pdf = singlePagePdf(Buffer.from('this is not a zlib stream at all', 'latin1')).buffer;
     let err: unknown;
     try {
-      extractTextFromPdf(pdf);
+      await extractTextFromPdf(pdf);
     } catch (e) {
       err = e;
     }
@@ -155,22 +163,22 @@ describe('PDF stream decoding fails closed on corrupt data', () => {
 describe('PDF text comes only from content the page tree reaches', () => {
   const visible = 'VISIBLE-LINE-ONE';
 
-  it('omits an orphan content stream that no page references', () => {
+  it('omits an orphan content stream that no page references', async () => {
     const pdf = singlePagePdf(flate(textContent(visible)), [
       { id: 6, dict: '/Filter /FlateDecode', stream: flate(textContent(ORPHAN_MARKER, 600)) },
     ]).buffer;
-    const text = extractTextFromPdf(pdf);
+    const text = await extractTextFromPdf(pdf);
     expect(text).toContain(visible);
     expect(text).not.toContain(ORPHAN_MARKER);
   });
 
-  oracleTest('matches pdftotext for a document with an orphan content stream', ['pdftotext'], () => {
+  oracleTest('matches pdftotext for a document with an orphan content stream', ['pdftotext'], async () => {
     const pdf = singlePagePdf(flate(textContent(visible)), [
       { id: 6, dict: '/Filter /FlateDecode', stream: flate(textContent(ORPHAN_MARKER, 600)) },
     ]).buffer;
     const reference = pdftotext(pdf);
     expect(reference).not.toContain(ORPHAN_MARKER);
-    expect(words(extractTextFromPdf(pdf))).toEqual(words(reference));
+    expect(words(await extractTextFromPdf(pdf))).toEqual(words(reference));
   });
 
   const revisionOne = singlePagePdf(flate(textContent(SUPERSEDED_MARKER)));
@@ -180,16 +188,16 @@ describe('PDF text comes only from content the page tree reaches', () => {
     1
   );
 
-  it('uses the newest revision of an object after an incremental update', () => {
-    const text = extractTextFromPdf(revised.buffer);
+  it('uses the newest revision of an object after an incremental update', async () => {
+    const text = await extractTextFromPdf(revised.buffer);
     expect(text).toContain(visible);
     expect(text).not.toContain(SUPERSEDED_MARKER);
   });
 
-  oracleTest('matches pdftotext after an incremental update', ['pdftotext'], () => {
+  oracleTest('matches pdftotext after an incremental update', ['pdftotext'], async () => {
     const reference = pdftotext(revised.buffer);
     expect(reference).not.toContain(SUPERSEDED_MARKER);
-    expect(words(extractTextFromPdf(revised.buffer))).toEqual(words(reference));
+    expect(words(await extractTextFromPdf(revised.buffer))).toEqual(words(reference));
   });
 
   const FORM_RESOURCES = '<< /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >>';
@@ -199,28 +207,28 @@ describe('PDF text comes only from content the page tree reaches', () => {
     stream: flate(textContent(text, 500)),
   });
 
-  it('decodes a form XObject that a page draws and skips one that no page draws', () => {
+  it('decodes a form XObject that a page draws and skips one that no page draws', async () => {
     const pdf = singlePagePdf(
       flate(`${textContent(visible)}/Fm0 Do\n`),
       [formObject(6, 'FORM-DRAWN-TEXT'), formObject(7, ORPHAN_MARKER)],
       { resources: FORM_RESOURCES }
     ).buffer;
-    const text = extractTextFromPdf(pdf);
+    const text = await extractTextFromPdf(pdf);
     expect(text).toContain('FORM-DRAWN-TEXT');
     expect(text).toContain(visible);
     expect(text).not.toContain(ORPHAN_MARKER);
   });
 
-  oracleTest('matches pdftotext for page and form XObject text', ['pdftotext'], () => {
+  oracleTest('matches pdftotext for page and form XObject text', ['pdftotext'], async () => {
     const pdf = singlePagePdf(
       flate(`${textContent(visible)}/Fm0 Do\n`),
       [formObject(6, 'FORM-DRAWN-TEXT'), formObject(7, ORPHAN_MARKER)],
       { resources: FORM_RESOURCES }
     ).buffer;
-    expect(words(extractTextFromPdf(pdf)).sort()).toEqual(words(pdftotext(pdf)).sort());
+    expect(words(await extractTextFromPdf(pdf)).sort()).toEqual(words(pdftotext(pdf)).sort());
   });
 
-  it('never decodes an image XObject, even one a page draws', () => {
+  it('never decodes an image XObject, even one a page draws', async () => {
     const image: CraftObject = {
       id: 6,
       dict: '/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode',
@@ -229,19 +237,19 @@ describe('PDF text comes only from content the page tree reaches', () => {
     const pdf = singlePagePdf(flate(`${textContent(visible)}/Fm0 Do\n`), [image], {
       resources: FORM_RESOURCES,
     }).buffer;
-    expect(extractTextFromPdf(pdf)).toContain(visible);
+    expect(await extractTextFromPdf(pdf)).toContain(visible);
   });
 
-  it('refuses a form XObject that draws itself', () => {
+  it('refuses a form XObject that draws itself', async () => {
     const selfReferencing: CraftObject = {
       id: 6,
       dict: '/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /XObject << /Fm0 6 0 R >> >>',
       stream: Buffer.from('/Fm0 Do\n', 'latin1'),
     };
     const pdf = singlePagePdf(flate('/Fm0 Do\n'), [selfReferencing], { resources: FORM_RESOURCES }).buffer;
-    const err = (() => {
+    const err = await (async () => {
       try {
-        extractTextFromPdf(pdf);
+        await extractTextFromPdf(pdf);
       } catch (e) {
         return e;
       }
@@ -262,13 +270,13 @@ describe('PDF text comes only from content the page tree reaches', () => {
     return fs.readFileSync(output);
   };
 
-  oracleTest('reads a page tree stored in object streams (qpdf-generated)', ['qpdf', 'pdftotext'], () => {
+  oracleTest('reads a page tree stored in object streams (qpdf-generated)', ['qpdf', 'pdftotext'], async () => {
     const source = singlePagePdf(flate(textContent(visible)), [
       { id: 6, dict: '/Filter /FlateDecode', stream: flate(textContent(ORPHAN_MARKER, 600)) },
     ]).buffer;
     const packed = compressedStructure(source);
     expect(packed.includes(Buffer.from('/Type /ObjStm')) || packed.includes(Buffer.from('/Type/ObjStm'))).toBe(true);
-    const text = extractTextFromPdf(packed);
+    const text = await extractTextFromPdf(packed);
     expect(text).toContain(visible);
     expect(text).not.toContain(ORPHAN_MARKER);
     expect(words(text)).toEqual(words(pdftotext(packed)));

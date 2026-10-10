@@ -54,6 +54,7 @@ CLAUDE.local.md
 .claude/
 implementation_plan.md
 walkthrough.md
+docs/EXECUTION_PLAN*.md
 
 # Git worktrees (manual and Claude Code managed)
 .worktrees/
@@ -68,3 +69,9 @@ tests/fixtures/golden-testnet-temp/
 
 # Camera-RAW samples fetched on demand (npm run fixtures:raw)
 tests/fixtures/raw/.cache/
+
+# Quality benchmark reports (npm run bench:quality)
+bench-results/
+
+# Reference-side measurements cached by the parity benchmark (npm run bench:quality -- --parity)
+.bench-cache/

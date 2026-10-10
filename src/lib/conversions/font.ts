@@ -11,7 +11,7 @@ import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bound
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
-import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, type Woff2DecodedFont } from './font-woff2';
+import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
 import { isXmlCharacter, parseSvgFontDocument, type SvgFont } from './font-svg';
 import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-path';
 
@@ -140,7 +140,7 @@ export async function convertFont(
       break;
 
     case 'woff2':
-      outputBuffer = encodeWoff2(parsedFont);
+      outputBuffer = await encodeWoff2Async(parsedFont);
       mimeType = 'font/woff2';
       break;
 
@@ -531,6 +531,12 @@ export function decodeWoff(buffer: Buffer, defaultName: string): ParsedFont {
 export function encodeWoff2(font: ParsedFont): Buffer {
   const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
   return encodeWoff2Container(font.sfntVersion || 0x00010000, tables);
+}
+
+/** `encodeWoff2` with the Brotli step off the event loop (see `encodeWoff2ContainerAsync`). */
+export async function encodeWoff2Async(font: ParsedFont): Promise<Buffer> {
+  const tables = Object.entries(font.tables).map(([tag, table]) => ({ tag, data: table.data }));
+  return encodeWoff2ContainerAsync(font.sfntVersion || 0x00010000, tables);
 }
 
 /** Builds the canonical font model from a font that decodeWoff2Fonts reconstructed. */
@@ -1764,7 +1770,7 @@ export function parseFvarTable(
   nameTableData?: Buffer
 ): { axes: VariableFontAxis[]; instances: VariableFontInstance[] } {
   if (fvarData.length < 16) {
-    throw new Error('Invalid fvar table: truncated header (less than 16 bytes).');
+    throw new ConversionFailedError('Invalid fvar table: truncated header (less than 16 bytes).');
   }
 
   const axesArrayOffset = fvarData.readUInt16BE(4);
@@ -1774,14 +1780,14 @@ export function parseFvarTable(
   const instanceSize = fvarData.readUInt16BE(14);
 
   if (axisCount > 0 && axisSize < 20) {
-    throw new Error(`Invalid fvar table: axisSize ${axisSize} is less than minimum 20 bytes`);
+    throw new ConversionFailedError(`Invalid fvar table: axisSize ${axisSize} is less than minimum 20 bytes`);
   }
 
   const axes: VariableFontAxis[] = [];
   for (let i = 0; i < axisCount; i++) {
     const offset = axesArrayOffset + i * axisSize;
     if (offset + axisSize > fvarData.length) {
-      throw new Error(`Invalid fvar table: truncated axis record ${i} of ${axisCount}`);
+      throw new ConversionFailedError(`Invalid fvar table: truncated axis record ${i} of ${axisCount}`);
     }
 
     const tag = fvarData.toString('ascii', offset, offset + 4);
@@ -1811,7 +1817,7 @@ export function parseFvarTable(
   const instances: VariableFontInstance[] = [];
   const minInstanceSize = axes.length * 4 + 4;
   if (instanceCount > 0 && instanceSize < minInstanceSize) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Invalid fvar table: instanceSize ${instanceSize} is less than minimum required ${minInstanceSize} bytes`
     );
   }
@@ -1819,7 +1825,7 @@ export function parseFvarTable(
   for (let j = 0; j < instanceCount; j++) {
     const offset = instStart + j * instanceSize;
     if (offset + instanceSize > fvarData.length) {
-      throw new Error(`Invalid fvar table: truncated instance record ${j} of ${instanceCount}`);
+      throw new ConversionFailedError(`Invalid fvar table: truncated instance record ${j} of ${instanceCount}`);
     }
 
     const subfamilyNameID = fvarData.readUInt16BE(offset);
@@ -1862,7 +1868,7 @@ export function parseStatTable(
   nameTableData?: Buffer
 ): { axes: StatDesignAxis[]; values: StatAxisValue[] } {
   if (statData.length < 8) {
-    throw new Error('Invalid STAT table: truncated header.');
+    throw new ConversionFailedError('Invalid STAT table: truncated header.');
   }
 
   const designAxisSize = statData.readUInt16BE(4);
@@ -1881,7 +1887,9 @@ export function parseStatTable(
   const axes: StatDesignAxis[] = [];
   for (let i = 0; i < designAxisCount; i++) {
     const offset = designAxesOffset + i * designAxisSize;
-    if (offset + designAxisSize > statData.length) break;
+    if (offset + designAxisSize > statData.length) {
+      throw new ConversionFailedError(`Invalid STAT table: design axis record ${i} of ${designAxisCount} lies outside the table`);
+    }
 
     const tag = statData.toString('ascii', offset, offset + 4);
     const axisNameID = statData.readUInt16BE(offset + 4);
@@ -2152,10 +2160,13 @@ export function instantiateVariableFont(
 
   for (const axis of axes) {
     const requested = coordinates[axis.tag];
-    if (requested !== undefined && Number.isFinite(requested)) {
-      pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
-    } else {
+    if (requested !== undefined && !Number.isFinite(requested)) {
+      throw new ConversionFailedError(`Variation coordinate for axis '${axis.tag}' must be a finite number, got ${requested}.`);
+    }
+    if (requested === undefined) {
       pinnedCoords[axis.tag] = axis.defaultValue;
+    } else {
+      pinnedCoords[axis.tag] = Math.max(axis.minValue, Math.min(axis.maxValue, requested));
     }
   }
 

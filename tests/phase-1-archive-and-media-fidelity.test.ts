@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import {
@@ -8,11 +8,9 @@ import {
   decompressLzma2,
   createRarArchive,
   extractRarArchive,
-  buildSyntheticStoredRarBuffer,
   convertArchive,
   convertMedia,
   decodeAudioBuffer,
-  decodeAdtsAac,
   decodeOgg,
   encodeOggContainer,
   detectFfmpegEnvironment,
@@ -23,8 +21,18 @@ import {
   write7zVarint,
   read7zVarint,
 } from '../src/lib/conversions';
-import { adtsStream, bestSnrDb, decodeAudioWithFfmpeg, silentRawDataBlock, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
+import { bestSnrDb, decodeAudioWithFfmpeg, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIN_ROUNDTRIP_SNR_DB = 25;
 
@@ -64,56 +72,6 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   // 1. Authentic 7z Archive Compression & Decompression
   // ==========================================================================
   describe('1. 7z Compression and Authentic Decompression', () => {
-    it('compresses files with Deflate in 7z format and achieves real size reduction', () => {
-      // Repetitive text payload that compresses well
-      const repetitiveText = Buffer.from('EasyConvert High Fidelity Archive Engine. '.repeat(200), 'utf-8');
-      const uncompressedResult = create7zArchive(
-        [{ filename: 'repetitive.txt', buffer: repetitiveText }],
-        { compressionLevel: 0 },
-        'uncompressed.7z'
-      );
-
-      const compressedResult = create7zArchive(
-        [{ filename: 'repetitive.txt', buffer: repetitiveText }],
-        { compressionLevel: 6 },
-        'compressed.7z'
-      );
-
-      expect(compressedResult.buffer.length).toBeLessThan(uncompressedResult.buffer.length);
-      expect(compressedResult.buffer.length).toBeLessThan(repetitiveText.length);
-
-      // Verify authentic decompression of both
-      const extractedCompressed = extract7zArchive(compressedResult.buffer);
-      expect(extractedCompressed).toHaveLength(1);
-      expect(extractedCompressed[0].filename).toBe('repetitive.txt');
-      expect(extractedCompressed[0].buffer.toString('utf-8')).toBe(repetitiveText.toString('utf-8'));
-
-      const extractedUncompressed = extract7zArchive(uncompressedResult.buffer);
-      expect(extractedUncompressed).toHaveLength(1);
-      expect(extractedUncompressed[0].buffer.toString('utf-8')).toBe(repetitiveText.toString('utf-8'));
-    });
-
-    it('preserves SHA-256 hashes across multi-file 7z roundtrip with mixed content types', () => {
-      const files = [
-        { filename: 'readme.md', buffer: Buffer.from('# Enterprise Archive Fidelity\nTested for zero loss.') },
-        { filename: 'config.json', buffer: Buffer.from(JSON.stringify({ port: 8080, engine: 'pure-ts', level: 9 })) },
-        { filename: 'random.bin', buffer: crypto.randomBytes(512) },
-      ];
-
-      const archive = create7zArchive(files, { compressionLevel: 6 }, 'multi.7z');
-      const extracted = extract7zArchive(archive.buffer);
-
-      expect(extracted).toHaveLength(files.length);
-      for (let i = 0; i < files.length; i++) {
-        expect(extracted[i].filename).toBe(files[i].filename);
-        expect(extracted[i].buffer.equals(files[i].buffer)).toBe(true);
-
-        const origHash = crypto.createHash('sha256').update(files[i].buffer).digest('hex');
-        const extractedHash = crypto.createHash('sha256').update(extracted[i].buffer).digest('hex');
-        expect(extractedHash).toBe(origHash);
-      }
-    });
-
     it('verifies pure TypeScript LZMA decompressor on authentic literal stream', () => {
       // Test decompressLzma directly on valid parameters: lc=3, lp=0, pb=2 (byte 0 = 93 = 0x5D), dictSize = 65536
       const props = Buffer.from([0x5d, 0x00, 0x00, 0x01, 0x00]);
@@ -132,13 +90,21 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     });
 
     it('fails closed on corrupt 7z archive buffers with invalid signature or truncated headers', () => {
-      const corruptGarbage = Buffer.from('NOT_A_VALID_7Z_FILE_HEADER_GARBAGE');
-      const extracted = extract7zArchive(corruptGarbage);
-      expect(extracted).toHaveLength(0);
-
-      // Truncated buffer under 32 bytes
-      const truncated = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00]);
-      expect(extract7zArchive(truncated)).toHaveLength(0);
+      // Writer and reader are proven against the reference 7-Zip in archive-7z-oracle.test.ts, where damage to a
+      // reference archive is covered too. Here the buffers are not archives at all.
+      const failureOf = (buffer: Buffer): unknown => {
+        try {
+          extract7zArchive(buffer);
+        } catch (err) {
+          return err;
+        }
+        return undefined;
+      };
+      const tooShort = { name: 'CorruptStreamError', message: 'Invalid 7z archive: shorter than the 32-byte start header' };
+      const badSignature = { name: 'CorruptStreamError', message: 'Invalid 7z archive: bad signature' };
+      expect(failureOf(Buffer.from('NOT_A_VALID_7Z_FILE_HEADER_GARBAGE'))).toMatchObject(badSignature);
+      expect(failureOf(Buffer.alloc(64, 0x41))).toMatchObject(badSignature);
+      expect(failureOf(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00]))).toMatchObject(tooShort);
     });
 
     it('sanitizes Zip-Slip directory traversal attempts in 7z entries', () => {
@@ -192,7 +158,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       // D8 contract: createRarArchive is disabled
       expect(() => createRarArchive(files, {}, 'bundle.rar')).toThrow();
 
-      const rarBuffer = buildSyntheticStoredRarBuffer(files);
+      const rarBuffer = storedRar(files);
       expect(rarBuffer.subarray(0, 7)).toEqual(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]));
 
       const extracted = extractRarArchive(rarBuffer);
@@ -253,26 +219,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   // ==========================================================================
   // 3. Audio Decoders: ADTS AAC, Ogg Vorbis & Opus Fidelity
   // ==========================================================================
-  describe('3. In-Memory Pure TS Audio Decoders (AAC & Ogg)', () => {
-    it('decodes ADTS AAC frames and recovers audio sample rate and channel layout', () => {
-      // Hand-authored ADTS stream: four silent stereo AAC LC frames at 44.1 kHz
-      const frames = 4;
-      const adts = adtsStream(new Array(frames).fill(silentRawDataBlock(2)), 44100, 2);
-
-      const decodedAac = decodeAdtsAac(adts);
-      expect(decodedAac.sampleRate).toBe(44100);
-      expect(decodedAac.channels).toBe(2);
-      expect(decodedAac.bitsPerSample).toBe(16);
-      expect(decodedAac.samples).toHaveLength(frames * 1024 * 2);
-      expect(decodedAac.duration).toBeCloseTo((frames * 1024) / 44100, 6);
-
-      // Verify universal decoder auto-detection
-      const autoDecoded = decodeAudioBuffer(adts);
-      expect(autoDecoded.sampleRate).toBe(44100);
-      expect(autoDecoded.channels).toBe(2);
-      expect(autoDecoded.samples).toHaveLength(decodedAac.samples.length);
-    });
-
+  describe('3. In-Memory Pure TS Audio Decoders (Ogg; AAC needs FFmpeg)', () => {
     it('decodes Ogg Vorbis containers and parses OggS pages with stream headers, and enforces Fail-Closed on raw PCM', async () => {
       // 1. Verify decode of valid Ogg Vorbis container with empty stream
       const emptyOgg = encodeOggContainer([], 44100, 2, 'audio');
@@ -285,7 +232,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       // 2. Verify pure TS convertMedia fails closed for ogg without native FFmpeg
       const origWav = createTestWav(44100, 2, 0.25);
       await expect(
-        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'audio.wav')
+        convertMedia(origWav, 'wav', 'ogg', { disableNativeEngine: true }, 'audio.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
     });
 
@@ -293,8 +240,8 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       const source = sineSamples(44100, 2, 1);
       const origWav = wavFromSamples(source, 44100, 2);
 
-      // Step 1: WAV -> AAC through the native engine, even when the pure opt-in is set
-      const aacResult = await convertMedia(origWav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'tune.wav');
+      // Step 1: WAV -> AAC through the native engine
+      const aacResult = await convertMedia(origWav, 'wav', 'aac', {}, 'tune.wav');
       expect(aacResult.mimeType).toBe('audio/aac');
 
       // Step 2: AAC -> WAV
@@ -314,48 +261,14 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
     it('enforces Fail-Closed on WAV -> OGG conversion in pure TypeScript without native FFmpeg', async () => {
       const origWav = createTestWav(44100, 2, 0.2);
       await expect(
-        convertMedia(origWav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'sound.wav')
+        convertMedia(origWav, 'wav', 'ogg', { disableNativeEngine: true }, 'sound.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
-    });
-
-    it('preserves non-standard sampling rates (e.g. 48kHz) in AAC ADTS header', () => {
-      const adts = adtsStream([silentRawDataBlock(2), silentRawDataBlock(2)], 48000, 2);
-      const decodedAac = decodeAdtsAac(adts);
-      expect(decodedAac.sampleRate).toBe(48000);
-      expect(decodedAac.samples).toHaveLength(2 * 1024 * 2);
-    });
-
-    it('decodes ADTS AAC frames when prefixed by ID3v2 metadata and skips false syncwords', () => {
-      // 1. Build a hand-authored ADTS frame (44.1kHz stereo, one silent block)
-      const validFrame = adtsStream([silentRawDataBlock(2)], 44100, 2);
-
-      // 2. Prepend ID3v2 tag (10 bytes header + 10 bytes payload)
-      const id3Header = Buffer.alloc(20);
-      id3Header.write('ID3', 0);
-      id3Header[3] = 3; // v2.3
-      id3Header[6] = 0;
-      id3Header[7] = 0;
-      id3Header[8] = 0;
-      id3Header[9] = 10; // tag size = 10 bytes
-
-      // 3. Prepend false syncword (0xff 0xf0) with length exceeding buffer
-      const falseSync = Buffer.from([0xff, 0xf0, 0x50, 0x07, 0xff, 0xff, 0x00]);
-
-      const testStream = Buffer.concat([id3Header, falseSync, validFrame]);
-      const decoded = decodeAdtsAac(testStream);
-      expect(decoded.sampleRate).toBe(44100);
-      expect(decoded.channels).toBe(2);
-      expect(decoded.samples.length).toBeGreaterThan(0);
-
-      // Verify routing in decodeAudioBuffer with hint
-      const routed = decodeAudioBuffer(testStream, 'aac');
-      expect(routed.sampleRate).toBe(44100);
     });
 
     it('enforces Fail-Closed on pure TS Ogg Vorbis conversion and packages multi-segment pages accurately', async () => {
       const wav = createTestWav(44100, 2, 0.1);
       await expect(
-        convertMedia(wav, 'wav', 'ogg', { allowPureLossyBitstream: true, disableNativeEngine: true }, 'full.wav')
+        convertMedia(wav, 'wav', 'ogg', { disableNativeEngine: true }, 'full.wav')
       ).rejects.toThrow(/Native FFmpeg engine is required for authentic lossy OGG compression/i);
 
       // Verify multi-page packaging with discrete packets
@@ -382,9 +295,7 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
 
     it('fails closed on malformed audio payloads passed to decoders', () => {
       const noise = Buffer.from('INVALID_AUDIO_DATA_FOR_DECODER_FUZZING');
-      expect(() => decodeAdtsAac(noise)).toThrow(/Unsupported audio format/i);
       expect(() => decodeOgg(noise)).toThrow(/Unsupported audio format/i);
-      expect(() => decodeAudioBuffer(noise, 'aac')).toThrow(/Unsupported audio format/i);
       expect(() => decodeAudioBuffer(noise, 'ogg')).toThrow(/Unsupported audio format/i);
     });
   });
@@ -409,18 +320,6 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       write7zVarint(arr16384, 16384);
       expect(arr16384).toEqual([0xc0, 0x00, 0x40]);
       expect(read7zVarint(Buffer.from(arr16384), 0)).toEqual({ value: 16384, nextOffset: 3 });
-    });
-
-    it('extracts 7z archives correctly when kEmptyStream (0x0e) property is present', () => {
-      // Build a 7z archive where kFilesInfo has kEmptyStream (0x0e) before kName (0x11)
-      const files = [{ filename: 'test.txt', buffer: Buffer.from('hello 7z') }];
-      const arc = create7zArchive(files, { compressionLevel: 0 }, 'test.7z');
-
-      // The archive was created with proper UTF-16 terminal null in kName
-      const extracted = extract7zArchive(arc.buffer);
-      expect(extracted).toHaveLength(1);
-      expect(extracted[0].filename).toBe('test.txt');
-      expect(extracted[0].buffer.toString()).toBe('hello 7z');
     });
 
     it('fails closed on RAR archives with uncompressed size exceeding bomb limits', () => {

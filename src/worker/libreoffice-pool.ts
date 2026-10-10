@@ -3,13 +3,16 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
+import { readPersistedOutput } from './persisted-output';
 import {
   executeSandboxedBinary,
+  rethrowSandboxUnavailable,
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
   SandboxedTimeoutError,
 } from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
+import { buildPdfExportFilterData } from '../lib/conversions/pdf-export-options';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 /** Engine name reported by the typed error when the pool cannot serve conversions. */
@@ -136,8 +139,26 @@ const MIME_TYPES: Record<string, string> = {
   odt: 'application/vnd.oasis.opendocument.text',
   ods: 'application/vnd.oasis.opendocument.spreadsheet',
   odp: 'application/vnd.oasis.opendocument.presentation',
+  odg: 'application/vnd.oasis.opendocument.graphics',
+  odd: 'application/vnd.oasis.opendocument.graphics-template',
   csv: 'text/csv',
+  doc: 'application/msword',
+  rtf: 'application/rtf',
 };
+
+const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
+const PRESENTATION_SOURCES: ReadonlySet<string> = new Set(['pptx', 'ppt', 'odp', 'potx', 'key']);
+const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
+/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export. */
+const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg' };
+
+/** PDF export filter of the LibreOffice component that opens a source format. */
+function pdfExportFilterName(sourceFormat: string): string {
+  if (SPREADSHEET_SOURCES.has(sourceFormat)) return 'calc_pdf_Export';
+  if (PRESENTATION_SOURCES.has(sourceFormat)) return 'impress_pdf_Export';
+  if (DRAWING_SOURCES.has(sourceFormat)) return 'draw_pdf_Export';
+  return 'writer_pdf_Export';
+}
 
 /**
  * Resolves compliant LibreOffice --convert-to filter specification according to
@@ -156,31 +177,10 @@ export function resolveLibreOfficeFilter(
   }
 
   if (tgt === 'pdf') {
-    const isSpreadsheet = ['xlsx', 'xls', 'ods', 'csv', 'tsv'].includes(src);
-    const isPresentation = ['pptx', 'ppt', 'odp', 'potx', 'key'].includes(src);
-    const filterName = isSpreadsheet
-      ? 'calc_pdf_Export'
-      : isPresentation
-      ? 'impress_pdf_Export'
-      : 'writer_pdf_Export';
-
-    const pdfVersion = (options.pdfVersion || options.pdfStandard || '').toLowerCase();
-    if (pdfVersion === 'pdfa' || pdfVersion === 'pdfa-1b' || pdfVersion === 'pdf/a-1b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"1"}}`;
-    }
-    if (pdfVersion === 'pdfa-2b' || pdfVersion === 'pdf/a-2b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"2"}}`;
-    }
-    if (pdfVersion === 'pdfa-3b' || pdfVersion === 'pdf/a-3b') {
-      return `${tgt}:${filterName}:{"SelectPdfVersion":{"type":"long","value":"3"}}`;
-    }
-
-    if (options.losslessImageCompression) {
-      return `${tgt}:${filterName}:{"UseLosslessCompression":{"type":"boolean","value":"true"}}`;
-    }
+    return `${tgt}:${pdfExportFilterName(src)}:${JSON.stringify(buildPdfExportFilterData(options))}`;
   }
 
-  return tgt;
+  return LIBREOFFICE_TARGET_NAMES[tgt] ?? tgt;
 }
 
 /**
@@ -402,6 +402,7 @@ export class LibreOfficePoolManager {
           networkIsolated: true,
         });
       } catch (err) {
+        rethrowSandboxUnavailable(err);
         if (err instanceof SandboxedTimeoutError) {
           throw new EngineUnavailableError(
             LIBREOFFICE_POOL_ENGINE_NAME,
@@ -625,17 +626,8 @@ export class LibreOfficePoolManager {
       engineUsed: 'native-soffice-pool',
       executionTimeMs: Date.now() - startTime,
       get buffer(): Buffer {
-        if (cachedBuffer) return cachedBuffer;
-        if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
-          throw new RangeError(
-            `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
-          );
-        }
-        if (fs.existsSync(persistedPath)) {
-          cachedBuffer = fs.readFileSync(persistedPath);
-          return cachedBuffer;
-        }
-        return Buffer.alloc(0);
+        cachedBuffer ??= readPersistedOutput(persistedPath, stat.size);
+        return cachedBuffer;
       },
       set buffer(b: Buffer) {
         cachedBuffer = b;

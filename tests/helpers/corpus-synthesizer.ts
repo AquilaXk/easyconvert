@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import JSZip from 'jszip';
-import { encodeSyntheticParquet } from './synthetic-parquet-encoder';
+import { buildCompoundFile } from './cfb-craft';
+import { pyarrowWrite, type ReferenceColumnKind } from './parquet-oracle';
 
 // ============================================================================
 // Types & Interfaces (Independent of Production Conversion Modules)
@@ -130,12 +132,6 @@ export interface BSplineSurface {
 export interface Parametric2DPoint {
   u: number;
   v: number;
-}
-
-export interface TessellatedMesh {
-  vertices: Array<{ x: number; y: number; z: number }>;
-  faces: Array<[number, number, number]>;
-  normals: Array<{ x: number; y: number; z: number }>;
 }
 
 export interface PdfTextBlock {
@@ -408,7 +404,6 @@ export interface DrawingMlTableCorpus {
   table: NestedTable;
   shapes: DrawingMlShape[];
   drawingMlXml: string;
-  renderSvg: () => { svg: string; shapes: DrawingMlShape[] };
   generateDocxTableXml: () => string;
 }
 
@@ -550,14 +545,6 @@ export function synthesizeDrawingMlTableCorpus(): DrawingMlTableCorpus {
     table: outerTable,
     shapes: sampleShapes,
     drawingMlXml,
-    renderSvg: () => ({
-      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
-  <rect x="10" y="10" width="140" height="36" rx="8" fill="#5C6BC0" stroke="#4A58A9" stroke-width="2"/>
-  <ellipse cx="176" cy="28" rx="16" ry="16" fill="#8E9CE6" stroke="#FFFFFF" stroke-width="1.5"/>
-  <path d="M 0 30 Q 30 5 60 18 T 120 5" fill="none" stroke="#3B4890" stroke-width="2.5"/>
-</svg>`,
-      shapes: sampleShapes,
-    }),
     generateDocxTableXml: () => {
       let tblXml = `<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:tblPr>
@@ -758,6 +745,35 @@ export interface ParquetColumnarCorpus {
   verifyRoundTrip: () => Record<string, unknown>[];
 }
 
+/** Row counts with a committed golden file under tests/fixtures/golden/data. */
+export const PARQUET_GOLDEN_FILES: ReadonlyMap<number, string> = new Map([
+  [30, 'columnar-30-records.parquet'],
+  [50, 'columnar-50-records.parquet'],
+  [60, 'columnar-snappy-records.parquet'],
+]);
+
+const CORPUS_PARQUET_COLUMNS: ReadonlyArray<[string, ReferenceColumnKind]> = [
+  ['transaction_id', 'int64'],
+  ['account_code', 'string'],
+  ['category', 'string'],
+  ['region', 'string'],
+  ['amount', 'double'],
+  ['tax_rate', 'double'],
+  ['is_cleared', 'bool'],
+  ['timestamp', 'int64'],
+  ['execution_latency_ms', 'double'],
+  ['notes', 'string'],
+];
+
+/** Writes the corpus records as a Snappy-compressed Parquet file with the reference writer (pyarrow). */
+export function writeCorpusParquet(records: Record<string, unknown>[]): Buffer {
+  const columns: Record<string, (string | number | boolean | null)[]> = {};
+  for (const [name] of CORPUS_PARQUET_COLUMNS) {
+    columns[name] = records.map((record) => record[name] as string | number | boolean | null);
+  }
+  return pyarrowWrite(columns, [...CORPUS_PARQUET_COLUMNS], 'snappy');
+}
+
 export function synthesizeParquetColumnarCorpus(rowCount = 60): ParquetColumnarCorpus {
   const regions = ['APAC', 'EMEA', 'NA', 'LATAM'];
   const categories = ['Infrastructure', 'Security', 'Algorithmic', 'Media', 'Vector'];
@@ -781,20 +797,15 @@ export function synthesizeParquetColumnarCorpus(rowCount = 60): ParquetColumnarC
     });
   }
 
-  const fixturePath = path.join(__dirname, '../fixtures/golden/data/columnar-snappy-records.parquet');
-  const fixture30 = path.join(__dirname, '../fixtures/golden/data/columnar-30-records.parquet');
-  const fixture50 = path.join(__dirname, '../fixtures/golden/data/columnar-50-records.parquet');
-
-  let buffer: Buffer;
-  if (rowCount === 60 && fs.existsSync(fixturePath)) {
-    buffer = fs.readFileSync(fixturePath);
-  } else if (rowCount === 30 && fs.existsSync(fixture30)) {
-    buffer = fs.readFileSync(fixture30);
-  } else if (rowCount === 50 && fs.existsSync(fixture50)) {
-    buffer = fs.readFileSync(fixture50);
-  } else {
-    buffer = encodeSyntheticParquet(records);
-  }
+  // The committed goldens (tests/fixtures/golden/data, see its PROVENANCE) and any other size are written by the
+  // reference Parquet writer (pyarrow, Snappy), never by an encoder of this project, so every file is one the
+  // reference reader reads. A size without a committed file needs python3 with pyarrow and throws
+  // OracleToolMissingError without it.
+  const goldenFile = PARQUET_GOLDEN_FILES.get(rowCount);
+  const buffer =
+    goldenFile && fs.existsSync(path.join(__dirname, '../fixtures/golden/data', goldenFile))
+      ? fs.readFileSync(path.join(__dirname, '../fixtures/golden/data', goldenFile))
+      : writeCorpusParquet(records);
 
   const schemas: ColumnSchema[] = [
     { name: 'transaction_id', type: ParquetType.INT64 },
@@ -869,9 +880,6 @@ export function synthesizeAudioBitstreamCorpus(durationSeconds = 0.5): AudioBits
 export interface CadNurbsCorpus {
   surface: BSplineSurface;
   midPoint: { x: number; y: number; z: number };
-  curvatures: { K: number; H: number; k1: number; k2: number };
-  adaptiveMesh: TessellatedMesh;
-  trimmedMesh: TessellatedMesh;
   outerLoop: Parametric2DPoint[];
   innerHoles: Parametric2DPoint[][];
 }
@@ -913,44 +921,6 @@ export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
   };
 
   const midPoint = { x: 15, y: 15, z: 5.25 };
-  const curvatures = {
-    K: 0.0011111111337911567,
-    H: -0.03333333367353402,
-    k1: -0.03333333301498951,
-    k2: -0.03333333433207853,
-  };
-
-  // Generate deterministic 9x9 grid mesh (81 vertices, 128 faces)
-  const adaptiveVertices: Array<{ x: number; y: number; z: number }> = [];
-  const adaptiveNormals: Array<{ x: number; y: number; z: number }> = [];
-  const adaptiveFaces: Array<[number, number, number]> = [];
-
-  for (let i = 0; i <= 8; i++) {
-    for (let j = 0; j <= 8; j++) {
-      const u = i / 8;
-      const v = j / 8;
-      adaptiveVertices.push({ x: u * 30, y: v * 30, z: Math.sin(u * Math.PI) * Math.sin(v * Math.PI) * 5.25 });
-      adaptiveNormals.push({ x: 0, y: 0, z: 1 });
-    }
-  }
-
-  for (let i = 0; i < 8; i++) {
-    for (let j = 0; j < 8; j++) {
-      const p1 = i * 9 + j;
-      const p2 = p1 + 1;
-      const p3 = (i + 1) * 9 + j;
-      const p4 = p3 + 1;
-      adaptiveFaces.push([p1, p2, p3]);
-      adaptiveFaces.push([p2, p4, p3]);
-    }
-  }
-
-  const adaptiveMesh: TessellatedMesh = {
-    vertices: adaptiveVertices,
-    faces: adaptiveFaces,
-    normals: adaptiveNormals,
-  };
-
   const outerLoop: Parametric2DPoint[] = [
     { u: 0.0, v: 0.0 },
     { u: 1.0, v: 0.0 },
@@ -967,28 +937,9 @@ export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
     ],
   ];
 
-  // 16 vertices, 24 faces trimmed CDT mesh
-  const trimmedVertices: Array<{ x: number; y: number; z: number }> = [];
-  for (let i = 0; i < 16; i++) {
-    trimmedVertices.push({ x: (i % 4) * 10, y: Math.floor(i / 4) * 10, z: 2.0 });
-  }
-  const trimmedFaces: Array<[number, number, number]> = [];
-  for (let i = 0; i < 24; i++) {
-    trimmedFaces.push([i % 16, (i + 1) % 16, (i + 2) % 16]);
-  }
-
-  const trimmedMesh: TessellatedMesh = {
-    vertices: trimmedVertices,
-    faces: trimmedFaces,
-    normals: trimmedVertices.map(() => ({ x: 0, y: 0, z: 1 })),
-  };
-
   return {
     surface,
     midPoint,
-    curvatures,
-    adaptiveMesh,
-    trimmedMesh,
     outerLoop,
     innerHoles,
   };
@@ -1162,46 +1113,88 @@ startxref
 
 export interface Hwp5CompoundCorpus {
   buffer: Buffer;
+  /** What was written into the file: the expectation any reader of it has to meet. */
   doc: HwpDocument;
+  /** Equation scripts written into the file, in order. */
   rawEquations: string[];
-  transpiledEquations: { script: string; mathml: string; latex: string }[];
 }
 
+// HWP 5.0 record layout (Hancom "Hangul Document File Format 5.0"): a 32-bit header holds the tag (10 bits), the
+// level (10 bits) and the payload size (12 bits, 0xFFF meaning a 32-bit size follows).
+const HWP_TAG = { DOCUMENT_PROPERTIES: 16, PARA_HEADER: 66, PARA_TEXT: 67, PARA_CHAR_SHAPE: 68, CTRL_HEADER: 71, LIST_HEADER: 72, TABLE: 77, EQEDIT: 88 } as const;
+const HWP_EXTENDED_RECORD_SIZE = 0xfff;
+
+function hwpRecord(tag: number, level: number, payload: Buffer): Buffer {
+  const extended = payload.length >= HWP_EXTENDED_RECORD_SIZE;
+  const header = Buffer.alloc(extended ? 8 : 4);
+  const size = extended ? HWP_EXTENDED_RECORD_SIZE : payload.length;
+  header.writeUInt32LE(((tag & 0x3ff) | ((level & 0x3ff) << 10) | (size << 20)) >>> 0, 0);
+  if (extended) header.writeUInt32LE(payload.length, 4);
+  return Buffer.concat([header, payload]);
+}
+
+function hwpUnits(...units: number[]): Buffer {
+  const out = Buffer.alloc(units.length * 2);
+  units.forEach((unit, index) => out.writeUInt16LE(unit, index * 2));
+  return out;
+}
+
+/** A paragraph: header, text with the paragraph-end mark, one character-shape run. `controls` are extended-control units placed before the text. */
+function hwpParagraph(text: string, level: number, controls: Buffer = Buffer.alloc(0)): Buffer[] {
+  const textBytes = Buffer.concat([controls, Buffer.from(text, 'utf16le'), hwpUnits(0x000d)]);
+  const header = Buffer.alloc(24);
+  header.writeUInt32LE(textBytes.length / 2, 0);
+  header.writeUInt16LE(1, 14); // character shape runs
+  header.writeUInt16LE(1, 18); // line segments
+  return [hwpRecord(HWP_TAG.PARA_HEADER, level, header), hwpRecord(HWP_TAG.PARA_TEXT, level + 1, textBytes), hwpRecord(HWP_TAG.PARA_CHAR_SHAPE, level + 1, Buffer.alloc(8))];
+}
+
+/** The eight units an extended control takes in paragraph text: the code 0x0b, the control id (4 bytes), 8 bytes of data, the code again. */
+function hwpControlMark(controlId: string): Buffer {
+  return Buffer.concat([hwpUnits(0x000b), Buffer.from(controlId.split('').reverse().join(''), 'latin1'), Buffer.alloc(8), hwpUnits(0x000b)]);
+}
+
+function hwpTable(rows: string[][]): Buffer[] {
+  const cols = Math.max(...rows.map((row) => row.length));
+  const control = Buffer.alloc(46);
+  control.write(' lbt', 0, 'latin1');
+  const table = Buffer.alloc(18 + rows.length * 2 + 2);
+  table.writeUInt32LE(0x04000006, 0);
+  table.writeUInt16LE(rows.length, 4);
+  table.writeUInt16LE(cols, 6);
+  rows.forEach((_, row) => table.writeUInt16LE(cols, 18 + row * 2));
+  const records = [...hwpParagraph('', 0, hwpControlMark('tbl ')), hwpRecord(HWP_TAG.CTRL_HEADER, 1, control), hwpRecord(HWP_TAG.TABLE, 2, table)];
+  rows.forEach((row, rowIndex) => {
+    for (let col = 0; col < cols; col += 1) {
+      const cell = Buffer.alloc(34);
+      cell.writeUInt32LE(1, 0);
+      cell.writeUInt16LE(col, 8);
+      cell.writeUInt16LE(rowIndex, 10);
+      cell.writeUInt16LE(1, 12);
+      cell.writeUInt16LE(1, 14);
+      records.push(hwpRecord(HWP_TAG.LIST_HEADER, 2, cell), ...hwpParagraph(row[col] ?? '', 2));
+    }
+  });
+  return records;
+}
+
+function hwpEquation(script: string): Buffer[] {
+  const control = Buffer.alloc(4);
+  control.write('deqe', 0, 'latin1');
+  const payload = Buffer.concat([Buffer.alloc(4), hwpUnits(script.length), Buffer.from(script, 'utf16le')]);
+  return [...hwpParagraph('', 0, hwpControlMark('eqed')), hwpRecord(HWP_TAG.CTRL_HEADER, 1, control), hwpRecord(HWP_TAG.EQEDIT, 2, payload)];
+}
+
+/**
+ * An HWP 5.0 document written here, record by record, into a compound file written by the independent test writer
+ * (cfb-craft). Nothing of the converter is used, so reading it back is a real check of the converter's reader.
+ */
 export function synthesizeHwp5CompoundCorpus(): Hwp5CompoundCorpus {
-  const rawEquations = [
-    'sum_{i=1}^{n} i = {n(n+1)} over {2}',
-    'f(x) = {1} over {sqrt{2 pi}} e^{-{x^2} over {2}}',
-    'E = m c^2',
-  ];
-
-  const transpiledEquations = [
-    {
-      script: 'sum_{i=1}^{n} i = {n(n+1)} over {2}',
-      mathml: '<math><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mrow><mi>n</mi></mrow></munderover><mi>i</mi><mo> </mo><mo>=</mo><mfrac><mrow><mi>n</mi><mo>(</mo><mi>n</mi><mo>+</mo><mn>1</mn><mo>)</mo></mrow><mrow><mn>2</mn></mrow></mfrac></math>',
-      latex: '\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}',
-    },
-    {
-      script: 'f(x) = {1} over {sqrt{2 pi}} e^{-{x^2} over {2}}',
-      mathml: '<math><mi>f</mi><mo>(</mo><mi>x</mi><mo>)</mo><mo> </mo><mo>=</mo><mo> </mo><mn>1</mn><mo> </mo><mo>over</mo><mo> </mo><msqrt><mrow><mn>2</mn><mo> </mo><mi>π</mi></mrow></msqrt><mo> </mo><mi>e</mi><msup><mrow></mrow><mn></mn></msup><mo>-</mo><mfrac><mrow><mi>x</mi><msup><mrow></mrow><mn>2</mn></msup></mrow><mrow><mn>2</mn></mrow></mfrac></math>',
-      latex: 'f(x) = {1} over {\\sqrt{2 \\pi}} e^{-\\frac{x^2}{2}}',
-    },
-    {
-      script: 'E = m c^2',
-      mathml: '<math><mi>E</mi><mo> </mo><mo>=</mo><mo> </mo><mi>m</mi><mo> </mo><mi>c</mi><msup><mrow></mrow><mn>2</mn></msup></math>',
-      latex: 'E = m c^2',
-    },
-  ];
-
-  const fixturePath = path.join(__dirname, '../fixtures/golden/document/enterprise-compound-document.hwp');
-  if (!fs.existsSync(fixturePath)) {
-    throw new Error(`Golden HWP compound document fixture not found at ${fixturePath}. Static binary fixtures must be present.`);
-  }
-  const buffer = fs.readFileSync(fixturePath);
-
+  const rawEquations = ['sum_{i=1}^{n} i = {n(n+1)} over {2}', 'f(x) = {1} over {sqrt{2 pi}} e^{-{x^2} over {2}}', 'E = m c^2'];
   const doc: HwpDocument = {
-    header: { signature: 'HWP Document File', version: 0x05000000, flags: 0 },
+    header: { signature: 'HWP Document File', version: 0x05000300, flags: 0x01 },
     paragraphs: [
-      { text: 'HWP 5.0 Enterprise Financial & Technical Architecture Specification', isHeading: true },
+      { text: 'HWP 5.0 Enterprise Financial & Technical Architecture Specification' },
       { text: 'This document validates KS C 5601 binary stream extraction and EqEdit math transpilation.' },
       { text: 'Mathematical formulations are parsed from HWPTAG_EQEDIT records into clean MathML and LaTeX representations.' },
     ],
@@ -1214,13 +1207,24 @@ export function synthesizeHwp5CompoundCorpus(): Hwp5CompoundCorpus {
         ],
       },
     ],
-    metadata: { title: 'HWP 5.0 Enterprise Financial & Technical Architecture Specification' },
   };
 
-  return {
-    buffer,
-    doc,
-    rawEquations,
-    transpiledEquations,
-  };
+  const section = Buffer.concat([
+    ...doc.paragraphs.flatMap((paragraph) => hwpParagraph(paragraph.text, 0)),
+    ...rawEquations.flatMap(hwpEquation),
+    ...(doc.tables ?? []).flatMap((table) => hwpTable(table.rows)),
+  ]);
+  const fileHeader = Buffer.alloc(256);
+  fileHeader.write('HWP Document File', 0, 'latin1');
+  fileHeader.writeUInt32LE(doc.header?.version ?? 0, 32);
+  fileHeader.writeUInt32LE(doc.header?.flags ?? 0, 36);
+  const documentProperties = Buffer.alloc(26);
+  documentProperties.writeUInt16LE(1, 0);
+
+  const buffer = buildCompoundFile([
+    { name: 'FileHeader', data: fileHeader },
+    { name: 'DocInfo', data: zlib.deflateRawSync(hwpRecord(HWP_TAG.DOCUMENT_PROPERTIES, 0, documentProperties)) },
+    { name: 'BodyText/Section0', data: zlib.deflateRawSync(section) },
+  ]);
+  return { buffer, doc, rawEquations };
 }

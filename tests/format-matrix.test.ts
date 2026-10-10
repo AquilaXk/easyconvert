@@ -67,10 +67,19 @@ describe('9 Domains & 200+ Format Matrix Tests', () => {
   });
 
   it('retrieves available target format definitions for complex media', () => {
+    // The advertised targets of WAV, pinned: a pair added or withdrawn changes this list on purpose.
     const targets = getAvailableTargetFormats('wav');
-    const targetExtensions = targets.map((t) => t.extension);
-    expect(targetExtensions).toContain('mp3');
-    expect(targetExtensions).toContain('aac');
-    expect(targetExtensions).toContain('ogg');
+    expect(targets.map((t) => t.extension)).toEqual([
+      'wav', 'mp3', 'aac', 'ogg', 'flac', 'm4a', 'wma', 'opus', 'mp4', 'webm', 'mkv', 'avi', 'zip', 'aiff',
+    ]);
+    // Each definition carries the registered media type (IANA) of its extension.
+    const mediaTypes = Object.fromEntries(targets.map((t) => [t.extension, t.mimeType]));
+    expect(mediaTypes).toMatchObject({
+      mp3: 'audio/mpeg',
+      aac: 'audio/aac',
+      ogg: 'audio/ogg',
+      flac: 'audio/flac',
+      zip: 'application/zip',
+    });
   });
 });

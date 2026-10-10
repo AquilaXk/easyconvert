@@ -4,6 +4,7 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { BayerSensorData } from '../src/lib/conversions/image';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa, type DemosaicResult } from '../src/lib/conversions/raw-demosaic';
+import { legacyDemosaicAhdBayerCfa, legacyDemosaicAmazeBayerCfa } from './raw-demosaic/legacy-demosaic';
 import { OracleToolMissingError } from './helpers/differential-oracle';
 import {
   REAL_CROP_CASES,
@@ -81,11 +82,29 @@ describe('AHD / AMaZE output equals the pre-rewrite golden', () => {
   const realRows = REAL_CROP_CASES.flatMap((c) =>
     c.methods.flatMap((method) => [DEFAULT_TILE, SEAM_TILE].map((tile) => [c.id, method, tile] as [string, DemosaicName, number | undefined]))
   );
+  // skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
   describe.skipIf(!SAMPLE_PRESENT)('real imx477 crops', () => {
     it.each(realRows)('%s %s tile=%s', (id, method, tile) => {
       const crop = REAL_CROP_CASES.find((candidate) => candidate.id === id)!;
       const imx = loadImx477Plane()!;
       expectMatchesGolden(id, method, cropSensor(imx.plane, imx.width, imx.bayer, crop), tile);
     });
+  });
+});
+
+describe('the preserved pre-rewrite implementation still reproduces the goldens', () => {
+  // The speed and quality suites use it as their reference, so it must stay what the goldens were recorded from.
+  const legacy: Record<DemosaicName, (sensor: BayerSensorData) => { data: Buffer; floatData?: Float32Array; width: number; height: number }> = {
+    ahd: legacyDemosaicAhdBayerCfa,
+    amaze: legacyDemosaicAmazeBayerCfa,
+  };
+  const rows = SYNTHETIC_CASES.flatMap((c) => c.methods.map((method) => [c.id, method] as [string, DemosaicName]));
+
+  it.each(rows)('%s %s', (id, method) => {
+    const c = SYNTHETIC_CASES.find((candidate) => candidate.id === id)!;
+    const golden = goldenFor(id, method);
+    const actual = digestOutput(legacy[method](buildSensor(c)), id, method);
+    expect(actual.floatSha256).toBe(golden.floatSha256);
+    expect(actual.rgb8Sha256).toBe(golden.rgb8Sha256);
   });
 });

@@ -237,14 +237,14 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const bobDownloadReq = new NextRequest(`${BASE_URL}/api/storage/file/${encodedKey}`, {
       headers: sessionHeaders(bob),
     });
-    const bobDownloadRes = await downloadRoute(bobDownloadReq, { params: { key: [encodedKey] } });
+    const bobDownloadRes = await downloadRoute(bobDownloadReq, { params: Promise.resolve({ key: [encodedKey] }) });
     expect(bobDownloadRes.status).toBe(404);
 
     // 6. Download route: Alice gets 200 with matching bytes
     const aliceDownloadReq = new NextRequest(`${BASE_URL}/api/storage/file/${encodedKey}`, {
       headers: sessionHeaders(alice),
     });
-    const aliceDownloadRes = await downloadRoute(aliceDownloadReq, { params: { key: [encodedKey] } });
+    const aliceDownloadRes = await downloadRoute(aliceDownloadReq, { params: Promise.resolve({ key: [encodedKey] }) });
     expect(aliceDownloadRes.status).toBe(200);
     const downloadedBuf = Buffer.from(await aliceDownloadRes.arrayBuffer());
     expect(downloadedBuf.toString('utf8')).toBe(payloadBytes.toString('utf8'));
