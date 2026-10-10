@@ -619,6 +619,17 @@ describe('a parity run on a saved report', () => {
       expect(rowsOfOtherFamily.code).toBe(0);
     });
 
+    it('treats an empty families list like an absent one: every changed entry is checked, none is skipped', () => {
+      const gaps: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [entry(0.1) as unknown as GapFile['gaps'][number]] };
+      const baseGaps: GapFile = { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [] };
+      const bypassed = (families: BenchReport['families'] | undefined): string[] =>
+        evaluateParity(report(slow()), gaps, { baseGaps, families }).rows.filter((candidate) => candidate.basis === 'gap-not-backed').map((candidate) => candidate.id);
+      expect(bypassed(undefined)).toEqual([SPEED_ID]);
+      expect(bypassed([])).toEqual([SPEED_ID]);
+      // A non-empty list still narrows the check to its families.
+      expect(bypassed(['pdf-ops'])).toEqual([]);
+    });
+
     it('checks an edit of a ratio, and leaves an entry the base already has as it is recorded', async () => {
       expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [entry(0.5)] })).code).toBe(3);
       expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45)], baseGaps: [entry(0.45)] })).code).toBe(0);
