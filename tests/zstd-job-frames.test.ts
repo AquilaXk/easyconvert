@@ -136,7 +136,7 @@ describe('a pool that cannot take a job', () => {
     controller.abort();
     const outcome = await compressZstdAsync(sourceText(JOB_INPUT_BYTES, 66), { level: 3, signal: controller.signal }).catch((error: unknown) => error);
     expect(outcome).toBeInstanceOf(CpuTaskAbortedError);
-    expect((outcome as Error).message).toBe('The zstd task was cancelled');
+    expect((outcome as Error).message).toBe('The zstdJob task was cancelled');
   });
 });
 

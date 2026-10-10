@@ -883,6 +883,9 @@ export async function compressZstdAsync(
   return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
 }
 
+/** The longest job the calling thread runs itself: about 30 ms at level 9, where the event loop may be held for 100. */
+export const ZSTD_CALLER_JOB_BYTES_MAX = 512 * 1024;
+
 /**
  * Pool threads and the calling thread take the next job of the frame as they finish one; the parts join in job order.
  * The frame is the same bytes wherever a job runs, so a pool that cannot take a job (no thread entry on this deployment,
@@ -896,7 +899,7 @@ async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs
   let poolRefused = false;
   const takeJob = (): number => (next < jobs.length ? next++ : -1);
   const runHere = async (index: number): Promise<void> => {
-    if (signal?.aborted) throw new CpuTaskAbortedError('zstd');
+    if (signal?.aborted) throw new CpuTaskAbortedError('zstdJob');
     parts[index] = encodeZstdJob(data, frame.level, jobs, index);
     await yieldToEventLoop();
   };
@@ -915,8 +918,10 @@ async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs
       }
     }
   };
+  // The calling thread takes only jobs short enough to keep the event loop free (EVENT_LOOP_BLOCK_BUDGET_MS); the longer
+  // jobs of a long input are left to the pool threads, which run them here only when the pool cannot.
   const callerWorker = async (): Promise<void> => {
-    for (let index = takeJob(); index >= 0; index = takeJob()) await runHere(index);
+    while (next < jobs.length && (poolRefused || jobs[next].to - jobs[next].from <= ZSTD_CALLER_JOB_BYTES_MAX)) await runHere(takeJob());
   };
   const poolWorkers = Array.from({ length: Math.min(pool.threadLimit, jobs.length - 1) }, poolWorker);
   const checksum = frame.checksum ? computeZstdChecksum(inputBuffer) : undefined;

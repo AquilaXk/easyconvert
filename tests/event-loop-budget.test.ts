@@ -152,6 +152,13 @@ describe('event loop stays free during CPU-bound encodes', () => {
     expect(value.equals(compressZstd(data, { level: 19 }))).toBe(true);
   }, TEST_TIMEOUT_MS);
 
+  it.each([3, 9])('a level-%i zstd encode of 8 MB in jobs keeps the loop delay under the budget and equals the synchronous frame', async (level) => {
+    const data = zipfText(8 * BYTES_PER_MB, 44 + level);
+    const { value, maxMs } = await withLoopMonitor(() => compressZstdAsync(data, { level }));
+    expect(maxMs).toBeLessThan(BUDGET_MS);
+    expect(value.equals(compressZstd(data, { level }))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
   it('a pure 7z archive of three 1 MB files keeps the loop delay under the budget and extracts to the inputs', async () => {
     const saved = process.env.P7ZIP_PATH;
     process.env.P7ZIP_PATH = '/nonexistent/easyconvert-no-7z';
