@@ -193,6 +193,28 @@ describe('native route: a payload that is not a tar is wrapped in a one-member t
   }
 
   oracleTest(
+    'the one-member tar is valid for payload sizes around the 512-byte block and for a source name that needs an extended header',
+    [...TOOLS],
+    async () => {
+      for (const size of [1, 511, 512, 513, 1023, 1024, 1025, 4096]) {
+        const payload = zipfText(size, 40 + size);
+        const result = await convertWithNative7z(COMPRESSORS[0].compress(payload), 'xz', 'tar', {}, 'notes.xz');
+        if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
+        expect(result.buffer.length % 512, `size ${size}`).toBe(0);
+        expect(tarNames(result.buffer, `size-${size}`), `size ${size}`).toEqual(['notes']);
+        expect(tarMember(result.buffer, 'notes').equals(payload), `size ${size}`).toBe(true);
+      }
+      const longName = 'n'.repeat(150);
+      const payload = zipfText(3000, 77);
+      const named = await convertWithNative7z(COMPRESSORS[0].compress(payload), 'xz', 'tar', {}, `${longName}.xz`);
+      if (named === null) throw new Error('the native 7-Zip engine declined the conversion');
+      expect(tarNames(named.buffer, 'long-name')).toEqual([longName]);
+      expect(tarMember(named.buffer, longName).equals(payload)).toBe(true);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
     'an empty payload becomes a tar with one empty member',
     [...TOOLS],
     async () => {

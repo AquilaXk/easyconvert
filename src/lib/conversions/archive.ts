@@ -2024,7 +2024,12 @@ export function getXzBinaryPath(): string | null {
  * wins over a legacy `7z` that may sit on the same host.
  */
 export const SEVEN_ZIP_BINARY_NAMES = ['7zz', '7z', '7za', '7zr'] as const;
-const SEVEN_ZIP_BINARY_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const;
+/**
+ * Debian and Ubuntu install the executables of the `7zip` package under `/usr/lib/7zip` and put a two-line shell script
+ * of the same name in `/usr/bin` that only runs them; the executable is tried first, so a conversion does not start a
+ * shell to start 7-Zip.
+ */
+const SEVEN_ZIP_BINARY_DIRECTORIES = ['/usr/lib/7zip', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'] as const;
 
 /** Fixed install locations of every 7-Zip name, best name first. */
 export const SEVEN_ZIP_BINARY_CANDIDATES: readonly string[] = SEVEN_ZIP_BINARY_NAMES.flatMap((name) =>
