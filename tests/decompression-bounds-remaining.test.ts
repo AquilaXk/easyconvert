@@ -81,18 +81,23 @@ function oneFileTar(name: string): Buffer {
 
 describe('decompression bombs are refused as typed 413 errors, fast and with bounded memory', () => {
   // The first inflate in a process allocates its working buffers; that one-off cost is not the refusal being measured.
+  let gzipBomb: Buffer;
+  let rawDeflateBomb: Buffer;
   beforeAll(async () => {
     await gunzipStreamingWithLimits(await compressZeros(4 * MIB, 'gzip')).catch(() => undefined);
+    // Compressed once: building a bomb costs more CPU than refusing it, and CI shards run test files side by side.
+    gzipBomb = await compressZeros(BOMB_BYTES, 'gzip');
+    rawDeflateBomb = await compressZeros(BOMB_BYTES, 'rawDeflate');
   });
 
   it('gunzipStreamingWithLimits throws a DecompressionLimitError for a size or ratio bomb', async () => {
-    const bomb = await compressZeros(BOMB_BYTES, 'gzip');
+    const bomb = gzipBomb;
     expect(BOMB_BYTES / bomb.length).toBeGreaterThan(ARCHIVE_SECURITY_LIMITS.MAX_RATIO * 2);
     expectBombRefused(await refused(() => gunzipStreamingWithLimits(bomb)));
   });
 
   it('convertArchive refuses a tar.gz and a plain gz bomb', async () => {
-    const bomb = await compressZeros(BOMB_BYTES, 'gzip');
+    const bomb = gzipBomb;
     for (const source of ['tar.gz', 'tgz', 'gz'] as const) {
       expectBombRefused(await refused(() => convertArchive(bomb, source, 'zip', {}, `bomb.${source}`)));
     }
@@ -107,7 +112,7 @@ describe('decompression bombs are refused as typed 413 errors, fast and with bou
   });
 
   it('inspectArchive refuses a gzip bomb instead of inflating it', async () => {
-    const bomb = await compressZeros(BOMB_BYTES, 'gzip');
+    const bomb = gzipBomb;
     expectBombRefused(await refused(() => inspectArchive(bomb, { filename: 'bomb.tar.gz' })));
   });
 
@@ -141,7 +146,7 @@ describe('decompression bombs are refused as typed 413 errors, fast and with bou
     }
 
     it('refuses a tgz bomb', async () => {
-      const bomb = await compressZeros(BOMB_BYTES, 'gzip');
+      const bomb = gzipBomb;
       const key = `tests/decompression-bounds-remaining/${Date.now()}_bomb.tgz`;
       await s3Storage.saveObject(key, bomb, 'application/gzip', 'bomb.tgz', 60_000);
       expectBombRefused(await refused(() => processGraphNodeJob(extractJob(key), undefined, s3Storage)));
@@ -181,7 +186,7 @@ describe('decompression bombs are refused as typed 413 errors, fast and with bou
     }
 
     it('refuses a deflate entry that expands past the archive limits', async () => {
-      const bomb = localEntryOnly('zeros.bin', await compressZeros(BOMB_BYTES, 'rawDeflate'));
+      const bomb = localEntryOnly('zeros.bin', rawDeflateBomb);
       expectBombRefused(await withoutZipBinary(() => refused(() => repairZipArchive(bomb))));
     });
 
