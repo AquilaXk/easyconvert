@@ -71,7 +71,7 @@ import {
 import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
-import { decodePlainPngOnce, isBarePng } from './image-decoded-source';
+import { decodePlainPngOnce } from './image-decoded-source';
 import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
@@ -1752,9 +1752,7 @@ interface EncodedAvif {
  * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits, the most the AV1 Main
  * profile carries (the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
  * that is fully opaque is dropped instead of encoded as a second plane. The reference library's encoder writes the
- * file when it is installed (grey sources as monochrome); without it the image library does. `pngFile`, when there is
- * one, is the source PNG that the pipeline has not changed in any pixel: the library's encoder reads that file itself,
- * where otherwise the pipeline is written as a PNG for it.
+ * file when it is installed (grey sources as monochrome); without it the image library does.
  */
 async function encodeAvifFromPipeline(
   pipeline: Sharp,
@@ -1762,8 +1760,7 @@ async function encodeAvifFromPipeline(
   content: ContentClass,
   keepsGrey: boolean,
   cicp: AvifCicp | undefined,
-  alphaIsOpaque: boolean | undefined,
-  pngFile: Buffer | undefined
+  alphaIsOpaque: boolean | undefined
 ): Promise<EncodedAvif> {
   const source = await pipeline.metadata();
   const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
@@ -1779,7 +1776,7 @@ async function encodeAvifFromPipeline(
   const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
-    const png = pngFile ?? (await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer());
+    const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();
     const buffer = await encodeAvifWithCli(avifenc, {
       png,
       width: target.width,
@@ -1944,8 +1941,6 @@ export async function convertImage(
   // Whether the alpha plane of a PNG decoded once is fully opaque; unknown (undefined) for any other source.
   let decodedAlphaIsOpaque: boolean | undefined;
   let decodedRaster: Raster | undefined;
-  // The PNG itself when it is a plain one the AVIF encoder can read as it is (see `isBarePng`).
-  let decodedPngFile: Buffer | undefined;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
   const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
@@ -2107,7 +2102,6 @@ export async function convertImage(
           pipeline = decoded.pipeline;
           decodedAlphaIsOpaque = decoded.alphaIsOpaque;
           decodedRaster = decoded.raster;
-          if (fmt === 'avif' && isBarePng(frameSelection.source)) decodedPngFile = frameSelection.source;
         }
       }
     }
@@ -2290,9 +2284,7 @@ export async function convertImage(
         break;
 
       case 'avif': {
-        // The encoder reads the plain PNG itself only while nothing changes its pixels: a resize or a background does.
-        const pngFile = resizeOptions || background !== undefined ? undefined : decodedPngFile;
-        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize, pngFile);
+        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize);
         // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
         // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
         // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
