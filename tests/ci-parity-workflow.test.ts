@@ -168,6 +168,11 @@ describe('parity-speed', () => {
     expect(String(policy?.with?.script)).toContain('scope: `speed-${process.env.BENCH_FAMILIES}`');
   });
 
+  it('uploads the report of a shard under a name of its own, since an artifact name can be used once per run', () => {
+    const upload = speed.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(upload?.with?.name).toBe('parity-speed-results-${{ matrix.family }}');
+  });
+
   it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
     const gate = stepNamed(speed, 'Use the gate of the base');
     expect(gate.if).toBe("env.BENCH_CHANGED == 'true'");
