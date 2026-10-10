@@ -1047,20 +1047,35 @@ export function decodeHtmlEntities(str: string): string {
 const SVG_SNIFF_BYTES = 256 * 1024;
 const SVG_SNIFF_CHARS = SVG_SNIFF_BYTES;
 
+/** Bytes decoded first to see whether a payload can be markup at all; a longer run of whitespace falls through to the full sniff. */
+const SVG_HEAD_BYTES = 64;
+
+/** True when a payload starts with the signature of a raster format: such a payload is never SVG text. */
+function startsWithRasterSignature(input: Buffer): boolean {
+  if (input.length >= 3 && input[0] === 0xff && input[1] === 0xd8 && input[2] === 0xff) return true; // JPG
+  if (input.length >= 8 && input[0] === 0x89 && input[1] === 0x50 && input[2] === 0x4e && input[3] === 0x47) return true; // PNG
+  return input.length >= 4 && input[0] === 0x47 && input[1] === 0x49 && input[2] === 0x46 && input[3] === 0x38; // GIF
+}
+
+/**
+ * False when the first character after the whitespace is not `<`. The root element follows only an XML declaration,
+ * comments and a doctype, which all start with `<`, so a payload that opens with anything else is not SVG; the head
+ * is enough to see it, where the whole sniff window decoded as text cost milliseconds for a binary image.
+ */
+function mayBeMarkup(input: Buffer): boolean {
+  const head = input.toString('utf-8', 0, SVG_HEAD_BYTES).trim();
+  return head === '' || head.startsWith('<');
+}
+
 /**
  * Checks whether the given buffer or text represents an SVG document.
  */
 export function isSvg(input: string | Buffer): boolean {
   if (!input) return false;
+  // Raster payloads are turned away from their signature and their first character, before any of them is decoded as text.
+  if (typeof input !== 'string' && (startsWithRasterSignature(input) || !mayBeMarkup(input))) return false;
   // The root element follows only an XML declaration, comments and a doctype, so the start decides.
   const str = typeof input === 'string' ? input.slice(0, SVG_SNIFF_CHARS) : input.toString('utf-8', 0, SVG_SNIFF_BYTES);
-
-  // Guard against binary files
-  if (typeof input !== 'string') {
-    if (input.length >= 3 && input[0] === 0xff && input[1] === 0xd8 && input[2] === 0xff) return false; // JPG
-    if (input.length >= 8 && input[0] === 0x89 && input[1] === 0x50 && input[2] === 0x4e && input[3] === 0x47) return false; // PNG
-    if (input.length >= 4 && input[0] === 0x47 && input[1] === 0x49 && input[2] === 0x46 && input[3] === 0x38) return false; // GIF
-  }
 
   const trimmed = str.trim();
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false; // JSON
