@@ -5,6 +5,7 @@ import { REPO_ROOT } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError, ToolRunError } from '../errors';
 import { measureSsimPsnr } from '../measure';
+import { type GrayRaster, lineAngleDifference, measureInk, type InkMeasure, parsePgm } from '../pdf-ink';
 import { buildStampPdf } from '../pdf-stamp';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow } from '../rows';
@@ -46,7 +47,7 @@ const UNSUPPORTED_CASES = [
 const REFERENCE_TOOL = 'qpdf';
 
 const MERGE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
-const WATERMARK_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
+const WATERMARK_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.stampInkMatchesReference, SPEC.stampGeometryMatchesSpec, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
 const ENCRYPTION_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.encryptionMatchesReference, SPEC.bytes, SPEC.throughput];
 
 const USER_PASSWORD = 'bench-user-secret';
@@ -62,6 +63,17 @@ const WATERMARK_GREY = 0.5;
 /** Pages the watermark covers (the page range option), as the range string and as page numbers; the rest must stay as the source. */
 const WATERMARK_PAGES = '2-3';
 const WATERMARK_PAGE_NUMBERS: ReadonlySet<number> = new Set([2, 3]);
+/** Resolution of the renders the stamp is measured on, in dots per inch. */
+const INK_DPI = 144;
+/**
+ * The stamp's darkness: the brightness it removes from the page, summed over the page, may differ from the reference
+ * stamp's by this share. The two are drawn by different code in the same font, size and opacity, so they agree within
+ * a few percent; a stamp with 0.5, 2/3 or 1.5 times the opacity differs by 50, 33 or 50 percent.
+ */
+const STAMP_INK_TOLERANCE = 0.1;
+/** The ink box of the stamp must be centred on the page within this many points along and across its text, and run at the requested angle within this many degrees. */
+const STAMP_CENTRE_TOLERANCE_POINTS = 2;
+const STAMP_ANGLE_TOLERANCE_DEGREES = 2;
 /**
  * SSIM, over the central square, at or above which our watermark render counts as the reference render. The two stamps
  * are set in the same font, size, angle, opacity and centring by different code. The text is thin and faint on a white
@@ -136,6 +148,28 @@ function renderPages(tools: PdfTools, file: string, dir: string, crop?: CropBox)
     .filter((name) => PAGE_FILE_PATTERN.test(name))
     .sort((a, b) => pageNumber(a) - pageNumber(b))
     .map((name) => path.join(dir, name));
+}
+
+/** The pages of `file` as 8-bit gray rasters at INK_DPI, in page order. */
+function renderRasters(tools: PdfTools, file: string, dir: string): GrayRaster[] {
+  fs.mkdirSync(dir, { recursive: true });
+  attempt(() => runTool(tools.pdftoppm, ['-r', String(INK_DPI), '-gray', file, path.join(dir, 'p')]).stdout);
+  const pageNumber = (name: string): number => Number(/-(\d+)\.pgm$/.exec(name)?.[1] ?? 0);
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith('.pgm'))
+    .sort((a, b) => pageNumber(a) - pageNumber(b))
+    .map((name) => parsePgm(fs.readFileSync(path.join(dir, name))));
+}
+
+/** Whether the ink of one stamped page sits where the spec puts a stamp: centred on the page, along the requested angle. */
+function stampGeometryHolds(ink: InkMeasure): boolean {
+  return (
+    ink.inkPixels > 0 &&
+    Math.abs(ink.centreAlong) <= STAMP_CENTRE_TOLERANCE_POINTS &&
+    Math.abs(ink.centreAcross) <= STAMP_CENTRE_TOLERANCE_POINTS &&
+    lineAngleDifference(ink.principalAngleDegrees, WATERMARK_ROTATION) <= STAMP_ANGLE_TOLERANCE_DEGREES
+  );
 }
 
 function pngSize(file: string): string {
@@ -275,9 +309,26 @@ async function runWatermark(ctx: FamilyContext, tools: PdfTools): Promise<BenchR
     const unchangedSsim = (pages: string[]): number => mean(pageSsims(tools, pages, sourcePages).filter((_, index) => untouched.includes(index)));
     const againstReference = pageSsims(tools, renderPages(tools, oursFile, ctx.scratch('watermark-ours-crop'), crop), renderPages(tools, referenceFile, ctx.scratch('watermark-reference-crop'), crop));
     ctx.log(`watermark render SSIM against the reference, central square, per page: ${againstReference.map((value) => value.toFixed(4)).join(', ')} (floor ${WATERMARK_MATCH_FLOOR})`);
+    const sourceRasters = renderRasters(tools, input.file, ctx.scratch('watermark-source-gray'));
+    const oursRasters = renderRasters(tools, oursFile, ctx.scratch('watermark-ours-gray'));
+    const referenceRasters = renderRasters(tools, referenceFile, ctx.scratch('watermark-reference-gray'));
+    const stampedIndexes = sourceRasters.map((_, index) => index).filter((index) => WATERMARK_PAGE_NUMBERS.has(index + 1));
+    const inkOf = (rasters: GrayRaster[]): InkMeasure[] => stampedIndexes.map((index) => measureInk(rasters[index], sourceRasters[index], INK_DPI, WATERMARK_ROTATION));
+    const oursInk = oursRasters.length === sourceCount ? inkOf(oursRasters) : [];
+    const referenceInk = referenceRasters.length === sourceCount ? inkOf(referenceRasters) : [];
+    const describeInk = (ink: InkMeasure[]): string => ink.map((one) => `mass ${one.mass.toFixed(1)} centre ${one.centreAlong.toFixed(2)}/${one.centreAcross.toFixed(2)} angle ${one.principalAngleDegrees.toFixed(2)}`).join('; ');
+    ctx.log(`watermark ink per stamped page, ours: ${describeInk(oursInk)}`);
+    ctx.log(`watermark ink per stamped page, reference: ${describeInk(referenceInk)}`);
+    const inkMatches =
+      oursInk.length === stampedIndexes.length &&
+      referenceInk.length === stampedIndexes.length &&
+      oursInk.every((ink, index) => ink.inkPixels > 0 && Math.abs(ink.mass / referenceInk[index].mass - 1) <= STAMP_INK_TOLERANCE);
+    const geometryHolds = (ink: InkMeasure[]): number => (ink.length === stampedIndexes.length && ink.every(stampGeometryHolds) ? 1 : 0);
     rows.push(
       ...qualityRows(WATERMARK_CASE, scoreOutput(tools, oursFile, truth), scoreOutput(tools, referenceFile, truth), [
         measuredRow(FAMILY, WATERMARK_CASE, SPEC.ssim, unchangedSsim(oursPages), unchangedSsim(referencePages), REFERENCE_TOOL),
+        measuredRow(FAMILY, WATERMARK_CASE, SPEC.stampInkMatchesReference, inkMatches ? 1 : 0, 1, REFERENCE_TOOL),
+        measuredRow(FAMILY, WATERMARK_CASE, SPEC.stampGeometryMatchesSpec, geometryHolds(oursInk), geometryHolds(referenceInk), REFERENCE_TOOL),
         measuredRow(FAMILY, WATERMARK_CASE, SPEC.renderMatchesReference, againstReference.length === sourceCount && Math.min(...againstReference) >= WATERMARK_MATCH_FLOOR ? 1 : 0, 1, REFERENCE_TOOL),
       ])
     );

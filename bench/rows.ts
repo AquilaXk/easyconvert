@@ -45,6 +45,8 @@ export const SPEC = {
   pdfCheckFailures: { metric: 'pdf_check_failures', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   pageCountError: { metric: 'page_count_error', unit: 'pages', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   renderMatchesReference: { metric: 'render_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
+  stampInkMatchesReference: { metric: 'stamp_ink_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
+  stampGeometryMatchesSpec: { metric: 'stamp_geometry_matches_spec', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   encryptionMatchesReference: { metric: 'encryption_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
   throughput: { metric: 'throughput', unit: 'MB/s', direction: 'higher', kind: 'throughput', tolerance: tol(0, 0.35) },

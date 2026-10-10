@@ -38,11 +38,11 @@ describe('the stamp PDF', () => {
     expect(declared).toBe(Buffer.byteLength(stream, 'latin1'));
   });
 
-  it('centres the rotated text box: the text matrix moves the origin to where the box centre is the page centre', () => {
+  it('centres the rotated ink box: the text matrix moves the origin to where the centre of the box of the capitals is the page centre', () => {
     const matrix = /([-0-9.]+) ([-0-9.]+) ([-0-9.]+) ([-0-9.]+) ([-0-9.]+) ([-0-9.]+) Tm/.exec(buildStampPdf(SPEC).toString('latin1'));
     const [cos, sin, , , x, y] = (matrix ?? []).slice(1).map(Number);
     const width = 6.5 * SPEC.fontSize; // D R A F T space C O P Y: 6500 units of the Helvetica-Bold metrics
-    const height = 0.925 * SPEC.fontSize; // ascender 718 plus descender 207
+    const height = 0.718 * SPEC.fontSize; // the cap height: the stamp text is capitals, so its ink runs from the baseline up to it
     expect(x + (width / 2) * cos - (height / 2) * sin).toBeCloseTo(SPEC.pageWidth / 2, 2);
     expect(y + (width / 2) * sin + (height / 2) * cos).toBeCloseTo(SPEC.pageHeight / 2, 2);
   });

@@ -17,9 +17,8 @@ const HELVETICA_BOLD_WIDTHS: Readonly<Record<string, number>> = {
   T: 611,
   Y: 667,
 };
-/** Ascender and descender of Helvetica-Bold in 1/1000 em from the same metrics. */
-const HELVETICA_BOLD_ASCENDER = 718;
-const HELVETICA_BOLD_DESCENDER = 207;
+/** Cap height of Helvetica-Bold in 1/1000 em from the same metrics: the stamp text is capitals only, so its ink spans the baseline to this height. */
+const HELVETICA_BOLD_CAP_HEIGHT = 718;
 const EM_UNITS = 1000;
 const DEGREES_PER_HALF_TURN = 180;
 const NUMBER_DIGITS = 4;
@@ -50,10 +49,10 @@ function textWidth(text: string, fontSize: number): number {
 
 const number = (value: number): string => value.toFixed(NUMBER_DIGITS);
 
-/** The content stream: the text box (its width, and the ascender plus descender as its height) centred on the page after the rotation. */
+/** The content stream: the ink box of the text (its advance width, and the cap height above the baseline) centred on the page after the rotation. */
 function stampContent(spec: StampSpec): string {
   const width = textWidth(spec.text, spec.fontSize);
-  const height = ((HELVETICA_BOLD_ASCENDER + HELVETICA_BOLD_DESCENDER) / EM_UNITS) * spec.fontSize;
+  const height = (HELVETICA_BOLD_CAP_HEIGHT / EM_UNITS) * spec.fontSize;
   const angle = (spec.rotationDegrees * Math.PI) / DEGREES_PER_HALF_TURN;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
