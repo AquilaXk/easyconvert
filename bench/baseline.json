@@ -1107,8 +1107,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -17.850514489840762,
-      "delta": -17.850514489840762,
+      "ours": -17.81188774546243,
+      "delta": -17.81188774546243,
       "ratio": null
     },
     "image/lineart.png->jpg/bd_rate_ssim": {
@@ -1117,8 +1117,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -43.525312923307055,
-      "delta": -43.525312923307055,
+      "ours": -43.74322435225568,
+      "delta": -43.74322435225568,
       "ratio": null
     },
     "image/lineart.png->jpg/bytes": {
@@ -1127,8 +1127,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 56347,
-      "delta": -2969,
+      "ours": 56320,
+      "delta": -2996,
       "ratio": null
     },
     "image/lineart.png->jpg/psnr": {
@@ -1137,8 +1137,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 40.583484,
-      "delta": 2.3549429999999987,
+      "ours": 40.573799,
+      "delta": 2.345258000000001,
       "ratio": null
     },
     "image/lineart.png->jpg/ssim": {
@@ -1147,8 +1147,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.996373,
-      "delta": 0.0066589999999999705,
+      "ours": 0.996324,
+      "delta": 0.006610000000000005,
       "ratio": null
     },
     "image/lineart.png->jpg/throughput": {
@@ -1287,8 +1287,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -20.937501242701806,
-      "delta": -20.937501242701806,
+      "ours": -12.433706993884053,
+      "delta": -12.433706993884053,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bd_rate_ssim": {
@@ -1297,8 +1297,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -17.186346668835604,
-      "delta": -17.186346668835604,
+      "ours": -10.910278977490751,
+      "delta": -10.910278977490751,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/bytes": {
@@ -1307,8 +1307,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 20896,
-      "delta": -7559,
+      "ours": 24798,
+      "delta": -3660,
       "ratio": null
     },
     "image/photo-a.jpg->jpg/psnr": {
@@ -1407,8 +1407,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -13.518299348308304,
-      "delta": -13.518299348308304,
+      "ours": -11.821837980095772,
+      "delta": -11.821837980095772,
       "ratio": null
     },
     "image/photo-b.png->avif/bd_rate_ssim": {
@@ -1417,8 +1417,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -13.379186590915692,
-      "delta": -13.379186590915692,
+      "ours": -11.81386872650222,
+      "delta": -11.81386872650222,
       "ratio": null
     },
     "image/photo-b.png->avif/bytes": {
@@ -1427,8 +1427,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 12776,
-      "delta": -8467,
+      "ours": 12990,
+      "delta": -8253,
       "ratio": null
     },
     "image/photo-b.png->avif/psnr": {
@@ -1437,8 +1437,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.715488,
-      "delta": -0.864924000000002,
+      "ours": 43.708866,
+      "delta": -0.8715460000000022,
       "ratio": null
     },
     "image/photo-b.png->avif/ssim": {
@@ -1447,8 +1447,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.966487,
-      "delta": -0.005662999999999974,
+      "ours": 0.966465,
+      "delta": -0.00568499999999994,
       "ratio": null
     },
     "image/photo-b.png->avif/throughput": {
@@ -1467,8 +1467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -16.63783533880594,
-      "delta": -16.63783533880594,
+      "ours": -9.42236581327639,
+      "delta": -9.42236581327639,
       "ratio": null
     },
     "image/photo-b.png->jpg/bd_rate_ssim": {
@@ -1477,8 +1477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.965236817645444,
-      "delta": -14.965236817645444,
+      "ours": -9.356208015007539,
+      "delta": -9.356208015007539,
       "ratio": null
     },
     "image/photo-b.png->jpg/bytes": {
@@ -1487,8 +1487,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 16479,
-      "delta": -4741,
+      "ours": 19067,
+      "delta": -2153,
       "ratio": null
     },
     "image/photo-b.png->jpg/psnr": {
@@ -1647,8 +1647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -63.659605226723095,
-      "delta": -63.659605226723095,
+      "ours": -2.7105058663253745,
+      "delta": -2.7105058663253745,
       "ratio": null
     },
     "image/screenshot.png->jpg/bd_rate_ssim": {
@@ -1657,8 +1657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -21.461941386992123,
-      "delta": -21.461941386992123,
+      "ours": -17.491893518698433,
+      "delta": -17.491893518698433,
       "ratio": null
     },
     "image/screenshot.png->jpg/bytes": {
@@ -1677,8 +1677,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.894442,
-      "delta": 4.431027,
+      "ours": 44.920806,
+      "delta": 1.5756319999999988,
       "ratio": null
     },
     "image/screenshot.png->jpg/ssim": {
