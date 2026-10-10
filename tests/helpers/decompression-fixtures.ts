@@ -26,6 +26,21 @@ export async function compressZeros(totalBytes: number, kind: StreamKind): Promi
   return Buffer.concat(parts);
 }
 
+/** `head`, `padBytes` spaces and `tail` as one raw deflate stream, produced in blocks so the fixture itself stays small. */
+export async function compressPadded(head: string, padBytes: number, tail: string): Promise<Buffer> {
+  const stream = zlib.createDeflateRaw({ level: 9 });
+  const parts: Buffer[] = [];
+  stream.on('data', (part: Buffer) => parts.push(part));
+  stream.write(head);
+  const block = Buffer.alloc(MIB, 0x20);
+  for (let written = 0; written < padBytes; written += block.length) {
+    if (!stream.write(written + block.length <= padBytes ? block : block.subarray(0, padBytes - written))) await once(stream, 'drain');
+  }
+  stream.end(tail);
+  await once(stream, 'end');
+  return Buffer.concat(parts);
+}
+
 /**
  * A raw deflate stream with no final block (it ends at a sync flush) that decodes to `outBytes` bytes, one random byte
  * in every `stride` (about 5.5 bytes of output per input byte at stride 6): the shape on which repairing a ZIP by
