@@ -69,13 +69,6 @@ export const SPEED_LIGHT_MAX_PAIRS = 25;
 /** The same for video, OCR and office rows, which take seconds per run. */
 export const SPEED_HEAVY_INITIAL_PAIRS = 6;
 export const SPEED_HEAVY_MAX_PAIRS = 12;
-/**
- * A row still undecided at its cap collects pairs up to this second cap (sequential sampling that stops as soon as the
- * interval decides). It is at most the 64 pairs the sign-test interval is exact for. Only rows whose interval straddles the pass
- * line at the first cap reach it, so a row that decides early costs nothing.
- */
-export const SPEED_LIGHT_EXTENDED_MAX_PAIRS = 50;
-export const SPEED_HEAVY_EXTENDED_MAX_PAIRS = 36;
 /** Paired runs added each time the interval straddles the pass line. */
 export const SPEED_PAIRS_STEP = 4;
 /**
@@ -139,43 +132,6 @@ export const SPEED_STEP_FACTOR = 1.6;
  * recorded in another run). A made-up entry far from what the pull request measures is refused.
  */
 export const GAP_BACKING_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
-/**
- * A/B speed comparison of a pull request with its base, in the same job (bench/ab-speed.ts). Each pair times the head,
- * the base and the reference once, in a rotating order; the number of pairs is fixed (no peeking, so no look correction).
- * A row fails only when the head is credibly slower than the base: the one-sided upper confidence bound of the median
- * head-to-base speed ratio is below 1 - SPEED_PARITY_TOLERANCE. The bound's error rate is the family-wise level shared
- * by AB_ROW_BUDGET rows (Bonferroni), so a run of unchanged code fails with a probability under AB_FAMILYWISE_ALPHA.
- * The pair counts are the fewest at which that bound can fall under the line for a 10 percent slowdown at the noise
- * CI measured (bench/ab-speed.ts, tests/bench-ab-speed.test.ts).
- */
-export const AB_LIGHT_PAIRS = 24;
-export const AB_HEAVY_PAIRS = 17;
-export const AB_FAMILYWISE_ALPHA = 0.01;
-export const AB_ROW_BUDGET = 50;
-/**
- * The regression threshold of the A/B comparison: a row fails when the head takes more than this share more time than
- * the base, with the confidence above. Unlike the 3 percent the reference may lead by, it is the size of a change that
- * is worth stopping: measured on CI with the base set to the head itself (bench/README.md), two copies of the same code
- * differ by up to 10 percent on a noisy row, so a tighter default would fail unchanged code.
- */
-export const AB_DEFAULT_REGRESSION = 0.1;
-export interface AbRegressionOverride {
-  /** The share of extra time that counts as a regression for this row. */
-  delta: number;
-  /** Why the default does not fit: the A/B noise or the bias measured for the row, and where. */
-  reason: string;
-}
-/**
- * Rows with their own threshold. An entry needs the measurement that justifies it (tests/bench-ab-speed.test.ts refuses
- * an entry without a reason and one that names no row of the baseline).
- */
-export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> = {
-  'compression/mixed.tar->zst/throughput': {
-    delta: 0.2,
-    reason:
-      'Two checkouts of the same commit measured 0.898 (upper bound 0.942, noise 0.037 over 24 pairs) against each other on the CI runner (nightly run 38025209212, base set to the head): the second copy of the code ran 10 percent faster than the first, a bias of the comparison whose cause is not established.',
-  },
-};
 /** Branch whose nightly and push runs may extend a speed history. */
 export const DEFAULT_BRANCH = 'main';
 /** Workflow events of the default branch that may extend a speed history. */

@@ -16,7 +16,7 @@ parity" below).
 | `npm run bench:quality -- --no-gate` | Measure and report without gating. |
 | `npm run bench:quality -- --inject-regression webp-quality` | Degrade our side on purpose to show the gate fails and names the metric. `webp-quality` lowers the WebP quality setting (a regression against our baseline; it stays on the same rate-distortion curve, so it is not behind the reference at equal size). `webp-reencode` encodes WebP twice (a worse curve, which BD-rate sees). `x264-ultrafast` switches H.264 to the ultrafast preset. `slow-ours` makes every timed run of our side twice as long (a speed regression). |
 | `npm run bench:quality -- --compare-report <file>` | Gate an existing report without measuring. |
-| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>] [--base-root <dir>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
+| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
 
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure.
 `ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
@@ -95,71 +95,9 @@ our side runs in-process and its JIT needs them; one for video, OCR and office),
 reference time to our time. The interval is the sign-test interval of the median ratio, taken from the order
 statistics of the sorted ratios (`bench/speed-parity.ts`): 95 percent coverage, no distribution assumption, no random
 numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound is below 0.97, otherwise UNSTABLE: four
-more pairs are added, up to 25 for light rows and 12 for video, OCR and office, and then (second cap) up to 50 and 36
-(`SPEED_LIGHT_EXTENDED_MAX_PAIRS`, `SPEED_HEAVY_EXTENDED_MAX_PAIRS`; the interval is exact up to 64 pairs). The extension
-is sequential sampling: only a row still undecided at the first cap pays for it, and it stops at the first decision.
-
-**Pull requests: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
-true ratio sits near it, so the `parity speed` job of a pull request does not judge the change by its distance to the
-reference alone. It checks out the base commit beside the head (`ab-base`, with the head's `node_modules` linked), and
-for every row times the head, the base and the reference in each pair, in a rotating order (`bench/ab-speed.ts`, the
-product is loaded in both versions through `bench/product.ts`, so a family's `ours` runs on either). Noise common to the
-three samples of a pair (this runner, this minute) cancels in the head-to-base ratio. A row **fails** when
-
-- the head is credibly slower than the base: the one-sided upper confidence bound of the median of base time / head time is
-  below `1 / (1 + delta)`, with `delta` the row's regression threshold (10 percent, `AB_DEFAULT_REGRESSION`; a row may have
-  its own in `AB_ROW_REGRESSION` with the measurement that justifies it); or
-- the base was at the reference (median reference time / base time at least 0.97) and the head is credibly below it (that
-  bound for reference time / head time under 0.97).
-
-The bound is the exact sign-test bound (the order statistic x(n + 1 - k), Conover section 3.2) at the error rate
-`AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET` = 0.01 / 50 = 0.0002 per row (Bonferroni), so a run of up to 50 rows of unchanged
-code fails with a probability under 1 percent whatever the noise; with too few pairs for that rate the bound does not
-exist and the row cannot fail. The pairs are fixed (24 for light rows, 17 for video, OCR and office rows: the fewest
-that give ranks 4 and 2), with no peeking. Everything else passes: a row below the reference that the base was already
-below is the standing gap the nightly run reports (`bench/parity-gaps.json`), not a failure of this change, and the
-history rule of tracked gaps does not apply to a row measured against its base. A row the base cannot run (a new
-capability) is measured against the reference alone, as the nightly run and `--parity` without `--base-root` measure every
-row: the interval of the pairs, the second cap of 50 and 36 pairs for rows undecided at the first cap, and a row still
-undecided at the last cap counts as a failure.
-
-**What the A/B comparison costs and sees.** Measured on the CI runner with the base set to the head itself (nightly
-dispatch `ab_base_ref`, run 38025209212, all 40 speed rows, commit c5982a81): the speed step took 7 min 52 s (2 min 43 s
-without the base), the 50-row budget gave no failure, and the A/B noise per row (standard deviation of the log of the
-pair ratios, `abNoise` in the report) had a median of 0.092 and a 90th percentile of 0.392, much more than on a quiet
-machine, so the smallest slowdown a row can show is large: with the default threshold the median row detects 18 percent
-(best 12 percent), 24 of 40 rows detect 20 percent and 28 detect 30 percent, and 12 rows need more than 30 percent
-(`compression/mixed.7z->tar`, `image/photo-b.png->jpg`, `document/noori.hwp->txt`, the `.docx` conversions, the audio
-`speech` and `aac` rows, `decrypt`, and `document/pdf-structure->docx`, whose office process makes it need 8 times).
-The same run found a bias of the comparison itself: two copies of the same code differ by 10 percent on
-`compression/mixed.tar->zst` (median 0.898, upper bound 0.942), which is why that row has the threshold 20 percent
-(`AB_ROW_REGRESSION`) and why the default is not 3 percent: at 3 percent that run fails the row. Detection of a slowdown
-by simulation (`npx tsx bench/simulate-speed-gate.ts`, 1000 trials per cell, noise per sample 2 percent, which is 2.8
-percent per pair ratio, the common load 5 percent; the percentages are the head's extra time over the base's):
-
-| Rows | Head slower than the base by | Absolute gate fails (the head against the reference alone, at its ratio) | A/B gate fails |
-|---|---|---|---|
-| light | 0 to 10% | 1.3% at ratio 1.00, 66% at 0.98, 100% at 0.90 | 0.0% |
-| light | 15% | the same | 96.4% |
-| light | 20% and more | the same | 100% |
-| heavy | 0 to 10% | 23% at ratio 1.00, 82% at 0.98, 100% at 0.90 | 0.0% |
-| heavy | 15% | the same | 74.1% |
-| heavy | 20% | the same | 99.9% |
-| heavy | 30% | the same | 100% |
-
-With 3 percent per sample (4 percent per pair ratio, closer to the noisy rows above) light rows detect 15% in 50.5% and
-20% in 99.7% of the trials, heavy rows 23.8% and 96.4%; unchanged rows fail 0.0% in every case, of which the guarantee is
-the 0.0002 per row. The absolute gate, which the nightly run still applies to every row, fails a row at parity by chance
-in 1 to 53 percent of the runs depending on the noise (columns of the same simulation), and a row at 0.98 in 66 to 88
-percent: the flakiness of #700, which the comparison with the base removes for rows the change did not slow. A 10 percent
-slowdown sits at the threshold and is not detected with the default (0.0%); a row that needs it detected asks for its own
-threshold (a 5 percent threshold detects 10 percent slowdowns in 95 percent or more of the light trials,
-`tests/bench-speed-gate-rate.test.ts`).
-
-`npx tsx bench/replay-speed-reports.ts <report or directory>...` replays recorded reports (the `bench-speed-results`
-artifact of a nightly run, the `parity-speed-results` artifact of a pull request) through the verdict and lists the rows
-that fail.
-
+more pairs are added, up to 25 for light rows and 12 for video, OCR and office. An interval that still straddles 0.97 at
+the cap is a failure. The interval of a median is as wide as the noise of a single pair, so a row whose true ratio
+sits at the pass line ends UNSTABLE: ours has to be clearly at or above the reference, not merely not behind it.
 **Minimum sample duration.** A timed sample of either side lasts at least `SPEED_MIN_SAMPLE_MS` (50 ms). Before the
 timed pairs, the warm-up rounds of a row are timed; the fastest single call of each side sets the number of back-to-back
 calls per sample, `ceil(50 / fastest call)` with at least 1 and at most `SPEED_MAX_SAMPLE_REPEATS` (1000), and each sample is

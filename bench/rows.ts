@@ -1,7 +1,6 @@
 import { BYTES_PER_MB, PSNR_CAP_DB, SSIM_DISTANCE_FLOOR } from './config';
 import type { BenchRow, Direction, Family, RowKind, SkipKind, Tolerance } from './report';
 import type { AdaptiveTiming } from './speed-parity';
-import type { AbTiming } from './ab-speed';
 import { megabytesPerSecond, type InterleavedTiming } from './stats';
 import type { ToolPlanSkipped } from './tools';
 
@@ -60,7 +59,7 @@ export function measuredRow(
   ours: number,
   reference: number,
   referenceTool: string,
-  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap' | 'abPairs' | 'abMedian' | 'abUpper' | 'abHeadVsReferenceUpper' | 'abNoise' | 'abBaseVsReferenceMedian'>> = {}
+  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap'>> = {}
 ): BenchRow {
   return {
     id: `${family}/${caseName}/${spec.metric}`,
@@ -85,12 +84,6 @@ export function measuredRow(
     ...(extra.ratioMedian === undefined ? {} : { ratioMedian: extra.ratioMedian }),
     ...(extra.speedVerdict === undefined ? {} : { speedVerdict: extra.speedVerdict }),
     ...(extra.unstableAtCap === undefined ? {} : { unstableAtCap: extra.unstableAtCap }),
-    ...(extra.abPairs === undefined ? {} : { abPairs: extra.abPairs }),
-    ...(extra.abMedian === undefined ? {} : { abMedian: extra.abMedian }),
-    ...(extra.abUpper === undefined ? {} : { abUpper: extra.abUpper }),
-    ...(extra.abHeadVsReferenceUpper === undefined ? {} : { abHeadVsReferenceUpper: extra.abHeadVsReferenceUpper }),
-    ...(extra.abNoise === undefined ? {} : { abNoise: extra.abNoise }),
-    ...(extra.abBaseVsReferenceMedian === undefined ? {} : { abBaseVsReferenceMedian: extra.abBaseVsReferenceMedian }),
   };
 }
 
@@ -149,7 +142,7 @@ export function throughputRow(
   family: Family,
   caseName: string,
   inputBytes: number,
-  timing: InterleavedTiming | AdaptiveTiming | AbTiming,
+  timing: InterleavedTiming | AdaptiveTiming,
   referenceTool: string
 ): BenchRow {
   const ours = megabytesPerSecond(inputBytes, timing.oursMedianMs, BYTES_PER_MB);
@@ -165,20 +158,5 @@ export function throughputRow(
     ...(decided
       ? { ratioMedian: decided.decision.median, speedVerdict: decided.decision.verdict === 'pass' ? ('pass' as const) : ('fail' as const), unstableAtCap: decided.unstableAtCap }
       : {}),
-    ...abFields(timing),
   });
-}
-
-/** The A/B fields of a row; a bound that cannot exist for want of pairs is left out. */
-function abFields(timing: InterleavedTiming | AdaptiveTiming | AbTiming): Partial<BenchRow> {
-  if (!('ab' in timing)) return {};
-  const { ab } = timing;
-  return {
-    abPairs: ab.pairs,
-    abMedian: ab.headVsBaseMedian,
-    ...(Number.isFinite(ab.headVsBaseUpper) ? { abUpper: ab.headVsBaseUpper } : {}),
-    ...(Number.isFinite(ab.headVsReferenceUpper) ? { abHeadVsReferenceUpper: ab.headVsReferenceUpper } : {}),
-    abNoise: ab.noise,
-    abBaseVsReferenceMedian: ab.baseVsReferenceMedian,
-  };
 }

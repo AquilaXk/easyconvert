@@ -63,19 +63,6 @@ export interface BenchRow {
   speedVerdict?: RowSpeedVerdict;
   /** The interval still straddled the pass line at the cap on pairs, which counts as a failure. */
   unstableAtCap?: boolean;
-  /**
-   * A/B comparison with the base of the change, measured in the same pairs (bench/ab-speed.ts): the number of pairs, the
-   * median of base time / head time, its upper bound and the upper bound of reference time / head time at the per-row
-   * error rate (absent when too few pairs exist for a bound: the row cannot fail on it), and the median of reference
-   * time / base time. All absent when the row was not compared with a base.
-   */
-  abPairs?: number;
-  abMedian?: number;
-  abUpper?: number;
-  abHeadVsReferenceUpper?: number;
-  /** Standard deviation of the natural logarithm of the per-pair base time / head time: the noise of the comparison. */
-  abNoise?: number;
-  abBaseVsReferenceMedian?: number;
   skipKind?: SkipKind;
   skipReason?: string;
 }
@@ -185,7 +172,7 @@ function validateRow(value: unknown, index: number): BenchRow {
     parsed.skipKind = member<SkipKind>(row.skipKind, SKIP_KIND_SET, `${path}.skipKind`);
     parsed.skipReason = str(row.skipReason, `${path}.skipReason`);
   }
-  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian', 'abPairs', 'abMedian', 'abUpper', 'abHeadVsReferenceUpper', 'abNoise', 'abBaseVsReferenceMedian'] as const) {
+  for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian'] as const) {
     if (row[key] !== undefined) parsed[key] = finiteNumber(row[key], `${path}.${key}`);
   }
   if (row.speedVerdict !== undefined) parsed.speedVerdict = member<RowSpeedVerdict>(row.speedVerdict, SPEED_VERDICT_SET, `${path}.speedVerdict`);

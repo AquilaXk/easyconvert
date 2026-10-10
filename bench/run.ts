@@ -23,7 +23,6 @@ import {
   SCHEMA_VERSION,
   WARMUP_RUNS,
 } from './config';
-import { configureBaseRoot } from './product';
 import { createContext, type Injection, parseInjection } from './context';
 import { BenchArgumentError, BenchError, ReportSchemaError } from './errors';
 import { FAMILY_RUNNERS } from './families';
@@ -67,8 +66,6 @@ export interface CliOptions {
   gapsPath: string;
   /** Parity only: the gap file of the base of the change; its new or changed entries must be backed by the speed rows measured in this run. */
   baseGapsPath: string | null;
-  /** Parity only: a checkout of the base commit; speed rows are then measured against it in the same pairs (bench/ab-speed.ts). */
-  baseRoot: string | null;
   /** Print a hash of the reference tool versions and exit (the key of the CI cache). */
   printToolFingerprint: boolean;
 }
@@ -97,7 +94,6 @@ export function parseArgs(args: string[]): CliOptions {
     cacheDir: REF_CACHE_DIR,
     gapsPath: PARITY_GAPS_PATH,
     baseGapsPath: null,
-    baseRoot: null,
     printToolFingerprint: false,
   };
   for (let i = 0; i < args.length; i++) {
@@ -137,8 +133,6 @@ export function parseArgs(args: string[]): CliOptions {
       options.cacheDir = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--gaps') {
       options.gapsPath = path.resolve(takeValue(args, i++, flag));
-    } else if (flag === '--base-root') {
-      options.baseRoot = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--base-gaps') {
       options.baseGapsPath = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--print-tool-fingerprint') {
@@ -155,10 +149,6 @@ export function parseArgs(args: string[]): CliOptions {
   if (options.qualityOnly && options.speedOnly) throw new BenchArgumentError('--quality-only and --speed-only exclude each other');
   if (options.parity && options.updateBaseline) throw new BenchArgumentError('--update-baseline cannot be combined with --parity');
   if (options.parity && !options.gate) throw new BenchArgumentError('--parity cannot be combined with --no-gate');
-  // A workflow names the base checkout through the environment, so that its command line stays the one the benchmark documents.
-  const fromEnvironment = process.env.BENCH_BASE_ROOT;
-  if (options.baseRoot === null && options.parity && fromEnvironment) options.baseRoot = path.resolve(fromEnvironment);
-  if (options.baseRoot && !options.parity) throw new BenchArgumentError('--base-root needs --parity');
   if (options.baseGapsPath && !options.parity) throw new BenchArgumentError('--base-gaps needs --parity');
   return options;
 }
@@ -194,7 +184,6 @@ export function toolFingerprint(tools: Record<string, string | null>): string {
 }
 
 async function measureAll(options: CliOptions, strict: boolean): Promise<BenchReport> {
-  configureBaseRoot(options.baseRoot);
   const resolve = defaultResolver();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-quality-'));
   try {

@@ -597,7 +597,7 @@ jobs:
       github.event_name == 'pull_request' &&
       (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
       issues: write
@@ -653,25 +653,11 @@ jobs:
           git show "$PR_BASE_SHA:bench/parity-gaps.json" > "$RUNNER_TEMP/base-parity-gaps.json"
           echo "path=$RUNNER_TEMP/base-parity-gaps.json" >> "$GITHUB_OUTPUT"
 
-      # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts), so the base is
-      # checked out beside it. Its dependencies are this checkout's (a link): only the sources differ.
-      - name: Check out the base of the pull request
-        if: env.BENCH_CHANGED == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: ab-base
-
-      - name: Link its dependencies
-        if: env.BENCH_CHANGED == 'true'
-        run: ln -s "$PWD/node_modules" ab-base/node_modules
-
       - name: Measure speed against the reference tools
         id: bench
         if: env.BENCH_CHANGED == 'true'
         env:
           BASE_GAPS: ${{ steps.base-gaps.outputs.path }}
-          BENCH_BASE_ROOT: ab-base
         run: |
           set +e
           npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps "$BASE_GAPS"

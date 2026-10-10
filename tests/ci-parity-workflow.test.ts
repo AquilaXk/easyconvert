@@ -139,18 +139,6 @@ describe('parity-speed', () => {
     }
   });
 
-  it('measures the pull request against its base in the same pairs: the base is checked out beside it, with this checkout\'s dependencies', () => {
-    const checkout = speed.steps.find((s) => s.name === 'Check out the base of the pull request');
-    expect(checkout?.uses).toMatch(/^actions\/checkout@/);
-    expect(checkout?.with).toMatchObject({ ref: '${{ github.event.pull_request.base.sha }}', path: 'ab-base' });
-    expect(speed.steps.find((s) => s.name === 'Link its dependencies')?.run).toBe('ln -s "$PWD/node_modules" ab-base/node_modules');
-    expect(speed.steps.find((s) => s.id === 'bench')?.env?.BENCH_BASE_ROOT).toBe('ab-base');
-    expect(speed['timeout-minutes']).toBe(60);
-    for (const name of ['Check out the base of the pull request', 'Link its dependencies']) {
-      expect(String(speed.steps.find((s) => s.name === name)?.if)).toMatch(/env\.BENCH_CHANGED == 'true'/);
-    }
-  });
-
   it("checks the gap entries the pull request adds or changes against its own speed run, with the base's gap file", () => {
     const take = speed.steps.find((s) => s.id === 'base-gaps');
     expect(take?.run).toContain('git show "$PR_BASE_SHA:bench/parity-gaps.json"');
@@ -412,16 +400,6 @@ describe('the nightly run', () => {
       expect(step.run).not.toContain('--quick');
       expect(step.run).not.toContain('--family');
     }
-  });
-
-  it('can measure the speed rows against a commit in the same pairs, for the noise of the comparison and for a check of the base', () => {
-    const inputs = (nightly.on as { workflow_dispatch?: { inputs?: Record<string, { default?: string }> } }).workflow_dispatch?.inputs;
-    expect(inputs?.ab_base_ref?.default).toBe('');
-    const checkout = stepNamed(speedJob, 'Check out the commit to compare with');
-    expect(checkout.if).toBe("inputs.ab_base_ref != ''");
-    expect(checkout.with).toMatchObject({ ref: '${{ inputs.ab_base_ref }}', path: 'ab-base' });
-    expect(stepNamed(speedJob, 'Link its dependencies').run).toBe('ln -s "$PWD/node_modules" ab-base/node_modules');
-    expect(stepNamed(speedJob, 'Run the speed parity benchmark').env?.BENCH_BASE_ROOT).toBe("${{ inputs.ab_base_ref != '' && 'ab-base' || '' }}");
   });
 
   it('is the writer of the reference cache, saved even when the benchmark fails', () => {

@@ -1,11 +1,9 @@
 import { performance } from 'node:perf_hooks';
 import {
   SPEED_CONFIDENCE_LEVEL,
-  SPEED_HEAVY_EXTENDED_MAX_PAIRS,
   SPEED_HEAVY_INITIAL_PAIRS,
   SPEED_HEAVY_MAX_PAIRS,
   SPEED_HEAVY_WARMUP_ROUNDS,
-  SPEED_LIGHT_EXTENDED_MAX_PAIRS,
   SPEED_LIGHT_INITIAL_PAIRS,
   SPEED_LIGHT_MAX_PAIRS,
   SPEED_LIGHT_WARMUP_ROUNDS,
@@ -26,9 +24,8 @@ import { coefficientOfVariation, median, type InterleavedTiming, timed } from '.
  * section 3.2). It needs no distributional assumption and no random numbers, so a decision is reproducible.
  *
  * PASS: the lower bound is at or above 1 - tolerance. FAIL: the upper bound is below it. UNSTABLE: the interval
- * straddles it (or fewer than SPEED_MIN_PAIRS pairs exist), so more pairs are collected, up to a cap and then, for a
- * row still undecided, up to a second cap (sequential sampling: it stops at the first decision). An interval that still
- * straddles the line at the last cap is returned as `unstableAtCap`; bench/parity.ts judges such a row by its median.
+ * straddles it (or fewer than SPEED_MIN_PAIRS pairs exist), so more pairs are collected, up to a cap; an interval that
+ * still straddles the line at the cap counts as a failure.
  *
  * Every timed sample of either side lasts at least SPEED_MIN_SAMPLE_MS: the number of back-to-back calls per sample is
  * calibrated once per row from its warm-up rounds, as benchmark harnesses calibrate their iteration counts, so a
@@ -63,7 +60,7 @@ export interface SpeedOptions {
 }
 
 /** P(Binomial(n, 1/2) <= j), exact for n up to MAX_INTERVAL_PAIRS. */
-export function binomialCdfHalf(n: number, j: number): number {
+function binomialCdfHalf(n: number, j: number): number {
   let coefficient = 1;
   let sum = 0;
   for (let i = 0; i <= j; i++) {
@@ -129,8 +126,6 @@ export function decideSpeed(oursMs: readonly number[], referenceMs: readonly num
 export interface SpeedPlan {
   initialPairs: number;
   maxPairs: number;
-  /** A second cap for a row still undecided at `maxPairs`; omitted or not above `maxPairs`: there is none. */
-  extendedMaxPairs?: number;
   step: number;
   warmup: number;
   /** Fewest back-to-back calls of our side timed per sample (the sample is the mean per call); 1 when omitted. */
@@ -149,7 +144,6 @@ export interface SpeedPlan {
 export const LIGHT_SPEED_PLAN: SpeedPlan = {
   initialPairs: SPEED_LIGHT_INITIAL_PAIRS,
   maxPairs: SPEED_LIGHT_MAX_PAIRS,
-  extendedMaxPairs: SPEED_LIGHT_EXTENDED_MAX_PAIRS,
   step: SPEED_PAIRS_STEP,
   warmup: SPEED_LIGHT_WARMUP_ROUNDS,
   minSampleMs: SPEED_MIN_SAMPLE_MS,
@@ -157,7 +151,6 @@ export const LIGHT_SPEED_PLAN: SpeedPlan = {
 export const HEAVY_SPEED_PLAN: SpeedPlan = {
   initialPairs: SPEED_HEAVY_INITIAL_PAIRS,
   maxPairs: SPEED_HEAVY_MAX_PAIRS,
-  extendedMaxPairs: SPEED_HEAVY_EXTENDED_MAX_PAIRS,
   step: SPEED_PAIRS_STEP,
   warmup: SPEED_HEAVY_WARMUP_ROUNDS,
   minSampleMs: SPEED_MIN_SAMPLE_MS,
@@ -179,15 +172,14 @@ export interface AdaptiveTiming extends InterleavedTiming {
   /** Back-to-back calls per timed sample on each side, as calibrated; each sample in `oursMs` and `referenceMs` is the mean per call. */
   repeats: { ours: number; reference: number };
   decision: SpeedDecision;
-  /** True when the interval still straddled the pass line at the last cap: the row is judged by its median (bench/parity.ts). */
+  /** True when the interval still straddled the pass line at the cap, which counts as a failure. */
   unstableAtCap: boolean;
 }
 
 /**
  * Collects paired runs until the speed decision is stable or the cap is reached. The order of the two sides
- * alternates with the pair index, so a drifting machine load or a warming cache favours neither. Pairs are added until
- * the interval decides, the first cap (`maxPairs`) is reached and then the second (`extendedMaxPairs`). An UNSTABLE
- * decision at the last cap is returned as a FAIL with `unstableAtCap` set; the verdict of such a row is taken from its median.
+ * alternates with the pair index, so a drifting machine load or a warming cache favours neither. An UNSTABLE decision
+ * at the cap is returned as a FAIL with `unstableAtCap` set.
  */
 export async function adaptiveSpeedTiming(
   ours: () => Promise<void> | void,
@@ -199,8 +191,6 @@ export async function adaptiveSpeedTiming(
   if (plan.maxPairs < plan.initialPairs || plan.maxPairs > MAX_INTERVAL_PAIRS) {
     throw new SpeedSampleError(`the cap must be from ${plan.initialPairs} to ${MAX_INTERVAL_PAIRS} pairs, got ${plan.maxPairs}`);
   }
-  const lastCap = Math.max(plan.maxPairs, plan.extendedMaxPairs ?? 0);
-  if (lastCap > MAX_INTERVAL_PAIRS) throw new SpeedSampleError(`the second cap must not exceed ${MAX_INTERVAL_PAIRS} pairs, got ${lastCap}`);
   if (!Number.isInteger(plan.step) || plan.step < 1) throw new SpeedSampleError(`the step must be a positive integer, got ${plan.step}`);
   const repeats = plan.oursRepeats ?? 1;
   if (!Number.isInteger(repeats) || repeats < 1) throw new SpeedSampleError(`oursRepeats must be a positive integer, got ${repeats}`);
@@ -239,8 +229,8 @@ export async function adaptiveSpeedTiming(
   };
   await collect(plan.initialPairs);
   let decision = decideSpeed(oursMs, referenceMs, plan);
-  while (decision.verdict === 'unstable' && oursMs.length < lastCap) {
-    await collect(Math.min(plan.step, lastCap - oursMs.length));
+  while (decision.verdict === 'unstable' && oursMs.length < plan.maxPairs) {
+    await collect(Math.min(plan.step, plan.maxPairs - oursMs.length));
     decision = decideSpeed(oursMs, referenceMs, plan);
   }
   const unstableAtCap = decision.verdict === 'unstable';

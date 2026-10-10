@@ -1,5 +1,4 @@
 import type { ConversionOptions } from '../src/lib/types';
-import { importProduct } from './product';
 
 /**
  * Our side of every comparison goes through the project's single public conversion dispatcher, the entry point
@@ -18,7 +17,7 @@ export async function convertWithProject(
   options: ConversionOptions,
   filename: string
 ): Promise<ConvertedOutput> {
-  const { dispatchConversion } = await importProduct<typeof import('../src/lib/conversions/dispatch')>('lib/conversions/dispatch');
+  const { dispatchConversion } = await import('../src/lib/conversions/dispatch');
   const result = await dispatchConversion(input, sourceFormat, targetFormat, options, filename);
   return { buffer: result.buffer, engineUsed: result.engineUsed };
 }
@@ -35,6 +34,6 @@ export async function convertInProcess(
   options: ConversionOptions,
   filename: string
 ): Promise<Buffer> {
-  const { convertFile } = await importProduct<typeof import('../src/lib/conversions')>('lib/conversions');
+  const { convertFile } = await import('../src/lib/conversions');
   return (await convertFile(input, sourceFormat, targetFormat, options, filename)).buffer;
 }
