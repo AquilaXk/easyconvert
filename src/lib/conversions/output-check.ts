@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import JSZip from 'jszip';
 import type { WorkerConversionResult } from '../../worker/engines';
 import { InvalidConversionOutputError } from '../types';
+import { readZipEntryBytes } from './zip-entry-reader';
 
 /** Targets whose bytes are text a reader opens as such. */
 const TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv', 'html']);
@@ -50,7 +51,7 @@ async function isTextArchive(result: Pick<WorkerConversionResult, 'filePath' | '
   if (zip === null) return false;
   for (const member of Object.values(zip.files)) {
     if (member.dir) continue;
-    if (isContainer((await member.async('nodebuffer')).subarray(0, SAMPLE_BYTES))) return false;
+    if (isContainer((await readZipEntryBytes(member)).subarray(0, SAMPLE_BYTES))) return false;
   }
   return true;
 }
