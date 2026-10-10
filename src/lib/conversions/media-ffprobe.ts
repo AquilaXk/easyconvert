@@ -162,6 +162,8 @@ export interface InputStream {
   language?: string;
   /** Transfer characteristic of a video stream (`bt709`, `smpte2084`, `arib-std-b67`), when the stream states one. */
   colorTransfer?: string;
+  /** True when the container or stream cuts the shown picture out of the stored one (frame cropping, clean aperture). */
+  cropped?: boolean;
 }
 
 interface RawStream {
@@ -176,7 +178,7 @@ interface RawStream {
   disposition?: { attached_pic?: unknown };
   tags?: { title?: unknown; language?: unknown };
   color_transfer?: unknown;
-  side_data_list?: Array<{ rotation?: unknown }>;
+  side_data_list?: Array<{ rotation?: unknown; side_data_type?: unknown }>;
 }
 
 const STREAM_TYPES: Readonly<Record<string, InputStreamType>> = {
@@ -210,6 +212,12 @@ function displayRotation(raw: RawStream): number {
   return 0;
 }
 
+const FRAME_CROPPING_SIDE_DATA = 'Frame Cropping';
+
+function hasFrameCropping(raw: RawStream): boolean {
+  return (raw.side_data_list ?? []).some((entry) => entry.side_data_type === FRAME_CROPPING_SIDE_DATA);
+}
+
 function toInputStream(raw: RawStream): InputStream {
   const index = typeof raw.index === 'number' && Number.isInteger(raw.index) && raw.index >= 0 ? raw.index : undefined;
   if (index === undefined) {
@@ -233,6 +241,7 @@ function toInputStream(raw: RawStream): InputStream {
     title: typeof raw.tags?.title === 'string' && raw.tags.title !== '' ? raw.tags.title : undefined,
     language: typeof raw.tags?.language === 'string' && raw.tags.language !== '' ? raw.tags.language : undefined,
     colorTransfer: typeof raw.color_transfer === 'string' && raw.color_transfer !== '' ? raw.color_transfer : undefined,
+    ...(hasFrameCropping(raw) ? { cropped: true } : {}),
   };
 }
 
