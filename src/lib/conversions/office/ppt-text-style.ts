@@ -97,21 +97,30 @@ class Cursor {
   }
 }
 
-/** Reads one TextPFException after its run header; false when the atom ends early or uses fields this reader does not know. */
+/**
+ * Skips one TextPFException after its run header, in the field order of [MS-PPT] 2.9.18: bullet flags, bullet
+ * character, font, size and colour, alignment, spacing, margins, default tab size, then the tab stops, and only then
+ * font alignment, wrap flags and text direction. False when the atom ends early or uses fields this reader does not know.
+ */
 function skipParagraphException(cursor: Cursor): boolean {
   const masks = cursor.u32();
   if (masks === null || (masks & ~PF_KNOWN) !== 0) return false;
-  let size = 0;
-  if ((masks & PF_BULLET_FLAGS) !== 0) size += U16_BYTES;
-  for (const field of PF_U16_FIELDS) if ((masks & field) !== 0) size += U16_BYTES;
-  if ((masks & PF_BULLET_COLOR) !== 0) size += U32_BYTES;
-  if ((masks & PF_WRAP_FLAGS) !== 0) size += U16_BYTES;
-  if (!cursor.skip(size)) return false;
+  let beforeTabStops = 0;
+  let afterTabStops = 0;
+  if ((masks & PF_BULLET_FLAGS) !== 0) beforeTabStops += U16_BYTES;
+  for (const field of PF_U16_FIELDS) {
+    if ((masks & field) === 0) continue;
+    if (field === PF_FONT_ALIGN || field === PF_TEXT_DIRECTION) afterTabStops += U16_BYTES;
+    else beforeTabStops += U16_BYTES;
+  }
+  if ((masks & PF_BULLET_COLOR) !== 0) beforeTabStops += U32_BYTES;
+  if ((masks & PF_WRAP_FLAGS) !== 0) afterTabStops += U16_BYTES;
+  if (!cursor.skip(beforeTabStops)) return false;
   if ((masks & PF_TAB_STOPS) !== 0) {
     const stops = cursor.u16();
-    return stops !== null && cursor.skip(stops * TAB_STOP_BYTES);
+    if (stops === null || !cursor.skip(stops * TAB_STOP_BYTES)) return false;
   }
-  return true;
+  return cursor.skip(afterTabStops);
 }
 
 /**

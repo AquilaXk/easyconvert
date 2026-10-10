@@ -41,6 +41,14 @@ describe('PowerPoint character runs', () => {
     ]);
   });
 
+  it('reads tab stops before the font alignment that follows them in a paragraph run', () => {
+    // [MS-PPT] 2.9.18 order: ... defaultTabSize, tabStops, fontAlign, wrapFlags, textDirection.
+    const masks = 0x00100000 | 0x00010000 | 0x00020000 | 0x00200000;
+    const paragraph = Buffer.concat([u32(3), u16(0), u32(masks), u16(1), u32(0x00640064), u16(2), u16(1), u16(0)]);
+    const body = Buffer.concat([paragraph, u32(3), u32(0x10000), u16(5)]);
+    expect(readCharacterFontRuns(body, 2)).toEqual([{ start: 0, end: 3, fontRef: 5, symbolFontRef: undefined }]);
+  });
+
   it('gives up when the atom is cut off, leaves bytes unread, or sets fields it does not know', () => {
     const run = Buffer.concat([u32(3), u32(0x10000), u16(2)]);
     const valid = Buffer.concat([paragraphRun(3), run]);
