@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import {
   CPU_POOL_MAX,
@@ -145,5 +145,40 @@ describe('CpuPool', () => {
     const pool = makePool({ size: 2 });
     await Promise.all(Array.from({ length: 8 }, (_, i) => pool.submit('echo', { value: i })));
     expect(pool.stats.threads).toBeLessThanOrEqual(2);
+  }, TEST_TIMEOUT_MS);
+
+  it('stops a thread that has been idle for the idle time, and starts a new one when work comes', async () => {
+    const pool = makePool({ size: 1, idleMs: 150 });
+    const first = await pool.submit<{ threadId: number }>('echo', { value: 1 });
+    expect(pool.stats.threads).toBe(1);
+    await vi.waitFor(() => expect(pool.stats.threads).toBe(0), { timeout: 5000, interval: 25 });
+    const second = await pool.submit<{ value: number; threadId: number }>('echo', { value: 2 });
+    expect(second.value).toBe(2);
+    expect(second.threadId).not.toBe(first.threadId);
+  }, TEST_TIMEOUT_MS);
+
+  it('keeps a thread that keeps getting work, and keeps threads for good with an idle time of 0', async () => {
+    const busy = makePool({ size: 1, idleMs: 400 });
+    const ids = new Set<number>();
+    for (let i = 0; i < 4; i++) {
+      ids.add((await busy.submit<{ threadId: number }>('echo', { value: i })).threadId);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    expect(ids.size).toBe(1);
+    const forever = makePool({ size: 1, idleMs: 0 });
+    await forever.submit('echo', { value: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(forever.stats.threads).toBe(1);
+  }, TEST_TIMEOUT_MS);
+
+  it('warms threads up to its size without giving them work', async () => {
+    const pool = makePool({ size: 2 });
+    expect(pool.stats.threads).toBe(0);
+    pool.warm();
+    expect(pool.stats).toEqual({ threads: 2, busy: 0, queued: 0 });
+    pool.warm(1);
+    expect(pool.stats.threads).toBe(2);
+    const reply = await pool.submit<{ value: number }>('echo', { value: 9 });
+    expect(reply.value).toBe(9);
   }, TEST_TIMEOUT_MS);
 });

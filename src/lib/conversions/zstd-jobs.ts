@@ -66,5 +66,6 @@ export function encodeZstdJob(data: Uint8Array, level: number, jobs: readonly Zs
   const job = jobs[index];
   const encoder = new ZstdBlockEncoder(data, params, windowSize, job.to, { historyFrom: job.historyFrom, firstJob: index === 0 });
   const encoded = encoder.encodeRange(job.from, job.to, index === jobs.length - 1, new Uint8Array(0), 0);
+  encoder.release();
   return encoded.data.subarray(0, encoded.length);
 }

@@ -247,6 +247,37 @@ function initialRepeatOffsets(job: ZstdJobStart | undefined): readonly [number, 
   return [0, 0, 0];
 }
 
+/**
+ * Working arrays kept for the next encoder on the same thread. One job allocates about 1.5 MB of them (the hash and chain
+ * tables, the sequence store, the literal buffer); a pool thread that left them to the garbage collector would hold tens of
+ * megabytes of dead arrays between collections, which makes every process this one starts slower to start (fork copies the
+ * page tables of everything mapped). Every array is written before it is read, except the hash table, which is refilled.
+ */
+interface EncoderScratch {
+  store: SequenceStore;
+  literals: Uint8Array;
+  llCodes: Uint8Array;
+  mlCodes: Uint8Array;
+  ofCodes: Uint8Array;
+}
+
+let spareScratch: EncoderScratch | null = null;
+/** Hash and chain tables by length; a few sizes at most (the log of the region), one table of each. */
+const spareTables = new Map<number, Int32Array>();
+const SPARE_TABLES_MAX = 6;
+
+function takeTable(length: number): Int32Array {
+  const spare = spareTables.get(length);
+  if (spare === undefined) return new Int32Array(length);
+  spareTables.delete(length);
+  return spare;
+}
+
+function giveTable(table: Int32Array): void {
+  if (spareTables.size >= SPARE_TABLES_MAX && !spareTables.has(table.length)) spareTables.delete(spareTables.keys().next().value as number);
+  spareTables.set(table.length, table);
+}
+
 class MatchFinder {
   public rep1: number = ZSTD_REP_OFFSET_INITIAL[0];
   public rep2: number = ZSTD_REP_OFFSET_INITIAL[1];
@@ -284,10 +315,10 @@ class MatchFinder {
     const inputLog = Math.max(MIN_TABLE_LOG, 32 - Math.clz32(regionEnd - historyFrom) + 1);
     const hashLog = Math.min(params.hashLog, inputLog);
     const chainLog = Math.min(params.chainLog, inputLog);
-    this.head = new Int32Array(1 << hashLog).fill(NO_POSITION);
+    this.head = takeTable(1 << hashLog).fill(NO_POSITION);
     this.hashShift = 32 - hashLog;
     if (chainLog > 0 && params.searchDepth > 1) {
-      this.chain = new Int32Array(1 << chainLog);
+      this.chain = takeTable(1 << chainLog);
       this.chainMask = (1 << chainLog) - 1;
     } else {
       this.chain = null;
@@ -295,6 +326,12 @@ class MatchFinder {
     }
     this.chainReach = this.chainMask - HASH_READ_BYTES;
     this.insertEnd = data.length - HASH_READ_BYTES;
+  }
+
+  /** Hands the tables back for the next finder on this thread; the finder is not used afterwards. */
+  public release(): void {
+    giveTable(this.head);
+    if (this.chain !== null) giveTable(this.chain);
   }
 
   /** Hash of the minMatch bytes at p, given the little-endian word of the first four. */
@@ -643,12 +680,23 @@ function chooseSymbolMode(
   return { mode: MODE_PREDEFINED, table: predefined.table, rleSymbol: 0, description: new Uint8Array(0) };
 }
 
+function newEncoderScratch(): EncoderScratch {
+  const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
+  return {
+    store: new SequenceStore(capacity),
+    literals: new Uint8Array(ZSTD_BLOCK_SIZE_MAX),
+    llCodes: new Uint8Array(capacity),
+    mlCodes: new Uint8Array(capacity),
+    ofCodes: new Uint8Array(capacity),
+  };
+}
+
 export class ZstdBlockEncoder {
   private readonly data: Uint8Array;
   private readonly finder: MatchFinder | null;
   private readonly optimal: ZstdOptimalParser | null;
   private readonly store: SequenceStore;
-  private readonly literals = new Uint8Array(ZSTD_BLOCK_SIZE_MAX);
+  private readonly literals: Uint8Array;
   private readonly llCodes: Uint8Array;
   private readonly mlCodes: Uint8Array;
   private readonly ofCodes: Uint8Array;
@@ -674,11 +722,15 @@ export class ZstdBlockEncoder {
     this.optimal = params.optimal ? new ZstdOptimalParser(data, params, windowSize) : null;
     this.finder = params.optimal ? null : new MatchFinder(data, params, windowSize, regionEnd, job);
     [this.committedRep1, this.committedRep2, this.committedRep3] = initialRepeatOffsets(job);
-    const capacity = Math.floor(ZSTD_BLOCK_SIZE_MAX / REP_MIN_MATCH) + 2;
-    this.store = new SequenceStore(capacity);
-    this.llCodes = new Uint8Array(capacity);
-    this.mlCodes = new Uint8Array(capacity);
-    this.ofCodes = new Uint8Array(capacity);
+    const scratch = spareScratch ?? newEncoderScratch();
+    spareScratch = null;
+    ({ store: this.store, literals: this.literals, llCodes: this.llCodes, mlCodes: this.mlCodes, ofCodes: this.ofCodes } = scratch);
+  }
+
+  /** Hands the working arrays back for the next encoder on this thread; the encoder is not used afterwards. */
+  public release(): void {
+    this.finder?.release();
+    spareScratch = { store: this.store, literals: this.literals, llCodes: this.llCodes, mlCodes: this.mlCodes, ofCodes: this.ofCodes };
   }
 
   /**

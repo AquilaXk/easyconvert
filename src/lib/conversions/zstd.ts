@@ -827,7 +827,9 @@ function prepareFrame(inputBuffer: Buffer, options: ZstdCompressOptions): Prepar
 function finishSingleJobFrame(inputBuffer: Buffer, frame: PreparedFrame): Buffer {
   const trailerBytes = frame.checksum ? CONTENT_CHECKSUM_BYTES : 0;
   const params = getZstdLevelParams(frame.level);
-  const encoded = new ZstdBlockEncoder(inputBuffer, params, frame.windowSize).encodeAll(frame.prefix, trailerBytes);
+  const encoder = new ZstdBlockEncoder(inputBuffer, params, frame.windowSize);
+  const encoded = encoder.encodeAll(frame.prefix, trailerBytes);
+  encoder.release();
   let end = encoded.length;
   if (frame.checksum) {
     new DataView(encoded.data.buffer, encoded.data.byteOffset, encoded.data.byteLength).setUint32(
@@ -896,7 +898,11 @@ async function compressJobsAsync(inputBuffer: Buffer, frame: PreparedFrame, jobs
   const pool = getCpuPool();
   const data = await shareBytes(inputBuffer);
   let next = 0;
-  let poolRefused = false;
+  // A pool with no thread yet would make this request wait for threads to start, longer than its jobs take: it starts them
+  // for the next request and the jobs run here, as long as they are short enough for the calling thread.
+  const cold = pool.stats.threads === 0;
+  if (cold) pool.warm();
+  let poolRefused = cold && jobs.every((job) => job.to - job.from <= ZSTD_CALLER_JOB_BYTES_MAX);
   const takeJob = (): number => (next < jobs.length ? next++ : -1);
   const runHere = async (index: number): Promise<void> => {
     if (signal?.aborted) throw new CpuTaskAbortedError('zstdJob');

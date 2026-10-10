@@ -120,6 +120,8 @@ describe('a pool that cannot take a job', () => {
     ['has a full queue', () => new CpuPoolOverloadedError(64, 64)],
   ])('still returns the frame of the in-thread jobs when it %s', async (_name, failure) => {
     const input = sourceText(JOB_INPUT_BYTES, 65);
+    // A first request starts the pool's threads (see 'a pool with no thread'); the second is the one that meets the failure.
+    await compressZstdAsync(input, { level: 3 });
     const refused = vi.spyOn(getCpuPool(), 'submit').mockRejectedValue(failure());
     try {
       const frame = await compressZstdAsync(input, { level: 3 });
@@ -137,6 +139,18 @@ describe('a pool that cannot take a job', () => {
     const outcome = await compressZstdAsync(sourceText(JOB_INPUT_BYTES, 66), { level: 3, signal: controller.signal }).catch((error: unknown) => error);
     expect(outcome).toBeInstanceOf(CpuTaskAbortedError);
     expect((outcome as Error).message).toBe('The zstdJob task was cancelled');
+  });
+});
+
+describe('a pool with no thread', () => {
+  it('runs the jobs of the request on the calling thread, starts the threads for the next request, and returns the same frame', async () => {
+    await shutdownCpuPool();
+    const input = sourceText(JOB_INPUT_BYTES, 67);
+    const cold = await compressZstdAsync(input, { level: 3 });
+    expect(getCpuPool().stats.threads).toBeGreaterThan(0);
+    const warm = await compressZstdAsync(input, { level: 3 });
+    expect(cold.equals(compressZstd(input, { level: 3 }))).toBe(true);
+    expect(warm.equals(cold)).toBe(true);
   });
 });
 
