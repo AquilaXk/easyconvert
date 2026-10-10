@@ -8,6 +8,7 @@ import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversio
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { JobDeadlineError } from '@/lib/queue/job-deadline';
+import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -121,6 +122,13 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    // At most five conversions in flight (queued plus running) for an anonymous or free caller. A refusal is not
+    // stored as the answer of the idempotency key: the same request may succeed once a job has finished.
+    const room = await mayEnqueue(auth.user.id, auth.user.tier);
+    if (!room.allowed) {
+      if (idempotencyCtx) await idempotencyCtx.abort();
+      return concurrencyLimitResponse(room.limit, instanceUri);
+    }
     const contentType = req.headers.get('content-type') || '';
     let originalFilename = '';
     let targetFormat = '';

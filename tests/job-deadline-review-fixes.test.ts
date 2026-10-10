@@ -420,9 +420,9 @@ describe('a job queued without a timeout gets the maximum of its owner tier', ()
     });
     const forOwner = (userId?: string) => legacyJobTimeoutMs({ data: jobData('x', { userId }) } as never);
     expect(await forOwner(pro.id)).toBe(1_800_000);
-    expect(await forOwner('anon:1.2.3.4')).toBe(600_000);
-    expect(await forOwner('nobody')).toBe(600_000);
-    expect(await forOwner(undefined)).toBe(600_000);
+    expect(await forOwner('anon:1.2.3.4')).toBe(300_000);
+    expect(await forOwner('nobody')).toBe(300_000);
+    expect(await forOwner(undefined)).toBe(300_000);
   });
 
   it('is applied by a worker to a job that was queued before deadlines existed', async () => {
@@ -585,7 +585,7 @@ describe('a graph node that hits its deadline fails the graph', () => {
   }, 10_000);
 });
 
-describe('quota of a job that ran past its deadline (QA decision 2026-10-10)', () => {
+describe('quota of a job that ran past its deadline (QA decision 2026-10-10: only successful conversions are charged)', () => {
   function fakeWorker(): EventEmitter {
     const worker = new EventEmitter();
     attachJobLifecycleListeners(worker as never);
@@ -610,11 +610,11 @@ describe('quota of a job that ran past its deadline (QA decision 2026-10-10)', (
     return { committed, rolledBack };
   }
 
-  it('is consumed: the deadline commits the reservation and does not roll it back', async () => {
-    expect(await failWith(new JobTimeoutError(1000))).toEqual({ committed: ['res_1'], rolledBack: [] });
+  it('is refunded: the deadline rolls the reservation back and commits nothing', async () => {
+    expect(await failWith(new JobTimeoutError(1000))).toEqual({ committed: [], rolledBack: ['res_1'] });
   });
 
-  it('is still rolled back for any other failure', async () => {
+  it('is refunded for any other failure too', async () => {
     expect(await failWith(new Error('boom'))).toEqual({ committed: [], rolledBack: ['res_1'] });
   });
 });

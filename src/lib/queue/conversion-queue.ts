@@ -122,13 +122,12 @@ export function attachJobLifecycleListeners(
   worker.on(
     'failed',
     async (job: Job<ConversionJobData, ConversionJobResult>, err: any) => {
-      // A job past its deadline consumed the engine's time, so its quota is committed (QA decision 2026-10-10).
-      // Any other unrecoverable failure rolls the reservation back.
+      // Only a successful conversion is charged: every unrecoverable failure, a job past its deadline included, rolls
+      // the reservation back (QA decision 2026-10-10).
       const pastDeadline = err instanceof JobTimeoutError;
       if (job.data?.reservationId) {
         try {
-          if (pastDeadline) await redisKeyStore.commitQuota(job.data.reservationId);
-          else await redisKeyStore.rollbackQuota(job.data.reservationId);
+          await redisKeyStore.rollbackQuota(job.data.reservationId);
         } catch (rollbackErr) {
           console.error(
             `[ConversionQueue] Failed to rollback quota for reservation ${job.data.reservationId}:`,

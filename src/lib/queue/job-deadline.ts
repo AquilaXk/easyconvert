@@ -64,7 +64,7 @@ export const JOB_DEADLINE_DEFAULTS: Record<keyof typeof JOB_DEADLINE_ENV, number
   BASE_FREE: 60_000,
   BASE_PRO: 120_000,
   BASE_ENTERPRISE: 180_000,
-  MAX_FREE: 600_000,
+  MAX_FREE: 300_000,
   MAX_PRO: 1_800_000,
   MAX_ENTERPRISE: 3_600_000,
   PER_PAGE: 10_000,
@@ -93,16 +93,20 @@ export class JobDeadlineError extends RangeError {
   }
 }
 
-function readSetting(env: Env, key: keyof typeof JOB_DEADLINE_ENV): number {
-  const name = JOB_DEADLINE_ENV[key];
+/** A positive-integer setting of `env` (a blank value is unset); a set value that is not one is a JobDeadlineError. */
+export function readIntegerSetting(env: Env, name: string, defaultValue: number): number {
   const raw = env[name];
-  if (raw === undefined || raw.trim() === '') return JOB_DEADLINE_DEFAULTS[key];
+  if (raw === undefined || raw.trim() === '') return defaultValue;
   const text = raw.trim();
   const value = SETTING_PATTERN.test(text) ? Number(text) : Number.NaN;
   if (!Number.isSafeInteger(value) || value < 1 || value > INT32_MAX) {
-    throw new JobDeadlineError(`${name} must be an integer from 1 to ${INT32_MAX} (milliseconds)`);
+    throw new JobDeadlineError(`${name} must be an integer from 1 to ${INT32_MAX}`);
   }
   return value;
+}
+
+function readSetting(env: Env, key: keyof typeof JOB_DEADLINE_ENV): number {
+  return readIntegerSetting(env, JOB_DEADLINE_ENV[key], JOB_DEADLINE_DEFAULTS[key]);
 }
 
 /**

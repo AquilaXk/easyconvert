@@ -43,10 +43,9 @@ export async function runUnderDeadline<T>(
   run: (limits: DeadlineLimits) => Promise<T>
 ): Promise<T> {
   const clientSignal = request.signal;
-  if (clientSignal.aborted) throw new RequestAbortedError(false);
+  if (clientSignal.aborted) throw new RequestAbortedError();
 
   const controller = new AbortController();
-  let started = false;
   let timer: NodeJS.Timeout | undefined;
   let onClientAbort: (() => void) | undefined;
   const stopped = new Promise<never>((_resolve, reject) => {
@@ -56,14 +55,13 @@ export async function runUnderDeadline<T>(
       reject(reason);
     }, timeoutMs);
     onClientAbort = () => {
-      const reason = new RequestAbortedError(started);
+      const reason = new RequestAbortedError();
       controller.abort(reason);
       reject(reason);
     };
     clientSignal.addEventListener('abort', onClientAbort, { once: true });
   });
 
-  started = true;
   const work = run({ timeoutMs, deadlineAt: Date.now() + timeoutMs, signal: controller.signal });
   // What the conversion reports after the deadline or the disconnect is not the answer.
   work.catch(() => undefined);
@@ -76,15 +74,6 @@ export async function runUnderDeadline<T>(
     clearTimeout(timer);
     if (onClientAbort) clientSignal.removeEventListener('abort', onClientAbort);
   }
-}
-
-/**
- * Whether the stop of a conversion still charges the quota (QA decision 2026-10-10): a deadline does, because the
- * engine worked for the whole limit; a client that left does once the conversion had started. A request that never
- * started, and every other failure, is rolled back.
- */
-export function consumesQuota(error: unknown): boolean {
-  return error instanceof JobTimeoutError || (error instanceof RequestAbortedError && error.conversionStarted);
 }
 
 const INTERNAL_DETAIL = 'Internal conversion error';

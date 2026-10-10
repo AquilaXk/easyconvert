@@ -16,6 +16,7 @@ import {
   FRAME_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
   CLIENT_CLOSED_DESCRIPTION,
+  CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
@@ -254,7 +255,7 @@ export const internalPaths = {
           },
         },
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
-        '429': createProblemResponse('Quota exhausted.'),
+        '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
@@ -287,7 +288,7 @@ export const internalPaths = {
         '401': createProblemResponse('Authentication required.'),
         '422': createPdfaProblemResponse(`The document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
-        '429': createProblemResponse('Quota exhausted.'),
+        '429': createProblemResponse('Quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createErrorResponse('Conversion failed.'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),

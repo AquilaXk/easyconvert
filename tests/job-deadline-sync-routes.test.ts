@@ -172,7 +172,7 @@ describe.each(ROUTES)('$label', (route) => {
     expect(deadlineAt).toBeLessThanOrEqual(Date.now() + DEADLINE_MS);
   });
 
-  it('aborts the conversion when the client disconnects after it started, and the quota stays consumed', async () => {
+  it('aborts the conversion when the client disconnects after it started, and refunds the quota', async () => {
     const client = new AbortController();
     const started = new Promise<void>((resolve) => hangHonoringSignal(resolve));
     const usedBefore = await usedToday();
@@ -187,7 +187,7 @@ describe.each(ROUTES)('$label', (route) => {
     expect(seen).toHaveLength(1);
     expect(seen[0].signal.aborted).toBe(true);
     expect(seen[0].signal.reason).toBeInstanceOf(RequestAbortedError);
-    expect(await usedToday()).toBe(usedBefore + 1);
+    expect(await usedToday()).toBe(usedBefore);
   });
 
   it('does not start the conversion for a client that is already gone, and rolls the quota back', async () => {
@@ -202,12 +202,12 @@ describe.each(ROUTES)('$label', (route) => {
     expect(await usedToday()).toBe(usedBefore);
   });
 
-  it('consumes the quota of a conversion that ran past its deadline', async () => {
+  it('refunds the quota of a conversion that ran past its deadline: only successful conversions are charged', async () => {
     hangIgnoringSignal();
     const usedBefore = await usedToday();
     const res = await route.call(request(route));
     expect(res.status).toBe(HTTP_GATEWAY_TIMEOUT);
-    expect(await usedToday()).toBe(usedBefore + 1);
+    expect(await usedToday()).toBe(usedBefore);
   });
 });
 

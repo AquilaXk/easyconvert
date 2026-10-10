@@ -1103,7 +1103,7 @@ const SCHEMA_ENTRIES = [
     description:
       'Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size gets this value.',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 600_000,
+    default: 300_000,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,
@@ -1170,6 +1170,17 @@ const SCHEMA_ENTRIES = [
       'Most wall-clock milliseconds a synchronous conversion request (`/api/convert`, `/api/v1/convert`, `/api/convert/batch`) may run, held below the job deadline of the tier. A request past it is stopped and answered with 504 and a pointer to the asynchronous API (`POST /api/v1/jobs`), which runs conversions up to the job deadline.',
     kind: { type: 'integer', min: 1, max: INT32_MAX },
     default: 120_000,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'CONVERSION_CONCURRENCY_FREE',
+    area: 'limits',
+    description:
+      'Most conversions an anonymous or free-tier caller may have in flight at once, queued and running together, counted on the server. A request that would exceed it is answered 429 (problem type `concurrency-limit`, with `Retry-After`) and takes no quota. Paid tiers have no such limit.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    default: 5,
     requiredInProduction: false,
     secret: false,
     roles: BOTH,

@@ -29,7 +29,7 @@ const CSV_BYTES = Buffer.byteLength(CSV_INPUT);
 /** Free: 60 s base + 2 s for the first started MiB. Pro: 120 s base + 2 s. */
 const FREE_CSV_DEADLINE_MS = 62_000;
 const PRO_CSV_DEADLINE_MS = 122_000;
-const FREE_MAX_MS = 600_000;
+const FREE_MAX_MS = 300_000;
 const PRO_MAX_MS = 1_800_000;
 
 const SRC_DIR = path.resolve(__dirname, '..', 'src');

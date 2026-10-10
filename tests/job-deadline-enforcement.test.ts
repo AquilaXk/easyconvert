@@ -338,8 +338,8 @@ describe('media keeps its own 180 s stage ceiling, clamped to the time the job h
   it('is not raised by a longer job deadline, and never exceeds the time left', () => {
     const now = Date.now();
     const MEDIA_STAGE_MS = 180_000;
-    // A free media job (deadline 600 s) and an enterprise one (3600 s) both keep the 180 s media ceiling.
-    expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 600_000 }, MEDIA_STAGE_MS, now)).toBe(MEDIA_STAGE_MS);
+    // A free media job (deadline 300 s) and an enterprise one (3600 s) both keep the 180 s media ceiling.
+    expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 300_000 }, MEDIA_STAGE_MS, now)).toBe(MEDIA_STAGE_MS);
     expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 3_600_000 }, MEDIA_STAGE_MS, now)).toBe(MEDIA_STAGE_MS);
     expect(stageTimeoutMs({ [JOB_DEADLINE_AT]: now + 62_000 }, MEDIA_STAGE_MS, now)).toBe(62_000);
   });

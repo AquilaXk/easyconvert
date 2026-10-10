@@ -3,6 +3,7 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { JobDeadlineError } from '@/lib/queue/job-deadline';
+import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
@@ -62,6 +63,12 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    // At most five conversions in flight (queued plus running) for an anonymous or free caller.
+    const room = await mayEnqueue(auth.user.id, auth.user.tier);
+    if (!room.allowed) {
+      if (reservationId) await rollbackQuota(reservationId);
+      return concurrencyLimitResponse(room.limit, instanceUri);
+    }
     const contentType = req.headers.get('content-type') || '';
 
     let originalFilename = '';

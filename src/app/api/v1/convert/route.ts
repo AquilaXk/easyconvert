@@ -5,8 +5,9 @@ import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
-import { consumesQuota, deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
@@ -181,7 +182,16 @@ export async function POST(req: NextRequest) {
 
   let reservation: { allowed: boolean; reservationId?: string } | null = null;
 
+  // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
+  // the request ends; an asynchronous handoff stays counted through the job it queues.
+  let releaseSlot: (() => void) | undefined;
   try {
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      if (idempotencyCtx) await idempotencyCtx.abort();
+      return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
+    }
+    releaseSlot = slot.release;
     const formData = await req.formData();
     const validation = parseConvertFormData(formData);
     if (validation.error || !validation.data) {
@@ -463,9 +473,8 @@ export async function POST(req: NextRequest) {
       await idempotencyCtx.abort();
     }
     if (reservation?.reservationId) {
-      // A deadline, or a client that left after the conversion started, consumes the quota; anything else refunds it.
-      if (consumesQuota(err)) await redisKeyStore.commitQuota(reservation.reservationId);
-      else await redisKeyStore.rollbackQuota(reservation.reservationId);
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
+      await redisKeyStore.rollbackQuota(reservation.reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
     if (deadlineProblem) return deadlineProblem;
@@ -521,5 +530,7 @@ export async function POST(req: NextRequest) {
       undefined,
       rateLimitHeaders
     );
+  } finally {
+    releaseSlot?.();
   }
 }

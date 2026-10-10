@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
+import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { bindJobLimits } from '@/lib/conversions/job-time';
-import { consumesQuota, deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
+import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { InputPixelLimitError } from '@/lib/conversions/image-input-limits';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
@@ -34,6 +35,16 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
+  // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
+  let releaseSlot: (() => void) | undefined;
+
+  /** The 429 of a caller over its concurrency limit, after releasing the quota reservation. */
+  const failWithRollbackProblem = async (limit: number) => {
+    if (reservationId) {
+      await rollbackQuota(reservationId);
+    }
+    return concurrencyLimitResponse(limit, instanceUri);
+  };
 
   const failWithRollback = async (status: number, error: string) => {
     if (reservationId) {
@@ -74,6 +85,12 @@ export async function POST(req: NextRequest) {
     }
 
     reservationId = auth.reservationId;
+
+    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
+    if (!slot.granted) {
+      return await failWithRollbackProblem(slot.limit);
+    }
+    releaseSlot = slot.release;
 
     let totalBatchSize = 0;
     for (const f of files) {
@@ -213,9 +230,8 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (reservationId) {
-      // A deadline, or a client that left after the conversion started, consumes the quota; anything else refunds it.
-      if (consumesQuota(error)) await commitQuota(reservationId);
-      else await rollbackQuota(reservationId);
+      // Only a successful conversion is charged: a deadline or a departed client refunds the unit like any failure.
+      await rollbackQuota(reservationId);
     }
     const deadlineProblem = deadlineErrorResponse(error, instanceUri);
     if (deadlineProblem) return deadlineProblem;
@@ -247,5 +263,7 @@ export async function POST(req: NextRequest) {
     }
     const message = error instanceof Error ? error.message : 'Batch conversion failed';
     return NextResponse.json({ success: false, error: message }, { status: 500 });
+  } finally {
+    releaseSlot?.();
   }
 }

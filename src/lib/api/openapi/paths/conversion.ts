@@ -15,6 +15,7 @@ import {
   ENGINE_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
   CLIENT_CLOSED_DESCRIPTION,
+  CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
@@ -128,7 +129,7 @@ export const conversionPaths = {
           `An idempotency key was reused with a different request payload or parameters, or the document is encrypted, password protected or DRM protected so its text cannot be read. ${PDFA_PROBLEM_DESCRIPTION}`
         ),
         '413': createProblemResponse(`${PAYLOAD_LIMIT_DESCRIPTION} Or: ${INPUT_PIXEL_LIMIT_DESCRIPTION}`),
-        '429': createProblemResponse('Rate limit or daily conversion quota exhausted.'),
+        '429': createProblemResponse('Rate limit or daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createProblemResponse('Internal engine processing failure (quota reservation rolled back).'),
         '499': createProblemResponse(CLIENT_CLOSED_DESCRIPTION),
         '503': createProblemResponse(ENGINE_UNAVAILABLE_DESCRIPTION),
@@ -241,7 +242,7 @@ export const conversionPaths = {
         '422': createProblemResponse(
           'The graph or pipeline tasks failed validation (for example, a merge with fewer than 2 inputs), or an idempotency key was reused with a different request payload.'
         ),
-        '429': createProblemResponse('Daily conversion quota exhausted.'),
+        '429': createProblemResponse('Daily conversion quota exhausted.' + CONCURRENCY_LIMIT_NOTE),
         '500': createProblemResponse('Job enqueue failure.'),
       },
     },
