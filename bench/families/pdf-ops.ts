@@ -9,7 +9,7 @@ import { measureSsimPsnr } from '../measure';
 import { type GrayRaster, lineAngleDifference, measureInk, type InkMeasure, parsePgm } from '../pdf-ink';
 import { buildStampPdf } from '../pdf-stamp';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow, speedRowId } from '../rows';
 import { wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 
@@ -214,8 +214,9 @@ function qualityRows(caseName: string, ours: OutputScore, reference: OutputScore
   ];
 }
 
-function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: () => unknown): ReturnType<FamilyContext['time']> {
+function timeBoth(ctx: FamilyContext, rowId: string, ours: () => Promise<unknown>, reference: () => unknown): ReturnType<FamilyContext['time']> {
   return ctx.time(
+    rowId,
     async () => {
       await ours();
     },
@@ -295,7 +296,7 @@ async function runMerge(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
     );
   }
   if (ctx.speed) {
-    const timing = await timeBoth(ctx, mergeOurs, mergeReference);
+    const timing = await timeBoth(ctx, speedRowId(FAMILY, MERGE_CASE), mergeOurs, mergeReference);
     rows.push(throughputRow(FAMILY, MERGE_CASE, inputs.reduce((sum, input) => sum + input.bytes.length, 0), timing, REFERENCE_TOOL));
   }
   return rows;
@@ -364,7 +365,7 @@ async function runWatermark(ctx: FamilyContext, tools: PdfTools): Promise<BenchR
     );
   }
   if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, WATERMARK_CASE, input.bytes.length, await timeBoth(ctx, watermarkOurs, watermarkReference), REFERENCE_TOOL));
+    rows.push(throughputRow(FAMILY, WATERMARK_CASE, input.bytes.length, await timeBoth(ctx, speedRowId(FAMILY, WATERMARK_CASE), watermarkOurs, watermarkReference), REFERENCE_TOOL));
   }
   return rows;
 }
@@ -394,7 +395,7 @@ async function runProtect(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
     );
   }
   if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, PROTECT_CASE, input.bytes.length, await timeBoth(ctx, protectOurs, protectReference), REFERENCE_TOOL));
+    rows.push(throughputRow(FAMILY, PROTECT_CASE, input.bytes.length, await timeBoth(ctx, speedRowId(FAMILY, PROTECT_CASE), protectOurs, protectReference), REFERENCE_TOOL));
   }
   return rows;
 }
@@ -431,7 +432,7 @@ async function runDecrypt(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
     );
   }
   if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, DECRYPT_CASE, encryptedSize, await timeBoth(ctx, decryptOurs, decryptReference), REFERENCE_TOOL));
+    rows.push(throughputRow(FAMILY, DECRYPT_CASE, encryptedSize, await timeBoth(ctx, speedRowId(FAMILY, DECRYPT_CASE), decryptOurs, decryptReference), REFERENCE_TOOL));
   }
   return rows;
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { FamilyRunner } from '../context';
 import { REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { characterErrorRatePercent } from '../text-metrics';
 import { runTool } from '../tools';
 import { importProduct } from '../product';
@@ -83,6 +83,7 @@ export const runDocumentShaping: FamilyRunner = async (ctx) => {
 
   if (ctx.speed) {
     const timing = await ctx.time(
+      speedRowId('document', CASE),
       async () => {
         for (const sample of samples) await oursPdf(sample);
       },

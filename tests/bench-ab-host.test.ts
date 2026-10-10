@@ -17,7 +17,7 @@ describe('the base process', () => {
   it('times one call and a sample of calls on request, row after row, and ends on request', async () => {
     const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     try {
-      await host.row();
+      await host.row('compression/first/throughput');
       const side = host.side();
       expect(await side.call()).toBeGreaterThanOrEqual(7);
       const mean = await side.sample(3);
@@ -25,12 +25,12 @@ describe('the base process', () => {
       expect(mean).toBeLessThan(200);
       host.next();
       // The second row cannot run on this version: the error carries what the version said, with its own root.
-      await host.row();
+      await host.row('compression/second/throughput');
       const failure = await host.side().call().catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(BaseRowError);
       expect((failure as Error).message).toContain(`root ${work}`);
       host.next();
-      await host.row();
+      await host.row('compression/third/throughput');
       expect(await host.side().sample(2)).toBeGreaterThanOrEqual(1);
       host.next();
     } finally {
@@ -41,11 +41,11 @@ describe('the base process', () => {
   it('fails when the benchmark asks for a row the process does not have: the two are out of step', async () => {
     const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     try {
-      for (let row = 0; row < 3; row++) {
-        await host.row();
+      for (const id of ['first', 'second', 'third']) {
+        await host.row(`compression/${id}/throughput`);
         host.next();
       }
-      await expect(host.row()).rejects.toThrow(AbHostError);
+      await expect(host.row('compression/fourth/throughput')).rejects.toThrow(AbHostError);
     } finally {
       await host.stop();
     }

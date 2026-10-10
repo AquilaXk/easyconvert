@@ -95,13 +95,13 @@ export class AbHost {
     this.child.send(message);
   }
 
-  /** Waits until the base process asks for the time of the next row, which must be the row the benchmark is on. */
-  async row(): Promise<void> {
+  /** Waits until the process asks for the time of the next row, which must be the row the benchmark is on (same number, same id). */
+  async row(id: string): Promise<void> {
     const expected = this.nextRow++;
     const message = await this.receive(ROW_TIMEOUT_MS);
     if (message.type === 'crashed') throw new AbHostError(message.message);
-    if (message.type !== 'ready' || message.row !== expected) {
-      throw new AbHostError(`the base process is out of step: expected row ${expected}, got ${JSON.stringify(message)}`);
+    if (message.type !== 'ready' || message.row !== expected || message.id !== id) {
+      throw new AbHostError(`the process is out of step: expected row ${expected} (${id}), got ${JSON.stringify(message)}`);
     }
   }
 

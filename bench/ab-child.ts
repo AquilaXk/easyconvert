@@ -80,9 +80,9 @@ export async function runChild(runners: Readonly<Record<Family, FamilyRunner>>, 
     refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
     work,
     log: (message) => process.stderr.write(`  [base] ${message}\n`),
-    timer: async (rawOurs) => {
+    timer: async (rowId, rawOurs) => {
       const ours = options.slowOurs ? slowed(rawOurs) : rawOurs;
-      send({ type: 'ready', row: rows++ });
+      send({ type: 'ready', row: rows++, id: rowId });
       for (;;) {
         const message = await receive();
         if (message.type === 'next') return STUB_TIMING;

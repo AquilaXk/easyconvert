@@ -13,7 +13,8 @@ export type HostMessage =
 
 export type ChildMessage =
   | { type: 'hello' }
-  | { type: 'ready'; row: number }
+  /** The row the process is about to time: its number in the order of the runners' requests, and its id. */
+  | { type: 'ready'; row: number; id: string }
   /** Milliseconds of one call, or the mean per call of a sample. */
   | { type: 'timed'; ms: number }
   /** The base cannot run this row (the product of the base lacks what the row asks for). */

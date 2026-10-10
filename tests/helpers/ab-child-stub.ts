@@ -9,15 +9,16 @@ import { FAMILIES, type Family } from '../../bench/report';
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const runner: FamilyRunner = async (ctx) => {
-  await ctx.time(() => sleep(8), () => undefined, 'light');
+  await ctx.time('compression/first/throughput', () => sleep(8), () => undefined, 'light');
   await ctx.time(
+    'compression/second/throughput',
     () => {
       throw new Error(`this version cannot run the row (root ${process.env.BENCH_PRODUCT_ROOT})`);
     },
     () => undefined,
     'light'
   );
-  await ctx.time(() => sleep(2), () => undefined, 'light');
+  await ctx.time('compression/third/throughput', () => sleep(2), () => undefined, 'light');
   return [];
 };
 

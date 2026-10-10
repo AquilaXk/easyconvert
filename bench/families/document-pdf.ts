@@ -4,7 +4,7 @@ import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
 import { IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import { readDocxStructure } from '../../tests/helpers/docx-structure';
@@ -79,6 +79,7 @@ const runText: FamilyRunner = async (ctx) => {
   }
   if (ctx.speed) {
     const timing = await ctx.time(
+      speedRowId('document', TEXT_CASE),
       async () => {
         for (const document of documents) await oursText(document.pdf, document.name);
       },
@@ -137,6 +138,7 @@ const runStructure: FamilyRunner = async (ctx) => {
   if (ctx.speed) {
     const timed = STRUCTURE_TIMED.map((name) => ({ name, file: path.join(STRUCTURE_FIXTURE_DIR, `${name}.pdf`) }));
     const timing = await ctx.time(
+      speedRowId('document', STRUCTURE_CASE),
       async () => {
         for (const document of timed) await convertWithProject(fs.readFileSync(document.file), 'pdf', 'docx', {}, `${document.name}.pdf`);
       },

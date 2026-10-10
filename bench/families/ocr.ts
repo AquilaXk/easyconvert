@@ -4,7 +4,7 @@ import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
 import { sha256Hex, stringValue } from '../ref-cache';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool, TESSDATA_PSEUDO_TOOL } from '../tools';
 
@@ -62,6 +62,7 @@ export const runOcr: FamilyRunner = async (ctx) => {
   if (ctx.speed) {
     const referenceBase = path.join(ctx.work, 'timing-ocr');
     const timing = await ctx.time(
+      speedRowId('ocr', CASE),
       async () => {
         await oursPdf();
       },

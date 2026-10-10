@@ -2,9 +2,8 @@ import fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS } from './ab-config';
-import type { AbHost } from './ab-host';
 import { AbHostError, BaseRowError } from './ab-host';
-import { abSpeedTiming, type ExtraBudget, localSide, type Side } from './ab-speed';
+import { abSpeedTiming, type ExtraBudget, localSide, regressionDelta, type Side } from './ab-speed';
 import { CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
@@ -61,7 +60,7 @@ export interface FamilyContext {
    * finishes in milliseconds passes `oursRepeats` > 1 to time that many back-to-back calls per sample. A parity run also
    * calibrates, per row, how many back-to-back calls make a sample of either side last SPEED_MIN_SAMPLE_MS.
    */
-  time: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats?: number) => Promise<InterleavedTiming | AdaptiveTiming>;
+  time: (rowId: string, ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats?: number) => Promise<InterleavedTiming | AdaptiveTiming>;
   /** Scratch directory of this run; removed by the runner. */
   work: string;
   log: (message: string) => void;
@@ -73,6 +72,13 @@ export interface FamilyContext {
 }
 
 export type FamilyRunner = (ctx: FamilyContext) => Promise<BenchRow[]>;
+
+/** What the benchmark asks of a process that measures one version (bench/ab-host.ts is the real one). */
+export interface AbRows {
+  row: (id: string) => Promise<void>;
+  side: () => Side;
+  next: () => void;
+}
 
 export interface ContextInit {
   resolve: Resolver;
@@ -89,9 +95,9 @@ export interface ContextInit {
   work: string;
   log: (message: string) => void;
   /** Speed rows are measured against the base of the change too: the head and the base each run in a process of their own (bench/ab-host.ts), so neither has the advantage of the benchmark's process; needs a speed-only parity run. */
-  ab?: { head: AbHost; base: AbHost; extra: ExtraBudget } | null;
+  ab?: { head: AbRows; base: AbRows; extra: ExtraBudget; /** Thresholds of rows other than bench/ab-config.ts names (tests of the job path). */ regression?: Readonly<Record<string, { delta: number }>> } | null;
   /** Replaces the timing of a row altogether: the process that measures the base answers the benchmark's requests with it (bench/ab-child.ts). */
-  timer?: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats: number) => Promise<InterleavedTiming | AdaptiveTiming>;
+  timer?: (rowId: string, ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats: number) => Promise<InterleavedTiming | AdaptiveTiming>;
 }
 
 /** `action` followed by a busy wait that makes the whole call INJECTED_SLOWDOWN_FACTOR times as long. */
@@ -118,15 +124,15 @@ export function createContext(init: ContextInit): FamilyContext {
   return {
     ...rest,
     inScope: (family, caseName) => caseInScope(quick, family, caseName),
-    time: async (rawOurs, reference, weight, oursRepeats = 1) => {
-      if (init.timer) return init.timer(rawOurs, reference, weight, oursRepeats);
+    time: async (rowId, rawOurs, reference, weight, oursRepeats = 1) => {
+      if (init.timer) return init.timer(rowId, rawOurs, reference, weight, oursRepeats);
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
       let abFallback: string | undefined;
       if (init.parity && init.ab) {
         // The head and the base each run in a process of their own, the reference here; a row the base cannot run is measured against the reference alone.
         const { head, base, extra } = init.ab;
-        await head.row();
-        await base.row();
+        await head.row(rowId);
+        await base.row(rowId);
         const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
         const headSide = head.side();
         // The head must run its own row: its refusal is an error of the benchmark, not a row without a base.
@@ -141,6 +147,7 @@ export function createContext(init: ContextInit): FamilyContext {
             oursRepeats,
             minSampleMs: plan.minSampleMs,
             extra,
+            delta: regressionDelta(rowId, init.ab.regression),
           });
           init.log(`A/B against the base, ${timing.runs} pairs (${timing.ab.extraPairs} extra), noise ${timing.ab.noise.toFixed(3)}: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample`);
           return timing;

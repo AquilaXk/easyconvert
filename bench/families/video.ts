@@ -6,7 +6,7 @@ import type { FamilyRunner } from '../context';
 import { fileSize, measureVmaf, pictureQuality, probeFile } from '../measure';
 import { numberRecord } from '../ref-cache';
 import type { BenchRow } from '../report';
-import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow } from '../rows';
+import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow, speedRowId } from '../rows';
 import { LIBVMAF_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -133,6 +133,7 @@ export const runVideo: FamilyRunner = async (ctx) => {
     if (ctx.speed) {
       const timingOut = ctx.scratch(`timing.${codec.target}`);
       const timing = await ctx.time(
+        speedRowId('video', caseName),
         async () => {
           await oursEncode(headlineCrf);
         },

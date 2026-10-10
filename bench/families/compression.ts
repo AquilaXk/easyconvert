@@ -6,7 +6,7 @@ import type { FamilyContext, FamilyRunner } from '../context';
 import { OutputIntegrityError } from '../errors';
 import { numberRecord } from '../ref-cache';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow, speedRowId } from '../rows';
 import { runTool } from '../tools';
 
 /**
@@ -78,7 +78,7 @@ export const runCompression: FamilyRunner = async (ctx) => {
       rows.push(measuredRow('compression', zstdCase, SPEC.ratio, zstdOursBytes.length / original.length, refBytes / original.length, `zstd -${ZSTD_LEVEL}`));
     }
     if (ctx.speed) {
-      rows.push(throughputRow('compression', zstdCase, original.length, await timeBoth(ctx, zstdOurs, zstdRef), `zstd -${ZSTD_LEVEL}`));
+      rows.push(throughputRow('compression', zstdCase, original.length, await timeBoth(ctx, speedRowId('compression', zstdCase), zstdOurs, zstdRef), `zstd -${ZSTD_LEVEL}`));
     }
   }
 
@@ -101,7 +101,7 @@ export const runCompression: FamilyRunner = async (ctx) => {
       rows.push(measuredRow('compression', sevenCase, SPEC.ratio, sevenOursBytes.length / original.length, refBytes / original.length, `7z -mx=${SEVEN_ZIP_LEVEL}`));
     }
     if (ctx.speed) {
-      rows.push(throughputRow('compression', sevenCase, original.length, await timeBoth(ctx, sevenOurs, sevenRef), `7z -mx=${SEVEN_ZIP_LEVEL}`));
+      rows.push(throughputRow('compression', sevenCase, original.length, await timeBoth(ctx, speedRowId('compression', sevenCase), sevenOurs, sevenRef), `7z -mx=${SEVEN_ZIP_LEVEL}`));
     }
   }
 
@@ -150,15 +150,16 @@ export const runCompression: FamilyRunner = async (ctx) => {
     assertSame(`our ${item.name} decode`, tarMember(await ours(), tarBin), original);
     assertSame(`the ${item.tool} decode`, item.reference(streamFile), original);
     if (ctx.speed) {
-      rows.push(throughputRow('compression', caseName, original.length, await timeBoth(ctx, ours, () => item.reference(streamFile), item.oursRepeats), item.tool));
+      rows.push(throughputRow('compression', caseName, original.length, await timeBoth(ctx, speedRowId('compression', caseName), ours, () => item.reference(streamFile), item.oursRepeats), item.tool));
     }
   }
   return rows;
 };
 
 /** Interleaved timing of two actions whose results are not needed; `oursRepeats` calls of ours make one sample. */
-function timeBoth(ctx: FamilyContext, ours: () => Promise<unknown>, reference: () => unknown, oursRepeats = 1): ReturnType<FamilyContext['time']> {
+function timeBoth(ctx: FamilyContext, rowId: string, ours: () => Promise<unknown>, reference: () => unknown, oursRepeats = 1): ReturnType<FamilyContext['time']> {
   return ctx.time(
+    rowId,
     async () => {
       await ours();
     },

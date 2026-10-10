@@ -466,6 +466,7 @@ describe('the timing a family asks of its context', () => {
     let oursCalls = 0;
     let referenceCalls = 0;
     const timing = await context(false).time(
+      'compression/case/throughput',
       async () => {
         oursCalls++;
         await new Promise((resolve) => setTimeout(resolve, 1));
@@ -500,6 +501,7 @@ describe('the timing a family asks of its context', () => {
       log: (message) => logged.push(message),
     });
     const timing = (await parityContext.time(
+      'compression/case/throughput',
       () => {
         oursCalls++;
       },
@@ -519,6 +521,7 @@ describe('the timing a family asks of its context', () => {
   it('calls ours once per sample unless asked for more', async () => {
     let oursCalls = 0;
     const timing = await context(false).time(
+      'compression/case/throughput',
       async () => {
         oursCalls++;
         await new Promise((resolve) => setTimeout(resolve, 1));

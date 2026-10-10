@@ -190,3 +190,8 @@ function abFields(timing: InterleavedTiming | AdaptiveTiming | AbTiming): Partia
     ...(ab.confirmed.lost === undefined ? {} : { abLostConfirmed: ab.confirmed.lost }),
   };
 }
+
+/** The id of the speed row of a case: `<family>/<case>/throughput`, the id `throughputRow` gives it. */
+export function speedRowId(family: Family, caseName: string): string {
+  return `${family}/${caseName}/${SPEC.throughput.metric}`;
+}
