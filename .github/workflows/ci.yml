@@ -664,7 +664,7 @@ jobs:
         run: |
           if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
             node ab-base/scripts/ci-parity-base-gate.mjs ab-base
-            npx tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change"; exit 1; } || true
+            node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change"; exit 1; } || true
           else
             echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
           fi

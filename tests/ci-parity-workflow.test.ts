@@ -160,13 +160,15 @@ describe('parity-speed', () => {
 
   it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
     const gate = stepNamed(speed, 'Use the gate of the base');
+    expect(gate.if).toBe("env.BENCH_CHANGED == 'true'");
     expect(gate.run).toContain('node ab-base/scripts/ci-parity-base-gate.mjs ab-base');
-    expect(gate.run).toContain('npx tsc --noEmit -p .');
+    expect(gate.run).toContain('node_modules/.bin/tsc --noEmit -p .');
     expect(gate.run).toContain('the gate of the base does not fit this change');
   });
 
   it("checks the gap entries the pull request adds or changes against its own speed run, with the gap file of the base checkout", () => {
     const bench = speed.steps.find((s) => s.id === 'bench');
+    expect(bench?.env?.BENCH_BASE_ROOT).toBe('ab-base');
     expect(bench?.run).toContain('--base-gaps ab-base/bench/parity-gaps.json');
   });
 

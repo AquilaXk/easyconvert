@@ -24,4 +24,7 @@ const runner: FamilyRunner = async (ctx) => {
 const none: FamilyRunner = async () => [];
 const runners = Object.fromEntries(FAMILIES.map((family) => [family, family === 'compression' ? runner : none])) as Record<Family, FamilyRunner>;
 
-runChild(runners, { families: ['compression'], quick: false }).then(() => process.exit(process.exitCode ?? 0));
+runChild(runners, { families: ["compression"], quick: false }).then(
+  () => process.exit(process.exitCode ?? 0),
+  () => process.exit(1)
+);
