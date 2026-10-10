@@ -1,12 +1,10 @@
 import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
-import { readZipEntryBytes } from './zip-entry-reader';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import JSZip from 'jszip';
 import { FORMAT_REGISTRY } from '../registry';
 import zlib from 'node:zlib';
 import {
@@ -42,6 +40,7 @@ import {
   cleanupDirectoryTree,
   sanitizeLeafFilename,
   summarizeInspectionSafety,
+  ARCHIVE_RATIO_BASELINE_BYTES,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
@@ -50,6 +49,7 @@ import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
+import { readZipDirectory, readZipFiles, zipDirectoryHasEncryptedEntry, type ZipDirectory } from './archive-zip-reader';
 import { AesKeyCache, AesKeyMissingError, aesKeyRequestOf } from './archive-sevenzip-aes';
 import { createSevenZipFolderDecoder } from './archive-sevenzip-coders';
 import {
@@ -591,7 +591,14 @@ export async function extractZipArchive(
 ): Promise<{ filename: string; buffer: Buffer }[]> {
   assertArchivePasswordSafe(options.password);
 
-  const isEncrypted = isZipBufferEncrypted(zipBuffer);
+  // An archive with an encrypted central directory cannot be parsed here, so the header scan decides first; an entry
+  // flagged encrypted only in the central directory (the authority) still sends the archive to the password path.
+  let directory: ZipDirectory | undefined;
+  let isEncrypted = isZipBufferEncrypted(zipBuffer);
+  if (!isEncrypted) {
+    directory = readZipDirectory(zipBuffer, ARCHIVE_SECURITY_LIMITS);
+    isEncrypted = zipDirectoryHasEncryptedEntry(directory);
+  }
   if (isEncrypted) {
     if (!options.password) {
       throw new ArchivePasswordRequiredError('ZIP archive is password protected. A password is required to extract.');
@@ -649,121 +656,13 @@ export async function extractZipArchive(
     }
   }
 
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(zipBuffer);
-  } catch (err) {
-    throw new CorruptStreamError(`Invalid ZIP archive: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const entries = Object.entries(zip.files).filter(([filename, f]) => !f.dir && matchArchiveGlob(filename, options.entries));
-
-  if (entries.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
-    throw new DecompressionLimitError(
-      `Archive bomb detected: file count (${entries.length}) exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}`
-    );
-  }
-
-  const files: { filename: string; buffer: Buffer }[] = [];
-  let totalUncompressedSize = 0;
-
-  for (const [filename, file] of entries) {
-    // Fast-path header check: if uncompressed size is recorded in header and exceeds limit
-    const headerUncompressedSize = (file as any)._data?.uncompressedSize;
-    if (
-      typeof headerUncompressedSize === 'number' &&
-      headerUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE
-    ) {
-      throw new DecompressionLimitError(
-        `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-      );
-    }
-
-    const chunks: Buffer[] = [];
-
-    // Stream-check uncompressed chunks before full buffer allocation in V8 heap
-    if (typeof (file as any).nodeStream === 'function') {
-      await new Promise<void>((resolve, reject) => {
-        const stream = (file as any).nodeStream('nodebuffer');
-        let rejected = false;
-
-        const fail = (err: Error) => {
-          if (!rejected) {
-            rejected = true;
-            if (typeof stream.pause === 'function') stream.pause();
-            if (typeof stream.destroy === 'function') stream.destroy();
-            reject(err);
-          }
-        };
-
-        stream.on('data', (chunk: Buffer) => {
-          if (rejected) return;
-          const chunkBuf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          totalUncompressedSize += chunkBuf.length;
-
-          if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-            fail(
-              new Error(
-                `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-              )
-            );
-            return;
-          }
-
-          if (
-            zipBuffer.length > 0 &&
-            totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
-          ) {
-            fail(
-              new Error(
-                `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-              )
-            );
-            return;
-          }
-
-          chunks.push(chunkBuf);
-        });
-
-        stream.on('error', (err: any) => {
-          fail(err instanceof Error ? err : new Error(String(err)));
-        });
-
-        stream.on('end', () => {
-          if (!rejected) resolve();
-        });
-      });
-    } else {
-      const buffer = await readZipEntryBytes(file, { maxBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE });
-      totalUncompressedSize += buffer.length;
-
-      if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-
-      if (
-        zipBuffer.length > 0 &&
-        totalUncompressedSize / zipBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
-      ) {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: compression ratio (${(totalUncompressedSize / zipBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
-
-      chunks.push(buffer);
-    }
-
-    const buffer = Buffer.concat(chunks);
-
-    // Zip-slip defense: sanitize path and strip leading / or drive letters or ..
-    const sanitizedName = sanitizeArchivePath(filename);
-    if (!sanitizedName) continue;
-
-    files.push({ filename: sanitizedName, buffer });
-  }
-
-  return files;
+  const files = await readZipFiles(zipBuffer, directory ?? readZipDirectory(zipBuffer, ARCHIVE_SECURITY_LIMITS), {
+    limits: ARCHIVE_SECURITY_LIMITS,
+    select: (name) => matchArchiveGlob(name, options.entries),
+    skipLinks: options.skipLinks,
+    onSkippedLinks: options.onSkippedLinks,
+  });
+  return resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
 }
 
 // ---------------------------------------------------------------------------
@@ -2190,7 +2089,7 @@ export async function packXzAsync(
 }
 
 /**
- * Pure TypeScript .xz unpacker: any number of blocks and streams, LZMA2 only, every check verified.
+ * Pure TypeScript .xz unpacker: any number of blocks and streams, branch and Delta filters in front of LZMA2, every check verified.
  */
 export function unpackXz(buf: Buffer): Buffer {
   return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
@@ -2239,6 +2138,18 @@ export async function compressXzAsync(
   return packXzAsync(inputBuffer, options, runtime);
 }
 
+/**
+ * Memory the native `xz` may use to decode: far above any preset (the largest, -9, needs 65 MiB), far below the
+ * 1.5 GiB a header can announce. A stream that asks for more is decoded by the in-process reader, whose memory follows
+ * the decoded output (capped below) and not the dictionary size.
+ */
+const NATIVE_XZ_MEMLIMIT_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Decodes an .xz file. The native `xz` does the work when it is installed; when it cannot (it refused the stream, hit
+ * the memory limit, or is an older build without a filter the file uses) the in-process reader decodes it or names
+ * the defect with a typed error. Output past the byte cap is a 413 from either.
+ */
 export function decompressXz(inputBuffer: Buffer): Buffer {
   if (inputBuffer.length < 32) {
     throw new CorruptStreamError('Invalid XZ archive: buffer too small');
@@ -2246,11 +2157,19 @@ export function decompressXz(inputBuffer: Buffer): Buffer {
   const xzBin = getXzBinaryPath();
   if (xzBin) {
     try {
-      return execFileSync(xzBin, ['-d', '-c', '-q'], {
+      return execFileSync(xzBin, ['-d', '-c', '-q', `--memlimit-decompress=${NATIVE_XZ_MEMLIMIT_BYTES}`], {
         input: inputBuffer,
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+        // Its diagnostics are captured, not inherited: the in-process reader names the defect.
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
-    } catch {}
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOBUFS') {
+        throw new DecompressionLimitError(
+          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
+        );
+      }
+    }
   }
   return unpackXz(inputBuffer);
 }
@@ -3112,7 +3031,7 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
       // 2. Guard against compression ratio bomb (evaluated beyond 1MB threshold)
       if (
         inputBuffer.length > 0 &&
-        totalBytes > 1024 * 1024 &&
+        totalBytes > ARCHIVE_RATIO_BASELINE_BYTES &&
         totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
       ) {
         destroyed = true;
@@ -3906,6 +3825,15 @@ async function inspectArchiveEntries(
   throw new ConversionFailedError('Unsupported or unrecognized archive format for inspection.');
 }
 
+/**
+ * A failure that already names what is wrong with the archive (a limit, an unsupported method, a password, a collision,
+ * a malformed stream, an unsafe entry). It keeps its class, and with it the HTTP status the routes derive from it;
+ * only an untyped error is wrapped with the file name.
+ */
+function isTypedArchiveFailure(err: unknown): err is ConversionFailedError {
+  return err instanceof ConversionFailedError && err.constructor !== ConversionFailedError;
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -3985,7 +3913,7 @@ export async function convertArchive(
         },
       });
     } catch (err) {
-      if (isArchivePasswordError(err) || err instanceof ArchiveEntryCollisionError) throw err;
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to extract ZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4008,7 +3936,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (err instanceof DecompressionLimitError) throw err;
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4032,6 +3960,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress BZIP2 archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4075,13 +4004,13 @@ export async function convertArchive(
       );
     }
     if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-      throw new ConversionFailedError(
+      throw new DecompressionLimitError(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
     // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
     if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
-      throw new ConversionFailedError(
+      throw new DecompressionLimitError(
         `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
     }
@@ -4109,6 +4038,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
+      if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );

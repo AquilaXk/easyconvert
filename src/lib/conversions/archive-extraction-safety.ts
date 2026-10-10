@@ -181,6 +181,13 @@ const KNOWN_LISTING_KEYS = new Set([
 
 /** Deepest entry path (in segments) an archive may contain or an extraction may produce. */
 export const MAX_ENTRY_PATH_DEPTH = 256;
+
+/**
+ * Decoded output below which the compression ratio is not judged (1 MiB). A few kilobytes of repetitive text deflate
+ * past 100:1 without being a bomb, and the absolute caps already bound what a small output can cost. The gzip reader
+ * and the ZIP reader share this floor.
+ */
+export const ARCHIVE_RATIO_BASELINE_BYTES = 1024 * 1024;
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
@@ -434,6 +441,18 @@ function assertSafeEntryPath(rawPath: string): void {
   if (entryPathDepth(rawPath) > MAX_ENTRY_PATH_DEPTH) {
     throw new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels.`);
   }
+}
+
+/**
+ * Throws for an entry name that is not a plain relative path: empty or holding NUL or a line break, absolute, a drive
+ * path, climbing out with `..`, or nested deeper than the cap. The name is also checked after Unicode compatibility
+ * folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer that normalises (a Windows code page,
+ * macOS, a search index). A name is only ever accepted or refused here, never rewritten.
+ */
+export function assertSafeArchiveEntryName(rawPath: string): void {
+  assertSafeEntryPath(rawPath);
+  const folded = rawPath.normalize('NFKC');
+  if (folded !== rawPath) assertSafeEntryPath(folded);
 }
 
 /** The running total with one entry's declared size added; a size that is not a safe integer, or a total over the cap, is refused. */

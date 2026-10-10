@@ -333,9 +333,10 @@ describe('JSZip package readers inflate under a byte cap', () => {
   it('a ZIP entry whose inflated size differs from its declared size answers 400 through the archive converter', async () => {
     const archive = fs.readFileSync(fixtures.get('zip-lying.zip')!);
     const failure = await convertArchive(archive, 'zip', 'tar', {}, 'lying.zip').catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect(failure).toBeInstanceOf(CorruptStreamError);
     expect(failure).not.toBeInstanceOf(PayloadLimitError);
-    expect((failure as Error).message).toMatch(/^Failed to extract ZIP archive 'lying\.zip': .*size mismatch/);
+    expect((failure as { status?: number }).status).toBe(400);
+    expect((failure as Error).message).toMatch(/^Invalid ZIP archive: 'big\.bin' (decodes to more than the \d+ bytes it declares|decodes to \d+ bytes but declares \d+)/);
   });
 
   it('still reads an ordinary workbook', async () => {

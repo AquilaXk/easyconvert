@@ -5,6 +5,7 @@ import {
   zstdFail,
   type FseDecodeTable,
 } from './zstd-fse';
+import { DecompressionLimitError } from '../types';
 import { decodeHuffmanLiterals, readHuffmanTable, type HuffmanDecodeTable } from './zstd-huffman';
 import {
   LL_BASELINE,
@@ -225,7 +226,7 @@ export class ZstdOutputBuffer {
   /** Reserves exactly `extra` more bytes when nothing has been written yet; otherwise grows normally. */
   public reserve(extra: number): void {
     if (this.length === 0 && extra > this.data.length) {
-      if (extra > this.hardLimit) zstdFail('Zstandard output exceeds the decoder size limit.');
+      if (extra > this.hardLimit) throw new DecompressionLimitError('Zstandard output exceeds the decoder size limit.');
       this.data = new Uint8Array(extra);
       return;
     }
@@ -235,7 +236,7 @@ export class ZstdOutputBuffer {
   public ensure(extra: number): void {
     const needed = this.length + extra;
     if (needed <= this.data.length) return;
-    if (needed > this.hardLimit) zstdFail('Zstandard output exceeds the decoder size limit.');
+    if (needed > this.hardLimit) throw new DecompressionLimitError('Zstandard output exceeds the decoder size limit.');
     let capacity = Math.max(this.data.length * OUTPUT_GROWTH_FACTOR, OUTPUT_MIN_GROWTH_BYTES);
     if (this.projectedTotal > needed) {
       const projected = Math.ceil(

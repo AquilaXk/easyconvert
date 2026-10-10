@@ -6,7 +6,7 @@
  * BWT, MTF + RUNA/RUNB zero-run coding, multi-table Huffman with selectors, block and stream CRCs).
  */
 
-import { ConversionFailedError } from '../types';
+import { CorruptStreamError, DecompressionLimitError } from '../types';
 import { copyYielding, CPU_POOL_MIN_BYTES, getCpuPool, yieldToEventLoop } from '../workers/cpu-pool';
 import { burrowsWheelerTransform, BwtWorkspace } from './bzip2-bwt';
 
@@ -67,8 +67,8 @@ const BYTE_BITS = 8;
 const HALF_WORD_BITS = 16;
 const HALF_WORD_MULTIPLIER = 65_536;
 
-function bzError(message: string): ConversionFailedError {
-  return new ConversionFailedError(`Invalid bzip2 data: ${message}`);
+function bzError(message: string): CorruptStreamError {
+  return new CorruptStreamError(`Invalid bzip2 data: ${message}`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -729,7 +729,7 @@ class OutputSink {
   /** Grows capacity so `needed` total bytes fit; fails closed past the output limit. */
   ensure(needed: number): void {
     if (needed > this.maxBytes) {
-      throw bzError(`decompressed size exceeds the limit of ${this.maxBytes} bytes`);
+      throw new DecompressionLimitError(`Invalid bzip2 data: decompressed size exceeds the limit of ${this.maxBytes} bytes`);
     }
     if (needed <= this.buffer.length) return;
     const grown = Math.min(Math.max(this.buffer.length * 2, needed), this.maxBytes);
@@ -984,7 +984,7 @@ function isZeroPadding(input: Buffer, from: number): boolean {
  * Decompresses a standard bzip2 buffer (one or more concatenated streams). Zero bytes after the
  * last stream are accepted as padding.
  *
- * Fails closed with a `ConversionFailedError` on any structural violation, CRC mismatch, trailing
+ * Fails closed with a `CorruptStreamError` (or a `DecompressionLimitError` past the output cap) on any structural violation, CRC mismatch, trailing
  * garbage, or when the decoded output would exceed `maxOutputBytes`.
  */
 export function decompressBzip2(input: Buffer, maxOutputBytes = BZIP2_DEFAULT_MAX_OUTPUT_BYTES): Buffer {

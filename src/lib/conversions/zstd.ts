@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, DecompressionLimitError } from '../types';
 import {
   ZstdOutputBuffer,
   createFrameDecodeState,
@@ -392,12 +392,12 @@ const CONTENT_CHECKSUM_BYTES = 4;
 /** Largest input the encoder accepts: match positions are stored as signed 32-bit integers. */
 export const ZSTD_ENCODER_INPUT_MAX = 2 ** 30;
 
-function bombSizeError(limit: number = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE): ConversionFailedError {
-  return new ConversionFailedError(`Archive bomb detected: uncompressed size exceeds limit of ${limit} bytes`);
+function bombSizeError(limit: number = ZSTD_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE): DecompressionLimitError {
+  return new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limit} bytes`);
 }
 
-function bombRatioError(uncompressed: number, compressed: number): ConversionFailedError {
-  return new ConversionFailedError(
+function bombRatioError(uncompressed: number, compressed: number): DecompressionLimitError {
+  return new DecompressionLimitError(
     `Archive bomb detected: compression ratio (${(uncompressed / compressed).toFixed(1)}:1) exceeds ${ZSTD_SECURITY_LIMITS.MAX_RATIO}:1 limit`
   );
 }
