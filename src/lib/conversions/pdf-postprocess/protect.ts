@@ -14,6 +14,7 @@ import {
 } from '../../security/process-sandbox';
 import { getQpdfBinaryPath } from './qpdf-path';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
+import { PdfStructureError } from '../pdf-document';
 
 export { getQpdfBinaryPath };
 
@@ -49,7 +50,14 @@ export async function protectPdf(
     throw new PdfPostprocessError(`Unsupported key length: ${keyLength}. Supported lengths are 128 and 256.`);
   }
 
-  const plain = await openPdfForEditing(pdfBuffer, 'protect', access);
+  let plain: Buffer;
+  try {
+    plain = await openPdfForEditing(pdfBuffer, 'protect', access);
+  } catch (err) {
+    // A file whose trailer cannot be read is a protection failure of this step, as it always was.
+    if (err instanceof PdfStructureError) throw new PdfPostprocessError(`PDF protection failed: ${err.message}`);
+    throw err;
+  }
 
   const perms = options.permissions || {};
   const printPerm = perms.print ?? 'full';
