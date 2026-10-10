@@ -11,6 +11,7 @@ import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { frameMetadataFields, frameMetadataHeaders } from '@/lib/api/frame-headers';
 import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
+import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
@@ -433,6 +434,7 @@ export async function POST(req: NextRequest) {
           ...frameMetadataHeaders(conversionResult),
           ...engineTraceHeaders(conversionResult),
           ...droppedStreamsHeaders(conversionResult),
+          ...conversionWarningsHeaders(conversionResult),
           ...rateLimitHeaders,
         },
       }));
@@ -462,6 +464,7 @@ export async function POST(req: NextRequest) {
         ...frameMetadataFields(conversionResult),
         ...engineTraceFields(conversionResult),
         ...droppedStreamsFields(conversionResult),
+        ...conversionWarningsFields(conversionResult),
       },
       {
         status: 200,

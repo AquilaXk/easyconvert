@@ -13,6 +13,7 @@ import {
   requireScope,
   FRAME_RESPONSE_HEADERS,
   ENGINE_RESPONSE_HEADERS,
+  CONVERSION_WARNINGS_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
   CLIENT_CLOSED_DESCRIPTION,
   CONCURRENCY_LIMIT_NOTE,
@@ -107,7 +108,7 @@ export const conversionPaths = {
       responses: {
         '200': {
           description: 'Successful conversion returning file metadata or raw binary stream.',
-          headers: { ...FRAME_RESPONSE_HEADERS, ...ENGINE_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS },
+          headers: { ...FRAME_RESPONSE_HEADERS, ...ENGINE_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS, ...CONVERSION_WARNINGS_RESPONSE_HEADERS },
           content: {
             'application/json': {
               schema: {

@@ -1,6 +1,8 @@
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
+import { isSymbolFontPrivateUse, mapSymbolFontCharacter } from '../symbol-font-map';
+import { readCharacterFontRuns, type CharacterFontRun } from './ppt-text-style';
 
 /**
  * Text reader for PowerPoint 97-2003 binary presentations, written from [MS-PPT]. It follows the
@@ -29,6 +31,10 @@ const REC_VER_CONTAINER = 0xf;
 const REC_INSTANCE_SHIFT = 4;
 
 const RT_DOCUMENT = 0x03e8;
+const RT_ENVIRONMENT = 0x03f2;
+const RT_FONT_COLLECTION = 0x07d5;
+const RT_FONT_ENTITY_ATOM = 0x0fb7;
+const RT_STYLE_TEXT_PROP_ATOM = 0x0fa1;
 const RT_SLIDE = 0x03ee;
 const RT_SLIDE_PERSIST_ATOM = 0x03f3;
 const RT_SLIDE_LIST_WITH_TEXT = 0x0ff0;
@@ -72,6 +78,12 @@ const CH_LINE_BREAK = 0x0b;
 const CH_TAB = 0x09;
 const FIELD_PLACEHOLDER = '*';
 const FIRST_PRINTABLE = 0x20;
+/** A FontEntityAtom starts with the face name: 32 UTF-16 code units, zero padded. */
+const FONT_FACE_NAME_BYTES = 64;
+const REPLACEMENT_CHARACTER = '\uFFFD';
+/** Most replaced symbol characters listed one by one; the rest are counted in a final line. */
+export const PPT_MAX_REPORTED_REPLACEMENTS = 50;
+const HEX_RADIX = 16;
 
 interface RecordHeader {
   offset: number;
@@ -86,6 +98,8 @@ interface RecordHeader {
 interface TextBlock {
   text: string;
   metaPositions: number[];
+  /** Font references per stretch of text, or null when the block has no readable StyleTextPropAtom. */
+  fontRuns: CharacterFontRun[] | null;
 }
 
 export interface PptSlide {
@@ -234,19 +248,65 @@ function decodeText(atom: RecordHeader, reader: CheckedReader): string {
 /** The text of a ClientTextbox or SlideListWithText block: its text atom, minus field placeholder characters. */
 function readTextBlock(reader: CheckedReader, atoms: RecordHeader[]): TextBlock | null {
   let text: string | null = null;
+  let style: RecordHeader | null = null;
   const metaPositions: number[] = [];
   for (const atom of atoms) {
     if (atom.recType === RT_TEXT_CHARS_ATOM || atom.recType === RT_TEXT_BYTES_ATOM) {
       text = decodeText(atom, reader);
+    } else if (atom.recType === RT_STYLE_TEXT_PROP_ATOM) {
+      style = atom;
     } else if (META_ATOM_TYPES.has(atom.recType) && atom.recLen >= UINT32_BYTES) {
       metaPositions.push(reader.u32(atom.offset + RECORD_HEADER_BYTES));
     }
   }
-  return text === null ? null : { text, metaPositions };
+  if (text === null) return null;
+  const fontRuns = style ? readCharacterFontRuns(reader.slice(style.offset + RECORD_HEADER_BYTES, style.recLen), text.length) : null;
+  return { text, metaPositions, fontRuns };
+}
+
+/** Face names of the document's FontCollection, indexed as the character runs refer to them. */
+function readFontNames(reader: CheckedReader, document: RecordHeader, budget: RecordBudget): string[] {
+  const names: string[] = [];
+  for (const environment of readChildren(reader, document, budget)) {
+    if (environment.recType !== RT_ENVIRONMENT || environment.recVer !== REC_VER_CONTAINER) continue;
+    for (const collection of readChildren(reader, environment, budget)) {
+      if (collection.recType !== RT_FONT_COLLECTION || collection.recVer !== REC_VER_CONTAINER) continue;
+      for (const entity of readChildren(reader, collection, budget)) {
+        if (entity.recType !== RT_FONT_ENTITY_ATOM || entity.recLen < FONT_FACE_NAME_BYTES) continue;
+        const name = Buffer.from(reader.slice(entity.offset + RECORD_HEADER_BYTES, FONT_FACE_NAME_BYTES)).toString('utf16le');
+        names.push(name.split('\u0000')[0]);
+      }
+    }
+  }
+  return names;
+}
+
+/** The fonts of a presentation and the symbol characters no table could map, in the order they were met. */
+interface TextContext {
+  readonly fontNames: readonly string[];
+  readonly replaced: Map<string, string>;
+  replacedTotal: number;
+}
+
+function recordReplacement(context: TextContext, font: string | undefined, code: number): void {
+  const key = `${font ?? ''}|${code}`;
+  if (context.replaced.has(key)) return;
+  context.replacedTotal++;
+  if (context.replaced.size >= PPT_MAX_REPORTED_REPLACEMENTS) return;
+  const hex = `U+${code.toString(HEX_RADIX).toUpperCase()}`;
+  const source = font === undefined ? hex : `${hex} of the font "${font}"`;
+  context.replaced.set(key, `Replaced ${source} with U+FFFD: no Unicode counterpart is known.`);
+}
+
+/** The symbol font of the character at `index`: the run's symbol typeface, else its typeface, else none. */
+function symbolFontAt(block: TextBlock, index: number, fontNames: readonly string[]): string | undefined {
+  const run = block.fontRuns?.find((candidate) => index >= candidate.start && index < candidate.end);
+  const ref = run?.symbolFontRef ?? run?.fontRef;
+  return ref === undefined ? undefined : fontNames[ref];
 }
 
 /** Splits a text block into paragraphs: field placeholders drop out, paragraph and line breaks split. */
-function paragraphsOf(block: TextBlock): string[] {
+function paragraphsOf(block: TextBlock, context: TextContext): string[] {
   const skip = new Set(block.metaPositions);
   const paragraphs: string[] = [];
   let line = '';
@@ -257,6 +317,11 @@ function paragraphsOf(block: TextBlock): string[] {
     if (code === CH_PARAGRAPH_END || code === CH_LINE_BREAK) {
       paragraphs.push(line);
       line = '';
+    } else if (isSymbolFontPrivateUse(code)) {
+      const font = symbolFontAt(block, i, context.fontNames);
+      const mapped = font === undefined ? undefined : mapSymbolFontCharacter(font, code);
+      if (mapped === undefined) recordReplacement(context, font, code);
+      line += mapped ?? REPLACEMENT_CHARACTER;
     } else if (code === CH_TAB || code >= FIRST_PRINTABLE) {
       line += ch;
     }
@@ -267,8 +332,11 @@ function paragraphsOf(block: TextBlock): string[] {
 
 interface SlideEntry {
   persistId: number;
-  /** Text blocks the SlideListWithText holds for this slide, in order. */
-  blocks: TextBlock[];
+  /**
+   * One entry per TextHeaderAtom the SlideListWithText holds for this slide, in order. A block without a text atom
+   * (a footer placeholder that only carries a field) stays as null, because an OutlineTextRefAtom numbers every block.
+   */
+  blocks: Array<TextBlock | null>;
 }
 
 /** Reads the slide order and the outline text blocks from the document's slide SlideListWithText. */
@@ -291,16 +359,18 @@ function readSlideEntries(reader: CheckedReader, chain: EditChain, budget: Recor
       if (entries.length >= PPT_MAX_SLIDES) {
         throw new LegacyOfficeFormatError(`${LABEL}: the presentation lists more than ${PPT_MAX_SLIDES} slides.`);
       }
-      const blocks: TextBlock[] = [];
-      let atoms: RecordHeader[] = [];
+      const blocks: Array<TextBlock | null> = [];
+      let atoms: RecordHeader[] | null = null;
       const flush = (): void => {
-        const block = readTextBlock(reader, atoms);
-        if (block) blocks.push(block);
-        atoms = [];
+        if (atoms) blocks.push(readTextBlock(reader, atoms));
+        atoms = null;
       };
       while (index < children.length && children[index].recType !== RT_SLIDE_PERSIST_ATOM) {
-        if (children[index].recType === RT_TEXT_HEADER_ATOM) flush();
-        atoms.push(children[index]);
+        if (children[index].recType === RT_TEXT_HEADER_ATOM) {
+          flush();
+          atoms = [];
+        }
+        atoms?.push(children[index]);
         index++;
       }
       flush();
@@ -311,7 +381,13 @@ function readSlideEntries(reader: CheckedReader, chain: EditChain, budget: Recor
 }
 
 /** Text of one slide: its ClientTextbox shapes in drawing order, outline references resolved. */
-function readSlideTexts(reader: CheckedReader, slide: RecordHeader, entry: SlideEntry, budget: RecordBudget): string[] {
+function readSlideTexts(
+  reader: CheckedReader,
+  slide: RecordHeader,
+  entry: SlideEntry,
+  context: TextContext,
+  budget: RecordBudget
+): string[] {
   const texts: string[] = [];
   const referenced = new Set<number>();
   const visit = (container: RecordHeader, depth: number): void => {
@@ -324,7 +400,7 @@ function readSlideTexts(reader: CheckedReader, slide: RecordHeader, entry: Slide
         const atoms = readChildren(reader, child, budget);
         const inline = readTextBlock(reader, atoms);
         if (inline) {
-          texts.push(...paragraphsOf(inline));
+          texts.push(...paragraphsOf(inline, context));
           continue;
         }
         const reference = atoms.find((atom) => atom.recType === RT_OUTLINE_TEXT_REF_ATOM);
@@ -334,7 +410,8 @@ function readSlideTexts(reader: CheckedReader, slide: RecordHeader, entry: Slide
             throw new LegacyOfficeFormatError(`${LABEL}: a shape refers to outline text ${index}, but the slide has ${entry.blocks.length}.`);
           }
           referenced.add(index);
-          texts.push(...paragraphsOf(entry.blocks[index]));
+          const outline = entry.blocks[index];
+          if (outline) texts.push(...paragraphsOf(outline, context));
         }
       } else {
         visit(child, depth + 1);
@@ -344,28 +421,34 @@ function readSlideTexts(reader: CheckedReader, slide: RecordHeader, entry: Slide
   visit(slide, 0);
   // Outline text that no shape refers to still belongs to the slide.
   entry.blocks.forEach((block, index) => {
-    if (!referenced.has(index)) texts.push(...paragraphsOf(block));
+    if (block && !referenced.has(index)) texts.push(...paragraphsOf(block, context));
   });
   return texts;
 }
 
 /**
  * Reads the slides of a PowerPoint 97-2003 presentation with their text in slide order. Malformed or empty
- * presentations throw a LegacyOfficeFormatError, encrypted ones an EncryptedOfficeDocumentError.
+ * presentations throw a LegacyOfficeFormatError, encrypted ones an EncryptedOfficeDocumentError. A symbol-font character
+ * with no Unicode counterpart becomes U+FFFD and one line per font and code is appended to `warnings`.
  */
-export function readPptSlides(buffer: Buffer): PptSlide[] {
+export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide[] {
   const streams = readCfbStreams(buffer, LABEL);
   const documentStream = new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL);
   const currentUser = new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL);
   const chain = readEditChain(currentUser, documentStream);
   const budget = new RecordBudget();
   const entries = readSlideEntries(documentStream, chain, budget);
+  const fontNames = readFontNames(documentStream, persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document'), budget);
+  const context: TextContext = { fontNames, replaced: new Map(), replacedTotal: 0 };
   const slides: PptSlide[] = entries.map((entry, i) => ({
     number: i + 1,
-    texts: readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, budget),
+    texts: readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, context, budget),
   }));
   if (slides.length === 0 || slides.every((slide) => slide.texts.length === 0)) {
     throw new LegacyOfficeFormatError(`${LABEL}: the presentation holds no slide text.`);
   }
+  warnings.push(...context.replaced.values());
+  const unlisted = context.replacedTotal - context.replaced.size;
+  if (unlisted > 0) warnings.push(`Replaced ${unlisted} more private-use characters with U+FFFD: no Unicode counterpart is known.`);
   return slides;
 }
