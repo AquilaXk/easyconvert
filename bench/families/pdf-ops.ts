@@ -515,10 +515,10 @@ async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
 
 type PageOps = typeof import('../../src/lib/conversions/pdf-postprocess/page-ops');
 
-const PAGE_OP_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
-const ROTATE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.rotationErrors, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
-const SPLIT_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
-const COMPRESS_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
+const PAGE_OP_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
+const ROTATE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.rotationErrors, SPEC.renderMatchesReference, SPEC.bytes];
+const SPLIT_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
+const COMPRESS_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes];
 
 /** Pages of the source (1-based) the page operations keep, in the order they must come out. */
 const EXTRACT_PAGES = '3,1';
@@ -591,9 +591,6 @@ async function runPageSelection(
       ])
     );
   }
-  if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, caseName, facts.bytes.length, await timeBoth(ctx, speedRowId(FAMILY, caseName), ours, reference), REFERENCE_TOOL));
-  }
   return rows;
 }
 
@@ -640,9 +637,6 @@ async function runRotate(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
         measuredRow(FAMILY, ROTATE_CASE, SPEC.renderMatchesReference, againstReference.length === count && Math.min(...againstReference) >= ROTATE_MATCH_FLOOR ? 1 : 0, 1, REFERENCE_TOOL),
       ])
     );
-  }
-  if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, ROTATE_CASE, facts.bytes.length, await timeBoth(ctx, speedRowId(FAMILY, ROTATE_CASE), ours, reference), REFERENCE_TOOL));
   }
   return rows;
 }
@@ -691,9 +685,6 @@ async function runSplit(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]
       ])
     );
   }
-  if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, SPLIT_CASE, facts.bytes.length, await timeBoth(ctx, speedRowId(FAMILY, SPLIT_CASE), ours, reference), REFERENCE_TOOL));
-  }
   return rows;
 }
 
@@ -734,9 +725,6 @@ async function runCompress(ctx: FamilyContext, tools: PdfTools & { gs: string })
       )
     );
   }
-  if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, COMPRESS_CASE, input.length, await timeBoth(ctx, speedRowId(FAMILY, COMPRESS_CASE), ours, reference), GHOSTSCRIPT_TOOL));
-  }
   return rows;
 }
 
@@ -745,6 +733,8 @@ interface PdfOpsCase {
   specs: readonly MetricSpec[];
   /** Tools beyond those every case needs. */
   extraTools?: readonly string[];
+  /** The case has quality rows only, so a speed-only run leaves it out. */
+  qualityOnly?: boolean;
   run: (ctx: FamilyContext, tools: PdfTools & { gs: string }) => Promise<BenchRow[]>;
 }
 
@@ -758,14 +748,15 @@ export const runPdfOps: FamilyRunner = async (ctx) => {
     { name: PROTECT_CASE, specs: ENCRYPTION_SPECS, run: runProtect },
     { name: DECRYPT_CASE, specs: ENCRYPTION_SPECS, run: runDecrypt },
     { name: UNLOCK_CASE, specs: ENCRYPTION_SPECS, run: runUnlock },
-    // The page operations come last: a base commit without them times the rows above and measures these against the reference alone.
-    { name: SPLIT_CASE, specs: SPLIT_SPECS, run: runSplit },
-    { name: EXTRACT_CASE, specs: PAGE_OP_SPECS, run: runExtract },
-    { name: DELETE_CASE, specs: PAGE_OP_SPECS, run: runDelete },
-    { name: REORDER_CASE, specs: PAGE_OP_SPECS, run: runReorder },
-    { name: ROTATE_CASE, specs: ROTATE_SPECS, run: runRotate },
-    { name: COMPRESS_CASE, specs: COMPRESS_SPECS, extraTools: ['gs'], run: runCompress },
-  ].filter((item) => ctx.inScope(FAMILY, item.name));
+    // The page operations come last. They have quality rows only for now: their speed rows are added with the gap entries
+    // that the CI runner's measurement calls for (bench/parity-gaps.json), in a change that touches the bench alone.
+    { name: SPLIT_CASE, specs: SPLIT_SPECS, qualityOnly: true, run: runSplit },
+    { name: EXTRACT_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runExtract },
+    { name: DELETE_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runDelete },
+    { name: REORDER_CASE, specs: PAGE_OP_SPECS, qualityOnly: true, run: runReorder },
+    { name: ROTATE_CASE, specs: ROTATE_SPECS, qualityOnly: true, run: runRotate },
+    { name: COMPRESS_CASE, specs: COMPRESS_SPECS, extraTools: ['gs'], qualityOnly: true, run: runCompress },
+  ].filter((item) => ctx.inScope(FAMILY, item.name) && (ctx.quality || item.qualityOnly !== true));
   for (const item of cases) {
     const plan = ctx.plan([...COMMON_TOOLS, ...(item.extraTools ?? [])], FAMILY);
     if (!plan.ok) {
