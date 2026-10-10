@@ -446,39 +446,54 @@
     {
       "id": "pdf-ops/watermark.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.83,
-      "note": "speed ratio 0.83 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "ratio": 0.78,
+      "note": "speed ratio 0.78 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8318,
           "at": "2026-10-10T02:16:29.414Z",
           "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.7823,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
         }
       ]
     },
     {
       "id": "pdf-ops/protect.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.89,
-      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "ratio": 0.91,
+      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8975,
           "at": "2026-10-10T02:16:29.414Z",
           "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.9183,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
         }
       ]
     },
     {
       "id": "pdf-ops/decrypt.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.92,
-      "note": "speed ratio 0.92 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "ratio": 0.89,
+      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.92): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9255,
           "at": "2026-10-10T02:16:29.414Z",
           "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.898,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
         }
       ]
     }
