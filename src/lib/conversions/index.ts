@@ -28,6 +28,7 @@ import {
   checkFfmpeg,
 } from './media';
 import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
+import { OOXML_VARIANT_FAMILY } from './ooxml-variants';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -592,6 +593,7 @@ export async function convertFile(
     srcDef.category === 'ebook' ||
     srcDef.category === 'presentation' ||
     srcDef.category === 'spreadsheet' ||
+    Object.hasOwn(OOXML_VARIANT_FAMILY, src) ||
     [
       'docx',
       'xlsx',
