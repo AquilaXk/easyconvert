@@ -1,7 +1,8 @@
 import fs from 'node:fs';
-import { GATE_EPSILON, MAX_JSON_BYTES, MAX_ROWS, SCHEMA_VERSION } from './config';
+import { GATE_EPSILON, MAX_JSON_BYTES, MAX_ROWS, SCHEMA_VERSION } from './speed-config';
 import { ReportSchemaError } from './errors';
-import { type BenchReport, type BenchRow, type Direction, type Family, type Tolerance, validateTolerance } from './report';
+import type { BenchReport, Family } from './report';
+import { type BenchRow, type Direction, type Tolerance, validateTolerance } from './report-schema';
 
 /**
  * Regression gate. Each baseline entry stores a direction (which way is better) and a tolerance. A measured row is

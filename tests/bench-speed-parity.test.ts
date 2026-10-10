@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   SPEED_CONFIDENCE_LEVEL,
+  SPEED_HEAVY_EXTENDED_MAX_PAIRS,
   SPEED_HEAVY_INITIAL_PAIRS,
   SPEED_HEAVY_MAX_PAIRS,
+  SPEED_LIGHT_EXTENDED_MAX_PAIRS,
   SPEED_LIGHT_INITIAL_PAIRS,
   SPEED_LIGHT_MAX_PAIRS,
   SPEED_MAX_SAMPLE_REPEATS,
@@ -47,6 +49,16 @@ describe('the policy constants', () => {
     }
     expect([SPEED_LIGHT_INITIAL_PAIRS, SPEED_LIGHT_MAX_PAIRS, SPEED_HEAVY_INITIAL_PAIRS, SPEED_HEAVY_MAX_PAIRS]).toEqual([7, 25, 6, 12]);
     expect([LIGHT_SPEED_PLAN.warmup, HEAVY_SPEED_PLAN.warmup]).toEqual([5, 1]);
+  });
+
+  it('give a row still undecided at its cap a second cap, within the 64 pairs the interval is exact for', () => {
+    expect([SPEED_LIGHT_EXTENDED_MAX_PAIRS, SPEED_HEAVY_EXTENDED_MAX_PAIRS]).toEqual([50, 36]);
+    expect(LIGHT_SPEED_PLAN.extendedMaxPairs).toBe(SPEED_LIGHT_EXTENDED_MAX_PAIRS);
+    expect(HEAVY_SPEED_PLAN.extendedMaxPairs).toBe(SPEED_HEAVY_EXTENDED_MAX_PAIRS);
+    for (const plan of [LIGHT_SPEED_PLAN, HEAVY_SPEED_PLAN]) {
+      expect(plan.extendedMaxPairs).toBeGreaterThan(plan.maxPairs);
+      expect(plan.extendedMaxPairs).toBeLessThanOrEqual(64);
+    }
   });
 });
 
@@ -229,15 +241,39 @@ describe('collecting paired runs until the decision is stable', () => {
     expect(timing.unstableAtCap).toBe(false);
   });
 
-  it('treats an interval that still straddles the line at the cap as a failure', async () => {
+  it('goes on to the second cap while the interval straddles the line, and stops there with unstableAtCap', async () => {
     // Alternating 0.8 and 1.2: the median is 1 but the interval always spans the line.
     const run = scripted((pair) => (pair % 2 === 0 ? 0.8 : 1.2));
     const timing = await adaptiveSpeedTiming(run.ours, run.reference, { ...HEAVY_SPEED_PLAN, warmup: 0 }, run.now);
-    expect(timing.runs).toBe(SPEED_HEAVY_MAX_PAIRS);
+    expect(timing.runs).toBe(SPEED_HEAVY_EXTENDED_MAX_PAIRS);
     expect(timing.unstableAtCap).toBe(true);
     expect(timing.decision.verdict).toBe('fail');
     expect(timing.decision.lower).toBeLessThan(PASS_LINE);
     expect(timing.decision.upper).toBeGreaterThan(PASS_LINE);
+  });
+
+  it('extends only a row that is undecided at the first cap, and stops as soon as the extension decides', async () => {
+    // Undecided through the first cap (every third pair slow), then every pair is fast: the interval clears the line during the extension.
+    const late = scripted((pair) => (pair < SPEED_HEAVY_MAX_PAIRS ? (pair % 3 === 0 ? 0.8 : 1.2) : 1.4));
+    const extended = await adaptiveSpeedTiming(late.ours, late.reference, { ...HEAVY_SPEED_PLAN, warmup: 0 }, late.now);
+    expect(extended.runs).toBeGreaterThan(SPEED_HEAVY_MAX_PAIRS);
+    expect(extended.runs).toBeLessThanOrEqual(SPEED_HEAVY_EXTENDED_MAX_PAIRS);
+    expect(extended.decision.verdict).toBe('pass');
+    expect(extended.unstableAtCap).toBe(false);
+    // A row that decides before the first cap collects nothing more, whatever the second cap is.
+    const early = scripted((pair) => (pair === 0 ? 0.95 : 1.1));
+    const stopped = await adaptiveSpeedTiming(early.ours, early.reference, { ...HEAVY_SPEED_PLAN, warmup: 0 }, early.now);
+    expect(stopped.runs).toBeLessThan(SPEED_HEAVY_MAX_PAIRS);
+    // Without a second cap the plan stops at the first.
+    const plain = scripted((pair) => (pair % 2 === 0 ? 0.8 : 1.2));
+    const capped = await adaptiveSpeedTiming(plain.ours, plain.reference, { ...HEAVY_SPEED_PLAN, extendedMaxPairs: undefined, warmup: 0 }, plain.now);
+    expect(capped.runs).toBe(SPEED_HEAVY_MAX_PAIRS);
+    expect(capped.unstableAtCap).toBe(true);
+  });
+
+  it('refuses a second cap beyond the pairs the interval is exact for', async () => {
+    const run = scripted(() => 1);
+    await expect(adaptiveSpeedTiming(run.ours, run.reference, { ...HEAVY_SPEED_PLAN, extendedMaxPairs: 65, warmup: 0 }, run.now)).rejects.toThrow(SpeedSampleError);
   });
 
   it('times several back-to-back calls of ours per sample and records the mean per call', async () => {
@@ -430,6 +466,7 @@ describe('the timing a family asks of its context', () => {
     let oursCalls = 0;
     let referenceCalls = 0;
     const timing = await context(false).time(
+      'compression/case/throughput',
       async () => {
         oursCalls++;
         await new Promise((resolve) => setTimeout(resolve, 1));
@@ -464,6 +501,7 @@ describe('the timing a family asks of its context', () => {
       log: (message) => logged.push(message),
     });
     const timing = (await parityContext.time(
+      'compression/case/throughput',
       () => {
         oursCalls++;
       },
@@ -483,6 +521,7 @@ describe('the timing a family asks of its context', () => {
   it('calls ours once per sample unless asked for more', async () => {
     let oursCalls = 0;
     const timing = await context(false).time(
+      'compression/case/throughput',
       async () => {
         oursCalls++;
         await new Promise((resolve) => setTimeout(resolve, 1));

@@ -6,7 +6,7 @@ import { type FamilyRunner, INJECTED_WEBP_QUALITY_SHARE } from '../context';
 import { decodeImageToPng, fileSize, measureSsimulacra2, pictureQuality, type ImageKind } from '../measure';
 import { numberRecord, type RefSpec } from '../ref-cache';
 import type { BenchRow } from '../report';
-import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow } from '../rows';
+import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow, speedRowId } from '../rows';
 import { runTool } from '../tools';
 
 /** Image family: jpg and png sources to webp, avif and jpg, against cwebp, avifenc and ImageMagick at matched quality. */
@@ -166,6 +166,7 @@ export const runImage: FamilyRunner = async (ctx) => {
       if (ctx.speed) {
         const timingOut = path.join(ctx.work, `timing-${path.basename(sourcePng)}.${target}`);
         const timing = await ctx.time(
+          speedRowId('image', caseName),
           async () => {
             await oursEncode(HEADLINE_QUALITY);
           },

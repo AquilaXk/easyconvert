@@ -167,7 +167,102 @@ describe('speed rows', () => {
     const unstable = evaluateParity(report([speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: 0.9, ratioHigh: 1.1, ratioMedian: 1 })]), NO_GAPS).rows[0];
     expect(unstable).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
     expect(unstable.detail).toContain('cap');
-    expect(unstable.speed).toEqual({ median: 1, low: 0.9, high: 1.1, pairs: 9 });
+  });
+
+  it('fails a row still undecided at its last cap when it has no base to be compared with', () => {
+    const undecided = evaluateParity(report([speed({ speedVerdict: 'fail', unstableAtCap: true, ratioLow: 0.9, ratioHigh: 1.1, ratioMedian: 1, runs: 50 })]), NO_GAPS).rows[0];
+    expect(undecided).toMatchObject({ outcome: 'fail', basis: 'speed-unstable-at-cap' });
+  });
+
+  describe('a row measured against the base of the change in the same pairs', () => {
+    const ID = 'image/photo-a.jpg->webp/throughput';
+    const flat = (ratio: number): { ratio: number; at: string }[] => [1, 2, 3, 4].map((day) => ({ ratio, at: `2026-10-0${day}T02:00:00.000Z` }));
+    const measured = (ab: Partial<BenchRow>, verdict: 'pass' | 'fail' = 'fail'): BenchRow =>
+      speed({ id: ID, speedVerdict: verdict, ratioLow: 0.7, ratioHigh: 0.8, ratioMedian: 0.75, runs: 24, abPairs: 24, abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.8, abBaseVsReferenceMedian: 0.75, ...ab });
+    const verdictOf = (row: BenchRow, gaps: GapFile = NO_GAPS): { outcome: string; basis: string; detail: string } => {
+      const found = evaluateParity(report([row]), gaps).rows.find((candidate) => candidate.id === ID);
+      if (!found) throw new Error('no verdict');
+      return { outcome: found.outcome, basis: found.basis, detail: found.detail };
+    };
+
+    it('fails when the head is credibly more than 10 percent slower than the base: the upper bound is below 1 / 1.1', () => {
+      const slower = verdictOf(measured({ abMedian: 0.85, abUpper: 0.9 }));
+      expect(slower).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+      expect(slower.detail).toContain('more than 10% slower than its base');
+      expect(verdictOf(measured({ abMedian: 0.85, abUpper: 0.909 })).basis).toBe('speed-slower-than-base');
+    });
+
+    it('does not fail on a first set the second set of pairs did not confirm', () => {
+      expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: false })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: true })).basis).toBe('speed-slower-than-base');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: false })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: true })).basis).toBe('speed-lost-parity');
+    });
+
+    it('passes a head that is not credibly slower by that much, however low the reference ratio sits', () => {
+      expect(verdictOf(measured({ abMedian: 0.9, abUpper: 0.9092 })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abMedian: 0.94, abUpper: 0.96 })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abMedian: 1, abUpper: undefined })).outcome).toBe('pass');
+    });
+
+    it('takes the threshold of the row: a row with its own threshold is judged by it', () => {
+      const found = evaluateParity(report([measured({ abMedian: 0.93, abUpper: 0.94 })]), NO_GAPS, { regression: { [ID]: { delta: 0.05 } } }).rows[0];
+      expect(found).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+      expect(found.detail).toContain('more than 5% slower');
+      expect(verdictOf(measured({ abMedian: 0.93, abUpper: 0.94 })).outcome).toBe('pass');
+    });
+
+    it('does not judge a nightly-only row on a pull request, whatever the pairs show, and judges it by the reference alone without a base', () => {
+      const nightly = { nightlyOnly: { [ID]: { needs: 0.8, reason: 'noise 0.200, run 1' } } };
+      const slow = evaluateParity(report([measured({ abMedian: 0.4, abUpper: 0.45 })]), NO_GAPS, nightly).rows[0];
+      expect(slow).toMatchObject({ outcome: 'pass', basis: 'speed-nightly-only' });
+      expect(slow.detail).toContain('noise 0.200');
+      const lost = evaluateParity(report([measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.5 })]), NO_GAPS, nightly).rows[0];
+      expect(lost.basis).toBe('speed-nightly-only');
+      const fallback = evaluateParity(report([measured({ abPairs: undefined, abFallback: 'the base cannot run it', speedVerdict: 'fail', ratio: 0.5, ratioMedian: 0.5, ratioLow: 0.4, ratioHigh: 0.6 })]), NO_GAPS, nightly).rows[0];
+      expect(fallback.basis).toBe('speed-nightly-only');
+      const absolute = evaluateParity(report([measured({ abPairs: undefined, speedVerdict: 'fail', ratio: 0.5, ratioMedian: 0.5, ratioLow: 0.4, ratioHigh: 0.6 })]), NO_GAPS, nightly).rows[0];
+      expect(absolute.outcome).toBe('fail');
+    });
+
+    it('fails when the base was at the reference and the head is credibly below it, and passes a base that was already below', () => {
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.98 })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 0.9, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'pass', basis: 'speed-unchanged-below-reference' });
+    });
+
+    it('passes a row at the reference', () => {
+      const atReference = measured({ abBaseVsReferenceMedian: 1.1, abHeadVsReferenceUpper: 1.2, ratioLow: 1.05, ratioHigh: 1.2, ratioMedian: 1.1 }, 'pass');
+      expect(verdictOf(atReference)).toMatchObject({ outcome: 'pass', basis: 'speed-pass' });
+    });
+
+    describe('a tracked gap: its history applies to what the change did to the row', () => {
+      const tracked = (level: number): GapFile => ({ schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: ID, issue: 695, ratio: level, note: 'n', history: flat(level) }] });
+
+      it('names the entry that has no reason to be there once its history level times the head-to-base ratio is at the reference', () => {
+        const found = verdictOf(measured({ abMedian: 1.02 }), tracked(1.1));
+        expect(found).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+        expect(found.detail).toContain('history level 1.1 times the head-to-base ratio 1.02');
+      });
+
+      it('passes a row below the reference that the change left as it was, tracked', () => {
+        expect(verdictOf(measured({ abMedian: 1 }), tracked(0.9))).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+        // The ratio the child measured against the reference does not enter: only the head-to-base ratio does.
+        expect(verdictOf(measured({ abMedian: 1, ratioMedian: 0.3, ratioLow: 0.2, ratioHigh: 0.4 }), tracked(0.9)).outcome).toBe('pass');
+      });
+
+      it('fails a change that walks a tracked gap under its history, though it is not credibly slower than the base', () => {
+        // A noisy row: its median fell to 0.6 of the base, yet its upper bound (1.05) does not show a slowdown beyond 10 percent.
+        const walked = verdictOf(measured({ abMedian: 0.6, abUpper: 1.05 }), tracked(0.9));
+        expect(walked).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
+        expect(verdictOf(measured({ abMedian: 0.95, abUpper: 1.05 }), tracked(0.9)).outcome).toBe('fail');
+      });
+    });
+
+    it('reports the rows that fell back to the reference alone, with the reason', () => {
+      const fallback = evaluateParity(report([speed({ id: ID, speedVerdict: 'pass', ratioLow: 1.1, ratioHigh: 1.2, ratioMedian: 1.15, abFallback: 'this version cannot run the row' })]), NO_GAPS).rows[0];
+      expect(fallback).toMatchObject({ outcome: 'pass', basis: 'speed-pass' });
+    });
   });
 
   it('refuses a throughput row that carries no speed decision', () => {

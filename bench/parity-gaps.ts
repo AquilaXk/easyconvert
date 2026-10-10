@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './config';
+import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './speed-config';
 import { ReportSchemaError } from './errors';
 import type { SpeedHistoryPoint } from './speed-history';
 

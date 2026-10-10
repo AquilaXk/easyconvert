@@ -16,7 +16,7 @@ parity" below).
 | `npm run bench:quality -- --no-gate` | Measure and report without gating. |
 | `npm run bench:quality -- --inject-regression webp-quality` | Degrade our side on purpose to show the gate fails and names the metric. `webp-quality` lowers the WebP quality setting (a regression against our baseline; it stays on the same rate-distortion curve, so it is not behind the reference at equal size). `webp-reencode` encodes WebP twice (a worse curve, which BD-rate sees). `x264-ultrafast` switches H.264 to the ultrafast preset. `slow-ours` makes every timed run of our side twice as long (a speed regression). |
 | `npm run bench:quality -- --compare-report <file>` | Gate an existing report without measuring. |
-| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
+| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>] [--base-root <dir>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
 
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure.
 `ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
@@ -95,9 +95,182 @@ our side runs in-process and its JIT needs them; one for video, OCR and office),
 reference time to our time. The interval is the sign-test interval of the median ratio, taken from the order
 statistics of the sorted ratios (`bench/speed-parity.ts`): 95 percent coverage, no distribution assumption, no random
 numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound is below 0.97, otherwise UNSTABLE: four
-more pairs are added, up to 25 for light rows and 12 for video, OCR and office. An interval that still straddles 0.97 at
-the cap is a failure. The interval of a median is as wide as the noise of a single pair, so a row whose true ratio
-sits at the pass line ends UNSTABLE: ours has to be clearly at or above the reference, not merely not behind it.
+more pairs are added, up to 25 for light rows and 12 for video, OCR and office, and then (second cap) up to 50 and 36
+(`SPEED_LIGHT_EXTENDED_MAX_PAIRS`, `SPEED_HEAVY_EXTENDED_MAX_PAIRS`; the interval is exact up to 64 pairs). The extension
+is sequential sampling: only a row still undecided at the first cap pays for it, and it stops at the first decision. A
+row still undecided at the last cap is a failure of this absolute rule, which the nightly run and a run without a base
+(`--parity` without `--base-root`) apply to every row, and the pull request job applies to a row the base cannot run.
+
+**Pull requests: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
+true ratio sits near it (issue #700: a row at 0.98 straddles 0.97 at any cap, and an unchanged row fails by chance), so the
+`parity speed` jobs of a pull request judge the change by what it did to the row, as performance gates that compare with the
+base branch do. A job takes the first parent of the merge commit it tested as the base (not the event's base sha, which can be
+older), checks it out beside the head (`ab-base`) with its own dependencies (its own `npm ci` when its lock file differs,
+cached by the lock file's hash; a change of a dependency is measured), and measures three sides in every pair, in a rotating
+order of the six permutations: the head and the base, each in a node process of its own started in its checkout
+(`bench/ab-host.ts`, `bench/ab-child.ts`: its tsconfig, its `node_modules`, `BENCH_PRODUCT_ROOT` pointing at it), and the
+reference, run by the benchmark's process, which does nothing else while a child works. Rows are matched by id (`bench/ab-host.ts`): a row a child does not time is a row it cannot run and is measured against the reference alone, and the row the child announced instead is kept for the benchmark's next request, so the processes never get out of step. Every speed row of a family runner names itself with `speedRowId` and loads the product through `importProduct` (`tests/bench-product.test.ts` checks both). The head and the base being
+alike (two processes, two checkouts, one family runner) is what makes their ratio fair: measured with the base in the
+benchmark's own process the ratio of two copies of one code was 0.97 on most image rows. Noise common to the three
+samples of a pair (this runner, this minute) cancels in the head-to-base ratio. A row **fails** when
+
+- the head is credibly more than `delta` slower than the base, `delta` being the row's own threshold from `AB_ROW_REGRESSION`
+  (each with the noise that justifies it, none above the cap of 50 percent, `AB_REGRESSION_CAP`) and 10 percent
+  (`AB_DEFAULT_REGRESSION`) for the rows that have none: the one-sided
+  upper confidence bound of the median of base time / head time is below `1 / (1 + delta)`, and a second set of fresh
+  pairs (as many as the first, taken after it) shows it too; or
+- the base was at the reference (median reference time / base time at least 0.97) and the head is credibly below it (that
+  bound for reference time / head time under 0.97), confirmed the same way; or
+- the row is a tracked gap (`bench/parity-gaps.json`) and the level of its history (the median of its points, or the
+  recorded ratio) times the median head-to-base ratio is under the floor or the prediction bound of that history: the history
+  rule of the nightly run applies to what the change did, so a change that walks a gap down by less than `delta` at a time
+  still cannot do it run after run.
+
+The bound is the exact sign-test bound (the order statistic x(n + 1 - k), Conover section 3.2) at the error rate
+`AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET` = 0.01 / 50 = 0.0002 per row (Bonferroni), so a run of up to 50 rows of unchanged
+code fails with a probability under 1 percent; the confirmation is taken at 0.01 and makes a failure need two independent
+sets, because noise comes in bursts of minutes on a shared runner and one set of pairs can be shifted by one. The first
+pairs are fixed, a whole number of cycles of the six orders so that every order runs equally often: 24 for light rows and 18
+for video, OCR and office rows (ranks 4 and 2 at that error rate), no peeking.
+
+**Extra pairs and the time of the job.** The job is a matrix, one `parity speed (<family>)` shard per changed family, in
+parallel (`bench_families_json` of the `changes` job), so the wall time of a pull request is that of its slowest family and
+not the sum of all of them. A row whose first pairs leave it undecided (its lower bound under its slowdown line and its upper
+bound over it: it could still turn out slower than its threshold, or not) gets six more pairs at a time, up to
+`AB_MAX_PAIRS` = 240, while the extra measuring time of its shard (`AB_EXTRA_BUDGET_MS`, 4 minutes) lasts; the budget is one
+per shard, shared by its rows in the order of the benchmark, and the confirmation sets of failing rows are charged to it. A
+row the first pairs decide (credibly not slower than its threshold, or credibly slower) gets none: more pairs cannot make it
+fail. The width of the bound does not depend on whether the head is slower, so extending does not change the error rate.
+Everything else passes: a row below the reference that the base was already below is the standing gap the nightly run
+reports, not a failure of this change. A row the base cannot run (a new capability) is measured against the reference alone,
+as above, and marked `abFallback` in the report.
+
+**A change cannot loosen the gate that judges it.** The files that decide a speed row (`GATE_FILES` in
+`scripts/ci-parity-base-gate.mjs`) are taken from the base commit before the job measures (`ci.yml`, "Use the gate of the
+base"): the verdict, its exit code and its thresholds (`judge.ts`, `parity.ts`, `gate.ts`, `speed-config.ts`,
+`speed-parity.ts`, `speed-history.ts`, `ab-config.ts`, `ab-speed.ts`), how a speed row is timed and built
+(`speed-timing.ts`, `speed-rows.ts`, the A/B host, child core and protocol, `product.ts`), the shape of a row a verdict can
+read (`report-schema.ts`) and the helpers under them (`stats.ts`, `errors.ts`, `parity-gaps.ts`). What a family defines stays
+the change's, as a change that adds a family or a row is measured with it: the family runners, `rows.ts` (the metric specs),
+`config.ts`, `context.ts`, `report.ts` (the family names), `run.ts`, the corpus and the baseline; each of them delegates the
+parts that judge or time to a gate file, so a change to them cannot move a threshold, a bound or a row's verdict. A row of the
+change that the base does not know is judged by the absolute rule, and a gate file the base lacks is the change's own (the
+change that introduces it is judged by it). The job fails when the base's gate does not fit the change's tree (`tsc` over
+`bench/` and `scripts/`).
+
+A change that needs another interface of the gate files (a renamed export, a new field the family runners read) lands in two
+steps: the pull request that changes the gate files, judged by the gate of its base, and then the one that uses the new
+interface, judged by the gate the first one merged. The `tsc` message of the job says so. `ab-base/` is a checkout of the base
+commit and is excluded from `tsconfig.json` and `vitest.config.ts` and ignored by git, so neither the type check, the tests nor
+the linter read it. (The workflow file of a pull request is the pull request's own, which GitHub runs; that is the limit of
+what a check inside the repository can do.)
+
+**What it measures on the CI runner** (nightly dispatch `ab_base_ref` with the commit under test as its own base, runs
+38037770394 and 38038913260, two measurements of 40 speed rows, `bench/ab-noise-samples.json`; `npx tsx
+bench/replay-speed-reports.ts --noise-out bench/ab-noise-samples.json <artifact>` regenerates it):
+
+- No false failure: 0 failing rows of 80 row-measurements with the per-row thresholds (`npx tsx bench/replay-speed-reports.ts
+  <artifact>`; the run before, with the earlier design, 0 of 80 as well). The bias of the comparison is nil: the mean of
+  the log of the head-to-base median over the rows is +0.009 (run 38038913260; -0.006 and +0.002 in the two runs before),
+  except `document/rich-structure.docx->odt`, which two copies of one code differ on by +0.17 in log terms, which is why that row
+  is nightly-only. The earlier design, the head in the benchmark's process, gave -0.020 and failed
+  `document/rich-structure.docx->odt` once with a median of 0.664; that is why the head runs in its own process and a failure
+  needs a second set of pairs.
+- The noise of the comparison (standard deviation of the log of the pair ratios): median 0.039, 90th percentile 0.136, worst
+  0.230 in run 38038913260 (0.039, 0.181 and 0.315 in run 38037770394, whose 14 reports `bench/ab-noise-samples.json` holds
+  and the thresholds derive from); the office conversions, `mixed.zst->tar` and `mixed.tar->7z` are the noisy rows.
+- Extra pairs: none were taken for the unchanged code (80 of 80 row-measurements decided on the first 24 or 18 pairs: with
+  its own threshold a row whose lower bound is over its slowdown line is credibly not slower, and nothing more is measured),
+  so the shards ran on the first pairs alone. A change that makes a row slower, or that leaves it undecided, spends its
+  shard's 4 minutes on that row.
+- Wall time of a shard (the `bench-ab-speed (family)` job of run 38038913260, two measurements of the family back to back,
+  minutes for the measuring step; one measurement is half): image 4.4, document 5.8, video 3.0, audio 2.3, compression 1.1,
+  ocr 1.0, pdf-ops 0.8; the jobs took 5.9, 7.4, 4.6, 3.8, 2.6, 2.5 and 2.3 including checkout, dependencies and tools. One
+  measurement of the slowest family, the document shard, is therefore about 3 minutes of measuring and 4.5 of job, and
+  the extra budget adds at most 4 more: under the 11 minutes of the rest of CI. (Run 38037770394, with all rows
+  extended: image 6.9, document 10.9 minutes per job for two measurements; the whole job before sharding took 19.7 minutes
+  per measurement.)
+
+**Nightly-only rows.** A threshold above 50 percent says little about a change (a row that must get 1.5 times slower to
+be noticed is not guarded by a pull request), so no row has one: a row whose noise needs more than the cap
+(`AB_NIGHTLY_ONLY` in `bench/ab-config.ts`, each with its noise, the run that measured it and why) is not judged on a pull
+request. The `parity speed` job times it with one cycle of six pairs for the report, gives it no extra pairs and no
+confirmation set, and its verdict passes it as `speed-nightly-only`; the nightly run, which judges every row against the
+reference alone, still guards it (and so does the tracked-gap history of `compression/mixed.tar->7z`). 7 of the 40 speed
+rows are nightly-only and 33 are gated on a pull request:
+
+| Nightly-only row | Noise | Threshold it would need |
+|---|---|---|
+| document/rich-structure.docx->html/throughput | 0.196 | more than 125% |
+| document/rich-structure.docx->odt/throughput | 0.136 | more than 125% (biased by +0.17 in log terms: two copies of one code differ systematically on it) |
+| document/rich-structure.docx->epub/throughput | 0.197 | more than 125% |
+| document/noori.hwp->txt/throughput | 0.181 | 106.3% |
+| document/pdf-structure->docx/throughput | 0.187 | 125% |
+| compression/mixed.tar->7z/throughput | 0.315 | more than 125% |
+| compression/mixed.zst->tar/throughput | 0.122 | 56.3% |
+
+Detection by simulation, per gated row, with the measured noise of that row, one extra budget per family shared by the gated
+rows of the family in the order of the benchmark (a nightly-only row takes none), 300 trials per row (`npx tsx
+bench/simulate-speed-gate.ts --noise bench/ab-noise-samples.json --row-trials 300`; `--derive` finds the thresholds below).
+The threshold of a row is the smallest at which a head 1.5 times that much slower fails in at least 95 percent of the
+trials; a row with the default threshold had a noise small enough for 10 percent. Unchanged code fails 0 percent on every
+row.
+
+| Row | Noise | Threshold | Unchanged fails | At the threshold fails | At 1.5 times the threshold fails |
+|---|---|---|---|---|---|
+| image/photo-a.jpg->webp/throughput | 0.023 | 10.0% | 0.0% | 0.3% | 100.0% |
+| image/photo-a.jpg->avif/throughput | 0.033 | 10.0% | 0.0% | 0.0% | 98.0% |
+| image/photo-a.jpg->jpg/throughput | 0.040 | 12.5% | 0.0% | 0.0% | 97.0% |
+| image/photo-b.png->webp/throughput | 0.015 | 10.0% | 0.0% | 0.0% | 100.0% |
+| image/photo-b.png->avif/throughput | 0.021 | 10.0% | 0.0% | 2.0% | 100.0% |
+| image/photo-b.png->jpg/throughput | 0.037 | 10.0% | 0.0% | 0.0% | 96.7% |
+| image/screenshot.png->webp/throughput | 0.025 | 10.0% | 0.0% | 0.0% | 100.0% |
+| image/screenshot.png->avif/throughput | 0.025 | 10.0% | 0.0% | 0.0% | 100.0% |
+| image/screenshot.png->jpg/throughput | 0.042 | 10.0% | 0.0% | 0.0% | 99.3% |
+| image/lineart.png->webp/throughput | 0.018 | 10.0% | 0.0% | 0.0% | 100.0% |
+| image/lineart.png->avif/throughput | 0.033 | 10.0% | 0.0% | 0.0% | 97.3% |
+| image/lineart.png->jpg/throughput | 0.034 | 10.0% | 0.0% | 0.0% | 99.7% |
+| video/clip.mp4->h264/throughput | 0.031 | 10.0% | 0.0% | 0.0% | 99.3% |
+| video/clip.mp4->hevc/throughput | 0.020 | 10.0% | 0.0% | 0.0% | 100.0% |
+| video/clip.mp4->vp9/throughput | 0.029 | 10.0% | 0.0% | 0.0% | 96.0% |
+| audio/music.wav->opus/throughput | 0.035 | 10.0% | 0.0% | 0.0% | 95.7% |
+| audio/music.wav->aac/throughput | 0.032 | 10.0% | 0.0% | 0.0% | 99.3% |
+| audio/music.wav->flac/throughput | 0.031 | 10.0% | 0.0% | 0.0% | 98.3% |
+| audio/speech.wav->opus/throughput | 0.020 | 10.0% | 0.0% | 0.0% | 100.0% |
+| audio/speech.wav->aac/throughput | 0.023 | 10.0% | 0.0% | 0.0% | 100.0% |
+| audio/speech.wav->flac/throughput | 0.045 | 10.0% | 0.0% | 0.0% | 96.0% |
+| ocr/scan.png->pdf/throughput | 0.039 | 15.0% | 0.0% | 0.0% | 97.7% |
+| document/report.docx->pdf/throughput | 0.057 | 20.0% | 0.0% | 0.0% | 96.3% |
+| document/rich-structure.docx->pdf/throughput | 0.048 | 17.5% | 0.0% | 0.0% | 96.7% |
+| document/pdf-text->txt/throughput | 0.029 | 10.0% | 0.0% | 0.0% | 98.3% |
+| document/complex-script txt->pdf/throughput | 0.056 | 22.5% | 0.0% | 0.0% | 96.3% |
+| compression/mixed.tar->zst/throughput | 0.054 | 15.0% | 0.0% | 0.0% | 95.0% |
+| compression/mixed.xz->tar/throughput | 0.074 | 20.0% | 0.0% | 0.7% | 96.3% |
+| compression/mixed.7z->tar/throughput | 0.116 | 42.5% | 0.0% | 0.0% | 95.3% |
+| pdf-ops/merge.pdf->pdf/throughput | 0.105 | 22.5% | 0.0% | 43.7% | 95.0% |
+| pdf-ops/watermark.pdf->pdf/throughput | 0.079 | 30.0% | 0.0% | 0.0% | 96.7% |
+| pdf-ops/protect.pdf->pdf/throughput | 0.061 | 20.0% | 0.0% | 0.0% | 96.0% |
+| pdf-ops/decrypt.pdf->pdf/throughput | 0.079 | 22.5% | 0.0% | 0.7% | 96.3% |
+
+All 33 gated rows fail a head 1.5 times their threshold slower in at least 95 percent of the trials, and none fails
+unchanged code in more than 1 percent (0 percent on every row). `pdf-ops/merge.pdf->pdf` fails 43.7 percent at exactly its
+threshold: a head at the threshold is what the bound cannot decide, which is why the table also gives 1.5 times.
+
+Detection by size, from the simulation with a quiet row (2 percent noise per sample, 1000 trials; the percentages are the
+head's extra time over the base's):
+
+| Rows | 0 to 10% | 15% | 20% | 30% |
+|---|---|---|---|---|
+| light, A/B gate fails | 0.0% | 96.3% | 100% | 100% |
+| heavy, A/B gate fails (18 pairs, no extra) | 0.0% | 70.1% | 99.9% | 100% |
+| absolute gate (the head against the reference alone), a row at parity | 0.0% light, 0.3% heavy | | | |
+| absolute gate, a row at 0.98 | 42.3% light, 56.2% heavy | | | |
+
+A row that needs a 10 percent slowdown seen asks for its own threshold: 5 percent detects a 10 percent slowdown in at least 95
+percent of the light trials (`tests/bench-speed-gate-rate.test.ts`). The rows whose noise is too large for a slowdown of 15 to
+20 percent are listed by `bench/ab-noise-samples.json`; making them quieter (pinned CPUs, fewer processes on the runner) is the
+way to guard them closer.
+
 **Minimum sample duration.** A timed sample of either side lasts at least `SPEED_MIN_SAMPLE_MS` (50 ms). Before the
 timed pairs, the warm-up rounds of a row are timed; the fastest single call of each side sets the number of back-to-back
 calls per sample, `ceil(50 / fastest call)` with at least 1 and at most `SPEED_MAX_SAMPLE_REPEATS` (1000), and each sample is
@@ -139,46 +312,14 @@ that family; the harness, the gate, the map, the corpus, `scripts/ci-parity-*.mj
 `bench/baseline.json` and `bench/parity-gaps.json` map to the families of the rows whose entries changed against the base
 (`PR_BASE_SHA`; every family when the base cannot be read or a row names an unknown family).
 
-### Acknowledging a speed run the harness could not decide (temporary)
-
-Speed is measured in the pull request's run against a reference that runs on a shared runner, so a row whose interval
-straddles the parity line even at the cap on pairs can fail a change that never touched it. Until the speed rows are
-compared against the base inside one job (#700), a maintainer can acknowledge such a run with the `parity-ack` label. The
-`verify` job then passes a failed `parity speed` only when the label counts and **every** failing row of that run's
-`parity-verdict.json` meets all of:
-
-1. its basis is `speed-unstable-at-cap` on a throughput row: never a credible slowdown (`speed-below-reference`,
-   `tracked-slower-than-gap`) and never a quality row;
-2. its median ratio is at least 0.97 (the parity line);
-3. its family is in the pull request's family set only through the all-family rules (`"*"`): the change maps no file
-   specifically to that family (the `specific` list that `scripts/ci-parity-families.mjs` prints, which the `verify` step
-   computes with the base commit's copy of the mapper and the family map). A row file maps by the rows that changed, and
-   by every family when it cannot tell.
-
-The verdict must also be a strict, full speed run with no injected regression, no baseline regression and at least one
-failing row; otherwise `verify` fails as before, label or not. The label counts only when its latest `labeled` event was
-made by a user whose repository role is `admin` or `maintain` (read through the API in `verify`); a label from anyone else
-changes nothing. The label counts only for the head it was put on: a push (the `synchronize` event) removes it, and that
-run never counts it, so the next head needs a new decision. `verify` posts one comment per pull request (updated in place,
-marked `<!-- parity-ack -->`, looked up only among the comments of `github-actions[bot]`) that lists the acknowledged rows
-with ratio, interval and pairs, and the rule, so the record stays on the pull request. The rule is applied to the verdict of
-the run the label event started. The rule is `scripts/ci-parity-ack.mjs`; remove it and the label steps of `verify` when
-#700 lands.
-
-**What the rule cannot trust, and what it refuses.** The verdict is written by the pull request's own benchmark code, so the
-rule acknowledges nothing when the pull request changes a file that produces or judges it, or that runs the step: all of
-`bench/` except this README, `scripts/ci-parity-*.mjs`, `.github/workflows/` and `.github/actions/`, `package.json`, the
-lockfile and `tsconfig*.json` (`PROTECTED_PATHS`, a constant of the rule). The `verify` step takes the rule, the mapper and
-the family map from the **base** commit and refuses when the base lacks them, so a change that adds or edits the rule is
-judged by the old one, and the pull request that introduces the rule can never acknowledge its own run. The limit that
-remains: on `pull_request` the workflow file is the head's own, so a pull request that rewrites the `verify` step is not
-stopped by that step. It is stopped by the rule only in the sense that the unmodified step would refuse it; a change to
-`.github/workflows/` must pass the speed gate on its own, and a reviewer must read it.
-
 A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
 passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
 carry the commit of a CI run) have to lie within the speed-ratio interval the job measured for the row, widened by
-`GAP_BACKING_LOG_MARGIN`. A made-up entry fails with `gap-not-backed`; an entry the base already holds is not rechecked.
+`GAP_BACKING_LOG_MARGIN`. A made-up entry fails with `gap-not-backed`; an entry the base already holds is not rechecked. A row
+measured against the base (above) was timed from a lighter benchmark process than the history, whose reference ratio is not
+the same number for rows that are mostly a spawn (`mixed.tar->zst` 0.33 against 0.60, `document/pdf-text->txt` 0.59 against 1.2); for
+such a row only the form of a changed entry is checked (a history point needs the commit of its run), and the history rule
+applies to what the change did to the row.
 
 **Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
 

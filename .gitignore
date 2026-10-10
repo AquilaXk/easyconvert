@@ -60,6 +60,9 @@ docs/EXECUTION_PLAN*.md
 .worktrees/
 .claude/worktrees/
 
+# The base commit a speed run measures the change against (bench/ab-host.ts)
+ab-base/
+
 # OCR artifacts
 *.traineddata
 

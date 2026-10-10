@@ -4,11 +4,12 @@ import { convertWithProject } from '../convert';
 import type { FamilyRunner } from '../context';
 import { IN_PROCESS_REPEATS, REPO_ROOT } from '../config';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import { readDocxStructure } from '../../tests/helpers/docx-structure';
 import { aggregate, scoreStructure, type StructureTruth } from '../../tests/helpers/structure-metrics';
+import { importProduct } from '../product';
 
 /**
  * PDF cases of the document family, measured on the committed golden sets (tests/fixtures/pdf-text and
@@ -47,7 +48,7 @@ const mean = (values: number[]): number => values.reduce((a, b) => a + b, 0) / v
 
 async function oursText(pdf: Buffer, name: string): Promise<string> {
   // The in-process engine, not the dispatcher: the dispatcher answers pdf -> txt with Poppler when it is installed.
-  const { convertFile } = await import('../../src/lib/conversions/index');
+  const { convertFile } = await importProduct<typeof import('../../src/lib/conversions/index')>('lib/conversions/index');
   return (await convertFile(pdf, 'pdf', 'txt', {}, `${name}.pdf`)).buffer.toString('utf8');
 }
 
@@ -78,6 +79,7 @@ const runText: FamilyRunner = async (ctx) => {
   }
   if (ctx.speed) {
     const timing = await ctx.time(
+      speedRowId('document', TEXT_CASE),
       async () => {
         for (const document of documents) await oursText(document.pdf, document.name);
       },
@@ -136,6 +138,7 @@ const runStructure: FamilyRunner = async (ctx) => {
   if (ctx.speed) {
     const timed = STRUCTURE_TIMED.map((name) => ({ name, file: path.join(STRUCTURE_FIXTURE_DIR, `${name}.pdf`) }));
     const timing = await ctx.time(
+      speedRowId('document', STRUCTURE_CASE),
       async () => {
         for (const document of timed) await convertWithProject(fs.readFileSync(document.file), 'pdf', 'docx', {}, `${document.name}.pdf`);
       },

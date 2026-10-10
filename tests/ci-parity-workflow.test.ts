@@ -139,20 +139,64 @@ describe('parity-speed', () => {
     }
   });
 
-  it("checks the gap entries the pull request adds or changes against its own speed run, with the base's gap file", () => {
-    const take = speed.steps.find((s) => s.id === 'base-gaps');
-    expect(take?.run).toContain('git show "$PR_BASE_SHA:bench/parity-gaps.json"');
-    expect(take?.env?.PR_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
-    expect(speed.steps.find((s) => s.id === 'bench')?.env?.BASE_GAPS).toBe('${{ steps.base-gaps.outputs.path }}');
-    expect(speed.steps.indexOf(take as Step)).toBeLessThan(speed.steps.findIndex((s) => s.id === 'bench'));
+  it('measures the pull request against its base in the same pairs: the first parent of the tested merge, with its own dependencies', () => {
+    const base = stepNamed(speed, 'base');
+    expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
+    expect(base.run).toContain('git worktree add --detach ab-base "$parent"');
+    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    const install = stepNamed(speed, 'Install the dependencies of the base');
+    expect(install.run).toContain('cmp -s package-lock.json ab-base/package-lock.json');
+    expect(install.run).toContain('cd ab-base && npm ci --ignore-scripts');
+    const restore = speed.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
+    expect(String(restore?.with?.key)).toContain("hashFiles('ab-base/package-lock.json')");
+    expect(stepNamed(speed, 'bench').env?.BENCH_BASE_ROOT).toBe('ab-base');
+    expect(speed['timeout-minutes']).toBe(45);
+    const order = ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'bench'].map((name) => speed.steps.indexOf(stepNamed(speed, name)));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    for (const name of ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'Save the dependencies of the base']) {
+      expect(String(stepNamed(speed, name).if), name).toMatch(/env\.BENCH_CHANGED == 'true'/);
+    }
+  });
+
+  it('runs one shard per changed family, each with the families of its own and the scope of its own comment', () => {
+    const strategy = (speed as unknown as { strategy: { 'fail-fast': boolean; matrix: { family: string } } }).strategy;
+    expect(strategy['fail-fast']).toBe(false);
+    expect(strategy.matrix.family).toContain("fromJSON(needs.changes.outputs.bench_families_json != '[]' && needs.changes.outputs.bench_families_json || '[\"none\"]')");
+    expect(speed.env?.BENCH_FAMILIES).toBe("${{ matrix.family == 'none' && '' || matrix.family }}");
+    expect((speed as unknown as { name: string }).name).toBe('parity speed (${{ matrix.family }})');
+    const policy = speed.steps.find((step) => step.uses?.startsWith('actions/github-script@'));
+    expect(String(policy?.with?.script)).toContain('scope: `speed-${process.env.BENCH_FAMILIES}`');
+  });
+
+  it('uploads the report of a shard under a name of its own, since an artifact name can be used once per run', () => {
+    const upload = speed.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    expect(upload?.with?.name).toBe('parity-speed-results-${{ matrix.family }}');
+  });
+
+  it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
+    const gate = stepNamed(speed, 'Use the gate of the base');
+    expect(gate.if).toBe("env.BENCH_CHANGED == 'true'");
+    expect(gate.run).toContain('node ab-base/scripts/ci-parity-base-gate.mjs ab-base');
+    expect(gate.run).toContain('node_modules/.bin/tsc --noEmit -p .');
+    expect(gate.run).toContain('the gate of the base does not fit this change');
+    expect(gate.run).toContain('lands in two steps, the gate files first');
+  });
+
+  it("checks the gap entries the pull request adds or changes against its own speed run, with the gap file of the base checkout", () => {
+    const bench = speed.steps.find((s) => s.id === 'bench');
+    expect(bench?.env?.BENCH_BASE_ROOT).toBe('ab-base');
+    expect(bench?.run).toContain('--base-gaps ab-base/bench/parity-gaps.json');
   });
 
   it('measures every case of the changed families, speed only, and never reads or writes a cache', () => {
     const bench = runOf(speed, 'bench');
-    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps "$BASE_GAPS"');
+    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json');
     expect(bench).not.toContain('--quick');
     expect(bench).not.toContain('--quality-only');
-    expect(JSON.stringify(speed)).not.toMatch(/actions\/cache|\.bench-cache|bench-ref-/);
+    expect(JSON.stringify(speed)).not.toMatch(/\.bench-cache|bench-ref-/);
+    // The only cache of the job holds the dependencies of the base, keyed by its lock file; no measurement is cached.
+    const caches = speed.steps.filter((step) => step.uses?.startsWith('actions/cache'));
+    expect(caches.map((step) => step.with?.path)).toEqual(['ab-base/node_modules', 'ab-base/node_modules']);
     expect(speed.env?.ORACLE_STRICT_MODE).toBe('1');
   });
 
@@ -164,7 +208,7 @@ describe('parity-speed', () => {
 
   it('applies the same label policy with the speed scope', () => {
     const policy = speed.steps.find((step) => step.uses?.startsWith('actions/github-script@'));
-    expect(String(policy?.with?.script)).toContain("scope: 'speed'");
+    expect(String(policy?.with?.script)).toContain('scope: `speed-${process.env.BENCH_FAMILIES}`');
     expect(speed.permissions).toEqual({ contents: 'read', issues: 'write', 'pull-requests': 'write' });
   });
 
@@ -337,14 +381,14 @@ describe('the step that maps changed paths to families', () => {
   const only = it.skipIf(skipUnless('git, bash and node', available));
 
   only('measures the family of a changed conversion file, and nothing for a change outside the conversion code', () => {
-    expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video', unmapped: '', changed: 'true' });
-    expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+    expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', families_json: '["compression"]', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video', families_json: '["image","video"]', unmapped: '', changed: 'true' });
+    expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
   });
 
   only('reports a changed family with no bench rows, so the parity jobs can fail it', () => {
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', unmapped: 'cad', changed: 'true' });
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', unmapped: 'cad,font', changed: 'true' });
+    expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: 'cad', changed: 'true' });
+    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', families_json: '["ocr"]', unmapped: 'cad,font', changed: 'true' });
   });
 
   only('measures every family when the dispatcher changes', () => {
@@ -356,13 +400,14 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
+    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', families_json: '["image","video","audio","ocr","document","compression","pdf-ops"]', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
   });
 
   it('is exposed as outputs of the changes job', () => {
     expect(ci.jobs.changes.outputs).toMatchObject({
       bench_families: '${{ steps.families.outputs.families }}',
+      bench_families_json: '${{ steps.families.outputs.families_json }}',
       bench_unmapped: '${{ steps.families.outputs.unmapped }}',
       bench_changed: '${{ steps.families.outputs.changed }}',
     });
@@ -400,6 +445,20 @@ describe('the nightly run', () => {
       expect(step.run).not.toContain('--quick');
       expect(step.run).not.toContain('--family');
     }
+  });
+
+  it('can measure the speed rows against another commit in the same pairs, by hand, one shard per family', () => {
+    const inputs = (nightly.on as { workflow_dispatch?: { inputs?: Record<string, { default?: string }> } }).workflow_dispatch?.inputs;
+    expect(Object.keys(inputs ?? {})).toEqual(['ab_base_ref', 'ab_repeats']);
+    expect(inputs?.ab_base_ref?.default).toBe('');
+    expect(speedJob.if).toBe("inputs.ab_base_ref == ''");
+    const ab = nightly.jobs['bench-ab-speed'];
+    expect(ab.if).toBe("inputs.ab_base_ref != ''");
+    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops']);
+    expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('cd ab-base && npm ci --ignore-scripts');
+    const measure = stepNamed(ab, 'Measure the speed rows against that commit');
+    expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base', FAMILY: '${{ matrix.family }}' });
+    expect(measure.run).toContain('--parity --speed-only --family "$FAMILY"');
   });
 
   it('is the writer of the reference cache, saved even when the benchmark fails', () => {

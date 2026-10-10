@@ -5,7 +5,7 @@ import { convertInProcess } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { stringValue } from '../ref-cache';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, throughputRow, speedRowId } from '../rows';
 import { structureOfDocx, structureOfEpub, structureOfOdt } from '../structure-extract';
 import { emptyStructure, normalizeText, scoreStructure, STRUCTURE_CATEGORIES, structureOfHtml, type DocumentStructure, type StructureCategory } from '../structure-metrics';
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
@@ -173,6 +173,7 @@ async function runStructureDocx(ctx: FamilyContext): Promise<BenchRow[]> {
 
     if (ctx.speed) {
       const timing = await ctx.time(
+        speedRowId('document', caseName),
         async () => {
           await ours();
         },
@@ -249,6 +250,7 @@ async function runHwp(ctx: FamilyContext): Promise<BenchRow[]> {
 
   if (ctx.speed) {
     const timing = await ctx.time(
+      speedRowId('document', txtCase),
       async () => {
         await convertInProcess(hwp, 'hwp', 'txt', {}, HWP_FILE);
       },
@@ -298,6 +300,7 @@ async function runReport(ctx: FamilyContext): Promise<BenchRow[]> {
 
   if (ctx.speed) {
     const timing = await ctx.time(
+      speedRowId('document', REPORT_CASE),
       async () => {
         await oursPdf();
       },
