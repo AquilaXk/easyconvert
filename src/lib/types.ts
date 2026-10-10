@@ -920,6 +920,28 @@ export class EncryptedOfficeDocumentError extends ConversionFailedError {
   }
 }
 
+/**
+ * A PDF is encrypted and the request carried no password, or a password that does not open it. Maps to HTTP 422 and,
+ * like every typed conversion failure, is never retried by the queue.
+ */
+export class PdfPasswordRequiredError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPasswordRequiredError';
+  }
+}
+
+/**
+ * A PDF's permissions forbid the requested edit and the request did not carry the owner password that lifts them.
+ * Maps to HTTP 422.
+ */
+export class PdfPermissionDeniedError extends EncryptedOfficeDocumentError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PdfPermissionDeniedError';
+  }
+}
+
 /** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
 export class CorruptStreamError extends ConversionFailedError {
   readonly status = 400;
