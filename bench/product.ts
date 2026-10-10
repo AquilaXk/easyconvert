@@ -1,5 +1,7 @@
 import path from 'node:path';
-import { REPO_ROOT } from './config';
+
+/** The checkout this file is in. */
+const REPO_ROOT = path.resolve(__dirname, '..');
 
 /**
  * Where our side of a comparison comes from. A process loads the product of one checkout: this repository, or the one

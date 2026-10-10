@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { MAX_RUNS, MS_PER_SECOND } from './config';
+import { MAX_RUNS, MS_PER_SECOND } from './speed-config';
 import { BenchArgumentError } from './errors';
 
 export function median(values: readonly number[]): number {

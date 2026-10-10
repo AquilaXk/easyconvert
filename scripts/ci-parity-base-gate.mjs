@@ -12,19 +12,33 @@
 import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-/** The files that decide whether a speed row passes. Keep this list to verdict and threshold code, not to what a family measures. */
+/**
+ * The files that decide whether a speed row passes, and the inputs they read: the verdict and the exit code (judge, parity,
+ * gate), the rules and constants that judge (speed-config, speed-parity, speed-history, ab-config, ab-speed), how a speed row
+ * is timed and built (speed-timing, speed-rows, the A/B host, child and protocol), the shape of a row a verdict can read
+ * (report-schema), and the plain helpers under them (stats, errors, parity-gaps, product). What a family measures stays
+ * the change's: bench/rows.ts (the metric specs of the quality rows), bench/config.ts (paths, quick subset), bench/report.ts
+ * (the family names), bench/context.ts, bench/run.ts and every family runner.
+ */
 export const GATE_FILES = [
+  'bench/judge.ts',
   'bench/parity.ts',
   'bench/parity-gaps.ts',
-  'bench/speed-history.ts',
+  'bench/gate.ts',
+  'bench/speed-config.ts',
   'bench/speed-parity.ts',
+  'bench/speed-history.ts',
+  'bench/speed-timing.ts',
+  'bench/speed-rows.ts',
+  'bench/report-schema.ts',
   'bench/ab-config.ts',
   'bench/ab-speed.ts',
   'bench/ab-host.ts',
-  'bench/ab-child.ts',
+  'bench/ab-child-core.ts',
   'bench/ab-protocol.ts',
   'bench/product.ts',
-  'bench/gate.ts',
+  'bench/stats.ts',
+  'bench/errors.ts',
 ];
 
 /** Copies the gate files of `baseDir` over those of `targetDir`; returns the files it replaced and those the base lacks. */

@@ -10,7 +10,7 @@ import {
   AB_ROW_REGRESSION,
   type AbRegressionOverride,
 } from './ab-config';
-import { SPEED_MAX_SAMPLE_REPEATS, SPEED_PARITY_TOLERANCE } from './config';
+import { SPEED_MAX_SAMPLE_REPEATS, SPEED_PARITY_TOLERANCE } from './speed-config';
 import { type AdaptiveTiming, binomialCdfHalf, calibrateRepeats, decideSpeed, SpeedSampleError } from './speed-parity';
 import { coefficientOfVariation, mean, median, timed } from './stats';
 

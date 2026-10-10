@@ -3,7 +3,6 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Side } from './ab-speed';
 import type { ChildMessage, HostMessage } from './ab-protocol';
-import { REPO_ROOT } from './config';
 import { BenchError } from './errors';
 import type { Family } from './report';
 
@@ -56,7 +55,7 @@ export class AbHost {
   }
 
   static async start(options: AbHostOptions): Promise<AbHost> {
-    const script = options.script ?? path.join(REPO_ROOT, 'bench', 'ab-child.ts');
+    const script = options.script ?? path.join(__dirname, 'ab-child.ts');
     // One process that runs the script itself (node with tsx's loader), so killing it ends the measuring: the tsx CLI is a wrapper that
     // starts the script in a second process, which a kill of the wrapper leaves running.
     const loader = pathToFileURL(path.join(path.dirname(require.resolve('tsx/package.json')), 'dist', 'loader.mjs')).href;

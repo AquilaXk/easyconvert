@@ -26,6 +26,7 @@ import {
 } from './config';
 import { AbHost } from './ab-host';
 import { AB_EXTRA_BUDGET_MS } from './ab-config';
+import { EXIT_BELOW_REFERENCE, EXIT_PASS, EXIT_REGRESSION, judgeParity, parityScope, printGate } from './judge';
 import { createContext, type Injection, parseInjection } from './context';
 import { BenchArgumentError, BenchError, ReportSchemaError } from './errors';
 import { FAMILY_RUNNERS } from './families';
@@ -40,12 +41,7 @@ import { defaultResolver, LIBVMAF_PSEUDO_TOOL, toolVersion } from './tools';
 
 const FAMILY_SET: ReadonlySet<string> = new Set(FAMILIES);
 const REPORTED_TOOLS = ['ffmpeg', 'ffprobe', 'cwebp', 'dwebp', 'avifenc', 'avifdec', 'magick', 'zstd', 'xz', '7z', 'pdftotext', 'tesseract', 'soffice', 'pdfimages', 'epubcheck', 'ssimulacra2'] as const;
-const EXIT_PASS = 0;
-/** A metric got worse than our own baseline: never excused by a label. */
-const EXIT_REGRESSION = 1;
 const EXIT_ERROR = 2;
-/** Every metric is at its baseline, but at least one row is below the reference tool. */
-const EXIT_BELOW_REFERENCE = 3;
 const DATE_LENGTH = 10;
 
 export interface CliOptions {
@@ -176,13 +172,6 @@ function describeRow(row: BenchRow): string {
   return `${row.id}: ours ${fmt(row.ours)} ${row.unit}, reference ${fmt(row.reference)}, delta ${fmt(row.delta)}`;
 }
 
-function printGate(result: GateResult, out: (line: string) => void): void {
-  out(`gate: ${result.compared} metrics compared, ${result.regressions.length} regressed, ${result.improvements.length} improved, ${result.unbaselined.length} without baseline, ${result.skipped.length} skipped`);
-  for (const regression of result.regressions) out(`REGRESSION ${regression.message}`);
-  for (const note of result.speedNotes) out(`note ${note}`);
-  for (const id of result.unbaselined) out(`no baseline yet: ${id}`);
-}
-
 function toolsOf(resolve: ReturnType<typeof defaultResolver>): Record<string, string | null> {
   const tools: Record<string, string | null> = {};
   for (const tool of REPORTED_TOOLS) tools[tool] = toolVersion(tool, resolve(tool));
@@ -296,55 +285,6 @@ function reportSuffix(options: CliOptions): string {
   if (!options.parity) return '';
   const quick = options.quick ? '-quick' : '';
   return `-parity-${parityScope(options)}${quick}`;
-}
-
-function parityScope(options: CliOptions): ParityScope {
-  if (options.qualityOnly) return 'quality';
-  return options.speedOnly ? 'speed' : 'both';
-}
-
-/**
- * Baseline gate and parity verdict of a parity run. The gate checks only what was measured: quality rows or
- * throughput rows (a baseline throughput entry has a ratio), and the cases of the quick subset when `--quick` is set.
- * Regressions against our own baseline return EXIT_REGRESSION and are never excused; a row below the reference with
- * every metric at its baseline returns EXIT_BELOW_REFERENCE. The verdict is also written for the CI step that applies
- * the label policy.
- */
-function judgeParity(report: BenchReport, options: CliOptions, out: (line: string) => void): number {
-  if (!fs.existsSync(options.baselinePath)) throw new BenchArgumentError(`no baseline at ${options.baselinePath}; create it with --update-baseline`);
-  const scope = parityScope(options);
-  const include = (id: string, entry: { ratio: number | null }): boolean => {
-    if (!rowInScope(options.quick, id)) return false;
-    if (scope === 'both') return true;
-    return scope === 'speed' ? entry.ratio !== null : entry.ratio === null;
-  };
-  const gate = evaluateGate(report, readBaseline(options.baselinePath), { families: new Set(options.families), include });
-  printGate(gate, out);
-  // A quality-only run measures no speed, so it cannot back a gap entry; the speed run of the same change does.
-  const baseGaps = options.baseGapsPath && scope !== 'quality' ? readGaps(options.baseGapsPath) : undefined;
-  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps });
-  for (const line of failureLines(parity)) out(line);
-  for (const line of renderParityText(parity)) out(line);
-
-  let exitCode = EXIT_PASS;
-  if (gate.regressions.length > 0) exitCode = EXIT_REGRESSION;
-  else if (parity.verdict === 'fail') exitCode = EXIT_BELOW_REFERENCE;
-  const file: ParityRunFile = {
-    schemaVersion: PARITY_SCHEMA_VERSION,
-    generatedAt: report.generatedAt,
-    families: options.families,
-    quick: options.quick,
-    scope,
-    strictMode: report.strictMode,
-    injectedRegression: report.settings.injectedRegression,
-    exitCode,
-    baseline: { compared: gate.compared, regressions: gate.regressions.map((regression) => regression.message) },
-    parity,
-  };
-  fs.mkdirSync(options.outDir, { recursive: true });
-  fs.writeFileSync(path.join(options.outDir, PARITY_VERDICT_FILE), `${JSON.stringify(file, null, 2)}\n`);
-  fs.writeFileSync(path.join(options.outDir, PARITY_VERDICT_FILE.replace(/\.json$/, '.md')), renderParityMarkdown(parity));
-  return exitCode;
 }
 
 export async function main(args: string[], out: (line: string) => void = (line) => process.stdout.write(`${line}\n`)): Promise<number> {

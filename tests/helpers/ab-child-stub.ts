@@ -1,6 +1,6 @@
-import { runChild } from '../../bench/ab-child';
-import type { FamilyRunner } from '../../bench/context';
-import { FAMILIES, type Family } from '../../bench/report';
+import { runChild } from '../../bench/ab-child-core';
+import { createContext, type FamilyRunner } from '../../bench/context';
+import { ReferenceCache } from '../../bench/ref-cache';
 
 /**
  * A stand-in for the family runners, to test the process that measures the base: three rows, of which the second cannot
@@ -22,10 +22,31 @@ const runner: FamilyRunner = async (ctx) => {
   return [];
 };
 
-const none: FamilyRunner = async () => [];
-const runners = Object.fromEntries(FAMILIES.map((family) => [family, family === 'compression' ? runner : none])) as Record<Family, FamilyRunner>;
-
-runChild(runners, { families: ["compression"], quick: false }).then(
+runChild(
+  {
+    runners: { compression: runner },
+    makeContext: (timer, log) => ({
+      ctx: createContext({
+        resolve: () => null,
+        strict: false,
+        runs: 1,
+        heavyRuns: 1,
+        warmup: 0,
+        injection: null,
+        parity: true,
+        quality: false,
+        speed: true,
+        quick: false,
+        refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
+        work: '/nonexistent',
+        log,
+        timer,
+      }),
+      dispose: () => undefined,
+    }),
+  },
+  { families: ['compression'] }
+).then(
   () => process.exit(process.exitCode ?? 0),
   () => process.exit(1)
 );

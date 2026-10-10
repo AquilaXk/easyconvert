@@ -14,7 +14,7 @@ import {
   SPEED_MIN_SAMPLE_MS,
   SPEED_PAIRS_STEP,
   SPEED_PARITY_TOLERANCE,
-} from './config';
+} from './speed-config';
 import { BenchArgumentError } from './errors';
 import { coefficientOfVariation, median, type InterleavedTiming, timed } from './stats';
 
