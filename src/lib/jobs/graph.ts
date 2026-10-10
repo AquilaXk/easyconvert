@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
-import { hasOptimizer, optimizeUnavailableMessage } from '../conversions/optimizers';
+import { hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,

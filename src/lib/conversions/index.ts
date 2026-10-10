@@ -699,6 +699,5 @@ export async function applyPdfPostProcessing(
 export * from './page-range';
 export * from './ctl';
 export * from './pdf-postprocess';
-export * from './optimizers';
 
 

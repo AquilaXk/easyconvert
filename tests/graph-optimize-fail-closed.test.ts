@@ -8,6 +8,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { OPTIMIZERS } from '../src/lib/conversions/optimizers';
+import { OPTIMIZABLE_FORMATS } from '../src/lib/jobs/optimize-formats';
 import { UnsupportedOptionError } from '../src/lib/types';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
@@ -127,7 +128,8 @@ describe('optimize fails closed for formats without an optimiser', () => {
     expect(await s3Storage.getObject(`intermediate/${job.data.graphId}/n1/src.pdf`)).toBeUndefined();
   });
 
-  it('keeps the registry empty so no format is reported optimised', () => {
+  it('keeps the registry empty and in step with the formats validation accepts', () => {
     expect([...OPTIMIZERS.keys()]).toEqual([]);
+    expect([...OPTIMIZERS.keys()]).toEqual([...OPTIMIZABLE_FORMATS]);
   });
 });
