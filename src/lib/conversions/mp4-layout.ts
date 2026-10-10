@@ -12,7 +12,7 @@ import type { InputStream } from './media-ffprobe';
 /** The stream facts a mapping plan reads. */
 export type LayoutStream = Pick<
   InputStream,
-  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height'
+  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped'
 >;
 
 export interface Mp4Layout {
@@ -346,6 +346,7 @@ interface EntryFacts {
   colorTransfer?: string;
   width?: number;
   height?: number;
+  cropped?: boolean;
 }
 
 function videoEntry(buf: Buffer, fourcc: string, entryBody: number, entryEnd: number): EntryFacts {
@@ -375,6 +376,8 @@ function videoEntry(buf: Buffer, fourcc: string, entryBody: number, entryEnd: nu
     colorTransfer: code === undefined ? undefined : transferName(code),
     width: buf.readUInt16BE(entryBody + VIDEO_ENTRY_SIZE_OFFSET),
     height: buf.readUInt16BE(entryBody + VIDEO_ENTRY_SIZE_OFFSET + 2),
+    // A clean aperture box says the picture shown is a cut of the one stored, so the stored size is not the decoded one.
+    ...(child(children, 'clap') === undefined ? {} : { cropped: true }),
   };
 }
 
@@ -481,6 +484,7 @@ function readTrack(buf: Buffer, trak: Box, index: number): LayoutStream {
     ...(language === undefined ? {} : { language }),
     ...(facts.colorTransfer === undefined ? {} : { colorTransfer: facts.colorTransfer }),
     ...(facts.width === undefined ? {} : { width: facts.width, height: facts.height }),
+    ...(facts.cropped === true ? { cropped: true } : {}),
   };
 }
 

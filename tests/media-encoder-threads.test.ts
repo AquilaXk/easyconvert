@@ -52,10 +52,14 @@ describe('the thread count asked of each software encoder', () => {
   });
 
   it.each([
+    // Under four cores x265's own count (one) is already all the host can use; from four cores up the frame
+    // threads keep the wavefronts of a short picture fed, so six are asked for on any host of four cores or more.
     { cores: 1, hevc: 1 },
     { cores: 2, hevc: 1 },
-    { cores: 4, hevc: 2 },
-    { cores: 8, hevc: 4 },
+    { cores: 3, hevc: 1 },
+    { cores: 4, hevc: 6 },
+    { cores: 6, hevc: 6 },
+    { cores: 8, hevc: 6 },
     { cores: 12, hevc: 6 },
     { cores: 16, hevc: 6 },
     { cores: 192, hevc: 6 },
@@ -141,9 +145,11 @@ describe('the arguments of a software encode', () => {
     'give x265 its frame threads for a constant-quality encode',
     ['ffmpeg'],
     () => {
-      vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
-      expect(threadsOf(build('hevc', { rateControl: { mode: 'crf', crf: 28 } }))).toEqual(['6']);
-      expect(threadsOf(build('hevc'))).toEqual(['6']);
+      for (const cores of [4, 12]) {
+        vi.spyOn(os, 'availableParallelism').mockReturnValue(cores);
+        expect(threadsOf(build('hevc', { rateControl: { mode: 'crf', crf: 28 } })), `${cores} cores`).toEqual(['6']);
+        expect(threadsOf(build('hevc')), `${cores} cores`).toEqual(['6']);
+      }
     },
     TEST_TIMEOUT_MS
   );
@@ -219,6 +225,33 @@ describe('the threads the encoders really start', () => {
       expect(x264Log).toMatch(/ threads=16 lookahead_threads=\d+ /);
       const x265Log = ourRun('hevc', path.join(workDir, 'ours-hevc.mp4'));
       expect(x265Log).toMatch(/frame threads \/ pool features\s*: 6 \//);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'x265 decodes to the same pictures at six frame threads as at the two it starts on a host of four cores',
+    ['ffmpeg'],
+    () => {
+      requireEncoders('libx265');
+      makeSource();
+      vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+      const ours = path.join(workDir, 'threads-ours.mp4');
+      ourRun('hevc', ours);
+      const reference = path.join(workDir, 'threads-ref.mp4');
+      execFileSync(
+        tool(),
+        ['-v', 'error', '-y', '-i', source, '-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error', '-threads', '2', '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference],
+        { stdio: ['ignore', 'ignore', 'pipe'] }
+      );
+      const framesOf = (file: string): string =>
+        execFileSync(tool(), ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'], { encoding: 'utf8' })
+          .split('\n')
+          .filter((line) => line !== '' && !line.startsWith('#'))
+          .map((line) => line.split(',').slice(-1)[0].trim())
+          .join('\n');
+      expect(framesOf(ours)).toBe(framesOf(reference));
+      expect(framesOf(ours).split('\n').length).toBeGreaterThanOrEqual(SECONDS * 24);
     },
     TEST_TIMEOUT_MS
   );
