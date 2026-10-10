@@ -15,7 +15,7 @@ const STUB = path.join(__dirname, 'helpers', 'ab-child-stub.ts');
 
 describe('the base process', () => {
   it('times one call and a sample of calls on request, row after row, and ends on request', async () => {
-    const host = await AbHost.start({ baseRoot: work, families: ['compression'], quick: false, script: STUB });
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     try {
       await host.row();
       const side = host.side();
@@ -39,7 +39,7 @@ describe('the base process', () => {
   }, 60_000);
 
   it('fails when the benchmark asks for a row the process does not have: the two are out of step', async () => {
-    const host = await AbHost.start({ baseRoot: work, families: ['compression'], quick: false, script: STUB });
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     try {
       for (let row = 0; row < 3; row++) {
         await host.row();
@@ -52,9 +52,9 @@ describe('the base process', () => {
   }, 60_000);
 
   it('reports a process that ends by itself, and refuses to start one that is not there', async () => {
-    const host = await AbHost.start({ baseRoot: work, families: ['compression'], quick: false, script: STUB });
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     await host.stop();
     expect(() => host.next()).toThrow(AbHostError);
-    await expect(AbHost.start({ baseRoot: path.join(work, 'missing'), families: ['compression'], quick: false, script: STUB })).rejects.toThrow(AbHostError);
+    await expect(AbHost.start({ root: path.join(work, 'missing'), families: ['compression'], quick: false, script: STUB })).rejects.toThrow(AbHostError);
   }, 60_000);
 });

@@ -54,7 +54,7 @@ export function measuredRow(
   ours: number,
   reference: number,
   referenceTool: string,
-  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap' | 'abPairs' | 'abMedian' | 'abUpper' | 'abHeadVsReferenceUpper' | 'abNoise' | 'abBaseVsReferenceMedian' | 'abExtraPairs' | 'abFallback'>> = {}
+  extra: Partial<Pick<BenchRow, 'ratio' | 'oursCv' | 'referenceCv' | 'runs' | 'ratioLow' | 'ratioHigh' | 'ratioMedian' | 'speedVerdict' | 'unstableAtCap' | 'abPairs' | 'abMedian' | 'abUpper' | 'abHeadVsReferenceUpper' | 'abNoise' | 'abBaseVsReferenceMedian' | 'abExtraPairs' | 'abSlowerConfirmed' | 'abLostConfirmed' | 'abFallback'>> = {}
 ): BenchRow {
   return {
     id: `${family}/${caseName}/${spec.metric}`,
@@ -86,6 +86,8 @@ export function measuredRow(
     ...(extra.abNoise === undefined ? {} : { abNoise: extra.abNoise }),
     ...(extra.abBaseVsReferenceMedian === undefined ? {} : { abBaseVsReferenceMedian: extra.abBaseVsReferenceMedian }),
     ...(extra.abExtraPairs === undefined ? {} : { abExtraPairs: extra.abExtraPairs }),
+    ...(extra.abSlowerConfirmed === undefined ? {} : { abSlowerConfirmed: extra.abSlowerConfirmed }),
+    ...(extra.abLostConfirmed === undefined ? {} : { abLostConfirmed: extra.abLostConfirmed }),
     ...(extra.abFallback === undefined ? {} : { abFallback: extra.abFallback }),
   };
 }
@@ -178,5 +180,7 @@ function abFields(timing: InterleavedTiming | AdaptiveTiming | AbTiming): Partia
     abNoise: ab.noise,
     abBaseVsReferenceMedian: ab.baseVsReferenceMedian,
     abExtraPairs: ab.extraPairs,
+    ...(ab.confirmed.slower === undefined ? {} : { abSlowerConfirmed: ab.confirmed.slower }),
+    ...(ab.confirmed.lost === undefined ? {} : { abLostConfirmed: ab.confirmed.lost }),
   };
 }

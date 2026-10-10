@@ -104,7 +104,7 @@ describe('the A/B timing', () => {
   it('measures a head as fast as its base, and one 10 percent slower, by the pair ratios', async () => {
     const same = sides(() => 100, () => 100, () => 100);
     const equal = await abSpeedTiming(same.head, same.base, same.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, same.now);
-    expect(equal.ab).toMatchObject({ pairs: 24, headVsBaseMedian: 1, headVsBaseUpper: 1, headVsReferenceUpper: 1, baseVsReferenceMedian: 1, noise: 0, extraPairs: 0 });
+    expect(equal.ab).toMatchObject({ pairs: 24, headVsBaseMedian: 1, headVsBaseUpper: 1, headVsReferenceUpper: 1, baseVsReferenceMedian: 1, noise: 0, extraPairs: 0, confirmed: {} });
     const slow = sides(() => 110, () => 100, () => 100);
     const slower = await abSpeedTiming(slow.head, slow.base, slow.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, slow.now);
     expect(slower.ab.headVsBaseMedian).toBeCloseTo(100 / 110, 12);
@@ -231,5 +231,34 @@ describe('the regression threshold of a row', () => {
       expect(override.delta, id).toBeLessThanOrEqual(0.5);
       expect(override.reason, id).toMatch(/run \d{8,}/);
     }
+  });
+});
+
+describe('the confirmation of a failure by a second set of fresh pairs', () => {
+  it('is taken only for a row the first pairs show credibly slower, and keeps the first pairs as the report', async () => {
+    const steady = sides(() => 130, () => 100, () => 100);
+    const timing = await abSpeedTiming(steady.head, steady.base, steady.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, steady.now);
+    expect(timing.ab.confirmed).toEqual({ slower: true, lost: true });
+    expect(steady.counts.head).toBe(2 * AB_LIGHT_PAIRS);
+    expect(timing.runs).toBe(AB_LIGHT_PAIRS);
+    const same = sides(() => 100, () => 100, () => 100);
+    const quiet = await abSpeedTiming(same.head, same.base, same.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, same.now);
+    expect(quiet.ab.confirmed).toEqual({});
+    expect(same.counts.head).toBe(AB_LIGHT_PAIRS);
+  });
+
+  it('does not confirm a burst: a first set that is slow and a second that is not', async () => {
+    // The head is 30 percent slower for its first 24 calls (a neighbour on the runner), then as fast as the base.
+    const burst = sides((call) => (call < AB_LIGHT_PAIRS ? 130 : 100), () => 100, () => 100);
+    const timing = await abSpeedTiming(burst.head, burst.base, burst.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, burst.now);
+    expect(timing.ab.headVsBaseUpper).toBeLessThan(1 / 1.1);
+    expect(timing.ab.confirmed).toEqual({ slower: false, lost: false });
+  });
+
+  it('can be switched off for a test of the first set', async () => {
+    const steady = sides(() => 130, () => 100, () => 100);
+    const timing = await abSpeedTiming(steady.head, steady.base, steady.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, confirm: false }, steady.now);
+    expect(timing.ab.confirmed).toEqual({});
+    expect(steady.counts.head).toBe(AB_LIGHT_PAIRS);
   });
 });

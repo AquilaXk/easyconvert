@@ -47,3 +47,11 @@ export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> =
 export const AB_EXTRA_STEP_PAIRS = 6;
 export const AB_DETECTABLE_FACTOR = 1.25;
 export const AB_EXTRA_BUDGET_MS = 12 * 60 * 1000;
+
+/**
+ * A row whose first pairs show it credibly slower is measured once more with as many fresh pairs, and fails only when
+ * those show it slower too (at this looser error rate: the first set already carries the strict one). Noise that comes in
+ * bursts of seconds or minutes (a neighbour on the runner) can shift one set of pairs; it does not shift two sets taken
+ * one after the other, and a slowdown of the code does.
+ */
+export const AB_CONFIRM_ALPHA = 0.01;

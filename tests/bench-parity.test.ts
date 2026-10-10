@@ -192,6 +192,13 @@ describe('speed rows', () => {
       expect(verdictOf(measured({ abMedian: 0.85, abUpper: 0.909 })).basis).toBe('speed-slower-than-base');
     });
 
+    it('does not fail on a first set the second set of pairs did not confirm', () => {
+      expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: false })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: true })).basis).toBe('speed-slower-than-base');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: false })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: true })).basis).toBe('speed-lost-parity');
+    });
+
     it('passes a head that is not credibly slower by that much, however low the reference ratio sits', () => {
       expect(verdictOf(measured({ abMedian: 0.9, abUpper: 0.9092 })).outcome).toBe('pass');
       expect(verdictOf(measured({ abMedian: 0.94, abUpper: 0.96 })).outcome).toBe('pass');

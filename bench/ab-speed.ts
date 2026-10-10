@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import {
+  AB_CONFIRM_ALPHA,
   AB_DEFAULT_REGRESSION,
   AB_DETECTABLE_FACTOR,
   AB_EXTRA_STEP_PAIRS,
@@ -9,7 +10,7 @@ import {
   AB_ROW_REGRESSION,
   type AbRegressionOverride,
 } from './ab-config';
-import { SPEED_MAX_SAMPLE_REPEATS } from './config';
+import { SPEED_MAX_SAMPLE_REPEATS, SPEED_PARITY_TOLERANCE } from './config';
 import { type AdaptiveTiming, binomialCdfHalf, calibrateRepeats, decideSpeed, SpeedSampleError } from './speed-parity';
 import { coefficientOfVariation, mean, median, timed } from './stats';
 
@@ -95,6 +96,12 @@ export interface AbSummary {
   baseVsReferenceMedian: number;
   /** Pairs added beyond the fixed number because the bound was too wide to show a slowdown of 1.25 times the threshold. */
   extraPairs: number;
+  /**
+   * Set when the first pairs showed the head credibly slower than the base (`slower`) or credibly below the reference
+   * while the base was at it (`lost`), and a second set of fresh pairs was taken: whether that set shows it too. Absent
+   * for a condition the first pairs did not show.
+   */
+  confirmed: { slower?: boolean; lost?: boolean };
 }
 
 export interface AbTiming extends AdaptiveTiming {
@@ -119,6 +126,8 @@ export interface AbPlan {
   delta?: number;
   /** Extra pairs for a row whose bound is too wide; none when absent. */
   extra?: ExtraBudget;
+  /** Take a second set of pairs to confirm a failure (the default); false for a test of the first set alone. */
+  confirm?: boolean;
 }
 
 const ORDERS: ReadonlyArray<readonly ('head' | 'base' | 'reference')[]> = [
@@ -192,6 +201,26 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   const headVsBase = ratio(times.base, times.head);
   const headVsReference = ratio(times.reference, times.head);
   const baseVsReference = ratio(times.reference, times.base);
+  const headVsBaseUpper = upperBoundOfMedian(headVsBase, AB_ROW_ALPHA);
+  const headVsReferenceUpper = upperBoundOfMedian(headVsReference, AB_ROW_ALPHA);
+  const slowerLine = 1 / (1 + delta);
+  const parityLine = 1 - (plan.tolerance ?? SPEED_PARITY_TOLERANCE);
+  const confirmed: AbSummary['confirmed'] = {};
+  const slower = headVsBaseUpper < slowerLine;
+  const lost = median(baseVsReference) >= parityLine && headVsReferenceUpper < parityLine;
+  if ((slower || lost) && plan.confirm !== false) {
+    // Fresh pairs, taken after the first set: a burst of noise in the first is not in them.
+    const first = { head: times.head.length, base: times.base.length, reference: times.reference.length };
+    await collect(plan.pairs);
+    const again = {
+      head: times.head.slice(first.head),
+      base: times.base.slice(first.base),
+      reference: times.reference.slice(first.reference),
+    };
+    if (slower) confirmed.slower = upperBoundOfMedian(ratio(again.base, again.head), AB_CONFIRM_ALPHA) < slowerLine;
+    if (lost) confirmed.lost = upperBoundOfMedian(ratio(again.reference, again.head), AB_CONFIRM_ALPHA) < parityLine;
+    for (const side of ['head', 'base', 'reference'] as const) times[side].length = first[side];
+  }
   const decision = decideSpeed(times.head, times.reference, { tolerance: plan.tolerance, confidence: plan.confidence });
   const unstableAtCap = decision.verdict === 'unstable';
   return {
@@ -209,11 +238,12 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
     ab: {
       pairs: times.head.length,
       headVsBaseMedian: median(headVsBase),
-      headVsBaseUpper: upperBoundOfMedian(headVsBase, AB_ROW_ALPHA),
-      headVsReferenceUpper: upperBoundOfMedian(headVsReference, AB_ROW_ALPHA),
+      headVsBaseUpper,
+      headVsReferenceUpper,
       noise: standardDeviation(headVsBase.map((value) => Math.log(value))),
       baseVsReferenceMedian: median(baseVsReference),
       extraPairs,
+      confirmed,
     },
   };
 }

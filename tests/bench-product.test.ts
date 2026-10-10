@@ -74,7 +74,7 @@ describe('the replay of a recorded report', () => {
       referenceCv: 0,
       decision: { verdict: 'pass' as const, pairs, median: 1, lower: 1, upper: 1, confidence: 0.99, passLine: 0.97 },
       unstableAtCap: false,
-      ab: { pairs, headVsBaseMedian: headSlower ? 0.8 : 1, headVsBaseUpper: headSlower ? 0.8 : 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: headSlower ? 1.25 : 1, extraPairs: 0 },
+      ab: { pairs, headVsBaseMedian: headSlower ? 0.8 : 1, headVsBaseUpper: headSlower ? 0.8 : 1, headVsReferenceUpper: 1, noise: 0, baseVsReferenceMedian: headSlower ? 1.25 : 1, extraPairs: 0, confirmed: { slower: headSlower, lost: false } },
     };
   };
   const reportWith = (headSlower: boolean): BenchReport => ({

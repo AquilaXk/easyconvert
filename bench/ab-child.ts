@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { ChildMessage, HostMessage } from './ab-protocol';
-import { createContext, type FamilyRunner } from './context';
+import { createContext, type FamilyRunner, slowed } from './context';
 import { FAMILY_RUNNERS } from './families';
 import { ReferenceCache } from './ref-cache';
 import { FAMILIES, type Family } from './report';
@@ -33,6 +33,8 @@ const STUB_TIMING: AdaptiveTiming = {
 export interface ChildOptions {
   families: Family[];
   quick: boolean;
+  /** `slow-ours`: the version this process measures is slowed, as the benchmark slows its own side (a test of the gate). */
+  slowOurs?: boolean;
 }
 
 /** The messages of the benchmark, in order, as an awaitable queue. */
@@ -78,7 +80,8 @@ export async function runChild(runners: Readonly<Record<Family, FamilyRunner>>, 
     refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
     work,
     log: (message) => process.stderr.write(`  [base] ${message}\n`),
-    timer: async (ours) => {
+    timer: async (rawOurs) => {
+      const ours = options.slowOurs ? slowed(rawOurs) : rawOurs;
       send({ type: 'ready', row: rows++ });
       for (;;) {
         const message = await receive();
@@ -113,7 +116,8 @@ function parseChildArgs(args: string[]): ChildOptions {
   const names = at >= 0 ? args[at + 1].split(',') : [...FAMILIES];
   const unknown = names.filter((name) => !(FAMILIES as readonly string[]).includes(name));
   if (unknown.length > 0) throw new Error(`unknown family ${unknown.join(', ')}`);
-  return { families: FAMILIES.filter((family) => names.includes(family)), quick: args.includes('--quick') };
+  const injected = args.indexOf('--inject-regression');
+  return { families: FAMILIES.filter((family) => names.includes(family)), quick: args.includes('--quick'), slowOurs: injected >= 0 && args[injected + 1] === 'slow-ours' };
 }
 
 if (require.main === module) {

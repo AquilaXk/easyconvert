@@ -7,22 +7,24 @@ import { BenchError } from './errors';
 import type { Family } from './report';
 
 /**
- * The benchmark's side of the A/B comparison: the base of the change runs in a second node process, started in the
- * checkout of the base commit (its own tsconfig and node_modules, BENCH_PRODUCT_ROOT pointing at it), and times `ours`
+ * The benchmark's side of the A/B comparison: the head and the base of the change each run in a node process of their own,
+ * started in their checkout (its own tsconfig and node_modules, BENCH_PRODUCT_ROOT pointing at it), and time `ours`
  * on request (bench/ab-child.ts, bench/ab-protocol.ts). Requests are strictly one at a time, so only one of the head,
  * the base and the reference is working at any moment.
  */
 
 export class AbHostError extends BenchError {}
 
-/** The base cannot run the row; the benchmark measures the row against the reference alone. */
+/** A version cannot run the row; for the base the benchmark measures the row against the reference alone. */
 export class BaseRowError extends AbHostError {}
 
 export interface AbHostOptions {
-  /** Checkout of the base commit. */
-  baseRoot: string;
+  /** The checkout whose product the process measures: the head or the base of the change. */
+  root: string;
   families: Family[];
   quick: boolean;
+  /** A regression injected into this version (a test of the gate), passed to the process. */
+  injection?: string | null;
   /** The script the child runs; bench/ab-child.ts unless a test supplies its own. */
   script?: string;
   log?: (message: string) => void;
@@ -46,16 +48,16 @@ export class AbHost {
   static async start(options: AbHostOptions): Promise<AbHost> {
     const script = options.script ?? path.join(REPO_ROOT, 'bench', 'ab-child.ts');
     const tsx = require.resolve('tsx/cli');
-    const args = [tsx, script, '--families', options.families.join(','), ...(options.quick ? ['--quick'] : [])];
+    const args = [tsx, script, '--families', options.families.join(','), ...(options.quick ? ['--quick'] : []), ...(options.injection ? ['--inject-regression', options.injection] : [])];
     const child = spawn(process.execPath, args, {
-      cwd: options.baseRoot,
-      env: { ...process.env, BENCH_PRODUCT_ROOT: options.baseRoot },
+      cwd: options.root,
+      env: { ...process.env, BENCH_PRODUCT_ROOT: options.root },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
     const host = new AbHost(child);
     const hello = await host.receive(HELLO_TIMEOUT_MS);
     if (hello.type !== 'hello') throw new AbHostError(`the base process answered ${hello.type} instead of hello`);
-    options.log?.(`the base of the change runs in its own process (${options.baseRoot})`);
+    options.log?.(`${options.root} is measured by a process of its own`);
     return host;
   }
 

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   BASELINE_PATH,
+  REPO_ROOT,
   DEFAULT_RUNS,
   HEAVY_RUNS_CAP,
   MAX_JSON_BYTES,
@@ -152,6 +153,7 @@ export function parseArgs(args: string[]): CliOptions {
   if (options.parity && options.updateBaseline) throw new BenchArgumentError('--update-baseline cannot be combined with --parity');
   // A workflow names the base checkout through the environment, so that its command line stays the one the benchmark documents.
   if (options.baseRoot === null && options.parity && options.speedOnly && process.env.BENCH_BASE_ROOT) options.baseRoot = path.resolve(process.env.BENCH_BASE_ROOT);
+  if (options.baseRoot && options.injection !== null && options.injection !== 'slow-ours') throw new BenchArgumentError('--base-root takes no injected regression but slow-ours');
   if (options.baseRoot && !(options.parity && options.speedOnly)) throw new BenchArgumentError('--base-root needs --parity and --speed-only');
   if (options.parity && !options.gate) throw new BenchArgumentError('--parity cannot be combined with --no-gate');
   return options;
@@ -191,15 +193,21 @@ async function measureAll(options: CliOptions, strict: boolean): Promise<BenchRe
   const log = (message: string): void => {
     process.stderr.write(`  ${message}\n`);
   };
-  const host = options.baseRoot ? await AbHost.start({ baseRoot: options.baseRoot, families: options.families, quick: options.quick, log }) : null;
+  // The head and the base each run in a process of their own: neither has the advantage of the benchmark's own process.
+  const hosts = options.baseRoot
+    ? {
+        head: await AbHost.start({ root: REPO_ROOT, families: options.families, quick: options.quick, injection: options.injection, log }),
+        base: await AbHost.start({ root: options.baseRoot, families: options.families, quick: options.quick, log }),
+      }
+    : null;
   try {
-    return await measureWith(options, strict, host);
+    return await measureWith(options, strict, hosts);
   } finally {
-    await host?.stop();
+    await Promise.all([hosts?.head.stop(), hosts?.base.stop()]);
   }
 }
 
-async function measureWith(options: CliOptions, strict: boolean, host: AbHost | null): Promise<BenchReport> {
+async function measureWith(options: CliOptions, strict: boolean, hosts: { head: AbHost; base: AbHost } | null): Promise<BenchReport> {
   const resolve = defaultResolver();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-quality-'));
   try {
@@ -240,7 +248,7 @@ async function measureWith(options: CliOptions, strict: boolean, host: AbHost | 
       refCache,
       work,
       log,
-      ab: host ? { host, extra: { remainingMs: AB_EXTRA_BUDGET_MS } } : null,
+      ab: hosts ? { ...hosts, extra: { remainingMs: AB_EXTRA_BUDGET_MS } } : null,
     });
     const rows: BenchRow[] = [];
     for (const family of options.families) {

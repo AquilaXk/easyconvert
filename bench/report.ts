@@ -77,6 +77,9 @@ export interface BenchRow {
   abNoise?: number;
   abBaseVsReferenceMedian?: number;
   abExtraPairs?: number;
+  /** A second set of fresh pairs was taken because the first showed the head credibly slower than the base / below the reference the base was at: whether it showed it too. */
+  abSlowerConfirmed?: boolean;
+  abLostConfirmed?: boolean;
   /** Why a row of a run with a base was measured against the reference alone (the base could not run it). */
   abFallback?: string;
   skipKind?: SkipKind;
@@ -190,6 +193,12 @@ function validateRow(value: unknown, index: number): BenchRow {
   }
   for (const key of ['oursCv', 'referenceCv', 'runs', 'ratioLow', 'ratioHigh', 'ratioMedian', 'abPairs', 'abMedian', 'abUpper', 'abHeadVsReferenceUpper', 'abNoise', 'abBaseVsReferenceMedian', 'abExtraPairs'] as const) {
     if (row[key] !== undefined) parsed[key] = finiteNumber(row[key], `${path}.${key}`);
+  }
+  for (const key of ['abSlowerConfirmed', 'abLostConfirmed'] as const) {
+    if (row[key] !== undefined) {
+      if (typeof row[key] !== 'boolean') fail(`${path}.${key}`, 'a boolean');
+      parsed[key] = row[key] as boolean;
+    }
   }
   if (row.abFallback !== undefined) parsed.abFallback = str(row.abFallback, `${path}.abFallback`);
   if (row.speedVerdict !== undefined) parsed.speedVerdict = member<RowSpeedVerdict>(row.speedVerdict, SPEED_VERDICT_SET, `${path}.speedVerdict`);

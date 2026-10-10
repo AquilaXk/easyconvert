@@ -3,8 +3,8 @@ import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS } from './ab-config';
 import type { AbHost } from './ab-host';
-import { BaseRowError } from './ab-host';
-import { abSpeedTiming, type ExtraBudget, localSide } from './ab-speed';
+import { AbHostError, BaseRowError } from './ab-host';
+import { abSpeedTiming, type ExtraBudget, localSide, type Side } from './ab-speed';
 import { CORPUS_DIR, SPEED_MIN_SAMPLE_MS } from './config';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
@@ -88,14 +88,14 @@ export interface ContextInit {
   refCache: ReferenceCache;
   work: string;
   log: (message: string) => void;
-  /** Speed rows are measured against the base of the change too, in a second process (bench/ab-host.ts); needs a speed-only parity run. */
-  ab?: { host: AbHost; extra: ExtraBudget } | null;
+  /** Speed rows are measured against the base of the change too: the head and the base each run in a process of their own (bench/ab-host.ts), so neither has the advantage of the benchmark's process; needs a speed-only parity run. */
+  ab?: { head: AbHost; base: AbHost; extra: ExtraBudget } | null;
   /** Replaces the timing of a row altogether: the process that measures the base answers the benchmark's requests with it (bench/ab-child.ts). */
   timer?: (ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats: number) => Promise<InterleavedTiming | AdaptiveTiming>;
 }
 
 /** `action` followed by a busy wait that makes the whole call INJECTED_SLOWDOWN_FACTOR times as long. */
-function slowed(action: () => Promise<void> | void): () => Promise<void> {
+export function slowed(action: () => Promise<void> | void): () => Promise<void> {
   return async () => {
     const start = performance.now();
     await action();
@@ -105,6 +105,11 @@ function slowed(action: () => Promise<void> | void): () => Promise<void> {
       // Spin: the point is CPU time on our side, as a slower implementation would spend.
     }
   };
+}
+
+function headRefused(error: unknown): never {
+  if (error instanceof BaseRowError) throw new AbHostError(`the head cannot run a row it is measured on: ${error.message}`);
+  throw error;
 }
 
 export function createContext(init: ContextInit): FamilyContext {
@@ -118,12 +123,19 @@ export function createContext(init: ContextInit): FamilyContext {
       const ours = init.injection === 'slow-ours' ? slowed(rawOurs) : rawOurs;
       let abFallback: string | undefined;
       if (init.parity && init.ab) {
-        // The head and the reference run here, the base in its own process; a row the base cannot run is measured against the reference alone.
-        const { host, extra } = init.ab;
-        await host.row();
+        // The head and the base each run in a process of their own, the reference here; a row the base cannot run is measured against the reference alone.
+        const { head, base, extra } = init.ab;
+        await head.row();
+        await base.row();
         const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
+        const headSide = head.side();
+        // The head must run its own row: its refusal is an error of the benchmark, not a row without a base.
+        const guarded: Side = {
+          call: () => headSide.call().catch(headRefused),
+          sample: (calls) => headSide.sample(calls).catch(headRefused),
+        };
         try {
-          const timing = await abSpeedTiming(localSide(ours), host.side(), localSide(reference), {
+          const timing = await abSpeedTiming(guarded, base.side(), localSide(reference), {
             pairs: weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS,
             warmup: plan.warmup,
             oursRepeats,
@@ -137,7 +149,8 @@ export function createContext(init: ContextInit): FamilyContext {
           abFallback = error.message.slice(0, 200);
           init.log(`the base cannot run this row (${abFallback}); it is measured against the reference alone`);
         } finally {
-          host.next();
+          head.next();
+          base.next();
         }
       }
       if (init.parity) {

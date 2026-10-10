@@ -185,9 +185,9 @@ export interface ParityOptions {
 /**
  * A speed row measured against the base of the change in the same pairs (bench/ab-speed.ts). It fails only on evidence:
  *  - the head is credibly slower than the base by more than the row's regression threshold (the one-sided upper bound of
- *    the median of base time / head time is below 1 / (1 + threshold)), or
+ *    the median of base time / head time is below 1 / (1 + threshold)) and a second set of fresh pairs shows it too, or
  *  - the base was at or above the reference and the head is credibly below it (the upper bound of reference time /
- *    head time is below the pass line), or
+ *    head time is below the pass line) and the second set shows it too, or
  *  - the row is a tracked gap and its median fell under what its history predicts (bench/parity-gaps.json): a change
  *    that makes a known gap worse by less than the threshold still may not walk it down run after run.
  * Otherwise the change did not make the row worse and it passes; a row below the reference that the base was already
@@ -201,11 +201,11 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null, regression?: ParityOpti
   const none = { worsening: null, allowance: null };
   const median = row.abMedian ?? row.ratio ?? 0;
   const against = `head against base ${show(median)} over ${row.abPairs} pairs`;
-  if (row.abUpper !== undefined && row.abUpper < slowerLine) {
+  if (row.abUpper !== undefined && row.abUpper < slowerLine && row.abSlowerConfirmed !== false) {
     return { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(slowerLine)}: the change made the row more than ${show(100 * (1 / slowerLine - 1))}% slower than its base`, ...none };
   }
   const baseVersusReference = row.abBaseVsReferenceMedian ?? 0;
-  if (baseVersusReference >= line && row.abHeadVsReferenceUpper !== undefined && row.abHeadVsReferenceUpper < line) {
+  if (baseVersusReference >= line && row.abHeadVsReferenceUpper !== undefined && row.abHeadVsReferenceUpper < line && row.abLostConfirmed !== false) {
     return {
       outcome: 'fail',
       basis: 'speed-lost-parity',
