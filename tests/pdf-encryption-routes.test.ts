@@ -268,3 +268,15 @@ describe('graph submission validation of the new options', () => {
     expect(JSON.stringify(await res.json())).toMatch(/confirmEditRights/);
   });
 });
+
+describe('the OpenAPI document describes the editing options', () => {
+  it('publishes confirmEditRights as a boolean, passwords as a list, and pdf.unlock as a graph operation', async () => {
+    const { GET: getOpenApi } = await import('../src/app/api/openapi.json/route');
+    const spec = await (await getOpenApi()).json();
+    const options = spec.components.schemas.ConversionOptions.properties;
+    expect(options.confirmEditRights.type).toBe('boolean');
+    expect(options.confirmEditRights.description).toMatch(/owner restrictions/i);
+    expect(options.passwords.type).toBe('array');
+    expect(spec.components.schemas.JobGraph.properties.nodes.additionalProperties.properties.op.enum).toContain('pdf.unlock');
+  });
+});
