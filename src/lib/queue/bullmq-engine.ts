@@ -251,6 +251,12 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   _onJobFailed?(job: Job<T, R>, err: any): Promise<boolean> | boolean;
   /** Supervises an attempt the worker just started (heartbeat, remote cancel). Returns a stop function. */
   _monitorActiveJob?(job: Job<T, R>): () => void;
+  /**
+   * @internal Distributed engines: records `candidateAt` as the job's absolute deadline unless one is already
+   * recorded, and returns the recorded one. The deadline outlives the attempt (a retry or a stall requeue loads the
+   * job from the store, where `opts` is the original), so every attempt of a job shares one deadline.
+   */
+  _claimDeadline?(job: Job<T, R>, candidateAt: number): Promise<number>;
   /** Recovers active jobs whose worker stopped heartbeating. Returns the jobs it moved to failed. */
   _recoverStalledJobs?(): Promise<Job<T, R>[]>;
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
@@ -767,7 +773,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     try {
       let result: R;
       try {
-        result = await this.runAttempt(job);
+        result = await this.runAttempt(job, queue);
       } catch (err: any) {
         // A cancelled or superseded attempt never retries, never reaches the DLQ, and never emits `failed`.
         if (isAttemptDiscarded(job)) {
@@ -787,7 +793,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
    * it elapses and the attempt fails even if the processor ignores the signal. The timeout is held to the job's
    * absolute deadline, so a retry gets only the time that is left and a job whose deadline passed fails at once.
    */
-  private async runAttempt(job: Job<T, R>): Promise<R> {
+  private async runAttempt(job: Job<T, R>, queue: IQueueEngine<T, R>): Promise<R> {
     if (job.opts.timeout === undefined && this.defaultTimeoutMs) {
       const resolved = await this.defaultTimeoutMs(job);
       if (resolved !== undefined) job.opts.timeout = resolved;
@@ -798,7 +804,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
 
     const startedAt = Date.now();
-    job.opts.deadlineAt = Math.min(job.opts.deadlineAt ?? Number.POSITIVE_INFINITY, startedAt + budgetMs);
+    const claimedAt = queue._claimDeadline ? await queue._claimDeadline(job, startedAt + budgetMs) : startedAt + budgetMs;
+    job.opts.deadlineAt = Math.min(job.opts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedAt);
     const timeoutMs = Math.min(budgetMs, job.opts.deadlineAt - startedAt);
     if (timeoutMs <= 0) {
       const expired = new JobTimeoutError(budgetMs);
@@ -1786,6 +1793,11 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       parsedOpts = JSON.parse(raw.opts || '{}');
     } catch {}
+    // The deadline claimed by the job's first attempt: a later attempt does not get a fresh one.
+    const claimedDeadline = Number(raw.deadlineAt);
+    if (Number.isFinite(claimedDeadline) && claimedDeadline > 0) {
+      parsedOpts.deadlineAt = Math.min(parsedOpts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedDeadline);
+    }
 
     const job = new Job<T, R>(
       raw.id,
@@ -2388,6 +2400,22 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         })
       );
     } catch {}
+  }
+
+  async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number> {
+    if (!this.redisClient || !this.redisConnected) {
+      return candidateAt;
+    }
+    try {
+      await this.redisClient.hsetnx(this.getJobKey(job.id), 'deadlineAt', String(candidateAt));
+      const recorded = Number(await this.redisClient.hget(this.getJobKey(job.id), 'deadlineAt'));
+      return Number.isFinite(recorded) && recorded > 0 ? recorded : candidateAt;
+    } catch (err) {
+      // The store is unreachable: this attempt runs under its own timer, and the completion write will fail or
+      // succeed on its own terms.
+      console.warn(`[Queue:${this.name}] Could not record the deadline of job ${job.id}:`, err);
+      return candidateAt;
+    }
   }
 
   async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<boolean> {

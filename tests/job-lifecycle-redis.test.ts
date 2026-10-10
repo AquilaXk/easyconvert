@@ -320,6 +320,52 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
       });
     });
 
+    it('holds one deadline across the attempts of a job: a retry loaded from the store keeps the first attempt deadline', async () => {
+      const queue = connect('deadline-across-attempts');
+      const deadlines: number[] = [];
+      const worker = new Worker(
+        queue,
+        async (job) => {
+          deadlines.push(job.opts.deadlineAt as number);
+          if (deadlines.length === 1) throw new Error('transient');
+          return 'done';
+        },
+        { concurrency: 1 }
+      );
+      const completed = nextEvent(worker, 'completed');
+      const before = Date.now();
+      const job = await queue.add('convert', { payload: 'retry' }, { attempts: 2, backoff: { type: 'fixed', delay: 150 }, timeout: 60_000 });
+      await completed;
+      await worker.close();
+
+      expect(deadlines).toHaveLength(2);
+      // Both attempts see the deadline claimed when the first one started, not a fresh one for the retry.
+      expect(deadlines[1]).toBe(deadlines[0]);
+      expect(deadlines[0]).toBeGreaterThanOrEqual(before + 60_000);
+      expect(deadlines[0]).toBeLessThanOrEqual(before + 60_000 + 5_000);
+      expect(Number(await admin.hget(keyOf('deadline-across-attempts', `job:${job.id}`), 'deadlineAt'))).toBe(deadlines[0]);
+    }, 15000);
+
+    it('fails a requeued job at once when the deadline claimed by its first attempt has passed', async () => {
+      const queue = connect('deadline-past');
+      let runs = 0;
+      const worker = new Worker(
+        queue,
+        async () => {
+          runs++;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          throw new Error('transient');
+        },
+        { concurrency: 1 }
+      );
+      const failed = nextEvent(worker, 'failed');
+      await queue.add('convert', { payload: 'late retry' }, { attempts: 3, backoff: { type: 'fixed', delay: 300 }, timeout: 350 });
+      const [, err] = (await failed) as [unknown, Error];
+      await worker.close();
+      expect(err.name).toBe('JobTimeoutError');
+      expect(runs).toBe(1);
+    }, 15000);
+
     it('does not recover a stalled id twice when two sweepers race', async () => {
       const sweeperA = connect('stalled-race');
       const sweeperB = connect('stalled-race');
