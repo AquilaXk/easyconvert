@@ -1222,7 +1222,12 @@ export function buildFfmpegArguments(
 
     // Stage 7: Even dimension normalization (ALWAYS LAST filter before format). A picture the header gives an even
     // size, and nothing above resizes, is already even: the filter would only add a stage to the graph.
-    const alreadyEven = unscaledPicture !== undefined && unscaledPicture.width % 2 === 0 && unscaledPicture.height % 2 === 0;
+    // A stream with a crop (container clean aperture or frame cropping) decodes to a smaller picture than it is stored at.
+    const alreadyEven =
+      unscaledPicture !== undefined &&
+      sourcePicture?.cropped !== true &&
+      unscaledPicture.width % 2 === 0 &&
+      unscaledPicture.height % 2 === 0;
     if (!alreadyEven) {
       videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
     }

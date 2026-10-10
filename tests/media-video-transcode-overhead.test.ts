@@ -309,6 +309,93 @@ describe('the filter that keeps a picture size even', () => {
     TEST_TIMEOUT_MS
   );
 
+  /**
+   * The file with a clean aperture (`clap`) box appended to its H.264 sample entry: the picture is shown as `width` x
+   * `height` out of the stored one. Every box on the way down to the entry grows by the box, and the movie box comes
+   * after the media data in a file ffmpeg writes without faststart, so no sample offset moves.
+   */
+  function withCleanAperture(file: string, width: number, height: number, name: string): string {
+    const bytes = fs.readFileSync(file);
+    const clap = Buffer.alloc(8 + 32);
+    clap.writeUInt32BE(clap.length, 0);
+    clap.write('clap', 4, 'latin1');
+    [width, 1, height, 1, 0, 1, 0, 1].forEach((value, i) => clap.writeUInt32BE(value, 8 + i * 4));
+    const containers = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
+    const chain: number[] = [];
+    let entryAt = -1;
+    const walk = (start: number, end: number): boolean => {
+      for (let at = start; at + 8 <= end; ) {
+        const size = bytes.readUInt32BE(at);
+        const type = bytes.toString('latin1', at + 4, at + 8);
+        if (type === 'avc1') {
+          entryAt = at;
+          return true;
+        }
+        const inner = type === 'stsd' ? at + 16 : at + 8;
+        if (containers.has(type) || type === 'stsd') {
+          chain.push(at);
+          if (walk(inner, at + size)) return true;
+          chain.pop();
+        }
+        at += size;
+      }
+      return false;
+    };
+    if (!walk(0, bytes.length) || entryAt === -1) throw new Error('the file has no H.264 sample entry');
+    const entryEnd = entryAt + bytes.readUInt32BE(entryAt);
+    const patched = Buffer.concat([bytes.subarray(0, entryEnd), clap, bytes.subarray(entryEnd)]);
+    for (const at of [...chain, entryAt]) patched.writeUInt32BE(patched.readUInt32BE(at) + clap.length, at);
+    const out = path.join(workDir, name);
+    fs.writeFileSync(out, patched);
+    return out;
+  }
+
+  /** A 160x120 MP4 whose clean aperture is 159x119, which ffmpeg decodes to an odd (cut) picture. */
+  function apertureMp4(): string {
+    requireEncoders('libx264');
+    const plain = make('aperture-plain.mp4', [...VIDEO_IN, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an']);
+    return withCleanAperture(plain, 159, 119, 'aperture.mp4');
+  }
+
+  oracleTest(
+    'is kept for a picture with a clean aperture, and the encode of it succeeds with an even picture',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      const source = apertureMp4();
+      // The oracle: ffprobe still lists the file as one picture and the aperture box really is in the file.
+      expect(fs.readFileSync(source).includes('clap', 0, 'latin1')).toBe(true);
+      const out = path.join(workDir, 'aperture-out.mp4');
+      const args = buildFfmpegArguments(source, out, 'mp4', 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      expect(filterOf(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+      const stream = probeFile(tool('ffprobe'), out).streams[0];
+      expect(Number(stream.width) % 2).toBe(0);
+      expect(Number(stream.height) % 2).toBe(0);
+      // The written frames are as many as the source's and as large as the file says.
+      const frames = execFileSync(tool('ffmpeg'), ['-v', 'error', '-i', out, '-map', '0:v:0', '-f', 'framemd5', '-'], { encoding: 'utf-8' })
+        .split('\n')
+        .filter((line) => line !== '' && !line.startsWith('#'));
+      expect(frames).toHaveLength(SECONDS * 24);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('is kept for a stream a prober lists with frame cropping side data', () => {
+    const dir = path.join(workDir, 'fake-cropping');
+    fs.mkdirSync(dir, { recursive: true });
+    const report = JSON.stringify({
+      streams: [{ index: 0, codec_type: 'video', codec_name: 'h264', width: 160, height: 120, side_data_list: [{ side_data_type: 'Frame Cropping', crop_right: 1, crop_bottom: 1 }] }],
+      format: { start_time: '0.000000', duration: '1.000000' },
+      chapters: [],
+    });
+    fs.writeFileSync(path.join(dir, 'ffprobe'), `#!/bin/sh\ncat <<'EOF'\n${report}\nEOF\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'ffmpeg'), `#!/bin/sh\nexec '${getOracleToolPath('ffmpeg') ?? 'ffmpeg'}' "$@"\n`, { mode: 0o755 });
+    const input = path.join(workDir, 'cropped-stream.mkv');
+    fs.writeFileSync(input, Buffer.alloc(64));
+    const args = buildFfmpegArguments(input, path.join(workDir, 'o.mp4'), 'mkv', 'mp4', { disableHwaccel: true }, path.join(dir, 'ffmpeg'));
+    expect(filterOf(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+  });
+
   oracleTest(
     'changes nothing in the picture: the encode without it decodes to the frames the same encode with it writes',
     ['ffmpeg', 'ffprobe'],
