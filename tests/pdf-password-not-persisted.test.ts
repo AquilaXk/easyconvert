@@ -15,7 +15,7 @@ import { getQueueForResourceClass } from '../src/lib/queue/conversion-queue';
 import { resolveNodeResourceClass } from '../src/lib/queue/resource-class';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { storageProvider } from '../src/lib/storage';
-import { AES_256, plainPdf, qpdfEncrypt } from './helpers/encrypted-pdf-fixtures';
+import { AES_256, pdftotext, plainPdf, qpdfCheckPasses, qpdfEncrypt, qpdfEncryptionReport } from './helpers/encrypted-pdf-fixtures';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -45,10 +45,10 @@ async function apiKeyHeaders(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${key.secretKey}` };
 }
 
-function convertForm(file: Buffer, options: Record<string, unknown>): FormData {
+function convertForm(file: Buffer, options: Record<string, unknown>, filename = 'locked.pdf', target = 'txt'): FormData {
   const data = new FormData();
-  data.append('file', new Blob([new Uint8Array(file)]), 'locked.pdf');
-  data.append('targetFormat', 'txt');
+  data.append('file', new Blob([new Uint8Array(file)]), filename);
+  data.append('targetFormat', target);
   data.append('options', JSON.stringify(options));
   return data;
 }
@@ -185,6 +185,104 @@ describe.skipIf(toolsMissing)('the PDF password never reaches logs, job records 
   });
 });
 
+const USER_PROTECT_CANARY = 'Protect-User-Canary-4d81e6b0';
+const OWNER_PROTECT_CANARY = 'Protect-Owner-Canary-c3a7f925';
+const PROTECT_SECRETS = [USER_PROTECT_CANARY, OWNER_PROTECT_CANARY];
+
+describe.skipIf(toolsMissing)('the passwords a PDF is protected with are never stored or logged', () => {
+  const protectOptions = { protect: { userPassword: USER_PROTECT_CANARY, ownerPassword: OWNER_PROTECT_CANARY, keyLength: 256 } };
+  const source = Buffer.from('Protected body text\n', 'utf-8');
+
+  function protectedOutput(buffer: Buffer): void {
+    expect(qpdfEncryptionReport(buffer, USER_PROTECT_CANARY)).toMatchObject({ encrypted: true, userPasswordMatched: true });
+    expect(qpdfEncryptionReport(buffer, OWNER_PROTECT_CANARY).ownerPasswordMatched).toBe(true);
+    expect(qpdfCheckPasses(buffer, USER_PROTECT_CANARY)).toBe(true);
+  }
+
+  it('keeps them out of the synchronous route output and logs while still protecting the file', async () => {
+    const headers = await apiKeyHeaders();
+    const { result, output } = await captureOutput(() =>
+      v1ConvertPost(new NextRequest(`${BASE_URL}/api/v1/convert`, { method: 'POST', headers, body: convertForm(source, protectOptions, 'note.txt', 'pdf') }))
+    );
+    expect(result.status).toBe(200);
+    const body = (await result.json()) as { dataUri: string };
+    const pdf = Buffer.from(body.dataUri.split(',')[1], 'base64');
+    protectedOutput(pdf);
+    for (const secret of PROTECT_SECRETS) {
+      expect(JSON.stringify(body)).not.toContain(secret);
+      expect(output).not.toContain(secret);
+    }
+  });
+
+  it('seals them in the queued job record, and the worker still protects the output', async () => {
+    const headers = await apiKeyHeaders();
+    const accepted = await v1ConvertPost(
+      new NextRequest(`${BASE_URL}/api/v1/convert`, {
+        method: 'POST',
+        headers: { ...headers, Prefer: 'respond-async' },
+        body: convertForm(source, protectOptions, 'note.txt', 'pdf'),
+      })
+    );
+    expect(accepted.status).toBe(202);
+    const { jobId } = (await accepted.json()) as { jobId: string };
+    const queued = await conversionQueue.getJob(jobId);
+    const persisted = JSON.stringify({ data: queued?.data, opts: queued?.opts });
+    for (const secret of PROTECT_SECRETS) expect(persisted).not.toContain(secret);
+    expect(queued?.data.options.protect).toMatchObject({ keyLength: 256 });
+    expect(queued?.data.options.protect).toHaveProperty('sealedPasswords');
+
+    const { output } = await captureOutput(() => runWorkerUntilSettled(jobId));
+    const finished = await conversionQueue.getJob(jobId);
+    expect(finished?.state).toBe('completed');
+    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } })).json());
+    const surfaces = [status, output, JSON.stringify(finished?.logs ?? []), JSON.stringify({ data: finished?.data, returnvalue: finished?.returnvalue })];
+    for (const secret of PROTECT_SECRETS) for (const surface of surfaces) expect(surface).not.toContain(secret);
+
+    const stored = await storageProvider.getObject(finished?.returnvalue?.resultKey as string);
+    protectedOutput(stored?.buffer as Buffer);
+    expect(pdftotext(stored?.buffer as Buffer, USER_PROTECT_CANARY)).toContain('Protected body text');
+  });
+
+  it('seals them in the stored graph and the queued node job, in the nested and the flat form of a pdf.protect node', async () => {
+    const headers = await apiKeyHeaders();
+    s3Storage.saveObject('uploads/protect-graph.pdf', Buffer.from('%PDF-1.4'), 'application/pdf', 'protect-graph.pdf');
+    const graph = {
+      nodes: {
+        src: { op: 'import.upload', storageKey: 'uploads/protect-graph.pdf' },
+        nested: { op: 'pdf.protect', input: 'src', options: protectOptions },
+        flat: { op: 'pdf.protect', input: 'src', options: { userPassword: USER_PROTECT_CANARY, ownerPassword: OWNER_PROTECT_CANARY } },
+        out: { op: 'export.internal', input: ['nested', 'flat'] },
+      },
+    };
+    const res = await createJobPost(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: 'protect-graph.pdf', targetFormat: 'pdf', storageKey: 'uploads/protect-graph.pdf', graph }),
+      })
+    );
+    const created = await res.clone().text();
+    expect(res.status, created).toBe(202);
+    const { jobId } = JSON.parse(created) as { jobId: string };
+
+    const state = await graphScheduler.getGraphState(jobId);
+    const stored = JSON.stringify(state);
+    for (const secret of PROTECT_SECRETS) expect(stored).not.toContain(secret);
+    expect(stored).toContain('sealedProtectPasswords');
+    expect(stored).toContain('sealedPasswords');
+
+    const nodes = (state as unknown as { graph: { nodes: Record<string, never> } }).graph.nodes;
+    for (const nodeId of ['nested', 'flat']) {
+      await enqueueGraphNodeJob(jobId, nodeId, nodes[nodeId], { ownerUserId: 'protect-canary-owner' }, []);
+      const queued = await getQueueForResourceClass(resolveNodeResourceClass(nodes[nodeId])).getJob(graphNodeJobId(jobId, nodeId));
+      const persisted = JSON.stringify({ data: queued?.data, opts: queued?.opts });
+      for (const secret of PROTECT_SECRETS) expect(persisted).not.toContain(secret);
+    }
+    const status = JSON.stringify(await (await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } })).json());
+    for (const secret of PROTECT_SECRETS) expect(status).not.toContain(secret);
+  });
+});
+
 describe('the password of a graph node is sealed in the stored graph and in the queued node job', () => {
   const NODE_CANARY = 'Node-Canary-Pw-0b6e44d1';
   const MERGE_CANARY = 'Merge-Canary-Pw-9a2f17c3';
@@ -246,6 +344,19 @@ describe('sealing of the password option', () => {
     expect(sealed).not.toHaveProperty('passwords');
     expect(openPasswordOption(sealed, 'job_a')).toEqual({ passwords: [CANARY, null, ''], confirmEditRights: true });
     expect(() => openPasswordOption(sealed, 'job_b')).toThrow(SecretSealError);
+  });
+
+  it('seals the protect passwords, nested and flat, and opens them for the same job only', () => {
+    const nested = sealPasswordOption({ protect: { userPassword: CANARY, ownerPassword: 'o-' + CANARY, keyLength: 256 } }, 'job_a');
+    expect(JSON.stringify(nested)).not.toContain(CANARY);
+    expect(nested).toMatchObject({ protect: { keyLength: 256 } });
+    expect(openPasswordOption(nested, 'job_a')).toEqual({ protect: { userPassword: CANARY, ownerPassword: 'o-' + CANARY, keyLength: 256 } });
+    expect(() => openPasswordOption(nested, 'job_b')).toThrow(SecretSealError);
+
+    const flat = sealPasswordOption({ userPassword: CANARY, keyLength: 128 }, 'job_a');
+    expect(JSON.stringify(flat)).not.toContain(CANARY);
+    expect(openPasswordOption(flat, 'job_a')).toEqual({ userPassword: CANARY, keyLength: 128 });
+    expect(() => openPasswordOption(flat, 'job_b')).toThrow(SecretSealError);
   });
 
   it('leaves options without a password, and an empty password, untouched', () => {

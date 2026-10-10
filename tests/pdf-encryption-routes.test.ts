@@ -230,6 +230,39 @@ describe.skipIf(toolsMissing)('a queued watermark, merge or unlock node on an en
   });
 });
 
+describe.skipIf(toolsMissing)('a sealed pdf.protect node', () => {
+  it('protects the PDF with the sealed passwords, in the nested and the flat form', async () => {
+    counter += 1;
+    const key = `tests/pdf-encryption-routes/${Date.now()}_${counter}_plain.pdf`;
+    s3Storage.saveObject(key, await plainPdf(['Sealed protect body']), 'application/pdf', 'plain.pdf', ARTIFACT_TTL_MS);
+    const { processGraphNodeJob } = await import('../src/lib/queue/graph/node-executor');
+    for (const options of [
+      { protect: { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 } },
+      { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 },
+    ]) {
+      counter += 1;
+      const graphId = `g_enc571_protect_${Date.now()}_${counter}`;
+      const jobId = `${graphId}:n1`;
+      const sealed = sealGraphNode({ op: 'pdf.protect', options } as never, jobId);
+      expect(JSON.stringify(sealed)).not.toContain(USER_PASSWORD);
+      const job = {
+        id: jobId,
+        data: { jobId, sourceFormat: 'bin', targetFormat: 'pdf', fileSize: 0, options: {}, graphId, graphNodeId: 'n1', graphNode: sealed, inputArtifacts: [key] },
+        opts: { attempts: 1 },
+        attemptsMade: 1,
+        signal: new AbortController().signal,
+        log: async () => {},
+        updateProgress: async () => {},
+      } as never;
+      const result = await processGraphNodeJob(job, undefined, s3Storage);
+      const out = s3Storage.getObject(result.resultKey)?.buffer as Buffer;
+      expect(qpdfEncryptionReport(out, USER_PASSWORD)).toMatchObject({ encrypted: true, userPasswordMatched: true, R: 6 });
+      expect(qpdfEncryptionReport(out, OWNER_PASSWORD).ownerPasswordMatched).toBe(true);
+      expect(pdftotext(out, USER_PASSWORD)).toContain('Sealed protect body');
+    }
+  });
+});
+
 describe('graph submission validation of the new options', () => {
   async function submit(nodeOptions: Record<string, unknown>, op = 'pdf.watermark'): Promise<Response> {
     const { headers } = await apiKeyHeaders();
