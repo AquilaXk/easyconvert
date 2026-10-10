@@ -77,6 +77,10 @@
       "match": "^src/lib/queue/graph/node-executor\\.ts$"
     },
     {
+      "families": ["pdf-ops", "image"],
+      "match": "^src/lib/conversions/optimizers\\.ts$"
+    },
+    {
       "families": ["pdf-ops"],
       "match": "^src/lib/jobs/artifact-helpers\\.ts$"
     },
@@ -90,7 +94,7 @@
     },
     {
       "families": ["compression"],
-      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*|optimizers)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
     },
     {
       "families": ["image"],

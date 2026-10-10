@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { FORMAT_REGISTRY, getFormatByExtension } from '@/lib/registry';
 import type { ConversionOptions, PipelineTask } from '@/lib/types';
-import { hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
+import { OPTIMIZABLE_FORMATS, hasOptimizer, optimizeUnavailableMessage } from './optimize-formats';
 import {
   GRAPH_OPERATION_SET,
   IMPORT_OPERATIONS,
@@ -648,14 +648,22 @@ export function validateJobGraph(
             message: `Cannot determine the source format of node "${inputId}" for optimize node "${nodeId}"; provide a filename extension or sourceFormat.`,
             code: 'SOURCE_FORMAT_UNKNOWN',
           });
-        } else if (srcFmt !== DYNAMIC_FORMAT) {
-          if (!hasOptimizer(srcFmt)) {
+        } else if (srcFmt === DYNAMIC_FORMAT) {
+          // With no optimiser at all, a source known only at run time is certain to fail there, after the
+          // job was queued, charged for and its upstream nodes ran.
+          if (OPTIMIZABLE_FORMATS.length === 0) {
             errors.push({
               path: `nodes.${nodeId}`,
-              message: optimizeUnavailableMessage(srcFmt),
+              message: optimizeUnavailableMessage('a source whose format is only known at run time'),
               code: 'UNSUPPORTED_TARGET_FORMAT',
-              });
+            });
           }
+        } else if (!hasOptimizer(srcFmt)) {
+          errors.push({
+            path: `nodes.${nodeId}`,
+            message: optimizeUnavailableMessage(srcFmt),
+            code: 'UNSUPPORTED_TARGET_FORMAT',
+          });
         }
         inferredFormats[nodeId] = srcFmt;
         break;

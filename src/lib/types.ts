@@ -550,6 +550,8 @@ export interface ConversionJobResult {
   fallbackReason?: string;
   /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
   droppedStreams?: DroppedStream[];
+  /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
+  optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
 }
 
 export class ConversionFailedError extends Error {
