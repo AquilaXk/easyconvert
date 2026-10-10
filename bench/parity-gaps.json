@@ -506,6 +506,19 @@
           "commit": "ff34315bcbb7111c249a168ed15f67e0f7094212"
         }
       ]
+    },
+    {
+      "id": "audio/music.wav->opus/throughput",
+      "issue": 642,
+      "ratio": 0.97,
+      "note": "speed ratio 0.97496 [0.96612, 0.98199] over 25 pairs at the cap on the CI runner: a small gap to the reference that stays inside the 3 percent tolerance only at its upper bound; tracked until the nightly shows the row at or above 0.97",
+      "history": [
+        {
+          "ratio": 0.975,
+          "at": "2026-10-10T08:43:44.112Z",
+          "commit": "d37723fe7831b6f053faf67b043e69d887be3dc8"
+        }
+      ]
     }
   ]
 }
