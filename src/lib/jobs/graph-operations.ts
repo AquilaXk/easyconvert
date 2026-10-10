@@ -15,6 +15,11 @@ export const GRAPH_OPERATIONS = [
   'pdf.watermark',
   'pdf.protect',
   'pdf.unlock',
+  'pdf.split-pages',
+  'pdf.extract-pages',
+  'pdf.delete-pages',
+  'pdf.reorder-pages',
+  'pdf.rotate-pages',
   'merge',
   'metadata',
   'archive.create',
@@ -66,6 +71,9 @@ export const ARCHIVE_CREATE_FORMATS: ReadonlySet<string> = new Set(['zip', 'tar'
 /** Output of a media.package node: the playlist or manifest and every segment, in one ZIP. */
 export const MEDIA_PACKAGE_OUTPUT_FORMAT = 'zip';
 
+/** Output of a pdf.split-pages node: the parts, one PDF each, in one ZIP. */
+export const PDF_SPLIT_OUTPUT_FORMAT = 'zip';
+
 /** Allowed output formats for operations limited to a fixed set. */
 export const RESTRICTED_OUTPUT_FORMATS: Readonly<Partial<Record<GraphOperation, ReadonlySet<string>>>> = {
   thumbnail: THUMBNAIL_FORMATS,
@@ -79,6 +87,7 @@ export const FIXED_OUTPUT_FORMATS: Readonly<Partial<Record<GraphOperation, strin
   ocr: 'pdf',
   metadata: 'json',
   'media.package': MEDIA_PACKAGE_OUTPUT_FORMAT,
+  'pdf.split-pages': PDF_SPLIT_OUTPUT_FORMAT,
 };
 
 /** Returns the canonical operation for a canonical or legacy name, or undefined when unknown. */

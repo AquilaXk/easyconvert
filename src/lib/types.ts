@@ -134,7 +134,7 @@ export interface ConversionOptions {
   pageCount?: number;
   password?: string;
   /**
-   * PDF editing (watermark, merge, unlock): the caller states that they may edit the document, which lifts the owner
+   * PDF editing (watermark, merge, unlock, page operations, optimize): the caller states that they may edit the document, which lifts the owner
    * restrictions of a PDF that has no open password or is opened with its user password. Only `true` counts.
    */
   confirmEditRights?: boolean;
@@ -260,6 +260,14 @@ export interface ConversionOptions {
   watermark?: PdfWatermarkOptions;
   protect?: PdfProtectOptions;
   pdfa?: PdfAOptions;
+  /** `pdf.split-pages` node: how the document is cut into parts. */
+  split?: PdfSplitOptions;
+  /** `pdf.rotate-pages` node: which pages turn, and by how much. */
+  rotate?: PdfRotateOptions;
+  /** `pdf.reorder-pages` node: the new page order. */
+  reorder?: PdfReorderOptions;
+  /** `optimize` node on a PDF: the compression profile. */
+  optimize?: PdfOptimizeOptions;
 }
 
 export interface AspectRatioOptions {
@@ -1223,6 +1231,45 @@ export interface PdfProtectOptions {
   ownerPassword?: string;
   keyLength?: 128 | 256;
   permissions?: PdfProtectPermissions;
+}
+
+/**
+ * How `pdf.split-pages` cuts a document; the parts come back as one ZIP. At most one of `ranges` and `everyNPages` is
+ * given; with neither, every page is a file of its own.
+ */
+export interface PdfSplitOptions {
+  /** One part per comma-separated range, in the order written: `1-3,4-6,7-`. */
+  ranges?: string;
+  /** One part per this many pages (the last part holds the remainder). */
+  everyNPages?: number;
+}
+
+export type PdfRotationDegrees = 90 | 180 | 270;
+
+export interface PdfRotation {
+  /** Clockwise, added to the rotation the page already has. */
+  rotation: PdfRotationDegrees;
+  /** Pages to turn (`1-3,5`, `2-`); every page when omitted. */
+  pages?: string;
+}
+
+/** Either one `rotation` for `pages` (every page when omitted), or `rotations` with one entry per group of pages. */
+export interface PdfRotateOptions {
+  rotation?: PdfRotationDegrees;
+  pages?: string;
+  rotations?: PdfRotation[];
+}
+
+export interface PdfReorderOptions {
+  /** The pages to put first, in the new order (`3,1,2` or `4-6,1-3`); a full order lists every page once. Pages not listed follow in their original order. */
+  order: string;
+}
+
+/** `web` 150 dpi and balanced JPEG, `print` 300 dpi, `archive` lossless, `max` 72 dpi and strong JPEG. */
+export type PdfOptimizeProfile = 'web' | 'print' | 'archive' | 'max';
+
+export interface PdfOptimizeOptions {
+  profile?: PdfOptimizeProfile;
 }
 
 export type PdfAConformance = 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
