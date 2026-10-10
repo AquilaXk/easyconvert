@@ -107,3 +107,77 @@ export function inflateBounded(data: Buffer, options: InflateOptions): Buffer {
   options.budget?.charge(output.length, options.label);
   return output;
 }
+
+export interface InflateSalvageOptions {
+  /** What is being decoded, for error messages. */
+  label: string;
+  /** Tighter cap than the per-stream constant. */
+  maxOutputLength?: number;
+  /** Document budget the decoded bytes are charged to. */
+  budget?: InflateBudget;
+}
+
+export interface InflateSalvage {
+  /** Every byte decoded before the stream ended, was cut short or broke. */
+  data: Buffer;
+  /** True when the input was consumed without a decoding error (a cut-short stream also ends this way). */
+  endedCleanly: boolean;
+}
+
+/**
+ * Raw-inflates `data` in one pass for archive repair: a stream that is cut short or breaks halfway keeps the bytes
+ * decoded before that point instead of failing. Work and memory are bounded by the same cap as `inflateBounded`,
+ * and the decoded bytes are charged to the budget, so no input costs more than one decode up to the cap.
+ */
+export function inflateRawSalvage(data: Buffer, options: InflateSalvageOptions): Promise<InflateSalvage> {
+  const streamCap = Math.min(options.maxOutputLength ?? MAX_STREAM_INFLATE_BYTES, MAX_STREAM_INFLATE_BYTES);
+  const budgetRemaining = options.budget ? options.budget.remaining : Number.POSITIVE_INFINITY;
+  const cap = Math.min(streamCap, budgetRemaining);
+  if (cap < 1) {
+    return Promise.reject(
+      new DecompressionLimitError(
+        `${options.label} would exceed the decoded-byte budget of ${options.budget?.limit} bytes for the whole document.`
+      )
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const inflater = zlib.createInflateRaw({ finishFlush: zlib.constants.Z_SYNC_FLUSH });
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (endedCleanly: boolean): void => {
+      if (settled) return;
+      settled = true;
+      const decoded = Buffer.concat(chunks);
+      try {
+        options.budget?.charge(decoded.length, options.label);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      resolve({ data: decoded, endedCleanly });
+    };
+    inflater.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > cap) {
+        settled = true;
+        chunks.length = 0;
+        inflater.destroy();
+        const budgetBound = budgetRemaining < streamCap;
+        reject(
+          new DecompressionLimitError(
+            budgetBound
+              ? `${options.label} would exceed the decoded-byte budget of ${options.budget?.limit} bytes for the whole document.`
+              : `${options.label} decodes to more than the limit of ${streamCap} bytes.`
+          )
+        );
+        return;
+      }
+      chunks.push(chunk);
+    });
+    inflater.on('end', () => finish(true));
+    inflater.on('error', () => finish(false));
+    inflater.end(data);
+  });
+}

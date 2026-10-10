@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readZipEntryBytes } from './zip-entry-reader';
 import { promisify } from 'node:util';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -42,7 +43,7 @@ import {
   summarizeInspectionSafety,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
-import { InflateBudget, inflateBounded } from './bounded-inflate';
+import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
@@ -721,7 +722,7 @@ export async function extractZipArchive(
         });
       });
     } else {
-      const buffer = await file.async('nodebuffer');
+      const buffer = await readZipEntryBytes(file, { maxBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE });
       totalUncompressedSize += buffer.length;
 
       if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
@@ -3204,8 +3205,10 @@ export async function repairZipArchive(
   const salvageBudget = new InflateBudget(
     Math.min(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, ARCHIVE_SECURITY_LIMITS.MAX_RATIO * zipBuffer.length)
   );
-  const inflateSalvaged = (data: Buffer, entryName: string): Buffer =>
-    inflateBounded(data, { label: `ZIP entry '${entryName}'`, format: 'raw', budget: salvageBudget });
+  const salvageDeflate = async (data: Buffer, entryName: string): Promise<Buffer | null> => {
+    const salvage = await inflateRawSalvage(data, { label: `ZIP entry '${entryName}'`, budget: salvageBudget });
+    return salvage.endedCleanly || salvage.data.length > 0 ? salvage.data : null;
+  };
   let pos = 0;
   while (pos + 30 <= zipBuffer.length) {
     if (
@@ -3240,18 +3243,7 @@ export async function repairZipArchive(
             if (compMethod === 0) {
               uncompressed = Buffer.from(rawChunk);
             } else if (compMethod === 8) {
-              try {
-                uncompressed = inflateSalvaged(rawChunk, cleanName);
-              } catch (err) {
-                if (err instanceof DecompressionLimitError) throw err;
-                for (let offset = rawChunk.length - 1; offset > 0 && !uncompressed; offset--) {
-                  try {
-                    uncompressed = inflateSalvaged(rawChunk.subarray(0, offset), cleanName);
-                  } catch (truncatedErr) {
-                    if (truncatedErr instanceof DecompressionLimitError) throw truncatedErr;
-                  }
-                }
-              }
+              uncompressed = await salvageDeflate(rawChunk, cleanName);
             }
             if (uncompressed && (uncompSize === 0 || uncompressed.length === uncompSize || compSize === 0)) {
               salvagedFiles.push({ filename: cleanName, buffer: uncompressed });
