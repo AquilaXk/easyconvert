@@ -449,7 +449,7 @@ async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
   encryptWithReference(tools, plain.file, encryptedFile);
   const encrypted = fs.readFileSync(encryptedFile);
 
-  const { unlockPdf } = await import('../../src/lib/conversions/pdf-postprocess/unlock');
+  const { unlockPdf } = await importProduct<typeof import('../../src/lib/conversions/pdf-postprocess/unlock')>('lib/conversions/pdf-postprocess/unlock');
   const unlockOurs = (): Promise<Buffer> => unlockPdf(encrypted, { password: USER_PASSWORD, confirmEditRights: true });
   const oursFile = ctx.scratch('unlock-ours.pdf');
   fs.writeFileSync(oursFile, await unlockOurs());
@@ -475,7 +475,7 @@ async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[
     );
   }
   if (ctx.speed) {
-    rows.push(throughputRow(FAMILY, UNLOCK_CASE, encrypted.length, await timeBoth(ctx, unlockOurs, unlockReference), REFERENCE_TOOL));
+    rows.push(throughputRow(FAMILY, UNLOCK_CASE, encrypted.length, await timeBoth(ctx, speedRowId(FAMILY, UNLOCK_CASE), unlockOurs, unlockReference), REFERENCE_TOOL));
   }
   return rows;
 }

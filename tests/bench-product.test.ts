@@ -141,3 +141,26 @@ describe('the noise summary of reports of a commit compared with itself', () => 
     ]);
   });
 });
+
+describe('the family runners in a speed run against a base', () => {
+  const FAMILIES_DIR = path.join(REPO_ROOT, 'bench', 'families');
+  const sources = fs.readdirSync(FAMILIES_DIR).filter((name) => name.endsWith('.ts')).map((name) => ({ name, text: fs.readFileSync(path.join(FAMILIES_DIR, name), 'utf8') }));
+
+  it('time every speed row by its id: the first argument of ctx.time, and the second of timeBoth, is speedRowId(...)', () => {
+    const wrong: string[] = [];
+    for (const { name, text } of sources) {
+      for (const match of text.matchAll(/ctx\.time\(\s*([^\s,]+)/g)) if (!match[1].startsWith('speedRowId(') && !match[1].startsWith('rowId')) wrong.push(`${name}: ctx.time(${match[1]}`);
+      for (const match of text.matchAll(/timeBoth\(ctx,\s*([^\s,]+)/g)) if (!match[1].startsWith('speedRowId(')) wrong.push(`${name}: timeBoth(ctx, ${match[1]}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it('load the product through importProduct, so the head and the base each run their own: no value import of src/', () => {
+    const direct: string[] = [];
+    for (const { name, text } of sources) {
+      for (const match of text.matchAll(/^import\s+(?!type\b)[^;]*from\s+'(\.\.\/\.\.\/src[^']*)'/gm)) direct.push(`${name}: ${match[1]}`);
+      for (const match of text.matchAll(/await import\('(\.\.\/\.\.\/src[^']*)'\)/g)) direct.push(`${name}: ${match[1]}`);
+    }
+    expect(direct).toEqual([]);
+  });
+});
