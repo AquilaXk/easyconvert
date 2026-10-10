@@ -1,6 +1,7 @@
 import { UnsupportedOptionError } from '../types';
 import type { ConversionOptions } from '../types';
 import { OPTIMIZABLE_FORMATS, optimizeUnavailableMessage } from '../jobs/optimize-formats';
+import { compressPdf } from './pdf-postprocess/compress';
 
 /** What the job lets one optimiser run use: its abort signal, and the time left to the job deadline. */
 export interface OptimizerRun {
@@ -18,8 +19,17 @@ export type OptimizerFunction = (
 
 export type OptimizerRegistry = ReadonlyMap<string, OptimizerFunction>;
 
+/** PDF: the profile of `options.optimize`, with the password and rights confirmation the node carries for an encrypted input. */
+const optimizePdf: OptimizerFunction = (buffer, options, run) =>
+  compressPdf(
+    buffer,
+    options.optimize,
+    { password: options.password, confirmEditRights: options.confirmEditRights },
+    { signal: run.signal, remainingMs: run.remainingMs }
+  );
+
 /** The optimiser of each format in `OPTIMIZABLE_FORMATS`, which graph validation consults at submission. */
-const OPTIMIZER_ENTRIES: ReadonlyArray<readonly [string, OptimizerFunction]> = [];
+const OPTIMIZER_ENTRIES: ReadonlyArray<readonly [string, OptimizerFunction]> = [['pdf', optimizePdf]];
 
 export const OPTIMIZERS: OptimizerRegistry = new Map(OPTIMIZER_ENTRIES);
 

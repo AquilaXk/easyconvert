@@ -16,6 +16,10 @@ import {
   PdfWatermarkOptionsSchema,
   PdfProtectOptionsSchema,
   PdfAOptionsSchema,
+  PdfSplitOptionsSchema,
+  PdfRotateOptionsSchema,
+  PdfReorderOptionsSchema,
+  PdfOptimizeOptionsSchema,
   PdfaValidationProblemSchema,
   DroppedStreamsProperties,
   EngineTraceProperties,
@@ -218,6 +222,18 @@ export const components = {
     PdfAOptions: {
       ...PdfAOptionsSchema,
       $id: undefined,
+    },
+    PdfSplitOptions: {
+      ...PdfSplitOptionsSchema,
+    },
+    PdfRotateOptions: {
+      ...PdfRotateOptionsSchema,
+    },
+    PdfReorderOptions: {
+      ...PdfReorderOptionsSchema,
+    },
+    PdfOptimizeOptions: {
+      ...PdfOptimizeOptionsSchema,
     },
   },
 };

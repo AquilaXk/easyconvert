@@ -641,6 +641,10 @@ export function validateJobGraph(
         inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS['media.package'] as string;
         break;
       }
+      case 'pdf.split-pages': {
+        inferredFormats[nodeId] = FIXED_OUTPUT_FORMATS['pdf.split-pages'] as string;
+        break;
+      }
       case 'thumbnail':
       case 'merge':
       case 'archive.create': {

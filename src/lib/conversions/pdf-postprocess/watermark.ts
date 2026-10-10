@@ -277,10 +277,13 @@ interface PreparedWatermarkAsset {
   standardFont: PDFFont | null;
 }
 
+/** Helvetica-Bold in a document of its own, made once: its metrics say which characters the standard font can draw. */
+let standardFontProbe: Promise<PDFFont> | undefined;
+
 /** Whether the standard Helvetica-Bold (WinAnsi) can draw every character of the text. */
 async function drawableWithStandardFont(text: string): Promise<boolean> {
-  const probe = await PDFDocument.create();
-  const font = await probe.embedFont(StandardFonts.HelveticaBold);
+  standardFontProbe ??= PDFDocument.create().then((probe) => probe.embedFont(StandardFonts.HelveticaBold));
+  const font = await standardFontProbe;
   try {
     font.widthOfTextAtSize(text, 1);
     return true;

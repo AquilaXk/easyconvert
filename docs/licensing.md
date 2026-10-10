@@ -41,6 +41,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Role**: Headless conversion for legacy and complex office documents (`.doc`, `.xls`, `.ppt`, `.odt`, `.ods`, `.odp`).
 - **Process Isolation**: Invoked headlessly as an isolated system process (`soffice --headless --convert-to ...`).
 
+### 2.5 Ghostscript (`gs`) (AGPL 3.0+)
+- **Role**: Image downsampling and recompression for the PDF `optimize` profiles `web`, `print` and `max` (pdfwrite), and PostScript/EPS rendering (`ps2pdf`).
+- **Process Isolation**: `gs` is the unmodified distribution package, executed as a separate process with `-dSAFER` and without network access. Nothing links `libgs` into the application, and the application code does not incorporate or modify Ghostscript source. Data is exchanged through files and standard streams.
+- **Compliance**: Running an unmodified, separate AGPL executable keeps EasyConvert's own code outside the AGPL. A modified Ghostscript, or one linked into the application, would not be covered by this and needs a reviewed exception.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
@@ -118,4 +123,4 @@ The notices file must not change with the host that generates it, so text inclus
 
 ### 6.3 Why LGPL-3.0 is allowed
 
-`LGPL-3.0` (which also matches `LGPL-3.0-only` and `LGPL-3.0-or-later`) is on the allowlist only because of the prebuilt `libvips` binaries (`@img/sharp-libvips-*`). `sharp` loads them dynamically as shared libraries that the user can replace (see section 3). Do not use the entry to admit a package that is statically linked or bundled into application code; such a package needs a reviewed exception instead. Strong network copyleft (AGPL) and non-commercial licences are never allowed.
+`LGPL-3.0` (which also matches `LGPL-3.0-only` and `LGPL-3.0-or-later`) is on the allowlist only because of the prebuilt `libvips` binaries (`@img/sharp-libvips-*`). `sharp` loads them dynamically as shared libraries that the user can replace (see section 3). Do not use the entry to admit a package that is statically linked or bundled into application code; such a package needs a reviewed exception instead. Strong network copyleft (AGPL) and non-commercial licences are never allowed as npm dependencies or as code linked or bundled into the application; AGPL is accepted only for an unmodified, separate command-line executable run as its own process (section 2.5) or a test oracle.
