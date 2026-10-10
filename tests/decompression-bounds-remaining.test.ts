@@ -12,6 +12,7 @@ import { POST as inspectRoute } from '../src/app/api/v1/archives/inspect/route';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import { ARCHIVE_SECURITY_LIMITS, convertArchive, inspectArchive, repairZipArchive } from '../src/lib/conversions/archive';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { Woff2FormatError, Woff2LimitError, WOFF2_MAX_TABLES } from '../src/lib/conversions/font-woff2';
@@ -37,6 +38,7 @@ import {
   unterminatedDeflate,
 } from './helpers/decompression-fixtures';
 import { buildWoff2, minimalTransformedFont } from './helpers/woff2-builder';
+import { buildDocxWithJpeg, buildPptxWithJpeg, makeNoisyJpeg } from './helpers/office-jpeg-fixtures';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 
@@ -417,5 +419,52 @@ describe('WOFF2 limits answer 413', () => {
     expect(payloadLimitStatus(new Woff2FormatError('bad magic'))).toBeNull();
     expect(payloadLimitStatus(new CorruptStreamError('cut short'))).toBeNull();
     expect(payloadLimitStatus(new Error('plain'))).toBeNull();
+  });
+});
+
+describe('embedded media is not held to the cap of parsed parts', () => {
+  const MEDIA_BYTES = 70 * MIB;
+  const SLIDE_TEXT = 'Quarterly results';
+
+  /** The deck from the office fixtures with its picture part replaced by `media`. */
+  async function deckWithPicture(media: Buffer, compression: 'STORE' | 'DEFLATE'): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
+    zip.file('ppt/media/image1.jpg', media, { compression });
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it('converts a deck with a 70 MiB picture part to text and HTML, as it did before the entry cap', async () => {
+    const jpeg = await makeNoisyJpeg();
+    const deck = await deckWithPicture(Buffer.concat([jpeg, Buffer.alloc(MEDIA_BYTES, 0x5a)]), 'STORE');
+    const text = await dispatchConversion(deck, 'pptx', 'txt', {}, 'media.pptx');
+    expect(text.buffer.toString('utf-8')).toContain(SLIDE_TEXT);
+    const html = await dispatchConversion(deck, 'pptx', 'html', {}, 'media.pptx');
+    const markup = html.buffer.toString('utf-8');
+    expect(markup).toContain(SLIDE_TEXT);
+    expect(markup).toContain('data:image/jpeg;base64,');
+  });
+
+  it('still refuses a picture part that inflates past 100 times its compressed size', async () => {
+    const bomb = await deckWithPicture(Buffer.concat([await makeNoisyJpeg(), Buffer.alloc(150 * MIB)]), 'DEFLATE');
+    expect(bomb.length * 100).toBeLessThan(150 * MIB);
+    const failure = await dispatchConversion(bomb, 'pptx', 'txt', {}, 'bomb.pptx').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DecompressionLimitError);
+    expect((failure as DecompressionLimitError).message).toMatch(/times its \d+ compressed bytes/);
+  });
+
+  it('keeps the 128 MiB cap of a DOCX XML part and the 64 MiB cap of its pictures', async () => {
+    const jpeg = await makeNoisyJpeg();
+    const zip = await JSZip.loadAsync(await buildDocxWithJpeg(jpeg));
+    const styles = await zip.file('word/styles.xml')!.async('text');
+    zip.file('word/styles.xml', styles.replace('</w:styles>', `<!--${' '.repeat(70 * MIB)}--></w:styles>`), { compression: 'DEFLATE' });
+    const docx = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const result = await dispatchConversion(docx, 'docx', 'txt', {}, 'styles.docx');
+    expect(result.buffer.toString('utf-8')).toContain('Findings');
+
+    zip.file('word/media/image1.jpg', Buffer.concat([jpeg, Buffer.alloc(MEDIA_BYTES, 0x5a)]), { compression: 'STORE' });
+    const oversized = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const failure = await dispatchConversion(oversized, 'docx', 'txt', {}, 'picture.docx').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toMatch(/"word\/media\/image1\.jpg" declares \d+ bytes, more than the 67108864 byte limit/);
   });
 });

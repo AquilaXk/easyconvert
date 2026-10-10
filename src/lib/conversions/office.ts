@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
-import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { MAX_ZIP_MEDIA_BYTES, ZIP_MEDIA_MAX_RATIO, readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
@@ -6434,7 +6434,8 @@ export async function parsePptxSlideSceneGraph(
         const mediaPath = resolveZipPath('ppt/slides', target);
         const mediaFile = zip.file(mediaPath);
         if (mediaFile) {
-          let imgBuffer = await readZipEntryBytes(mediaFile);
+          // An embedded picture is media, not a parsed part: it may be far over the 64 MiB cap of XML and text.
+          let imgBuffer = await readZipEntryBytes(mediaFile, { maxBytes: MAX_ZIP_MEDIA_BYTES, maxRatio: ZIP_MEDIA_MAX_RATIO });
           // PNG and JPEG are embedded without a re-encode, whatever the part is called: check their header.
           // Pictures are processed one at a time on purpose: each decode can hold up to the pixel limit in memory.
           await assertEmbeddableImageWithinLimit(imgBuffer); // NOSONAR S9382: sequential to bound memory

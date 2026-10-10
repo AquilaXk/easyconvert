@@ -9,8 +9,25 @@ import { InflateBudget, MAX_STREAM_INFLATE_BYTES } from './bounded-inflate';
  * directory. The caps never rely on a declared size: a lying header is refused as soon as the stream passes it.
  */
 
-/** Most bytes one package entry may decode to (64 MiB). */
+/**
+ * Most bytes one package entry that is parsed (XML, text, relationships) may decode to (64 MiB). A reader that
+ * parses a part holds it as a string or a tree, so the cap sits far above any real document part.
+ */
 export const MAX_ZIP_ENTRY_BYTES = MAX_STREAM_INFLATE_BYTES;
+
+/**
+ * Most bytes one embedded media part (a picture or a video in a deck or document) may decode to: the 1 GiB of the
+ * largest upload. Media is copied or handed to an image decoder rather than parsed, and a presentation with a
+ * 100 MiB video or photograph is ordinary, so the 64 MiB cap of the parsed parts does not apply to it. It is held
+ * back by `ZIP_MEDIA_MAX_RATIO` instead, which a bomb cannot meet.
+ */
+export const MAX_ZIP_MEDIA_BYTES = 1024 * 1024 * 1024;
+
+/** Most decoded bytes per compressed byte an embedded media part may show; real media is already compressed. */
+export const ZIP_MEDIA_MAX_RATIO = 100;
+
+/** Decoded bytes allowed on top of the ratio, so that a tiny part is never held to a few bytes. */
+const RATIO_SLACK_BYTES = 1024 * 1024;
 
 export interface ZipEntryReadOptions {
   /** What is being read, for error messages. Defaults to the entry name. */
@@ -19,6 +36,13 @@ export interface ZipEntryReadOptions {
   maxBytes?: number;
   /** Package budget the decoded bytes are charged to, for readers that open many entries of one package. */
   budget?: InflateBudget;
+  /** Most decoded bytes per compressed byte (plus 1 MiB). A stored entry or one with no known compressed size is not held to it. */
+  maxRatio?: number;
+}
+
+function compressedSize(entry: JSZip.JSZipObject): number | undefined {
+  const compressed = (entry as unknown as { _data?: { compressedSize?: unknown } })._data?.compressedSize;
+  return typeof compressed === 'number' && Number.isFinite(compressed) ? compressed : undefined;
 }
 
 function declaredSize(entry: JSZip.JSZipObject): number | undefined {
@@ -31,14 +55,25 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
   const label = options.label ?? `ZIP entry '${entry.name}'`;
   const budgetRemaining = options.budget ? options.budget.remaining : Number.POSITIVE_INFINITY;
   const entryCap = options.maxBytes ?? MAX_ZIP_ENTRY_BYTES;
-  const cap = Math.min(entryCap, budgetRemaining);
+  const compressed = compressedSize(entry);
+  const ratioCap =
+    options.maxRatio !== undefined && compressed !== undefined
+      ? options.maxRatio * compressed + RATIO_SLACK_BYTES
+      : Number.POSITIVE_INFINITY;
+  const cap = Math.min(entryCap, budgetRemaining, ratioCap);
   const declared = declaredSize(entry);
-  const overLimit = (): DecompressionLimitError =>
-    new DecompressionLimitError(
+  const overLimit = (): DecompressionLimitError => {
+    if (ratioCap < entryCap && ratioCap < budgetRemaining) {
+      return new DecompressionLimitError(
+        `${label} decodes to more than ${options.maxRatio} times its ${compressed} compressed bytes.`
+      );
+    }
+    return new DecompressionLimitError(
       budgetRemaining < entryCap
         ? `${label} would exceed the decoded-byte budget of ${options.budget?.limit} bytes for the whole package.`
         : `${label} decodes to more than the limit of ${entryCap} bytes.`
     );
+  };
   if (declared !== undefined && declared > cap) {
     return Promise.reject(overLimit());
   }
