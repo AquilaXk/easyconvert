@@ -493,6 +493,19 @@
           "commit": "467616a13794421adc9d744e38fd288235201e5a"
         }
       ]
+    },
+    {
+      "id": "video/clip.mp4->vp9/throughput",
+      "issue": 643,
+      "ratio": 0.99,
+      "note": "speed ratio 0.9949 [0.95221, 1.0255] at the cap on the CI runner: video rows oscillate around the reference line from run to run (0.974 to 1.007), so the row is tracked until a stable margin is measured",
+      "history": [
+        {
+          "ratio": 0.9949,
+          "at": "2026-10-10T06:49:35.390Z",
+          "commit": "ff34315bcbb7111c249a168ed15f67e0f7094212"
+        }
+      ]
     }
   ]
 }
