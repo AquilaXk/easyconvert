@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   deletePdfPages,
@@ -164,6 +166,24 @@ describe.skipIf(toolsMissing)('PDF page operations', () => {
       expect(pageRotations(out)).toEqual([180, 270, 0, 0, 0]);
     });
 
+    it('adds up groups that name the same pages, whichever way the pages are written', async () => {
+      const turned = async (rotations: Array<{ rotation: 90 | 180 | 270; pages?: string }>): Promise<number[]> =>
+        pageRotations(await rotatePdfPages(await source(), { rotations }));
+      expect(await turned([{ rotation: 90, pages: '2' }, { rotation: 90, pages: '2' }])).toEqual([0, 180, 0, 0, 0]);
+      expect(await turned([{ rotation: 90 }, { rotation: 180 }])).toEqual([270, 270, 270, 270, 270]);
+      expect(await turned([{ rotation: 90 }, { rotation: 180, pages: '1-' }])).toEqual([270, 270, 270, 270, 270]);
+      expect(await turned([{ rotation: 90, pages: '-3' }, { rotation: 90, pages: '1-3' }])).toEqual([180, 180, 180, 0, 0]);
+      expect(await turned([{ rotation: 90, pages: '4-' }, { rotation: 270 }])).toEqual([270, 270, 270, 0, 0]);
+    });
+
+    it('adds up partly overlapping groups page by page, and a sum of 360 degrees leaves the page as it was', async () => {
+      const turned = async (rotations: Array<{ rotation: 90 | 180 | 270; pages?: string }>): Promise<number[]> =>
+        pageRotations(await rotatePdfPages(await source(), { rotations }));
+      expect(await turned([{ rotation: 90, pages: '1-3' }, { rotation: 180, pages: '2-4' }])).toEqual([90, 270, 270, 180, 0]);
+      expect(await turned([{ rotation: 270, pages: '2' }, { rotation: 90, pages: '2' }])).toEqual([0, 0, 0, 0, 0]);
+      expect(await turned([{ rotation: 90, pages: '1,3,5' }, { rotation: 180, pages: '3-5' }])).toEqual([90, 0, 270, 180, 270]);
+    });
+
     it.each([0, 45, 360, -90, 91, '90deg', null])('refuses the rotation %j', async (rotation) => {
       expect(await refusal(rotatePdfPages(await source(), { rotation: rotation as never }))).toMatchObject({ name: 'UnsupportedOptionError' });
     });
@@ -205,6 +225,24 @@ describe.skipIf(toolsMissing)('PDF page operations', () => {
         [PAGE_TEXTS[3], PAGE_TEXTS[4]],
         [PAGE_TEXTS[0], PAGE_TEXTS[1]],
       ]);
+    });
+
+    it('counts the parts of a split by pages and N before cutting a large document, and refuses more than 1000', async () => {
+      const doc = await PDFDocument.create();
+      for (let page = 0; page < 1100; page++) doc.addPage([100, 100]);
+      // Random bytes do not deflate: the file is large enough for the page count to be read before qpdf cuts anything.
+      await doc.attach(randomBytes(300 * 1024), 'padding.bin', { mimeType: 'application/octet-stream' });
+      const pdf = Buffer.from(await doc.save());
+      const message = (await refusal(splitPdfPages(pdf, { everyNPages: 1 }))).message;
+      expect(message).toMatch(/at most 1000.*1100 pages.*1100 parts/s);
+      expect(pdfinfoPages(await splitPdfPages(pdf, { everyNPages: 2 }).then(async (zip) => (await JSZip.loadAsync(zip)).files['document-part001.pdf'].async('nodebuffer')))).toBe(2);
+    });
+
+    it('stops a small document that would split into more than 1000 parts', async () => {
+      const doc = await PDFDocument.create();
+      for (let page = 0; page < 1100; page++) doc.addPage([100, 100]);
+      const pdf = Buffer.from(await doc.save());
+      expect(await refusal(splitPdfPages(pdf, {}))).toMatchObject({ name: 'UnsupportedOptionError', message: expect.stringMatching(/at most 1000 parts/) });
     });
 
     it('refuses both ranges and everyNPages, a bad N, a range past the end and too many parts', async () => {
