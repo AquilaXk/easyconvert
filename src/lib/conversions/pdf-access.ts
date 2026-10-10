@@ -97,7 +97,7 @@ async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, 
         );
       }
     }
-    return await withQpdfDecryptedPdf(request, async (plainPath) => fs.readFileSync(plainPath));
+    return await withQpdfDecryptedPdf(request, (plainPath) => Promise.resolve(fs.readFileSync(plainPath)));
   } finally {
     cleanupWorkerSandboxDir(tempDir);
   }

@@ -185,7 +185,9 @@ async function mergePasswordsFor(
 ): Promise<Array<string | null> | undefined> {
   const passwords = node.options?.passwords;
   if (passwords === undefined) return undefined;
-  const inputs = Array.isArray(node.input) ? node.input : node.input ? [node.input] : [];
+  let inputs: string[] = [];
+  if (Array.isArray(node.input)) inputs = node.input;
+  else if (node.input) inputs = [node.input];
   if (!Array.isArray(passwords) || passwords.length !== inputs.length) {
     throw new PdfPasswordListError(
       `The merge node lists ${Array.isArray(passwords) ? passwords.length : 'no list of'} passwords for ${inputs.length} input node(s); give one entry per input, in input order, with null for an input that has none.`

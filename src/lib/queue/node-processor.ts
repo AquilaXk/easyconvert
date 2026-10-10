@@ -231,7 +231,7 @@ export async function processNodeJob(
 
         const mergedOptions: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean } = {
           ...openPasswordOption(job.data.options, job.id),
-          ...(openPasswordOption(task.options, job.id) || {}),
+          ...openPasswordOption(task.options, job.id),
           signal: attemptSignal,
         };
         if (task.operation === 'ocr') {

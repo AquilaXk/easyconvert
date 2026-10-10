@@ -8,7 +8,7 @@ import fs from 'node:fs';
  */
 const KIB = 1024;
 
-(async () => {
+async function main(): Promise<void> {
   const [file] = process.argv.slice(2);
   const bytes = fs.readFileSync(file);
   const { inspectPdfEncryption } = await import('../src/lib/conversions/pdf-encryption');
@@ -25,4 +25,9 @@ const KIB = 1024;
   const elapsedMs = performance.now() - started;
   const rssGrowthBytes = process.resourceUsage().maxRSS * KIB - rssBefore;
   process.stdout.write(`RESULT:${JSON.stringify({ error, info, elapsedMs, rssGrowthBytes })}\n`);
-})();
+}
+
+main().catch((error: unknown) => {
+  process.stderr.write(`${String(error)}\n`);
+  process.exitCode = 1;
+});
