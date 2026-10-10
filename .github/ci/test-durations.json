@@ -11,6 +11,7 @@
   "tests/api-request-validation.test.ts": 0.4,
   "tests/api.test.ts": 0.1,
   "tests/api/auth-distributed.test.ts": 1.2,
+  "tests/archive-7z-coder-chains.test.ts": 2.4,
   "tests/archive-7z-oracle.test.ts": 0.4,
   "tests/archive-bitlevel-throughput.test.ts": 0.8,
   "tests/archive-create-extract-inspect.test.ts": 0.2,
@@ -25,6 +26,7 @@
   "tests/archive-native-compression-level.test.ts": 1.1,
   "tests/archive-nested-tar-vetting.test.ts": 0.4,
   "tests/archive-password-delivery.test.ts": 42.3,
+  "tests/archive-password-routes.test.ts": 0.3,
   "tests/archive-review-blockers.test.ts": 8.6,
   "tests/archive-review-round2.test.ts": 5.8,
   "tests/archive-seven-zip-hostile-members.test.ts": 0.5,
@@ -197,7 +199,7 @@
   "tests/flac-encoder.test.ts": 0.9,
   "tests/font-astral-cmap-format12.test.ts": 0,
   "tests/font-cff-to-truetype.test.ts": 6.2,
-  "tests/font-cubic-to-quadratic.test.ts": 7.9,
+  "tests/font-cubic-to-quadratic.test.ts": 0.3,
   "tests/font-glyf-to-cff.test.ts": 5.5,
   "tests/font-mac-containers.test.ts": 0.2,
   "tests/font-svg-document.test.ts": 1.2,
@@ -658,6 +660,6 @@
   "tests/zstd-engine.test.ts": 16.3,
   "tests/zstd-hostile-frames.test.ts": 11.9,
   "tests/zstd-level-pins.test.ts": 1.8,
-  "tests/zstd-optimal-ratio.test.ts": 85.6,
+  "tests/zstd-optimal-ratio.test.ts": 8.9,
   "tests/zstd-streaming-dict.test.ts": 0.5
 }
