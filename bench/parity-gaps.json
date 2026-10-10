@@ -428,10 +428,28 @@
       ]
     },
     {
+      "id": "pdf-ops/watermark.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.78,
+      "note": "speed ratio 0.78 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.8318,
+          "at": "2026-10-10T02:16:29.414Z",
+          "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
+        },
+        {
+          "ratio": 0.7823,
+          "at": "2026-10-10T03:04:37.950Z",
+          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        }
+      ]
+    },
+    {
       "id": "pdf-ops/protect.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.83,
-      "note": "speed ratio 0.83 or below when recorded on the CI runner (previous record 0.91): ours is slower than the reference tool",
+      "ratio": 0.91,
+      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8975,
@@ -442,19 +460,14 @@
           "ratio": 0.9183,
           "at": "2026-10-10T03:04:37.950Z",
           "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
-        },
-        {
-          "ratio": 0.8362,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
         }
       ]
     },
     {
       "id": "pdf-ops/decrypt.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.86,
-      "note": "speed ratio 0.86 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
+      "ratio": 0.89,
+      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.92): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9255,
@@ -465,94 +478,19 @@
           "ratio": 0.898,
           "at": "2026-10-10T03:04:37.950Z",
           "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
-        },
-        {
-          "ratio": 0.8671,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
         }
       ]
     },
     {
       "id": "pdf-ops/unlock.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.85,
-      "note": "speed ratio 0.85 or below when recorded on the CI runner (previous record 0.88): ours is slower than the reference tool",
+      "ratio": 0.88,
+      "note": "speed ratio 0.88 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8889,
           "at": "2026-10-10T09:06:00.343Z",
           "commit": "f17eeecaa1285f2bc7ac2a969d807a5b1d25f941"
-        },
-        {
-          "ratio": 0.857,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
-        }
-      ]
-    },
-    {
-      "id": "pdf-ops/split.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.82,
-      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8289,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
-        }
-      ]
-    },
-    {
-      "id": "pdf-ops/extract.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.8,
-      "note": "speed ratio 0.8 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8037,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
-        }
-      ]
-    },
-    {
-      "id": "pdf-ops/delete.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.81,
-      "note": "speed ratio 0.81 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8158,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
-        }
-      ]
-    },
-    {
-      "id": "pdf-ops/reorder.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.83,
-      "note": "speed ratio 0.83 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8372,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
-        }
-      ]
-    },
-    {
-      "id": "pdf-ops/rotate.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.82,
-      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8285,
-          "at": "2026-10-10T20:30:11.582Z",
-          "commit": "278940bb09f6b3ae05e0466263ddc4059cdc6939"
         }
       ]
     },
