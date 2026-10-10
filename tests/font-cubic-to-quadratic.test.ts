@@ -77,15 +77,30 @@ function distanceToSegment(pt: Pt, a: Pt, b: Pt): number {
   return distance(pt, { x: a.x + t * dx, y: a.y + t * dy });
 }
 
-/** Largest distance from any point of `from` to the polyline through `polyline`. */
+/**
+ * Largest distance from any point of `from` to the polyline through `polyline`. The distance of a point is the exact
+ * minimum over all segments; a segment whose bounding box is already `best` or farther away cannot lower it and is skipped
+ * without computing its distance, and the search of a point starts at the segment that was nearest to the point before it
+ * (the points of `from` follow a curve), so `best` is tight from the first segment on.
+ */
 function maxDistanceToPolyline(from: Pt[], polyline: Pt[]): number {
   let worst = 0;
+  let hint = 1;
   for (const pt of from) {
-    let best = Infinity;
+    let best = distanceToSegment(pt, polyline[hint - 1], polyline[hint]);
+    let nearest = hint;
     for (let i = 1; i < polyline.length; i++) {
-      const d = distanceToSegment(pt, polyline[i - 1], polyline[i]);
-      if (d < best) best = d;
+      const a = polyline[i - 1];
+      const b = polyline[i];
+      if (Math.min(a.x, b.x) - pt.x >= best || pt.x - Math.max(a.x, b.x) >= best) continue;
+      if (Math.min(a.y, b.y) - pt.y >= best || pt.y - Math.max(a.y, b.y) >= best) continue;
+      const d = distanceToSegment(pt, a, b);
+      if (d < best) {
+        best = d;
+        nearest = i;
+      }
     }
+    hint = nearest;
     if (best > worst) worst = best;
   }
   return worst;
