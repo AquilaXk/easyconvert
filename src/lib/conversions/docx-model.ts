@@ -1,4 +1,5 @@
 import type JSZip from 'jszip';
+import { readZipEntryBytes } from './zip-entry-reader';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
 import { BlockSink, BodySink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
@@ -129,7 +130,7 @@ async function readPart(zip: JSZip, partPath: string, limit: number): Promise<Bu
   if (declared !== undefined && declared > limit) {
     throw new PayloadLimitError(`"${partPath}" declares ${declared} bytes, more than the ${limit} byte limit.`);
   }
-  const bytes = await entry.async('nodebuffer');
+  const bytes = await readZipEntryBytes(entry);
   if (bytes.length > limit) throw new PayloadLimitError(`"${partPath}" holds ${bytes.length} bytes, more than the ${limit} byte limit.`);
   return bytes;
 }
