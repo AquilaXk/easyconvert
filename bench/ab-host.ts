@@ -43,7 +43,11 @@ export class AbHost {
   private readonly queue: ChildMessage[] = [];
   private waiting: ((message: ChildMessage) => void) | null = null;
   private lost: string | null = null;
-  private nextRow = 0;
+  /** A row the process announced that the benchmark has not asked for (yet): kept, not lost, so the process is never out of step. */
+  private pending: Extract<ChildMessage, { type: 'ready' }> | null = null;
+  private finished = false;
+  /** Whether the process is waiting at a row the benchmark matched with `row` and has not let go of with `next`. */
+  private open = false;
 
   private constructor(
     private readonly child: ChildProcess,
@@ -112,14 +116,27 @@ export class AbHost {
     this.child.send(message);
   }
 
-  /** Waits until the process asks for the time of the next row, which must be the row the benchmark is on (same number, same id). */
+  /**
+   * Waits until the process asks for the time of the row `id`. Rows are matched by id: a row the process does not time (it
+   * ended, or went on to a row the benchmark has not reached) is a row this version cannot run, `BaseRowError`, and the
+   * row it announced instead is kept for the benchmark's next request, so the two never get out of step.
+   */
   async row(id: string): Promise<void> {
-    const expected = this.nextRow++;
-    const message = await this.receive(ROW_TIMEOUT_MS);
+    if (this.open) throw new AbHostError(`the row ${id} was asked for before the previous row was let go`);
+    if (this.finished) throw new BaseRowError(`the process has no row ${id}: it timed all its rows`);
+    const message = this.pending ?? (await this.receive(ROW_TIMEOUT_MS));
+    this.pending = null;
     if (message.type === 'crashed') throw new AbHostError(message.message);
-    if (message.type !== 'ready' || message.row !== expected || message.id !== id) {
-      throw new AbHostError(`the process is out of step: expected row ${expected} (${id}), got ${JSON.stringify(message)}`);
+    if (message.type === 'finished') {
+      this.finished = true;
+      throw new BaseRowError(`the process has no row ${id}: it timed all its rows`);
     }
+    if (message.type !== 'ready') throw new AbHostError(`the process answered ${JSON.stringify(message)} where it should announce a row`);
+    if (message.id !== id) {
+      this.pending = message;
+      throw new BaseRowError(`the process does not time ${id} (it is at ${message.id})`);
+    }
+    this.open = true;
   }
 
   /** The base as a side of a pair. */
@@ -134,8 +151,11 @@ export class AbHost {
     return { call: () => ask({ type: 'call' }), sample: (calls) => ask({ type: 'sample', calls }) };
   }
 
-  /** Lets the base process go on to its next row. */
+  /** Lets the process go on to its next row; nothing to let go of when it did not time the row. */
   next(): void {
+    if (this.lost !== null) throw new AbHostError(this.lost);
+    if (!this.open) return;
+    this.open = false;
     this.send({ type: 'next' });
   }
 

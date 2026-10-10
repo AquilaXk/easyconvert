@@ -39,14 +39,62 @@ describe('the base process', () => {
     }
   }, 60_000);
 
-  it('fails when the benchmark asks for a row the process does not have: the two are out of step', async () => {
+  it('keys rows by id: a row the process does not time is a row it cannot run, and the rows after it still match', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    try {
+      await host.row('compression/first/throughput');
+      host.next();
+      // The benchmark has a row (new in the head) that the process never times: the process is at its second row.
+      const absent = await host.row('compression/new-in-head/throughput').catch((error: unknown) => error);
+      expect(absent).toBeInstanceOf(BaseRowError);
+      expect((absent as Error).message).toContain('compression/second/throughput');
+      // Nothing is let go of for a row that was not matched, and the announced row is kept for the benchmark's next request.
+      host.next();
+      await host.row('compression/second/throughput');
+      host.next();
+      await host.row('compression/third/throughput');
+      expect(await host.side().sample(2)).toBeGreaterThanOrEqual(1);
+      host.next();
+    } finally {
+      await host.stop();
+    }
+  }, 60_000);
+
+  it('never times a row the benchmark did not ask for: a row the process has and the benchmark skips is not measured in its place', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    try {
+      await host.row('compression/first/throughput');
+      host.next();
+      // The benchmark goes straight to the third row; the process is at its second.
+      await expect(host.row('compression/third/throughput')).rejects.toThrow(BaseRowError);
+      await expect(host.row('compression/third/throughput')).rejects.toThrow(BaseRowError);
+      await host.row('compression/second/throughput');
+      host.next();
+    } finally {
+      await host.stop();
+    }
+  }, 60_000);
+
+  it('says that it has no row once it has timed all its rows, as a row it cannot run', async () => {
     const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
     try {
       for (const id of ['first', 'second', 'third']) {
         await host.row(`compression/${id}/throughput`);
         host.next();
       }
-      await expect(host.row('compression/fourth/throughput')).rejects.toThrow(AbHostError);
+      await expect(host.row('compression/fourth/throughput')).rejects.toThrow(BaseRowError);
+      await expect(host.row('compression/fifth/throughput')).rejects.toThrow(BaseRowError);
+      expect(() => host.next()).not.toThrow();
+    } finally {
+      await host.stop();
+    }
+  }, 60_000);
+
+  it('fails when a row is asked for before the previous one is let go', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    try {
+      await host.row('compression/first/throughput');
+      await expect(host.row('compression/second/throughput')).rejects.toThrow(AbHostError);
     } finally {
       await host.stop();
     }

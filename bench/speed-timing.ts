@@ -67,8 +67,8 @@ export function createTimer(init: TimerInit): RowTimer {
       const { head, base, extra } = init.ab;
       // A nightly-only row is not judged on a pull request: one cycle of pairs for the report, no extra pairs, no confirmation.
       const nightlyOnly = (init.ab.nightlyOnly ?? AB_NIGHTLY_ONLY)[rowId] !== undefined;
-      await head.row(rowId);
-      await base.row(rowId);
+      // The head must run its own row: a head that does not time it is an error of the benchmark, not a row without a base.
+      await head.row(rowId).catch(headRefused);
       const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
       const fixedPairs = weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS;
       const headSide = head.side();
@@ -78,6 +78,7 @@ export function createTimer(init: TimerInit): RowTimer {
         sample: (calls) => headSide.sample(calls).catch(headRefused),
       };
       try {
+        await base.row(rowId);
         const timing = await abSpeedTiming(guarded, base.side(), localSide(reference), {
           pairs: nightlyOnly ? AB_NIGHTLY_ONLY_PAIRS : fixedPairs,
           warmup: plan.warmup,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AB_LIGHT_PAIRS } from '../bench/ab-config';
 import { type AbTiming, type Side } from '../bench/ab-speed';
 import { type AbRows, createContext } from '../bench/context';
-import { BaseRowError } from '../bench/ab-host';
+import { AbHostError, BaseRowError } from '../bench/ab-host';
 import { ReferenceCache } from '../bench/ref-cache';
 
 /**
@@ -128,6 +128,22 @@ describe('the threshold of a row in the job path', () => {
     const slowTiming = (await slow.ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
     expect(slowTiming.ab.confirmed).toEqual({});
     expect(slowTiming.runs).toBe(6);
+  });
+
+  it('measures a row the base does not time against the reference alone, and does not let the base go on', async () => {
+    const head = process(() => 100);
+    const base = process(() => 100);
+    const absent: AbRows = { ...base, row: async (id) => Promise.reject(new BaseRowError(`the process does not time ${id}`)) };
+    const { ctx } = contextWith(head, absent);
+    const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as { abFallback?: string };
+    expect(timing.abFallback).toContain(`does not time ${ROW}`);
+    expect(head.nexts).toBe(1);
+  });
+
+  it('fails when the head does not time its own row: that is an error of the benchmark', async () => {
+    const head: AbRows = { ...process(() => 100), row: async (id) => Promise.reject(new BaseRowError(`the process does not time ${id}`)) };
+    const { ctx } = contextWith(head, process(() => 100));
+    await expect(ctx.time(ROW, () => undefined, reference, 'light')).rejects.toThrow(AbHostError);
   });
 
   it('measures a row the base cannot run against the reference alone, and says why', async () => {
