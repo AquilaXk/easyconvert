@@ -109,7 +109,7 @@ older), checks it out beside the head (`ab-base`) with its own dependencies (its
 cached by the lock file's hash; a change of a dependency is measured), and measures three sides in every pair, in a rotating
 order of the six permutations: the head and the base, each in a node process of its own started in its checkout
 (`bench/ab-host.ts`, `bench/ab-child.ts`: its tsconfig, its `node_modules`, `BENCH_PRODUCT_ROOT` pointing at it), and the
-reference, run by the benchmark's process, which does nothing else while a child works. The head and the base being
+reference, run by the benchmark's process, which does nothing else while a child works. Rows are matched by id (`bench/ab-host.ts`): a row a child does not time is a row it cannot run and is measured against the reference alone, and the row the child announced instead is kept for the benchmark's next request, so the processes never get out of step. Every speed row of a family runner names itself with `speedRowId` and loads the product through `importProduct` (`tests/bench-product.test.ts` checks both). The head and the base being
 alike (two processes, two checkouts, one family runner) is what makes their ratio fair: measured with the base in the
 benchmark's own process the ratio of two copies of one code was 0.97 on most image rows. Noise common to the three
 samples of a pair (this runner, this minute) cancels in the head-to-base ratio. A row **fails** when
