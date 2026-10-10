@@ -115,18 +115,14 @@ describe('zstd optimal parser validity', () => {
     TEST_TIMEOUT_MS
   );
 
-  it(
-    'decodes with this repository decoder at levels 16-19',
-    () => {
-      for (const [name, data] of cases) {
-        for (const level of LEVELS) {
-          const restored = decompressZstd(compressZstd(data, { level }));
-          expect(restored.equals(data), `${name} at level ${level}`).toBe(true);
-        }
+  it('decodes with this repository decoder at levels 16-19', () => {
+    for (const [name, data] of cases) {
+      for (const level of LEVELS) {
+        const restored = decompressZstd(compressZstd(data, { level }));
+        expect(restored.equals(data), `${name} at level ${level}`).toBe(true);
       }
-    },
-    TEST_TIMEOUT_MS
-  );
+    }
+  });
 
   oracleTest(
     'fuzzed structured inputs decode with zstd -d at levels 16-19',
