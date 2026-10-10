@@ -105,39 +105,48 @@ describe('zstd optimal parser validity', () => {
   ];
 
   // The optimal parser takes about a second to encode every case at every level, and two tests read the same frames: they
-  // are encoded once, before the tests, with the time limit the other encoding work of this file has, so that the test that
-  // decodes them is measured on decoding (about 20 ms) and not on the load of the shard that runs it.
-  const frames = new Map<string, Buffer>();
-  const frameKey = (name: string, level: number): string => `${name} at level ${level}`;
-  beforeAll(() => {
-    for (const [name, data] of cases) {
-      for (const level of LEVELS) frames.set(frameKey(name, level), compressZstd(data, { level }));
-    }
-  }, TEST_TIMEOUT_MS);
-  const frameOf = (name: string, level: number): Buffer => {
-    const frame = frames.get(frameKey(name, level));
-    if (frame === undefined) throw new Error(`no frame was encoded for ${frameKey(name, level)}`);
-    return frame;
-  };
-
-  oracleTest(
-    'every frame passes zstd -t and decodes byte-exact with zstd -d at levels 16-19',
-    ['zstd'],
-    () => {
+  // are encoded once, before those two tests, with the time limit the other encoding work of this file has, so that the test
+  // that decodes them is measured on decoding (about 20 ms) and not on the load of the shard that runs it. The hook belongs to
+  // this block alone: a failure to encode fails these two tests and leaves the fuzzed and window tests to run.
+  describe('the frames of the cases at levels 16-19', () => {
+    const frames = new Map<string, Buffer>();
+    const frameKey = (name: string, level: number): string => `${name} at level ${level}`;
+    beforeAll(() => {
       for (const [name, data] of cases) {
-        for (const level of LEVELS) expectReferenceRoundTrip(frameOf(name, level), data, frameKey(name, level));
+        for (const level of LEVELS) {
+          try {
+            frames.set(frameKey(name, level), compressZstd(data, { level }));
+          } catch (error) {
+            throw new Error(`encoding ${frameKey(name, level)} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+          }
+        }
       }
-    },
-    TEST_TIMEOUT_MS
-  );
+    }, TEST_TIMEOUT_MS);
+    const frameOf = (name: string, level: number): Buffer => {
+      const frame = frames.get(frameKey(name, level));
+      if (frame === undefined) throw new Error(`no frame was encoded for ${frameKey(name, level)}`);
+      return frame;
+    };
 
-  it('decodes with this repository decoder at levels 16-19', () => {
-    for (const [name, data] of cases) {
-      for (const level of LEVELS) {
-        const restored = decompressZstd(frameOf(name, level));
-        expect(restored.equals(data), frameKey(name, level)).toBe(true);
+    oracleTest(
+      'every frame passes zstd -t and decodes byte-exact with zstd -d at levels 16-19',
+      ['zstd'],
+      () => {
+        for (const [name, data] of cases) {
+          for (const level of LEVELS) expectReferenceRoundTrip(frameOf(name, level), data, frameKey(name, level));
+        }
+      },
+      TEST_TIMEOUT_MS
+    );
+
+    it('decodes with this repository decoder at levels 16-19', () => {
+      for (const [name, data] of cases) {
+        for (const level of LEVELS) {
+          const restored = decompressZstd(frameOf(name, level));
+          expect(restored.equals(data), frameKey(name, level)).toBe(true);
+        }
       }
-    }
+    });
   });
 
   oracleTest(
