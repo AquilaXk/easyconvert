@@ -162,6 +162,7 @@ export class RedisGraphScheduler implements IGraphScheduler {
       reservationId: record.reservationId,
       originalFilename: record.originalFilename,
       sourceStorageKey: record.sourceStorageKey,
+      createdAt: record.createdAt,
     };
 
     for (const nodeId of ready) {

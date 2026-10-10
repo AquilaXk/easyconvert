@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { stripEngineControls } from '@/lib/conversions/job-time';
+import { JobDeadlineError } from '@/lib/queue/job-deadline';
+import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
@@ -59,6 +63,12 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    // At most five conversions in flight (queued plus running) for an anonymous or free caller.
+    const room = await mayEnqueue(auth.user.id, auth.user.tier);
+    if (!room.allowed) {
+      if (reservationId) await rollbackQuota(reservationId);
+      return concurrencyLimitResponse(room.limit, instanceUri);
+    }
     const contentType = req.headers.get('content-type') || '';
 
     let originalFilename = '';
@@ -138,7 +148,8 @@ export async function POST(req: NextRequest) {
     const sourceFormat = detected.extension;
 
     // Add conversion task to BullMQ Distributed Queue
-    const job = await conversionQueue.add(
+    const job = await enqueueConversionJob(
+      conversionQueue,
       'convert',
       {
         jobId: '',
@@ -148,14 +159,15 @@ export async function POST(req: NextRequest) {
         fileSize,
         storageKey,
         inputBufferBase64,
-        options,
+        options: stripEngineControls(options),
         userId: auth.user.id,
         reservationId,
       },
       {
         attempts: 2,
         backoff: { type: 'fixed', delay: 1500 },
-      }
+      },
+      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider) }
     );
 
     return NextResponse.json({
@@ -174,6 +186,11 @@ export async function POST(req: NextRequest) {
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, req.nextUrl?.pathname || '/api/queue/jobs');
     if (storageProblem) return storageProblem;
+    if (error instanceof JobDeadlineError) {
+      // The detail names a deadline setting, so it stays in the server log.
+      console.error('[queue/jobs] Invalid deadline setting or input:', error);
+      return NextResponse.json({ success: false, error: 'Job enqueue error' }, { status: 500 });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : 'Job enqueue error' },
       { status: 500 }

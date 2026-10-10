@@ -97,7 +97,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
     for (const [nodeId, nodeState] of Object.entries(nodesRecord)) {
       if (nodeState.status === 'waiting') {
         const node = graph.nodes[nodeId];
-        await this.enqueueNodeJob(graphId, nodeId, node, meta);
+        await this.enqueueNodeJob(graphId, nodeId, node, { ...meta, createdAt });
       }
     }
 
@@ -163,6 +163,7 @@ export class InMemoryGraphScheduler implements IGraphScheduler {
             reservationId: data.state.reservationId,
             webhookUrl: data.state.webhookUrl,
             webhookSecret: data.state.webhookSecret,
+            createdAt: data.state.createdAt,
           });
         }
       }

@@ -1,6 +1,9 @@
 import type { GraphMetadata } from './scheduler-types';
 import type { GraphNode, NodeId } from './types';
 import { getQueueForResourceClass } from '../conversion-queue';
+import { enqueueConversionJob } from '../enqueue';
+import { tierForOwner } from '../page-cap';
+import { tierMaxDeadlineMs } from '../job-deadline';
 import { resolveNodeResourceClass } from '../resource-class';
 import { sealGraphNode } from './sealed-nodes';
 
@@ -26,7 +29,8 @@ export async function enqueueGraphNodeJob(
   const resourceClass = resolveNodeResourceClass(node);
   const jobId = graphNodeJobId(graphId, nodeId);
   const nodeFields = node as { targetFormat?: string; options?: Record<string, unknown> };
-  await getQueueForResourceClass(resourceClass).add(
+  await enqueueConversionJob(
+    getQueueForResourceClass(resourceClass),
     'graph-node',
     {
       jobId,
@@ -44,7 +48,11 @@ export async function enqueueGraphNodeJob(
       inputArtifacts,
       resourceClass,
     },
-    { jobId, attempts: GRAPH_NODE_JOB_ATTEMPTS }
+    { jobId, attempts: GRAPH_NODE_JOB_ATTEMPTS },
+    // The size of a node's inputs is not known until it runs, so it gets the deadline maximum of its owner's tier,
+    // and no node runs past the end of the graph's own deadline (the graph start plus that maximum): a graph is
+    // bounded by the tier maximum, not by its node count times it.
+    await graphDeadlineOwner(meta)
   );
 }
 
@@ -59,4 +67,9 @@ export async function cancelGraphNodeJob(
     return false;
   }
   return getQueueForResourceClass(resolveNodeResourceClass(node)).cancelJob(graphNodeJobId(graphId, nodeId), reason);
+}
+
+async function graphDeadlineOwner(meta: GraphMetadata): Promise<{ tier: string; notAfter?: number }> {
+  const tier = await tierForOwner(meta.ownerUserId);
+  return meta.createdAt === undefined ? { tier } : { tier, notAfter: meta.createdAt + tierMaxDeadlineMs(tier) };
 }

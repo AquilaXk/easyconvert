@@ -325,6 +325,8 @@ export interface CliOcrRequest {
   timeoutMs?: number;
   maxOutputBytes?: number;
   memoryLimitMb?: number;
+  /** The job's signal: the run is killed when it fires, as well as at its own timeout. */
+  signal?: AbortSignal;
   /** Replaces the page segmentation chosen for the language; used for the single-block retry. */
   pageSegMode?: string;
   /** Image height in pixels; images too short for page layout analysis are read as one block. */
@@ -411,6 +413,15 @@ function describeCliFailure(err: unknown, timeoutMs: number, memoryLimitMb: numb
   return new OcrEngineUnavailableError('Tesseract CLI could not be started.');
 }
 
+/**
+ * The signal of one CLI run: its own timeout, and the job's signal when there is one. The run ends with the job's
+ * reason, not a timeout, when the job is over (deadline, cancel), so the caller does not mistake it for a slow page.
+ */
+function runSignal(timeoutMs: number, jobSignal?: AbortSignal): AbortSignal {
+  const own = AbortSignal.timeout(timeoutMs);
+  return jobSignal ? AbortSignal.any([own, jobSignal]) : own;
+}
+
 async function runCli(request: CliOcrRequest): Promise<OcrResult> {
   const timeoutMs = request.timeoutMs ?? OCR_CLI_TIMEOUT_MS;
   const memoryLimitMb = request.memoryLimitMb ?? OCR_CLI_MEMORY_LIMIT_MB;
@@ -439,7 +450,7 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
         executeSandboxedBinary(request.cliPath, args, {
           stdin: request.image,
           env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: runSignal(timeoutMs, request.signal),
           timeoutMs: timeoutMs + OCR_CLI_TIMER_BACKSTOP_MS,
           maxBuffer: maxOutputBytes,
           maxFileSize: maxOutputBytes,
@@ -447,6 +458,7 @@ async function runCli(request: CliOcrRequest): Promise<OcrResult> {
         })
       );
     } catch (err) {
+      if (request.signal?.aborted) throw request.signal.reason;
       throw describeCliFailure(err, timeoutMs, memoryLimitMb);
     }
     const tsv = await readJobOutput(`${outputBase}.tsv`, maxOutputBytes, 'TSV');
@@ -473,6 +485,8 @@ export interface CliOsdRequest {
   image: Buffer;
   timeoutMs?: number;
   memoryLimitMb?: number;
+  /** The job's signal: the run is killed when it fires, as well as at its own timeout. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -489,7 +503,7 @@ export async function runOsdWithCli(request: CliOsdRequest): Promise<string | nu
       executeSandboxedBinary(request.cliPath, args, {
         stdin: request.image,
         env: { OMP_THREAD_LIMIT: OCR_CLI_THREAD_LIMIT },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: runSignal(timeoutMs, request.signal),
         timeoutMs: timeoutMs + OCR_CLI_TIMER_BACKSTOP_MS,
         maxBuffer: OCR_CLI_OSD_MAX_OUTPUT_BYTES,
         memoryLimitMb,
@@ -497,6 +511,7 @@ export async function runOsdWithCli(request: CliOsdRequest): Promise<string | nu
     );
     return stdout.toString('utf-8');
   } catch (err) {
+    if (request.signal?.aborted) throw request.signal.reason;
     if (err instanceof SandboxedProcessError && OSD_TOO_FEW_CHARACTERS.test(err.stderr)) return null;
     throw describeCliFailure(err, timeoutMs, memoryLimitMb);
   }
