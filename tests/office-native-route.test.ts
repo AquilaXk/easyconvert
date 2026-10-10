@@ -4,6 +4,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ConversionFailedError } from '../src/lib/types';
 import { craftDocx, paragraph } from './helpers/docx-craft';
 import { oracleTest } from './helpers/oracle-test';
+import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 
 /**
  * LibreOffice is tried first for Office pairs, but only for pairs it has an export filter for, and a file it cannot
@@ -52,5 +53,17 @@ describe('Presentations that LibreOffice opens as another kind of document', () 
     const run = dispatchConversion(Buffer.from('Plain text, not a presentation.\n'), 'ppt', 'odp', {}, 'text.ppt');
     await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file: it is damaged');
     await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+  }, NATIVE_TIMEOUT_MS);
+});
+
+describe('Macro-enabled documents through LibreOffice', () => {
+  oracleTest('renders a macro-enabled document to a PDF holding its text', ['soffice', 'pdftotext'], async () => {
+    const plain = await craftDocx({ body: PARAGRAPHS.map(paragraph).join('') });
+    const zip = await JSZip.loadAsync(plain);
+    const types = await zip.file('[Content_Types].xml')!.async('string');
+    zip.file('[Content_Types].xml', types.replace('wordprocessingml.document.main+xml', 'ms-word.document.macroEnabled.main+xml').replace('openxmlformats-officedocument.ms-word', 'ms-word'));
+    const result = await dispatchConversion(await zip.generateAsync({ type: 'nodebuffer' }), 'docm', 'pdf', {}, 'macro.docm');
+    const text = extractTextWithExternalPdftotext(result.buffer) ?? '';
+    for (const line of PARAGRAPHS) expect(text).toContain(line);
   }, NATIVE_TIMEOUT_MS);
 });

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import JSZip from 'jszip';
 import type { WorkerConversionResult } from '../../worker/engines';
-import { InvalidConversionOutputError, NoConvertibleContentError } from '../types';
+import { InvalidConversionOutputError } from '../types';
 
 /** Targets whose bytes are text a reader opens as such. */
 const TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'md', 'csv', 'tsv', 'html']);
@@ -18,6 +19,8 @@ const BINARY_CONTAINER_SIGNATURES: readonly Buffer[] = [
 const UTF8_BOM_LENGTH = 3;
 /** Leading bytes read to judge an output; a longer output than this is never judged empty. */
 const SAMPLE_BYTES = 64 * 1024;
+/** Declared type of a conversion that delivers several files in one archive (a workbook written one text file per sheet). */
+const ARCHIVE_MIME_TYPE = 'application/zip';
 
 function isBlank(buffer: Buffer): boolean {
   const start = buffer.length >= UTF8_BOM_LENGTH && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf ? UTF8_BOM_LENGTH : 0;
@@ -37,17 +40,42 @@ function sampleOf(result: Pick<WorkerConversionResult, 'filePath' | 'buffer' | '
   return sample;
 }
 
+function isContainer(sample: Buffer): boolean {
+  return BINARY_CONTAINER_SIGNATURES.some((signature) => sample.subarray(0, signature.length).equals(signature));
+}
+
+/** Whether a declared archive of text files is a readable ZIP whose members are all text, not containers. */
+async function isTextArchive(result: Pick<WorkerConversionResult, 'filePath' | 'buffer'>): Promise<boolean> {
+  const zip = await JSZip.loadAsync(result.buffer).catch(() => null);
+  if (zip === null) return false;
+  for (const member of Object.values(zip.files)) {
+    if (member.dir) continue;
+    if (isContainer((await member.async('nodebuffer')).subarray(0, SAMPLE_BYTES))) return false;
+  }
+  return true;
+}
+
 /**
- * The last check on a conversion before it is returned: a text target is never empty and never binary container bytes.
- * A job whose input holds nothing to write fails with a typed 422; one whose engine returned container bytes for a text
- * target fails with a typed 500. Targets that carry their own structure are checked by their writers.
+ * The last check on a conversion before it is returned. A text target is never binary container bytes: a result that
+ * holds them fails with a typed 500, except the declared ZIP of a split conversion whose members are all text. A text
+ * target with nothing in it (a blank document, an empty sheet) is a valid empty file, returned with an `emptyOutput`
+ * warning in its metadata. Targets that carry their own structure are checked by their writers.
  */
-export function assertUsableOutput(result: Pick<WorkerConversionResult, 'filePath' | 'buffer' | 'size'>, source: string, target: string): void {
-  if (!TEXT_TARGETS.has(target) || source === target) return;
-  const sample = sampleOf(result);
-  const length = result.filePath ? result.size : result.buffer.length;
-  if (CONTENT_TARGETS.has(target) && length <= SAMPLE_BYTES && isBlank(sample)) throw new NoConvertibleContentError(source, target);
-  if (BINARY_CONTAINER_SIGNATURES.some((signature) => sample.subarray(0, signature.length).equals(signature))) {
+export async function checkConversionOutput<T extends Pick<WorkerConversionResult, 'filePath' | 'buffer' | 'size' | 'metadata'> & { mimeType?: string }>(
+  result: T,
+  source: string,
+  target: string
+): Promise<T> {
+  if (!TEXT_TARGETS.has(target) || source === target) return result;
+  if (result.mimeType === ARCHIVE_MIME_TYPE) {
+    if (await isTextArchive(result)) return result;
     throw new InvalidConversionOutputError(source, target);
   }
+  const sample = sampleOf(result);
+  const length = result.filePath ? result.size : result.buffer.length;
+  if (isContainer(sample)) throw new InvalidConversionOutputError(source, target);
+  if (CONTENT_TARGETS.has(target) && length <= SAMPLE_BYTES && isBlank(sample)) {
+    return { ...result, metadata: { ...result.metadata, emptyOutput: true } };
+  }
+  return result;
 }

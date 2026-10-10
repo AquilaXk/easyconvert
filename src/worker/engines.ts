@@ -27,7 +27,7 @@ import {
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
-import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
+import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2226,6 +2226,17 @@ const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
 const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
 const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
+/**
+ * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
+ * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
+ */
+export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
+  const family = OOXML_VARIANT_FAMILY[src];
+  const buffer = family === undefined ? undefined : inputAsBuffer(input);
+  if (family === undefined || buffer === undefined) return input;
+  const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
+  return plain.droppedMacros ? plain.buffer : input;
+}
 /** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
 const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
 
@@ -2481,6 +2492,7 @@ export async function executeWorkerConversion(
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
   assertWorkbookNotEncrypted(input, src);
+  if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
   if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)) && !crossesLibreOfficeApplications(src, tgt))) {
     try {

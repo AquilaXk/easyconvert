@@ -11,7 +11,7 @@ import {
 } from '../types';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { requiresNativeEngine } from './native-engine-pairs';
-import { assertUsableOutput } from './output-check';
+import { checkConversionOutput } from './output-check';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
 import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { assertConversionOptionsObject } from './options-guard';
@@ -160,8 +160,7 @@ export async function dispatchConversion(
   } catch (err) {
     throw toEngineUnavailable(err, src, tgt);
   }
-  const result = await postProcessNativePdf(converted, tgt, options);
-  assertUsableOutput(result, src, tgt);
+  const result = await checkConversionOutput(await postProcessNativePdf(converted, tgt, options), src, tgt);
 
   const keepOnDisk = !Buffer.isBuffer(input) || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
   return keepOnDisk ? result : materialize(result);

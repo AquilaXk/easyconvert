@@ -8,6 +8,8 @@ import { ConversionFailedError } from '../src/lib/types';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from '../src/lib/conversions/ooxml-variants';
 import { craftDocx, paragraph } from './helpers/docx-craft';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
+import { readXps } from './helpers/xps-text-walker';
+import { officeInputWithoutMacros } from '../src/worker/engines';
 
 /**
  * Macro-enabled, template and slideshow Office Open XML variants are read like their plain formats (#670). The packages
@@ -118,6 +120,32 @@ describe('Office Open XML variants are read like their plain formats', () => {
         expect(runPythonHelper<{ text: string[] }>('docx_facts.py', [file]).text).toEqual(PARAGRAPHS);
       }
     }
+  });
+
+  it('writes a template, macro-enabled document or workbook as an XPS package whose pages hold its text', async () => {
+    const word = [['dotx', WORD_TEMPLATE_TYPE], ['docm', 'application/vnd.ms-word.document.macroEnabled.main+xml']] as const;
+    for (const [format, mainType] of word) {
+      const result = await convertFile(await wordVariant(mainType, format === 'docm'), format, 'xps', {}, `letter.${format}`);
+      expect(result.filename).toBe('letter.xps');
+      expect(result.mimeType).toBe('application/oxps');
+      const xps = await readXps(result.buffer);
+      expect(xps.pages.length).toBeGreaterThan(0);
+      const lines = xps.pages.flatMap((page) => page.glyphs.map((glyph) => glyph.text));
+      expect(lines).toEqual(PARAGRAPHS);
+    }
+    const workbook = await convertFile(await excelVariant(EXCEL_MACRO_TYPE, true), 'xlsm', 'xps', {}, 'book.xlsm');
+    const cells = (await readXps(workbook.buffer)).pages.flatMap((page) => page.glyphs.map((glyph) => glyph.text)).join('\n');
+    for (const text of SHEET_ROWS.flat()) expect(cells).toContain(text);
+  });
+
+  it('hands the office suite the package of a macro-enabled document without its macro project', async () => {
+    const docm = await wordVariant('application/vnd.ms-word.document.macroEnabled.main+xml', true);
+    const handed = await officeInputWithoutMacros(docm, 'docm');
+    const zip = await JSZip.loadAsync(handed as Buffer);
+    expect(Object.keys(zip.files).filter((name) => name.includes('vbaProject'))).toEqual([]);
+    expect(await zip.file('word/document.xml')!.async('string')).toContain(PARAGRAPHS[0]);
+    const plain = await craftDocx({ body: paragraph('x') });
+    expect(await officeInputWithoutMacros(plain, 'docx')).toBe(plain);
   });
 
   it('refuses a variant without its main part with a typed error', async () => {

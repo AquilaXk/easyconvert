@@ -544,7 +544,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-word.document.macroEnabled.12',
     category: 'document',
     description: 'Microsoft Word macro-enabled OpenXML document.',
-    targetFormats: ['pdf', 'html', 'txt', 'zip', 'md'],
+    targetFormats: ['pdf', 'html', 'txt', 'zip', 'md', 'xps'],
   },
   dotx: {
     id: 'dotx',
@@ -553,7 +553,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
     category: 'document',
     description: 'Word template file for pre-formatted document structures.',
-    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'odt'],
+    targetFormats: ['docx', 'pdf', 'html', 'txt', 'zip', 'odt', 'xps'],
   },
   dot: {
     id: 'dot',
@@ -1110,7 +1110,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-excel.sheet.macroEnabled.12',
     category: 'spreadsheet',
     description: 'Excel spreadsheet supporting embedded VBA macros.',
-    targetFormats: ['xlsx', 'csv', 'pdf', 'zip', 'html', 'ods', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'pdf', 'zip', 'html', 'xps', 'ods', 'xls'],
   },
   xltx: {
     id: 'xltx',

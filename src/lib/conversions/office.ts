@@ -78,6 +78,15 @@ export async function convertOffice(
   const ooxmlFamily = OOXML_VARIANT_FAMILY[src];
   if (ooxmlFamily !== undefined) {
     if (tgt === ooxmlFamily) return ooxmlVariantToPlainFormat(inputBuffer, src, ooxmlFamily, baseName);
+    if (tgt === 'xps' || tgt === 'oxps') {
+      // The plain format's reader gives the text (a workbook, its rows as CSV lines); the XPS writer lays it out like the
+      // one of the other text-based sources.
+      const textTarget = ooxmlFamily === 'xlsx' ? 'csv' : 'txt';
+      const text = (await convertOffice(inputBuffer, ooxmlFamily, textTarget, options, originalFilename)).buffer.toString('utf-8');
+      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const buffer = await buildOpenXpsPackage([{ title: baseName, lines }], baseName);
+      return { buffer, mimeType: 'application/oxps', filename: `${baseName}.${tgt}`, size: buffer.length };
+    }
     return convertOffice(inputBuffer, ooxmlFamily, tgt, options, originalFilename);
   }
 
