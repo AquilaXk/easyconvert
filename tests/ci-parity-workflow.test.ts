@@ -139,9 +139,17 @@ describe('parity-speed', () => {
     }
   });
 
+  it("checks the gap entries the pull request adds or changes against its own speed run, with the base's gap file", () => {
+    const take = speed.steps.find((s) => s.id === 'base-gaps');
+    expect(take?.run).toContain('git show "$PR_BASE_SHA:bench/parity-gaps.json"');
+    expect(take?.env?.PR_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    expect(speed.steps.find((s) => s.id === 'bench')?.env?.BASE_GAPS).toBe('${{ steps.base-gaps.outputs.path }}');
+    expect(speed.steps.indexOf(take as Step)).toBeLessThan(speed.steps.findIndex((s) => s.id === 'bench'));
+  });
+
   it('measures every case of the changed families, speed only, and never reads or writes a cache', () => {
     const bench = runOf(speed, 'bench');
-    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"');
+    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps "$BASE_GAPS"');
     expect(bench).not.toContain('--quick');
     expect(bench).not.toContain('--quality-only');
     expect(JSON.stringify(speed)).not.toMatch(/actions\/cache|\.bench-cache|bench-ref-/);

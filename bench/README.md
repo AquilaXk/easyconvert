@@ -16,7 +16,7 @@ parity" below).
 | `npm run bench:quality -- --no-gate` | Measure and report without gating. |
 | `npm run bench:quality -- --inject-regression webp-quality` | Degrade our side on purpose to show the gate fails and names the metric. `webp-quality` lowers the WebP quality setting (a regression against our baseline; it stays on the same rate-distortion curve, so it is not behind the reference at equal size). `webp-reencode` encodes WebP twice (a worse curve, which BD-rate sees). `x264-ultrafast` switches H.264 to the ultrafast preset. `slow-ours` makes every timed run of our side twice as long (a speed regression). |
 | `npm run bench:quality -- --compare-report <file>` | Gate an existing report without measuring. |
-| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
+| `npm run bench:quality -- --parity [--family a,b] [--quick] [--quality-only \| --speed-only] [--base-gaps <file>]` | The reference-parity gate. Exit 0 pass, 1 regression against the baseline, 2 run failure, 3 a row below the reference. |
 
 `ORACLE_STRICT_MODE=1` turns a missing reference tool from an explicit skip (listed in the report) into a failure.
 `ssimulacra2` and libvmaf are optional metrics and are only reported when installed.
@@ -132,6 +132,17 @@ that scope that no rule covers fails the `changes` job, so a new file cannot esc
 family with `"bench": null` (cad, font, raw, data, ebook, vector, hdr-image) fails with "add reference-compared
 bench rows for <family>" until the same change adds a runner in `bench/families/` and sets the family's `bench` to its
 own name.
+
+The benchmark's own files are mapped too, so a change to what measures or judges cannot skip the measurement: a family's
+runner and helpers (`bench/families/<family>.ts`, `bench/pdf-stamp.ts`, `bench/structure-*.ts`, `bench/bd-rate.ts`, ...) map to
+that family; the harness, the gate, the map, the corpus, `scripts/ci-parity-*.mjs` and `ci.yml` map to every family;
+`bench/baseline.json` and `bench/parity-gaps.json` map to the families of the rows whose entries changed against the base
+(`PR_BASE_SHA`; every family when the base cannot be read or a row names an unknown family).
+
+A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
+passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
+carry the commit of a CI run) have to lie within the speed-ratio interval the job measured for the row, widened by
+`GAP_BACKING_LOG_MARGIN`. A made-up entry fails with `gap-not-backed`; an entry the base already holds is not rechecked.
 
 **Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
 

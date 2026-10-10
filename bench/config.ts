@@ -125,6 +125,13 @@ export const SPEED_HISTORY_MIN_LOG_SPREAD = 0.11;
  * archive streaming, OCR in bands) were 1.65 times or more.
  */
 export const SPEED_STEP_FACTOR = 1.6;
+/**
+ * A gap entry a pull request adds or changes must be backed by that pull request's own speed measurement: the recorded
+ * ratio, and every history point the change adds, lie inside the measured interval of the row widened by this log
+ * margin on each side (twice the run-to-run spread of a runner, SPEED_HISTORY_MIN_LOG_SPREAD, since the entry was
+ * recorded in another run). A made-up entry far from what the pull request measures is refused.
+ */
+export const GAP_BACKING_LOG_MARGIN = 2 * SPEED_HISTORY_MIN_LOG_SPREAD;
 /** Branch whose nightly and push runs may extend a speed history. */
 export const DEFAULT_BRANCH = 'main';
 /** Workflow events of the default branch that may extend a speed history. */

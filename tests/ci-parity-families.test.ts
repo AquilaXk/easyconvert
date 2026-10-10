@@ -1,14 +1,17 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { QUICK_SUBSET } from '../bench/config';
 import { FAMILIES } from '../bench/report';
 import { FAMILY_RUNNERS } from '../bench/families';
 import {
   ALL_FAMILIES,
+  changedRowIds,
   classifyPaths,
   FamilyMapError,
+  gitChangedRows,
   loadFamilyMap,
   MAX_CHANGED_PATHS,
   MAX_PATH_LENGTH,
@@ -34,7 +37,7 @@ describe('the map', () => {
     expect(MAP.scope.test('src/lib/workers/cpu-pool.ts')).toBe(true);
     expect(MAP.scope.test('src/lib/jobs/artifact-helpers.ts')).toBe(true);
     expect(MAP.scope.test('src/lib/queue/graph/node-executor.ts')).toBe(true);
-    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'src/lib/jobs/graph.ts', 'src/lib/queue/graph/scheduler.ts', 'bench/run.ts', 'tests/x.test.ts', 'docs/a.md']) {
+    for (const outside of ['src/app/api/convert/route.ts', 'src/components/Upload.tsx', 'src/lib/registry.ts', 'src/lib/jobs/graph.ts', 'src/lib/queue/graph/scheduler.ts', 'bench/realworld/run.ts', 'bench/README.md', 'tests/x.test.ts', 'docs/a.md']) {
       expect(MAP.scope.test(outside), outside).toBe(false);
     }
   });
@@ -165,7 +168,7 @@ describe('classifying changed paths', () => {
   });
 
   it('leaves unrelated files at the repository root and under .github alone', () => {
-    expect(classify('README.md', 'tsconfig.json', 'docker-compose.yml', '.github/workflows/ci.yml', '.github/PULL_REQUEST_TEMPLATE.md', 'docker/AIRGAP.md')).toEqual({
+    expect(classify('README.md', 'tsconfig.json', 'docker-compose.yml', '.github/workflows/nightly.yml', '.github/PULL_REQUEST_TEMPLATE.md', 'docker/AIRGAP.md')).toEqual({
       benchmarked: [],
       unmapped: [],
       unclassified: [],
@@ -173,7 +176,7 @@ describe('classifying changed paths', () => {
   });
 
   it('maps nothing outside the conversion code', () => {
-    expect(classify('src/app/page.tsx', 'src/lib/queue/redis.ts', 'README.md', 'bench/run.ts', 'tests/a.test.ts', '.github/workflows/ci.yml')).toEqual({
+    expect(classify('src/app/page.tsx', 'src/lib/queue/redis.ts', 'README.md', 'bench/README.md', 'tests/a.test.ts', '.github/workflows/nightly.yml')).toEqual({
       benchmarked: [],
       unmapped: [],
       unclassified: [],
@@ -269,5 +272,143 @@ describe('the command the changes job runs', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('unclassified=src/lib/conversions/brand-new-engine.ts');
     expect(result.stderr).toContain('::error::no rule in bench/family-map.json covers src/lib/conversions/brand-new-engine.ts');
+  });
+});
+
+describe('the files of the benchmark itself', () => {
+  const walkBench = (dir: string): string[] =>
+    readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((entry) => {
+      const relative = `${dir}/${entry.name}`;
+      return entry.isDirectory() ? walkBench(relative) : [relative];
+    });
+  const benchFiles = walkBench('bench').filter((file) => !file.startsWith('bench/realworld/') && !file.endsWith('.md'));
+  const everything = { benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] };
+
+  it('leaves no file of the harness, its corpus or the parity scripts without a rule', () => {
+    expect(benchFiles.length).toBeGreaterThan(30);
+    const files = [...benchFiles, ...readdirSync(path.join(ROOT, 'scripts')).filter((name) => /^ci-parity-.*\.mjs$/.test(name)).map((name) => `scripts/${name}`)];
+    expect(files.filter((file) => !MAP.scope.test(file))).toEqual([]);
+    expect(classify(...files).unclassified).toEqual([]);
+  });
+
+  it("sends each family's runner to that family: the runner file names the family, and a document runner may be split", () => {
+    const runners = readdirSync(path.join(ROOT, 'bench', 'families')).filter((name) => name !== 'index.ts');
+    expect(runners.length).toBeGreaterThanOrEqual(BENCH_FAMILIES.length);
+    for (const name of runners) {
+      const family = BENCH_FAMILIES.find((candidate) => name === `${candidate}.ts` || name.startsWith(`${candidate}-`));
+      expect(family, name).toBeDefined();
+      expect(classify(`bench/families/${name}`), name).toEqual({ benchmarked: [family], unmapped: [], unclassified: [] });
+    }
+  });
+
+  it.each<[string, string, string[]]>([
+    ['the bench helper of the image, video and audio rate-distortion fits', 'bench/bd-rate.ts', ['image', 'video', 'audio']],
+    ['the text scoring of OCR, documents and PDF operations', 'bench/text-metrics.ts', ['ocr', 'document', 'pdf-ops']],
+    ['the structure scoring of documents', 'bench/structure-metrics.ts', ['document']],
+    ['the PDF stamp reference', 'bench/pdf-stamp.ts', ['pdf-ops']],
+    ['the stamp ink oracle', 'bench/pdf-ink.ts', ['pdf-ops']],
+  ])('sends %s to its families', (_name, file, families) => {
+    expect(classify(file)).toEqual({ benchmarked: families, unmapped: [], unclassified: [] });
+  });
+
+  it.each([
+    'bench/family-map.json',
+    'bench/gate.ts',
+    'bench/parity.ts',
+    'bench/parity-gaps.ts',
+    'bench/speed-history.ts',
+    'bench/speed-parity.ts',
+    'bench/config.ts',
+    'bench/run.ts',
+    'bench/rows.ts',
+    'bench/measure.ts',
+    'bench/tools.ts',
+    'bench/families/index.ts',
+    'bench/corpus/clip.mp4',
+    'scripts/ci-parity-families.mjs',
+    'scripts/ci-parity-policy.mjs',
+    '.github/workflows/ci.yml',
+  ])('sends %s, the code of the gate itself, to every family', (file) => {
+    expect(classify(file)).toEqual(everything);
+  });
+
+  it('leaves the benchmark notes and the real-world corpus alone', () => {
+    expect(classify('bench/README.md', 'bench/realworld/run.ts', '.github/workflows/nightly.yml')).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
+  });
+});
+
+describe('the rows of baseline.json and parity-gaps.json', () => {
+  const rows = (ids: string[] | null) => ({ changedRows: () => ids });
+
+  it('map to the families of the rows that changed', () => {
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['image/photo-a.jpg->avif/throughput', 'pdf-ops/merge.pdf->pdf/bytes']))).toEqual({ benchmarked: ['image', 'pdf-ops'], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP, rows(['image/photo-a.jpg->avif/throughput']))).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+  });
+
+  it('map to nothing when no row changed, to every family for a row of an unknown family, and to every family when the change cannot be read', () => {
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows([]))).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(['sound/a/b']))).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/baseline.json'], MAP, rows(null))).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classifyPaths(['bench/parity-gaps.json'], MAP)).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+  });
+
+  it('read the ids of the rows that differ', () => {
+    const before = { entries: { 'a/x/m': { ours: 1 }, 'b/x/m': { ours: 2 } } };
+    const after = { entries: { 'a/x/m': { ours: 1 }, 'b/x/m': { ours: 3 }, 'c/x/m': { ours: 4 } } };
+    expect(changedRowIds('baseline', before, after)?.sort()).toEqual(['b/x/m', 'c/x/m']);
+    const gapsBefore = { gaps: [{ id: 'a/x/throughput', ratio: 0.5 }, { id: 'b/x/throughput', ratio: 0.6 }] };
+    const gapsAfter = { gaps: [{ id: 'a/x/throughput', ratio: 0.1 }, { id: 'b/x/throughput', ratio: 0.6 }] };
+    expect(changedRowIds('gaps', gapsBefore, gapsAfter)).toEqual(['a/x/throughput']);
+    expect(changedRowIds('baseline', {}, [])).toBeNull();
+    expect(changedRowIds('gaps', { gaps: 1 }, { gaps: [] })).toBeNull();
+  });
+
+  describe('in a real repository', () => {
+    const repo = mkdtempSync(path.join(tmpdir(), 'family-rows-'));
+    afterAll(() => rmSync(repo, { recursive: true, force: true }));
+    const git = (...args: string[]): string => {
+      const run = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (run.status !== 0) throw new Error(`git ${args.join(' ')}: ${run.stderr}`);
+      return run.stdout.trim();
+    };
+    const write = (file: string, value: unknown): void => {
+      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+      writeFileSync(path.join(repo, file), `${JSON.stringify(value, null, 2)}\n`);
+    };
+    const gap = (id: string, ratio: number) => ({ id, issue: 641, ratio, note: 'n' });
+
+    it('maps the bypass of a new image gap at 0.1 to the image family, so its speed is measured against the entry', () => {
+      git('init', '-q');
+      git('config', 'user.email', 'bench@example.test');
+      git('config', 'user.name', 'bench');
+      write('bench/parity-gaps.json', { schemaVersion: 1, gaps: [gap('compression/mixed.7z->tar/throughput', 0.89)] });
+      write('bench/baseline.json', { schemaVersion: 1, entries: { 'image/a.jpg->webp/ssim': { ours: 0.9 }, 'audio/a.wav->opus/snr': { ours: 40 } } });
+      git('add', 'bench');
+      git('commit', '-q', '-m', 'base');
+      const base = git('rev-parse', 'HEAD');
+      const read = gitChangedRows(base, repo);
+      expect(read('bench/parity-gaps.json', 'gaps')).toEqual([]);
+      write('bench/parity-gaps.json', { schemaVersion: 1, gaps: [gap('compression/mixed.7z->tar/throughput', 0.89), gap('image/photo-a.jpg->avif/throughput', 0.1)] });
+      expect(classifyPaths(['bench/parity-gaps.json'], MAP, { changedRows: read })).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+      write('bench/baseline.json', { schemaVersion: 1, entries: { 'image/a.jpg->webp/ssim': { ours: 0.9 }, 'audio/a.wav->opus/snr': { ours: 41 } } });
+      expect(classifyPaths(['bench/baseline.json', 'bench/parity-gaps.json'], MAP, { changedRows: read })).toEqual({ benchmarked: ['image', 'audio'], unmapped: [], unclassified: [] });
+    });
+
+    it('treats a file the base does not have as all new, and an unreadable base as every family', () => {
+      const base = git('rev-parse', 'HEAD');
+      write('bench/other.json', { schemaVersion: 1, entries: { 'ocr/x/y': { ours: 1 } } });
+      expect(gitChangedRows(base, repo)('bench/other.json', 'baseline')).toEqual(['ocr/x/y']);
+      expect(gitChangedRows('0'.repeat(40), repo)('bench/baseline.json', 'baseline')).toBeNull();
+      expect(gitChangedRows(undefined, repo)('bench/baseline.json', 'baseline')).toBeNull();
+      expect(gitChangedRows(base, repo)('bench/missing-now.json', 'baseline')).toBeNull();
+    });
+  });
+});
+
+describe('a map with a rule over the rows of a file', () => {
+  it('accepts rows "baseline" or "gaps" and refuses anything else', () => {
+    const map = { schemaVersion: 1, scope: '^src/', families: benchEntries };
+    expect(() => validateFamilyMap({ ...map, rules: [{ families: ['image'], match: '^src/', rows: 'gaps' }] })).not.toThrow();
+    expect(() => validateFamilyMap({ ...map, rules: [{ families: ['image'], match: '^src/', rows: 'other' }] })).toThrow(/rows must be/);
   });
 });

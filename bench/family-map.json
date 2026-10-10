@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -18,6 +18,56 @@
     "hdr-image": { "bench": null }
   },
   "rules": [
+    {
+      "families": ["*"],
+      "match": "^bench/(family-map\\.json|(gate|parity|parity-gaps|speed-history|speed-parity|config|run|context|rows|report|tools|stats|measure|ref-cache|harness-hash|scope|convert|errors|refresh-speed|families/index)\\.ts)$|^bench/corpus/|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$"
+    },
+    {
+      "families": ["*"],
+      "rows": "baseline",
+      "match": "^bench/baseline\\.json$"
+    },
+    {
+      "families": ["*"],
+      "rows": "gaps",
+      "match": "^bench/parity-gaps\\.json$"
+    },
+    {
+      "families": ["image"],
+      "match": "^bench/families/image\\.ts$"
+    },
+    {
+      "families": ["video"],
+      "match": "^bench/families/video\\.ts$"
+    },
+    {
+      "families": ["audio"],
+      "match": "^bench/families/audio\\.ts$"
+    },
+    {
+      "families": ["image", "video", "audio"],
+      "match": "^bench/bd-rate\\.ts$"
+    },
+    {
+      "families": ["ocr"],
+      "match": "^bench/families/ocr\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^bench/families/document[^/]*\\.ts$|^bench/structure-(extract|metrics)\\.ts$"
+    },
+    {
+      "families": ["ocr", "document", "pdf-ops"],
+      "match": "^bench/text-metrics\\.ts$"
+    },
+    {
+      "families": ["compression"],
+      "match": "^bench/families/compression\\.ts$"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^bench/families/pdf-ops\\.ts$|^bench/pdf-(stamp|ink)\\.ts$"
+    },
     {
       "families": ["*"],
       "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"

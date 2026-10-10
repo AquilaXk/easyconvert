@@ -439,13 +439,14 @@ describe('a parity run on a saved report', () => {
   ];
 
   /** Writes the report, baseline and gaps files, runs the command and returns the printed lines and the verdict file. */
-  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; flags?: string[]; gaps?: unknown[] } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
-    const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json') };
+  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[] } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
+    const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json'), baseGaps: path.join(dir, 'base-gaps.json') };
     fs.writeFileSync(files.report, JSON.stringify(report(rows)));
     fs.writeFileSync(files.baseline, JSON.stringify({ schemaVersion: 1, entries: options.baseline ?? baselineEntries(1.1) }));
     fs.writeFileSync(files.gaps, JSON.stringify({ schemaVersion: 1, gaps: options.gaps ?? [] }));
+    if (options.baseGaps) fs.writeFileSync(files.baseGaps, JSON.stringify({ schemaVersion: 1, gaps: options.baseGaps }));
     const lines: string[] = [];
-    const code = await main(['--parity', '--compare-report', files.report, '--baseline', files.baseline, '--gaps', files.gaps, '--out', dir, ...(options.flags ?? [])], (line) => lines.push(line));
+    const code = await main(['--parity', '--compare-report', files.report, '--baseline', files.baseline, '--gaps', files.gaps, ...(options.baseGaps ? ['--base-gaps', files.baseGaps] : []), '--out', dir, ...(options.flags ?? [])], (line) => lines.push(line));
     return { code, lines, verdict: JSON.parse(fs.readFileSync(path.join(dir, PARITY_VERDICT_FILE), 'utf8')) as ParityRunFile };
   }
 
@@ -472,6 +473,46 @@ describe('a parity run on a saved report', () => {
     expect(lines.some((line) => line.startsWith('TRACKED ROWS'))).toBe(true);
     expect(lines.some((line) => line.includes('TRACK image/a.jpg->webp/throughput [tracked-gap]') && line.includes('issue #487'))).toBe(true);
     expect(verdict.parity.summary).toMatchObject({ fail: 0, tracked: 1 });
+  });
+
+  describe('a gap entry the change adds or edits', () => {
+    // The slow row measures 0.5 [0.4, 0.6]. An honest entry is near that; a made-up one is far from it.
+    const entry = (ratio: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ id: SPEED_ID, issue: 641, ratio, note: 'AVIF speed', history: FLAT_HISTORY(ratio).map((point) => ({ ...point, commit: 'b'.repeat(40) })), ...extra });
+    const slow = (): BenchRow[] => rowsWith(-2, 0.96, 'fail');
+
+    it('exits 3 for the bypass: a new image gap recorded at 0.1, far below what this run measured', async () => {
+      const { code, lines, verdict } = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [] });
+      expect(code).toBe(3);
+      expect(lines.some((line) => line.startsWith(`BELOW REFERENCE ${SPEED_ID}: known-gap entry not backed by this run: the recorded ratio 0.1 is outside [`))).toBe(true);
+      expect(verdict.parity.rows.find((candidate) => candidate.id === SPEED_ID)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+    });
+
+    it('exits 0 for the same entry at a ratio this run measures, and when the run does not measure speed', async () => {
+      expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45)], baseGaps: [] })).code).toBe(0);
+      // The quality job cannot back an entry; the speed job of the same change does (the changed family is mapped to it).
+      expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [], flags: ['--quality-only'] })).code).toBe(0);
+    });
+
+    it('checks an edit of a ratio, and leaves an entry the base already has as it is recorded', async () => {
+      expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.1)], baseGaps: [entry(0.5)] })).code).toBe(3);
+      expect((await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45)], baseGaps: [entry(0.45)] })).code).toBe(0);
+    });
+
+    it('refuses an entry for a row this run did not measure, and a made-up history point', async () => {
+      const other = { id: 'image/b.jpg->webp/throughput', issue: 641, ratio: 0.5, note: 'AVIF speed', history: FLAT_HISTORY(0.5).map((point) => ({ ...point, commit: 'b'.repeat(40) })) };
+      const unmeasured = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45), other], baseGaps: [entry(0.45)] });
+      expect(unmeasured.code).toBe(3);
+      expect(unmeasured.lines.some((line) => line.includes('this run did not measure image/b.jpg->webp/throughput'))).toBe(true);
+      const withoutCommit = await run(slow(), { baseline: baselineEntries(0.5), gaps: [entry(0.45, { history: [...(entry(0.45).history as unknown[]), { ratio: 0.45, at: '2026-10-09T02:00:00.000Z' }] })], baseGaps: [entry(0.45)] });
+      expect(withoutCommit.code).toBe(3);
+      expect(withoutCommit.lines.some((line) => line.includes('is new and has no commit'))).toBe(true);
+      const recorded = await run(slow(), {
+        baseline: baselineEntries(0.5),
+        gaps: [entry(0.45, { history: [...(entry(0.45).history as unknown[]), { ratio: 0.46, at: '2026-10-09T02:00:00.000Z', commit: 'a'.repeat(40) }] })],
+        baseGaps: [entry(0.45)],
+      });
+      expect(recorded.code).toBe(0);
+    });
   });
 
   it('exits 3 when a tracked row got slower than its history predicts', async () => {

@@ -15,6 +15,7 @@
 // `bench` to its own name; tests/ci-parity-families.test.ts keeps the map and the runners in step.
 //
 // This file needs no installed dependencies: the `changes` job runs it straight after checkout.
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +31,8 @@ export const MAX_RULES = 200;
 export const MAX_PATTERN_LENGTH = 2000;
 const MAP_SCHEMA_VERSION = 1;
 const FAMILY_NAME = /^[a-z][a-z0-9-]*$/;
+/** The files whose rows belong to families: a rule with `rows` maps such a file by the rows that changed, not by its name. */
+const ROW_FILE_KINDS = new Set(['baseline', 'gaps']);
 const MAX_MAP_BYTES = 1024 * 1024;
 
 export class FamilyMapError extends Error {
@@ -75,7 +78,8 @@ export function validateFamilyMap(value) {
     for (const name of rule.families) {
       if (name !== ALL_FAMILIES && !families.has(name)) throw new FamilyMapError(`${where} names the unknown family ${String(name)}`);
     }
-    return { families: rule.families, match: compile(rule.match, `${where}.match`) };
+    if (rule.rows !== undefined && !ROW_FILE_KINDS.has(rule.rows)) throw new FamilyMapError(`${where}.rows must be "baseline" or "gaps"`);
+    return { families: rule.families, match: compile(rule.match, `${where}.match`), rows: rule.rows };
   });
   return { scope, families, benchmarked, rules };
 }
@@ -96,7 +100,7 @@ export function loadFamilyMap(file = FAMILY_MAP_FILE) {
  * Classifies changed paths. `benchmarked` lists the families to measure, in harness order; `unmapped` the conversion
  * families without bench rows; `unclassified` the paths inside the scope that no rule covers.
  */
-export function classifyPaths(paths, map) {
+export function classifyPaths(paths, map, options = {}) {
   if (paths.length > MAX_CHANGED_PATHS) throw new FamilyMapError(`more than ${MAX_CHANGED_PATHS} changed paths`);
   const benchmarked = new Set();
   const unmapped = new Set();
@@ -107,6 +111,21 @@ export function classifyPaths(paths, map) {
     const rule = map.rules.find((candidate) => candidate.match.test(file));
     if (!rule) {
       unclassified.push(file);
+      continue;
+    }
+    const rowIds = rule.rows === undefined ? null : (options.changedRows?.(file, rule.rows) ?? null);
+    if (rowIds !== null) {
+      // A file of rows maps by the families of the rows that changed; a row of a family the map does not know could be anything.
+      for (const id of rowIds) {
+        const name = id.split('/')[0];
+        if (!map.families.has(name)) {
+          for (const bench of map.benchmarked) benchmarked.add(bench);
+        } else if (map.families.get(name) === null) {
+          unmapped.add(name);
+        } else {
+          benchmarked.add(map.families.get(name));
+        }
+      }
       continue;
     }
     for (const name of rule.families) {
@@ -126,12 +145,61 @@ export function classifyPaths(paths, map) {
   };
 }
 
+/** Rows of a parsed row file by id, or null when the file is not shaped like one. */
+function rowsById(kind, value) {
+  if (kind === 'baseline') {
+    const entries = value?.entries;
+    return entries !== null && typeof entries === 'object' && !Array.isArray(entries) ? entries : null;
+  }
+  const gaps = value?.gaps;
+  return Array.isArray(gaps) ? Object.fromEntries(gaps.map((gap) => [gap?.id, gap])) : null;
+}
+
+/** Ids of the rows that differ between two parsed row files, or null when either is not shaped like one. */
+export function changedRowIds(kind, before, after) {
+  const old = rowsById(kind, before);
+  const next = rowsById(kind, after);
+  if (old === null || next === null) return null;
+  const ids = new Set([...Object.keys(old), ...Object.keys(next)]);
+  return [...ids].filter((id) => JSON.stringify(old[id]) !== JSON.stringify(next[id]));
+}
+
+const ABSENT_AT_BASE = /does not exist in|exists on disk, but not in/;
+
+/** The text of `file` at `sha`: null when the commit has no such file, an error when the commit cannot be read. */
+function gitShow(sha, file, root) {
+  execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd: root, stdio: 'ignore' });
+  try {
+    return execFileSync('git', ['show', `${sha}:${file}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    if (ABSENT_AT_BASE.test(String(error?.stderr ?? ''))) return null;
+    throw error;
+  }
+}
+
+/**
+ * The `changedRows` reader for a change measured against `baseSha`: the row file in the working tree against the file
+ * at the base. It answers null (every family) when there is no base, the base cannot be read or a file is not a row file.
+ */
+export function gitChangedRows(baseSha, root = ROOT, readBase = gitShow) {
+  if (!baseSha) return () => null;
+  return (file, kind) => {
+    try {
+      const old = readBase(baseSha, file, root);
+      const before = old === null ? { entries: {}, gaps: [] } : JSON.parse(old);
+      return changedRowIds(kind, before, JSON.parse(readFileSync(path.join(root, file), 'utf8')));
+    } catch {
+      return null;
+    }
+  };
+}
+
 function main() {
   const paths = readFileSync(0, 'utf8')
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
-  const result = classifyPaths(paths, loadFamilyMap());
+  const result = classifyPaths(paths, loadFamilyMap(), { changedRows: gitChangedRows(process.env.PR_BASE_SHA) });
   console.log(`families=${result.benchmarked.join(',')}`);
   console.log(`unmapped=${result.unmapped.join(',')}`);
   console.log(`unclassified=${result.unclassified.join(',')}`);

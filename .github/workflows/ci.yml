@@ -641,12 +641,26 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
 
+      # A known-gap entry this pull request adds or changes is judged against the speed this job measures, so it needs
+      # the gap file of the base (bench/parity.ts). Without it the entries could not be checked, so the job fails.
+      - name: Take the gap file of the base
+        id: base-gaps
+        if: env.BENCH_CHANGED == 'true'
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          git show "$PR_BASE_SHA:bench/parity-gaps.json" > "$RUNNER_TEMP/base-parity-gaps.json"
+          echo "path=$RUNNER_TEMP/base-parity-gaps.json" >> "$GITHUB_OUTPUT"
+
       - name: Measure speed against the reference tools
         id: bench
         if: env.BENCH_CHANGED == 'true'
+        env:
+          BASE_GAPS: ${{ steps.base-gaps.outputs.path }}
         run: |
           set +e
-          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"
+          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps "$BASE_GAPS"
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "benchmark exit code: $code"
