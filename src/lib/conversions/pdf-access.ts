@@ -83,13 +83,17 @@ async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, 
     fs.writeFileSync(inputPath, pdf, { mode: 0o600 });
     const request = { inputPath, tempDir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS };
 
-    const verdict = await readPdfAccess(request);
-    const forbidden = forbiddenRights(operation, verdict.capabilities);
-    if (forbidden.length > 0 && !verdict.ownerPasswordMatched && access.confirmEditRights !== true) {
-      throw new PdfPermissionDeniedError(
-        `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
-          'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
-      );
+    // A confirmed edit needs no verdict: the confirmation lifts every restriction, and a wrong password still fails the
+    // decryption below. Only an unconfirmed request asks qpdf which rights the password grants.
+    if (access.confirmEditRights !== true) {
+      const verdict = await readPdfAccess(request);
+      const forbidden = forbiddenRights(operation, verdict.capabilities);
+      if (forbidden.length > 0 && !verdict.ownerPasswordMatched) {
+        throw new PdfPermissionDeniedError(
+          `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
+            'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
+        );
+      }
     }
     return await withQpdfDecryptedPdf(request, async (plainPath) => fs.readFileSync(plainPath));
   } finally {

@@ -482,6 +482,13 @@
       ]
     },
     {
+      "id": "pdf-ops/unlock.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.97,
+      "note": "speed ratio 0.97 or below when measured locally (the interval straddled 0.97): ours spawns qpdf through the sandbox like the decrypt row, which is tracked under the same issue",
+      "history": []
+    },
+    {
       "id": "video/clip.mp4->hevc/throughput",
       "issue": 643,
       "ratio": 0.97,
