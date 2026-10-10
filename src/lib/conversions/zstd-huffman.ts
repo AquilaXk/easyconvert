@@ -34,6 +34,8 @@ export interface HuffmanDecodeTable {
   maxBits: number;
   symbol: Uint8Array;
   nbBits: Uint8Array;
+  /** `symbol` in the low byte and `nbBits` above it, so a decoded symbol costs one table read. */
+  entry: Uint16Array;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ function weightsToDecodeTable(weights: Uint8Array, count: number): HuffmanDecode
   const size = 1 << maxBits;
   const symbol = new Uint8Array(size);
   const nbBits = new Uint8Array(size);
+  const entry = new Uint16Array(size);
   let index = 0;
   for (let w = 1; w <= maxBits; w++) {
     const span = 1 << (w - 1);
@@ -66,11 +69,12 @@ function weightsToDecodeTable(weights: Uint8Array, count: number): HuffmanDecode
       if (weights[s] !== w) continue;
       symbol.fill(s, index, index + span);
       nbBits.fill(bits, index, index + span);
+      entry.fill((bits << 8) | s, index, index + span);
       index += span;
     }
   }
   if (index !== size) zstdFail('Malformed Zstandard Huffman table: code space mismatch.');
-  return { maxBits, symbol, nbBits };
+  return { maxBits, symbol, nbBits, entry };
 }
 
 /** Reads a Huffman tree description (RFC 8878 section 4.2.1). */
@@ -150,11 +154,32 @@ export function decodeHuffmanStream(
     return;
   }
   const reader = new ReverseBitReader(buf, start, end);
+  finishHuffmanStream(table, buf, start, end, reader, out, outStart, count, 0, reader.bitsLeft);
+}
+
+/**
+ * Decodes the symbols from `done` to `count` of a stream whose first `done` symbols are written and whose unread bits
+ * are `bitsLeft`: in bulk while a 32-bit container can be refilled from inside the stream, then one at a time for the
+ * last few bytes.
+ */
+function finishHuffmanStream(
+  table: HuffmanDecodeTable,
+  buf: Uint8Array,
+  start: number,
+  end: number,
+  reader: ReverseBitReader,
+  out: Uint8Array,
+  outStart: number,
+  count: number,
+  done: number,
+  bitsLeftNow: number
+): void {
   const { maxBits, symbol, nbBits } = table;
   const mask = (1 << maxBits) - 1;
   const bufLength = buf.length;
-  let bitsLeft = reader.bitsLeft;
-  for (let i = 0; i < count; i++) {
+  const decoded = decodeHuffmanBulk(table, buf, start, bitsLeftNow, out, outStart, count, done);
+  let bitsLeft = decoded.bitsLeft;
+  for (let i = decoded.symbols; i < count; i++) {
     const pos = bitsLeft - maxBits;
     const at = start + (pos >> 3);
     let index: number;
@@ -168,6 +193,53 @@ export function decodeHuffmanStream(
     bitsLeft -= nbBits[index];
   }
   if (bitsLeft !== 0) zstdFail('Malformed Zstandard Huffman stream: bitstream not fully consumed.');
+}
+
+/** Bytes a 32-bit bit container holds. */
+const CONTAINER_BYTES = 4;
+const CONTAINER_BITS = 32;
+
+/**
+ * Decodes symbols from the top of a 32-bit container of the stream's bytes (the stream is read from its end, so the
+ * container is the little-endian word whose highest byte holds the next bit), refilling by whole consumed bytes. One
+ * refill serves two or three symbols where reading each symbol from the byte array would load four bytes per symbol.
+ * It stops, with the position it reached, when the next refill would reach below `start`; the caller finishes those
+ * last symbols one at a time. The result is exactly what the one-at-a-time reader produces.
+ */
+function decodeHuffmanBulk(
+  table: HuffmanDecodeTable,
+  buf: Uint8Array,
+  start: number,
+  bitsLeftAtEnd: number,
+  out: Uint8Array,
+  outStart: number,
+  count: number,
+  done: number
+): { symbols: number; bitsLeft: number } {
+  const topBit = bitsLeftAtEnd - 1;
+  const topByte = topBit >> 3;
+  if (topByte < CONTAINER_BYTES - 1) return { symbols: done, bitsLeft: bitsLeftAtEnd };
+  const { maxBits, entry } = table;
+  const shift = CONTAINER_BITS - maxBits;
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let ptr = start + topByte - (CONTAINER_BYTES - 1);
+  let consumed = 7 - (topBit & 7);
+  let container = view.getInt32(ptr, true);
+  let i = done;
+  while (i < count) {
+    if (consumed > shift) {
+      const next = ptr - (consumed >> 3);
+      if (next < start) break;
+      ptr = next;
+      consumed &= 7;
+      container = view.getInt32(ptr, true);
+    }
+    const e = entry[(container << consumed) >>> shift];
+    out[outStart + i] = e & 0xff;
+    consumed += e >>> 8;
+    i++;
+  }
+  return { symbols: i, bitsLeft: (ptr - start + CONTAINER_BYTES) * 8 - consumed };
 }
 
 /** Decodes a Huffman-coded literals payload of 1 or 4 streams into `out`. */
@@ -194,14 +266,105 @@ export function decodeHuffmanLiterals(
   const segment = (regeneratedSize + STREAM_COUNT - 1) >> 2;
   const lastSegment = regeneratedSize - 3 * segment;
   if (lastSegment < 0) zstdFail('Malformed Zstandard literals: too few literals for four streams.');
-  let cursor = dataStart;
-  decodeHuffmanStream(table, buf, cursor, cursor + size1, out, 0, segment);
-  cursor += size1;
-  decodeHuffmanStream(table, buf, cursor, cursor + size2, out, segment, segment);
-  cursor += size2;
-  decodeHuffmanStream(table, buf, cursor, cursor + size3, out, 2 * segment, segment);
-  cursor += size3;
-  decodeHuffmanStream(table, buf, cursor, end, out, 3 * segment, lastSegment);
+  const starts = [dataStart, dataStart + size1, dataStart + size1 + size2, dataStart + size1 + size2 + size3];
+  const ends = [starts[1], starts[2], starts[3], end];
+  const readers = starts.map((at, k) => new ReverseBitReader(buf, at, ends[k]));
+  const positions = readers.map((reader) => reader.bitsLeft);
+  // The streams advance in lockstep, so that the four chains of dependent table reads overlap.
+  const lockstep = decodeFourStreamsLockstep(table, buf, starts, positions, out, segment, lastSegment);
+  for (let k = 0; k < STREAM_COUNT; k++) {
+    const length = k < STREAM_COUNT - 1 ? segment : lastSegment;
+    finishHuffmanStream(table, buf, starts[k], ends[k], readers[k], out, k * segment, length, lockstep.symbols, lockstep.bitsLeft[k]);
+  }
+}
+
+/** Four streams of a block carry `segment`, `segment`, `segment` and `lastSegment` symbols. */
+function decodeFourStreamsLockstep(
+  table: HuffmanDecodeTable,
+  buf: Uint8Array,
+  starts: readonly number[],
+  bitsLeftAtEnd: readonly number[],
+  out: Uint8Array,
+  segment: number,
+  lastSegment: number
+): { symbols: number; bitsLeft: number[] } {
+  const entry = table.entry;
+  const shift = CONTAINER_BITS - table.maxBits;
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const lockstepCount = Math.min(segment, lastSegment);
+  const bitsLeft = [...bitsLeftAtEnd];
+  for (let k = 0; k < STREAM_COUNT; k++) {
+    if (((bitsLeftAtEnd[k] - 1) >> 3) < CONTAINER_BYTES - 1) return { symbols: 0, bitsLeft };
+  }
+  const start0 = starts[0];
+  const start1 = starts[1];
+  const start2 = starts[2];
+  const start3 = starts[3];
+  let ptr0 = start0 + ((bitsLeftAtEnd[0] - 1) >> 3) - (CONTAINER_BYTES - 1);
+  let ptr1 = start1 + ((bitsLeftAtEnd[1] - 1) >> 3) - (CONTAINER_BYTES - 1);
+  let ptr2 = start2 + ((bitsLeftAtEnd[2] - 1) >> 3) - (CONTAINER_BYTES - 1);
+  let ptr3 = start3 + ((bitsLeftAtEnd[3] - 1) >> 3) - (CONTAINER_BYTES - 1);
+  let used0 = 7 - ((bitsLeftAtEnd[0] - 1) & 7);
+  let used1 = 7 - ((bitsLeftAtEnd[1] - 1) & 7);
+  let used2 = 7 - ((bitsLeftAtEnd[2] - 1) & 7);
+  let used3 = 7 - ((bitsLeftAtEnd[3] - 1) & 7);
+  let word0 = view.getInt32(ptr0, true);
+  let word1 = view.getInt32(ptr1, true);
+  let word2 = view.getInt32(ptr2, true);
+  let word3 = view.getInt32(ptr3, true);
+  const out1 = segment;
+  const out2 = 2 * segment;
+  const out3 = 3 * segment;
+  let i = 0;
+  while (i < lockstepCount) {
+    // A refill below the start of its stream ends the lockstep; the stream is finished on its own.
+    if (used0 > shift) {
+      const next = ptr0 - (used0 >> 3);
+      if (next < start0) break;
+      ptr0 = next;
+      used0 &= 7;
+      word0 = view.getInt32(ptr0, true);
+    }
+    if (used1 > shift) {
+      const next = ptr1 - (used1 >> 3);
+      if (next < start1) break;
+      ptr1 = next;
+      used1 &= 7;
+      word1 = view.getInt32(ptr1, true);
+    }
+    if (used2 > shift) {
+      const next = ptr2 - (used2 >> 3);
+      if (next < start2) break;
+      ptr2 = next;
+      used2 &= 7;
+      word2 = view.getInt32(ptr2, true);
+    }
+    if (used3 > shift) {
+      const next = ptr3 - (used3 >> 3);
+      if (next < start3) break;
+      ptr3 = next;
+      used3 &= 7;
+      word3 = view.getInt32(ptr3, true);
+    }
+    const e0 = entry[(word0 << used0) >>> shift];
+    const e1 = entry[(word1 << used1) >>> shift];
+    const e2 = entry[(word2 << used2) >>> shift];
+    const e3 = entry[(word3 << used3) >>> shift];
+    out[i] = e0 & 0xff;
+    out[out1 + i] = e1 & 0xff;
+    out[out2 + i] = e2 & 0xff;
+    out[out3 + i] = e3 & 0xff;
+    used0 += e0 >>> 8;
+    used1 += e1 >>> 8;
+    used2 += e2 >>> 8;
+    used3 += e3 >>> 8;
+    i++;
+  }
+  bitsLeft[0] = (ptr0 - start0 + CONTAINER_BYTES) * 8 - used0;
+  bitsLeft[1] = (ptr1 - start1 + CONTAINER_BYTES) * 8 - used1;
+  bitsLeft[2] = (ptr2 - start2 + CONTAINER_BYTES) * 8 - used2;
+  bitsLeft[3] = (ptr3 - start3 + CONTAINER_BYTES) * 8 - used3;
+  return { symbols: i, bitsLeft };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +596,14 @@ function encodeWeightStream(
   return writer.overflow ? -1 : end;
 }
 
-/** Encodes src[start..end) as one backward Huffman stream. Returns the end position or -1 on overflow. */
+/** The bit accumulator is flushed two bytes at a time once it holds this many bits (a code is at most 11 bits, so 15 + 11 fit 32). */
+const FAST_FLUSH_BITS = 16;
+
+/**
+ * Encodes src[start..end) as one backward Huffman stream. Returns the end position or -1 on overflow. When the stream
+ * cannot exceed `cap` whatever the symbols are, the codes go through a local accumulator flushed two bytes at a time;
+ * otherwise each write is bounds-checked by the BitWriter.
+ */
 function encodeHuffmanStream(
   table: HuffmanEncodeTable,
   src: Uint8Array,
@@ -443,8 +613,34 @@ function encodeHuffmanStream(
   pos: number,
   cap: number
 ): number {
-  const writer = new BitWriter(out, pos, cap);
   const { codes, lengths } = table;
+  const worstCaseBytes = ((end - start) * table.maxBits + 7) >> 3;
+  if (pos + worstCaseBytes + 2 <= cap) {
+    let acc = 0;
+    let nbits = 0;
+    let at = pos;
+    for (let i = end - 1; i >= start; i--) {
+      const s = src[i];
+      acc |= codes[s] << nbits;
+      nbits += lengths[s];
+      if (nbits >= FAST_FLUSH_BITS) {
+        out[at] = acc & 0xff;
+        out[at + 1] = (acc >>> 8) & 0xff;
+        at += 2;
+        acc >>>= FAST_FLUSH_BITS;
+        nbits -= FAST_FLUSH_BITS;
+      }
+    }
+    acc |= 1 << nbits;
+    nbits++;
+    while (nbits > 0) {
+      out[at++] = acc & 0xff;
+      acc >>>= 8;
+      nbits -= 8;
+    }
+    return at;
+  }
+  const writer = new BitWriter(out, pos, cap);
   for (let i = end - 1; i >= start; i--) {
     const s = src[i];
     writer.write(codes[s], lengths[s]);

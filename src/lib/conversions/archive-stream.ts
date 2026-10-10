@@ -219,11 +219,29 @@ function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPol
 /** The unpacked bytes are within the archive caps but would not fit the in-process budget: the disk pipeline serves the request. */
 class ExceedsMemoryBudget extends Error {}
 
-async function runSevenZip(
-  p7zBin: string,
-  args: string[],
-  options: { maxBuffer: number; timeoutMs: number; stdin?: Buffer; signal?: AbortSignal; onLimit: () => Error }
-): Promise<Buffer> {
+interface SevenZipRunOptions {
+  maxBuffer: number;
+  timeoutMs: number;
+  stdin?: Buffer;
+  signal?: AbortSignal;
+  onLimit: () => Error;
+  /** Free bytes to keep before and after the output (see SandboxedExecutionOptions). */
+  headroomBytes?: number;
+  tailroomBytes?: number;
+}
+
+/** What 7-Zip wrote to stdout, and, when room was asked for, the buffer it sits in with that room around it. */
+interface SevenZipOutput {
+  stdout: Buffer;
+  frame?: Buffer;
+  headroomBytes: number;
+}
+
+async function runSevenZip(p7zBin: string, args: string[], options: SevenZipRunOptions): Promise<Buffer> {
+  return (await runSevenZipFramed(p7zBin, args, options)).stdout;
+}
+
+async function runSevenZipFramed(p7zBin: string, args: string[], options: SevenZipRunOptions): Promise<SevenZipOutput> {
   try {
     const run = await executeSandboxedBinary(p7zBin, args, {
       timeoutMs: options.timeoutMs,
@@ -231,8 +249,10 @@ async function runSevenZip(
       networkIsolated: true,
       stdin: options.stdin,
       signal: options.signal,
+      stdoutHeadroomBytes: options.headroomBytes,
+      stdoutTailroomBytes: options.tailroomBytes,
     });
-    return run.stdout;
+    return { stdout: run.stdout, frame: run.stdoutFrame, headroomBytes: options.headroomBytes ?? 0 };
   } catch (err) {
     if (err instanceof SandboxedBufferLimitError) throw options.onLimit();
     throw toArchiveFailure(err, 'archive', 'extract', LIMITS, false);
@@ -251,26 +271,54 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
   const memoryBound = getMaxInMemoryBytes();
   const bound = Math.min(cap, memoryBound);
   const input = request.source.buffer === undefined ? [request.source.filePath as string] : ['-si'];
-  let unpacked: Buffer;
+  // Room is kept around the output for the tar header, the block padding and the end marker of a one-member tar, so that
+  // a payload that is not a tar is wrapped where it lies and not copied again.
+  const memberName = memberNameFor(request.originalFilename);
+  let output: SevenZipOutput;
   try {
-    unpacked = await runSevenZip(request.p7zBin, ['x', '-so', '-y', `-t${request.compressor}`, ...input], {
+    output = await runSevenZipFramed(request.p7zBin, ['x', '-so', '-y', `-t${request.compressor}`, ...input], {
       maxBuffer: bound + STDERR_ALLOWANCE_BYTES,
       timeoutMs: request.timeoutMs,
       stdin: request.source.buffer,
       signal: request.signal,
       onLimit: () => (memoryBound < cap ? new ExceedsMemoryBudget() : unpackedBytesCapError(archiveBytes, LIMITS)),
+      headroomBytes: memberHeaderBytes(memberName),
+      tailroomBytes: TAR_BLOCK_BYTES - 1 + TAR_END_OF_ARCHIVE.length,
     });
   } catch (err) {
     if (err instanceof ExceedsMemoryBudget) return null;
     throw err;
   }
+  const unpacked = output.stdout;
   if (unpacked.length > cap) throw unpackedBytesCapError(archiveBytes, LIMITS);
   // A first block that passes the tar header test makes the payload a tar, and one that then fails to read is damaged.
   if (classifyUnpacked(unpacked) === 'plain') {
-    return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
+    return { segments: wrapInPlace(output, memberName), skippedLinks: [] };
   }
   const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
   return { segments: tarFromEntries(entries), skippedLinks };
+}
+
+/** Bytes of the header (with its extended header, if the name needs one) of a regular member of this name. */
+function memberHeaderBytes(name: string): number {
+  return buildTarEntryHeaders({ filename: name, size: 0, directory: false, mode: DEFAULT_FILE_MODE, mtime: undefined }).length;
+}
+
+/**
+ * A tar around one member whose bytes already sit in a buffer with room before and after them: the header, the padding
+ * and the end marker are written into that room. Falls back to a copying wrap when the room does not fit the header.
+ */
+function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
+  const data = output.stdout;
+  const header = buildTarEntryHeaders({ filename: name, size: data.length, directory: false, mode: DEFAULT_FILE_MODE, mtime: undefined });
+  assertHeaderDeclaresSize(header, data.length);
+  if (output.frame === undefined || header.length !== output.headroomBytes) return wrapAsMember(name, data);
+  const padding = blockPadding(data.length);
+  const bodyEnd = output.headroomBytes + data.length;
+  const tarEnd = bodyEnd + padding + TAR_END_OF_ARCHIVE.length;
+  output.frame.fill(0, bodyEnd, tarEnd);
+  header.copy(output.frame, 0);
+  return [output.frame.subarray(0, tarEnd)];
 }
 
 function toListedEntry(file: ReturnType<typeof listSevenZipEntries>['files'][number]): ListedArchiveEntry {
