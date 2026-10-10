@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent } from '../src/lib/conversions/image-content';
-import { AVIF_CLI_MAX_PIXELS, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
+import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -283,6 +283,13 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
   }, 60_000);
 });
 
+describe('WebP encoder options', () => {
+  it('converts to YUV the way the reference encoder does, whatever the content: sharp YUV doubles the encode time of a graphic for under 2% of bytes', () => {
+    expect(webpOptionsFor(70)).toEqual({ quality: 70, effort: WEBP_EFFORT, smartSubsample: false });
+    expect(webpOptionsFor(undefined)).toEqual({ quality: 80, effort: WEBP_EFFORT, smartSubsample: false });
+  });
+});
+
 describe.skipIf(skipWithoutTools('cwebp', 'dwebp', 'ffmpeg'))('WebP default quality and effort', () => {
   it('a request with no quality is quality 80 at the reference encoder effort, within 3% of cwebp -q 80 -m 4', async () => {
     const png = await photoPng();
@@ -292,6 +299,15 @@ describe.skipIf(skipWithoutTools('cwebp', 'dwebp', 'ffmpeg'))('WebP default qual
     execFileSync(requireOracleTool('cwebp'), ['-quiet', '-q', '80', '-m', '4', source, '-o', reference]);
     const referenceBytes = readFileSync(reference).length;
     expect(Math.abs(ours.length - referenceBytes) / referenceBytes).toBeLessThan(SIZE_MATCH_TOLERANCE);
+  });
+
+  it('writes an interface (graphic content) as the very file cwebp -q 70 -m 4 writes', async () => {
+    const png = await svgPng(uiBody);
+    const ours = (await convertImage(png, 'webp', { quality: 70 }, 'ui.png', 'png')).buffer;
+    const source = writeIn('webp-ui-source.png', png);
+    const reference = path.join(workDir, 'ref-ui.webp');
+    execFileSync(requireOracleTool('cwebp'), ['-quiet', '-q', '70', '-m', '4', source, '-o', reference]);
+    expect(ours.equals(readFileSync(reference))).toBe(true);
   });
 });
 
