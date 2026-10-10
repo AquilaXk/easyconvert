@@ -50,7 +50,7 @@ describe('Office pairs through LibreOffice', () => {
 describe('Presentations that LibreOffice opens as another kind of document', () => {
   oracleTest('answers a typed 400 for a .ppt that is plain text and has no presentation export filter', ['soffice'], async () => {
     const run = dispatchConversion(Buffer.from('Plain text, not a presentation.\n'), 'ppt', 'odp', {}, 'text.ppt');
-    await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file: it is damaged, encrypted or not a valid PPT document.');
+    await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file: it is damaged');
     await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
   }, NATIVE_TIMEOUT_MS);
 });

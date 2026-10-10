@@ -342,6 +342,21 @@ async function buildProbePotx(): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
+/** The golden package of the plain format with the content type of its main part switched to the variant's type. */
+function buildProbeVariant(golden: string, plainMainType: string, variantMainType: string): () => Promise<Buffer> {
+  return async () => {
+    const zip = await JSZip.loadAsync(readFileSync(path.join(FIXTURE_ROOT, 'golden', 'office', golden)));
+    const types = await zip.file('[Content_Types].xml')!.async('string');
+    zip.file('[Content_Types].xml', types.replace(plainMainType, variantMainType));
+    return zip.generateAsync({ type: 'nodebuffer' });
+  };
+}
+
+const OPENXML = 'application/vnd.openxmlformats-officedocument';
+const WORD_MAIN = `${OPENXML}.wordprocessingml.document.main+xml`;
+const EXCEL_MAIN = `${OPENXML}.spreadsheetml.sheet.main+xml`;
+const POWERPOINT_MAIN = `${OPENXML}.presentationml.presentation.main+xml`;
+
 async function buildCbz(): Promise<Buffer> {
   const zip = new JSZip();
   zip.file('page-001.png', PNG_SEED);
@@ -424,6 +439,18 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
   // A template is a presentation package whose main part has the template content type.
   potx: buildProbePotx,
+  // The macro-enabled, template and slideshow variants are the golden package of their plain format with the main part's
+  // content type of the variant (ECMA-376 Part 1 and the Microsoft Office content types).
+  docm: buildProbeVariant('multi-column-annotated.docx', WORD_MAIN, 'application/vnd.ms-word.document.macroEnabled.main+xml'),
+  dotx: buildProbeVariant('multi-column-annotated.docx', WORD_MAIN, `${OPENXML}.wordprocessingml.template.main+xml`),
+  dotm: buildProbeVariant('multi-column-annotated.docx', WORD_MAIN, 'application/vnd.ms-word.template.macroEnabledTemplate.main+xml'),
+  xlsm: buildProbeVariant('multi-sheet-enterprise.xlsx', EXCEL_MAIN, 'application/vnd.ms-excel.sheet.macroEnabled.main+xml'),
+  xltx: buildProbeVariant('multi-sheet-enterprise.xlsx', EXCEL_MAIN, `${OPENXML}.spreadsheetml.template.main+xml`),
+  xltm: buildProbeVariant('multi-sheet-enterprise.xlsx', EXCEL_MAIN, 'application/vnd.ms-excel.template.macroEnabled.main+xml'),
+  pptm: buildProbeVariant('drawingml-shapes-presentation.pptx', POWERPOINT_MAIN, 'application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml'),
+  potm: buildProbeVariant('drawingml-shapes-presentation.pptx', POWERPOINT_MAIN, 'application/vnd.ms-powerpoint.template.macroEnabled.main+xml'),
+  ppsx: buildProbeVariant('drawingml-shapes-presentation.pptx', POWERPOINT_MAIN, `${OPENXML}.presentationml.slideshow.main+xml`),
+  ppsm: buildProbeVariant('drawingml-shapes-presentation.pptx', POWERPOINT_MAIN, 'application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml'),
   // A tar.bz2 is a valid bzip2 stream, and a zst archive a valid Zstandard frame.
   'tar.bz': () => requireDerived('tar.bz2'),
   // Java packages are ZIP files; a tar compressed with compress is an LZW stream (the builder is checked against gzip in
