@@ -171,23 +171,43 @@ export function avifSpeedFor(effort: number): number {
  * they zero the high-frequency coefficients that make up the edges.
  */
 export const GRAPHIC_JPEG_QUANTISATION_TABLE = 2;
+/** mozjpeg quantisation table for photographs: 3, ImageMagick's table, which mozjpeg uses by default. */
+export const PHOTO_JPEG_QUANTISATION_TABLE = 3;
 
-export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass): JpegOptions {
+/**
+ * What the JPEG encoder is asked for, by the picture's content. All three keep the encoder's optimal Huffman tables and
+ * its overshoot deringing; they differ in the searches that cost the most time (benchmark corpus, 4 quality points,
+ * BD-rate against ImageMagick's encoder; encode times are those of the 640 x 432 photograph and the 640 x 640 line art):
+ *
+ * - Photographs: baseline scan, trellis quantisation, table 3. The search for the best progressive scan script
+ *   (`optimiseScans`) saves under 1% on a photograph (BD-rate -16.8% against -16.8% with it) and cost 4 ms of the 9.
+ * - Grey graphics (one component): baseline scan, table 2, no trellis. The scan search costs 7 ms of 11 on a picture that
+ *   has a single plane and still saves under 5% of the bytes (BD-rate -18.8% PSNR / -45.3% SSIM with the search; the
+ *   difference stays far below the reference).
+ * - Colour graphics (three planes at full resolution): progressive with the scan search, table 2, no trellis. The search
+ *   is worth 12% of the bytes on an interface (29.9 kB against 33.9 kB); without it the BD-rate in PSNR is 4.9% behind the
+ *   reference encoder's, so it stays.
+ */
+export function jpegOptionsFor(requestedQuality: number | undefined, content: ContentClass, grey: boolean = false): JpegOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.jpeg);
   const chromaSubsampling = jpegChromaFor(quality, content);
-  // mozjpeg turns on trellis quantisation, overshoot deringing and scan optimisation (and keeps optimal Huffman tables).
-  if (content === 'photo') return { quality, mozjpeg: true, chromaSubsampling };
+  const common = { quality, chromaSubsampling, optimiseCoding: true, overshootDeringing: true } satisfies JpegOptions;
+  if (content === 'photo') return { ...common, progressive: false, trellisQuantisation: true, quantisationTable: PHOTO_JPEG_QUANTISATION_TABLE };
   // Measured on line art: trellis quantisation costs 5 to 6 dB of PSNR at the same quality number; without it,
   // with table 2, the file is 10% smaller than the reference encoder's at equal PSNR, where it was 9% larger.
   // Overshoot deringing stays on: switching it off costs 1.5 dB on text and rules.
-  return { quality, mozjpeg: true, chromaSubsampling, trellisQuantisation: false, quantisationTable: GRAPHIC_JPEG_QUANTISATION_TABLE };
+  const graphic = { ...common, trellisQuantisation: false, quantisationTable: GRAPHIC_JPEG_QUANTISATION_TABLE } satisfies JpegOptions;
+  if (grey) return { ...graphic, progressive: false };
+  return { ...graphic, progressive: true, optimiseScans: true };
 }
 
-export function webpOptionsFor(requestedQuality: number | undefined, content: ContentClass): WebpOptions {
+export function webpOptionsFor(requestedQuality: number | undefined): WebpOptions {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.webp);
-  // Sharp YUV keeps coloured edges crisp, which matters for text and line art; on photographs it costs
-  // bytes for no gain in PSNR or SSIM (+1 to +2.6% BD-rate), so it is applied to graphic content only.
-  return { quality, effort: WEBP_EFFORT, smartSubsample: content === 'graphic' };
+  // The encoder's own chroma conversion. Sharp YUV (smartSubsample) kept coloured edges crisper on interfaces (about
+  // +1.6 SSIMULACRA 2 points at 1.8% more bytes, +0.4% PSNR BD-rate on the screenshot) and made the encode 1.8 times as
+  // long (41 ms against 22 ms for a 1024 x 640 interface); it changes nothing on a grey picture and costs bytes on
+  // photographs (+1 to +2.6% BD-rate). Without it the file is the reference encoder's at the same quality and effort.
+  return { quality, effort: WEBP_EFFORT, smartSubsample: false };
 }
 
 export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
