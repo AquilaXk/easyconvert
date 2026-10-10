@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS } from './ab-config';
+import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_NIGHTLY_ONLY, AB_NIGHTLY_ONLY_PAIRS } from './ab-config';
 import { AbHostError, BaseRowError } from './ab-host';
 import { abSpeedTiming, type ExtraBudget, localSide, regressionDelta, type Side } from './ab-speed';
 import type { Injection, RowWeight } from './context';
@@ -32,7 +32,7 @@ export interface TimerInit {
   warmup: number;
   log: (message: string) => void;
   /** Speed rows are measured against the base of the change too: the head and the base each run in a process of their own (bench/ab-host.ts); needs a speed-only parity run. */
-  ab?: { head: AbRows; base: AbRows; extra: ExtraBudget; /** Thresholds of rows other than bench/ab-config.ts names (tests of the job path). */ regression?: Readonly<Record<string, { delta: number }>> } | null;
+  ab?: { head: AbRows; base: AbRows; extra: ExtraBudget; /** Thresholds of rows other than bench/ab-config.ts names (tests of the job path). */ regression?: Readonly<Record<string, { delta: number }>>; /** Nightly-only rows other than bench/ab-config.ts names (tests of the job path). */ nightlyOnly?: Readonly<Record<string, unknown>> } | null;
   /** Replaces the timing of a row altogether: the process that measures the base answers the benchmark's requests with it (bench/ab-child.ts). */
   timer?: (rowId: string, ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats: number) => Promise<InterleavedTiming | AdaptiveTiming>;
 }
@@ -65,9 +65,12 @@ export function createTimer(init: TimerInit): RowTimer {
     if (init.parity && init.ab) {
       // The head and the base each run in a process of their own, the reference here; a row the base cannot run is measured against the reference alone.
       const { head, base, extra } = init.ab;
+      // A nightly-only row is not judged on a pull request: one cycle of pairs for the report, no extra pairs, no confirmation.
+      const nightlyOnly = (init.ab.nightlyOnly ?? AB_NIGHTLY_ONLY)[rowId] !== undefined;
       await head.row(rowId);
       await base.row(rowId);
       const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
+      const fixedPairs = weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS;
       const headSide = head.side();
       // The head must run its own row: its refusal is an error of the benchmark, not a row without a base.
       const guarded: Side = {
@@ -76,11 +79,11 @@ export function createTimer(init: TimerInit): RowTimer {
       };
       try {
         const timing = await abSpeedTiming(guarded, base.side(), localSide(reference), {
-          pairs: weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS,
+          pairs: nightlyOnly ? AB_NIGHTLY_ONLY_PAIRS : fixedPairs,
           warmup: plan.warmup,
           oursRepeats,
           minSampleMs: plan.minSampleMs,
-          extra,
+          ...(nightlyOnly ? { confirm: false } : { extra }),
           delta: regressionDelta(rowId, init.ab.regression),
         });
         init.log(`A/B against the base, ${timing.runs} pairs (${timing.ab.extraPairs} extra), noise ${timing.ab.noise.toFixed(3)}: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample`);

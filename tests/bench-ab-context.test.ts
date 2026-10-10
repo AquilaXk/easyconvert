@@ -46,7 +46,7 @@ function process(ms: (k: number) => number, options: { refuse?: boolean } = {}):
   };
 }
 
-function contextWith(head: AbRows, base: AbRows, regression?: Record<string, { delta: number }>, remainingMs = 1e9) {
+function contextWith(head: AbRows, base: AbRows, regression?: Record<string, { delta: number }>, remainingMs = 1e9, nightlyOnly?: Record<string, unknown>) {
   const logged: string[] = [];
   const ctx = createContext({
     resolve: () => null,
@@ -62,7 +62,7 @@ function contextWith(head: AbRows, base: AbRows, regression?: Record<string, { d
     refCache: new ReferenceCache({ dir: null, toolVersion: () => null, fileHash: () => '', harnessHash: () => '', log: () => undefined }),
     work: '/nonexistent',
     log: (message) => logged.push(message),
-    ab: { head, base, extra: { remainingMs }, regression },
+    ab: { head, base, extra: { remainingMs }, regression, nightlyOnly },
   });
   return { ctx, logged };
 }
@@ -114,6 +114,20 @@ describe('the threshold of a row in the job path', () => {
     expect(first.ab.pairs).toBeGreaterThan(AB_LIGHT_PAIRS);
     expect(second.ab.extraPairs).toBe(0);
     expect(second.ab.pairs).toBe(AB_LIGHT_PAIRS);
+  });
+
+  it('measures a nightly-only row with one cycle of pairs, no extra pairs and no confirmation, and leaves the budget to the others', async () => {
+    const wide = (k: number): number => (k % 2 === 0 ? 70 : 130);
+    const budget = { remainingMs: 1e9 };
+    const { ctx } = contextWith(process(wide), process(() => 100), undefined, budget.remainingMs, { [ROW]: {} });
+    const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
+    expect(timing.ab.pairs).toBe(6);
+    expect(timing.ab.extraPairs).toBe(0);
+    expect(timing.ab.confirmed).toEqual({});
+    const slow = contextWith(process(() => 200), process(() => 100), undefined, 1e9, { [ROW]: {} });
+    const slowTiming = (await slow.ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
+    expect(slowTiming.ab.confirmed).toEqual({});
+    expect(slowTiming.runs).toBe(6);
   });
 
   it('measures a row the base cannot run against the reference alone, and says why', async () => {

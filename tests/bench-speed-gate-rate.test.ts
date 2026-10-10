@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AB_DEFAULT_REGRESSION, AB_EXTRA_BUDGET_MS, AB_ROW_REGRESSION } from '../bench/ab-config';
+import { AB_DEFAULT_REGRESSION, AB_EXTRA_BUDGET_MS, AB_NIGHTLY_ONLY, AB_ROW_REGRESSION } from '../bench/ab-config';
 import { abGateFails, absoluteGateFails, failureRate, type NoiseSample, rowRates, type Truth, type Weight } from '../bench/simulate-speed-gate';
 
 /**
@@ -59,23 +59,26 @@ describe('the gate without a base, for contrast', () => {
   });
 });
 
-describe('every row at its own threshold, with the measured noise and the shared extra budget of its shard', () => {
-  const noise = JSON.parse(readFileSync(path.join(__dirname, '..', 'bench', 'ab-noise-samples.json'), 'utf8')) as { rows: NoiseSample[] };
+describe('every row the pull request gate judges, at its own threshold, with the measured noise and the shared extra budget of its shard', () => {
+  const all = (JSON.parse(readFileSync(path.join(__dirname, '..', 'bench', 'ab-noise-samples.json'), 'utf8')) as { rows: NoiseSample[] }).rows;
+  // A nightly-only row takes none of the extra budget and is not judged on a pull request.
+  const gated = all.filter((row) => AB_NIGHTLY_ONLY[row.id] === undefined);
   const thresholds = Object.fromEntries(Object.entries(AB_ROW_REGRESSION).map(([id, override]) => [id, { delta: override.delta }] as const));
   const deltaOf = (row: NoiseSample): number => thresholds[row.id]?.delta ?? AB_DEFAULT_REGRESSION;
-  /** The rows no threshold up to 125 percent brings to the bar: their reason in bench/ab-config.ts says so. */
-  const BELOW_THE_BAR = Object.entries(AB_ROW_REGRESSION).filter(([, override]) => override.reason.includes('no threshold up to 125 percent')).map(([id]) => id);
   const TRIALS_PER_ROW = 80;
 
-  it('fails 1.5 times its threshold in at least 90 percent of the trials (95 percent in the derivation, 80 trials here), every row but the ones whose reason says no threshold reaches it', async () => {
-    const rates = await rowRates(noise.rows, (row) => 1.5 * deltaOf(row), TRIALS_PER_ROW, AB_EXTRA_BUDGET_MS, thresholds);
-    const short = noise.rows.filter((row) => (rates.get(row.id) ?? 0) < 0.9).map((row) => `${row.id} ${((rates.get(row.id) ?? 0) * 100).toFixed(0)}%`);
-    // A row below the bar is one whose reason says so; one that says so may still reach it in a given run of the simulation (it sits at the edge).
-    for (const entry of short) expect(BELOW_THE_BAR, entry).toContain(entry.split(' ')[0]);
+  it('leaves seven of the forty measured rows to the nightly run, the ones whose noise needs more than the cap', () => {
+    expect([all.length, all.length - gated.length]).toEqual([40, 7]);
+    expect(Object.keys(AB_NIGHTLY_ONLY).sort()).toEqual(all.filter((row) => AB_NIGHTLY_ONLY[row.id] !== undefined).map((row) => row.id).sort());
+  });
+
+  it('fails 1.5 times its threshold in at least 90 percent of the trials on every gated row (95 percent in the derivation, 80 trials here)', async () => {
+    const rates = await rowRates(gated, (row) => 1.5 * deltaOf(row), TRIALS_PER_ROW, AB_EXTRA_BUDGET_MS, thresholds);
+    expect(gated.filter((row) => (rates.get(row.id) ?? 0) < 0.9).map((row) => `${row.id} ${((rates.get(row.id) ?? 0) * 100).toFixed(0)}%`)).toEqual([]);
   }, 120_000);
 
   it('does not fail unchanged code in more than 1 percent of the trials, whatever the row', async () => {
-    const rates = await rowRates(noise.rows, 0, TRIALS_PER_ROW, AB_EXTRA_BUDGET_MS, thresholds);
-    expect(noise.rows.filter((row) => (rates.get(row.id) ?? 0) > 0.01).map((row) => row.id)).toEqual([]);
+    const rates = await rowRates(gated, 0, TRIALS_PER_ROW, AB_EXTRA_BUDGET_MS, thresholds);
+    expect(gated.filter((row) => (rates.get(row.id) ?? 0) > 0.01).map((row) => row.id)).toEqual([]);
   }, 120_000);
 });

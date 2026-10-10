@@ -13,7 +13,7 @@
  * as noisy as the rows of the benchmark are.
  */
 import fs from 'node:fs';
-import { AB_DEFAULT_REGRESSION, AB_EXTRA_BUDGET_MS, AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_ROW_REGRESSION } from './ab-config';
+import { AB_DEFAULT_REGRESSION, AB_EXTRA_BUDGET_MS, AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_NIGHTLY_ONLY, AB_ROW_REGRESSION } from './ab-config';
 import { abSpeedTiming, type ExtraBudget, type Side } from './ab-speed';
 import { PARITY_SCHEMA_VERSION, SCHEMA_VERSION } from './config';
 import { evaluateParity } from './parity';
@@ -244,12 +244,14 @@ async function main(args: string[]): Promise<void> {
     }
   }
   if (noiseAt >= 0) {
-    const samples = JSON.parse(fs.readFileSync(args[noiseAt + 1], 'utf8')) as { rows: NoiseSample[] };
+    const measuredRows = (JSON.parse(fs.readFileSync(args[noiseAt + 1], 'utf8')) as { rows: NoiseSample[] }).rows;
+    // The nightly-only rows are not judged on a pull request and take none of the extra budget: only the gated rows are simulated.
+    const samples = { rows: measuredRows.filter((row) => AB_NIGHTLY_ONLY[row.id] === undefined) };
     const perRow = flag('--row-trials', Math.max(40, Math.floor(trials / 10)));
     const budget = AB_EXTRA_BUDGET_MS;
     const thresholds = Object.fromEntries(Object.entries(AB_ROW_REGRESSION).map(([id, override]) => [id, { delta: override.delta }] as const));
     const deltaOf = (row: NoiseSample): number => thresholds[row.id]?.delta ?? AB_DEFAULT_REGRESSION;
-    console.log(`\nRows with the measured noise of ${args[noiseAt + 1]} (${samples.rows.length} rows, ${perRow} trials per row; the rows of a family share its extra budget of ${budget / 60000} min of simulated time, in the order of the benchmark; every row with its own threshold)\n`);
+    console.log(`\nRows with the measured noise of ${args[noiseAt + 1]} (${samples.rows.length} gated rows of ${measuredRows.length}, the other ${measuredRows.length - samples.rows.length} are nightly-only; ${perRow} trials per row; the rows of a family share its extra budget of ${budget / 60000} min of simulated time, in the order of the benchmark; every row with its own threshold)\n`);
     const unchanged = await rowRates(samples.rows, 0, perRow, budget, thresholds);
     const slow = await rowRates(samples.rows, (row) => 1.5 * deltaOf(row), perRow, budget, thresholds);
     const just = await rowRates(samples.rows, (row) => deltaOf(row), perRow, budget, thresholds);

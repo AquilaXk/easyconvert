@@ -33,7 +33,7 @@ export interface AbRegressionOverride {
 }
 
 /**
- * Rows with their own threshold. An entry needs the measurement that justifies it in its reason, names a row of
+ * Rows with their own threshold, at most AB_REGRESSION_CAP. An entry needs the measurement that justifies it in its reason, names a row of
  * bench/baseline.json, and sets a threshold above the default only when the measured noise of the row needs it, or
  * below it (5 percent) when the row is worth guarding more closely (tests/bench-ab-speed.test.ts checks the form).
  */
@@ -54,43 +54,13 @@ export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> =
       reason:
         "noise 0.057 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
-    "document/rich-structure.docx->html/throughput": {
-      delta: 1.25,
-      reason:
-        "noise 0.196 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent, so 1.25 only fails a slowdown of 2.25 times or more, and the row stays guarded by the nightly run.",
-    },
-    "document/rich-structure.docx->odt/throughput": {
-      delta: 1.25,
-      reason:
-        "noise 0.136 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent, so 1.25 only fails a slowdown of 2.25 times or more, and the row stays guarded by the nightly run.",
-    },
-    "document/rich-structure.docx->epub/throughput": {
-      delta: 1.25,
-      reason:
-        "noise 0.197 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent, so 1.25 only fails a slowdown of 2.25 times or more, and the row stays guarded by the nightly run.",
-    },
     "document/rich-structure.docx->pdf/throughput": {
-      delta: 0.25,
+      delta: 0.175,
       reason:
         "noise 0.048 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
-    "document/noori.hwp->txt/throughput": {
-      delta: 1.0625,
-      reason:
-        "noise 0.181 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
-    },
-    "document/pdf-text->txt/throughput": {
-      delta: 0.125,
-      reason:
-        "noise 0.029 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
-    },
-    "document/pdf-structure->docx/throughput": {
-      delta: 1.25,
-      reason:
-        "noise 0.187 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
-    },
     "document/complex-script txt->pdf/throughput": {
-      delta: 0.375,
+      delta: 0.225,
       reason:
         "noise 0.056 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
@@ -99,23 +69,13 @@ export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> =
       reason:
         "noise 0.054 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
-    "compression/mixed.tar->7z/throughput": {
-      delta: 1.25,
-      reason:
-        "noise 0.315 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent, so 1.25 only fails a slowdown of 2.25 times or more, and the row stays guarded by the nightly run.",
-    },
-    "compression/mixed.zst->tar/throughput": {
-      delta: 0.5625,
-      reason:
-        "noise 0.122 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
-    },
     "compression/mixed.xz->tar/throughput": {
       delta: 0.2,
       reason:
         "noise 0.074 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
     "compression/mixed.7z->tar/throughput": {
-      delta: 0.35,
+      delta: 0.425,
       reason:
         "noise 0.116 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard.",
     },
@@ -141,6 +101,60 @@ export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> =
     },
   };
 
+/** The largest threshold a row may have in the pull request gate: a slowdown of more than half of the base's time is the most a shared runner can be asked to show. */
+export const AB_REGRESSION_CAP = 0.5;
+
+export interface AbNightlyOnly {
+  /** The smallest threshold (at most 1.25 was tried) at which the gate would fail 1.5 times it in 95 percent of the simulated trials; above AB_REGRESSION_CAP. */
+  needs: number;
+  /** The noise that sets it, the run that measured it, and what guards the row instead. */
+  reason: string;
+}
+
+/**
+ * Rows whose measured noise needs a threshold above AB_REGRESSION_CAP: the pull request job does not judge them (the verdict
+ * passes them as `speed-nightly-only`; the job times them with one cycle of pairs, for the report, and spends no extra
+ * pairs on them). The nightly run, which judges every row against the reference alone, still guards them.
+ */
+export const AB_NIGHTLY_ONLY: Readonly<Record<string, AbNightlyOnly>> =
+  {
+    "document/rich-structure.docx->html/throughput": {
+      needs: 1.25,
+      reason:
+        "noise 0.196 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "document/rich-structure.docx->odt/throughput": {
+      needs: 1.25,
+      reason:
+        "noise 0.136 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "document/rich-structure.docx->epub/throughput": {
+      needs: 1.25,
+      reason:
+        "noise 0.197 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "document/noori.hwp->txt/throughput": {
+      needs: 1.0625,
+      reason:
+        "noise 0.181 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "document/pdf-structure->docx/throughput": {
+      needs: 1.25,
+      reason:
+        "noise 0.187 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "compression/mixed.tar->7z/throughput": {
+      needs: 1.25,
+      reason:
+        "noise 0.315 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; no threshold up to 125 percent reaches 95 percent; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+    "compression/mixed.zst->tar/throughput": {
+      needs: 0.5625,
+      reason:
+        "noise 0.122 (sd of the log pair ratio, median of 14 reports of the nightly dispatch run 38037770394, the commit as its own base); the smallest threshold at which the gate fails 1.5 times it in 95 percent of 300 simulated trials with the shared extra budget of its shard; it needs more than the cap of 50 percent, so the pull request job does not judge it and the nightly run against the reference guards it.",
+    },
+  };
+
 /**
  * A row whose first pairs leave it undecided (the lower bound of its median under the row's slowdown line and the upper bound
  * over it: it could still turn out slower than the threshold, or not) gets more pairs, six at a time up to AB_MAX_PAIRS, while
@@ -149,6 +163,8 @@ export const AB_ROW_REGRESSION: Readonly<Record<string, AbRegressionOverride>> =
  * a share of the job: the speed job runs one shard per family, each with this much.
  */
 export const AB_EXTRA_STEP_PAIRS = 6;
+/** The pairs of a nightly-only row: one cycle of the six orders, for the report. */
+export const AB_NIGHTLY_ONLY_PAIRS = 6;
 export const AB_EXTRA_BUDGET_MS = 4 * 60 * 1000;
 
 /**

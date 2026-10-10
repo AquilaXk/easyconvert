@@ -213,6 +213,19 @@ describe('speed rows', () => {
       expect(verdictOf(measured({ abMedian: 0.93, abUpper: 0.94 })).outcome).toBe('pass');
     });
 
+    it('does not judge a nightly-only row on a pull request, whatever the pairs show, and judges it by the reference alone without a base', () => {
+      const nightly = { nightlyOnly: { [ID]: { needs: 0.8, reason: 'noise 0.200, run 1' } } };
+      const slow = evaluateParity(report([measured({ abMedian: 0.4, abUpper: 0.45 })]), NO_GAPS, nightly).rows[0];
+      expect(slow).toMatchObject({ outcome: 'pass', basis: 'speed-nightly-only' });
+      expect(slow.detail).toContain('noise 0.200');
+      const lost = evaluateParity(report([measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.5 })]), NO_GAPS, nightly).rows[0];
+      expect(lost.basis).toBe('speed-nightly-only');
+      const fallback = evaluateParity(report([measured({ abPairs: undefined, abFallback: 'the base cannot run it', speedVerdict: 'fail', ratio: 0.5, ratioMedian: 0.5, ratioLow: 0.4, ratioHigh: 0.6 })]), NO_GAPS, nightly).rows[0];
+      expect(fallback.basis).toBe('speed-nightly-only');
+      const absolute = evaluateParity(report([measured({ abPairs: undefined, speedVerdict: 'fail', ratio: 0.5, ratioMedian: 0.5, ratioLow: 0.4, ratioHigh: 0.6 })]), NO_GAPS, nightly).rows[0];
+      expect(absolute.outcome).toBe('fail');
+    });
+
     it('fails when the base was at the reference and the head is credibly below it, and passes a base that was already below', () => {
       expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
       expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.98 })).outcome).toBe('pass');

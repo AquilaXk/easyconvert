@@ -3,6 +3,7 @@ import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
+import { AB_NIGHTLY_ONLY, type AbNightlyOnly } from './ab-config';
 import { slowdownLine } from './ab-speed';
 import { speedGapThreshold } from './speed-history';
 
@@ -43,6 +44,7 @@ export type ParityBasis =
   | 'speed-lost-parity'
   | 'speed-not-slower-than-base'
   | 'speed-unchanged-below-reference'
+  | 'speed-nightly-only'
   | 'gap-not-backed'
   | 'unsupported'
   | 'skipped';
@@ -200,6 +202,8 @@ function judgeTrackedAgainstBase(row: BenchRow, gap: GapEntry, headVsBaseMedian:
 export interface ParityOptions {
   /** Regression thresholds of rows other than bench/ab-config.ts names; for tests of the verdict. */
   regression?: Readonly<Record<string, { delta: number }>>;
+  /** Nightly-only rows other than bench/ab-config.ts names; for tests of the verdict. */
+  nightlyOnly?: Readonly<Record<string, Pick<AbNightlyOnly, 'reason'>>>;
   /**
    * The gap file of the base the change is measured against. When given, every gap entry that is new or changed
    * against it must be backed by the speed rows of this report (bench/config.ts, GAP_BACKING_LOG_MARGIN).
@@ -241,10 +245,15 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
  * Otherwise the change did not make the row worse and it passes; a row below the reference that the base was already
  * below is the standing gap the nightly run reports (the absolute rule), not a failure of this change.
  */
-function judgeSpeed(row: BenchRow, gap: GapEntry | null, regression?: ParityOptions['regression']): SpeedJudgement {
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions): SpeedJudgement {
+  const comparedWithBase = row.abPairs !== undefined || row.abFallback !== undefined;
+  const nightly = (options.nightlyOnly ?? AB_NIGHTLY_ONLY)[row.id];
+  if (nightly !== undefined && comparedWithBase) {
+    return { outcome: 'pass', basis: 'speed-nightly-only', detail: `not judged on a pull request: ${nightly.reason}`, worsening: null, allowance: null };
+  }
   if (row.abPairs === undefined) return judgeAbsolute(row, gap);
   const line = 1 - SPEED_PARITY_TOLERANCE;
-  const slowerLine = slowdownLine(row.id, regression);
+  const slowerLine = slowdownLine(row.id, options.regression);
   const none = { worsening: null, allowance: null };
   const median = row.abMedian ?? row.ratio ?? 0;
   const against = `head against base ${show(median)} over ${row.abPairs} pairs`;
@@ -301,7 +310,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
         row.ratioLow !== undefined && row.ratioHigh !== undefined
           ? { speed: { median: row.ratioMedian ?? row.ratio ?? Number.NaN, low: row.ratioLow, high: row.ratioHigh, pairs: row.runs ?? null } }
           : {};
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options.regression), ...measured });
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options), ...measured });
       continue;
     }
     const siblings = byCase.get(caseKey(row)) ?? [];

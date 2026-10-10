@@ -10,6 +10,8 @@ import {
   AB_LIGHT_PAIRS,
   AB_MAX_PAIRS,
   AB_ROW_BUDGET,
+  AB_NIGHTLY_ONLY,
+  AB_REGRESSION_CAP,
   AB_ROW_REGRESSION,
 } from '../bench/ab-config';
 import { AB_ROW_ALPHA, abSpeedTiming, localSide, lowerBoundOfMedian, oneSidedRank, regressionDelta, type Side, slowdownLine, upperBoundOfMedian } from '../bench/ab-speed';
@@ -248,9 +250,24 @@ describe('the regression threshold of a row', () => {
     for (const [id, override] of Object.entries(AB_ROW_REGRESSION)) {
       expect(id in baseline.entries, id).toBe(true);
       expect(override.delta, id).toBeGreaterThan(AB_DEFAULT_REGRESSION);
-      expect(override.delta, id).toBeLessThanOrEqual(1.25);
+      expect(override.delta, id).toBeLessThanOrEqual(AB_REGRESSION_CAP);
       expect(override.reason, id).toMatch(/run \d{8,}/);
       expect(override.reason, id).toContain(`noise ${(measured.get(id) ?? NaN).toFixed(3)}`);
+    }
+  });
+
+  it('caps the threshold of a row at 50 percent: a row whose noise needs more is nightly-only, with its noise and why', () => {
+    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
+    const noise = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'ab-noise-samples.json'), 'utf8')) as { rows: { id: string; noise: number }[] };
+    const measured = new Map(noise.rows.map((row) => [row.id, row.noise]));
+    expect(AB_REGRESSION_CAP).toBe(0.5);
+    expect(Object.keys(AB_NIGHTLY_ONLY).length).toBeGreaterThan(0);
+    for (const [id, entry] of Object.entries(AB_NIGHTLY_ONLY)) {
+      expect(id in baseline.entries, id).toBe(true);
+      expect(id in AB_ROW_REGRESSION, id).toBe(false);
+      expect(entry.needs, id).toBeGreaterThan(AB_REGRESSION_CAP);
+      expect(entry.reason, id).toMatch(/run \d{8,}/);
+      expect(entry.reason, id).toContain(`noise ${(measured.get(id) ?? NaN).toFixed(3)}`);
     }
   });
 });
