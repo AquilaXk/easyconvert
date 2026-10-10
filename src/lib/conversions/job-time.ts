@@ -11,8 +11,12 @@
 
 export const JOB_DEADLINE_AT = Symbol.for('easyconvert.jobDeadlineAt');
 
+/** Length of the job's deadline in milliseconds, for the timeout error of a stage that finds the deadline passed. */
+export const JOB_TIMEOUT_MS = Symbol.for('easyconvert.jobTimeoutMs');
+
 export interface JobDeadlined {
   [JOB_DEADLINE_AT]?: number;
+  [JOB_TIMEOUT_MS]?: number;
 }
 
 const SIGNAL_KEY = 'signal';
@@ -29,6 +33,12 @@ function isControlKey(key: string): boolean {
 export function remainingJobMs(options: object | undefined, now: number = Date.now()): number | undefined {
   const deadlineAt = (options as JobDeadlined | undefined)?.[JOB_DEADLINE_AT];
   return typeof deadlineAt === 'number' && Number.isFinite(deadlineAt) ? deadlineAt - now : undefined;
+}
+
+/** Length of the job's deadline, or undefined when the conversion has none or was not told its length. */
+export function jobTimeoutMs(options: object | undefined): number | undefined {
+  const timeoutMs = (options as JobDeadlined | undefined)?.[JOB_TIMEOUT_MS];
+  return typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) ? timeoutMs : undefined;
 }
 
 /** `limitMs` held to the time the job has left (at least one millisecond); unchanged when there is no deadline. */
@@ -62,7 +72,7 @@ export function stripEngineControls<T extends object>(options: T): T {
  */
 export function bindJobLimits<T extends object>(
   options: T | undefined,
-  limits: { signal: AbortSignal; deadlineAt?: number }
+  limits: { signal: AbortSignal; deadlineAt?: number; timeoutMs?: number }
 ): T & JobDeadlined & { signal: AbortSignal } {
   const bound: Record<PropertyKey, unknown> = {};
   let ownSignal: AbortSignal | undefined;
@@ -76,5 +86,6 @@ export function bindJobLimits<T extends object>(
   }
   bound[SIGNAL_KEY] = ownSignal && ownSignal !== limits.signal ? AbortSignal.any([ownSignal, limits.signal]) : limits.signal;
   if (limits.deadlineAt !== undefined) bound[JOB_DEADLINE_AT] = limits.deadlineAt;
+  if (limits.timeoutMs !== undefined) bound[JOB_TIMEOUT_MS] = limits.timeoutMs;
   return bound as T & JobDeadlined & { signal: AbortSignal };
 }
