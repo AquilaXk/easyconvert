@@ -46,22 +46,28 @@ export async function extractArtifactMetadata(
   return metadata;
 }
 
-/** Passwords for the inputs of a merge, by position; an input without an entry is merged only when unencrypted. */
+/** Passwords for the inputs of a merge, by position; an input without an entry is merged only if it has no open password. */
 export interface PdfMergeAccess {
-  passwords?: ReadonlyArray<string | undefined>;
+  passwords?: ReadonlyArray<string | null | undefined>;
+  /** True when the caller states they may edit every encrypted input, which lifts the owner restrictions of all of them. */
+  confirmEditRights?: boolean;
 }
 
 /**
  * Merges multiple PDF buffers into a single PDF buffer using pdf-lib.
  *
- * Each encrypted input needs its own password in `access.passwords` (PdfPasswordRequiredError, 422, otherwise) and
- * its owner must not restrict any right unless the password is the owner password (PdfPermissionDeniedError, 422).
+ * An input that needs an open password takes its own entry in `access.passwords` (PdfPasswordRequiredError, 422,
+ * otherwise). An input whose owner forbids page assembly and modification is merged only with
+ * `access.confirmEditRights` or the owner password as its password (PdfPermissionDeniedError, 422, otherwise).
  * The merged output is not encrypted.
  */
 export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess = {}): Promise<Buffer> {
   const mergedPdf = await PDFDocument.create();
   for (const [index, buf] of buffers.entries()) {
-    const plain = await openPdfForEditing(buf, { password: access.passwords?.[index] });
+    const plain = await openPdfForEditing(buf, 'merge', {
+      password: access.passwords?.[index] ?? undefined,
+      confirmEditRights: access.confirmEditRights,
+    });
     const doc = await loadPdfDocument(plain);
     const copiedPages = await mergedPdf.copyPages(doc, doc.getPageIndices());
     for (const page of copiedPages) {

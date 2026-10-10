@@ -14,6 +14,7 @@ export const GRAPH_OPERATIONS = [
   'watermark',
   'pdf.watermark',
   'pdf.protect',
+  'pdf.unlock',
   'merge',
   'metadata',
   'archive.create',

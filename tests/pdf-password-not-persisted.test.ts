@@ -8,6 +8,12 @@ import { Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { openPasswordOption, sealPasswordOption } from '../src/lib/queue/option-secrets';
 import { SecretSealError } from '../src/lib/security/job-secret-seal';
+import { POST as createJobPost } from '../src/app/api/v1/jobs/route';
+import { graphScheduler } from '../src/lib/queue/graph';
+import { enqueueGraphNodeJob, graphNodeJobId } from '../src/lib/queue/graph/node-jobs';
+import { getQueueForResourceClass } from '../src/lib/queue/conversion-queue';
+import { resolveNodeResourceClass } from '../src/lib/queue/resource-class';
+import { s3Storage } from '../src/lib/storage/s3-storage';
 import { storageProvider } from '../src/lib/storage';
 import { AES_256, plainPdf, qpdfEncrypt } from './helpers/encrypted-pdf-fixtures';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -179,12 +185,66 @@ describe.skipIf(toolsMissing)('the PDF password never reaches logs, job records 
   });
 });
 
+describe('the password of a graph node is sealed in the stored graph and in the queued node job', () => {
+  const NODE_CANARY = 'Node-Canary-Pw-0b6e44d1';
+  const MERGE_CANARY = 'Merge-Canary-Pw-9a2f17c3';
+
+  it('keeps node passwords out of graph state, node job data and the status response', async () => {
+    const headers = await apiKeyHeaders();
+    s3Storage.saveObject('uploads/canary-graph.pdf', Buffer.from('%PDF-1.4'), 'application/pdf', 'canary-graph.pdf');
+    const graph = {
+      nodes: {
+        src: { op: 'import.upload', storageKey: 'uploads/canary-graph.pdf' },
+        src2: { op: 'import.upload', storageKey: 'uploads/canary-graph.pdf' },
+        mark: { op: 'pdf.watermark', input: 'src', options: { password: NODE_CANARY, confirmEditRights: true, watermark: { text: 'X' } } },
+        joined: { op: 'merge', input: ['mark', 'src2'], targetFormat: 'pdf', options: { passwords: [null, MERGE_CANARY] } },
+        out: { op: 'export.internal', input: 'joined' },
+      },
+    };
+    const res = await createJobPost(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: 'canary-graph.pdf', targetFormat: 'pdf', storageKey: 'uploads/canary-graph.pdf', graph }),
+      })
+    );
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+
+    const state = await graphScheduler.getGraphState(jobId);
+    const stored = JSON.stringify(state);
+    for (const secret of [NODE_CANARY, MERGE_CANARY]) expect(stored).not.toContain(secret);
+    expect(stored).toContain('sealedPassword');
+
+    // The scheduler enqueues a node once its inputs are done; enqueue the two password-bearing nodes the same way.
+    const nodes = (state as unknown as { graph: { nodes: Record<string, never> } }).graph.nodes;
+    for (const nodeId of ['mark', 'joined']) {
+      await enqueueGraphNodeJob(jobId, nodeId, nodes[nodeId], { ownerUserId: 'canary-owner' }, []);
+      const queued = await getQueueForResourceClass(resolveNodeResourceClass(nodes[nodeId])).getJob(graphNodeJobId(jobId, nodeId));
+      expect(JSON.stringify({ data: queued?.data, opts: queued?.opts })).not.toContain(NODE_CANARY);
+      expect(JSON.stringify({ data: queued?.data, opts: queued?.opts })).not.toContain(MERGE_CANARY);
+    }
+
+    const status = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${jobId}`, { headers }), { params: { id: jobId } });
+    const body = JSON.stringify(await status.json());
+    for (const secret of [NODE_CANARY, MERGE_CANARY]) expect(body).not.toContain(secret);
+  });
+});
+
 describe('sealing of the password option', () => {
   it('replaces the password by a blob only the same job opens', () => {
     const sealed = sealPasswordOption({ password: CANARY, dpi: 150 }, 'job_a');
     expect(JSON.stringify(sealed)).not.toContain(CANARY);
     expect(sealed).toMatchObject({ dpi: 150 });
     expect(openPasswordOption(sealed, 'job_a')).toEqual({ password: CANARY, dpi: 150 });
+    expect(() => openPasswordOption(sealed, 'job_b')).toThrow(SecretSealError);
+  });
+
+  it('seals the per-input passwords of a merge node and opens them for the same job only', () => {
+    const sealed = sealPasswordOption({ passwords: [CANARY, null, ''], confirmEditRights: true }, 'job_a');
+    expect(JSON.stringify(sealed)).not.toContain(CANARY);
+    expect(sealed).not.toHaveProperty('passwords');
+    expect(openPasswordOption(sealed, 'job_a')).toEqual({ passwords: [CANARY, null, ''], confirmEditRights: true });
     expect(() => openPasswordOption(sealed, 'job_b')).toThrow(SecretSealError);
   });
 

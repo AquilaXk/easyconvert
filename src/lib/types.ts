@@ -133,6 +133,13 @@ export interface ConversionOptions {
   multiPageOutput?: 'zip' | 'first';
   pageCount?: number;
   password?: string;
+  /**
+   * PDF editing (watermark, merge, unlock): the caller states that they may edit the document, which lifts the owner
+   * restrictions of a PDF that has no open password or is opened with its user password. Only `true` counts.
+   */
+  confirmEditRights?: boolean;
+  /** Merge: the open password of each input, by position (`null` for an input that has none). */
+  passwords?: Array<string | null>;
   orientation?: 'portrait' | 'landscape';
   preserveTables?: boolean;
   /** BCP 47 language of the document content, written to the language metadata of targets that carry it (EPUB). */

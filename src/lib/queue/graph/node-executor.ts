@@ -28,7 +28,10 @@ import {
   isSplitArchive,
   applyPdfWatermark,
   protectPdf,
+  unlockPdf,
 } from '../../conversions';
+import type { PdfAccess } from '../../conversions/pdf-access';
+import { openPasswordOption } from '../option-secrets';
 import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
   ConversionFailedError,
@@ -168,6 +171,11 @@ function requireTargetFormat(node: { op?: string; targetFormat?: unknown; option
   return target;
 }
 
+/** The password and the rights confirmation a PDF node's options carry. */
+function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean } | undefined): PdfAccess {
+  return { password: options?.password, confirmEditRights: options?.confirmEditRights };
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -181,8 +189,9 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const submittedNode = job.data.graphNode as any;
   // Node options come from the request body: they cannot carry the signal, a timeout or a deadline into an engine.
+  // Passwords sealed for the queue are opened here, in memory, and never stored back anywhere.
   const node = submittedNode?.options && typeof submittedNode.options === 'object'
-    ? { ...submittedNode, options: stripEngineControls(submittedNode.options) }
+    ? { ...submittedNode, options: openPasswordOption(stripEngineControls(submittedNode.options), graphNodeJobId(graphId, nodeId)) }
     : submittedNode;
   const effectiveStorage: IStorageBackend = scope.storage;
   const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
@@ -371,7 +380,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => applyPdfWatermark(buf, watermarkOpts)
+          (buf) => applyPdfWatermark(buf, watermarkOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
@@ -394,6 +403,24 @@ export async function processGraphNodeJob(
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.unlock': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const processedKeys = await processIntermediatePdfArtifacts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          (buf) => unlockPdf(buf, pdfAccessOf(node.options))
+        );
+        outputKeys.push(...processedKeys);
+        await job.log(`Node "${nodeId}" unlocked ${inputArtifacts.length} artifact(s)`);
         break;
       }
 
@@ -423,7 +450,10 @@ export async function processGraphNodeJob(
         }));
         if (targetFmt === 'pdf') {
           const pdfBuffers = inputs.map((stored) => stored.buffer);
-          const mergedBuf = await mergePdfBuffers(pdfBuffers);
+          const mergedBuf = await mergePdfBuffers(pdfBuffers, {
+            passwords: node.options?.passwords,
+            confirmEditRights: node.options?.confirmEditRights,
+          });
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);

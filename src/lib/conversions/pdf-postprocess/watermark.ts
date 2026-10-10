@@ -252,7 +252,7 @@ async function loadAndPrepareDocument(
     throw new PdfPostprocessError('PDF buffer is empty.');
   }
   // Encrypted input is decrypted (or refused with a typed 422) before pdf-lib sees a byte of it.
-  const plain = await openPdfForEditing(pdfBuffer, access);
+  const plain = await openPdfForEditing(pdfBuffer, 'watermark', access);
   try {
     const doc = await loadPdfDocument(plain);
     const pageCount = doc.getPageCount();
@@ -371,9 +371,10 @@ async function prepareWatermarkAsset(
  * Apply text or image watermarking to a PDF document with configurable positioning,
  * rotation, opacity, page range selection, and over/under layering.
  *
- * An encrypted PDF needs `access.password`; without it, or with a password that does not open the file, the call
- * answers PdfPasswordRequiredError (422). The result is written without encryption, so a PDF whose owner restricts
- * any right is only watermarked when the password is the owner password (PdfPermissionDeniedError otherwise).
+ * An encrypted PDF that needs an open password answers PdfPasswordRequiredError (422) without `access.password` or
+ * with a wrong one. The result is written without encryption, so a PDF whose owner forbids modifying it is only
+ * watermarked when the caller confirms the right to edit (`access.confirmEditRights`) or supplies the owner password;
+ * otherwise the call answers PdfPermissionDeniedError (422).
  */
 export async function applyPdfWatermark(
   pdfBuffer: Buffer,

@@ -1,4 +1,4 @@
-import { sealJobSecret, unsealJobSecret } from '../security/job-secret-seal';
+import { SecretSealError, sealJobSecret, unsealJobSecret } from '../security/job-secret-seal';
 import type { ConversionJobData } from '../types';
 
 /**
@@ -7,10 +7,12 @@ import type { ConversionJobData } from '../types';
  * `options.password` is replaced by `options.sealedPassword`, an AES-256-GCM blob bound to the id of the job (see
  * job-secret-seal), before the job record is written; the worker opens it in memory at the point of use. The queue
  * therefore never persists the password, and a blob copied into another job fails authentication instead of opening.
- * An empty password is not a secret and stays as it is.
+ * The per-input `passwords` of a merge node are sealed the same way into `options.sealedPasswords`. An empty password
+ * is not a secret and stays as it is.
  */
 
 const SEALED_PASSWORD_KEY = 'sealedPassword';
+const SEALED_PASSWORDS_KEY = 'sealedPasswords';
 
 type OptionsRecord = Record<string, unknown>;
 
@@ -18,23 +20,51 @@ function isRecord(value: unknown): value is OptionsRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** `options` with a plaintext `password` replaced by a `sealedPassword` bound to `jobId`. */
+function hasSecretPassword(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/** `options` with a plaintext `password` or `passwords` replaced by sealed blobs bound to `jobId`. */
 export function sealPasswordOption<T>(options: T, jobId: string): T {
-  if (!isRecord(options) || typeof options.password !== 'string' || options.password.length === 0) return options;
-  const { password, ...rest } = options;
-  return { ...rest, [SEALED_PASSWORD_KEY]: sealJobSecret(password, jobId) } as T;
+  if (!isRecord(options)) return options;
+  let sealed: OptionsRecord = options;
+  if (hasSecretPassword(options.password)) {
+    const { password, ...rest } = sealed;
+    sealed = { ...rest, [SEALED_PASSWORD_KEY]: sealJobSecret(password as string, jobId) };
+  }
+  if (Array.isArray(options.passwords) && options.passwords.some(hasSecretPassword)) {
+    const { passwords, ...rest } = sealed;
+    sealed = { ...rest, [SEALED_PASSWORDS_KEY]: sealJobSecret(JSON.stringify(passwords), jobId) };
+  }
+  return sealed as T;
 }
 
 /**
- * `options` with its `sealedPassword` opened into `password`. Options that carry no sealed password are returned as
- * they are, including a plaintext password from a job queued before sealing existed.
+ * `options` with its sealed passwords opened into `password` and `passwords`. Options that carry none are returned
+ * as they are, including a plaintext password from a job queued before sealing existed.
  *
- * @throws SecretSealError when the blob is not sealed for `jobId` under a configured key.
+ * @throws SecretSealError when a blob is not sealed for `jobId` under a configured key.
  */
 export function openPasswordOption<T>(options: T, jobId: string): T {
-  if (!isRecord(options) || typeof options[SEALED_PASSWORD_KEY] !== 'string') return options;
-  const { [SEALED_PASSWORD_KEY]: sealed, ...rest } = options;
-  return { ...rest, password: unsealJobSecret(sealed as string, jobId) } as T;
+  if (!isRecord(options)) return options;
+  let opened: OptionsRecord = options;
+  if (typeof options[SEALED_PASSWORD_KEY] === 'string') {
+    const { [SEALED_PASSWORD_KEY]: sealed, ...rest } = opened;
+    opened = { ...rest, password: unsealJobSecret(sealed as string, jobId) };
+  }
+  if (typeof options[SEALED_PASSWORDS_KEY] === 'string') {
+    const { [SEALED_PASSWORDS_KEY]: sealed, ...rest } = opened;
+    opened = { ...rest, passwords: parsePasswordList(unsealJobSecret(sealed as string, jobId)) };
+  }
+  return opened as T;
+}
+
+function parsePasswordList(json: string): Array<string | null> {
+  const parsed: unknown = JSON.parse(json);
+  if (!Array.isArray(parsed) || parsed.some((entry) => entry !== null && typeof entry !== 'string')) {
+    throw new SecretSealError('MALFORMED_BLOB', '[JobSecretSeal] Sealed password list is malformed.');
+  }
+  return parsed as Array<string | null>;
 }
 
 /** The job data with the password of its options (and of each task's options) sealed for `jobId`. */

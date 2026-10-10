@@ -43,6 +43,8 @@ export interface EncryptOptions {
   /** classic: cross-reference table; objstm: cross-reference stream and object streams. */
   structure?: ObjectStreamMode;
   linearize?: boolean;
+  /** false adds `--extract=n`: copying content is forbidden while editing stays allowed. */
+  extractAllowed?: boolean;
 }
 
 export function qpdfPath(): string {
@@ -76,7 +78,7 @@ function modifyArgs(variant: EncryptionVariant, modify: EncryptOptions['modify']
 
 /** Encrypts `plain` with the qpdf CLI. */
 export function qpdfEncrypt(plain: Buffer, options: EncryptOptions): Buffer {
-  const { variant, userPassword = '', ownerPassword = 'owner-secret-1', modify, structure = 'classic', linearize = false } = options;
+  const { variant, userPassword = '', ownerPassword = 'owner-secret-1', modify, structure = 'classic', linearize = false, extractAllowed = true } = options;
   return withTempDir((dir) => {
     const input = path.join(dir, 'in.pdf');
     const output = path.join(dir, 'out.pdf');
@@ -91,6 +93,7 @@ export function qpdfEncrypt(plain: Buffer, options: EncryptOptions): Buffer {
       variant.bits,
       ...variant.extra,
       ...modifyArgs(variant, modify),
+      ...(extractAllowed ? [] : ['--extract=n']),
       '--',
       input,
       output,

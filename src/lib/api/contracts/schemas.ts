@@ -290,7 +290,18 @@ export const ConversionOptionsSchema = {
     },
     password: {
       type: 'string',
-      description: 'Decryption or protection password.',
+      description: 'Decryption or protection password. For an encrypted PDF it is the open password, or the owner password, which also lifts the owner restrictions on a PDF edit.',
+    },
+    confirmEditRights: {
+      type: 'boolean',
+      description:
+        'PDF watermark, merge and unlock: set to true to confirm that you may edit the document. This lifts the owner restrictions of a PDF that has no open password or is opened with its user password; without it, or the owner password, such a request answers 422. The result is written without those restrictions.',
+    },
+    passwords: {
+      type: 'array',
+      maxItems: 1000,
+      items: { type: ['string', 'null'] },
+      description: 'Merge node: the open password of each input PDF, in input order; null for an input that has none.',
     },
     orientation: {
       type: 'string',

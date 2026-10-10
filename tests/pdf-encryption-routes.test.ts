@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import { POST as createJobPost } from '../src/app/api/v1/jobs/route';
+import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
 import { GET as getV1JobRoute } from '../src/app/api/v1/jobs/[id]/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -9,7 +11,7 @@ import { conversionQueue, processConversionJob } from '../src/lib/queue/conversi
 import { graphScheduler } from '../src/lib/queue/graph';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData } from '../src/lib/types';
-import { AES_256, RC4_128, pdfinfoPages, plainPdf, qpdfEncrypt, pdftotext } from './helpers/encrypted-pdf-fixtures';
+import { AES_256, RC4_128, pdfinfoPages, plainPdf, qpdfEncrypt, qpdfEncryptionReport, pdftotext } from './helpers/encrypted-pdf-fixtures';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -89,7 +91,7 @@ describe.skipIf(toolsMissing)('POST /api/v1/convert with an encrypted PDF', () =
   });
 });
 
-describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted PDF', () => {
+describe.skipIf(toolsMissing)('a queued watermark, merge or unlock node on an encrypted PDF', () => {
   function seed(name: string, buffer: Buffer): string {
     counter += 1;
     const key = `tests/pdf-encryption-routes/${Date.now()}_${counter}_${name}`;
@@ -97,15 +99,12 @@ describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted 
     return key;
   }
 
-  async function failedJob(graphNode: Record<string, unknown>, inputArtifacts: string[]): Promise<Record<string, unknown>> {
-    const { headers, userId } = await apiKeyHeaders();
+  function nodeJob(graphNode: Record<string, unknown>, inputArtifacts: string[], userId?: string) {
     counter += 1;
     const graphId = `g_enc571_${Date.now()}_${counter}`;
-    vi.spyOn(graphScheduler, 'onNodeFailed').mockResolvedValue(undefined as never);
-    const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
-    const failed = new Promise<void>((resolve) => worker.on('failed', () => resolve()));
+    const jobId = `${graphId}:n1`;
     const data: ConversionJobData = {
-      jobId: `${graphId}:n1`,
+      jobId,
       originalFilename: 'locked.pdf',
       sourceFormat: 'bin',
       targetFormat: 'pdf',
@@ -117,8 +116,17 @@ describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted 
       graphNode: graphNode as unknown as ConversionJobData['graphNode'],
       inputArtifacts,
     };
+    return { graphId, jobId, data };
+  }
+
+  async function failedJob(graphNode: Record<string, unknown>, inputArtifacts: string[]): Promise<Record<string, unknown>> {
+    const { headers, userId } = await apiKeyHeaders();
+    const { jobId, data } = nodeJob(graphNode, inputArtifacts, userId);
+    vi.spyOn(graphScheduler, 'onNodeFailed').mockResolvedValue(undefined as never);
+    const worker = new Worker(conversionQueue, processConversionJob, { concurrency: 1 });
+    const failed = new Promise<void>((resolve) => worker.on('failed', () => resolve()));
     const job = await conversionQueue.add('graph-node', data, {
-      jobId: `${graphId}:n1`,
+      jobId,
       attempts: ATTEMPTS,
       backoff: { type: 'fixed', delay: RETRY_DELAY_MS },
     });
@@ -129,44 +137,15 @@ describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted 
     return res.json();
   }
 
-  it('fails a pdf.watermark node once with failedStatus 422 and PdfPasswordRequiredError', async () => {
-    const key = seed('locked.pdf', qpdfEncrypt(await plainPdf(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
-    const body = await failedJob({ op: 'pdf.watermark', options: { watermark: { text: 'MARK' } } }, [key]);
-    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPasswordRequiredError' });
-  });
-
-  it('fails a pdf.watermark node on a modify-restricted file with an empty user password as 422 as well', async () => {
-    const key = seed('restricted.pdf', qpdfEncrypt(await plainPdf(), { variant: RC4_128, userPassword: '', ownerPassword: OWNER_PASSWORD, modify: 'none' }));
-    const body = await failedJob({ op: 'pdf.watermark', options: { watermark: { text: 'MARK' } } }, [key]);
-    expect(body).toMatchObject({ status: 'failed', failedStatus: HTTP_UNPROCESSABLE });
-  });
-
-  it('fails a merge node with an encrypted input once with failedStatus 422', async () => {
-    const encrypted = seed('locked.pdf', qpdfEncrypt(await plainPdf(['Locked']), { variant: RC4_128, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
-    const open = seed('open.pdf', await plainPdf(['Open']));
-    const body = await failedJob({ op: 'merge', targetFormat: 'pdf' }, [open, encrypted]);
-    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPasswordRequiredError' });
-  });
-
-  it('still merges two unencrypted PDFs through the same worker path', async () => {
-    const first = seed('a.pdf', await plainPdf(['Alpha body']));
-    const second = seed('b.pdf', await plainPdf(['Beta body']));
+  async function runNode(graphNode: Record<string, unknown>, inputArtifacts: string[], seal = false): Promise<Buffer> {
     const { processGraphNodeJob } = await import('../src/lib/queue/graph/node-executor');
-    counter += 1;
-    const graphId = `g_enc571_ok_${Date.now()}_${counter}`;
+    const { data, jobId } = nodeJob(graphNode, inputArtifacts);
+    // The queue stores a node sealed under its job id; the executor must open it at the point of use.
+    if (seal) data.graphNode = sealGraphNode(graphNode as never, jobId);
+    if (seal) expect(JSON.stringify(data.graphNode)).not.toContain(USER_PASSWORD);
     const job = {
-      id: `${graphId}:n1`,
-      data: {
-        jobId: `${graphId}:n1`,
-        sourceFormat: 'bin',
-        targetFormat: 'pdf',
-        fileSize: 0,
-        options: {},
-        graphId,
-        graphNodeId: 'n1',
-        graphNode: { op: 'merge', targetFormat: 'pdf' },
-        inputArtifacts: [first, second],
-      },
+      id: jobId,
+      data,
       opts: { attempts: 1 },
       attemptsMade: 1,
       signal: new AbortController().signal,
@@ -174,10 +153,118 @@ describe.skipIf(toolsMissing)('a queued watermark or merge node on an encrypted 
       updateProgress: async () => {},
     } as never;
     const result = await processGraphNodeJob(job, undefined, s3Storage);
-    const merged = s3Storage.getObject(result.resultKey)?.buffer as Buffer;
+    return s3Storage.getObject(result.resultKey)?.buffer as Buffer;
+  }
+
+  const watermarkNode = (options: Record<string, unknown> = {}) => ({
+    op: 'pdf.watermark',
+    options: { watermark: { text: 'MARK', rotation: 0 }, ...options },
+  });
+
+  it('fails a pdf.watermark node once with failedStatus 422 and PdfPasswordRequiredError when a user password is needed', async () => {
+    const key = seed('locked.pdf', qpdfEncrypt(await plainPdf(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
+    const body = await failedJob(watermarkNode(), [key]);
+    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPasswordRequiredError' });
+  });
+
+  it('fails a pdf.watermark node on an owner-restricted file once with PdfPermissionDeniedError and a hint', async () => {
+    const key = seed('restricted.pdf', qpdfEncrypt(await plainPdf(), { variant: RC4_128, userPassword: '', ownerPassword: OWNER_PASSWORD, modify: 'none' }));
+    const body = await failedJob(watermarkNode(), [key]);
+    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPermissionDeniedError' });
+    expect(String(body.failedReason)).toMatch(/confirmEditRights/);
+  });
+
+  it('fails a merge node with an input that needs a user password once with failedStatus 422', async () => {
+    const encrypted = seed('locked.pdf', qpdfEncrypt(await plainPdf(['Locked']), { variant: RC4_128, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
+    const open = seed('open.pdf', await plainPdf(['Open']));
+    const body = await failedJob({ op: 'merge', targetFormat: 'pdf' }, [open, encrypted]);
+    expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPasswordRequiredError' });
+  });
+
+  it('fails a pdf.unlock node on a file with a user password once with failedStatus 422', async () => {
+    const key = seed('locked.pdf', qpdfEncrypt(await plainPdf(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
+    const body = await failedJob({ op: 'pdf.unlock', options: { confirmEditRights: true } }, [key]);
+    expect(body).toMatchObject({ status: 'failed', failedStatus: HTTP_UNPROCESSABLE, failedCode: 'PdfPasswordRequiredError' });
+  });
+
+  it('watermarks with node options password, and with a confirmation on an owner-restricted file', async () => {
+    const userKey = seed('user.pdf', qpdfEncrypt(await plainPdf(['User body']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
+    const viaPassword = await runNode(watermarkNode({ password: USER_PASSWORD }), [userKey]);
+    expect(pdftotext(viaPassword)).toContain('MARK');
+
+    const restrictedKey = seed('restricted.pdf', qpdfEncrypt(await plainPdf(['Restricted body']), { variant: RC4_128, userPassword: '', ownerPassword: OWNER_PASSWORD, modify: 'none' }));
+    const viaConfirm = await runNode(watermarkNode({ confirmEditRights: true }), [restrictedKey]);
+    expect(pdftotext(viaConfirm)).toContain('MARK');
+    expect(pdftotext(viaConfirm)).toContain('Restricted body');
+    expect(pdfinfoPages(viaConfirm)).toBe(1);
+  });
+
+  it('merges with the passwords of the encrypted inputs, in input order, and with a confirmation', async () => {
+    const locked = seed('locked.pdf', qpdfEncrypt(await plainPdf(['Locked body']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, modify: 'none' }));
+    const open = seed('open.pdf', await plainPdf(['Open body']));
+    const merged = await runNode(
+      { op: 'merge', targetFormat: 'pdf', options: { passwords: [USER_PASSWORD, null], confirmEditRights: true } },
+      [locked, open]
+    );
     expect(pdfinfoPages(merged)).toBe(2);
-    const text = pdftotext(merged);
-    expect(text).toContain('Alpha body');
-    expect(text).toContain('Beta body');
+    expect(pdftotext(merged)).toContain('Locked body');
+    expect(pdftotext(merged)).toContain('Open body');
+  });
+
+  it('unlocks with a pdf.unlock node and stores a PDF qpdf reports as unencrypted', async () => {
+    const key = seed('restricted.pdf', qpdfEncrypt(await plainPdf(['Unlock me']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, modify: 'none' }));
+    const out = await runNode({ op: 'pdf.unlock', options: { password: USER_PASSWORD, confirmEditRights: true } }, [key]);
+    expect(qpdfEncryptionReport(out).encrypted).toBe(false);
+    expect(pdftotext(out)).toContain('Unlock me');
+  });
+
+  it('runs a node whose passwords were sealed for the queue, which holds no plaintext password', async () => {
+    const locked = seed('sealed.pdf', qpdfEncrypt(await plainPdf(['Sealed body']), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD }));
+    const open = seed('plain.pdf', await plainPdf(['Plain body']));
+    const merged = await runNode({ op: 'merge', targetFormat: 'pdf', options: { passwords: [USER_PASSWORD, null] } }, [locked, open], true);
+    expect(pdfinfoPages(merged)).toBe(2);
+    expect(pdftotext(merged)).toContain('Sealed body');
+
+    const watermarked = await runNode(watermarkNode({ password: USER_PASSWORD }), [locked], true);
+    expect(pdftotext(watermarked)).toContain('MARK');
+  });
+});
+
+describe('graph submission validation of the new options', () => {
+  async function submit(nodeOptions: Record<string, unknown>, op = 'pdf.watermark'): Promise<Response> {
+    const { headers } = await apiKeyHeaders();
+    s3Storage.saveObject('uploads/enc571-input.pdf', Buffer.from('%PDF-1.4'), 'application/pdf', 'enc571-input.pdf');
+    return createJobPost(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: 'enc571-input.pdf',
+          targetFormat: 'pdf',
+          storageKey: 'uploads/enc571-input.pdf',
+          graph: {
+            nodes: {
+              src: { op: 'import.upload', storageKey: 'uploads/enc571-input.pdf' },
+              step: { op, input: 'src', options: nodeOptions },
+              out: { op: 'export.internal', input: 'step' },
+            },
+          },
+        }),
+      })
+    );
+  }
+
+  it('accepts a pdf.unlock node with a boolean confirmEditRights and a password', async () => {
+    const res = await submit({ confirmEditRights: true, password: 'pw' }, 'pdf.unlock');
+    const text = await res.clone().text();
+    expect(res.status, text).toBe(202);
+    const body = await res.json();
+    expect(body.nodes.step).toBeDefined();
+  });
+
+  it('rejects a confirmEditRights that is not a boolean with a 422 schema problem', async () => {
+    const res = await submit({ confirmEditRights: 'yes' });
+    expect(res.status).toBe(HTTP_UNPROCESSABLE);
+    expect(JSON.stringify(await res.json())).toMatch(/confirmEditRights/);
   });
 });
