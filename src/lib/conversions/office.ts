@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
-import { MAX_ZIP_MEDIA_BYTES, ZIP_MEDIA_MAX_RATIO, readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
@@ -6087,7 +6088,8 @@ export async function parsePptxSlideSceneGraph(
   slideHeight: number,
   relsMap: Map<string, string>,
   zip: JSZip,
-  texts: string[]
+  texts: string[],
+  media: PptxMedia = new PptxMedia()
 ): Promise<VisualSlideShape[]> {
   const shapes: VisualSlideShape[] = [];
 
@@ -6121,7 +6123,8 @@ export async function parsePptxSlideSceneGraph(
       slideHeight,
       relsMap,
       zip,
-      texts
+      texts,
+      media
     );
     shapes.push(...childShapes);
   }
@@ -6433,25 +6436,10 @@ export async function parsePptxSlideSceneGraph(
       const target = relsMap.get(rId);
       if (target) {
         const mediaPath = resolveZipPath('ppt/slides', target);
-        const mediaFile = zip.file(mediaPath);
-        if (mediaFile) {
-          // An embedded picture is media, not a parsed part: it may be far over the 64 MiB cap of XML and text.
-          let imgBuffer = await readZipEntryBytes(mediaFile, { maxBytes: MAX_ZIP_MEDIA_BYTES, maxRatio: ZIP_MEDIA_MAX_RATIO });
-          // PNG and JPEG are embedded without a re-encode, whatever the part is called: check their header.
-          // Pictures are processed one at a time on purpose: each decode can hold up to the pixel limit in memory.
-          await assertEmbeddableImageWithinLimit(imgBuffer); // NOSONAR S9382: sequential to bound memory
-          let mimeType = 'image/png';
-          const lower = mediaPath.toLowerCase();
-          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-            mimeType = 'image/jpeg';
-          } else if (!lower.endsWith('.png')) {
-            try {
-              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer(); // NOSONAR S9382: sequential to bound memory
-              mimeType = 'image/png';
-            } catch (err) {
-              rethrowInputPixelLimit(err);
-            }
-          }
+        const picture = await media.picture(zip, mediaPath);
+        if (picture) {
+          let imgBuffer = picture.buffer;
+          const mimeType = picture.mimeType;
 
           // DrawingML <a:srcRect> image cropping (ISO/IEC 29500-1 §20.1.8.56)
           const srcRectEl = safeExtractFirstXmlElement(picXml, 'a:srcRect');
@@ -6473,6 +6461,7 @@ export async function parsePptxSlideSceneGraph(
                   imgBuffer = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
+                  media.chargeDerived(imgBuffer.length, mediaPath);
                 }
               } catch (err) {
                 rethrowInputPixelLimit(err);
@@ -6648,6 +6637,11 @@ async function convertPptxSource(
 
   const slides: VisualSlide[] = [];
   const slideBudget = new InflateBudget();
+  // Only the HTML and PDF targets draw pictures; an HTML page also cannot hold more than a string can.
+  const media = new PptxMedia({
+    enabled: tgt === 'html' || tgt === 'pdf',
+    maxPartBytes: tgt === 'html' ? Math.floor(HTML_MAX_EMBEDDED_BASE64_CHARS / 4) * 3 : undefined,
+  });
 
   for (let i = 0; i < slideFiles.length; i++) {
     const xml = await readZipEntryText(zip.files[slideFiles[i]], { budget: slideBudget });
@@ -6688,7 +6682,8 @@ async function convertPptxSource(
       slideHeight,
       relsMap,
       zip,
-      texts
+      texts,
+      media
     );
 
     slides.push({
@@ -6929,7 +6924,7 @@ async function convertPotxSource(
   return convertPptxSource(inputBuffer, tgt, options, baseName);
 }
 
-function generateHtmlFromSlides(
+export function generateHtmlFromSlides(
   slides: Array<{
     number: number;
     texts: string[];
@@ -6941,6 +6936,8 @@ function generateHtmlFromSlides(
   title: string
 ): string {
   let slidesHtml = '';
+  // Every picture is written in full where it is drawn, so a part used by several pictures counts once per picture.
+  let embeddedBase64Chars = 0;
   slides.forEach((slide) => {
     const sWidth = slide.width || 960;
     const sHeight = slide.height || 540;
@@ -6969,6 +6966,12 @@ function generateHtmlFromSlides(
             transforms.push(`translate(${cx} ${cy}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`);
           }
           const trAttr = transforms.length > 0 ? ` transform="${transforms.join(' ')}"` : '';
+          embeddedBase64Chars += base64Length(s.imageData.length);
+          if (embeddedBase64Chars > HTML_MAX_EMBEDDED_BASE64_CHARS) {
+            throw new PayloadLimitError(
+              `The pictures of this deck would embed more than ${HTML_MAX_EMBEDDED_BASE64_CHARS} base64 characters, more than an HTML page can hold.`
+            );
+          }
           svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"${trAttr}/>\n`;
         } else if (type === 'table' && s.tableData) {
           const rowCount = Math.max(1, s.tableData.rows.length);

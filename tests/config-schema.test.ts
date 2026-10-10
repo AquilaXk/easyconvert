@@ -26,6 +26,7 @@ import {
   XLS_MAX_GRID_CELLS_ENV,
   XLS_MAX_PDF_TEXT_CELLS_ENV,
 } from '../src/lib/conversions/office/spreadsheet-limits';
+import { DEFAULT_MAX_DOCUMENT_MEDIA_BYTES, MAX_DOCUMENT_MEDIA_BYTES_ENV } from '../src/lib/conversions/office/media-limits';
 
 /**
  * Parsers and loader, checked against values written out from the rules of the code that consumes each variable
@@ -481,6 +482,7 @@ describe('schema', () => {
     expect(defaults.get(XLS_MAX_PDF_TEXT_CELLS_ENV)).toBe(DEFAULT_XLS_MAX_PDF_TEXT_CELLS);
     expect(defaults.get(XLSX_MAX_CELL_TEXT_CHARS_ENV)).toBe(DEFAULT_XLSX_MAX_CELL_TEXT_CHARS);
     expect(defaults.get(XLS_MAX_CELL_TEXT_CHARS_ENV)).toBe(DEFAULT_XLS_MAX_CELL_TEXT_CHARS);
+    expect(defaults.get(MAX_DOCUMENT_MEDIA_BYTES_ENV)).toBe(DEFAULT_MAX_DOCUMENT_MEDIA_BYTES);
     // Values written in the consumers' expressions (`|| '1000'`, `: 10`, `?? 600`) and in the issue text.
     expect(Object.fromEntries(['WORKER_CONCURRENCY', 'WORKER_MAX_JOBS', 'WORKER_MAX_RSS_MB', 'WORKER_DRAIN_TIMEOUT_MS', 'WORKER_HEARTBEAT_INTERVAL_MS'].map((name) => [name, defaults.get(name)]))).toEqual({
       WORKER_CONCURRENCY: 3,
@@ -541,6 +543,8 @@ describe('schema', () => {
       'EASYCONVERT_XLS_MAX_PDF_TEXT_CELLS',
       'EASYCONVERT_XLSX_MAX_CELL_TEXT_CHARS',
       'EASYCONVERT_XLS_MAX_CELL_TEXT_CHARS',
+      // office/media-limits.ts
+      'EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES',
       // job-secret-seal.ts
       'JOB_SECRET_KEK',
       'JOB_SECRET_KEK_PREVIOUS',
