@@ -7,7 +7,7 @@ import sharp from 'sharp';
  * photograph took 45 ms to encode as AVIF on a 4-core machine where the reference encoder (all cores) took 31 ms, and a
  * 24-megapixel one 9.6 s against 2.9 s on 4 threads.
  *
- * The threads are leased for the length of an AVIF encode and not set for the process: the same threads made the WebP
+ * The threads are leased for the length of an AVIF encode of a photograph and not set for the process: the same threads made the WebP
  * encode of a 1024 x 640 interface 6 ms longer (27 ms to 33 ms) and gained nothing in JPEG, because the thread pool of a
  * picture this small costs more to start than it saves. Resident memory of a run of 4-megapixel conversions rose from
  * 483 MB to 934 MB on 4 threads (a 24-megapixel AVIF: 921 MB to 1011 MB), and the heap stays that size on glibc; a

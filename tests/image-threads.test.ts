@@ -1,6 +1,7 @@
 import os from 'node:os';
 import sharp from 'sharp';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { convertImage } from '../src/lib/conversions/image';
 import { IMAGE_MAX_THREADS, IMAGE_THREADS_ENV, imageThreadsFor, withImageThreads } from '../src/lib/conversions/image-threads';
 
 describe('imageThreadsFor', () => {
@@ -47,5 +48,44 @@ describe('withImageThreads', () => {
     releaseFirst();
     await first;
     expect(sharp.concurrency()).toBe(1);
+  });
+});
+
+describe('the AVIF encode of the image library', () => {
+  const SIDE = 64;
+  const MULTIPLIER = 2654435761;
+  const picture = (flat: boolean): Promise<Buffer> => {
+    const raw = Buffer.alloc(SIDE * SIDE * 3);
+    for (let i = 0; i < raw.length; i += 1) raw[i] = flat ? (Math.floor(i / 3 / 8) % 2) * 200 : (Math.imul(i + 1, MULTIPLIER) >>> 24) & 0xff;
+    return sharp(raw, { raw: { width: SIDE, height: SIDE, channels: 3 } }).png().toBuffer();
+  };
+  const savedPath = process.env.AVIFENC_PATH;
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedPath === undefined) delete process.env.AVIFENC_PATH;
+    else process.env.AVIFENC_PATH = savedPath;
+  });
+
+  /** Thread counts the image library was asked for during a conversion that the image library itself encodes. */
+  async function threadsAsked(source: Buffer): Promise<unknown[]> {
+    process.env.AVIFENC_PATH = '/nonexistent/avifenc';
+    const asked: unknown[] = [];
+    const concurrency = sharp.concurrency;
+    vi.spyOn(sharp, 'concurrency').mockImplementation(((count?: number) => {
+      if (count !== undefined) asked.push(count);
+      return concurrency(count as number);
+    }) as typeof sharp.concurrency);
+    const result = await convertImage(source, 'avif', { quality: 60 }, 'p.png', 'png');
+    expect(result.metadata).toMatchObject({ avifEncoder: 'image-library' });
+    return asked;
+  }
+
+  it('runs a photograph on the leased threads and puts the previous count back', async () => {
+    const before = sharp.concurrency();
+    expect(await threadsAsked(await picture(false))).toEqual([imageThreadsFor(os.availableParallelism()), before]);
+  });
+
+  it('keeps a graphic on the single thread it had: the tiles that threads bring moved an interface from -14.4% to +1.6% BD-rate in PSNR', async () => {
+    expect(await threadsAsked(await picture(true))).toEqual([]);
   });
 });

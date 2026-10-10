@@ -1788,7 +1788,10 @@ async function encodeAvifFromPipeline(
     return { buffer, encoder };
   }
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
-  return { buffer: await withImageThreads(() => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer()), encoder };
+  const encode = (): Promise<Buffer> => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer();
+  // With threads the encoder splits the picture into tiles, which costs a little compression: affordable on a photograph
+  // (BD-rate in PSNR -14.0% against the reference, -13.1% with threads), not on an interface, which went from -14.4% to +1.6%, past the allowance.
+  return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
 }
 
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
