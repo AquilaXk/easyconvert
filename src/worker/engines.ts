@@ -27,6 +27,7 @@ import {
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
+import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2196,7 +2197,27 @@ const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'od
  * presentations and OpenDocument drawings, none of which the in-process engine can render. Targets
  * are still limited to OFFICE_FORMATS, because LibreOffice cannot write the other formats.
  */
-const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([...OFFICE_FORMATS, 'potx', 'key', 'odg', 'odd']);
+const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([
+  ...OFFICE_FORMATS,
+  'potx',
+  'key',
+  'odg',
+  'odd',
+  // Macro-enabled, template and slideshow variants: LibreOffice opens them like their plain formats, without running macros.
+  ...Object.keys(OOXML_VARIANT_FAMILY),
+]);
+/** LibreOffice application that opens and writes each Office format: a document is only converted into its own application's formats (and PDF). */
+const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impress'>> = {
+  doc: 'writer', docx: 'writer', odt: 'writer', rtf: 'writer', docm: 'writer', dotx: 'writer', dotm: 'writer',
+  xls: 'calc', xlsx: 'calc', ods: 'calc', xlsm: 'calc', xltx: 'calc', xltm: 'calc',
+  ppt: 'impress', pptx: 'impress', odp: 'impress', potx: 'impress', pptm: 'impress', potm: 'impress', ppsx: 'impress', ppsm: 'impress',
+};
+/** Whether LibreOffice has no export filter for the pair: a text document cannot be saved as a presentation, nor a workbook as a text document. */
+function crossesLibreOfficeApplications(src: string, tgt: string): boolean {
+  const from = LIBREOFFICE_APPLICATION[src];
+  const to = LIBREOFFICE_APPLICATION[tgt];
+  return from !== undefined && to !== undefined && from !== to;
+}
 /** Formats LibreOffice also writes back out: a drawing template is saved again as a normalised template (.otg). */
 const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
 /** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
@@ -2205,9 +2226,19 @@ const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
 const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
 const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
-/** Sources whose load failure LibreOffice reports on stderr (an encrypted or damaged workbook) instead of writing nothing. */
-const LIBREOFFICE_LOAD_FAILURE_SOURCES: ReadonlySet<string> = new Set(['xls']);
-const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded/;
+/**
+ * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
+ * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
+ */
+export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
+  const family = OOXML_VARIANT_FAMILY[src];
+  const buffer = family === undefined ? undefined : inputAsBuffer(input);
+  if (family === undefined || buffer === undefined) return input;
+  const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
+  return plain.droppedMacros ? plain.buffer : input;
+}
+/** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
+const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
 
 /** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
 function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
@@ -2239,10 +2270,10 @@ function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: strin
 
 /** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
 function asUnreadableDocument(err: unknown, src: string): unknown {
-  if (LIBREOFFICE_ONLY_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
+  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
   }
-  if (LIBREOFFICE_LOAD_FAILURE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
+  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
   }
   return err;
@@ -2461,8 +2492,9 @@ export async function executeWorkerConversion(
   // 1. Native Headless Office
   await assertDrawingPackage(input, src);
   assertWorkbookNotEncrypted(input, src);
+  if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
-  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)) && !crossesLibreOfficeApplications(src, tgt))) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)

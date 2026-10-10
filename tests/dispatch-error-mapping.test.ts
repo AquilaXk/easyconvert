@@ -13,8 +13,7 @@ import sharp from 'sharp';
 
 const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const HTTP_INTERNAL_ERROR = 500;
-const GENERIC_INTERNAL_DETAIL = 'Internal conversion error';
+const HTTP_BAD_REQUEST = 400;
 const CONVERT_TIMEOUT_MS = 120_000;
 const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
 const PDF_SIGNATURE = '%PDF-';
@@ -101,20 +100,13 @@ describe('POST /api/v1/convert error responses', () => {
   });
 
   it.skipIf(skipWithoutTools('soffice'))(
-    'does not echo internal error messages or sandbox paths in a 500 response (needs soffice)',
+    'answers a document LibreOffice cannot open with a 400 that names the file, not a 500, and echoes no sandbox path (needs soffice)',
     async () => {
-      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        const res = await v1ConvertPost(convertRequest(BROKEN_DOCX, 'broken.docx', 'png'));
-        expect(res.status).toBe(HTTP_INTERNAL_ERROR);
-        const problem = await res.json();
-        expect(problem.detail).toBe(GENERIC_INTERNAL_DETAIL);
-        expect(JSON.stringify(problem)).not.toContain('/tmp');
-        const loggedText = logged.mock.calls.flat().map(String).join('\n');
-        expect(loggedText).toContain('LibreOffice');
-      } finally {
-        logged.mockRestore();
-      }
+      const res = await v1ConvertPost(convertRequest(BROKEN_DOCX, 'broken.docx', 'png'));
+      expect(res.status).toBe(HTTP_BAD_REQUEST);
+      const problem = await res.json();
+      expect(problem.detail).toContain('LibreOffice could not read the .docx file');
+      expect(JSON.stringify(problem)).not.toContain('/tmp');
     },
     CONVERT_TIMEOUT_MS
   );
