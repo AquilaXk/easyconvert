@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -104,12 +104,28 @@ describe('zstd optimal parser validity', () => {
     ['one block and one byte', zipfText(BLOCK_BYTES + 1, 7)],
   ];
 
+  // The optimal parser takes about a second to encode every case at every level, and two tests read the same frames: they
+  // are encoded once, before the tests, with the time limit the other encoding work of this file has, so that the test that
+  // decodes them is measured on decoding (about 20 ms) and not on the load of the shard that runs it.
+  const frames = new Map<string, Buffer>();
+  const frameKey = (name: string, level: number): string => `${name} at level ${level}`;
+  beforeAll(() => {
+    for (const [name, data] of cases) {
+      for (const level of LEVELS) frames.set(frameKey(name, level), compressZstd(data, { level }));
+    }
+  }, TEST_TIMEOUT_MS);
+  const frameOf = (name: string, level: number): Buffer => {
+    const frame = frames.get(frameKey(name, level));
+    if (frame === undefined) throw new Error(`no frame was encoded for ${frameKey(name, level)}`);
+    return frame;
+  };
+
   oracleTest(
     'every frame passes zstd -t and decodes byte-exact with zstd -d at levels 16-19',
     ['zstd'],
     () => {
       for (const [name, data] of cases) {
-        for (const level of LEVELS) expectReferenceRoundTrip(compressZstd(data, { level }), data, `${name} at level ${level}`);
+        for (const level of LEVELS) expectReferenceRoundTrip(frameOf(name, level), data, frameKey(name, level));
       }
     },
     TEST_TIMEOUT_MS
@@ -118,8 +134,8 @@ describe('zstd optimal parser validity', () => {
   it('decodes with this repository decoder at levels 16-19', () => {
     for (const [name, data] of cases) {
       for (const level of LEVELS) {
-        const restored = decompressZstd(compressZstd(data, { level }));
-        expect(restored.equals(data), `${name} at level ${level}`).toBe(true);
+        const restored = decompressZstd(frameOf(name, level));
+        expect(restored.equals(data), frameKey(name, level)).toBe(true);
       }
     }
   });
