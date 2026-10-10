@@ -101,7 +101,7 @@ const waiting: Array<() => void> = [];
 
 /** The outcome of a scenario, started on first use and run under the concurrency limit. */
 function outcomeOf(scenario: string, fixtureName: string, env: Record<string, string> = {}): Promise<Outcome> {
-  const key = `${scenario}:${fixtureName}`;
+  const key = `${scenario}:${fixtureName}:${JSON.stringify(env)}`;
   let result = results.get(key);
   if (!result) {
     result = (async () => {
@@ -535,6 +535,49 @@ describe('embedded media: read once per part, only where it is drawn, under a pe
     expect(html.error?.message).toMatch(/decodes to more than the limit of \d+ bytes/);
     expect(html.elapsedMs).toBeLessThan(REFUSAL_MS);
     expect(html.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
+  });
+
+  it('counts the PNG made from a TIFF part against the media budget', async () => {
+    const noise = crypto.randomBytes(3840 * 2160 * 3);
+    const tiff = await sharp(noise, { raw: { width: 3840, height: 2160, channels: 3 } }).tiff({ compression: 'none' }).toBuffer();
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(await makeNoisyJpeg()));
+    zip.remove('ppt/media/image1.jpg');
+    zip.file('ppt/media/image1.tif', tiff);
+    const rels = await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('text');
+    zip.file('ppt/slides/_rels/slide1.xml.rels', rels.replace('image1.jpg', 'image1.tif'));
+    deckFixture('noise-tiff.pptx', await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }));
+    // The TIFF alone fits 40 MiB; the PNG made from it as well does not.
+    const tight = await outcomeOf('pptx-html', 'noise-tiff.pptx', { EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES: String(40 * MIB) });
+    expect(tight.error?.name).toBe('DecompressionLimitError');
+    expect(tight.error?.message).toMatch(/A copy of ZIP entry 'ppt\/media\/image1\.tif' would exceed the decoded-byte budget of 41943040 bytes/);
+    const roomy = await outcomeOf('pptx-html', 'noise-tiff.pptx', { EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES: String(96 * MIB) });
+    expect(roomy.error).toBeNull();
+    expect(roomy.pictures).toHaveLength(1);
+  });
+
+  it('counts a cropped copy of a picture against the media budget', async () => {
+    const jpeg = await makeNoisyJpeg();
+    const zip = await JSZip.loadAsync(await buildPptxWithJpeg(jpeg));
+    const slide = await zip.file('ppt/slides/slide1.xml')!.async('text');
+    zip.file('ppt/slides/slide1.xml', slide.replace('<a:blip r:embed="rId2"/>', '<a:blip r:embed="rId2"/><a:srcRect l="10000" t="10000"/>'));
+    const deck = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const withBudget = async (bytes: number): Promise<unknown> => {
+      const original = process.env.EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES;
+      process.env.EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES = String(bytes);
+      try {
+        return await dispatchConversion(deck, 'pptx', 'html', {}, 'crop.pptx');
+      } catch (error) {
+        return error;
+      } finally {
+        if (original === undefined) delete process.env.EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES;
+        else process.env.EASYCONVERT_MAX_DOCUMENT_MEDIA_BYTES = original;
+      }
+    };
+    const tight = await withBudget(jpeg.length + 500);
+    expect(tight).toBeInstanceOf(DecompressionLimitError);
+    expect((tight as Error).message).toMatch(/A copy of ZIP entry 'ppt\/media\/image1\.jpg' would exceed the decoded-byte budget of \d+ bytes/);
+    const roomy = await withBudget(4 * jpeg.length);
+    expect((roomy as { buffer: Buffer }).buffer.toString('utf-8')).toContain('data:image/jpeg;base64,');
   });
 
   it('answers a typed 413 for pictures an HTML page cannot hold, whichever way they add up', () => {

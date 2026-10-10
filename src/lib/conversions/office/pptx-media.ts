@@ -73,11 +73,16 @@ export class PptxMedia {
     const lower = mediaPath.toLowerCase();
     if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return { buffer, mimeType: 'image/jpeg' };
     if (!lower.endsWith('.png')) {
+      let converted: Buffer | undefined;
       try {
-        buffer = await openLimitedSharp(buffer).png().toBuffer();
-        this.chargeDerived(buffer.length, mediaPath);
+        converted = await openLimitedSharp(buffer).png().toBuffer();
       } catch (err) {
         rethrowInputPixelLimit(err);
+      }
+      // Outside the try: rethrowInputPixelLimit passes every other error on, which would swallow the budget's 413.
+      if (converted) {
+        this.chargeDerived(converted.length, mediaPath);
+        buffer = converted;
       }
     }
     return { buffer, mimeType: 'image/png' };

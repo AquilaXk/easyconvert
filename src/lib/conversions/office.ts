@@ -6449,6 +6449,7 @@ export async function parsePptxSlideSceneGraph(
             const r = parseInt(srcRectEl.attrs.r || '0', 10);
             const b = parseInt(srcRectEl.attrs.b || '0', 10);
             if (l > 0 || t > 0 || r > 0 || b > 0) {
+              let cropped: Buffer | undefined;
               try {
                 const meta = await sharp(imgBuffer).metadata();
                 if (meta.width && meta.height) {
@@ -6458,13 +6459,17 @@ export async function parsePptxSlideSceneGraph(
                   const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
                   const extractW = Math.max(1, meta.width - cropLeft - cropRight);
                   const extractH = Math.max(1, meta.height - cropTop - cropBottom);
-                  imgBuffer = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
+                  cropped = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
-                  media.chargeDerived(imgBuffer.length, mediaPath);
                 }
               } catch (err) {
                 rethrowInputPixelLimit(err);
+              }
+              // Outside the try: rethrowInputPixelLimit passes every other error on, which would swallow the budget's 413.
+              if (cropped) {
+                media.chargeDerived(cropped.length, mediaPath);
+                imgBuffer = cropped;
               }
             }
           }
