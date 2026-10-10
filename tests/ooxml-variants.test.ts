@@ -124,7 +124,7 @@ describe('Office Open XML variants are read like their plain formats', () => {
     const zip = await JSZip.loadAsync(await wordVariant(WORD_TEMPLATE_TYPE, false));
     zip.remove('word/document.xml');
     const broken = await zip.generateAsync({ type: 'nodebuffer' });
-    await expect(convertFile(broken, 'dotx', 'docx', {}, 'broken.dotx')).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(convertFile(broken, 'dotx', 'docx', {}, 'broken.dotx')).rejects.toThrow('The DOTX package has no word/document.xml part.');
     await expect(convertFile(Buffer.from('not a package'), 'xlsm', 'csv', {}, 'junk.xlsm')).rejects.toBeInstanceOf(ConversionFailedError);
   });
 

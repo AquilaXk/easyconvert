@@ -38,20 +38,19 @@ describe('Office pairs through LibreOffice', () => {
     const docx = await craftDocx({ body: PARAGRAPHS.map(paragraph).join('') });
     const truncated = docx.subarray(0, Math.floor(docx.length / 2));
     const run = dispatchConversion(truncated, 'docx', 'pdf', {}, 'cut.docx');
-    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(run).rejects.toThrow('LibreOffice could not read the .docx file');
   }, NATIVE_TIMEOUT_MS);
 
   it('keeps the cases above honest: a truncated package is not a readable ZIP', async () => {
     const docx = await craftDocx({ body: paragraph('x') });
-    await expect(JSZip.loadAsync(docx.subarray(0, Math.floor(docx.length / 2)))).rejects.toThrow();
+    await expect(JSZip.loadAsync(docx.subarray(0, Math.floor(docx.length / 2)))).rejects.toThrow(/end of central directory/);
   });
 });
 
 describe('Presentations that LibreOffice opens as another kind of document', () => {
   oracleTest('answers a typed 400 for a .ppt that is plain text and has no presentation export filter', ['soffice'], async () => {
     const run = dispatchConversion(Buffer.from('Plain text, not a presentation.\n'), 'ppt', 'odp', {}, 'text.ppt');
-    const error = await run.catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect((error as Error).message).toContain('LibreOffice could not read the .ppt file');
+    await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file: it is damaged, encrypted or not a valid PPT document.');
+    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
   }, NATIVE_TIMEOUT_MS);
 });

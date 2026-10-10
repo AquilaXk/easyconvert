@@ -54,10 +54,15 @@ describe('final output check', () => {
   });
 
   it('lets text through, including an HTML page and a same-format copy', () => {
-    expect(() => assertUsableOutput(resultOf('Region,Units\nNorth,12\n'), 'xlsx', 'csv')).not.toThrow();
-    expect(() => assertUsableOutput(resultOf('<!DOCTYPE html><html><body></body></html>'), 'docx', 'html')).not.toThrow();
-    expect(() => assertUsableOutput(resultOf('\n'), 'txt', 'txt')).not.toThrow();
-    expect(() => assertUsableOutput(resultOf(Buffer.from('PK\u0003\u0004', 'latin1')), 'docx', 'pdf')).not.toThrow();
+    const passes = (text: string | Buffer, source: string, target: string) => {
+      const result = resultOf(text);
+      assertUsableOutput(result, source, target);
+      return result.buffer.toString('latin1');
+    };
+    expect(passes('Region,Units\nNorth,12\n', 'xlsx', 'csv')).toBe('Region,Units\nNorth,12\n');
+    expect(passes('<!DOCTYPE html><html><body></body></html>', 'docx', 'html')).toContain('<body></body>');
+    expect(passes('\n', 'txt', 'txt')).toBe('\n');
+    expect(passes(Buffer.from('PK\u0003\u0004', 'latin1'), 'docx', 'pdf')).toBe('PK\u0003\u0004');
   });
 
   it('reads the head of an output left on disk, and never judges a long whitespace output as empty', () => {
@@ -73,16 +78,16 @@ describe('conversions of inputs without content', () => {
   it('answers an empty workbook written as CSV or TSV, and an empty document written as text, with the typed refusal', async () => {
     const workbook = await emptyWorkbook();
     for (const target of ['csv', 'tsv']) {
-      await expect(dispatchConversion(workbook, 'xlsx', target, {}, 'empty.xlsx')).rejects.toBeInstanceOf(NoConvertibleContentError);
+      await expect(dispatchConversion(workbook, 'xlsx', target, {}, 'empty.xlsx')).rejects.toThrow(`The .xlsx file holds no content to write as .${target}.`);
     }
     const document = await craftDocx({ body: '<w:p/>' });
-    await expect(dispatchConversion(document, 'docx', 'txt', {}, 'empty.docx')).rejects.toBeInstanceOf(NoConvertibleContentError);
+    await expect(dispatchConversion(document, 'docx', 'txt', {}, 'empty.docx')).rejects.toThrow('The .docx file holds no content to write as .txt.');
   });
 
   it('answers a page that is only a frameset, written as text or Markdown, with the typed refusal', async () => {
     const frameset = Buffer.from('<frameset cols="*,300"><frame src="a.php"><frame src="b.php"></frameset>');
     for (const target of ['txt', 'md']) {
-      await expect(dispatchConversion(frameset, 'html', target, {}, 'frames.html')).rejects.toBeInstanceOf(NoConvertibleContentError);
+      await expect(dispatchConversion(frameset, 'html', target, {}, 'frames.html')).rejects.toThrow(`The .html file holds no content to write as .${target}.`);
     }
   });
 });

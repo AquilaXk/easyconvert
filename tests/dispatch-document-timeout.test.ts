@@ -30,11 +30,12 @@ describe('document conversions that outrun a tool limit', () => {
     failures.next = new SandboxedTimeoutError(LIMIT_MS);
     const error = await dispatchConversion(Buffer.from('x'), source, target, {}, `in.${source}`).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(CpuTaskTimeoutError);
+    expect((error as Error).message).toBe(`The .${source} to .${target} conversion task exceeded its ${LIMIT_MS} ms time limit`);
     expect(classifyJobFailure(error)).toMatchObject({ status: HTTP_UNPROCESSABLE, retryable: false });
   });
 
   it('leaves the timeout of a media tool as it was', async () => {
     failures.next = new SandboxedTimeoutError(LIMIT_MS);
-    await expect(dispatchConversion(Buffer.from('x'), 'mp4', 'webm', {}, 'in.mp4')).rejects.toBeInstanceOf(SandboxedTimeoutError);
+    await expect(dispatchConversion(Buffer.from('x'), 'mp4', 'webm', {}, 'in.mp4')).rejects.toThrow(`Process execution timed out after ${LIMIT_MS}ms`);
   });
 });
