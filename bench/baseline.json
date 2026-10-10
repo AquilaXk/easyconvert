@@ -2011,16 +2011,6 @@
       "delta": 0,
       "ratio": null
     },
-    "pdf-ops/unlock.pdf->pdf/throughput": {
-      "direction": "higher",
-      "tolerance": {
-        "abs": 0,
-        "rel": 0.35
-      },
-      "ours": null,
-      "delta": null,
-      "ratio": 0.8959095565575452
-    },
     "pdf-ops/unlock.pdf->pdf/word_f1": {
       "direction": "higher",
       "tolerance": {
