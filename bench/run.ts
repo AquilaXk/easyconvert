@@ -64,6 +64,8 @@ export interface CliOptions {
   refCache: boolean;
   cacheDir: string;
   gapsPath: string;
+  /** Parity only: the gap file of the base of the change; its new or changed entries must be backed by the speed rows measured in this run. */
+  baseGapsPath: string | null;
   /** Print a hash of the reference tool versions and exit (the key of the CI cache). */
   printToolFingerprint: boolean;
 }
@@ -91,6 +93,7 @@ export function parseArgs(args: string[]): CliOptions {
     refCache: true,
     cacheDir: REF_CACHE_DIR,
     gapsPath: PARITY_GAPS_PATH,
+    baseGapsPath: null,
     printToolFingerprint: false,
   };
   for (let i = 0; i < args.length; i++) {
@@ -130,6 +133,8 @@ export function parseArgs(args: string[]): CliOptions {
       options.cacheDir = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--gaps') {
       options.gapsPath = path.resolve(takeValue(args, i++, flag));
+    } else if (flag === '--base-gaps') {
+      options.baseGapsPath = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--print-tool-fingerprint') {
       options.printToolFingerprint = true;
     } else {
@@ -144,6 +149,7 @@ export function parseArgs(args: string[]): CliOptions {
   if (options.qualityOnly && options.speedOnly) throw new BenchArgumentError('--quality-only and --speed-only exclude each other');
   if (options.parity && options.updateBaseline) throw new BenchArgumentError('--update-baseline cannot be combined with --parity');
   if (options.parity && !options.gate) throw new BenchArgumentError('--parity cannot be combined with --no-gate');
+  if (options.baseGapsPath && !options.parity) throw new BenchArgumentError('--base-gaps needs --parity');
   return options;
 }
 
@@ -283,7 +289,9 @@ function judgeParity(report: BenchReport, options: CliOptions, out: (line: strin
   };
   const gate = evaluateGate(report, readBaseline(options.baselinePath), { families: new Set(options.families), include });
   printGate(gate, out);
-  const parity = evaluateParity(report, readGaps(options.gapsPath));
+  // A quality-only run measures no speed, so it cannot back a gap entry; the speed run of the same change does.
+  const baseGaps = options.baseGapsPath && scope !== 'quality' ? readGaps(options.baseGapsPath) : undefined;
+  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps });
   for (const line of failureLines(parity)) out(line);
   for (const line of renderParityText(parity)) out(line);
 

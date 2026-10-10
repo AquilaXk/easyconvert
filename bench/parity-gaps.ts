@@ -36,7 +36,7 @@ export interface GapFile {
   gaps: GapEntry[];
 }
 
-const ROW_ID_PATTERN = /^[a-z]+\/[^/]+\/[a-z0-9_]+$/;
+const ROW_ID_PATTERN = /^[a-z][a-z-]*\/[^/]+\/[a-z0-9_]+$/;
 
 const COMMIT_PATTERN = /^[0-9a-f]{7,40}$/;
 
