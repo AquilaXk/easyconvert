@@ -6,7 +6,7 @@ import { ReportSchemaError } from './errors';
 
 /** Report model, schema validation and Markdown rendering. */
 
-export const FAMILIES = ['image', 'video', 'audio', 'ocr', 'document', 'compression'] as const;
+export const FAMILIES = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops'] as const;
 export type Family = (typeof FAMILIES)[number];
 const FAMILY_SET: ReadonlySet<string> = new Set(FAMILIES);
 

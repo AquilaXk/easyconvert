@@ -1,7 +1,7 @@
 /**
  * The thresholds of the A/B speed comparison (bench/ab-speed.ts). They are the gate's own numbers, so a pull request is
  * judged by the ones of its base: the `parity speed` job takes this file, with the other gate files, from the base
- * commit (scripts/ci-base-gate.mjs).
+ * commit (scripts/ci-parity-base-gate.mjs).
  */
 
 /**

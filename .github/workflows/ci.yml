@@ -91,7 +91,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops
         run: |
           families=""
           unmapped=""
@@ -658,12 +658,12 @@ jobs:
           echo "the base is $parent"
 
       # A change cannot loosen the gate that judges it: the speed verdict, its thresholds and the A/B machinery come from the
-      # base (scripts/ci-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
+      # base (scripts/ci-parity-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
       - name: Use the gate of the base
         if: env.BENCH_CHANGED == 'true'
         run: |
-          if [ -f ab-base/scripts/ci-base-gate.mjs ]; then
-            node ab-base/scripts/ci-base-gate.mjs ab-base
+          if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
+            node ab-base/scripts/ci-parity-base-gate.mjs ab-base
             npx tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change"; exit 1; } || true
           else
             echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
@@ -702,7 +702,7 @@ jobs:
           BENCH_BASE_ROOT: ab-base
         run: |
           set +e
-          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"
+          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "benchmark exit code: $code"

@@ -2,7 +2,7 @@
 // Puts the gate of the base commit in place of the one of the change under test, so that a pull request cannot loosen
 // the verdict that judges it:
 //
-//   node ab-base/scripts/ci-base-gate.mjs ab-base
+//   node ab-base/scripts/ci-parity-base-gate.mjs ab-base
 //
 // run from the root of the tested checkout, with the checkout of the base commit as its argument (and run from that
 // checkout's copy of this script, which the workflow does). It copies the gate files (the speed verdict, its thresholds
@@ -48,7 +48,7 @@ export function takeBaseGate(baseDir, targetDir = '.') {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const baseDir = process.argv[2];
   if (!baseDir) {
-    console.error('usage: node ci-base-gate.mjs <checkout of the base commit>');
+    console.error('usage: node ci-parity-base-gate.mjs <checkout of the base commit>');
     process.exit(2);
   }
   const { replaced, missing } = takeBaseGate(baseDir);

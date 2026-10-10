@@ -31,6 +31,7 @@ const HEX_COLOR = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 const RGB_COLOR = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i;
 const CHANNEL_MAX = 255;
 const DEFAULT_WATERMARK_GRAY = 0.5;
+const HALF_TURN_DEGREES = 180;
 
 /**
  * The colour of a text watermark: `#rgb`, `#rrggbb` or `rgb(r,g,b)`; neutral gray when none is given. A value that is
@@ -304,12 +305,34 @@ async function requestedFace(family: string, text: string): Promise<PdfFontFace>
   return face;
 }
 
+/** Characters whose glyph reaches below the baseline in the standard Latin faces. */
+const BELOW_BASELINE = /[gjpqy,;()[\]{}|@_]/;
+
+/**
+ * The text drawn with a standard font. Its box is the ink: the baseline up to the font's ascender (the height of the
+ * capitals and tall letters), and down to the descender only when a character of the text reaches there, so that
+ * centring the box centres what is seen, not the line the font reserves.
+ */
 function standardTextWatermark(font: PDFFont, text: string, fontSize: number, color: ReturnType<typeof rgb>, opacity: number): TextWatermark {
+  const aboveBaseline = font.heightAtSize(fontSize, { descender: false });
+  const hasDescender = BELOW_BASELINE.test(text);
+  const belowBaseline = hasDescender ? font.heightAtSize(fontSize) - aboveBaseline : 0;
   return {
     width: font.widthOfTextAtSize(text, fontSize),
-    height: font.heightAtSize(fontSize),
-    draw: (page, { x, y }, rotationDegrees) =>
-      page.drawText(text, { x, y, size: fontSize, font, color, opacity, rotate: degrees(rotationDegrees) }),
+    height: aboveBaseline + belowBaseline,
+    draw: (page, { x, y }, rotationDegrees) => {
+      // `{ x, y }` is the lower-left corner of the box; the baseline origin lies `belowBaseline` above it, across the text direction.
+      const turn = (rotationDegrees * Math.PI) / HALF_TURN_DEGREES;
+      page.drawText(text, {
+        x: x - belowBaseline * Math.sin(turn),
+        y: y + belowBaseline * Math.cos(turn),
+        size: fontSize,
+        font,
+        color,
+        opacity,
+        rotate: degrees(rotationDegrees),
+      });
+    },
   };
 }
 

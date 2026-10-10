@@ -160,14 +160,19 @@ describe('parity-speed', () => {
 
   it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
     const gate = stepNamed(speed, 'Use the gate of the base');
-    expect(gate.run).toContain('node ab-base/scripts/ci-base-gate.mjs ab-base');
+    expect(gate.run).toContain('node ab-base/scripts/ci-parity-base-gate.mjs ab-base');
     expect(gate.run).toContain('npx tsc --noEmit -p .');
     expect(gate.run).toContain('the gate of the base does not fit this change');
   });
 
+  it("checks the gap entries the pull request adds or changes against its own speed run, with the gap file of the base checkout", () => {
+    const bench = speed.steps.find((s) => s.id === 'bench');
+    expect(bench?.run).toContain('--base-gaps ab-base/bench/parity-gaps.json');
+  });
+
   it('measures every case of the changed families, speed only, and never reads or writes a cache', () => {
     const bench = runOf(speed, 'bench');
-    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES"');
+    expect(bench).toContain('npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json');
     expect(bench).not.toContain('--quick');
     expect(bench).not.toContain('--quality-only');
     expect(JSON.stringify(speed)).not.toMatch(/\.bench-cache|bench-ref-/);
@@ -369,7 +374,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {
@@ -377,7 +382,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression', unmapped: '', changed: 'true' });
+    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', unmapped: '', changed: 'true' });
     expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', unmapped: '', changed: 'false' });
   });
 

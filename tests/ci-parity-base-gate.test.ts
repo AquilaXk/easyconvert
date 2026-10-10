@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { GATE_FILES, takeBaseGate } from '../scripts/ci-base-gate.mjs';
+import { GATE_FILES, takeBaseGate } from '../scripts/ci-parity-base-gate.mjs';
 
 /**
  * A change cannot loosen the gate that judges it: the files that decide a speed row are taken from the base commit.
