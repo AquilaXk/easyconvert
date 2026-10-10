@@ -43,12 +43,15 @@ import { readWavPcmInfo } from './wav-header';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
+  LOSSY_AUDIO_ENCODERS,
+  LOSSY_SOXR_PRECISION_BITS,
   LoudnessMeasurement,
   loudnormApplyFilter,
   loudnormMeasureFilter,
   resampleFilter,
   resolveDither,
   resolveLoudnessTarget,
+  SOXR_PRECISION_BITS,
 } from './media-audio-quality';
 import {
   BITMAP_SUBTITLE_CODECS,
@@ -1217,8 +1220,12 @@ export function buildFfmpegArguments(
       videoFilters.push(`subtitles='${escapeFfmpegFilterPath(source)}'${stream}`);
     }
 
-    // Stage 7: Even dimension normalization (ALWAYS LAST filter before format)
-    videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+    // Stage 7: Even dimension normalization (ALWAYS LAST filter before format). A picture the header gives an even
+    // size, and nothing above resizes, is already even: the filter would only add a stage to the graph.
+    const alreadyEven = unscaledPicture !== undefined && unscaledPicture.width % 2 === 0 && unscaledPicture.height % 2 === 0;
+    if (!alreadyEven) {
+      videoFilters.push('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+    }
 
     // Stage 7b: display aspect ratio without touching the pixels
     if (aspect?.mode === 'dar') {
@@ -1523,7 +1530,9 @@ export function buildFfmpegArguments(
   const dither = resolveDither(options.audio?.dither, resolvedAudioCodec);
   const resampler = chooseResampler(options.audio?.resampler, ffmpegBin);
   if (finalRate !== undefined && (resampler.resampler === 'soxr' || dither !== undefined || loudnessRate !== undefined)) {
-    audioFilters.push(resampleFilter(finalRate, resampler, dither));
+    // Only an encode that nothing else rests on, with soxr left to the default, trades precision for speed.
+    const trimmed = LOSSY_AUDIO_ENCODERS.has(resolvedAudioCodec) && loudnessRate === undefined && options.audio?.resampler === undefined;
+    audioFilters.push(resampleFilter(finalRate, resampler, dither, trimmed ? LOSSY_SOXR_PRECISION_BITS : SOXR_PRECISION_BITS));
   } else if (dither !== undefined) {
     audioFilters.push(`aresample=dither_method=${dither}`);
   }

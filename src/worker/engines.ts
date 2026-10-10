@@ -418,6 +418,30 @@ export function preserveOutput(
   return finalPath;
 }
 
+/**
+ * Hands the finished output of a job to its destination and leaves nothing of it in the job directory. An output
+ * nobody named a place for goes to a file of the worker's own naming, and the job directory is on the same volume as
+ * that file in all but unusual setups, so the file is renamed into place and its bytes are not written a second time;
+ * across volumes, or when the caller named the destination (which may be a link or a mount of its own), it is copied.
+ */
+function handOffOutput(
+  tempOutputPath: string,
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const named = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
+  if (named) return preserveOutput(tempOutputPath, targetFormat, options, vfsPayload);
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  try {
+    fs.renameSync(tempOutputPath, finalPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    fs.copyFileSync(tempOutputPath, finalPath);
+  }
+  return finalPath;
+}
+
 /** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
 function writeOutputSegments(
   segments: readonly Uint8Array[],
@@ -751,7 +775,7 @@ export async function convertWithNativeFfmpeg(
       }
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+      const persistedPath = handOffOutput(tempOutputPath, tgt, options, vfsPayload);
 
       const transcoded = createConversionResult(
         persistedPath,

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { measureLoudnessStage } from '../src/lib/conversions/media-audio-run';
 import { buildFfmpegArguments, resetHardwareAccelerationCache } from '../src/lib/conversions/media-ffmpeg-args';
 import { probeAudioChannels, probeAudioSampleRate } from '../src/lib/conversions/media-ffprobe';
@@ -384,9 +384,9 @@ describe('a minimal input probe leaves the encoded audio as the reference encode
           run(minimal);
 
           const reference = path.join(workDir, `same-ref-${rate}.${target}`);
-          // libopus codes 48 kHz, so a 44.1 kHz source is resampled. The reference resamples with what the build
-          // offers at its best, as the quality default documents: soxr at 28 bits of precision, else swresample.
-          const resampleTo48k = hasSoxr() ? ['-ar', '48000', '-filter:a', 'aresample=48000:resampler=soxr:precision=28'] : ['-ar', '48000'];
+          // libopus codes 48 kHz, so a 44.1 kHz source is resampled. The reference resamples as the quality default
+          // documents for a lossy encoder: soxr at 16 bits of precision, else swresample.
+          const resampleTo48k = hasSoxr() ? ['-ar', '48000', '-filter:a', 'aresample=48000:resampler=soxr:precision=16'] : ['-ar', '48000'];
           const referenceRate = target === 'opus' && rate === 44_100 ? resampleTo48k : [];
           run(['-y', '-i', input, '-vn', '-map_metadata', '-1', ...referenceArgs, ...referenceRate, reference]);
 
@@ -397,4 +397,56 @@ describe('a minimal input probe leaves the encoded audio as the reference encode
       );
     }
   }
+});
+
+describe('the encoded file is handed over, not copied', () => {
+  const previousFfmpeg = process.env.FFMPEG_PATH;
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  afterAll(() => {
+    if (previousFfmpeg === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = previousFfmpeg;
+  });
+
+  /** Duration and codec of a written file, from ffprobe. */
+  function describeFile(file: string): { codec: string; seconds: number } {
+    const probed = JSON.parse(
+      execFileSync(tool('ffprobe'), ['-v', 'error', '-show_entries', 'stream=codec_name:format=duration', '-of', 'json', file], { encoding: 'utf-8' })
+    ) as { streams: { codec_name: string }[]; format: { duration: string } };
+    return { codec: probed.streams[0].codec_name, seconds: Number(probed.format.duration) };
+  }
+
+  oracleTest(
+    'an output nobody named a place for is moved out of the job directory with no second write of its bytes',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      const input = writeWav('handoff.wav', 44_100, NOT_MONO, 1);
+      const copies = vi.spyOn(fs, 'copyFileSync');
+      const result = await convertWithNativeFfmpeg(fs.readFileSync(input), 'wav', 'opus', { audio: { codec: 'opus', bitrateK: 64 }, throwOnUnavailable: true }, 'in.wav');
+      if (result === null || result.filePath === undefined) throw new Error('the engine returned no output file');
+      expect(copies).not.toHaveBeenCalled();
+      expect(describeFile(result.filePath).codec).toBe('opus');
+      expect(Math.abs(describeFile(result.filePath).seconds - 1)).toBeLessThan(DURATION_TOLERANCE_S);
+      expect(result.size).toBe(fs.statSync(result.filePath).size);
+      fs.rmSync(result.filePath, { force: true });
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'an output the caller named a path for is written there, and the file already at that path is replaced',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      const input = writeWav('handoff-named.wav', 44_100, NOT_MONO, 1);
+      const wanted = path.join(workDir, 'named-output.opus');
+      fs.writeFileSync(wanted, 'stale');
+      const result = await convertWithNativeFfmpeg(
+        fs.readFileSync(input), 'wav', 'opus', { audio: { codec: 'opus', bitrateK: 64 }, throwOnUnavailable: true, outputPath: wanted } as never, 'in.wav'
+      );
+      expect(result?.filePath).toBe(wanted);
+      expect(describeFile(wanted).codec).toBe('opus');
+    },
+    TEST_TIMEOUT_MS
+  );
 });

@@ -222,8 +222,9 @@ describe('resampler and dither (arguments)', () => {
       expect(() => chooseResampler('soxr', without)).toThrow(EngineUnavailableError);
       expect(() => chooseResampler('sinc' as never, withSoxr)).toThrow(InvalidMediaOptionError);
 
+      // The AAC track of an MP4 is lossy: its coding noise is some 55 dB above the error of soxr at 16 bits.
       const a = buildFfmpegArguments(SOURCE, '/tmp/out.mp4', 'mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, withSoxr);
-      expect(after(a, '-filter:a')).toBe('aresample=async=1:first_pts=0,aresample=22050:resampler=soxr:precision=28');
+      expect(after(a, '-filter:a')).toBe('aresample=async=1:first_pts=0,aresample=22050:resampler=soxr:precision=16');
       expect(after(a, '-ar')).toBe('22050');
       const b = buildFfmpegArguments(SOURCE, '/tmp/out.mp4', 'mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, without);
       expect(after(b, '-filter:a')).toBe('aresample=async=1:first_pts=0');
@@ -231,6 +232,40 @@ describe('resampler and dither (arguments)', () => {
         resampler: 'swr',
         resamplerFallbackReason: 'this ffmpeg build has no libsoxr; the default swresample resampler was used',
       });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps soxr at 28 bits of precision wherever the output is lossless or the caller asks for soxr, and trims it for a lossy encoder', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-soxr-precision-'));
+    try {
+      const withSoxr = path.join(dir, 'ffmpeg-soxr');
+      fs.writeFileSync(withSoxr, '#!/bin/sh\ncase "$*" in\n  *-version*) echo "configuration: --enable-gpl --enable-libsoxr";;\nesac\n');
+      fs.chmodSync(withSoxr, 0o755);
+      const filterOf = (target: string, audio: object, source = 'wav'): string =>
+        after(buildFfmpegArguments(SOURCE, `/tmp/out.${target}`, source, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
+
+      // Lossy encoders: libopus (a 44.1 kHz source is brought to 48 kHz), the AAC and MP3 encoders, Vorbis.
+      for (const target of ['opus', 'aac', 'm4a', 'mp3', 'ogg', 'weba']) {
+        expect(filterOf(target, { sampleRate: 48000 }), target).toBe('aresample=48000:resampler=soxr:precision=16');
+      }
+      // Lossless and PCM outputs keep the full precision, as does an explicit request for soxr.
+      for (const target of ['flac', 'wav', 'aiff', 'alac']) {
+        expect(filterOf(target, { sampleRate: 48000 }), target).toContain('resampler=soxr:precision=28');
+      }
+      expect(filterOf('opus', { sampleRate: 48000, resampler: 'soxr' })).toBe('aresample=48000:resampler=soxr:precision=28');
+      expect(
+        buildFfmpegArguments(SOURCE, '/tmp/out.opus', 'wav', 'opus', { audio: { sampleRate: 48000, resampler: 'swr' } } as never, withSoxr)
+      ).not.toContain('-filter:a');
+      // A normalised file is resampled back from loudnorm's 192 kHz with the full precision.
+      const normalised = buildFfmpegArguments(
+        SOURCE, '/tmp/out.opus', 'wav', 'opus',
+        { audio: { sampleRate: 48000, loudness: {} } } as never, withSoxr,
+        undefined,
+        { kind: 'apply', measurement: { inputI: -20, inputTp: -3, inputLra: 5, inputThresh: -30, targetOffset: 0, sampleRate: 44100 } }
+      );
+      expect(after(normalised, '-filter:a')).toContain('resampler=soxr:precision=28');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

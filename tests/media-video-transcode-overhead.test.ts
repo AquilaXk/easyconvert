@@ -257,8 +257,83 @@ describe('the tone mapping plan of an HDR picture', () => {
     () => {
       const ffmpeg = ffmpegListingZscale();
       const args = buildFfmpegArguments(plainMp4(), path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, ffmpeg);
-      // The only filter is the one that keeps the picture size even.
-      expect(toneMapFilter(args)).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      // The picture is 160x120 and nothing changes its size: the encoder gets it as it is, through no filter at all.
+      expect(args.filter((arg) => arg === '-vf' || arg === '-filter_complex')).toEqual([]);
+      // The picture goes straight to the encoder in the one pixel format it is asked for.
+      expect(args.slice(args.indexOf('-pix_fmt'), args.indexOf('-pix_fmt') + 4)).toEqual(['-pix_fmt', 'yuv420p', '-c:v', 'libx264']);
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+describe('the filter that keeps a picture size even', () => {
+  function filterOf(args: string[]): string | undefined {
+    const at = args.indexOf('-vf');
+    return at === -1 ? undefined : args[at + 1];
+  }
+
+  /** A picture of an odd size (the H.264 and MPEG-4 encoders of ffmpeg cut it to an even one), in Matroska. */
+  function oddMkv(): string {
+    return make('odd.mkv', ['-f', 'lavfi', '-i', `color=c=blue:size=161x121:rate=24:duration=${SECONDS}`, '-c:v', 'ffv1', '-pix_fmt', 'yuv444p']);
+  }
+
+  oracleTest(
+    'is left out for a picture the header gives an even size and nothing resizes, and kept otherwise',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      const out = path.join(workDir, 'o.mp4');
+      expect(filterOf(buildFfmpegArguments(plainMp4(), out, 'mp4', 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBeUndefined();
+      // An odd picture is cut to an even size.
+      expect(filterOf(buildFfmpegArguments(oddMkv(), out, 'mkv', 'mp4', { disableHwaccel: true }, tool('ffmpeg')))).toBe('scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      // A resize, a crop or a display aspect may produce an odd size from an even one: the filter stays after them.
+      const even = plainMp4();
+      for (const options of [
+        { video: { scale: { width: 101, height: 75 } } },
+        { video: { crop: { w: 101, h: 75, x: 0, y: 0 } } },
+        { videoResolution: '360p' },
+      ]) {
+        const filter = filterOf(buildFfmpegArguments(even, out, 'mp4', 'mp4', { disableHwaccel: true, ...options } as never, tool('ffmpeg')));
+        expect(filter, JSON.stringify(options)).toMatch(/,scale=trunc\(iw\/2\)\*2:trunc\(ih\/2\)\*2$/);
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'changes nothing in the picture: the encode without it decodes to the frames the same encode with it writes',
+    ['ffmpeg', 'ffprobe'],
+    () => {
+      requireEncoders('libx264');
+      const source = plainMp4();
+      const without = path.join(workDir, 'even-without.mp4');
+      const args = buildFfmpegArguments(source, without, 'mp4', 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      expect(args).not.toContain('-vf');
+      execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+      const withFilter = path.join(workDir, 'even-with.mp4');
+      const filtered = [...args.slice(0, -1)];
+      filtered.splice(filtered.indexOf('-pix_fmt'), 0, '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2');
+      execFileSync(tool('ffmpeg'), ['-v', 'error', ...filtered, withFilter], { stdio: ['ignore', 'ignore', 'pipe'] });
+      const frames = (file: string): string =>
+        execFileSync(tool('ffmpeg'), ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'], { encoding: 'utf-8' })
+          .split('\n')
+          .filter((line) => line !== '' && !line.startsWith('#'))
+          .map((line) => line.split(',').slice(-1)[0].trim())
+          .join('\n');
+      expect(frames(without)).toBe(frames(withFilter));
+      expect(frames(without).split('\n').length).toBe(SECONDS * 24);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'still gives an odd picture an even one in the written file',
+    ['ffmpeg', 'ffprobe'],
+    async () => {
+      const out = path.join(workDir, 'odd-out.mp4');
+      const args = buildFfmpegArguments(oddMkv(), out, 'mkv', 'mp4', { disableHwaccel: true, video: { codec: 'h264', rateControl: { mode: 'crf', crf: CRF } } }, tool('ffmpeg'));
+      execFileSync(tool('ffmpeg'), ['-v', 'error', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+      const stream = probeFile(tool('ffprobe'), out).streams[0];
+      expect([stream.width, stream.height]).toEqual([160, 120]);
     },
     TEST_TIMEOUT_MS
   );
