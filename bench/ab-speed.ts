@@ -29,6 +29,9 @@ import { coefficientOfVariation, mean, median, timed } from './stats';
  * for that alpha the bound is infinite and the row cannot fail.
  */
 
+/** Pairs the absolute interval against the reference is taken over (bench/speed-parity.ts is exact up to 64). */
+const ABSOLUTE_PAIRS = 64;
+
 /** Per-row error rate of the one-sided bounds. */
 export const AB_ROW_ALPHA = AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET;
 
@@ -211,8 +214,9 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   if ((slower || lost) && plan.confirm !== false) {
     // Fresh pairs, taken after the first set: a burst of noise in the first is not in them. Their time counts against the extra budget.
     const first = { head: times.head.length, base: times.base.length, reference: times.reference.length };
+    // As many as the first set holds, so that the second is as strong a test as the first.
     const start = now();
-    await collect(plan.pairs);
+    await collect(first.head);
     if (plan.extra) plan.extra.remainingMs -= now() - start;
     const again = {
       head: times.head.slice(first.head),
@@ -223,7 +227,8 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
     if (lost) confirmed.lost = upperBoundOfMedian(ratio(again.reference, again.head), AB_CONFIRM_ALPHA) < parityLine;
     for (const side of ['head', 'base', 'reference'] as const) times[side].length = first[side];
   }
-  const decision = decideSpeed(times.head, times.reference, { tolerance: plan.tolerance, confidence: plan.confidence });
+  // The absolute interval (the row's interval against the reference, for the gap entries) is the one of the first pairs: it is exact up to MAX_INTERVAL_PAIRS.
+  const decision = decideSpeed(times.head.slice(0, ABSOLUTE_PAIRS), times.reference.slice(0, ABSOLUTE_PAIRS), { tolerance: plan.tolerance, confidence: plan.confidence });
   const unstableAtCap = decision.verdict === 'unstable';
   return {
     runs: times.head.length,

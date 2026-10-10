@@ -136,8 +136,8 @@ describe('the noise summary of reports of a commit compared with itself', () => 
     });
     const rows = noiseSamples([report(0.02, 0.98), report(0.04, 0.98), report(0.03, 0.98)]);
     expect(rows).toEqual([
-      { id: 'compression/a/throughput', weight: 'light', noise: 0.03, bias: Number(Math.log(0.98).toFixed(4)), reports: 3 },
-      { id: 'video/b/throughput', weight: 'heavy', noise: 0.06, bias: Number(Math.log(0.98).toFixed(4)), reports: 3 },
+      { id: 'compression/a/throughput', weight: 'light', noise: 0.03, bias: Number(Math.log(0.98).toFixed(4)), pairMs: 300, reports: 3 },
+      { id: 'video/b/throughput', weight: 'heavy', noise: 0.06, bias: Number(Math.log(0.98).toFixed(4)), pairMs: 300, reports: 3 },
     ]);
   });
 });

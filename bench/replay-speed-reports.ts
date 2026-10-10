@@ -52,17 +52,20 @@ export interface NoiseRow {
   noise: number;
   /** Mean over the reports of the log of the median head-to-base ratio: 0 when two copies of one code are measured alike. */
   bias: number;
+  /** Median over the reports of the milliseconds one pair took (the simulation spends the extra budget with it). */
+  pairMs: number;
   reports: number;
 }
 
 /** The noise and the bias of every speed row over reports of a commit compared with itself. */
 export function noiseSamples(reports: readonly BenchReport[]): NoiseRow[] {
-  const byRow = new Map<string, { noise: number[]; bias: number[] }>();
+  const byRow = new Map<string, { noise: number[]; bias: number[]; pairMs: number[] }>();
   for (const report of reports) {
     for (const row of report.rows) {
       if (row.status !== 'measured' || row.kind !== 'throughput' || row.abNoise === undefined || row.abMedian === undefined) continue;
-      const entry = byRow.get(row.id) ?? { noise: [], bias: [] };
+      const entry = byRow.get(row.id) ?? { noise: [], bias: [], pairMs: [] };
       entry.noise.push(row.abNoise);
+      if (row.abPairMs !== undefined) entry.pairMs.push(row.abPairMs);
       entry.bias.push(Math.log(row.abMedian));
       byRow.set(row.id, entry);
     }
@@ -72,6 +75,7 @@ export function noiseSamples(reports: readonly BenchReport[]): NoiseRow[] {
     weight: HEAVY_FAMILIES.has(id.split('/')[0]) ? 'heavy' : 'light',
     noise: Number(median(entry.noise).toFixed(4)),
     bias: Number(mean(entry.bias).toFixed(4)),
+    pairMs: entry.pairMs.length > 0 ? Math.round(median(entry.pairMs)) : 0,
     reports: entry.noise.length,
   }));
 }

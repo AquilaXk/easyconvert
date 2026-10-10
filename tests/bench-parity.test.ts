@@ -175,7 +175,7 @@ describe('speed rows', () => {
   });
 
   describe('a row measured against the base of the change in the same pairs', () => {
-    const ID = 'ocr/scan.png->pdf/throughput';
+    const ID = 'image/photo-a.jpg->webp/throughput';
     const flat = (ratio: number): { ratio: number; at: string }[] => [1, 2, 3, 4].map((day) => ({ ratio, at: `2026-10-0${day}T02:00:00.000Z` }));
     const measured = (ab: Partial<BenchRow>, verdict: 'pass' | 'fail' = 'fail'): BenchRow =>
       speed({ id: ID, speedVerdict: verdict, ratioLow: 0.7, ratioHigh: 0.8, ratioMedian: 0.75, runs: 24, abPairs: 24, abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.8, abBaseVsReferenceMedian: 0.75, ...ab });

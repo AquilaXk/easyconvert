@@ -1,7 +1,7 @@
 /**
  * Simulation of the speed gate on rows with a known truth, to measure how often it fails by chance and how often it
  * catches a real slowdown:
- *   npx tsx bench/simulate-speed-gate.ts [--trials 1000] [--sigma 0.02] [--rows 40] [--noise bench/ab-noise-samples.json]
+ *   npx tsx bench/simulate-speed-gate.ts [--trials 1000] [--sigma 0.02] [--rows 40] [--noise bench/ab-noise-samples.json] [--row-trials 300] [--derive]
  *
  * Each pair of a simulated row draws the three times (head, base, reference) with a log-normal noise per sample
  * (`sigma`) and a load factor shared by the three samples of the pair (`COMMON_SIGMA`, the part pairing cancels). The
@@ -146,6 +146,8 @@ export interface NoiseSample {
   weight: Weight;
   /** Mean milliseconds of one pair (the head, the base and the reference once each); 300 when the measurement did not record it. */
   pairMs?: number;
+  /** The measured bias of the comparison: the log of the median base time / head time of two copies of one code (0: none). The simulation applies it, so a row that the comparison shows slower than it is gets its false failures counted. */
+  bias?: number;
 }
 
 /** The family of a row id, which is the shard that measures it. */
@@ -159,7 +161,7 @@ export async function shardTrial(rows: readonly NoiseSample[], slowdown: number,
   const extra: ExtraBudget = { remainingMs: budgetMs };
   const failed = new Set<string>();
   for (const [index, row] of rows.entries()) {
-    const truth: Truth = { headVsBase: 1 / (1 + slowdown), headVsReference: 1, sigma: sigmaOfRatioNoise(row.noise), referenceMs: (row.pairMs ?? 300) / 3 };
+    const truth: Truth = { headVsBase: Math.exp(row.bias ?? 0) / (1 + slowdown), headVsReference: 1, sigma: sigmaOfRatioNoise(row.noise), referenceMs: (row.pairMs ?? 300) / 3 };
     if (await abGateFails(truth, row.weight, seed * 1000 + index, { regression: thresholds[row.id], extra })) failed.add(row.id);
   }
   return failed;
@@ -176,7 +178,7 @@ export async function rowRates(rows: readonly NoiseSample[], slowdown: number | 
       const extra: ExtraBudget = { remainingMs: budgetMs };
       for (const [index, row] of shard.entries()) {
         const s = typeof slowdown === 'number' ? slowdown : slowdown(row);
-        const truth: Truth = { headVsBase: 1 / (1 + s), headVsReference: 1, sigma: sigmaOfRatioNoise(row.noise), referenceMs: (row.pairMs ?? 300) / 3 };
+        const truth: Truth = { headVsBase: Math.exp(row.bias ?? 0) / (1 + s), headVsReference: 1, sigma: sigmaOfRatioNoise(row.noise), referenceMs: (row.pairMs ?? 300) / 3 };
         if (await abGateFails(truth, row.weight, 1000 + trial * 1000 + index, { regression: thresholds[row.id], extra })) counts.set(row.id, (counts.get(row.id) ?? 0) + 1);
       }
     }
@@ -184,8 +186,8 @@ export async function rowRates(rows: readonly NoiseSample[], slowdown: number | 
   return new Map([...counts].map(([id, count]) => [id, count / trials] as const));
 }
 
-/** Thresholds a row may ask for: the default first, then in steps of 2.5 percent. */
-export const THRESHOLD_STEPS: readonly number[] = [AB_DEFAULT_REGRESSION, ...Array.from({ length: 17 }, (_, index) => 0.125 + index * 0.025)];
+/** Thresholds a row may ask for: the default first, then in steps of 2.5 percent up to 50 percent, then in steps of 6.25 percent up to 125 percent. */
+export const THRESHOLD_STEPS: readonly number[] = [AB_DEFAULT_REGRESSION, ...Array.from({ length: 15 }, (_, index) => 0.125 + index * 0.025), ...Array.from({ length: 13 }, (_, index) => 0.5 + index * 0.0625)];
 
 /**
  * The smallest threshold (of THRESHOLD_STEPS) at which each row, with its shard's shared extra budget in the order of the
@@ -243,7 +245,7 @@ async function main(args: string[]): Promise<void> {
   }
   if (noiseAt >= 0) {
     const samples = JSON.parse(fs.readFileSync(args[noiseAt + 1], 'utf8')) as { rows: NoiseSample[] };
-    const perRow = Math.max(40, Math.floor(trials / 10));
+    const perRow = flag('--row-trials', Math.max(40, Math.floor(trials / 10)));
     const budget = AB_EXTRA_BUDGET_MS;
     const thresholds = Object.fromEntries(Object.entries(AB_ROW_REGRESSION).map(([id, override]) => [id, { delta: override.delta }] as const));
     const deltaOf = (row: NoiseSample): number => thresholds[row.id]?.delta ?? AB_DEFAULT_REGRESSION;
@@ -261,7 +263,7 @@ async function main(args: string[]): Promise<void> {
     if (args.includes('--derive')) {
       const derived = await deriveThresholds(samples.rows, perRow, budget);
       console.log('\nSmallest threshold per row that fails 1.5 times it in at least 95% of the trials:\n');
-      for (const row of samples.rows) console.log(`${row.id} ${derived[row.id] === undefined ? 'none up to 50%' : derived[row.id]}`);
+      for (const row of samples.rows) console.log(`${row.id} ${derived[row.id] === undefined ? 'none up to 125%' : derived[row.id]}`);
     }
   }
 }

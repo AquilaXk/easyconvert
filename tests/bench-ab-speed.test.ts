@@ -240,13 +240,17 @@ describe('the regression threshold of a row', () => {
     expect(slowdownLine('x/y/throughput', { 'x/y/throughput': { delta: 0.05 } })).toBeCloseTo(1 / 1.05, 12);
   });
 
-  it('is overridden only for a row of the baseline, with a recorded measurement as its reason', () => {
+  it('is overridden only for a row of the baseline, with its measured noise and the run that measured it as the reason', () => {
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
+    const noise = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'ab-noise-samples.json'), 'utf8')) as { rows: { id: string; noise: number }[] };
+    const measured = new Map(noise.rows.map((row) => [row.id, row.noise]));
+    expect(Object.keys(AB_ROW_REGRESSION).length).toBeGreaterThan(0);
     for (const [id, override] of Object.entries(AB_ROW_REGRESSION)) {
       expect(id in baseline.entries, id).toBe(true);
-      expect(override.delta, id).toBeGreaterThan(0);
-      expect(override.delta, id).toBeLessThanOrEqual(0.5);
+      expect(override.delta, id).toBeGreaterThan(AB_DEFAULT_REGRESSION);
+      expect(override.delta, id).toBeLessThanOrEqual(1.25);
       expect(override.reason, id).toMatch(/run \d{8,}/);
+      expect(override.reason, id).toContain(`noise ${(measured.get(id) ?? NaN).toFixed(3)}`);
     }
   });
 });
