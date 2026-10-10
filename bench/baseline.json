@@ -1971,6 +1971,66 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/unlock.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 20556,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/unlock.pdf->pdf/encryption_matches_reference": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/unlock.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/unlock.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/unlock.pdf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9033080497228588
+    },
+    "pdf-ops/unlock.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/watermark.pdf->pdf/bytes": {
       "direction": "lower",
       "tolerance": {

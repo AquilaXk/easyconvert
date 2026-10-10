@@ -482,6 +482,19 @@
       ]
     },
     {
+      "id": "pdf-ops/unlock.pdf->pdf/throughput",
+      "issue": 695,
+      "ratio": 0.88,
+      "note": "speed ratio 0.88 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.8889,
+          "at": "2026-10-10T09:06:00.343Z",
+          "commit": "f17eeecaa1285f2bc7ac2a969d807a5b1d25f941"
+        }
+      ]
+    },
+    {
       "id": "video/clip.mp4->hevc/throughput",
       "issue": 643,
       "ratio": 0.97,

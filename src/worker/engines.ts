@@ -22,6 +22,7 @@ import {
   InvalidRawSensorError,
   RawEngineRequiredError,
   PayloadLimitError,
+  PdfPasswordRequiredError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
@@ -70,7 +71,9 @@ import {
   SandboxedProcessError,
   SandboxedBufferLimitError,
 } from './sandbox';
-import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -1270,16 +1273,21 @@ async function countPagesOfReadablePdf(
     }
   }
 
-  // Fallback via pdf-lib
+  // Fallback via pdf-lib. A password was already applied through qpdf, so an encrypted buffer here is one nobody
+  // opened: it is refused, never read with its encryption ignored.
   const buf = inputBuffer ?? fs.readFileSync(inputPath);
   try {
-    const pdfDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+    if (inspectPdfEncryption(buf).encrypted) {
+      throw new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
+    }
+    const pdfDoc = await PDFDocument.load(buf);
     const count = pdfDoc.getPageCount();
     if (count > 0) return count;
-  } catch {
-    // Fall-through to error
+  } catch (err) {
+    if (err instanceof PdfPasswordRequiredError) throw err;
+    // Fall-through to the typed error
   }
-  throw new Error('Unable to determine PDF page count: invalid or corrupted PDF structure.');
+  throw new PdfStructureError('Unable to determine PDF page count: invalid or corrupted PDF structure.');
 }
 
 /** Raster density of a PDF page image: the default and the range the API accepts. */

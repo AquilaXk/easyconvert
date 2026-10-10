@@ -18,7 +18,11 @@ import { runTool } from '../tools';
  *  - watermark (the pdf.watermark node and the `watermark` option of a PDF output): a text stamp on pages 2 and 3 of three,
  *    against `qpdf --overlay` of a stamp PDF written in bench/pdf-stamp.ts;
  *  - protect (the pdf.protect node): AES-256 encryption with a user and an owner password, against `qpdf --encrypt`;
- *  - decrypt (the password option of every PDF source): a decrypted copy, against `qpdf --decrypt`.
+ *  - decrypt (the password option of every PDF source): a decrypted copy, against `qpdf --decrypt`;
+ *  - unlock (the pdf.unlock node): the user-password copy of a PDF whose owner forbids modifying and copying, with the
+ *    request confirming the right to edit, against `qpdf --decrypt`. The input is checked with `qpdf --show-encryption`
+ *    to carry the restrictions under both passwords, and the copy unlocked with the owner password, with no
+ *    confirmation, must report as the reference's does.
  * The product has no split, rotate or compress operation, so those cases are listed as unsupported rather than measured.
  *
  * Per output: `qpdf --check` passes, the page count equals the expected one, the text of every page read by `pdftotext`
@@ -39,6 +43,7 @@ const MERGE_CASE = 'merge.pdf->pdf';
 const WATERMARK_CASE = 'watermark.pdf->pdf';
 const PROTECT_CASE = 'protect.pdf->pdf';
 const DECRYPT_CASE = 'decrypt.pdf->pdf';
+const UNLOCK_CASE = 'unlock.pdf->pdf';
 const UNSUPPORTED_CASES = [
   { name: 'split.pdf->pdf', reason: 'the product has no PDF split operation: a page range selects pages of a conversion to text or images, and a PDF output keeps every page' },
   { name: 'rotate.pdf->pdf', reason: 'the product has no PDF rotate operation: the orientation option sets the page shape of a PDF written from text, not the rotation of an existing page' },
@@ -432,6 +437,44 @@ async function runDecrypt(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow
   return rows;
 }
 
+async function runUnlock(ctx: FamilyContext, tools: PdfTools): Promise<BenchRow[]> {
+  const plain = source(SINGLE_SOURCE);
+  const truth = pageTexts(tools, plain.file, pageCount(tools, plain.file));
+  const encryptedFile = ctx.scratch('unlock-input.pdf');
+  encryptWithReference(tools, plain.file, encryptedFile);
+  const encrypted = fs.readFileSync(encryptedFile);
+
+  const { unlockPdf } = await import('../../src/lib/conversions/pdf-postprocess/unlock');
+  const unlockOurs = (): Promise<Buffer> => unlockPdf(encrypted, { password: USER_PASSWORD, confirmEditRights: true });
+  const oursFile = ctx.scratch('unlock-ours.pdf');
+  fs.writeFileSync(oursFile, await unlockOurs());
+  const ownerFile = ctx.scratch('unlock-owner.pdf');
+  fs.writeFileSync(ownerFile, await unlockPdf(encrypted, { password: OWNER_PASSWORD }));
+  const referenceFile = ctx.scratch('unlock-reference.pdf');
+  const unlockReference = (): void => {
+    runTool(tools.qpdf, [`--password=${USER_PASSWORD}`, '--decrypt', encryptedFile, referenceFile]);
+  };
+  unlockReference();
+
+  const rows: BenchRow[] = [];
+  if (ctx.quality) {
+    const unlocked = (file: string): boolean => encryptionReport(tools, file).trim() === 'File is not encrypted';
+    const referenceReport = encryptionReport(tools, referenceFile);
+    const same =
+      encryptionReport(tools, oursFile) === referenceReport && encryptionReport(tools, ownerFile) === referenceReport && unlocked(oursFile) ? 1 : 0;
+    const expected = unlocked(referenceFile) && protectionHolds(tools, encryptedFile) ? 1 : 0;
+    rows.push(
+      ...qualityRows(UNLOCK_CASE, scoreOutput(tools, oursFile, truth), scoreOutput(tools, referenceFile, truth), [
+        measuredRow(FAMILY, UNLOCK_CASE, SPEC.encryptionMatchesReference, same, expected, REFERENCE_TOOL),
+      ])
+    );
+  }
+  if (ctx.speed) {
+    rows.push(throughputRow(FAMILY, UNLOCK_CASE, encrypted.length, await timeBoth(ctx, unlockOurs, unlockReference), REFERENCE_TOOL));
+  }
+  return rows;
+}
+
 export const runPdfOps: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
   const cases = [
@@ -439,6 +482,7 @@ export const runPdfOps: FamilyRunner = async (ctx) => {
     { name: WATERMARK_CASE, specs: WATERMARK_SPECS, run: runWatermark },
     { name: PROTECT_CASE, specs: ENCRYPTION_SPECS, run: runProtect },
     { name: DECRYPT_CASE, specs: ENCRYPTION_SPECS, run: runDecrypt },
+    { name: UNLOCK_CASE, specs: ENCRYPTION_SPECS, run: runUnlock },
   ].filter((item) => ctx.inScope(FAMILY, item.name));
   if (cases.length > 0) {
     const plan = ctx.plan(['qpdf', 'pdftotext', 'pdftoppm', 'pdfinfo', 'ffmpeg'], FAMILY);

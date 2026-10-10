@@ -6,6 +6,7 @@ import {
   unsealJobSecret,
 } from '../../security/job-secret-seal';
 import { ConversionFailedError } from '../../types';
+import { sealPasswordOption } from '../option-secrets';
 import type { GraphNode, JobGraph, NodeId } from './types';
 
 /** Operations whose `url` and `headers` are bearer secrets of customer storage. */
@@ -32,16 +33,25 @@ type UrlNodeFields = { op: string; url?: unknown; headers?: unknown; sealed?: un
  * blob bound to `jobId`. Other nodes, and nodes without plaintext secrets, are returned as they are.
  */
 export function sealGraphNode<N extends GraphNode>(node: N, jobId: string): N {
-  const fields = node as unknown as UrlNodeFields;
+  const withSealedPasswords = sealNodePasswords(node, jobId);
+  const fields = withSealedPasswords as unknown as UrlNodeFields;
   if (!SECRET_URL_OPERATIONS.has(fields.op) || (fields.url === undefined && fields.headers === undefined)) {
-    return node;
+    return withSealedPasswords;
   }
+  node = withSealedPasswords;
   const { url, headers, ...rest } = node as unknown as UrlNodeFields & Record<string, unknown>;
   const payload: Record<string, unknown> = { url };
   if (headers !== undefined) {
     payload.headers = headers;
   }
   return { ...rest, sealed: sealJobSecret(JSON.stringify(payload), jobId) } as unknown as N;
+}
+
+/** The node with the open passwords of its options (`password`, `passwords`) sealed; a node without any is returned as is. */
+function sealNodePasswords<N extends GraphNode>(node: N, jobId: string): N {
+  const options = (node as { options?: unknown }).options;
+  const sealed = sealPasswordOption(options, jobId);
+  return sealed === options ? node : ({ ...node, options: sealed } as N);
 }
 
 /** A copy of `graph` in which every node's secrets are sealed under the job id `jobIdOf` gives that node. */

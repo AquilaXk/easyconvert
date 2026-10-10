@@ -28,7 +28,10 @@ import {
   isSplitArchive,
   applyPdfWatermark,
   protectPdf,
+  unlockPdf,
 } from '../../conversions';
+import type { PdfAccess } from '../../conversions/pdf-access';
+import { openPasswordOption } from '../option-secrets';
 import { OPTIMIZERS, getOptimizer, type OptimizerRegistry } from '../../conversions/optimizers';
 import { gunzipStreamingWithLimits } from '../../conversions/archive';
 import {
@@ -36,6 +39,7 @@ import {
   GraphExportError,
   JobTimeoutError,
   MediaPackagingOptions,
+  PdfPasswordListError,
   UnknownArtifactFormatError,
   WorkerOutputMissingError,
 } from '../../types';
@@ -169,6 +173,40 @@ function requireTargetFormat(node: { op?: string; targetFormat?: unknown; option
   return target;
 }
 
+/**
+ * The password of each merged artifact. `options.passwords` lists one entry per input node of the merge, in the order
+ * of `input`; every artifact an input node produced takes that node's entry.
+ *
+ * @throws PdfPasswordListError (422) when the list does not have one entry per input node, or an artifact belongs to none.
+ */
+async function mergePasswordsFor(
+  graphId: string,
+  node: { input?: string | string[]; options?: { passwords?: unknown } },
+  artifacts: string[]
+): Promise<Array<string | null> | undefined> {
+  const passwords = node.options?.passwords;
+  if (passwords === undefined) return undefined;
+  let inputs: string[] = [];
+  if (Array.isArray(node.input)) inputs = node.input;
+  else if (node.input) inputs = [node.input];
+  if (!Array.isArray(passwords) || passwords.length !== inputs.length) {
+    throw new PdfPasswordListError(
+      `The merge node lists ${Array.isArray(passwords) ? passwords.length : 'no list of'} passwords for ${inputs.length} input node(s); give one entry per input, in input order, with null for an input that has none.`
+    );
+  }
+  const produced = await Promise.all(inputs.map((inputId) => graphScheduler.getNodeOutputs(graphId, inputId)));
+  return artifacts.map((key) => {
+    const owner = produced.findIndex((outputs) => outputs.includes(key));
+    if (owner === -1) throw new PdfPasswordListError('A merged PDF is not an output of any input node, so its password cannot be matched.');
+    return passwords[owner] as string | null;
+  });
+}
+
+/** The password and the rights confirmation a PDF node's options carry. */
+function pdfAccessOf(options: { password?: string; confirmEditRights?: boolean } | undefined): PdfAccess {
+  return { password: options?.password, confirmEditRights: options?.confirmEditRights };
+}
+
 export async function processGraphNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   engine?: ConversionEnginePort,
@@ -183,8 +221,9 @@ export async function processGraphNodeJob(
   const nodeId = job.data.graphNodeId!;
   const submittedNode = job.data.graphNode as any;
   // Node options come from the request body: they cannot carry the signal, a timeout or a deadline into an engine.
+  // Passwords sealed for the queue are opened here, in memory, and never stored back anywhere.
   const node = submittedNode?.options && typeof submittedNode.options === 'object'
-    ? { ...submittedNode, options: stripEngineControls(submittedNode.options) }
+    ? { ...submittedNode, options: openPasswordOption(stripEngineControls(submittedNode.options), graphNodeJobId(graphId, nodeId)) }
     : submittedNode;
   const effectiveStorage: IStorageBackend = scope.storage;
   const effectiveEngine: ConversionEnginePort = deadlineBoundEngine(
@@ -386,7 +425,7 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => applyPdfWatermark(buf, watermarkOpts)
+          (buf) => applyPdfWatermark(buf, watermarkOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied watermark to ${inputArtifacts.length} artifact(s)`);
@@ -405,10 +444,28 @@ export async function processGraphNodeJob(
           inputArtifacts,
           effectiveStorage,
           attemptSignal,
-          (buf) => protectPdf(buf, protectOpts)
+          (buf) => protectPdf(buf, protectOpts, pdfAccessOf(node.options))
         );
         outputKeys.push(...processedKeys);
         await job.log(`Node "${nodeId}" applied protection to ${inputArtifacts.length} artifact(s)`);
+        break;
+      }
+
+      case 'pdf.unlock': {
+        const inputArtifacts = await resolveInputArtifacts(graphId, node.input, job.data.inputArtifacts);
+        if (inputArtifacts.length === 0) {
+          throw new Error(`Node "${nodeId}" has no input artifacts from upstream`);
+        }
+        const processedKeys = await processIntermediatePdfArtifacts(
+          graphId,
+          nodeId,
+          inputArtifacts,
+          effectiveStorage,
+          attemptSignal,
+          (buf) => unlockPdf(buf, pdfAccessOf(node.options))
+        );
+        outputKeys.push(...processedKeys);
+        await job.log(`Node "${nodeId}" unlocked ${inputArtifacts.length} artifact(s)`);
         break;
       }
 
@@ -438,7 +495,10 @@ export async function processGraphNodeJob(
         }));
         if (targetFmt === 'pdf') {
           const pdfBuffers = inputs.map((stored) => stored.buffer);
-          const mergedBuf = await mergePdfBuffers(pdfBuffers);
+          const mergedBuf = await mergePdfBuffers(pdfBuffers, {
+            passwords: await mergePasswordsFor(graphId, node, inputArtifacts),
+            confirmEditRights: node.options?.confirmEditRights,
+          });
           const outFilename = 'merged.pdf';
           const outKey = `intermediate/${graphId}/${nodeId}/${outFilename}`;
           await effectiveStorage.saveObject(outKey, mergedBuf, registryMimeType('pdf'), outFilename, INTERMEDIATE_TTL_MS);

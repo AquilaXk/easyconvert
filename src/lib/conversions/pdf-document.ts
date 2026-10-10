@@ -98,24 +98,24 @@ const CHAR_RIGHT_BRACKET = 93;
 const CHAR_LEFT_BRACE = 123;
 const CHAR_RIGHT_BRACE = 125;
 
-type PdfValue = null | boolean | number | PdfName | PdfRef | PdfDict | PdfArray | PdfOpaque;
-interface PdfName {
+export type PdfValue = null | boolean | number | PdfName | PdfRef | PdfDict | PdfArray | PdfOpaque;
+export interface PdfName {
   kind: 'name';
   value: string;
 }
-interface PdfRef {
+export interface PdfRef {
   kind: 'ref';
   num: number;
 }
-interface PdfDict {
+export interface PdfDict {
   kind: 'dict';
   entries: Map<string, PdfValue>;
 }
-interface PdfArray {
+export interface PdfArray {
   kind: 'array';
   items: PdfValue[];
 }
-interface PdfOpaque {
+export interface PdfOpaque {
   kind: 'string' | 'keyword';
   value: string;
 }
@@ -169,7 +169,7 @@ function isDigit(code: number): boolean {
   return code >= CHAR_0 && code <= CHAR_9;
 }
 
-function skipWhite(src: string, from: number): number {
+export function skipWhite(src: string, from: number): number {
   let pos = from;
   while (pos < src.length) {
     const code = src.charCodeAt(pos);
@@ -259,7 +259,7 @@ function referenceTailEnd(src: string, from: number): number {
   return -1;
 }
 
-function parseValue(src: string, from: number, depth: number): { value: PdfValue; end: number } {
+export function parseValue(src: string, from: number, depth: number): { value: PdfValue; end: number } {
   if (depth > MAX_PDF_PARSE_DEPTH) throw new PdfStructureError('PDF object is nested too deeply.');
   const pos = skipWhite(src, from);
   if (pos >= src.length) return { value: null, end: pos };

@@ -24,6 +24,7 @@ import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
+import { openPasswordOption } from './option-secrets';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
 
@@ -229,8 +230,8 @@ export async function processNodeJob(
         );
 
         const mergedOptions: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean } = {
-          ...job.data.options,
-          ...(task.options || {}),
+          ...openPasswordOption(job.data.options, job.id),
+          ...openPasswordOption(task.options, job.id),
           signal: attemptSignal,
         };
         if (task.operation === 'ocr') {
@@ -278,7 +279,7 @@ export async function processNodeJob(
     } else {
       attemptSignal.throwIfAborted();
       const conversionOptions: ConversionOptions & { signal?: AbortSignal } = {
-        ...job.data.options,
+        ...openPasswordOption(job.data.options, job.id),
         signal: attemptSignal,
       };
       finalResult = await engine.convert(

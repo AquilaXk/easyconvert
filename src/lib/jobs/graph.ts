@@ -569,6 +569,14 @@ export function validateJobGraph(
         code: 'MERGE_INPUTS_INSUFFICIENT',
       });
     }
+    const mergePasswords = op === 'merge' ? (node as { options?: { passwords?: unknown } }).options?.passwords : undefined;
+    if (mergePasswords !== undefined && (!Array.isArray(mergePasswords) || mergePasswords.length !== mergeInputListed(node))) {
+      errors.push({
+        path: `nodes.${nodeId}.options.passwords`,
+        message: `Merge node "${nodeId}" needs one password entry (null for none) per input, in input order; found ${Array.isArray(mergePasswords) ? mergePasswords.length : 'no list'} for ${mergeInputListed(node)} input(s).`,
+        code: 'MERGE_PASSWORDS_MISMATCH',
+      });
+    }
     if (op === 'merge' && target && MERGE_FORMATS.has(target)) {
       for (const inputId of getTaskDependencies(node)) {
         const inputFormat = inferredFormats[inputId];
@@ -685,6 +693,12 @@ export function validateJobGraph(
     inferredOutputFormats: inferredFormats,
     normalizedNodes: valid ? nodes : undefined,
   };
+}
+
+/** Inputs a node lists in `input`, counting a repeated one each time. */
+function mergeInputListed(node: { input?: unknown }): number {
+  if (Array.isArray(node.input)) return node.input.length;
+  return node.input ? 1 : 0;
 }
 
 /** Records why a convert node cannot run on its input format, if it cannot. */
