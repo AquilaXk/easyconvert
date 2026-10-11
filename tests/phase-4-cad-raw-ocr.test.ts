@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
 import sharp from 'sharp';
 import { oracleTest } from './helpers/oracle-test';
-import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pageFrame, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
+import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
 import {
   tessellateCurvesToMesh,
   BSplineCurve,
@@ -139,27 +139,27 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       expect(pdfPageCount(result.buffer)).toBe(1);
 
       // Poppler draws the page. Every one of the 150 lines is there, in order, scaled by one factor (a uniform affine
-      // map of the DXF extent into the page frame): each has equal run and rise like the 5 by 5 source line, a run of
-      // the same length as the first, and a start that advances by twice the run (10 units per line against a run of 5).
+      // map of the DXF extent into the page): each has equal run and rise like the 5 by 5 source line, and a start that
+      // advances by twice the run (10 units per line against a run of 5). A page line is a few points long, so the run
+      // is measured over the whole drawing, from the first start to the last, instead of from one rounded segment.
       const svg = pdfPageToSvg(result.buffer);
-      const segments = svgPathSegments(svg);
-      const drawn = diagonalSegments(segments);
+      const drawn = diagonalSegments(svgPathSegments(svg));
       expect(drawn).toHaveLength(150);
-      const run = drawn[0].x2 - drawn[0].x1;
-      expect(run).toBeGreaterThan(0);
+      const pitch = (drawn[149].x1 - drawn[0].x1) / 149;
+      expect(pitch).toBeGreaterThan(0);
       drawn.forEach((segment, index) => {
-        expect(segment.x2 - segment.x1, `run of line ${index}`).toBeCloseTo(run, CAIRO_COORDINATE_DIGITS);
-        expect(segment.y1 - segment.y2, `rise of line ${index}`).toBeCloseTo(run, CAIRO_COORDINATE_DIGITS);
-        expect(segment.x1 - drawn[0].x1, `start of line ${index}`).toBeCloseTo(2 * run * index, CAIRO_COORDINATE_DIGITS);
-        expect(segment.y1 - drawn[0].y1, `height of line ${index}`).toBeCloseTo(-run * index, CAIRO_COORDINATE_DIGITS);
+        expect(segment.x2 - segment.x1, `run of line ${index}`).toBeCloseTo(pitch / 2, CAIRO_COORDINATE_DIGITS);
+        expect(segment.y1 - segment.y2, `rise of line ${index}`).toBeCloseTo(pitch / 2, CAIRO_COORDINATE_DIGITS);
+        expect(segment.x1 - drawn[0].x1, `start of line ${index}`).toBeCloseTo(pitch * index, CAIRO_COORDINATE_DIGITS);
+        expect(segment.y1 - drawn[0].y1, `height of line ${index}`).toBeCloseTo((-pitch * index) / 2, CAIRO_COORDINATE_DIGITS);
       });
-      const frame = pageFrame(segments);
+      const root = /<svg[^>]*\swidth="([\d.]+)(?:pt)?"[^>]*\sheight="([\d.]+)(?:pt)?"/.exec(svg);
       for (const segment of drawn) {
         for (const [x, y] of [[segment.x1, segment.y1], [segment.x2, segment.y2]]) {
-          expect(x).toBeGreaterThan(frame.left);
-          expect(x).toBeLessThan(frame.right);
-          expect(y).toBeGreaterThan(frame.top);
-          expect(y).toBeLessThan(frame.bottom);
+          expect(x).toBeGreaterThan(0);
+          expect(x).toBeLessThan(Number(root?.[1]));
+          expect(y).toBeGreaterThan(0);
+          expect(y).toBeLessThan(Number(root?.[2]));
         }
       }
     });

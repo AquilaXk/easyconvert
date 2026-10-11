@@ -6,7 +6,6 @@ import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
 import { openInputImage, resizedDimensions } from './image-input-limits';
-import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
@@ -21,6 +20,7 @@ import {
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
+import { dxfDrawingToSvg, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
 
@@ -32,23 +32,6 @@ export {
   cubicBezierToBSpline,
   tessellateSvgArc,
 };
-
-export interface DxfEntity {
-  type: 'LINE' | 'CIRCLE' | 'ARC' | 'LWPOLYLINE' | 'TEXT';
-  layer?: string;
-  x1?: number;
-  y1?: number;
-  x2?: number;
-  y2?: number;
-  cx?: number;
-  cy?: number;
-  r?: number;
-  startAngle?: number;
-  endAngle?: number;
-  points?: { x: number; y: number }[];
-  isClosed?: boolean;
-  text?: string;
-}
 
 export interface CadMesh3D {
   name: string;
@@ -526,20 +509,6 @@ async function convertDxfSource(
   baseName: string
 ): Promise<ConversionResult> {
   const dxfContent = inputBuffer.toString('utf-8');
-  const entities = parseDxfEntities(dxfContent);
-
-  // DXF -> SVG
-  if (tgt === 'svg') {
-    const svg = dxfToSvg(entities, baseName);
-    const cleanSvg = sanitizeSvgDocument(svg);
-    const buffer = Buffer.from(cleanSvg, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'image/svg+xml',
-      filename: `${baseName}.svg`,
-      size: buffer.length,
-    };
-  }
 
   // DXF -> DWG
   if (tgt === 'dwg') {
@@ -552,9 +521,24 @@ async function convertDxfSource(
     };
   }
 
+  const drawing = parseDxfDrawing(dxfContent);
+
+  // DXF -> SVG
+  if (tgt === 'svg') {
+    const svg = dxfDrawingToSvg(drawing, baseName);
+    const cleanSvg = sanitizeSvgDocument(svg);
+    const buffer = Buffer.from(cleanSvg, 'utf-8');
+    return {
+      buffer,
+      mimeType: 'image/svg+xml',
+      filename: `${baseName}.svg`,
+      size: buffer.length,
+    };
+  }
+
   // DXF -> PDF
   if (tgt === 'pdf') {
-    const pdfBuffer = await renderDxfToPdf(entities, options, baseName);
+    const pdfBuffer = await renderDxfDrawingToPdf(drawing);
     return {
       buffer: pdfBuffer,
       mimeType: 'application/pdf',
@@ -565,7 +549,7 @@ async function convertDxfSource(
 
   // DXF -> Raster (PNG, JPG, WEBP)
   if (['png', 'jpg', 'jpeg', 'webp'].includes(tgt)) {
-    const svgStr = dxfToSvg(entities, baseName);
+    const svgStr = dxfDrawingToSvg(drawing, baseName);
     const svgBuf = Buffer.from(svgStr, 'utf-8');
     return convertSvgSource(svgBuf, tgt, options, baseName);
   }
@@ -676,330 +660,6 @@ async function convert3dCad(
 export function svgToDxf(svgContent: string): string {
   return encodeSvgPageToDxf(Buffer.from(svgContent, 'utf-8')).toString('utf-8');
 }
-
-/**
- * Parses AutoCAD ASCII DXF into structured geometric entities
- */
-export function parseDxfEntities(dxfContent: string): DxfEntity[] {
-  const lines = dxfContent.split(/\r?\n/).map((l) => l.trim());
-  const entities: DxfEntity[] = [];
-
-  let inEntitiesSection = false;
-  let i = 0;
-
-  while (i < lines.length - 1) {
-    const code = lines[i];
-    const val = lines[i + 1];
-
-    if (code === '2' && val === 'ENTITIES') {
-      inEntitiesSection = true;
-      i += 2;
-      continue;
-    }
-
-    if (inEntitiesSection && code === '0' && val === 'ENDSEC') {
-      break;
-    }
-
-    if (inEntitiesSection && code === '0') {
-      const entityType = val.toUpperCase();
-      i += 2;
-
-      if (entityType === 'LINE') {
-        const ent: DxfEntity = { type: 'LINE' };
-        while (i < lines.length - 1 && lines[i] !== '0') {
-          const c = lines[i];
-          const v = lines[i + 1];
-          if (c === '10') ent.x1 = parseFloat(v);
-          else if (c === '20') ent.y1 = parseFloat(v);
-          else if (c === '11') ent.x2 = parseFloat(v);
-          else if (c === '21') ent.y2 = parseFloat(v);
-          i += 2;
-        }
-        entities.push(ent);
-        continue;
-      }
-
-      if (entityType === 'CIRCLE') {
-        const ent: DxfEntity = { type: 'CIRCLE' };
-        while (i < lines.length - 1 && lines[i] !== '0') {
-          const c = lines[i];
-          const v = lines[i + 1];
-          if (c === '10') ent.cx = parseFloat(v);
-          else if (c === '20') ent.cy = parseFloat(v);
-          else if (c === '40') ent.r = parseFloat(v);
-          i += 2;
-        }
-        entities.push(ent);
-        continue;
-      }
-
-      if (entityType === 'ARC') {
-        const ent: DxfEntity = { type: 'ARC' };
-        while (i < lines.length - 1 && lines[i] !== '0') {
-          const c = lines[i];
-          const v = lines[i + 1];
-          if (c === '10') ent.cx = parseFloat(v);
-          else if (c === '20') ent.cy = parseFloat(v);
-          else if (c === '40') ent.r = parseFloat(v);
-          else if (c === '50') ent.startAngle = parseFloat(v);
-          else if (c === '51') ent.endAngle = parseFloat(v);
-          i += 2;
-        }
-        entities.push(ent);
-        continue;
-      }
-
-      if (entityType === 'LWPOLYLINE') {
-        const points: { x: number; y: number }[] = [];
-        let currX: number | undefined;
-        let isClosed = false;
-
-        while (i < lines.length - 1 && lines[i] !== '0') {
-          const c = lines[i];
-          const v = lines[i + 1];
-          if (c === '70') isClosed = parseInt(v, 10) === 1;
-          else if (c === '10') currX = parseFloat(v);
-          else if (c === '20' && currX !== undefined) {
-            points.push({ x: currX, y: parseFloat(v) });
-            currX = undefined;
-          }
-          i += 2;
-        }
-        entities.push({ type: 'LWPOLYLINE', points, isClosed });
-        continue;
-      }
-
-      if (entityType === 'TEXT') {
-        const ent: DxfEntity = { type: 'TEXT' };
-        while (i < lines.length - 1 && lines[i] !== '0') {
-          const c = lines[i];
-          const v = lines[i + 1];
-          if (c === '10') ent.x1 = parseFloat(v);
-          else if (c === '20') ent.y1 = parseFloat(v);
-          else if (c === '1') ent.text = v;
-          i += 2;
-        }
-        entities.push(ent);
-        continue;
-      }
-    }
-
-    i += 2;
-  }
-
-  return entities;
-}
-
-/**
- * Renders DXF entities into a clean, resolution-independent SVG document
- */
-export function dxfToSvg(entities: DxfEntity[], title: string): string {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  function updateBounds(x: number, y: number) {
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-  }
-
-  entities.forEach((e) => {
-    if (e.type === 'LINE') {
-      if (e.x1 !== undefined && e.y1 !== undefined) updateBounds(e.x1, e.y1);
-      if (e.x2 !== undefined && e.y2 !== undefined) updateBounds(e.x2, e.y2);
-    } else if (e.type === 'CIRCLE' || e.type === 'ARC') {
-      if (e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-        updateBounds(e.cx - e.r, e.cy - e.r);
-        updateBounds(e.cx + e.r, e.cy + e.r);
-      }
-    } else if (e.type === 'LWPOLYLINE' && e.points) {
-      e.points.forEach((p) => updateBounds(p.x, p.y));
-    }
-  });
-
-  if (!isFinite(minX)) {
-    minX = 0;
-    minY = 0;
-    maxX = 500;
-    maxY = 500;
-  }
-
-  const width = Math.max(10, Math.ceil(maxX - minX + 20));
-  const height = Math.max(10, Math.ceil(maxY - minY + 20));
-
-  const svgElements: string[] = [];
-
-  entities.forEach((e) => {
-    if (e.type === 'LINE' && e.x1 !== undefined && e.y1 !== undefined && e.x2 !== undefined && e.y2 !== undefined) {
-      svgElements.push(
-        `<line x1="${e.x1}" y1="${-e.y1}" x2="${e.x2}" y2="${-e.y2}" stroke="#5C6BC0" stroke-width="1.5" stroke-linecap="round" />`
-      );
-    } else if (e.type === 'CIRCLE' && e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-      svgElements.push(
-        `<circle cx="${e.cx}" cy="${-e.cy}" r="${e.r}" fill="none" stroke="#5C6BC0" stroke-width="1.5" />`
-      );
-    } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length > 0) {
-      const pts = e.points.map((p) => `${p.x},${-p.y}`).join(' ');
-      const tag = e.isClosed ? 'polygon' : 'polyline';
-      svgElements.push(
-        `<${tag} points="${pts}" fill="none" stroke="#5C6BC0" stroke-width="1.5" stroke-linejoin="round" />`
-      );
-    } else if (e.type === 'TEXT' && e.x1 !== undefined && e.y1 !== undefined && e.text) {
-      svgElements.push(
-        `<text x="${e.x1}" y="${-e.y1}" fill="#1F2340" font-family="system-ui, sans-serif" font-size="12">${escapeXml(
-          e.text
-        )}</text>`
-      );
-    }
-  });
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${minX - 10} ${-maxY - 10} ${width} ${height}" width="${width}" height="${height}">
-  <title>${escapeXml(title)}</title>
-  <g>
-    ${svgElements.join('\n    ')}
-  </g>
-</svg>`;
-}
-
-/**
- * Renders DXF entities onto PDFKit vector canvas
- */
-async function renderDxfToPdf(
-  entities: DxfEntity[],
-  options: ConversionOptions,
-  title: string
-): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 40 });
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    const fontFallback = configurePdfKitFontFallback(doc);
-
-    // Title header rendered safely with Unicode fallback
-    doc.fillColor('#5C6BC0').fontSize(14);
-    renderSafePdfText(
-      doc,
-      `AutoCAD Vector Plot: ${title}`,
-      fontFallback.hasUnicodeFont,
-      { align: 'left' },
-      40,
-      40
-    );
-
-    const plotX = 40;
-    const plotY = 75;
-    const plotW = doc.page.width - 80;
-    const plotH = doc.page.height - 115;
-
-    // Draw frame
-    doc.rect(plotX, plotY, plotW, plotH).strokeColor('#CCD2FC').lineWidth(1).stroke();
-
-    // 1. Calculate authentic bounding box across all entities
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-
-    const updateBounds = (x: number, y: number) => {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    };
-
-    entities.forEach((e) => {
-      if (e.type === 'LINE') {
-        if (e.x1 !== undefined && e.y1 !== undefined) updateBounds(e.x1, e.y1);
-        if (e.x2 !== undefined && e.y2 !== undefined) updateBounds(e.x2, e.y2);
-      } else if (e.type === 'CIRCLE' || e.type === 'ARC') {
-        if (e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-          updateBounds(e.cx - e.r, e.cy - e.r);
-          updateBounds(e.cx + e.r, e.cy + e.r);
-        }
-      } else if (e.type === 'LWPOLYLINE' && e.points) {
-        e.points.forEach((p) => updateBounds(p.x, p.y));
-      } else if (e.type === 'TEXT' && e.x1 !== undefined && e.y1 !== undefined) {
-        updateBounds(e.x1, e.y1);
-      }
-    });
-
-    if (
-      !isFinite(minX) ||
-      !isFinite(maxX) ||
-      !isFinite(minY) ||
-      !isFinite(maxY) ||
-      (minX === maxX && minY === maxY)
-    ) {
-      minX = 0;
-      minY = 0;
-      maxX = 500;
-      maxY = 500;
-    }
-
-    // 2. Compute aspect-ratio-preserving affine transformation
-    const pad = 15;
-    const availableW = Math.max(10, plotW - 2 * pad);
-    const availableH = Math.max(10, plotH - 2 * pad);
-    const dx = Math.max(0.0001, maxX - minX);
-    const dy = Math.max(0.0001, maxY - minY);
-    const scale = Math.min(availableW / dx, availableH / dy);
-
-    const offsetX = plotX + pad + (availableW - dx * scale) / 2;
-    const offsetY = plotY + pad + (availableH - dy * scale) / 2;
-
-    const tx = (x: number) => offsetX + (x - minX) * scale;
-    // Map CAD upwards Y to PDF downwards Y
-    const ty = (y: number) => offsetY + (maxY - y) * scale;
-
-    // 3. Render all entities without truncation
-    entities.forEach((e) => {
-      doc.strokeColor('#5C6BC0').lineWidth(1);
-      if (
-        e.type === 'LINE' &&
-        e.x1 !== undefined &&
-        e.y1 !== undefined &&
-        e.x2 !== undefined &&
-        e.y2 !== undefined
-      ) {
-        doc.moveTo(tx(e.x1), ty(e.y1)).lineTo(tx(e.x2), ty(e.y2)).stroke();
-      } else if (e.type === 'CIRCLE' && e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-        doc.circle(tx(e.cx), ty(e.cy), Math.max(0.5, e.r * scale)).stroke();
-      } else if (e.type === 'ARC' && e.cx !== undefined && e.cy !== undefined && e.r !== undefined) {
-        doc.circle(tx(e.cx), ty(e.cy), Math.max(0.5, e.r * scale)).stroke();
-      } else if (e.type === 'LWPOLYLINE' && e.points && e.points.length > 0) {
-        doc.moveTo(tx(e.points[0].x), ty(e.points[0].y));
-        for (let i = 1; i < e.points.length; i++) {
-          doc.lineTo(tx(e.points[i].x), ty(e.points[i].y));
-        }
-        if (e.isClosed) {
-          doc.closePath();
-        }
-        doc.stroke();
-      } else if (e.type === 'TEXT' && e.text && e.x1 !== undefined && e.y1 !== undefined) {
-        doc.fillColor('#1F2340').fontSize(Math.max(6, Math.min(12, 10 * scale)));
-        renderSafePdfText(
-          doc,
-          e.text,
-          fontFallback.hasUnicodeFont,
-          undefined,
-          tx(e.x1),
-          ty(e.y1)
-        );
-      }
-    });
-
-    doc.end();
-  });
-}
-
 
 /**
  * 3D CAD Parser (STEP, STP, IGES, IGS, STL, OBJ)
