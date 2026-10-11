@@ -71,6 +71,10 @@ const REPORTED_TOOLS = [
   'pdfimages',
   'epubcheck',
   'ssimulacra2',
+  'rsvg-convert',
+  'gs',
+  'pdftoppm',
+  'dcraw_emu',
 ] as const;
 const EXIT_ERROR = 2;
 const DATE_LENGTH = 10;

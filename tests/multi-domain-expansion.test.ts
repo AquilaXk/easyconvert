@@ -8,7 +8,7 @@ import { zipEntryText } from './helpers/zip-entry';
 import { readDxf } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
 import { readSvgShapes } from './helpers/svg-dom-audit';
-import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pageFrame, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
+import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
 
 /** The attributes of `attributes` named in `names`, in that order. */
 function pick(attributes: Record<string, string>, names: string[]): Record<string, string> {
@@ -131,15 +131,16 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(result.filename).toBe('schematic.svg');
 
       // DXF has Y pointing up and SVG down, so every Y is negated: the line runs (0,0) to (100,-100), the circle is
-      // centred (50,-50) with radius 25, and the view box is the drawing's extent (0..100 by -100..0) plus a margin of 10.
+      // centred (50,-50) with radius 25, and the view box is the drawing's extent (0..100 by -100..0) plus a margin of 2 percent
+      // of its longer side on each side.
       const shapes = readSvgShapes(result.buffer.toString('utf-8'), new Set(['svg', 'line', 'circle']));
       expect(shapes.map((shape) => shape.name)).toEqual(['svg', 'line', 'circle']);
-      expect(shapes[0].attributes.viewBox).toBe('-10 -110 120 120');
+      expect(shapes[0].attributes.viewBox).toBe('-2 -102 104 104');
       expect(pick(shapes[1].attributes, ['x1', 'y1', 'x2', 'y2'])).toEqual({ x1: '0', y1: '0', x2: '100', y2: '-100' });
       expect(pick(shapes[2].attributes, ['cx', 'cy', 'r'])).toEqual({ cx: '50', cy: '-50', r: '25' });
     });
 
-    oracleTest('converts DXF drawing to PDF plot layout: the line, scaled uniformly into the page frame', ['pdftocairo', 'pdfinfo'], async () => {
+    oracleTest('converts DXF drawing to a PDF page fitted to its extents: the line alone, no title and no frame, scaled uniformly', ['pdftocairo', 'pdfinfo'], async () => {
       const dxf = `  0\nSECTION\n  2\nENTITIES\n  0\nLINE\n  8\n0\n 10\n10.0\n 20\n10.0\n 11\n80.0\n 21\n80.0\n  0\nENDSEC\n  0\nEOF\n`;
       const buffer = Buffer.from(dxf, 'utf-8');
 
@@ -148,22 +149,24 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(result.filename).toBe('floorplan.pdf');
       expect(pdfPageCount(result.buffer)).toBe(1);
 
-      // Poppler draws the page: a frame (four axis-aligned segments) and the one diagonal line. The DXF line rises at
-      // 45 degrees (dx = dy = 70), so the page line has equal run and rise, runs from lower left to upper right (SVG
-      // y grows downward) and lies inside the frame.
-      const drawn = diagonalSegments(svgPathSegments(pdfPageToSvg(result.buffer)));
+      // Poppler draws the page: one path, the diagonal. The DXF line rises at 45 degrees (dx = dy = 70), so the page line has
+      // equal run and rise, runs from lower left to upper right (SVG y grows downward), and the page is square because the
+      // drawing is: the line spans the page but for the same margin on every side.
+      const svg = pdfPageToSvg(result.buffer);
+      const segments = svgPathSegments(svg);
+      const drawn = diagonalSegments(segments);
+      expect(segments).toHaveLength(1);
       expect(drawn).toHaveLength(1);
       const [line] = drawn;
       expect(Math.abs(line.x2 - line.x1)).toBeCloseTo(Math.abs(line.y2 - line.y1), CAIRO_COORDINATE_DIGITS);
       expect(line.x2).toBeGreaterThan(line.x1);
       expect(line.y2).toBeLessThan(line.y1);
-      const frame = pageFrame(svgPathSegments(pdfPageToSvg(result.buffer)));
-      for (const [x, y] of [[line.x1, line.y1], [line.x2, line.y2]]) {
-        expect(x).toBeGreaterThan(frame.left);
-        expect(x).toBeLessThan(frame.right);
-        expect(y).toBeGreaterThan(frame.top);
-        expect(y).toBeLessThan(frame.bottom);
-      }
+      const root = /<svg[^>]*\swidth="([\d.]+)(?:pt)?"[^>]*\sheight="([\d.]+)(?:pt)?"/.exec(svg);
+      const [pageWidth, pageHeight] = [Number(root?.[1]), Number(root?.[2])];
+      expect(pageWidth).toBeCloseTo(pageHeight, CAIRO_COORDINATE_DIGITS);
+      expect(line.x1).toBeCloseTo(pageHeight - line.y1, CAIRO_COORDINATE_DIGITS);
+      expect(line.x1).toBeGreaterThan(0);
+      expect(line.x2).toBeLessThan(pageWidth);
     });
 
     it('rasterizes DXF to crisp PNG image via Sharp rendering pipeline', async () => {

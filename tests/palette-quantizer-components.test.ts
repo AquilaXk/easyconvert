@@ -222,6 +222,43 @@ describe('quantizeImage', () => {
   });
 });
 
+describe('quantizeImage with a run tolerance', () => {
+  /** A 64 x 64 ramp of greys with a fixed grain, so the nearest of a few palette greys flips from pixel to pixel. */
+  function grainyRamp(): Uint8Array {
+    const random = lcg(99);
+    const pixels = new Uint8Array(64 * 64 * 4);
+    for (let p = 0; p < 64 * 64; p += 1) {
+      const grey = Math.round(Math.min(255, Math.max(0, (p % 64) * 4 + (random() - 0.5) * 6)));
+      pixels.set([grey, grey, grey, 255], p * 4);
+    }
+    return pixels;
+  }
+  const runs = (indices: Uint8Array): number => indices.reduce((count, value, i) => (i === 0 || value !== indices[i - 1] ? count + 1 : count), 0);
+
+  it('maps to the nearest colour exactly when the tolerance is 0, and joins runs when it is above 0', () => {
+    const pixels = grainyRamp();
+    const exact = quantizeImage(pixels, 64, 64, 16, { dither: 'none' });
+    const tolerant = quantizeImage(pixels, 64, 64, 16, { dither: 'none', runTolerance: 0.25 });
+    expect(Array.from(tolerant.palette)).toEqual(Array.from(exact.palette));
+    expect(runs(tolerant.indices)).toBeLessThan(runs(exact.indices));
+    expect(Array.from(quantizeImage(pixels, 64, 64, 16, { dither: 'none', runTolerance: 0 }).indices)).toEqual(Array.from(exact.indices));
+  });
+
+  it('never keeps a colour farther than the tolerance allows: the grey of each pixel is within (1 + tolerance) of its nearest palette grey', () => {
+    const pixels = grainyRamp();
+    const tolerance = 0.25;
+    const result = quantizeImage(pixels, 64, 64, 16, { dither: 'none', runTolerance: tolerance });
+    const greys = Array.from({ length: result.paletteSize }, (_, i) => result.palette[i * 3]);
+    // Lightness is monotonic in a grey, so the nearest palette grey in Oklab is the nearest in sRGB code up to the curve; the
+    // oracle is the code distance with the same relative slack plus the curve's local slope (a factor of 2 here).
+    for (let p = 0; p < 64 * 64; p += 1) {
+      const grey = pixels[p * 4];
+      const nearest = Math.min(...greys.map((g) => Math.abs(g - grey)));
+      expect(Math.abs(greys[result.indices[p]] - grey)).toBeLessThanOrEqual(nearest * (1 + tolerance) * 2 + 1);
+    }
+  });
+});
+
 describe('GIF writer', () => {
   let workDir: string;
   beforeAll(() => {
