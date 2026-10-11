@@ -93,18 +93,18 @@ function wordRecall(truth: readonly string[], text: string): number {
   return found / truth.length;
 }
 
-function pdfText(pdftotext: string, pdf: string): string {
+export function pdfText(pdftotext: string, pdf: string): string {
   return runTool(pdftotext, ['-enc', 'UTF-8', pdf, '-']).stdout.toString('utf8');
 }
 
 /** Fonts a PDF does not embed, from the `emb` column of `pdffonts` (two header lines, one line per font). */
-function unembeddedFonts(pdffonts: string, pdf: string): number {
+export function unembeddedFonts(pdffonts: string, pdf: string): number {
   const lines = runTool(pdffonts, [pdf]).stdout.toString('utf8').split('\n').slice(2).filter((line) => line.trim() !== '');
   return lines.filter((line) => /\sno\s+(?:yes|no)\s+(?:yes|no)\s+\d+\s+\d+\s*$/.test(line)).length;
 }
 
 /** 1 when `qpdf --check` reports an error or a warning, else 0. */
-function structuralFaults(qpdf: string, pdf: string): number {
+export function structuralFaults(qpdf: string, pdf: string): number {
   try {
     runTool(qpdf, ['--check', pdf]);
     return 0;
@@ -113,7 +113,7 @@ function structuralFaults(qpdf: string, pdf: string): number {
   }
 }
 
-function sofficePdf(soffice: string, profile: string, input: string, outDir: string): string {
+export function sofficePdf(soffice: string, profile: string, input: string, outDir: string): string {
   fs.mkdirSync(outDir, { recursive: true });
   runTool(soffice, [`-env:UserInstallation=${profile}`, '--headless', '--convert-to', 'pdf', '--outdir', outDir, input]);
   return path.join(outDir, `${path.parse(input).name}.pdf`);

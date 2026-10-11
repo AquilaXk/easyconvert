@@ -3,11 +3,15 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { convertWithProject } from '../convert';
-import { OutputIntegrityError } from '../errors';
+import { OutputIntegrityError, ToolRunError } from '../errors';
+import { PublicClassRows } from '../public-classes';
+import { publicCompanionFile, publicFile, publicSamples, type PublicSample } from '../public-samples';
+import { publicSpeedSample } from '../public-scope';
+import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
 import type { BenchRow, SkipKind } from '../report';
 import { measuredRow, type MetricSpec, skippedRow, SPEC, speedRowId, throughputRow } from '../rows';
 import { structureOfEpub } from '../structure-extract';
-import { scoreStructure, type DocumentStructure } from '../structure-metrics';
+import { emptyStructure, scoreStructure, type DocumentStructure } from '../structure-metrics';
 import { wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 
@@ -24,6 +28,13 @@ import { runTool } from '../tools';
  * against the text the book was written from; an EPUB output is validated with EPUBCheck and its headings are read with a
  * WHATWG HTML parser and scored for precision and recall against the headings of the source package; the pictures of a PDF
  * (`pdfimages`) and of an EPUB are counted against the one picture of the book.
+ *
+ * The public samples (bench/corpus/public-manifest.json) are public-domain books with images and linked tables of contents in
+ * EPUB, Kindle and FictionBook form, and the EPUB 3 sample publications of an open standards group (right-to-left text,
+ * MathML, specification text). The truth is read from the source by this file: the text of an EPUB's spine and its headings and
+ * pictures; the text of the `body` elements of an FB2 file and its pictures; for a Kindle file, the text and pictures of the
+ * EPUB of the same book, which the same publisher builds from the same source. The reference side is the same calibre process,
+ * and a file the product refuses is a `converts` row instead of a stopped run.
  */
 
 const REFERENCE = 'ebook-convert (calibre)';
@@ -49,23 +60,36 @@ const CASES: readonly BookCase[] = [
   { source: 'fb2', target: 'pdf' },
 ];
 const caseName = (item: BookCase): string => `book.${item.source}->${item.target}`;
+/** The conversions a public book gets, by its format (the targets of the generated book's cases). */
+const PUBLIC_TARGETS: Readonly<Record<BookCase['source'], readonly BookCase['target'][]>> = { epub: ['txt', 'pdf'], mobi: ['epub', 'txt', 'pdf'], fb2: ['epub', 'txt', 'pdf'] };
+
+/** A book the family converts: the generated one (three formats under the name `book`) or a public sample. */
+interface Book {
+  /** The name of the case: `book.<format>` or the sample id. */
+  name: string;
+  item: BookCase;
+  sample: PublicSample | null;
+}
+
+const bookCaseName = (book: Book): string => (book.sample ? `${book.sample.id}->${book.item.target}` : caseName(book.item));
 
 /** The rows of a case: the case id each metric is reported under, and its spec. */
-function rowPlan(item: BookCase): Array<{ caseId: string; spec: MetricSpec }> {
-  const name = caseName(item);
+function rowPlan(book: Book): Array<{ caseId: string; spec: MetricSpec }> {
+  const { item } = book;
+  const name = bookCaseName(book);
   const plan: Array<{ caseId: string; spec: MetricSpec }> = [{ caseId: name, spec: SPEC.wordF1 }];
   if (item.target === 'pdf') plan.push({ caseId: `${name}:images`, spec: SPEC.structureRecall });
   if (item.target === 'epub') {
-    plan.push(
-      { caseId: name, spec: SPEC.epubcheckErrors },
-      { caseId: `${name}:headings`, spec: SPEC.structurePrecision },
-      { caseId: `${name}:headings`, spec: SPEC.structureRecall },
-      { caseId: `${name}:images`, spec: SPEC.structureRecall }
-    );
+    plan.push({ caseId: name, spec: SPEC.epubcheckErrors });
+    if (headingsMeasured(book)) plan.push({ caseId: `${name}:headings`, spec: SPEC.structurePrecision }, { caseId: `${name}:headings`, spec: SPEC.structureRecall });
+    plan.push({ caseId: `${name}:images`, spec: SPEC.structureRecall });
   }
   plan.push({ caseId: name, spec: SPEC.throughput });
   return plan;
 }
+
+/** Headings are scored when the truth has them: the generated book, and an EPUB source (a Kindle or FictionBook file has no heading truth to read). */
+const headingsMeasured = (book: Book): boolean => book.sample === null || book.sample.meta.format === 'epub';
 
 function decodeEntities(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, name: string) => {
@@ -120,7 +144,7 @@ function pdfImageCount(pdfimages: string, pdf: string): number {
 }
 
 /** Share of the pictures of the book that an output holds; more pictures than the book has do not raise it. */
-const pictureRecall = (found: number): number => Math.min(found, BOOK_PICTURES) / BOOK_PICTURES;
+
 
 interface Tools {
   ebookConvert: string;
@@ -132,6 +156,8 @@ interface Tools {
 interface Truth {
   text: string;
   structure: DocumentStructure;
+  /** Pictures of the book, the denominator of the picture recall. */
+  pictures: number;
 }
 
 interface Output {
@@ -145,34 +171,74 @@ async function textOf(tools: Tools, target: BookCase['target'], output: Output):
   return runTool(tools.pdftotext, ['-layout', '-enc', 'UTF-8', output.file, '-']).stdout.toString('utf8');
 }
 
-async function qualityRows(ctx: FamilyContext, tools: Tools, truth: Truth, item: BookCase, ours: Output, reference: Output): Promise<BenchRow[]> {
-  const name = caseName(item);
+/** The text of a FictionBook 2 file: the `body` elements (the notes included), markup and the pictures' base64 removed. */
+export function textOfFb2(xml: string): string {
+  const bodies = [...xml.matchAll(/<body\b[^>]*>([\s\S]*?)<\/body>/g)].map((match) => match[1]);
+  return decodeEntities(bodies.join('\n').replace(/<binary\b[\s\S]*?<\/binary>/g, ' ').replace(/<[^>]+>/g, ' '));
+}
+
+/** The pictures of a FictionBook 2 file: its `binary` parts with an image type. */
+export const picturesOfFb2 = (xml: string): number => [...xml.matchAll(/<binary\b[^>]*content-type="image\/[^"]*"/gi)].length;
+
+/** The truth of a public book, read from the file or, for a Kindle file, from the EPUB of the same book. */
+async function publicTruth(ctx: FamilyContext, sample: PublicSample, file: string): Promise<Truth | null> {
+  const format = String(sample.meta.format);
+  if (format === 'epub') {
+    const bytes = fs.readFileSync(file);
+    const structure = await structureOfEpub(bytes);
+    return { text: await textOfEpub(bytes), structure, pictures: structure.images.length };
+  }
+  if (format === 'fb2') {
+    const xml = fs.readFileSync(file, 'utf8');
+    return { text: textOfFb2(xml), structure: emptyStructure(), pictures: picturesOfFb2(xml) };
+  }
+  const twin = await publicCompanionFile(ctx, sample, 'text');
+  if (twin === null) return null;
+  const bytes = fs.readFileSync(twin);
+  const structure = await structureOfEpub(bytes);
+  return { text: await textOfEpub(bytes), structure, pictures: structure.images.length };
+}
+
+async function qualityRows(ctx: FamilyContext, tools: Tools, truth: Truth, book: Book, ours: Output, reference: Output): Promise<BenchRow[]> {
+  const { item } = book;
+  const name = bookCaseName(book);
   const rows: BenchRow[] = [measuredRow('ebook', name, SPEC.wordF1, wordF1(truth.text, await textOf(tools, item.target, ours)), wordF1(truth.text, await textOf(tools, item.target, reference)), REFERENCE)];
-  if (item.target === 'pdf') {
-    rows.push(measuredRow('ebook', `${name}:images`, SPEC.structureRecall, pictureRecall(pdfImageCount(tools.pdfimages, ours.file)), pictureRecall(pdfImageCount(tools.pdfimages, reference.file)), REFERENCE));
+  const recall = (found: number): number => Math.min(found, truth.pictures) / truth.pictures;
+  if (item.target === 'pdf' && truth.pictures > 0) {
+    rows.push(measuredRow('ebook', `${name}:images`, SPEC.structureRecall, recall(pdfImageCount(tools.pdfimages, ours.file)), recall(pdfImageCount(tools.pdfimages, reference.file)), REFERENCE));
   }
   if (item.target === 'epub') {
     const oursStructure = await structureOfEpub(ours.bytes);
     const referenceStructure = await structureOfEpub(reference.bytes);
-    const oursScores = scoreStructure(truth.structure, oursStructure);
-    const referenceScores = scoreStructure(truth.structure, referenceStructure);
-    rows.push(
-      measuredRow('ebook', name, SPEC.epubcheckErrors, epubcheckErrors(tools.epubcheck, ctx.scratch, ours.bytes), epubcheckErrors(tools.epubcheck, ctx.scratch, reference.bytes), REFERENCE),
-      measuredRow('ebook', `${name}:headings`, SPEC.structurePrecision, oursScores.headings.precision, referenceScores.headings.precision, REFERENCE),
-      measuredRow('ebook', `${name}:headings`, SPEC.structureRecall, oursScores.headings.recall, referenceScores.headings.recall, REFERENCE),
-      measuredRow('ebook', `${name}:images`, SPEC.structureRecall, pictureRecall(oursStructure.images.length), pictureRecall(referenceStructure.images.length), REFERENCE)
-    );
+    rows.push(measuredRow('ebook', name, SPEC.epubcheckErrors, epubcheckErrors(tools.epubcheck, ctx.scratch, ours.bytes), epubcheckErrors(tools.epubcheck, ctx.scratch, reference.bytes), REFERENCE));
+    if (headingsMeasured(book)) {
+      const oursScores = scoreStructure(truth.structure, oursStructure);
+      const referenceScores = scoreStructure(truth.structure, referenceStructure);
+      rows.push(
+        measuredRow('ebook', `${name}:headings`, SPEC.structurePrecision, oursScores.headings.precision, referenceScores.headings.precision, REFERENCE),
+        measuredRow('ebook', `${name}:headings`, SPEC.structureRecall, oursScores.headings.recall, referenceScores.headings.recall, REFERENCE)
+      );
+    }
+    if (truth.pictures > 0) rows.push(measuredRow('ebook', `${name}:images`, SPEC.structureRecall, recall(oursStructure.images.length), recall(referenceStructure.images.length), REFERENCE));
   }
   return rows;
 }
 
-async function runCase(ctx: FamilyContext, tools: Tools, truth: Truth, item: BookCase): Promise<BenchRow[]> {
-  const name = caseName(item);
+interface BookFiles {
+  file: string;
+  /** The name the product is told the file has. */
+  filename: string;
+  truth: Truth;
+}
+
+async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book: Book, classRows: PublicClassRows): Promise<BenchRow[]> {
+  const { item, sample } = book;
+  const name = bookCaseName(book);
   ctx.log(`ebook ${name}`);
-  const sourceFile = ctx.corpusPath(`ebooks/book.${item.source}`);
+  const sourceFile = files.file;
   const input = fs.readFileSync(sourceFile);
   const convertOurs = async (): Promise<Buffer> => {
-    const converted = await convertWithProject(input, item.source, item.target, {}, `book.${item.source}`);
+    const converted = await convertWithProject(input, item.source, item.target, {}, files.filename);
     if (converted.engineUsed.startsWith(NATIVE_ENGINE_PREFIX)) {
       throw new OutputIntegrityError(`${name} ran on ${converted.engineUsed}; an ebook row compares the in-process engine with the reference tool, not a native engine with itself`);
     }
@@ -184,15 +250,32 @@ async function runCase(ctx: FamilyContext, tools: Tools, truth: Truth, item: Boo
   };
 
   const rows: BenchRow[] = [];
+  let converted = true;
   if (ctx.quality) {
-    const oursBytes = await convertOurs();
-    const oursFile = ctx.scratch(`ours.${item.target}`);
-    fs.writeFileSync(oursFile, oursBytes);
+    if (sample) classRows.expectCases(sample.class, [...rowPlan(book).filter((entry) => entry.spec.kind !== 'throughput').map((entry) => ({ suffix: entry.caseId.slice(sample.id.length), metric: entry.spec.metric })), { suffix: `->${item.target}`, metric: CONVERTS_SPEC.metric }]);
+    const attempt = await attemptOurs(convertOurs, sample !== null);
+    converted = attempt.ok;
     const referenceFile = ctx.scratch(`reference.${item.target}`);
-    convertReference(referenceFile);
-    rows.push(...(await qualityRows(ctx, tools, truth, item, { file: oursFile, bytes: oursBytes }, { file: referenceFile, bytes: fs.readFileSync(referenceFile) })));
+    let referenceConverted = true;
+    try {
+      convertReference(referenceFile);
+    } catch (error) {
+      if (sample === null || !(error instanceof ToolRunError)) throw error;
+      referenceConverted = false;
+      ctx.log(`ebook ${name}: the reference tool does not convert it (${error.message.slice(0, 160)})`);
+    }
+    if (sample) {
+      if (!attempt.ok) ctx.log(`ebook ${name}: the product does not convert it (${attempt.reason})`);
+      rows.push(convertsRow('ebook', name, attempt.ok, referenceConverted, REFERENCE));
+    }
+    if (attempt.ok && referenceConverted) {
+      const oursFile = ctx.scratch(`ours.${item.target}`);
+      fs.writeFileSync(oursFile, attempt.value);
+      rows.push(...(await qualityRows(ctx, tools, files.truth, book, { file: oursFile, bytes: attempt.value }, { file: referenceFile, bytes: fs.readFileSync(referenceFile) })));
+    }
+    if (sample) classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed) {
+  if (ctx.speed && converted && (sample === null || publicSpeedSample('ebook', sample.id))) {
     const timing = await ctx.time(
       speedRowId('ebook', name),
       async () => {
@@ -209,16 +292,52 @@ async function runCase(ctx: FamilyContext, tools: Tools, truth: Truth, item: Boo
 }
 
 export const runEbook: FamilyRunner = async (ctx) => {
-  const cases = CASES.filter((item) => ctx.inScope('ebook', caseName(item)));
-  if (cases.length === 0) return [];
+  const generated: Book[] = CASES.map((item) => ({ name: `book.${item.source}`, item, sample: null }));
+  const published: Book[] = publicSamples('ebook').flatMap((sample) => {
+    const source = String(sample.meta.format) as BookCase['source'];
+    return PUBLIC_TARGETS[source].map((target) => ({ name: sample.id, item: { source, target }, sample }));
+  });
+  const books = [...generated, ...published].filter((book) => ctx.inScope('ebook', bookCaseName(book)));
+  if (books.length === 0) return [];
   const plan = ctx.plan(['ebook-convert', 'pdftotext', 'pdfimages', 'epubcheck'], 'ebook');
   if (!plan.ok) {
     const kind: SkipKind = plan.optional ? 'optional-tool' : 'missing-tool';
-    return cases.flatMap((item) => rowPlan(item).map(({ caseId, spec }) => skippedRow('ebook', caseId, spec, REFERENCE, kind, plan.reason)));
+    return books.flatMap((book) => rowPlan(book).map(({ caseId, spec }) => skippedRow('ebook', caseId, spec, REFERENCE, kind, plan.reason)));
   }
   const tools: Tools = { ebookConvert: plan.paths['ebook-convert'], pdftotext: plan.paths.pdftotext, pdfimages: plan.paths.pdfimages, epubcheck: plan.paths.epubcheck };
-  const truth: Truth = { text: fs.readFileSync(ctx.corpusPath('ebooks/book.gt.txt'), 'utf8'), structure: await structureOfEpub(ctx.corpusBuffer('ebooks/book.epub')) };
+  const generatedTruth: Truth = { text: fs.readFileSync(ctx.corpusPath('ebooks/book.gt.txt'), 'utf8'), structure: await structureOfEpub(ctx.corpusBuffer('ebooks/book.epub')), pictures: BOOK_PICTURES };
   const rows: BenchRow[] = [];
-  for (const item of cases) rows.push(...(await runCase(ctx, tools, truth, item)));
+  const classRows = new PublicClassRows();
+  const publicFiles = new Map<string, BookFiles | null>();
+  for (const book of books) {
+    const { sample } = book;
+    if (sample === null) {
+      const file = ctx.corpusPath(`ebooks/book.${book.item.source}`);
+      rows.push(...(await runCase(ctx, tools, { file, filename: `book.${book.item.source}`, truth: generatedTruth }, book, classRows)));
+      continue;
+    }
+    if (!publicFiles.has(sample.id)) {
+      const cached = await publicFile(ctx, sample);
+      const truth = cached === null ? null : await publicTruth(ctx, sample, cached);
+      let staged: string | null = null;
+      if (cached !== null) {
+        // The reference tool takes the format from the extension.
+        staged = ctx.scratch(sample.id);
+        fs.copyFileSync(cached, staged);
+      }
+      publicFiles.set(sample.id, staged === null || truth === null ? null : { file: staged, filename: sample.id, truth });
+    }
+    const files = publicFiles.get(sample.id) ?? null;
+    if (files === null) {
+      rows.push(...rowPlan(book).flatMap((entry) => unavailableRows('ebook', entry.caseId, [entry.spec], REFERENCE, `public sample ${sample.id} is not available`)));
+      continue;
+    }
+    rows.push(...(await runCase(ctx, tools, files, book, classRows)));
+  }
+  if (ctx.quality) {
+    for (const row of classRows.rows('ebook', () => REFERENCE)) {
+      if (ctx.inScope('ebook', row.case)) rows.push(row);
+    }
+  }
   return rows;
 };
