@@ -555,9 +555,15 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .bench-cache
-          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
           restore-keys: |
             bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
+
+      # The public sample sets the quick subset reads (bench/corpus/remote-manifest.json), checked against their digests.
+      - name: Restore the public samples
+        uses: ./.github/actions/bench-corpora
+        with:
+          families: ${{ env.BENCH_FAMILIES }}
 
       # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
       # file it leaves is what the policy step below reads, so this step never fails the job by itself.
@@ -636,6 +642,8 @@ jobs:
       BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
       BENCH_FAMILIES: ${{ matrix.family == 'none' && '' || matrix.family }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+      # The pull request times the generated corpus only; the public sample sets are timed by the nightly run (bench/scope.ts).
+      BENCH_CORPUS_TIER: pr
 
     steps:
       - name: Say that there is nothing to measure

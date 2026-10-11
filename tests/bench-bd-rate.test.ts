@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bdPsnr, bdRate, type RdPoint } from '../bench/bd-rate';
+import { BD_MIN_QUALITY_SPAN, bdPsnr, bdRate, type RdPoint, tryBdRate } from '../bench/bd-rate';
 import { BdRateInputError } from '../bench/errors';
 
 /**
@@ -80,5 +80,38 @@ describe('Bjontegaard delta rate (VCEG-M33)', () => {
   it('bounds the number of points', () => {
     const many = Array.from({ length: 17 }, (_, i) => ({ rate: 100 + i, quality: 30 + i }));
     expect(() => bdRate(many, many)).toThrow(/at most 16/);
+  });
+});
+
+describe('the BD-rate of a curve that states a trade-off', () => {
+  const anchor: RdPoint[] = [
+    { rate: 100, quality: 30 },
+    { rate: 200, quality: 34 },
+    { rate: 400, quality: 38 },
+    { rate: 800, quality: 42 },
+  ];
+
+  it('is the Bjontegaard delta when both curves gain quality with rate over a span of decibels', () => {
+    const cheaper = anchor.map((point) => ({ rate: point.rate * 0.9, quality: point.quality }));
+    const result = tryBdRate(anchor, cheaper);
+    expect('value' in result && result.value).toBeCloseTo(-10, 6);
+  });
+
+  it('states no BD-rate for a curve that is flat, the way the SNR of a perceptual audio codec is, whatever the cubic of its points says', () => {
+    const flat: RdPoint[] = [
+      { rate: 30, quality: -3.257 },
+      { rate: 45, quality: -3.198 },
+      { rate: 57, quality: -3.167 },
+      { rate: 87, quality: -3.164 },
+    ];
+    const result = tryBdRate(flat, flat);
+    expect(result).toEqual({ fault: 'reference', reason: `the reference curve gains 0.093 dB across its rates, less than the ${BD_MIN_QUALITY_SPAN} dB that makes a trade-off` });
+  });
+
+  it('states none for a curve whose quality falls as its rate grows, or for curves that share no quality', () => {
+    const noisy = [anchor[0], { rate: 200, quality: 29 }, anchor[2], anchor[3]];
+    expect(tryBdRate(anchor, noisy)).toEqual({ fault: 'ours', reason: 'the our curve does not gain quality with its rate' });
+    const apart = anchor.map((point) => ({ rate: point.rate, quality: point.quality + 20 }));
+    expect(tryBdRate(anchor, apart)).toEqual({ fault: 'curves', reason: 'the two curves have no overlapping interval to integrate over' });
   });
 });

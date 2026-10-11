@@ -42,10 +42,12 @@ describe('missing reference tools: skip versus strict failure', () => {
 describe('runner against a toolchain with no reference tools', () => {
   let work: string;
   let emptyToolDir: string;
+  let corpusCache: string;
 
   beforeAll(() => {
     work = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-tools-test-'));
     emptyToolDir = path.join(work, 'no-tools');
+    corpusCache = path.join(work, 'public-samples');
     fs.mkdirSync(emptyToolDir);
   });
   afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
@@ -56,7 +58,7 @@ describe('runner against a toolchain with no reference tools', () => {
   }
 
   function childEnv(strict: boolean): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, BENCH_TOOL_DIRS: emptyToolDir };
+    const env: NodeJS.ProcessEnv = { ...process.env, BENCH_TOOL_DIRS: emptyToolDir, BENCH_CORPUS_CACHE: corpusCache };
     if (strict) env.ORACLE_STRICT_MODE = '1';
     else delete env.ORACLE_STRICT_MODE;
     return env;
@@ -68,6 +70,10 @@ describe('runner against a toolchain with no reference tools', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('skipped image/photo-a.jpg->webp/ssim: tools not installed: ffmpeg, cwebp, dwebp');
     expect(run.stdout).toContain('skipped compression/mixed.tar->zst/compression_ratio: tools not installed: zstd, xz, 7z, tar');
+    // The public samples are skipped for the same reason, and nothing is downloaded to find out.
+    expect(run.stdout).toContain('skipped compression/silesia-xml.tar->zst/compression_ratio: tools not installed: zstd, xz, 7z, tar, zip, unzip, gzip, bzip2, unrar');
+    expect(run.stdout).toContain('skipped image/kodim01.png->webp/ssim: tools not installed: ffmpeg, ffprobe, cwebp, dwebp');
+    expect(fs.existsSync(corpusCache)).toBe(false);
     const jsonFiles = fs.readdirSync(out).filter((name) => name.endsWith('.json'));
     expect(jsonFiles).toHaveLength(1);
     const report = validateReport(JSON.parse(fs.readFileSync(path.join(out, jsonFiles[0]), 'utf8')) as unknown);
@@ -93,6 +99,18 @@ describe('runner against a toolchain with no reference tools', () => {
     const report = validateReport(JSON.parse(fs.readFileSync(path.join(out, jsonFile), 'utf8')) as unknown);
     expect(report.rows.every((row) => row.status === 'skipped')).toBe(true);
     expect(new Set(report.rows.map((row) => row.family))).toEqual(new Set(['data', 'ebook', 'font', 'compression']));
+  }, CHILD_TIMEOUT_MS);
+
+  it('delivers every line of a long listing to a reader that is slow to take it: the exit waits for the pipe', () => {
+    const out = path.join(work, 'slow-reader');
+    // The listing of the skipped rows is about 64 KB, the size a pipe holds, and the reader starts after 4 s: the end of the listing must not be lost to the exit.
+    const command = `"$NODE" "$TSX" "$RUNNER" --family data,ebook,font,compression --no-gate --out "$OUT" | (sleep 4; cat)`;
+    const run = spawnSync('sh', ['-c', command], { cwd: ROOT, env: { ...childEnv(false), NODE: process.execPath, TSX: TSX_CLI, RUNNER, OUT: out }, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    const lines = run.stdout.trimEnd().split('\n');
+    expect(lines[0]).toMatch(/^report: .* \(0 measured, \d+ skipped\)$/);
+    const skipped = Number(/(\d+) skipped\)/.exec(lines[0])?.[1]);
+    expect(lines.filter((line) => line.startsWith('skipped ')).length).toBe(skipped);
+    expect(lines.some((line) => line.startsWith('skipped data/table.csv->parquet/bytes: '))).toBe(true);
   }, CHILD_TIMEOUT_MS);
 
   it('fails the run under ORACLE_STRICT_MODE=1 and names the missing tool', () => {

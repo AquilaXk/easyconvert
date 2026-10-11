@@ -139,3 +139,44 @@ export function bdPsnr(anchor: readonly RdPoint[], test: readonly RdPoint[]): nu
   const fitT = fitCubic(logRateT, test.map((p) => p.quality));
   return (integrate(fitT, lo, hi) - integrate(fitA, lo, hi)) / (hi - lo);
 }
+
+/**
+ * A rate-distortion curve states a trade-off only when its quality grows with its rate and gains enough along the way. A curve
+ * that is flat (the SNR of a perceptual audio codec stays within a tenth of a decibel across its rates; a graphic coded without
+ * loss at every quality) fits a cubic of rate against quality that explodes, and the BD-rate it gives is a number of the fit and
+ * not of the codec. Below this span of quality (in the unit of the curve, decibels for every curve the benchmark fits) no
+ * BD-rate is stated.
+ */
+export const BD_MIN_QUALITY_SPAN = 0.5;
+
+/** Whose curve prevents a BD-rate: the reference's states no trade-off (not evaluated), ours falls or stays flat while the reference's is sound (our regression), or both are sound but share no quality. */
+export type BdFault = 'reference' | 'ours' | 'curves';
+export type BdResult = { value: number } | { reason: string; fault: BdFault };
+
+function curveProblem(name: string, points: readonly RdPoint[]): string | null {
+  const byRate = [...points].sort((a, b) => a.rate - b.rate);
+  for (let i = 1; i < byRate.length; i++) {
+    if (!(byRate[i].quality > byRate[i - 1].quality)) return `the ${name} curve does not gain quality with its rate`;
+  }
+  const span = byRate[byRate.length - 1].quality - byRate[0].quality;
+  if (span < BD_MIN_QUALITY_SPAN) return `the ${name} curve gains ${Number(span.toPrecision(2))} dB across its rates, less than the ${BD_MIN_QUALITY_SPAN} dB that makes a trade-off`;
+  return null;
+}
+
+/**
+ * The BD-rate, or the reason when the points determine none and whose curve is at fault. The reference's curve is judged first: a
+ * reference that states no trade-off leaves nothing to compare with, but a sound reference against a curve of ours that falls or stays
+ * flat is a regression of ours, which the caller reports as a failing row and not as a skip.
+ */
+export function tryBdRate(anchor: readonly RdPoint[], test: readonly RdPoint[]): BdResult {
+  const anchorProblem = curveProblem('reference', anchor);
+  if (anchorProblem !== null) return { reason: anchorProblem, fault: 'reference' };
+  const testProblem = curveProblem('our', test);
+  if (testProblem !== null) return { reason: testProblem, fault: 'ours' };
+  try {
+    return { value: bdRate(anchor, test) };
+  } catch (error) {
+    if (error instanceof BdRateInputError) return { reason: error.message, fault: 'curves' };
+    throw error;
+  }
+}
