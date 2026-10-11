@@ -52,7 +52,7 @@ export const AVIFENC_ADDRESS_SPACE_MB = 5120;
 export const AVIFENC_TIMEOUT_MS = 180_000;
 /** Diagnostics the encoder may print; more is runaway output. */
 const AVIFENC_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
-/** The file written is at most this many bytes per pixel (four 10-bit planes, lossless, uncompressible) plus headers. */
+/** The file written is at most this many bytes per pixel (four 12-bit planes, lossless, uncompressible) plus headers. */
 const AVIFENC_MAX_OUTPUT_BYTES_PER_PIXEL = 8;
 const AVIFENC_OUTPUT_OVERHEAD_BYTES = 64 * 1024;
 /** Characters of the encoder's diagnostics written to the log on a failure. */
@@ -71,6 +71,14 @@ const NOT_FOUND_STATUS = 127;
 /** The range of `-q`; the encoder reads anything else as a different number or refuses it. */
 const AVIFENC_QUALITY_MIN = 0;
 const AVIFENC_QUALITY_MAX = 100;
+
+/**
+ * Quality of the alpha plane: 100, lossless, which is what the reference encoder writes when only `-q` is given. A graphic
+ * with transparency is flat colour with anti-aliased edges, where lossy alpha moves the edge pixels (PSNR of the flattened
+ * picture 57 dB against the reference's exact 100 dB on a flat chart) and saves little: the plane of a soft shadow is about
+ * 10% of the file.
+ */
+export const AVIFENC_ALPHA_QUALITY = 100;
 
 /** The `-y` value of each plane layout. */
 const YUV_FORMAT: Readonly<Record<AvifPlaneLayout, string>> = { '4:0:0': '400', '4:2:0': '420', '4:4:4': '444' };
@@ -223,7 +231,7 @@ function encoderThreads(): number {
 }
 
 /**
- * Arguments of one encode. Quality applies to colour and alpha alike, as in the image library; a tuning metric
+ * Arguments of one encode. Quality applies to the colour planes; the alpha plane is lossless; a tuning metric
  * applies to the colour planes only (the alpha plane keeps the encoder's PSNR tuning). Reading the picture from a
  * path and writing to a path in the private directory keeps every file name fixed.
  */
@@ -240,7 +248,7 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
     '-q',
     quality,
     '--qalpha',
-    quality,
+    String(AVIFENC_ALPHA_QUALITY),
     '-s',
     String(avifSpeedFor(request.effort)),
     '-j',

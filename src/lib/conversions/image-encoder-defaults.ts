@@ -23,8 +23,12 @@ export const QUALITY_MAX = 100;
 
 /** JPEG at or above this quality keeps full-resolution chroma; below it 4:2:0 saves bytes, as in the reference encoders. */
 export const JPEG_FULL_CHROMA_QUALITY = 90;
-/** AVIF at or above this quality keeps full-resolution chroma. */
-export const AVIF_FULL_CHROMA_QUALITY = 80;
+/**
+ * AVIF at this quality (lossless) keeps full-resolution chroma; every lossy quality is 4:2:0, for photographs and graphics alike.
+ * QA decision 2026-10-11: match the reference service, whose engine (ImageMagick 7.1.2 over libheif) writes 4:2:0 for every lossy
+ * AVIF and 4:4:4 for quality 100 or an identity matrix.
+ */
+export const AVIF_LOSSLESS_QUALITY = 100;
 
 export type ChromaSubsampling = '4:4:4' | '4:2:0';
 /** Plane layout of an AVIF: monochrome (4:0:0, the AV1 Main profile has it) or one of the chroma subsamplings. */
@@ -86,20 +90,21 @@ export const AVIF_CLI_PHOTO_TUNE = 'ssim';
 export const AVIF_EFFORT = 3;
 
 /**
- * Bit depth of AVIF output for sources with more than 8 bits per sample (colour, grey and HDR alike): 10, the most
- * the AV1 Main profile carries. The AVIF Baseline profile is AV1 Main, and decoders such as Android 14's only
- * guarantee Baseline, so 12-bit (AV1 Professional) output would be unreadable on part of the audience. The 8-bit
- * path would cap a deep picture near 51 dB PSNR whatever the quality; HDR output (PQ or HLG, BT.2020) is delivered
- * at 10 bits for the same reason.
+ * Bit depth of AVIF output, by the bits per sample of the source (QA decision 2026-10-11: match the reference service): an
+ * 8-bit source stays 8-bit, a 9 or 10-bit source is written at 10 bits and a source of 11 bits or more (16-bit included) at
+ * 12 bits (AV1 Professional profile). The 8-bit path would cap a deep picture near 51 dB PSNR whatever the quality. HDR output
+ * (PQ or HLG, BT.2020) keeps the 10 bits of its rendition.
  */
-export const AVIF_DEEP_BITDEPTH = 10;
 export const AVIF_STANDARD_BITDEPTH = 8;
+export const AVIF_HDR_BITDEPTH = 10;
+export const AVIF_DEEP_BITDEPTH = 12;
+const AVIF_TEN_BIT_MAX_SOURCE = 10;
 
 /**
  * Largest picture, in pixels, the library's command-line encoder is given; larger pictures go to the image library.
  * Resident memory of one run, measured: 37 bytes per pixel for 8-bit RGB at speeds 2, 3 and 6 (591 MB at 16
  * megapixels, 1.32 GB at 36) and 45 bytes per pixel for 16-bit RGB written as 10-bit 4:4:4 (2.87 GB at 64
- * megapixels). 48 megapixels (an 8000 x 6000 frame) keeps one run near 2.2 GB of the 3.3 GB that docker-compose.yml
+ * megapixels; the planes of a 12-bit picture are 16-bit words as well). 48 megapixels (an 8000 x 6000 frame) keeps one run near 2.2 GB of the 3.3 GB that docker-compose.yml
  * gives each of 3 concurrent jobs, with the raster and the PNG this process holds on top.
  */
 export const AVIF_CLI_MAX_PIXELS = 48_000_000;
@@ -113,7 +118,7 @@ export const AVIF_CLI_MAX_PIXELS = 48_000_000;
  * them before the tool existed, so no picture size is refused that was accepted earlier.
  *
  * An untagged photograph with more than 8 bits per sample (a developed camera file, a 16-bit scan or render) also goes
- * to the command-line encoder, at the layout the policy gives a photograph (4:2:0) and 10 bits: on the 2.7 and 0.5 megapixel
+ * to the command-line encoder, at the layout the policy gives (4:2:0) and 12 bits: on the 2.7 and 0.5 megapixel
  * camera samples of the benchmark the image library's encoder at the same layout and speed was 5.7 to 11.8% behind the
  * command-line encoder in BD-rate (and 3.6 to 20.6% without the tuning), while the command-line encoder matched the
  * reference's own output at the same constraints.
@@ -146,17 +151,16 @@ export function jpegChromaFor(quality: number): ChromaSubsampling {
   return quality >= JPEG_FULL_CHROMA_QUALITY ? '4:4:4' : '4:2:0';
 }
 
-export function avifChromaFor(quality: number, content: ContentClass): ChromaSubsampling {
-  if (quality >= AVIF_FULL_CHROMA_QUALITY) return '4:4:4';
-  return content === 'graphic' ? '4:4:4' : '4:2:0';
+export function avifChromaFor(quality: number): ChromaSubsampling {
+  return quality >= AVIF_LOSSLESS_QUALITY ? '4:4:4' : '4:2:0';
 }
 
 /**
  * Layout of the AVIF planes: a grey source is monochrome (a colour layout spends bytes on two chroma planes that
  * carry nothing), anything else follows `avifChromaFor`.
  */
-export function avifLayoutFor(grey: boolean, quality: number, content: ContentClass): AvifPlaneLayout {
-  return grey ? '4:0:0' : avifChromaFor(quality, content);
+export function avifLayoutFor(grey: boolean, quality: number): AvifPlaneLayout {
+  return grey ? '4:0:0' : avifChromaFor(quality);
 }
 
 /**
@@ -221,11 +225,12 @@ export function webpOptionsFor(requestedQuality: number | undefined): WebpOption
   return { quality, effort: WEBP_EFFORT, smartSubsample: false };
 }
 
-export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
+export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_HDR_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
 
-/** 8 bits for 8-bit sources, 10 for anything deeper: the AV1 Main profile has no more. */
-export function avifBitdepthFor(deep: boolean): AvifBitdepth {
-  return deep ? AVIF_DEEP_BITDEPTH : AVIF_STANDARD_BITDEPTH;
+/** 8 bits for a source of 8 bits or fewer, 10 for 9 and 10 bits, 12 from 11 bits (see `AVIF_DEEP_BITDEPTH`). */
+export function avifBitdepthFor(sourceBits: number): AvifBitdepth {
+  if (sourceBits <= AVIF_STANDARD_BITDEPTH) return AVIF_STANDARD_BITDEPTH;
+  return sourceBits <= AVIF_TEN_BIT_MAX_SOURCE ? AVIF_HDR_BITDEPTH : AVIF_DEEP_BITDEPTH;
 }
 
 /** Every choice the AVIF encoders share, whichever of them runs: the library encoder and the image library read the same policy. */
@@ -246,7 +251,7 @@ export function avifPolicyFor(
   requestedQuality: number | undefined,
   content: ContentClass,
   pixels: number,
-  deep: boolean,
+  sourceBits: number,
   grey: boolean,
   encoder: AvifEncoder
 ): AvifPolicy {
@@ -255,9 +260,9 @@ export function avifPolicyFor(
     encoder,
     quality,
     effort: avifEffortFor(pixels, content, encoder),
-    bitdepth: avifBitdepthFor(deep),
-    chroma: avifChromaFor(quality, content),
-    layout: avifLayoutFor(grey, quality, content),
+    bitdepth: avifBitdepthFor(sourceBits),
+    chroma: avifChromaFor(quality),
+    layout: avifLayoutFor(grey, quality),
     tune: avifTuneFor(encoder, content),
   };
 }

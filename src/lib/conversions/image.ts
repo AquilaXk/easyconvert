@@ -19,6 +19,7 @@ import {
   AVIF_CLI_MAX_PIXELS,
   avifEncoderFor,
   avifPolicyFor,
+  AVIF_HDR_BITDEPTH,
   type AvifEncoder,
   clampQuality,
   jpegOptionsFor,
@@ -1549,10 +1550,21 @@ const SRGB_TAGGED_TARGETS: ReadonlySet<string> = new Set(['tiff', 'tif']);
 const DEFAULT_DENSITY_PPI = 72;
 
 /**
+ * Targets that can only hold a pixel density inside an EXIF block. JPEG keeps it in the JFIF header and PNG in `pHYs`, both
+ * free; WebP and AVIF would need a synthesised EXIF block (about 190 bytes, 2% of a small file), and their viewers ignore a print
+ * density. A picture whose only metadata is its density therefore carries none into them; the EXIF block of a source that has
+ * one is kept, with the density inside it.
+ */
+const DENSITY_IN_EXIF_ONLY_TARGETS: ReadonlySet<string> = new Set(['webp', 'avif']);
+
+/**
  * Keeps EXIF, XMP and IPTC metadata on the output and converts the pixels to sRGB through the input's ICC
  * profile. The sRGB profile is attached only for the targets in `SRGB_TAGGED_TARGETS`. An input with no metadata
  * block and the default density keeps nothing: asking the encoder to keep metadata makes it write an EXIF block
- * synthesised from the density (186 bytes, 3.5% of a small AVIF). Samples deeper than 8 bit that carry no
+ * synthesised from the density (186 bytes, 3.5% of a small AVIF). The same holds for an input whose only extra is an ICC
+ * profile: without keeping metadata the library applies the profile to the pixels and writes no profile, which is the
+ * very output `withIccProfile('srgb', { attach: false })` gives, minus the synthesised block; an input with an XMP packet or an EXIF block
+ * and nothing else keeps just those blocks (`keepBlocksOf`). Samples deeper than 8 bit that carry no
  * profile are another exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut
  * working profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those
  * images keep only their EXIF block and reach the encoder as plain device RGB, so the high byte of each sample
@@ -1564,12 +1576,31 @@ async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp>
   if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await pipeline.metadata();
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
-  const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
+  const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI && !DENSITY_IN_EXIF_ONLY_TARGETS.has(target);
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
   const tagsSrgb = SRGB_TAGGED_TARGETS.has(target);
   if (isDeepWithoutProfile) return hasMetadataBlock || hasCustomDensity ? pipeline.keepExif() : pipeline;
-  if (!hasMetadataBlock && !hasCustomDensity && !meta.hasProfile && !tagsSrgb) return pipeline;
+  if (!hasMetadataBlock && !hasCustomDensity && !tagsSrgb) return appliedProfileOf(pipeline, meta);
+  // Keeping all metadata also makes the library write an EXIF block of its own (about 190 bytes) for a source that has none,
+  // from its density: a source with an XMP packet only keeps just the packet.
+  if (meta.iptc === undefined && !hasCustomDensity && !tagsSrgb) return appliedProfileOf(keepBlocksOf(pipeline, meta), meta);
   return pipeline.keepMetadata().withIccProfile('srgb', { attach: tagsSrgb });
+}
+
+/**
+ * The pipeline with the input's ICC profile applied to the pixels and not written. Said explicitly: a 16-bit picture with a profile that
+ * reaches the encoder without it goes through the library's default reduction, which shifts its colours (PSNR 41 dB against 43 dB).
+ */
+function appliedProfileOf(pipeline: Sharp, meta: Metadata): Sharp {
+  return meta.hasProfile ? pipeline.withIccProfile('srgb', { attach: false }) : pipeline;
+}
+
+/** The pipeline keeping the EXIF and XMP blocks the input has, and no block it has not. */
+function keepBlocksOf(pipeline: Sharp, meta: Metadata): Sharp {
+  let kept = pipeline;
+  if (meta.exif !== undefined) kept = kept.keepExif();
+  if (meta.xmp !== undefined) kept = kept.keepXmp();
+  return kept;
 }
 
 /** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
@@ -1784,8 +1815,8 @@ interface EncodedAvif {
 }
 
 /**
- * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits, the most the AV1 Main
- * profile carries (the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
+ * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits (a source of 9 or 10 bits) or 12 bits
+ * (more; the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
  * that is fully opaque is dropped instead of encoded as a second plane. The reference library's encoder writes the
  * file when it is installed (grey sources as monochrome); without it the image library does.
  */
@@ -1814,7 +1845,9 @@ async function encodeAvifFromPipeline(
   const pendingPng = toCommandLine ? raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer() : null;
   const [content, speculativePng] = await Promise.all([contentOf, pendingPng]);
   const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null, deep && cicp === undefined);
-  const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
+  // The bits per sample the source holds (the library reports every depth above 8 as 16-bit); an HDR rendition is delivered at 10.
+  const sourceBits = deep ? Math.max(source.bitsPerSample ?? SIXTEEN_BITS, EIGHT_BITS + 1) : EIGHT_BITS;
+  const policy = avifPolicyFor(options.quality, content, pixels, cicp === undefined ? sourceBits : Math.min(sourceBits, AVIF_HDR_BITDEPTH), grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const png = speculativePng ?? (await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer());
     const buffer = await encodeAvifWithCli(avifenc, {
@@ -1838,6 +1871,8 @@ async function encodeAvifFromPipeline(
   return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
 }
 
+const EIGHT_BITS = 8;
+const SIXTEEN_BITS = 16;
 /** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
 const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
 /** Colourspaces whose pixels an embedded RGB ICC profile describes unchanged. */
@@ -2181,7 +2216,10 @@ export async function convertImage(
 
   // libvips uses only the first component of a background colour for 1 and 2 band (gray) images; work in
   // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
+  // The pipeline below reduces a 16-bit picture to 8 bits, which would hide its tones from the classifier: it keeps the 16-bit one.
+  let deepPipeline: Sharp | undefined;
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
+    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
     pipeline = pipeline.pipelineColourspace('srgb');
   }
 
@@ -2202,10 +2240,10 @@ export async function convertImage(
   if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation) {
     if (decodedRaster) content = classifyRaster(decodedRaster);
     else if (fmt === 'avif' && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) {
-      pendingContent = classifyContent(pipeline);
+      pendingContent = classifyContent(pipeline, deepPipeline);
       // Awaited by the encoder; a failure before that must not surface as an unhandled rejection.
       pendingContent.catch(() => undefined);
-    } else content = await classifyContent(pipeline);
+    } else content = await classifyContent(pipeline, deepPipeline);
   }
 
   // Resize options
