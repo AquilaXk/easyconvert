@@ -229,10 +229,17 @@ export const runCompression: FamilyRunner = async (ctx) => {
   const classes = new ClassRows();
   const samples = remoteSamples('compression');
   for (const sample of samples) for (const target of PACKED_TARGETS) classes.expect(sample.class, `.tar->${target}`, [SPEC.ratio.metric]);
+  // The tools are checked before any sample is fetched: a run without them skips every row and downloads nothing.
+  const toolPlan = ctx.plan(['zstd', 'xz', '7z', 'tar', 'zip', 'unzip', 'gzip', 'bzip2', 'unrar'], 'compression public samples');
   for (const sample of samples) {
     const cases = publicCases(sample).filter((item) => ctx.inScope('compression', item.caseName));
     // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
     if (cases.length === 0 || (!ctx.quality && !PUBLIC_SPEED_SAMPLES.compression.includes(sample.id))) continue;
+    if (!toolPlan.ok) {
+      const kind = toolPlan.optional ? 'optional-tool' : 'missing-tool';
+      for (const item of cases) for (const spec of item.specs) rows.push(skippedRow('compression', item.caseName, spec, 'reference tool', kind, toolPlan.reason));
+      continue;
+    }
     const file = await ctx.remote(sample);
     if (file === null) {
       for (const item of cases) for (const spec of item.specs) rows.push(skippedRow('compression', item.caseName, spec, 'reference tool', 'optional-tool', `public sample ${sample.id} could not be fetched`));
