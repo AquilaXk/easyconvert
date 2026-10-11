@@ -311,6 +311,36 @@
       "delta": null,
       "ratio": 0.896879849041572
     },
+    "compression/mixed.bz2->tar/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.gz->tar/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.rar->tar/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "compression/mixed.tar->7z/compression_ratio": {
       "direction": "lower",
       "tolerance": {
@@ -330,6 +360,66 @@
       "ours": null,
       "delta": null,
       "ratio": 0.9198632398683276
+    },
+    "compression/mixed.tar->gz/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.35627871863020644,
+      "delta": -0.011851087641150948,
+      "ratio": null
+    },
+    "compression/mixed.tar->gz/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.tar->tar.bz2/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.30504540186433793,
+      "delta": 0.00029112983837314976,
+      "ratio": null
+    },
+    "compression/mixed.tar->tar.bz2/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "compression/mixed.tar->zip/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.35641598136769037,
+      "delta": -0.011822306744581679,
+      "ratio": null
+    },
+    "compression/mixed.tar->zip/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
     },
     "compression/mixed.tar->zst/compression_ratio": {
       "direction": "lower",
@@ -361,6 +451,16 @@
       "delta": null,
       "ratio": 0.884414807476612
     },
+    "compression/mixed.zip->tar/lossless_exact": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "compression/mixed.zst->tar/throughput": {
       "direction": "higher",
       "tolerance": {
@@ -370,6 +470,96 @@
       "ours": null,
       "delta": null,
       "ratio": 1.855239621266776
+    },
+    "data/table.csv->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/table.csv->parquet/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 82593,
+      "delta": -3949,
+      "ratio": null
+    },
+    "data/table.csv->parquet/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/table.csv->xlsx/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 139240,
+      "delta": -8374,
+      "ratio": null
+    },
+    "data/table.csv->xlsx/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1317,
+      "ratio": null
+    },
+    "data/table.jsonl->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -319,
+      "ratio": null
+    },
+    "data/table.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/table.parquet->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/table.xlsx->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
@@ -1039,6 +1229,356 @@
       },
       "ours": 0.7272727272727273,
       "delta": 0.003868471953578423,
+      "ratio": null
+    },
+    "ebook/book.epub->pdf:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book.epub->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9985840151038389,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book.epub->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0006292276230926985,
+      "ratio": null
+    },
+    "ebook/book.fb2->epub:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.fb2->epub:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.fb2->epub:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.fb2->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.fb2->epub/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9996855840276685,
+      "delta": 0.003757627880448533,
+      "ratio": null
+    },
+    "ebook/book.fb2->pdf:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.fb2->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9966897856242118,
+      "delta": 0.0007618294769918821,
+      "ratio": null
+    },
+    "ebook/book.fb2->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.004699984333385476,
+      "ratio": null
+    },
+    "ebook/book.mobi->epub:headings/structure_precision": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book.mobi->epub:headings/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book.mobi->epub:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.mobi->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -3,
+      "ratio": null
+    },
+    "ebook/book.mobi->epub/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9956940421200972,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book.mobi->pdf:images/structure_recall": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -1,
+      "ratio": null
+    },
+    "ebook/book.mobi->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9948308270676691,
+      "delta": -0.00007792205115286777,
+      "ratio": null
+    },
+    "ebook/book.mobi->txt/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9956940421200972,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.otf->ttf/font_validation_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.otf->ttf/glyph_outline_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.otf->woff/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.4470024208477714,
+      "delta": 0.0033701998386101994,
+      "ratio": null
+    },
+    "font/sans-cff.otf->woff/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.otf->woff2/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.38899700954098826,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.otf->woff2/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.woff->otf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans-cff.woff2->otf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.ttf->otf/font_validation_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.ttf->otf/glyph_outline_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.ttf->woff/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.5762012511646479,
+      "delta": 0.003549403256577488,
+      "ratio": null
+    },
+    "font/sans.ttf->woff/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.ttf->woff2/compression_ratio": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.01
+      },
+      "ours": 0.4396379608678291,
+      "delta": -0.006566396024668353,
+      "ratio": null
+    },
+    "font/sans.ttf->woff2/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.woff->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/sans.woff2->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/lineart.png->avif/bd_rate_psnr": {

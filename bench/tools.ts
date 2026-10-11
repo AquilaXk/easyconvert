@@ -23,11 +23,21 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   xz: ['xz'],
   '7z': ['7zz', '7z', '7za'],
   tar: ['tar'],
+  zip: ['zip'],
+  unzip: ['unzip'],
+  gzip: ['gzip'],
+  bzip2: ['bzip2'],
+  unrar: ['unrar'],
+  woff2_compress: ['woff2_compress'],
+  woff2_decompress: ['woff2_decompress'],
+  sfnt2woff: ['sfnt2woff'],
+  woff2sfnt: ['woff2sfnt'],
   pdftotext: ['pdftotext'],
   tesseract: ['tesseract'],
   soffice: ['soffice', 'libreoffice'],
   pdfimages: ['pdfimages'],
   epubcheck: ['epubcheck'],
+  'ebook-convert': ['ebook-convert'],
   python3: ['python3'],
   ssimulacra2: ['ssimulacra2', 'ssimulacra2_rs'],
 };
@@ -45,12 +55,26 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   xz: ['--version'],
   '7z': ['i'],
   tar: ['--version'],
+  zip: ['-v'],
+  unzip: ['-v'],
+  gzip: ['--version'],
+  bzip2: ['--version'],
+  unrar: [],
   pdftotext: ['-v'],
   tesseract: ['--version'],
   soffice: ['--version'],
   pdfimages: ['-v'],
   epubcheck: ['--version'],
+  'ebook-convert': ['--version'],
   ssimulacra2: ['--version'],
+};
+
+/** Tools that print no version: the Debian package that ships them is asked instead. */
+const PACKAGE_OF: Readonly<Record<string, string>> = {
+  woff2_compress: 'woff2',
+  woff2_decompress: 'woff2',
+  sfnt2woff: 'woff-tools',
+  woff2sfnt: 'woff-tools',
 };
 
 const VERSION_TIMEOUT_MS = 20_000;
@@ -60,6 +84,17 @@ export const TESSDATA_PSEUDO_TOOL = 'tessdata-eng';
 export const LIBVMAF_PSEUDO_TOOL = 'libvmaf';
 /** Resolves to python3 when the olefile package (OLE2 container access) imports in isolated mode. */
 export const OLEFILE_PSEUDO_TOOL = 'python3-olefile';
+/** Resolve to python3 when the library imports in isolated mode; the version of the tool is the library's. */
+export const PYARROW_PSEUDO_TOOL = 'python3-pyarrow';
+export const DUCKDB_PSEUDO_TOOL = 'python3-duckdb';
+export const OPENPYXL_PSEUDO_TOOL = 'python3-openpyxl';
+export const FONTTOOLS_PSEUDO_TOOL = 'python3-fonttools';
+const PYTHON_LIBRARY_OF: Readonly<Record<string, string>> = {
+  [PYARROW_PSEUDO_TOOL]: 'pyarrow',
+  [DUCKDB_PSEUDO_TOOL]: 'duckdb',
+  [OPENPYXL_PSEUDO_TOOL]: 'openpyxl',
+  [FONTTOOLS_PSEUDO_TOOL]: 'fontTools',
+};
 
 const TESSDATA_DIRS = [
   ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
@@ -101,6 +136,9 @@ export function defaultResolver(env: NodeJS.ProcessEnv = process.env): Resolver 
     } else if (tool === OLEFILE_PSEUDO_TOOL) {
       const python = defaultResolver(env)('python3');
       found = python && pythonImports(python, 'olefile') ? python : null;
+    } else if (PYTHON_LIBRARY_OF[tool] !== undefined) {
+      const python = defaultResolver(env)('python3');
+      found = python && pythonImports(python, PYTHON_LIBRARY_OF[tool]) ? python : null;
     } else if (tool === LIBVMAF_PSEUDO_TOOL) {
       const ffmpeg = defaultResolver(env)('ffmpeg');
       found = ffmpeg && ffmpegHasFilter(ffmpeg, 'libvmaf') ? ffmpeg : null;
@@ -134,12 +172,29 @@ export function ffmpegHasFilter(ffmpeg: string, filter: string): boolean {
 
 export function toolVersion(tool: string, binary: string | null): string | null {
   if (!binary) return null;
+  const library = PYTHON_LIBRARY_OF[tool];
+  if (library !== undefined) return pythonLibraryVersion(binary, library);
+  const pkg = PACKAGE_OF[tool];
+  if (pkg !== undefined) return packageVersion(pkg) ?? path.basename(binary);
   const args = VERSION_ARGS[tool];
   if (!args) return path.basename(binary);
   const run = spawnSync(binary, [...args], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
   const text = `${run.stdout ?? ''}${run.stderr ?? ''}`;
   const line = text.split('\n').map((l) => l.trim()).find((l) => /\d/.test(l));
   return (line ?? path.basename(binary)).slice(0, VERSION_LINE_LIMIT);
+}
+
+/** `<library> <version>` as the library reports it, or the library name when it reports none. */
+function pythonLibraryVersion(python: string, library: string): string {
+  const run = spawnSync(python, ['-I', '-c', `import ${library} as m; v = getattr(m, '__version__', None) or getattr(m, 'version', ''); print(v if isinstance(v, str) else '')`], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
+  const version = (run.stdout ?? '').trim();
+  return `${library} ${version}`.trim().slice(0, VERSION_LINE_LIMIT);
+}
+
+/** `<package> <version>` from the Debian package database, or null where there is none (a laptop, a container without dpkg). */
+function packageVersion(pkg: string): string | null {
+  const run = spawnSync('dpkg-query', ['-W', '-f', '${Version}', pkg], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
+  return run.status === 0 && run.stdout.trim() !== '' ? `${pkg} ${run.stdout.trim()}` : null;
 }
 
 export interface ToolPlanReady {

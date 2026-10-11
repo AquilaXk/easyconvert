@@ -80,6 +80,21 @@ describe('runner against a toolchain with no reference tools', () => {
     expect(markdown).toContain('tools not installed: ffmpeg, cwebp, dwebp');
   }, CHILD_TIMEOUT_MS);
 
+  it('skips the rows of the data, ebook, font and archive families with the tools that are missing, one reason per row', () => {
+    const out = path.join(work, 'skip-new-families');
+    const run = runRunner(['--family', 'data,ebook,font,compression', '--no-gate', '--out', out], childEnv(false));
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('skipped data/table.csv->parquet/bytes: tools not installed: python3, python3-pyarrow, python3-duckdb, python3-openpyxl, soffice');
+    expect(run.stdout).toContain('skipped ebook/book.mobi->epub:headings/structure_recall: tools not installed: ebook-convert, pdftotext, pdfimages, epubcheck');
+    expect(run.stdout).toContain('skipped font/sans.ttf->woff2/font_table_mismatches: tools not installed: woff2_compress, woff2_decompress, sfnt2woff, woff2sfnt, python3, python3-fonttools');
+    expect(run.stdout).toContain('skipped compression/mixed.tar->zip/compression_ratio: tools not installed: tar, zip, unzip, gzip, bzip2, unrar');
+    expect(run.stdout).toContain('skipped compression/mixed.rar->tar/lossless_exact: tools not installed: tar, zip, unzip, gzip, bzip2, unrar');
+    const jsonFile = fs.readdirSync(out).find((name) => name.endsWith('.json')) as string;
+    const report = validateReport(JSON.parse(fs.readFileSync(path.join(out, jsonFile), 'utf8')) as unknown);
+    expect(report.rows.every((row) => row.status === 'skipped')).toBe(true);
+    expect(new Set(report.rows.map((row) => row.family))).toEqual(new Set(['data', 'ebook', 'font', 'compression']));
+  }, CHILD_TIMEOUT_MS);
+
   it('fails the run under ORACLE_STRICT_MODE=1 and names the missing tool', () => {
     const out = path.join(work, 'strict-out');
     const run = runRunner(['--family', 'image', '--no-gate', '--out', out], childEnv(true));
@@ -93,6 +108,9 @@ describe('runner against a toolchain with no reference tools', () => {
     ['image', 'ORACLE_STRICT_MODE=1 requires ffmpeg, cwebp, dwebp for photo-a.jpg->webp'],
     ['document', 'ORACLE_STRICT_MODE=1 requires pdftotext, soffice for report.docx->pdf'],
     ['ocr', 'ORACLE_STRICT_MODE=1 requires pdftotext, tesseract, tessdata-eng for scan.png->pdf'],
+    ['data', 'ORACLE_STRICT_MODE=1 requires python3, python3-pyarrow, python3-duckdb, python3-openpyxl, soffice for data'],
+    ['ebook', 'ORACLE_STRICT_MODE=1 requires ebook-convert, pdftotext, pdfimages, epubcheck for ebook'],
+    ['font', 'ORACLE_STRICT_MODE=1 requires woff2_compress, woff2_decompress, sfnt2woff, woff2sfnt, python3, python3-fonttools for font'],
   ])('fails a %s parity run under ORACLE_STRICT_MODE=1 with exit code 2 and no verdict, so a missing reference tool is never a pass', (family, message) => {
     for (const mode of [['--quality-only', '--quick'], ['--speed-only']]) {
       const out = path.join(work, `parity-strict-${family}-${mode[0]}`);
