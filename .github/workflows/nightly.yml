@@ -95,6 +95,11 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      - name: Restore the public benchmark samples
+        uses: ./.github/actions/bench-public-samples
+        with:
+          families: document,pdf-ops,ebook,font,cad,raw,vector,data
+
       - name: Run the quality benchmark
         shell: bash
         run: |
@@ -162,6 +167,11 @@ jobs:
           restore-keys: |
             bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
 
+      - name: Restore the public benchmark samples
+        uses: ./.github/actions/bench-public-samples
+        with:
+          families: document,pdf-ops,ebook,font,cad,raw,vector,data
+
       - name: Run the quality parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
@@ -216,6 +226,11 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+
+      - name: Restore the public benchmark samples
+        uses: ./.github/actions/bench-public-samples
+        with:
+          families: document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Run the speed parity benchmark
         env:
@@ -292,6 +307,11 @@ jobs:
           if cmp -s package-lock.json ab-base/package-lock.json; then ln -s "$PWD/node_modules" ab-base/node_modules; else (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund); fi
         env:
           AB_BASE_REF: ${{ inputs.ab_base_ref }}
+
+      - name: Restore the public benchmark samples
+        uses: ./.github/actions/bench-public-samples
+        with:
+          families: ${{ matrix.family }}
 
       - name: Measure the speed rows against that commit
         env:

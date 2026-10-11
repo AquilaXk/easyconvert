@@ -559,6 +559,11 @@ jobs:
           restore-keys: |
             bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
 
+      - name: Restore the public benchmark samples
+        uses: ./.github/actions/bench-public-samples
+        with:
+          families: ${{ env.BENCH_FAMILIES }}
+
       # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
       # file it leaves is what the policy step below reads, so this step never fails the job by itself.
       - name: Measure quality against the reference tools
@@ -728,6 +733,8 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         env:
           BENCH_BASE_ROOT: ab-base
+          # The speed job of a pull request times the generated corpus only; the public samples are measured by the nightly run.
+          BENCH_CORPUS_TIER: pr
         run: |
           set +e
           npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json
