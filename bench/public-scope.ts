@@ -27,7 +27,7 @@ export const PUBLIC_QUICK_CASES: Readonly<Record<string, readonly string[]>> = {
   ebook: ['book-wasteland.epub->txt', 'book-wasteland.fb2->txt'],
   font: ['font-lato-regular.ttf->woff2', 'font-sourcecodepro-regular.otf->woff', 'font-amiri-regular.ttf->otf'],
   cad: ['cad-openscad-export.dxf->svg', 'cad-circles-ellipses-arcs.dxf->pdf', 'cad-blocks.dxf->png'],
-  raw: ['raw-canon-g1.crw->jpg'],
+  raw: ['raw-canon-g1.crw->png'],
   vector: ['vec-path-M-C-S.svg->png', 'vec-radialGradient-fr-0.5.svg->png', 'vec-clipPath-clip-path-on-children.svg->pdf'],
   data: ['data-penguins.json->csv', 'data-delta-byte-array.csv->parquet', 'data-weather.csv->json'],
 };
