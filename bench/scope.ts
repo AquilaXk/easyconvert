@@ -1,10 +1,14 @@
 import { QUICK_SUBSET } from './config';
+import { publicCaseScope } from './public-scope';
 
 /**
  * Which cases a run measures. A full run measures every case; `--quick` measures the cases listed per family in
- * QUICK_SUBSET (a family listed as null, or absent, is measured whole).
+ * QUICK_SUBSET (a family listed as null, or absent, is measured whole). The cases of the public sample sets follow their own
+ * rule (bench/public-scope.ts).
  */
 export function caseInScope(quick: boolean, family: string, caseName: string): boolean {
+  const publicScope = publicCaseScope(quick, family, caseName);
+  if (publicScope !== null) return publicScope;
   if (!quick) return true;
   const subset = QUICK_SUBSET[family];
   return subset === undefined || subset === null || subset.includes(caseName);
