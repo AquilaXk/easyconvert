@@ -49,6 +49,7 @@ function book(options: { bodyTitle?: boolean } = {}): Buffer {
   return Buffer.from(xml, 'utf-8');
 }
 
+const ROUNDS = 120;
 const toEpub = async (input: Buffer) => (await convertFile(input, 'fb2', 'epub', {}, 'book.fb2')).buffer;
 
 describe('FB2 to EPUB', () => {
@@ -125,9 +126,8 @@ describe('FB2 to EPUB', () => {
 
   it('carries the book title, author and language into the package', async () => {
     const epub = await inspectEpub(await toEpub(book()));
-    expect(epub.opf).toContain('<dc:title>The Structured Book</dc:title>');
-    expect(epub.opf).toContain('<dc:creator>Ann B. Writer</dc:creator>');
-    expect(epub.opf).toContain('<dc:language>en</dc:language>');
+    const field = (tag: string): string | undefined => new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(epub.opf)?.[1];
+    expect({ title: field('dc:title'), creator: field('dc:creator'), language: field('dc:language') }).toEqual({ title: 'The Structured Book', creator: 'Ann B. Writer', language: 'en' });
   });
 
   oracleTest('is valid according to EPUBCheck', ['epubcheck'], async () => {
@@ -166,12 +166,16 @@ describe('FB2 input that is not a book', () => {
   });
 
   it.each([
-    ['a book whose XML is cut off', (b: Buffer) => b.subarray(0, Math.floor(b.length / 2))],
-    ['a book nested far deeper than any book is', () => Buffer.from(`<?xml version="1.0"?><FictionBook><body>${'<section>'.repeat(400)}<p>x</p>${'</section>'.repeat(400)}</body></FictionBook>`)],
-    ['a book that is not FictionBook', () => Buffer.from('<?xml version="1.0"?><html><body><p>x</p></body></html>')],
-  ])('refuses %s with a typed error', async (_name, make) => {
-    const run = convertFile(make(book()), 'fb2', 'epub', {}, 'bad.fb2');
-    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
+    ['a book whose XML is cut off', (b: Buffer) => b.subarray(0, Math.floor(b.length / 2)), /not well-formed XML/],
+    ['a book nested far deeper than any book is', () => Buffer.from(`<?xml version="1.0"?><FictionBook><body>${'<section>'.repeat(400)}<p>x</p>${'</section>'.repeat(400)}</body></FictionBook>`), /deeper than 256 levels/],
+    ['a book that is not FictionBook', () => Buffer.from('<?xml version="1.0"?><html><body><p>x</p></body></html>'), /not a FictionBook document with a body/],
+  ])('refuses %s with a typed error that says why', async (_name, make, message) => {
+    const error = await convertFile(make(book()), 'fb2', 'epub', {}, 'bad.fb2').then(
+      () => undefined,
+      (caught: unknown) => caught as Error
+    );
+    expect({ typed: error instanceof ConversionFailedError, message: error?.message.match(message)?.[0] }).toEqual({ typed: true, message: message.exec(error?.message ?? '')?.[0] });
+    expect(error?.message).toMatch(message);
   });
 
   it('survives random damage to a book: it converts or fails with a typed error, never hangs or throws another kind', async () => {
@@ -181,16 +185,24 @@ describe('FB2 input that is not a book', () => {
       state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
       return state % bound;
     };
-    for (let round = 0; round < 120; round += 1) {
+    const outcomes = { converted: 0, refused: 0, untyped: [] as string[] };
+    for (let round = 0; round < ROUNDS; round += 1) {
       const damaged = Buffer.from(original);
       const kind = round % 3;
       if (kind === 0) for (let hit = 0; hit < 1 + next(8); hit += 1) damaged[next(damaged.length)] = next(256);
       const bytes = kind === 1 ? damaged.subarray(0, 1 + next(damaged.length)) : kind === 2 ? Buffer.concat([damaged.subarray(0, next(damaged.length)), damaged.subarray(next(damaged.length))]) : damaged;
       try {
         await convertFile(bytes, 'fb2', 'epub', {}, 'fuzz.fb2');
+        outcomes.converted += 1;
       } catch (error) {
-        expect(error, `round ${round}`).toBeInstanceOf(ConversionFailedError);
+        if (error instanceof ConversionFailedError) outcomes.refused += 1;
+        else outcomes.untyped.push(`round ${round}: ${String(error)}`);
       }
     }
+    expect(outcomes.untyped).toEqual([]);
+    expect(outcomes.converted + outcomes.refused).toBe(ROUNDS);
+    // The damage is real: some books are refused, and some survive it.
+    expect(outcomes.refused).toBeGreaterThan(5);
+    expect(outcomes.converted).toBeGreaterThan(5);
   }, 120_000);
 });

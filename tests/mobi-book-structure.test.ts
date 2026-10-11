@@ -24,7 +24,13 @@ import { oracleTest } from './helpers/oracle-test';
 const CORPUS = path.join(__dirname, '..', 'bench', 'corpus');
 const PHOTO = fs.readFileSync(path.join(CORPUS, 'photo-a.jpg'));
 const PIXEL = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#3366cc' } }).png().toBuffer();
+const ROUNDS = 150;
 const CHAPTERS = ['Chapter One', 'Chapter Two', 'Chapter Three'];
+
+const metadataOf = (opf: string): { title?: string; creator?: string; language?: string } => {
+  const field = (tag: string): string | undefined => new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(opf)?.[1];
+  return { title: field('dc:title'), creator: field('dc:creator'), language: field('dc:language') };
+};
 
 /** Markup with a `filepos` table of contents at its end: offsets are those of the chapter paragraphs, as bytes. */
 function markupWithToc(chapters: readonly string[], extraBody = ''): Buffer {
@@ -87,17 +93,14 @@ describe('MOBI to EPUB', () => {
   });
 
   it('carries the title, author and language of the headers', async () => {
-    const epub = await inspectEpub(await toEpub(book()));
-    expect(epub.opf).toContain('<dc:title>The Fixture Book</dc:title>');
-    expect(epub.opf).toContain('<dc:creator>Ann Writer</dc:creator>');
-    expect(epub.opf).toContain('<dc:language>en</dc:language>');
+    expect(metadataOf((await inspectEpub(await toEpub(book()))).opf)).toEqual({ title: 'The Fixture Book', creator: 'Ann Writer', language: 'en' });
   });
 
   it('uses the stored full name when no updated title is given, and the file name when there is neither', async () => {
     const named = await inspectEpub(await toEpub(buildMobi({ ...parts(), fullName: 'Stored full name' })));
-    expect(named.opf).toContain('<dc:title>Stored full name</dc:title>');
+    expect(metadataOf(named.opf).title).toBe('Stored full name');
     const bare = await inspectEpub(await toEpub(buildMobi({ ...parts(), fullName: '' })));
-    expect(bare.opf).toContain('<dc:title>book</dc:title>');
+    expect(metadataOf(bare.opf).title).toBe('book');
   });
 
   oracleTest('is valid according to EPUBCheck', ['epubcheck'], async () => {
@@ -112,8 +115,7 @@ describe('MOBI to EPUB', () => {
     const epub = await inspectEpub(await toEpub(mobi));
     expect(epub.chapters.flatMap((chapter) => headingsOf(chapter.html)).map(([, text]) => text)).toEqual(titles);
     expect([...epub.manifest].filter(([, item]) => item.mediaType.startsWith('image/'))).toHaveLength(1);
-    expect(epub.opf).toContain('<dc:title>The Quiet Harbour Survey</dc:title>');
-    expect(epub.opf).toContain('<dc:creator>Mara Ellison</dc:creator>');
+    expect(metadataOf(epub.opf)).toMatchObject({ title: 'The Quiet Harbour Survey', creator: 'Mara Ellison' });
   });
 });
 
@@ -142,6 +144,7 @@ describe('MOBI to PDF', () => {
 
 describe('a MOBI book whose headers or links lie', () => {
   const converts = async (input: Buffer): Promise<string> => (await inspectEpub(await toEpub(input))).chapters.map((chapter) => chapter.html).join('\n');
+  const texts = (html: string): string[] => elementsOf(html, new Set(['p'])).map((paragraph) => paragraph.text).filter((text) => text.startsWith('Text of'));
 
   it.each([
     ['a picture number beyond the pictures it has', () => book({ markup: markupWithToc(CHAPTERS, '<p><img recindex="00099"></img></p>') })],
@@ -152,7 +155,9 @@ describe('a MOBI book whose headers or links lie', () => {
     ['a full name length that runs past the record', () => book({ extra: { fullNameField: { offset: 300, length: 0x7fffffff } } })],
     ['a cover offset that names no picture', () => book({ cover: 77 })],
   ])('converts a book with %s, leaving out what it cannot find', async (_name, make) => {
-    expect(await converts(make())).toContain('Text of chapter two');
+    const html = await converts(make());
+    expect(headingsOf(html).map(([, text]) => text)).toEqual(CHAPTERS);
+    expect(texts(html)).toEqual(CHAPTERS.map((title) => `Text of ${title.toLowerCase()} & more.`));
   });
 
   it('ignores the metadata after a record that is cut off or claims more than the header holds', async () => {
@@ -160,19 +165,16 @@ describe('a MOBI book whose headers or links lie', () => {
     const at = good.indexOf(Buffer.from('EXTH'));
     const broken = Buffer.from(good);
     broken.writeUInt32BE(0xfffffff0, at + 12 + 4); // length of the first EXTH record
-    const epub = await inspectEpub(await toEpub(broken));
-    expect(epub.opf).toContain('<dc:title>Stored full name</dc:title>');
-    expect(epub.opf).not.toContain('<dc:creator>');
+    expect(metadataOf((await inspectEpub(await toEpub(broken))).opf)).toMatchObject({ title: 'Stored full name', creator: undefined });
     const countLies = Buffer.from(good);
     countLies.writeUInt32BE(0xffffffff, at + 8);
-    expect((await inspectEpub(await toEpub(countLies))).opf).toContain('<dc:creator>Ann Writer</dc:creator>');
+    expect(metadataOf((await inspectEpub(await toEpub(countLies))).opf)).toEqual({ title: 'The Fixture Book', creator: 'Ann Writer', language: 'en' });
   });
 
   it('keeps the text when a table of contents entry points outside the markup, into a tag or twice at one place', async () => {
     const markup = markupWithToc(CHAPTERS).toString('utf-8');
     const lying = markup.replace(/filepos=(\d+)>Chapter Two/, 'filepos=0099999999>Chapter Two').replace(/filepos=(\d+)>Chapter Three/, 'filepos=0000000012>Chapter Three');
-    const text = await converts(book({ markup: Buffer.from(lying) }));
-    expect(text).toContain('Text of chapter three');
+    expect(texts(await converts(book({ markup: Buffer.from(lying) })))).toEqual(CHAPTERS.map((title) => `Text of ${title.toLowerCase()} & more.`));
   });
 
   it('finishes quickly on thousands of links that never close, which it converts or refuses with a typed error', async () => {
@@ -190,7 +192,8 @@ describe('a MOBI book whose headers or links lie', () => {
       return state % bound;
     };
     const header = 4096;
-    for (let round = 0; round < 150; round += 1) {
+    const outcomes = { converted: 0, refused: 0, untyped: [] as string[] };
+    for (let round = 0; round < ROUNDS; round += 1) {
       const damaged = Buffer.from(original);
       // Half of the damage lands in the container and header records, where the offsets and lengths are.
       const reach = round % 2 === 0 ? header : damaged.length;
@@ -198,9 +201,16 @@ describe('a MOBI book whose headers or links lie', () => {
       const bytes = round % 5 === 0 ? damaged.subarray(0, 1 + next(damaged.length)) : damaged;
       try {
         await convertFile(bytes, 'mobi', 'epub', {}, 'fuzz.mobi');
+        outcomes.converted += 1;
       } catch (error) {
-        expect(error, `round ${round}`).toBeInstanceOf(ConversionFailedError);
+        if (error instanceof ConversionFailedError) outcomes.refused += 1;
+        else outcomes.untyped.push(`round ${round}: ${String(error)}`);
       }
     }
+    expect(outcomes.untyped).toEqual([]);
+    expect(outcomes.converted + outcomes.refused).toBe(ROUNDS);
+    // The damage is real: some books are refused, and some survive it.
+    expect(outcomes.refused).toBeGreaterThan(5);
+    expect(outcomes.converted).toBeGreaterThan(5);
   }, 120_000);
 });

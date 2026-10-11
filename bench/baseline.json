@@ -1267,8 +1267,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.fb2->epub:headings/structure_recall": {
@@ -1277,8 +1277,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.fb2->epub:images/structure_recall": {
@@ -1287,8 +1287,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.fb2->epub/epubcheck_errors": {
@@ -1307,8 +1307,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9996855840276685,
-      "delta": 0.003757627880448533,
+      "ours": 1,
+      "delta": 0.0040720438527800384,
       "ratio": null
     },
     "ebook/book.fb2->pdf:images/structure_recall": {
@@ -1317,8 +1317,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.fb2->pdf/word_f1": {
@@ -1327,8 +1327,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9966897856242118,
-      "delta": 0.0007618294769918821,
+      "ours": 0.9985840151038389,
+      "delta": 0.002656058956618912,
       "ratio": null
     },
     "ebook/book.fb2->txt/word_f1": {
@@ -1347,8 +1347,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": 1,
+      "delta": 1,
       "ratio": null
     },
     "ebook/book.mobi->epub:headings/structure_recall": {
@@ -1357,8 +1357,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": 1,
+      "delta": 1,
       "ratio": null
     },
     "ebook/book.mobi->epub:images/structure_recall": {
@@ -1367,8 +1367,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.mobi->epub/epubcheck_errors": {
@@ -1397,8 +1397,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.mobi->pdf/word_f1": {
@@ -1407,8 +1407,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9948308270676691,
-      "delta": -0.00007792205115286777,
+      "ours": 0.994908749118822,
+      "delta": 0,
       "ratio": null
     },
     "ebook/book.mobi->txt/word_f1": {
