@@ -12,7 +12,7 @@ import {
   type HtmlResourcePolicy,
   type SrcsetCandidate,
 } from './html-omitted-resources';
-import { currentImageFetchSession, IMAGE_FETCH_LIMITS, ImageFetchRefusal, type FetchedImage, type ImageFetchSession } from './html-image-fetch';
+import { IMAGE_FETCH_LIMITS, ImageFetchRefusal, type FetchedImage, type ImageFetchSession, withImageFetchSession } from './html-image-fetch';
 
 /**
  * Loads the external images of an HTML tree before it is rendered and puts them into the tree as base64 data: URIs, so
@@ -283,7 +283,9 @@ export async function loadExternalImages(
   const base = takeDocumentBase(root);
   const images = findExternalImages(root);
   if (images.length === 0) return;
-  const loader = new ImageLoader(policy, omitted, caps, currentImageFetchSession(policy.signal), base, countEmbeddedImages(root));
-  // One after another on purpose: the size, count and time caps are shared, so the order decides which image is left out.
-  for (const image of images) await loader.load(image); // NOSONAR S9382
+  await withImageFetchSession(policy.signal, async (session) => {
+    const loader = new ImageLoader(policy, omitted, caps, session, base, countEmbeddedImages(root));
+    // One after another on purpose: the size, count and time caps are shared, so the order decides which image is left out.
+    for (const image of images) await loader.load(image); // NOSONAR S9382
+  });
 }

@@ -98,6 +98,128 @@ describe('a fetch runs in the child process', () => {
   });
 });
 
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+  const limit = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > limit) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+describe('one child serves the whole session', () => {
+  it('serves 20 images with one child process', async () => {
+    const session = new ImageFetchSession();
+    try {
+      const fetched = await Promise.all(Array.from({ length: 20 }, (_, i) => session.fetch(at(`/a.png?n=${i}`))));
+      expect(fetched.every((image) => image.bytes.equals(png))).toBe(true);
+      expect(server.requests).toHaveLength(20);
+      expect(session.childrenStarted).toBe(1);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('stops the child when the session ends', async () => {
+    const session = new ImageFetchSession();
+    await session.fetch(at('/a.png'));
+    const pid = session.childPid as number;
+    expect(isRunning(pid)).toBe(true);
+    session.close();
+    await until(() => !isRunning(pid), 'the child to end');
+  });
+
+  it('kills the child when the job is aborted in the middle of a batch', async () => {
+    server.route('/hang.png', () => undefined);
+    const controller = new AbortController();
+    const session = new ImageFetchSession({}, { signal: controller.signal });
+    const batch = [at('/a.png?n=1'), at('/a.png?n=2'), at('/hang.png'), at('/a.png?n=3'), at('/a.png?n=4')].map((target) =>
+      session.fetch(target).then(
+        () => 'loaded',
+        (error: unknown) => (error as Error).message
+      )
+    );
+    await until(() => server.requests.some((request) => request.url === '/hang.png'), 'the hanging request');
+    const pid = session.childPid as number;
+    controller.abort(new Error('job cancelled'));
+    expect(await Promise.all(batch)).toEqual(['loaded', 'loaded', 'job cancelled', 'job cancelled', 'job cancelled']);
+    await until(() => !isRunning(pid), 'the child to be killed');
+    expect(session.childrenStarted).toBe(1);
+    expect(server.requests.map((request) => request.url)).not.toContain('/a.png?n=3');
+  });
+
+  it('starts the child again when it died between two fetches', async () => {
+    const session = new ImageFetchSession();
+    try {
+      await session.fetch(at('/a.png?n=1'));
+      const pid = session.childPid as number;
+      process.kill(pid, 'SIGKILL');
+      await until(() => session.childPid === undefined, 'the death of the child');
+      expect((await session.fetch(at('/a.png?n=2'))).mime).toBe('image/png');
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('restarts a child that dies in the middle of a fetch once, then gives up', async () => {
+    const session = new ImageFetchSession();
+    server.route('/die.png', () => {
+      process.kill(session.childPid as number, 'SIGKILL');
+    });
+    try {
+      const error = await refusal(session.fetch(at('/die.png')));
+      expect(error.message).toBe('the image could not be loaded');
+      expect(session.childrenStarted).toBe(2);
+      expect(server.requests.filter((request) => request.url === '/die.png')).toHaveLength(2);
+      await refusal(session.fetch(at('/a.png')));
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('restarts after a crash and completes the fetch when the second child lives', async () => {
+    const session = new ImageFetchSession();
+    let hits = 0;
+    server.route('/once.png', (_request, response) => {
+      hits++;
+      if (hits === 1) {
+        process.kill(session.childPid as number, 'SIGKILL');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
+      response.end(png);
+    });
+    try {
+      expect((await session.fetch(at('/once.png'))).bytes.equals(png)).toBe(true);
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('kills a child that does not answer in time and starts a new one for the next image', async () => {
+    server.route('/stall.png', () => undefined);
+    const session = new ImageFetchSession({ perFetchMs: 300 });
+    try {
+      // The child reports the time limit itself.
+      expect((await refusal(session.fetch(at('/stall.png')))).message).toMatch(/too long/);
+      expect((await session.fetch(at('/a.png'))).mime).toBe('image/png');
+    } finally {
+      session.close();
+    }
+  });
+});
+
 describe('the caps of a session', () => {
   it('fetches the same URL once', async () => {
     const session = new ImageFetchSession();

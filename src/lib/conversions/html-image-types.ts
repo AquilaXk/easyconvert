@@ -71,7 +71,7 @@ export interface ImageFetchTestRules {
   anyPort?: boolean;
 }
 
-/** What the session sends the fetcher child on stdin. */
+/** What the session sends the fetcher child on stdin, one frame per image. */
 export interface ImageFetchRequest {
   url: string;
   maxBytes: number;
@@ -81,5 +81,20 @@ export interface ImageFetchRequest {
   testRules?: ImageFetchTestRules;
 }
 
-/** First line of what the child writes to stdout; on success the image bytes follow it. */
-export type ImageFetchReply = { ok: true; mime: FetchedImageType } | { ok: false; reason: string };
+/**
+ * Header of one reply of the child; on success the image bytes follow it. The stream between the worker and the child
+ * is a sequence of frames, each a 4-byte big-endian length and that many bytes of JSON; a successful reply is that
+ * frame followed by `length` bytes of image.
+ */
+export type ImageFetchReply = { ok: true; mime: FetchedImageType; length: number } | { ok: false; reason: string };
+
+/** Longest JSON frame either side accepts. */
+export const MAX_FRAME_BYTES = 64 * 1024;
+export const FRAME_PREFIX_BYTES = 4;
+
+export function jsonFrame(value: ImageFetchRequest | ImageFetchReply): Buffer {
+  const json = Buffer.from(JSON.stringify(value), 'utf8');
+  const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);
+  prefix.writeUInt32BE(json.length);
+  return Buffer.concat([prefix, json]);
+}
