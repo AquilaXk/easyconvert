@@ -1,4 +1,3 @@
-import { BenchArgumentError } from './errors';
 import { isPublicCase } from './public-samples';
 
 /**
@@ -10,16 +9,6 @@ import { isPublicCase } from './public-samples';
  *   the speed job of a pull request, which times the generated corpus only: its paired sequential sampling over every public
  *   sample would multiply the wall-clock time of a pull request.
  */
-export const CORPUS_TIER_ENV = 'BENCH_CORPUS_TIER';
-export type CorpusTier = 'pr' | 'full';
-
-export function corpusTier(env: Readonly<Record<string, string | undefined>> = process.env): CorpusTier {
-  const value = env[CORPUS_TIER_ENV];
-  if (value === undefined || value === '' || value === 'full') return 'full';
-  if (value === 'pr') return 'pr';
-  throw new BenchArgumentError(`${CORPUS_TIER_ENV} must be "pr" or "full", not "${value}"`);
-}
-
 /** The public cases `--quick` measures, per family. A family absent here measures none of them quickly. */
 export const PUBLIC_QUICK_CASES: Readonly<Record<string, readonly string[]>> = {
   document: ['doc-poi-61787.docx->pdf', 'doc-poi-japanese.pptx->pdf', 'doc-poi-53446.doc->pdf', 'doc-gov-001858.rtf->pdf'],
@@ -49,10 +38,10 @@ export const PUBLIC_SPEED_SAMPLES: Readonly<Record<string, readonly string[]>> =
 };
 
 /** The decision for a public case, or null when the case is none of them. */
-export function publicCaseScope(quick: boolean, family: string, caseName: string): boolean | null {
+export function publicCaseScope(quick: boolean, family: string, caseName: string, tier: 'pr' | 'full'): boolean | null {
   if (!isPublicCase(caseName)) return null;
   if (quick) return (PUBLIC_QUICK_CASES[family] ?? []).includes(caseName);
-  return corpusTier() === 'full';
+  return tier === 'full';
 }
 
 /** Whether the throughput rows of this sample are measured when the run measures speed. */

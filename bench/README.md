@@ -12,6 +12,7 @@ parity" below).
 |---|---|
 | `npm run bench:quality` | Run every family, write `bench-results/<date>.json` and `.md`, gate against the baseline. Exit 0 pass, 1 regression, 2 run failure. |
 | `npm run bench:quality:update-baseline` | Run, then rewrite `bench/baseline.json` from the measured rows. Review the diff before committing. |
+| `npm run bench:quality -- --baseline-from-report <report.json>` | Add the rows of a report that a CI run measured (Linux, `ORACLE_STRICT_MODE=1`, no injected regression, with its workflow source) to `bench/baseline.json` when the baseline has no entry for them; an existing entry is never rewritten. The way new rows get their numbers from the runner. |
 | `npm run bench:quality -- --family image,audio --runs 3` | A subset of families (`image video audio ocr document compression pdf-ops data ebook font cad raw vector`) and the number of interleaved timing runs (default 5, at most 25; video, OCR and office use at most 3). |
 | `npm run bench:quality -- --no-gate` | Measure and report without gating. |
 | `npm run bench:quality -- --inject-regression webp-quality` | Degrade our side on purpose to show the gate fails and names the metric. `webp-quality` lowers the WebP quality setting (a regression against our baseline; it stays on the same rate-distortion curve, so it is not behind the reference at equal size). `webp-reencode` encodes WebP twice (a worse curve, which BD-rate sees). `x264-ultrafast` switches H.264 to the ultrafast preset. `slow-ours` makes every timed run of our side twice as long (a speed regression). |
@@ -55,6 +56,55 @@ The video rows use the same ffmpeg encoder arguments on both sides, so their BD-
 encoder settings change; they exist to catch that change.
 
 ## Public sample sets
+
+The generated corpus (`bench/corpus/`, 4 MB) is a trend tracker: its pictures, clips and tracks are synthetic. The families that
+encode media or compress files also measure the public sample sets that codec and compressor evaluations use, so that "at or above
+the reference" holds beyond one or two inputs per pair. `bench/corpus/remote-manifest.json` pins every sample (origin, size,
+SHA-256, licence code); `bench/corpus/PROVENANCE.md` records the licence of each one; `bench/corpora.ts` fetches them.
+
+| Family | Samples | Classes |
+|---|---|---|
+| image | the Kodak lossless suite (24 pictures), ten pictures of the CLIC 2020 professional validation set (512x384 to 2048x1365), seven screenshots, four line-art pictures, three pictures with a transparent background (two line-art pictures are partly transparent too), three 16-bit pictures (a grey radiograph, two RGB) | photo, screen, lineart, alpha, deep |
+| video | the first frames of 13 sequences of the AV1 common test conditions (270p to 1080p, 0.7 to 3 s): natural scenes, fast motion, screen content and game capture, computer animation, film grain | natural, highmotion, screen, animation, grain |
+| audio | 14 tracks of the EBU SQAM material (speech in three languages, solo instruments, voice, castanets, claves and a side drum, orchestra, pop), a 24-bit studio production, and five edge cases built from them (a quiet passage with one burst, 8 kHz telephone speech, a 5.1 mix, a clipped signal, 96 kHz 24-bit) | speech, instrument, vocal, transient, orchestra, pop, modern24, edge |
+| compression | the 12 files of the Silesia corpus (5 to 51 MB: text, markup, source, executables, databases, medical images, a PDF), a JPEG and a FLAC file as already compressed members | text, markup, source, binary, database, data, medical, compressed |
+
+**Cases and rows.** A sample is a case like any other, named `<sample id>-><target>` (`kodim23.png->avif`,
+`aom-debugging-1080p.y4m->h264`, `sqam-27-castanets.flac->opus`, `silesia-xml.tar->zst`), measured with the same oracles and the same
+rows as the generated corpus. A sequence is stored once as a lossless H.264 file, which decodes to the sequence's frames, and both
+sides encode that file; an audio track is cut to its first 12 s as PCM. The compression cases wrap the sample in a tar like `mixed`.
+The Silesia files `xml`, `samba` and `mozilla` are tar archives, so converting one of their streams to tar gives back an archive with
+the same entries, and the check compares the files, not the padding. A picture with transparency is compared flattened onto
+mid-grey and is not converted to JPEG. A product output that the oracle cannot read, or a sample the product rejects, is a row
+(`converts` or `lossless_exact` at 0, below the reference), not an ended run, so one sample cannot hide the others.
+
+**Per sample and per class.** Quality verdicts are never one number for the whole set. Every sample has its own rows and is judged
+alone, like the BD-rate over the four-point curve of a codec comparison. Beside them each content class has rows named
+`class-<class>-><target>`: the mean of the BD-rates of its samples without weights (the average over a class that video codec
+evaluations report), and for compression the ratio pooled over the class (sum of compressed over sum of original sizes). A class
+row exists only when every sample of the class was measured for the target, so a skipped sample states nothing about its class. A
+sample whose points determine no BD-rate (a curve that is flat or shares no quality with the other, which happens to flat
+graphics coded near losslessly at every quality) has skipped BD-rate rows that say why and leaves the class mean; the rest of its
+rows are judged at the headline quality.
+
+**Fetching.** A sample is fetched from the host that publishes it the first time a run needs it and kept in
+`.bench-corpora/<family>/<sha256>` (git-ignored; `BENCH_CORPUS_CACHE` moves it). A digest or size that differs from the manifest
+fails the run, a body is abandoned as soon as it is longer than the size the manifest pins, and a redirect is followed only to the host the
+download started from, over https to the same registrable domain, or to a host suffix the set lists (`redirectHosts`: the EBU download
+links to its storage). A host that does not deliver fails a run under `ORACLE_STRICT_MODE=1` and otherwise skips the rows of that sample
+(listed in the report). CI caches the directory per family with `actions/cache`, keyed by the hash of the manifest
+(`.github/actions/bench-corpora`); `npx tsx bench/corpora.ts verify` fetches and checks everything, and
+`npx tsx bench/corpora.ts pin <seeds.json>` resolves the origin, size and digest of new samples.
+
+**Which runs measure them.** The nightly run measures every sample's quality rows and the throughput rows of the samples in
+`PUBLIC_SPEED_SAMPLES` (`bench/config.ts`: a few per class, because speed follows the code path and the input size more than the picture,
+and a timed row costs many pairs). A pull request's quality job (`--quick`) measures the cases of `QUICK_PUBLIC_SUBSET`, whose
+reference side is read from the cache the nightly run keeps. A pull request's speed job sets `BENCH_CORPUS_TIER=pr` and times the
+generated corpus only, as before, and so does the plain baseline run of the nightly workflow (its gate then looks for the generated
+corpus' baseline entries only; the parity jobs of the night measure and judge the public samples); a change that lands a speed gap on a public sample is found by the nightly run (the gate files
+that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was).
+
+### Documents, PDF, ebooks, fonts, CAD, RAW, vector and data
 
 The generated corpus (`bench/corpus/`) is small by design. For the document, PDF, ebook, font, CAD, RAW, vector and data
 families the benchmark also measures public files, because a verdict from one or two inputs can flip on another: published
@@ -109,6 +159,16 @@ reference tool and, for tracked rows, with their own history (below). Quality ro
 `bench/bd-rate.ts` follows VCEG-M33 (Bjontegaard): a cubic fit of ln(rate) against quality, integrated over the
 overlapping quality range, reported as a percentage (negative: ours needs fewer bits). `tests/bench-bd-rate.test.ts`
 checks it against published curve pairs and an exact closed-form case.
+
+A BD-rate is stated only for curves that state a trade-off: quality must grow with the rate at all four points, and gain at least
+`BD_MIN_QUALITY_SPAN` (0.5 dB) across them (`tryBdRate`). A flat curve fits a cubic that explodes, and the number it gives
+belongs to the fit and not to the codec: on the SQAM tracks the SNR of Opus stays within 0.1 dB from 32 to 96 kbit/s (it is a
+perceptual codec, and its output is not waveform-matched), and the unvalidated BD-rate of two encodes that agree to the third
+decimal came out as 1e14 percent. When the reference's curve is the one that states no trade-off, the case has skipped BD rows that say why and is judged on its point rows
+(SNR, loudness, bit rate) against the reference within their allowances, like any case without a curve. When the reference's curve is sound and
+ours falls or stays flat as the rate grows, that is our regression: the case gets a failing `rd_curve_*` row (ours 0, the reference 1), and a BD-rate
+row that has a baseline entry and is skipped as unsupported is a gate regression, so a change that breaks the curve of an encoder cannot turn its
+BD-rate into a skip.
 
 ## Baseline and tool versions
 

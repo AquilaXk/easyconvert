@@ -1,0 +1,42 @@
+name: Public benchmark samples
+description: >-
+  Restores the verified downloads of the public sample sets (bench/corpus/remote-manifest.json) of the benchmark families a
+  job runs, and saves them when the job finishes, keyed by the digest of the manifest. The benchmark checks every file against
+  the manifest's SHA-256 whatever the cache holds (bench/corpora.ts), so a stale or damaged cache costs a download, never a
+  wrong measurement. One cache per family: a job that measures one family restores only the files of that family.
+
+inputs:
+  families:
+    description: Comma-separated benchmark families the job measures (image, video, audio, compression); others are ignored.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the image samples
+      if: contains(format(',{0},', inputs.families), ',image,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/image
+        key: bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the video samples
+      if: contains(format(',{0},', inputs.families), ',video,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/video
+        key: bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the audio samples
+      if: contains(format(',{0},', inputs.families), ',audio,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/audio
+        key: bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the compression samples
+      if: contains(format(',{0},', inputs.families), ',compression,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/compression
+        key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}

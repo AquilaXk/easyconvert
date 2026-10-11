@@ -1,6 +1,7 @@
+import type { BdFault } from './bd-rate';
 import { PSNR_CAP_DB, SSIM_DISTANCE_FLOOR } from './config';
 import type { BenchRow, Family, SkipKind, Tolerance } from './report';
-import { type MetricSpec, THROUGHPUT_SPEC } from './speed-rows';
+import { measuredRow, type MetricSpec, THROUGHPUT_SPEC } from './speed-rows';
 import type { ToolPlanSkipped } from './tools';
 
 export { measuredRow, type MetricSpec, speedRowId, THROUGHPUT_SPEC, throughputRow } from './speed-rows';
@@ -23,6 +24,8 @@ export const SPEC = {
   snr: { metric: 'snr', unit: 'dB', direction: 'higher', kind: 'quality', tolerance: tol(0.5, 0) },
   loudnessShift: { metric: 'loudness_shift', unit: 'LU', direction: 'lower', kind: 'quality', tolerance: tol(0.3, 0) },
   truePeakShift: { metric: 'true_peak_shift', unit: 'dB', direction: 'lower', kind: 'quality', tolerance: tol(0.3, 0) },
+  /** 1 when the product converts the sample at all; a sample it rejects is a row below the reference, not a failed run. */
+  converts: { metric: 'converts', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   losslessExact: { metric: 'lossless_exact', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   cer: { metric: 'cer', unit: '%', direction: 'lower', kind: 'quality', tolerance: tol(0.75, 0) },
   wordF1: { metric: 'word_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
@@ -105,4 +108,21 @@ export function capPsnr(psnr: number): number {
 /** SSIM in decibels, -10 log10(1 - SSIM): the scale on which SSIM differences are comparable across the range. */
 export function ssimDb(ssim: number): number {
   return -10 * Math.log10(Math.max(1 - ssim, SSIM_DISTANCE_FLOOR));
+}
+
+/**
+ * The rows of a case whose rate-distortion points determine no BD-rate: the BD-rate row stated as not evaluated with the reason, and,
+ * when the reference's curve is sound and ours is not, a failing `rd_curve_*` row (ours 0, the reference 1) beside it: our encoder
+ * stopped gaining quality with its rate, which is a regression and not a missing measurement.
+ */
+export function undeterminedBdRows(family: Family, caseName: string, specs: readonly MetricSpec[], referenceTool: string, bd: { reason: string; fault: BdFault }): BenchRow[] {
+  const skipped = specs.map((spec) => skippedRow(family, caseName, spec, referenceTool, 'unsupported', `no BD-rate: ${bd.reason}`));
+  if (bd.fault !== 'ours') return skipped;
+  const curves = specs.map((spec) => measuredRow(family, caseName, rdCurveSpec(spec), 0, 1, referenceTool));
+  return [...skipped, ...curves];
+}
+
+/** `rd_curve_psnr` for `bd_rate_psnr`: 1 when the curve of the encoder gains quality with its rate. */
+function rdCurveSpec(bdSpec: MetricSpec): MetricSpec {
+  return { metric: bdSpec.metric.replace(/^bd_rate/, 'rd_curve'), unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) };
 }

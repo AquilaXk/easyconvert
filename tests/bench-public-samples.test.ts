@@ -18,7 +18,8 @@ import {
   resetVerifiedPublicSamples,
   validatePublicManifest,
 } from '../bench/public-samples';
-import { corpusTier, PUBLIC_QUICK_CASES, PUBLIC_SPEED_SAMPLES, publicCaseScope } from '../bench/public-scope';
+import { PUBLIC_QUICK_CASES, PUBLIC_SPEED_SAMPLES, publicCaseScope } from '../bench/public-scope';
+import { caseInScope, corpusTier } from '../bench/scope';
 import { markdownText, htmlText, rtfText, sourceText } from '../bench/office-words';
 import { textOfFb2, picturesOfFb2 } from '../bench/families/ebook';
 import { truthWordsOf, wordRecallOf } from '../bench/families/document-public';
@@ -176,11 +177,14 @@ describe('the scope of the public cases', () => {
   it('measures only the named cases under --quick, all of them in a full run and none in the pull request speed tier', () => {
     const [family, [named]] = Object.entries(PUBLIC_QUICK_CASES)[0];
     const other = MANIFEST.samples.find((item) => item.family === family && !named.startsWith(item.id));
-    expect(publicCaseScope(true, family, named)).toBe(true);
-    expect(publicCaseScope(true, family, `${(other as PublicSample).id}->x`)).toBe(false);
-    expect(publicCaseScope(true, family, `${CLASS_CASE_PREFIX}tagged->x`)).toBe(false);
-    expect(publicCaseScope(false, family, named)).toBe(true);
-    expect(publicCaseScope(true, 'image', 'photo-a.jpg->webp')).toBeNull();
+    expect(publicCaseScope(true, family, named, 'full')).toBe(true);
+    expect(publicCaseScope(true, family, `${(other as PublicSample).id}->x`, 'full')).toBe(false);
+    expect(publicCaseScope(true, family, `${CLASS_CASE_PREFIX}tagged->x`, 'full')).toBe(false);
+    expect(publicCaseScope(false, family, named, 'full')).toBe(true);
+    expect(publicCaseScope(false, family, named, 'pr')).toBe(false);
+    expect(publicCaseScope(true, 'image', 'photo-a.jpg->webp', 'full')).toBeNull();
+    expect(caseInScope(true, family, named)).toBe(true);
+    expect(caseInScope(false, family, `${(other as PublicSample).id}->x`)).toBe(true);
     expect(corpusTier({})).toBe('full');
     expect(corpusTier({ BENCH_CORPUS_TIER: 'pr' })).toBe('pr');
     expect(() => corpusTier({ BENCH_CORPUS_TIER: 'half' })).toThrow(/must be "pr" or "full"/);

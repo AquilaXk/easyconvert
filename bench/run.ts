@@ -25,6 +25,8 @@ import {
   WARMUP_RUNS,
 } from './config';
 import { AbHost } from './ab-host';
+import { addNewRowsFromReport } from './baseline-from-report';
+import { remoteSample } from './corpora';
 import { AB_EXTRA_BUDGET_MS } from './ab-config';
 import { EXIT_BELOW_REFERENCE, EXIT_PASS, EXIT_REGRESSION, judgeParity, parityScope, printGate } from './judge';
 import { createContext, type Injection, parseInjection } from './context';
@@ -104,6 +106,8 @@ export interface CliOptions {
   baseGapsPath: string | null;
   /** Print a hash of the reference tool versions and exit (the key of the CI cache). */
   printToolFingerprint: boolean;
+  /** Add the rows of this CI report that the baseline has no entry for, and exit (bench/baseline-from-report.ts). */
+  baselineFromReport: string | null;
 }
 
 function takeValue(args: string[], index: number, flag: string): string {
@@ -132,6 +136,7 @@ export function parseArgs(args: string[]): CliOptions {
     baseRoot: null,
     baseGapsPath: null,
     printToolFingerprint: false,
+    baselineFromReport: null,
   };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
@@ -176,6 +181,8 @@ export function parseArgs(args: string[]): CliOptions {
       options.baseGapsPath = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--print-tool-fingerprint') {
       options.printToolFingerprint = true;
+    } else if (flag === '--baseline-from-report') {
+      options.baselineFromReport = path.resolve(takeValue(args, i++, flag));
     } else {
       throw new BenchArgumentError(`unknown argument ${flag}`);
     }
@@ -260,7 +267,7 @@ async function measureWith(options: CliOptions, strict: boolean, hosts: { head: 
         if (!versions.has(tool)) versions.set(tool, toolVersion(tool, resolve(tool)));
         return versions.get(tool) ?? null;
       },
-      fileHash: (relative) => memoized(fileHashes, relative, () => corpusFileHash(relative)),
+      fileHash: (relative) => memoized(fileHashes, relative, () => remoteSample(relative)?.sha256 ?? corpusFileHash(relative)),
       harnessHash: (family) => memoized(harnessHashes, family, () => harnessHash(family)),
       log,
     });
@@ -331,6 +338,13 @@ export async function main(args: string[], out: (line: string) => void = (line) 
     return EXIT_PASS;
   }
 
+  if (options.baselineFromReport) {
+    const { baseline, added } = addNewRowsFromReport(readReport(options.baselineFromReport), readBaseline(options.baselinePath));
+    fs.writeFileSync(options.baselinePath, `${JSON.stringify(baseline, null, 2)}\n`);
+    out(`baseline: ${added.length} entries added to ${options.baselinePath}`);
+    return EXIT_PASS;
+  }
+
   if (options.compareReport) {
     const compared = readReport(options.compareReport);
     if (options.parity) return judgeParity(compared, options, out);
@@ -363,9 +377,14 @@ export async function main(args: string[], out: (line: string) => void = (line) 
   return result.regressions.length > 0 ? EXIT_REGRESSION : EXIT_PASS;
 }
 
+/** Exits once what was written to stdout has been taken: a pipe holds 64 KiB, and a run that lists hundreds of skipped rows must not lose the end of its output to an exit that does not wait. */
+function exitAfterFlush(code: number): void {
+  process.stdout.write('', () => process.exit(code));
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => exitAfterFlush(code),
     (error: unknown) => {
       process.stderr.write(`bench:quality failed: ${error instanceof BenchError ? `${error.name}: ${error.message}` : String(error instanceof Error ? error.stack : error)}\n`);
       process.exit(EXIT_ERROR);
