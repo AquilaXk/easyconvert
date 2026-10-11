@@ -1,0 +1,318 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  currentImageFetchSession,
+  HTML_IMAGE_FETCH_ENV,
+  IMAGES_TURNED_OFF,
+  ImageFetchRefusal,
+  ImageFetchSession,
+  overrideImageFetchRules,
+  runWithImageFetchSession,
+} from '../src/lib/conversions/html-image-fetch';
+import { solidPng, startImageServer, type ImageServer } from './helpers/image-server';
+
+/**
+ * The session that drives the fetcher child process: the child's environment, the per-job caps, the job's abort
+ * signal and the off switch. The guards inside the child are tested in html-image-fetch.test.ts. A local server on
+ * 127.0.0.1 stands in for a public host: the child answers `images.test` from a table and lets only that address in.
+ */
+
+const LOOPBACK = '127.0.0.1';
+const HOST = 'images.test';
+
+let server: ImageServer;
+let restore: (() => void) | undefined;
+let png: Buffer;
+
+const at = (pathAndQuery: string): string => `http://${HOST}:${server.port}${pathAndQuery}`;
+
+async function refusal(promise: Promise<unknown>): Promise<ImageFetchRefusal> {
+  const error = await promise.then(
+    () => null,
+    (reason: unknown) => reason
+  );
+  expect(error).toBeInstanceOf(ImageFetchRefusal);
+  return error as ImageFetchRefusal;
+}
+
+beforeEach(async () => {
+  server = await startImageServer();
+  png = await solidPng(4, 3, { r: 10, g: 200, b: 90 });
+  server.serve('/a.png', png);
+  restore = overrideImageFetchRules({ hosts: { [HOST]: [LOOPBACK] }, permitAddresses: [LOOPBACK], anyPort: true });
+});
+
+afterEach(async () => {
+  restore?.();
+  await server.close();
+});
+
+describe('a fetch runs in the child process', () => {
+  it('returns the bytes and the signature type', async () => {
+    const fetched = await new ImageFetchSession().fetch(at('/a.png'));
+    expect(fetched.bytes.equals(png)).toBe(true);
+    expect(fetched.mime).toBe('image/png');
+    expect(server.requests[0].headers.host).toBe(`${HOST}:${server.port}`);
+  });
+
+  it('starts the child without the environment of the worker', async () => {
+    // A preload named in NODE_OPTIONS would run in the child and leave this file; the child must not see the variable.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fetch-env-'));
+    const marker = path.join(dir, 'ran');
+    const preload = path.join(dir, 'preload.cjs');
+    fs.writeFileSync(preload, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
+    const previous = { NODE_OPTIONS: process.env.NODE_OPTIONS, SECRET_TOKEN: process.env.SECRET_TOKEN, HTTPS_PROXY: process.env.HTTPS_PROXY };
+    process.env.NODE_OPTIONS = `--require ${preload}`;
+    process.env.SECRET_TOKEN = 'must-not-reach-the-child';
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+    try {
+      await new ImageFetchSession().fetch(at('/a.png'));
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    try {
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the production address rules inside the child', async () => {
+    restore?.();
+    restore = overrideImageFetchRules({ hosts: { [HOST]: [LOOPBACK] }, anyPort: true });
+    const viaName = await refusal(new ImageFetchSession().fetch(at('/a.png')));
+    const viaLiteral = await refusal(new ImageFetchSession().fetch(`http://${LOOPBACK}:${server.port}/a.png`));
+    expect(viaName.message).toBe('the host is not a public address');
+    expect(viaLiteral.message).toBe('the host is not a public address');
+    expect(server.connections()).toBe(0);
+  });
+
+  it('reports a failure of the fetch as the reason the child gave', async () => {
+    expect((await refusal(new ImageFetchSession().fetch(at('/missing.png')))).message).toBe('the server answered with status 404');
+    expect((await refusal(new ImageFetchSession().fetch('http://nowhere.test/a.png'))).message).toBe('the host could not be resolved');
+  });
+});
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+  const limit = Date.now() + 10_000;
+  while (!condition()) {
+    if (Date.now() > limit) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+describe('one child serves the whole session', () => {
+  it('serves 20 images with one child process', async () => {
+    const session = new ImageFetchSession();
+    try {
+      const fetched = await Promise.all(Array.from({ length: 20 }, (_, i) => session.fetch(at(`/a.png?n=${i}`))));
+      expect(fetched.every((image) => image.bytes.equals(png))).toBe(true);
+      expect(server.requests).toHaveLength(20);
+      expect(session.childrenStarted).toBe(1);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('stops the child when the session ends', async () => {
+    const session = new ImageFetchSession();
+    await session.fetch(at('/a.png'));
+    const pid = session.childPid as number;
+    expect(isRunning(pid)).toBe(true);
+    session.close();
+    await until(() => !isRunning(pid), 'the child to end');
+  });
+
+  it('kills the child when the job is aborted in the middle of a batch', async () => {
+    server.route('/hang.png', () => undefined);
+    const controller = new AbortController();
+    const session = new ImageFetchSession({}, { signal: controller.signal });
+    const batch = [at('/a.png?n=1'), at('/a.png?n=2'), at('/hang.png'), at('/a.png?n=3'), at('/a.png?n=4')].map((target) =>
+      session.fetch(target).then(
+        () => 'loaded',
+        (error: unknown) => (error as Error).message
+      )
+    );
+    await until(() => server.requests.some((request) => request.url === '/hang.png'), 'the hanging request');
+    const pid = session.childPid as number;
+    controller.abort(new Error('job cancelled'));
+    expect(await Promise.all(batch)).toEqual(['loaded', 'loaded', 'job cancelled', 'job cancelled', 'job cancelled']);
+    await until(() => !isRunning(pid), 'the child to be killed');
+    expect(session.childrenStarted).toBe(1);
+    expect(server.requests.map((request) => request.url)).not.toContain('/a.png?n=3');
+  });
+
+  it('starts the child again when it died between two fetches', async () => {
+    const session = new ImageFetchSession();
+    try {
+      await session.fetch(at('/a.png?n=1'));
+      const pid = session.childPid as number;
+      process.kill(pid, 'SIGKILL');
+      await until(() => session.childPid === undefined, 'the death of the child');
+      expect((await session.fetch(at('/a.png?n=2'))).mime).toBe('image/png');
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('restarts a child that dies in the middle of a fetch once, then gives up', async () => {
+    const session = new ImageFetchSession();
+    server.route('/die.png', () => {
+      process.kill(session.childPid as number, 'SIGKILL');
+    });
+    try {
+      const error = await refusal(session.fetch(at('/die.png')));
+      expect(error.message).toBe('the image could not be loaded');
+      expect(session.childrenStarted).toBe(2);
+      expect(server.requests.filter((request) => request.url === '/die.png')).toHaveLength(2);
+      await refusal(session.fetch(at('/a.png')));
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('restarts after a crash and completes the fetch when the second child lives', async () => {
+    const session = new ImageFetchSession();
+    let hits = 0;
+    server.route('/once.png', (_request, response) => {
+      hits++;
+      if (hits === 1) {
+        process.kill(session.childPid as number, 'SIGKILL');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'image/png', 'content-length': png.length });
+      response.end(png);
+    });
+    try {
+      expect((await session.fetch(at('/once.png'))).bytes.equals(png)).toBe(true);
+      expect(session.childrenStarted).toBe(2);
+    } finally {
+      session.close();
+    }
+  });
+
+  it('kills a child that does not answer in time and starts a new one for the next image', async () => {
+    server.route('/stall.png', () => undefined);
+    const session = new ImageFetchSession({ perFetchMs: 300 });
+    try {
+      // The child reports the time limit itself.
+      expect((await refusal(session.fetch(at('/stall.png')))).message).toMatch(/too long/);
+      expect((await session.fetch(at('/a.png'))).mime).toBe('image/png');
+    } finally {
+      session.close();
+    }
+  });
+});
+
+describe('the caps of a session', () => {
+  it('fetches the same URL once', async () => {
+    const session = new ImageFetchSession();
+    await Promise.all([session.fetch(at('/a.png')), session.fetch(at('/a.png'))]);
+    await session.fetch(at('/a.png'));
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it('counts a refused fetch too, and refuses the fetch past the limit without starting a child', async () => {
+    const session = new ImageFetchSession({ maxImages: 2 });
+    await refusal(session.fetch(at('/missing.png')));
+    await session.fetch(at('/a.png'));
+    const before = server.requests.length;
+    expect((await refusal(session.fetch(at('/b.png')))).message).toBe('the limit of 2 images per document was reached');
+    expect(server.requests).toHaveLength(before);
+  });
+
+  it('refuses images past the total size', async () => {
+    server.serve('/b.png', png);
+    const session = new ImageFetchSession({ maxTotalBytes: png.length + 10 });
+    await session.fetch(at('/a.png'));
+    expect((await refusal(session.fetch(at('/b.png')))).message).toMatch(/total size/);
+  });
+
+  it('refuses an image above the per-image size', async () => {
+    const error = await refusal(new ImageFetchSession({ maxImageBytes: png.length - 1 }).fetch(at('/a.png')));
+    expect(error.message).toBe(`the image is larger than ${png.length - 1} bytes`);
+  });
+
+  it('shares one total time across the fetches', async () => {
+    server.route('/hang.png', () => undefined);
+    const session = new ImageFetchSession({ perFetchMs: 5000, totalMs: 1500 });
+    const started = Date.now();
+    await refusal(session.fetch(at('/hang.png')));
+    expect(Date.now() - started).toBeLessThan(8000);
+    expect((await refusal(session.fetch(at('/a.png')))).message).toMatch(/too long/);
+  });
+});
+
+describe('the job', () => {
+  it('shares one session for everything inside runWithImageFetchSession, so the caps hold across routes', async () => {
+    const outside = currentImageFetchSession();
+    await runWithImageFetchSession(undefined, async () => {
+      const first = currentImageFetchSession();
+      await first.fetch(at('/a.png'));
+      // A later route of the same job asks for the same image: it is not fetched again.
+      await currentImageFetchSession().fetch(at('/a.png'));
+      expect(currentImageFetchSession()).toBe(first);
+      expect(first).not.toBe(outside);
+    });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it('starts no fetch once the job signal has fired', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('job cancelled'));
+    const session = new ImageFetchSession({}, { signal: controller.signal });
+    await expect(session.fetch(at('/a.png'))).rejects.toThrow('job cancelled');
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('stops a fetch in flight when the job signal fires', async () => {
+    server.route('/hang.png', () => undefined);
+    const controller = new AbortController();
+    const session = new ImageFetchSession({}, { signal: controller.signal });
+    const pending = session.fetch(at('/hang.png'));
+    const settled = pending.then(
+      () => 'resolved',
+      (error: unknown) => (error as Error).message
+    );
+    while (server.requests.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+    const started = Date.now();
+    controller.abort(new Error('job cancelled'));
+    expect(await settled).toBe('job cancelled');
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe(HTML_IMAGE_FETCH_ENV, () => {
+  const previous = process.env[HTML_IMAGE_FETCH_ENV];
+  afterEach(() => {
+    if (previous === undefined) delete process.env[HTML_IMAGE_FETCH_ENV];
+    else process.env[HTML_IMAGE_FETCH_ENV] = previous;
+  });
+
+  it.each(['off', 'OFF', ' Off '])('%j turns fetching off: nothing is fetched and the reason says so', async (value) => {
+    process.env[HTML_IMAGE_FETCH_ENV] = value;
+    expect((await refusal(new ImageFetchSession().fetch(at('/a.png')))).message).toBe(IMAGES_TURNED_OFF);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it.each(['on', 'ON', ''])('%j leaves fetching on', async (value) => {
+    process.env[HTML_IMAGE_FETCH_ENV] = value;
+    expect((await new ImageFetchSession().fetch(at('/a.png'))).mime).toBe('image/png');
+  });
+});
