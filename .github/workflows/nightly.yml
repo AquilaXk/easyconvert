@@ -100,8 +100,12 @@ jobs:
         with:
           families: document,pdf-ops,ebook,font,cad,raw,vector,data
 
+      # The plain run is the check against our own baseline on the generated corpus. The public samples take hours on one
+      # process, and the parity jobs below measure them in full, so this run leaves them out.
       - name: Run the quality benchmark
         shell: bash
+        env:
+          BENCH_CORPUS_TIER: pr
         run: |
           if node -e "process.exit(require('./package.json').scripts?.['bench:quality'] ? 0 : 1)"; then
             npm run bench:quality
