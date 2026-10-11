@@ -247,6 +247,10 @@ npm start
 
 ---
 
+## Policy decisions
+
+Conversion and product policies, such as output defaults, limits, engines and the quality gate, are recorded with their rationale and trade-offs in [docs/policy-decisions.md](docs/policy-decisions.md). Update it in the same pull request that changes a policy.
+
 ## Licensing
 
 - **Project License**: EasyConvert is distributed under the [MIT License](LICENSE).
