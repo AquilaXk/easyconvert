@@ -56,7 +56,8 @@ export async function startImageServer(): Promise<ImageServer> {
     },
     serve: (path, body, contentType = 'image/png') => {
       routes.set(path, (_request, response) => {
-        response.writeHead(200, { 'content-type': contentType });
+        // The exact length, as a real image host sends it.
+        response.writeHead(200, { 'content-type': contentType, 'content-length': Buffer.byteLength(body) });
         response.end(body);
       });
     },

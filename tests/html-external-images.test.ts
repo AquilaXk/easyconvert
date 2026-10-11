@@ -9,7 +9,7 @@ import { PDFDocument } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
 import { MAX_REPORTED_OMISSIONS } from '../src/lib/conversions/html-omitted-resources';
-import { overrideImageFetchEnvironment } from '../src/lib/conversions/html-image-fetch';
+import { overrideImageFetchRules } from '../src/lib/conversions/html-image-fetch';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
@@ -57,11 +57,7 @@ function html(body: string): Buffer {
 let restoreFetchEnvironment: (() => void) | undefined;
 
 beforeEach(() => {
-  restoreFetchEnvironment = overrideImageFetchEnvironment({
-    resolve: async () => {
-      throw new Error('offline');
-    },
-  });
+  restoreFetchEnvironment = overrideImageFetchRules({ hosts: {} });
 });
 
 afterEach(() => {

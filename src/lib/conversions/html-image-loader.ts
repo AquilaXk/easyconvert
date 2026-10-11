@@ -12,7 +12,7 @@ import {
   type HtmlResourcePolicy,
   type SrcsetCandidate,
 } from './html-omitted-resources';
-import { IMAGE_FETCH_LIMITS, ImageFetchRefusal, ImageFetchSession, type FetchedImage } from './html-image-fetch';
+import { currentImageFetchSession, IMAGE_FETCH_LIMITS, ImageFetchRefusal, type FetchedImage, type ImageFetchSession } from './html-image-fetch';
 
 /**
  * Loads the external images of an HTML tree before it is rendered and puts them into the tree as base64 data: URIs, so
@@ -23,6 +23,8 @@ import { IMAGE_FETCH_LIMITS, ImageFetchRefusal, ImageFetchSession, type FetchedI
  * - `<img src>` and `<img srcset>`: one candidate is loaded (see pickCandidate).
  * - `<picture><source srcset>`: the first source of a supported type that loads replaces the picture's `<img>`, as a
  *   browser would; the other sources are dropped.
+ * - An absolute http or https `<base href>` is honoured for the relative image URLs, as a browser does, with the same
+ *   guards; the `<base>` element is removed from the tree afterwards (nothing renders it).
  * - An image that cannot be loaded (refused address, failed or oversize fetch, not an image, not an absolute http or
  *   https URL) is left out of the tree and reported; with `requireResources` it is a 400 instead.
  */
@@ -40,6 +42,7 @@ export interface ImageCaps {
 const PICTURE_TAG = 'picture';
 const SOURCE_TAG = 'source';
 const IMAGE_TAG = 'img';
+const BASE_TAG = 'base';
 const SRC_ATTRIBUTE = 'src';
 const DATA_URI_PREFIX = /^data:/i;
 const HTTP_URL = /^https?:\/\//i;
@@ -150,8 +153,34 @@ export function unloadableImageRefusal(reference: string, reason: string | null)
   return new ConversionFailedError(`HTML image "${quoted(reference)}" could not be loaded: ${reason}`);
 }
 
+/**
+ * The document's base URL when its first `<base href>` is an absolute http or https URL; that element is removed from
+ * the tree. A base of any other kind is left where it is, for the staging to refuse as it does any such reference.
+ */
+function takeDocumentBase(root: HtmlElement): URL | null {
+  const visit = (parent: HtmlElement): URL | null => {
+    for (const [index, child] of parent.children.entries()) {
+      if (typeof child === 'string') continue;
+      if (child.tag === BASE_TAG && child.attrs.has('href')) {
+        const href = normalizeUrl(child.attrs.get('href') ?? '');
+        if (!HTTP_URL.test(href)) return null;
+        try {
+          const base = new URL(href);
+          parent.children[index] = '';
+          return base;
+        } catch {
+          return null;
+        }
+      }
+      const found = visit(child);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return visit(root);
+}
+
 class ImageLoader {
-  private readonly session = new ImageFetchSession();
   /** For each picture whose image came from a source, the index of the child that now holds it. */
   private readonly pictures = new Map<HtmlElement, number>();
   private room: number;
@@ -161,6 +190,8 @@ class ImageLoader {
     private readonly policy: HtmlResourcePolicy,
     private readonly omitted: OmittedExternalImages,
     private readonly caps: ImageCaps,
+    private readonly session: ImageFetchSession,
+    private readonly base: URL | null,
     embedded: number
   ) {
     this.room = caps.maxImages - embedded;
@@ -212,9 +243,22 @@ class ImageLoader {
     }
   }
 
-  private async dataUri(url: string): Promise<string> {
-    if (DATA_URI_PREFIX.test(url)) return url;
-    if (!HTTP_URL.test(url)) throw new ImageFetchRefusal(NOT_ABSOLUTE);
+  /** The absolute URL of a reference: as written, or resolved against the document's base; null when it has none. */
+  private absoluteUrl(url: string): string | null {
+    if (HTTP_URL.test(url)) return url;
+    if (this.base === null || url === '') return null;
+    try {
+      const resolved = new URL(url, this.base);
+      return resolved.protocol === 'http:' || resolved.protocol === 'https:' ? resolved.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async dataUri(reference: string): Promise<string> {
+    if (DATA_URI_PREFIX.test(reference)) return reference;
+    const url = this.absoluteUrl(reference);
+    if (url === null) throw new ImageFetchRefusal(NOT_ABSOLUTE);
     if (this.room <= 0) throw new ImageFetchRefusal(`the document already holds the most images it can embed (${this.caps.maxImages})`);
     const prepared = await prepareImage(await this.session.fetch(url), this.caps);
     if (this.pixels + prepared.pixels > this.caps.maxDocumentPixels) {
@@ -236,9 +280,10 @@ export async function loadExternalImages(
   omitted: OmittedExternalImages,
   caps: ImageCaps
 ): Promise<void> {
+  const base = takeDocumentBase(root);
   const images = findExternalImages(root);
   if (images.length === 0) return;
-  const loader = new ImageLoader(policy, omitted, caps, countEmbeddedImages(root));
+  const loader = new ImageLoader(policy, omitted, caps, currentImageFetchSession(policy.signal), base, countEmbeddedImages(root));
   // One after another on purpose: the size, count and time caps are shared, so the order decides which image is left out.
   for (const image of images) await loader.load(image); // NOSONAR S9382
 }

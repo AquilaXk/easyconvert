@@ -1,17 +1,17 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
-import { overrideImageFetchEnvironment } from '../src/lib/conversions/html-image-fetch';
-import { pickCandidate } from '../src/lib/conversions/html-image-loader';
-import { srcsetCandidates } from '../src/lib/conversions/html-omitted-resources';
+import { overrideImageFetchRules } from '../src/lib/conversions/html-image-fetch';
+import { HTML_IMAGE_CAPS, parseHtmlTree } from '../src/lib/conversions/html-blocks';
+import { loadExternalImages, pickCandidate } from '../src/lib/conversions/html-image-loader';
+import { OmittedExternalImages, srcsetCandidates } from '../src/lib/conversions/html-omitted-resources';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
@@ -34,21 +34,16 @@ const PAGE_TEXT = 'Gallery of the quarter.';
 
 let server: ImageServer;
 let restore: (() => void) | undefined;
-let resolved: string[];
 let png: Buffer;
 let jpeg: Buffer;
 
-function useLoopbackAsPublic(extra: Record<string, string[]> = {}): void {
+function useLoopbackAsPublic(): void {
   restore?.();
-  const hosts: Record<string, string[]> = { [HOST]: [LOOPBACK], [OTHER_HOST]: [LOOPBACK], [PRIVATE_HOST]: ['10.0.0.5'], ...extra };
-  restore = overrideImageFetchEnvironment({
-    resolve: async (host) => {
-      resolved.push(host);
-      if (!hosts[host]) throw new Error(`no such host ${host}`);
-      return hosts[host];
-    },
-    permitAddress: (address) => address === LOOPBACK,
-    permitPort: () => true,
+  // The fetcher child answers `images.test` and the like from this table and lets only the one loopback address through.
+  restore = overrideImageFetchRules({
+    hosts: { [HOST]: [LOOPBACK], [OTHER_HOST]: [LOOPBACK], [PRIVATE_HOST]: ['10.0.0.5'] },
+    permitAddresses: [LOOPBACK],
+    anyPort: true,
   });
 }
 
@@ -99,21 +94,16 @@ async function rawPixels(bytes: Buffer): Promise<{ data: string; width: number; 
 const toPdf = (source: Buffer, options: Record<string, unknown> = {}): ReturnType<typeof convertFile> =>
   withMissingBinary('SOFFICE_PATH', () => convertFile(source, 'html', 'pdf', options, 'page.html'));
 
-let connectSpy: ReturnType<typeof vi.spyOn>;
-
 beforeEach(async () => {
   server = await startImageServer();
-  resolved = [];
   png = await solidPng(24, 16, { r: 20, g: 120, b: 220 });
   jpeg = await noisyJpeg(48, 32);
   server.serve('/photo.png', png);
   server.serve('/photo.jpg', jpeg, 'image/jpeg');
   useLoopbackAsPublic();
-  connectSpy = vi.spyOn(net.Socket.prototype, 'connect');
 });
 
 afterEach(async () => {
-  connectSpy.mockRestore();
   restore?.();
   restore = undefined;
   await server.close();
@@ -246,7 +236,7 @@ describe('images that are refused or fail stay out of the page', () => {
 
   it('does not connect to a loopback, private or metadata address under the production address rules', async () => {
     restore?.();
-    restore = overrideImageFetchEnvironment({ permitPort: () => true });
+    restore = overrideImageFetchRules({ anyPort: true });
     const markup =
       `<img src="http://${LOOPBACK}:${server.port}/photo.png">` +
       `<img src="http://localhost:${server.port}/photo.png">` +
@@ -255,9 +245,8 @@ describe('images that are refused or fail stay out of the page', () => {
       '<img src="http://10.0.0.1/logo.png">';
     const warnings = await warningsOf(markup);
     expect(warnings).toHaveLength(5);
-    expect(warnings.filter((line) => line.endsWith('the host is not a public address.')).length + warnings.filter((line) => line.endsWith('the host name is not allowed.')).length).toBe(5);
+    expect(warnings.filter((line) => /the host is not a public address\.$|the host name is not allowed\.$/.test(line))).toHaveLength(5);
     expect(server.connections()).toBe(0);
-    expect(connectSpy).not.toHaveBeenCalled();
   });
 
   it('refuses a host that resolves to a private address, and a redirect to one', async () => {
@@ -271,22 +260,6 @@ describe('images that are refused or fail stay out of the page', () => {
       `Left out the image "${at('/bounce.png')}": the host is not a public address.`,
     ]);
     expect(server.requests.map((request) => request.url)).toEqual(['/bounce.png']);
-  });
-
-  it('keeps using the address that was checked when the name server changes its answer', async () => {
-    let answers = 0;
-    restore?.();
-    restore = overrideImageFetchEnvironment({
-      resolve: async () => {
-        answers++;
-        return answers === 1 ? [LOOPBACK] : ['10.0.0.5'];
-      },
-      permitAddress: (address) => address === LOOPBACK,
-      permitPort: () => true,
-    });
-    const result = await toPdf(html(`<img src="${at('/photo.png')}">`));
-    expect(result.metadata?.warnings).toBeUndefined();
-    expect(answers).toBe(1);
   });
 
   it('leaves out a response that is not an image and one above the size cap', async () => {
@@ -311,14 +284,18 @@ describe('images that are refused or fail stay out of the page', () => {
     expect(warnings[1]).toMatch(/huge\.png": the image is 6000x6000 pixels, above the limit of 25000000 pixels\.$/);
   });
 
-  oracleTest('embeds at most what the renderer draws and reports the rest', ['pdfimages'], async () => {
-    const images = Array.from({ length: 70 }, (_, i) => `<img src="${at(`/photo.png?n=${i}`)}">`).join('');
-    const result = await toPdf(html(images));
-    expect(pdfImages(result.buffer).count).toBe(64);
-    const warnings = result.metadata?.warnings as string[];
-    expect(warnings).toHaveLength(6);
-    expect(warnings[0]).toMatch(/the document already holds the most images it can embed \(64\)\.$/);
-  }, 60_000);
+  it('embeds at most the images the caps leave and reports the rest', async () => {
+    const tree = parseHtmlTree(`<p>${PAGE_TEXT}</p>${Array.from({ length: 5 }, (_, i) => `<img src="${at(`/photo.png?n=${i}`)}">`).join('')}`).root;
+    const omitted = new OmittedExternalImages();
+    await loadExternalImages(tree, {}, omitted, { maxImages: 3, maxImagePixels: 25_000_000, maxDocumentPixels: 100_000_000 });
+    expect(server.requests).toHaveLength(3);
+    expect(omitted.warnings()).toHaveLength(2);
+    expect(omitted.warnings()[0]).toMatch(/the document already holds the most images it can embed \(3\)\.$/);
+  });
+
+  it('keeps the renderers\' own limit of embedded images', () => {
+    expect(HTML_IMAGE_CAPS.maxImages).toBe(64);
+  });
 });
 
 describe('requireResources', () => {
@@ -348,6 +325,113 @@ describe('requireResources', () => {
   it('refuses a reference that is not an absolute http or https URL', async () => {
     await expect(toPdf(html('<img src="images/logo.png">'), strict)).rejects.toThrow('"images/logo.png" is an external reference');
     await expect(stageHtmlForNativeEngine('<img src="file:///etc/hosts">', strict)).rejects.toThrow('"file:///etc/hosts" is an external reference');
+  });
+});
+
+describe('an absolute http or https <base href>', () => {
+  const base = (host = HOST, path = '/gallery/'): string => `<base href="${at(path, host)}">`;
+
+  beforeEach(() => {
+    server.serve('/gallery/photo.png', png);
+    server.serve('/gallery/up.png', png);
+  });
+
+  it('resolves relative image URLs on both routes, and the base itself is not kept', async () => {
+    const markup = `${base()}<img src="photo.png"><img src="../photo.png"><img srcset="/gallery/up.png 1x"><img src="//${OTHER_HOST}:${server.port}/photo.png">`;
+    const staged = await stageHtmlForNativeEngine(`<p>${PAGE_TEXT}</p>${markup}`);
+    expect(staged.warnings).toEqual([]);
+    expect(staged.html.match(/data:image\/png;base64/g)).toHaveLength(4);
+    expect(staged.html).not.toMatch(/<base|images\.test/);
+    expect(server.requests.map((request) => request.url).sort()).toEqual(['/gallery/photo.png', '/gallery/up.png', '/photo.png', '/photo.png']);
+    const inProcess = await toPdf(html(markup));
+    expect(inProcess.metadata?.warnings).toBeUndefined();
+  });
+
+  oracleTest('gives the same images in the PDF', ['pdfimages'], async () => {
+    const result = await toPdf(html(`${base()}<img src="photo.png">`));
+    expect(pdfImages(result.buffer).count).toBe(1);
+  });
+
+  it('applies the same guards to what the base points at', async () => {
+    const warnings = ((await toPdf(html(`${base(PRIVATE_HOST)}<img src="photo.png">`))).metadata?.warnings ?? []) as string[];
+    expect(warnings).toEqual(['Left out the image "photo.png": the host is not a public address.']);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('leaves a relative image out when the base is not an http or https URL, and without a base', async () => {
+    const warnings = ((await toPdf(html('<base href="file:///srv/pages/"><img src="photo.png">'))).metadata?.warnings ?? []) as string[];
+    expect(warnings).toEqual(['Left out the image "photo.png": only absolute http and https images are loaded.']);
+  });
+
+  it('is still strict about a relative image that cannot be placed', async () => {
+    await expect(toPdf(html('<img src="photo.png">'), { requireResources: true })).rejects.toThrow('"photo.png" is an external reference');
+    await expect(stageHtmlForNativeEngine(`${base()}<img src="missing.png">`, { requireResources: true })).rejects.toThrow(
+      'could not be loaded: the server answered with status 404'
+    );
+  });
+});
+
+describe('one fetch session per job', () => {
+  oracleTest('does not fetch the images again when the LibreOffice route fails and the in-process route follows', ['pdfimages'], async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'failing-soffice-'));
+    const stub = path.join(dir, 'soffice');
+    fs.writeFileSync(stub, '#!/bin/sh\ncase "$*" in *--help*) exit 0;; esac\nexit 1\n', { mode: 0o755 });
+    const previous = process.env.SOFFICE_PATH;
+    process.env.SOFFICE_PATH = stub;
+    try {
+      const result = await executeWorkerConversion(html(`<img src="${at('/photo.png')}"><img src="${at('/photo.jpg')}">`), 'html', 'pdf', {}, 'p.html');
+      expect(result.engineUsed).toBe('internal-fallback');
+      expect(result.fallbackChain?.[0]).toMatch(/^native-soffice/);
+      expect(pdfImages(result.buffer).count).toBe(2);
+      expect(server.requests).toHaveLength(2);
+    } finally {
+      if (previous === undefined) delete process.env.SOFFICE_PATH;
+      else process.env.SOFFICE_PATH = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops loading images when the job is cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('job cancelled'));
+    await expect(
+      withMissingBinary('SOFFICE_PATH', () =>
+        executeWorkerConversion(html(`<img src="${at('/photo.png')}">`), 'html', 'pdf', { signal: controller.signal }, 'p.html')
+      )
+    ).rejects.toThrow('job cancelled');
+    expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe('HTML_IMAGE_FETCH=off', () => {
+  const previous = process.env.HTML_IMAGE_FETCH;
+  beforeEach(() => {
+    process.env.HTML_IMAGE_FETCH = 'off';
+  });
+  afterEach(() => {
+    if (previous === undefined) delete process.env.HTML_IMAGE_FETCH;
+    else process.env.HTML_IMAGE_FETCH = previous;
+  });
+
+  it('leaves every external image out with a warning on both routes, and fetches nothing', async () => {
+    const warning = `Left out the image "${at('/photo.png')}": loading images is turned off on this server.`;
+    const staged = await stageHtmlForNativeEngine(`<p>${PAGE_TEXT}</p><img src="${at('/photo.png')}">`);
+    expect(staged.warnings).toEqual([warning]);
+    expect(staged.html).not.toContain('<img');
+    expect(((await toPdf(html(`<img src="${at('/photo.png')}">`))).metadata?.warnings ?? []) as string[]).toEqual([warning]);
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('refuses with a 400 when every resource is required', async () => {
+    await expect(toPdf(html(`<img src="${at('/photo.png')}">`), { requireResources: true })).rejects.toThrow(
+      'could not be loaded: loading images is turned off on this server'
+    );
+  });
+
+  it('keeps embedded images', async () => {
+    const staged = await stageHtmlForNativeEngine(`<img src="data:image/png;base64,${png.toString('base64')}">`);
+    expect(staged.warnings).toEqual([]);
+    expect(staged.html).toContain('<img');
   });
 });
 

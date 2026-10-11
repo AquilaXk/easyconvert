@@ -15,6 +15,8 @@ const CONTROL_CHARACTERS = /\p{Cc}/gu;
 export interface HtmlResourcePolicy {
   /** Refuse a document with an image that cannot be loaded (400) instead of leaving the image out. */
   requireResources?: boolean;
+  /** The job's signal: once it fires, no further image is fetched. */
+  signal?: AbortSignal;
 }
 
 export function quoted(reference: string): string {

@@ -15,7 +15,7 @@ import {
   conversionWarningsFields,
   conversionWarningsHeaders,
 } from '../src/lib/api/conversion-warnings';
-import { overrideImageFetchEnvironment } from '../src/lib/conversions/html-image-fetch';
+import { overrideImageFetchRules } from '../src/lib/conversions/html-image-fetch';
 import { withMissingBinary } from './helpers/native-tools';
 
 /**
@@ -42,11 +42,7 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
-  restoreFetchEnvironment = overrideImageFetchEnvironment({
-    resolve: async () => {
-      throw new Error('offline');
-    },
-  });
+  restoreFetchEnvironment = overrideImageFetchRules({ hosts: {} });
   const user = await userStore.createUser({
     name: 'Warnings Tester',
     email: `warnings_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
