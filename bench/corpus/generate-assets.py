@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Writes the benchmark corpus files that need a library or tool with no deterministic mode (see PROVENANCE.md).
 
-    python3 -I generate-assets.py <corpus-dir>
+    python3 -I generate-assets.py
 
-Requires pyarrow, openpyxl, fontTools and, for the MOBI file, calibre's `ebook-convert`; the table (data/table.jsonl) and
+It writes into the directory it lives in. Requires pyarrow, openpyxl, fontTools and, for the MOBI file, calibre's `ebook-convert`; the table (data/table.jsonl) and
 the EPUB (ebooks/book.epub) come from generate.ts first. The committed bytes are the record: manifest.json pins them.
 """
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,7 +130,7 @@ def make_mobi(corpus):
 
 
 def main():
-    corpus = Path(sys.argv[1])
+    corpus = Path(__file__).resolve().parent
     make_parquet(corpus)
     make_xlsx(corpus)
     make_fonts(corpus)

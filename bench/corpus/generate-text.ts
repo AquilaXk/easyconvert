@@ -252,7 +252,7 @@ export async function makeBook(outDir: string): Promise<void> {
   let figure: Buffer;
   try {
     const figurePath = path.join(scratch, 'figure.jpg');
-    execFileSync('convert', [path.join(outDir, 'photo-a.jpg'), '-resize', `${FIGURE_WIDTH_PX}x`, '-strip', '-quality', '80', figurePath], { stdio: ['ignore', 'ignore', 'pipe'], timeout: TOOL_TIMEOUT_MS });
+    execFileSync('/usr/bin/convert', [path.join(outDir, 'photo-a.jpg'), '-resize', `${FIGURE_WIDTH_PX}x`, '-strip', '-quality', '80', figurePath], { stdio: ['ignore', 'ignore', 'pipe'], timeout: TOOL_TIMEOUT_MS });
     figure = fs.readFileSync(figurePath);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

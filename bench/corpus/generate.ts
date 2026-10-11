@@ -235,7 +235,7 @@ function writeManifest(): void {
 
 /** Python assets: the Parquet, XLSX, font and MOBI files, written by libraries and tools with no deterministic mode. */
 function makeAssets(): void {
-  execFileSync('python3', ['-I', path.join(CORPUS_DIR, 'generate-assets.py'), CORPUS_DIR], { stdio: ['ignore', 'inherit', 'inherit'], timeout: TOOL_TIMEOUT_MS });
+  execFileSync('/usr/bin/python3', ['-I', path.join(CORPUS_DIR, 'generate-assets.py')], { stdio: ['ignore', 'inherit', 'inherit'], timeout: TOOL_TIMEOUT_MS });
 }
 
 const STEPS: Readonly<Record<string, () => void | Promise<void>>> = {

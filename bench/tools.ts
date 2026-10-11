@@ -193,7 +193,7 @@ function pythonLibraryVersion(python: string, library: string): string {
 
 /** `<package> <version>` from the Debian package database, or null where there is none (a laptop, a container without dpkg). */
 function packageVersion(pkg: string): string | null {
-  const run = spawnSync('dpkg-query', ['-W', '-f', '${Version}', pkg], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
+  const run = spawnSync('/usr/bin/dpkg-query', ['-W', '-f', '${Version}', pkg], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS });
   return run.status === 0 && run.stdout.trim() !== '' ? `${pkg} ${run.stdout.trim()}` : null;
 }
 
