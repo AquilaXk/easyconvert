@@ -79,12 +79,11 @@ const SPLINE_PERIODIC_FLAG = 2;
 const SPLINE_FRAME_VERTEX_FLAG = 16;
 const NUMBER = (value: string): number => Number.parseFloat(value);
 
-interface Pair {
-  code: number;
-  value: string;
+/** The pairs of one entity (or table entry, or block header) as parallel arrays: group codes and their values. */
+interface GroupRecord {
+  codes: number[];
+  values: string[];
 }
-
-type GroupRecord = Pair[];
 
 interface Affine {
   a: number;
@@ -111,7 +110,10 @@ function compose(outer: Affine, inner: Affine): Affine {
 const apply = (t: Affine, p: Point): Point => [t.a * p[0] + t.c * p[1] + t.e, t.b * p[0] + t.d * p[1] + t.f];
 
 /** The rotation and uniform scale of a transform that is only that (no mirror, no shear), or null. */
+const IDENTITY_SIMILARITY = { scale: 1, rotation: 0 };
+
 function similarity(t: Affine): { scale: number; rotation: number } | null {
+  if (t === IDENTITY) return IDENTITY_SIMILARITY;
   const scaleX = Math.hypot(t.a, t.b);
   const scaleY = Math.hypot(t.c, t.d);
   const rotation = Math.atan2(t.b, t.a);
@@ -123,15 +125,60 @@ function similarity(t: Affine): { scale: number; rotation: number } | null {
 // ---------------------------------------------------------------------------------------------------------------
 // Group-code stream
 
+const CHAR_NEWLINE = 10;
+const CHAR_ZERO = 48;
+const CHAR_NINE = 57;
+const CHAR_SPACE_LIMIT = 32;
+const CHAR_ASCII_LIMIT = 127;
+const MAX_CODE_DIGITS = 4;
+
+/** One line of the stream without its surrounding white space (what `String.prototype.trim` removes), as a slice of `text`. */
+function trimmedSlice(text: string, from: number, to: number): string {
+  let start = from;
+  let end = to;
+  while (start < end && text.charCodeAt(start) <= CHAR_SPACE_LIMIT) start++;
+  while (end > start && text.charCodeAt(end - 1) <= CHAR_SPACE_LIMIT) end--;
+  const slice = text.substring(start, end);
+  // Characters beyond ASCII that trim also removes (no-break space, byte-order mark, line separators) are rare: the check is two reads.
+  return slice.length > 0 && (slice.charCodeAt(0) > CHAR_ASCII_LIMIT || slice.charCodeAt(slice.length - 1) > CHAR_ASCII_LIMIT) ? slice.trim() : slice;
+}
+
+/** The group code of a line: a plain run of digits is read directly, anything else as `parseInt` reads it. */
+function groupCode(line: string): number {
+  const length = line.length;
+  if (length > 0 && length <= MAX_CODE_DIGITS) {
+    let value = 0;
+    for (let i = 0; i < length; i++) {
+      const digit = line.charCodeAt(i) - CHAR_ZERO;
+      if (digit < 0 || digit > CHAR_NINE - CHAR_ZERO) return Number.parseInt(line, 10);
+      value = value * 10 + digit;
+    }
+    return value;
+  }
+  return Number.parseInt(line, 10);
+}
+
+/**
+ * The group-code stream as sections of records. Lines are split at "\n" (a "\r" before it is white space), a code line and a
+ * value line make a pair, a code that is not an integer drops its pair, and an unpaired last line is ignored.
+ */
 function readRecords(text: string): { section: string; records: GroupRecord[] }[] {
-  const lines = text.split(/\r?\n/);
   const sections: { section: string; records: GroupRecord[] }[] = [];
   let current: { section: string; records: GroupRecord[] } | null = null;
   let record: GroupRecord | null = null;
-  for (let i = 0; i + 1 < lines.length; i += 2) {
-    const code = Number.parseInt(lines[i].trim(), 10);
+  let at = 0;
+  const length = text.length;
+  while (at < length) {
+    const codeEnd = text.indexOf('\n', at);
+    if (codeEnd < 0) break;
+    const code = groupCode(trimmedSlice(text, at, codeEnd));
+    const valueStart = codeEnd + 1;
+    let valueEnd = text.indexOf('\n', valueStart);
+    // The last line of the file has no newline after it.
+    if (valueEnd < 0) valueEnd = length;
+    at = valueEnd + 1;
     if (!Number.isInteger(code)) continue;
-    const value = lines[i + 1].trim();
+    const value = trimmedSlice(text, valueStart, valueEnd);
     if (code === 0) {
       if (value === 'SECTION') {
         current = { section: '', records: [] };
@@ -141,11 +188,12 @@ function readRecords(text: string): { section: string; records: GroupRecord[] }[
         current = null;
         record = null;
       } else if (current) {
-        record = [{ code, value }];
+        record = { codes: [code], values: [value] };
         current.records.push(record);
       }
     } else if (record) {
-      record.push({ code, value });
+      record.codes.push(code);
+      record.values.push(value);
     } else if (current && code === 2 && current.section === '') {
       current.section = value;
     }
@@ -153,7 +201,10 @@ function readRecords(text: string): { section: string; records: GroupRecord[] }[
   return sections;
 }
 
-const first = (record: GroupRecord, code: number): string | undefined => record.find((pair) => pair.code === code)?.value;
+const first = (record: GroupRecord, code: number): string | undefined => {
+  const at = record.codes.indexOf(code);
+  return at < 0 ? undefined : record.values[at];
+};
 /** A group value as a number; a value that is not a finite number is a damaged drawing, never a coordinate. */
 function finite(value: string, code: number): number {
   const parsed = NUMBER(value);
@@ -164,7 +215,11 @@ const num = (record: GroupRecord, code: number, fallback: number): number => {
   const raw = first(record, code);
   return raw === undefined ? fallback : finite(raw, code);
 };
-const all = (record: GroupRecord, code: number): number[] => record.filter((pair) => pair.code === code).map((pair) => finite(pair.value, code));
+const all = (record: GroupRecord, code: number): number[] => {
+  const found: number[] = [];
+  for (let i = 0; i < record.codes.length; i++) if (record.codes[i] === code) found.push(finite(record.values[i], code));
+  return found;
+};
 /** An angle in degrees reduced into [0, 360), so arithmetic on it stays exact however large the file states it. */
 const turnDegrees = (degrees: number): number => ((degrees % DEGREES_PER_TURN) + DEGREES_PER_TURN) % DEGREES_PER_TURN;
 /** The same for an angle in radians. */
@@ -180,10 +235,12 @@ function sweepOf(start: number, end: number): number {
 
 function sampleArc(centre: Point, radius: number, start: number, sweep: number): Point[] {
   const steps = Math.min(MAX_SAMPLED_POINTS_PER_CURVE, Math.max(2, Math.ceil(Math.abs(sweep) / SAMPLE_STEP_RADIANS)));
-  return Array.from({ length: steps + 1 }, (_, i) => {
+  const points: Point[] = new Array<Point>(steps + 1);
+  for (let i = 0; i <= steps; i++) {
     const angle = start + (sweep * i) / steps;
-    return [centre[0] + radius * Math.cos(angle), centre[1] + radius * Math.sin(angle)] as Point;
-  });
+    points[i] = [centre[0] + radius * Math.cos(angle), centre[1] + radius * Math.sin(angle)];
+  }
+  return points;
 }
 
 /** The points of a circular arc from `p0` to `p1` with the bulge of a polyline vertex, ends included. */
@@ -225,12 +282,16 @@ function sampleEllipse(centre: Point, major: Point, ratio: number, start: number
   const steps = Math.min(MAX_SAMPLED_POINTS_PER_CURVE, Math.max(8, Math.ceil(sweep / SAMPLE_STEP_RADIANS)));
   const a = Math.hypot(major[0], major[1]);
   const rotation = Math.atan2(major[1], major[0]);
-  return Array.from({ length: steps + 1 }, (_, i) => {
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const points: Point[] = new Array<Point>(steps + 1);
+  for (let i = 0; i <= steps; i++) {
     const t = start + (sweep * i) / steps;
     const x = a * Math.cos(t);
     const y = a * ratio * Math.sin(t);
-    return [centre[0] + x * Math.cos(rotation) - y * Math.sin(rotation), centre[1] + x * Math.sin(rotation) + y * Math.cos(rotation)] as Point;
-  });
+    points[i] = [centre[0] + x * cos - y * sin, centre[1] + x * sin + y * cos];
+  }
+  return points;
 }
 
 /** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t, taking the last span at the end. */
@@ -242,11 +303,9 @@ function knotSpan(knots: number[], degree: number, count: number, t: number): nu
 }
 
 /** A point of a NURBS curve (The NURBS Book, A4.1 over the basis of A2.2). */
-function nurbsPoint(degree: number, knots: number[], control: Point[], weights: number[], t: number): Point {
+function nurbsPoint(degree: number, knots: number[], control: Point[], weights: number[], t: number, basis: Float64Array, left: Float64Array, right: Float64Array): Point {
   const span = knotSpan(knots, degree, control.length, t);
-  const basis = new Array<number>(degree + 1).fill(0);
-  const left = new Array<number>(degree + 1).fill(0);
-  const right = new Array<number>(degree + 1).fill(0);
+  // The three work arrays are reused between points: the recurrence writes every value it later reads.
   basis[0] = 1;
   for (let j = 1; j <= degree; j++) {
     left[j] = t - knots[span + 1 - j];
@@ -296,7 +355,12 @@ function sampleSpline(record: GroupRecord): Point[] {
   const steps = Math.min(MAX_SAMPLED_POINTS_PER_CURVE, spans * SPLINE_SAMPLES_PER_SPAN);
   const from = knots[degree];
   const to = knots[control.length];
-  return Array.from({ length: steps + 1 }, (_, i) => nurbsPoint(degree, knots, control, weights, from + ((to - from) * i) / steps));
+  const basis = new Float64Array(degree + 1);
+  const left = new Float64Array(degree + 1);
+  const right = new Float64Array(degree + 1);
+  const points: Point[] = new Array<Point>(steps + 1);
+  for (let i = 0; i <= steps; i++) points[i] = nurbsPoint(degree, knots, control, weights, from + ((to - from) * i) / steps, basis, left, right);
+  return points;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -316,7 +380,7 @@ function readLayers(sections: { section: string; records: GroupRecord[] }[]): La
   for (const section of sections) {
     if (section.section !== 'TABLES') continue;
     for (const record of section.records) {
-      if (record[0].value !== 'LAYER') continue;
+      if (record.values[0] !== 'LAYER') continue;
       const name = first(record, 2);
       if (name === undefined) continue;
       const frozen = (Math.trunc(num(record, 70, 0)) & LAYER_FROZEN_FLAG) !== 0;
@@ -331,7 +395,7 @@ function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; ve
   const entities: Array<{ record: GroupRecord; vertices: GroupRecord[] }> = [];
   let open: { record: GroupRecord; vertices: GroupRecord[] } | null = null;
   for (const record of records) {
-    const type = record[0].value;
+    const type = record.values[0];
     if (type === 'POLYLINE') {
       open = { record, vertices: [] };
       entities.push(open);
@@ -395,7 +459,7 @@ class Builder {
 
   private curve(points: Point[], closed: boolean, t: Affine): void {
     if (points.length < 2) return;
-    this.add({ kind: 'poly', points: points.map((p) => apply(t, p)), closed });
+    this.add({ kind: 'poly', points: t === IDENTITY ? points : points.map((p) => apply(t, p)), closed });
   }
 
   entities(records: GroupRecord[], t: Affine, depth: number): void {
@@ -406,7 +470,7 @@ class Builder {
   }
 
   private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number): void {
-    const type = record[0].value;
+    const type = record.values[0];
     if (this.layers.hidden.has(first(record, 8) ?? '0')) return;
     const at: Point = [num(record, 10, 0), num(record, 20, 0)];
     const similar = similarity(t);
@@ -432,10 +496,11 @@ class Builder {
       }
       case 'LWPOLYLINE': {
         const list: Vertex[] = [];
-        for (const pair of record) {
-          if (pair.code === 10) list.push({ point: [finite(pair.value, 10), 0], bulge: 0 });
-          else if (pair.code === 20 && list.length > 0) list[list.length - 1].point = [list[list.length - 1].point[0], finite(pair.value, 20)];
-          else if (pair.code === 42 && list.length > 0) list[list.length - 1].bulge = finite(pair.value, 42);
+        for (let i = 0; i < record.codes.length; i++) {
+          const code = record.codes[i];
+          if (code === 10) list.push({ point: [finite(record.values[i], 10), 0], bulge: 0 });
+          else if (code === 20 && list.length > 0) list[list.length - 1].point = [list[list.length - 1].point[0], finite(record.values[i], 20)];
+          else if (code === 42 && list.length > 0) list[list.length - 1].bulge = finite(record.values[i], 42);
         }
         const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
         if (list.length > 1) this.curve(polylinePoints(list, closed, (count) => this.chargePoints(count)), closed, t);
@@ -527,7 +592,7 @@ class Builder {
 
   private mtext(record: GroupRecord, at: Point, t: Affine): void {
     const height = num(record, 40, 0);
-    const raw = `${record.filter((pair) => pair.code === 3).map((pair) => pair.value).join('')}${first(record, 1) ?? ''}`;
+    const raw = `${record.values.filter((_, i) => record.codes[i] === 3).join('')}${first(record, 1) ?? ''}`;
     if (!(height > 0) || raw.trim() === '') return;
     const direction = first(record, 11) === undefined ? turnDegrees(num(record, 50, 0)) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
     this.place({ at, height, rotation: direction, lines: stripMtext(raw), anchor: MTEXT_ANCHORS[Math.trunc(num(record, 71, 1))] ?? 'start', hangsFromTop: true }, t);
@@ -559,43 +624,58 @@ function textBox(text: DxfText): Point[] {
   return corners.map(([x, y]) => [text.at[0] + x * cos - y * sin, text.at[1] + x * sin + y * cos] as Point);
 }
 
-function strokePoints(stroke: DxfStroke): Point[] {
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  finite: boolean;
+}
+
+function grow(bounds: Bounds, x: number, y: number): void {
+  // NaN and infinities fail the comparisons below and are caught by the finite flag.
+  if (!(Number.isFinite(x) && Number.isFinite(y))) bounds.finite = false;
+  if (x < bounds.minX) bounds.minX = x;
+  if (y < bounds.minY) bounds.minY = y;
+  if (x > bounds.maxX) bounds.maxX = x;
+  if (y > bounds.maxY) bounds.maxY = y;
+}
+
+function growByStroke(bounds: Bounds, stroke: DxfStroke): void {
   switch (stroke.kind) {
     case 'line':
-      return [stroke.a, stroke.b];
+      grow(bounds, stroke.a[0], stroke.a[1]);
+      grow(bounds, stroke.b[0], stroke.b[1]);
+      return;
     case 'poly':
-      return stroke.points;
+      for (const point of stroke.points) grow(bounds, point[0], point[1]);
+      return;
     case 'circle':
-      return [[stroke.centre[0] - stroke.radius, stroke.centre[1] - stroke.radius], [stroke.centre[0] + stroke.radius, stroke.centre[1] + stroke.radius]];
+      grow(bounds, stroke.centre[0] - stroke.radius, stroke.centre[1] - stroke.radius);
+      grow(bounds, stroke.centre[0] + stroke.radius, stroke.centre[1] + stroke.radius);
+      return;
     case 'arc': {
-      const at = (angle: number): Point => [stroke.centre[0] + stroke.radius * Math.cos(angle), stroke.centre[1] + stroke.radius * Math.sin(angle)];
-      const points = [at(stroke.start), at(stroke.end)];
+      const at = (angle: number): void => grow(bounds, stroke.centre[0] + stroke.radius * Math.cos(angle), stroke.centre[1] + stroke.radius * Math.sin(angle));
+      at(stroke.start);
+      at(stroke.end);
       // The axis extremes the arc passes through.
       // The angles are reduced into a turn when read (and by a similarity's rotation of at most a half turn), so the arc
       // crosses a handful of quarter turns; the bound makes that a fact of the loop and not of its input.
       const firstQuarter = Math.ceil(stroke.start / (Math.PI / 2));
-      for (let quarter = firstQuarter; quarter <= firstQuarter + MAX_ARC_QUARTERS && quarter * (Math.PI / 2) <= stroke.end; quarter++) points.push(at(quarter * (Math.PI / 2)));
-      return points;
+      for (let quarter = firstQuarter; quarter <= firstQuarter + MAX_ARC_QUARTERS && quarter * (Math.PI / 2) <= stroke.end; quarter++) at(quarter * (Math.PI / 2));
     }
   }
 }
 
 function extentsOf(strokes: DxfStroke[], texts: DxfText[]): DxfDrawing['extents'] {
-  const points = [...strokes.flatMap(strokePoints), ...texts.flatMap(textBox)];
-  if (points.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) {
+  const bounds: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, finite: true };
+  for (const stroke of strokes) growByStroke(bounds, stroke);
+  for (const text of texts) for (const corner of textBox(text)) grow(bounds, corner[0], corner[1]);
+  if (!bounds.finite) {
     throw new CadGeometryError('The DXF has coordinates that overflow once its blocks and scales are applied, so it has no drawable extent');
   }
-  if (points.length === 0) throw new ConversionFailedError('The DXF holds no drawable entities (LINE, CIRCLE, ARC, polyline, ELLIPSE, SPLINE, INSERT or text on a visible layer)');
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const [x, y] of points) {
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-  }
+  if (bounds.minX === Infinity) throw new ConversionFailedError('The DXF holds no drawable entities (LINE, CIRCLE, ARC, polyline, ELLIPSE, SPLINE, INSERT or text on a visible layer)');
+  const { minX, minY, maxX, maxY } = bounds;
   if (!Number.isFinite(maxX - minX) || !Number.isFinite(maxY - minY)) throw new CadGeometryError('The DXF is so large that its extent overflows');
   return { minX, minY, maxX, maxY };
 }
@@ -608,7 +688,7 @@ export function parseDxfDrawing(dxf: string): DxfDrawing {
     if (section.section !== 'BLOCKS') continue;
     let current: { name: string; block: Block } | null = null;
     for (const record of section.records) {
-      const type = record[0].value;
+      const type = record.values[0];
       if (type === 'BLOCK') {
         const name = first(record, 2);
         current = name === undefined ? null : { name, block: { base: [num(record, 10, 0), num(record, 20, 0)], records: [] } };
@@ -640,14 +720,62 @@ const PDF_STROKE_PT = 0.75;
 const FONT_FAMILY = 'system-ui, sans-serif';
 const ELEMENT_SEPARATOR = '\n    ';
 
-const fmt = (value: number): string => String(Number(value.toPrecision(9)));
-const escapeXml = (value: string): string => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+/** A number with nine significant digits, for the few values (angles, sizes) whose scale is not that of the drawing. */
+const exact = (value: number): string => String(Number(value.toPrecision(9)));
+
+/**
+ * Characters XML 1.0 cannot carry in text (controls other than tab, line feed and carriage return, lone surrogates, U+FFFE
+ * and U+FFFF): they are left out, so that the document stays well-formed whatever a DXF text holds.
+ */
+const NEEDS_XML_ESCAPE = /[&<>"\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/;
+const XML_ENTITIES: Readonly<Record<string, string>> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
+const LOW_SURROGATE_MIN = 0xdc00;
+const LOW_SURROGATE_MAX = 0xdfff;
+
+function escapeXml(value: string): string {
+  if (!NEEDS_XML_ESCAPE.test(value)) return value;
+  let out = '';
+  for (let i = 0; i < value.length; i++) {
+    const unit = value.charCodeAt(i);
+    const entity = XML_ENTITIES[value[i]];
+    if (entity !== undefined) out += entity;
+    else if (unit >= HIGH_SURROGATE_MIN && unit <= HIGH_SURROGATE_MAX && i + 1 < value.length && value.charCodeAt(i + 1) >= LOW_SURROGATE_MIN && value.charCodeAt(i + 1) <= LOW_SURROGATE_MAX) {
+      out += value[i] + value[i + 1];
+      i++;
+    } else if (unit < 0x20 && unit !== 0x09 && unit !== 0x0a && unit !== 0x0d) continue;
+    else if (unit >= HIGH_SURROGATE_MIN && unit <= LOW_SURROGATE_MAX) continue;
+    else if (unit === 0xfffe || unit === 0xffff) continue;
+    else out += value[i];
+  }
+  return out;
+}
+
+/** Decimals that resolve a drawing to a ten-millionth of its longest side. */
+const DECIMALS_BELOW_LONGEST = 7;
+const MAX_DECIMALS = 12;
+
+/**
+ * Number writer of one drawing: coordinates are rounded to a fixed number of decimals that follows its size (a
+ * ten-millionth of the longest side) and printed in their shortest form, which is several times faster than formatting
+ * significant digits and writes fewer characters.
+ */
+function coordinateWriter(longest: number): (value: number) => string {
+  const decimals = Math.min(MAX_DECIMALS, Math.max(0, DECIMALS_BELOW_LONGEST - Math.floor(Math.log10(longest))));
+  const scale = 10 ** decimals;
+  return (value) => {
+    const scaled = Math.round(value * scale);
+    // Beyond 2^53 the rounding is the identity, and a scale of 1e12 on a huge value would overflow: print the value itself.
+    return String(Number.isFinite(scaled) ? scaled / scale : value);
+  };
+}
 
 /** A sine or cosine without the rounding noise of a quarter turn (6e-17 for 90 degrees). */
 const trig = (value: number): number => (Math.abs(value) < 1e-12 ? 0 : value);
 
 /** An SVG path of an arc stroke through `map`, which carries drawing units to the output; `scale` is the length ratio. */
-function arcPath(stroke: Extract<DxfStroke, { kind: 'arc' }>, map: (p: Point) => Point, scale: number): string {
+function arcPath(stroke: Extract<DxfStroke, { kind: 'arc' }>, map: (p: Point) => Point, scale: number, fmt: (value: number) => string): string {
   const at = (angle: number): Point => [stroke.centre[0] + stroke.radius * trig(Math.cos(angle)), stroke.centre[1] + stroke.radius * trig(Math.sin(angle))];
   const from = map(at(stroke.start));
   const to = map(at(stroke.end));
@@ -663,56 +791,83 @@ function extentSizes(extents: DxfDrawing['extents']): { width: number; height: n
   return { width, height, longest: Math.max(width, height, Number.MIN_VALUE) };
 }
 
-function textElements(texts: DxfText[], map: (p: Point) => Point): string[] {
-  return texts.flatMap((text) => {
-    const anchor = text.anchor === 'start' ? '' : ` text-anchor="${text.anchor}"`;
-    const [x, y] = map(text.at);
-    const lines = text.lines.map((line, index) => {
-      const drop = (text.hangsFromTop ? 1 : 0) * text.height + index * text.height * MTEXT_LINE_PITCH;
-      return { line, drop };
-    });
-    return lines.map(({ line, drop }) => {
-      const cos = Math.cos(text.rotation);
-      const sin = Math.sin(text.rotation);
-      // The drop runs down the rotated text, which is (sin, cos) in y-up units and (sin, -cos) after the page's y flip.
-      const px = x + drop * sin;
-      const py = y + drop * cos;
-      const rotate = text.rotation === 0 ? '' : ` transform="rotate(${fmt(-text.rotation / DEGREES)} ${fmt(px)} ${fmt(py)})"`;
-      return `<text x="${fmt(px)}" y="${fmt(py)}" fill="${TEXT_COLOUR}" font-family="${FONT_FAMILY}" font-size="${fmt(text.height)}"${anchor}${rotate}>${escapeXml(line)}</text>`;
-    });
-  });
-}
-
-/** The drawing as a resolution-independent SVG: y is negated so the drawing is upright, the view box is the extents and a margin. */
-export function dxfDrawingToSvg(drawing: DxfDrawing, title: string): string {
-  const { extents } = drawing;
+/** The view box margin and the declared size of the SVG of a drawing: its long side is `SVG_LONG_SIDE_PX` user units. */
+function svgLayout(extents: DxfDrawing['extents']): { margin: number; viewWidth: number; viewHeight: number; pixelWidth: number; pixelHeight: number } {
   const { width, height, longest } = extentSizes(extents);
   const margin = longest * MARGIN_SHARE;
-  const strokeWidth = longest * STROKE_SHARE;
-  const flip = (p: Point): Point => [p[0], -p[1]];
-  const elements = drawing.strokes.map((stroke) => {
-    switch (stroke.kind) {
-      case 'line':
-        return `<line x1="${fmt(stroke.a[0])}" y1="${fmt(-stroke.a[1])}" x2="${fmt(stroke.b[0])}" y2="${fmt(-stroke.b[1])}" />`;
-      case 'circle':
-        return `<circle cx="${fmt(stroke.centre[0])}" cy="${fmt(-stroke.centre[1])}" r="${fmt(stroke.radius)}" />`;
-      case 'arc':
-        return `<path d="${arcPath(stroke, flip, 1)}" />`;
-      case 'poly':
-        return `<${stroke.closed ? 'polygon' : 'polyline'} points="${stroke.points.map((p) => `${fmt(p[0])},${fmt(-p[1])}`).join(' ')}" />`;
-    }
-  });
   const viewWidth = width + 2 * margin;
   const viewHeight = height + 2 * margin;
   const pixelScale = SVG_LONG_SIDE_PX / Math.max(viewWidth, viewHeight);
+  return { margin, viewWidth, viewHeight, pixelWidth: viewWidth * pixelScale, pixelHeight: viewHeight * pixelScale };
+}
+
+/** The width and height `dxfDrawingToSvg` declares for the drawing, in user units (pixels at 72 dpi). */
+export function dxfSvgDeclaredSize(drawing: DxfDrawing): { width: number; height: number } {
+  const { pixelWidth, pixelHeight } = svgLayout(drawing.extents);
+  return { width: Number(exact(pixelWidth)), height: Number(exact(pixelHeight)) };
+}
+
+function textElements(texts: DxfText[], map: (p: Point) => Point, fmt: (value: number) => string): string[] {
+  const elements: string[] = [];
+  for (const text of texts) {
+    const anchor = text.anchor === 'start' ? '' : ` text-anchor="${text.anchor}"`;
+    const [x, y] = map(text.at);
+    const cos = Math.cos(text.rotation);
+    const sin = Math.sin(text.rotation);
+    const size = exact(text.height);
+    text.lines.forEach((line, index) => {
+      const drop = (text.hangsFromTop ? 1 : 0) * text.height + index * text.height * MTEXT_LINE_PITCH;
+      // The drop runs down the rotated text, which is (sin, cos) in y-up units and (sin, -cos) after the page's y flip.
+      const px = x + drop * sin;
+      const py = y + drop * cos;
+      const rotate = text.rotation === 0 ? '' : ` transform="rotate(${exact(-text.rotation / DEGREES)} ${fmt(px)} ${fmt(py)})"`;
+      elements.push(`<text x="${fmt(px)}" y="${fmt(py)}" fill="${TEXT_COLOUR}" font-family="${FONT_FAMILY}" font-size="${size}"${anchor}${rotate}>${escapeXml(line)}</text>`);
+    });
+  }
+  return elements;
+}
+
+/**
+ * The drawing as a resolution-independent SVG: y is negated so the drawing is upright, the view box is the extents and a
+ * margin. The document is safe by construction: the elements are the fixed set svg, title, g, line, circle, path, polyline,
+ * polygon and text, every attribute is a number this function printed or a constant, and the two free texts (the title
+ * and the drawing's texts) go through `escapeXml`. It needs no pass through the general SVG sanitizer, which
+ * tests/cad-dxf-svg-safe.test.ts checks by feeding hostile drawings to both and requiring the sanitizer to change nothing.
+ */
+export function dxfDrawingToSvg(drawing: DxfDrawing, title: string): string {
+  const { extents } = drawing;
+  const { longest } = extentSizes(extents);
+  const { margin, viewWidth, viewHeight, pixelWidth, pixelHeight } = svgLayout(extents);
+  const strokeWidth = longest * STROKE_SHARE;
+  const fmt = coordinateWriter(longest);
+  const flip = (p: Point): Point => [p[0], -p[1]];
+  const elements: string[] = [];
+  for (const stroke of drawing.strokes) {
+    switch (stroke.kind) {
+      case 'line':
+        elements.push(`<line x1="${fmt(stroke.a[0])}" y1="${fmt(-stroke.a[1])}" x2="${fmt(stroke.b[0])}" y2="${fmt(-stroke.b[1])}" />`);
+        break;
+      case 'circle':
+        elements.push(`<circle cx="${fmt(stroke.centre[0])}" cy="${fmt(-stroke.centre[1])}" r="${fmt(stroke.radius)}" />`);
+        break;
+      case 'arc':
+        elements.push(`<path d="${arcPath(stroke, flip, 1, fmt)}" />`);
+        break;
+      case 'poly': {
+        let points = '';
+        for (const point of stroke.points) points += `${points === '' ? '' : ' '}${fmt(point[0])},${fmt(-point[1])}`;
+        elements.push(`<${stroke.closed ? 'polygon' : 'polyline'} points="${points}" />`);
+      }
+    }
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="${fmt(extents.minX - margin)} ${fmt(-extents.maxY - margin)} ${fmt(viewWidth)} ${fmt(viewHeight)}" width="${fmt(viewWidth * pixelScale)}" height="${fmt(viewHeight * pixelScale)}">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${exact(extents.minX - margin)} ${exact(-extents.maxY - margin)} ${exact(viewWidth)} ${exact(viewHeight)}" width="${exact(pixelWidth)}" height="${exact(pixelHeight)}">
   <title>${escapeXml(title)}</title>
-  <g fill="none" stroke="${STROKE_COLOUR}" stroke-width="${fmt(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round">
+  <g fill="none" stroke="${STROKE_COLOUR}" stroke-width="${exact(strokeWidth)}" stroke-linecap="round" stroke-linejoin="round">
     ${elements.join(ELEMENT_SEPARATOR)}
   </g>
   <g>
-    ${textElements(drawing.texts, flip).join(ELEMENT_SEPARATOR)}
+    ${textElements(drawing.texts, flip, fmt).join(ELEMENT_SEPARATOR)}
   </g>
 </svg>`;
 }
@@ -746,7 +901,7 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
           break;
         }
         case 'arc':
-          doc.path(arcPath(stroke, map, scale)).stroke();
+          doc.path(arcPath(stroke, map, scale, exact)).stroke();
           break;
         case 'poly': {
           const points = stroke.points.map(map);

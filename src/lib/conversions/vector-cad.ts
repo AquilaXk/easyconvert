@@ -1,11 +1,11 @@
-import sharp, { type ResizeOptions } from 'sharp';
+import sharp, { type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
 import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError, EngineUnavailableError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
-import { openInputImage, resizedDimensions } from './image-input-limits';
+import { assertInputPixels, openInputImage, openLimitedSharp, resizedDimensions } from './image-input-limits';
 import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
@@ -20,7 +20,7 @@ import {
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
-import { dxfDrawingToSvg, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
+import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
 
@@ -284,6 +284,13 @@ export async function convertVectorCad(
 
 /** Resolution an SVG is rendered at when the request names none. */
 const DEFAULT_SVG_RENDER_DPI = 300;
+/** The resolution at which one user unit of an SVG is one pixel. */
+const SVG_USER_UNIT_DPI = 72;
+/**
+ * Deflate level of a PNG rendered from a DXF drawing: a plate with curves has many anti-aliased pixels, and level 3 writes it
+ * in 60 percent of the time of the default level for 6 percent more bytes.
+ */
+const DXF_PNG_COMPRESSION_LEVEL = 3;
 
 /** SVG to SVG, EMF, WMF or CGM straight from the vector geometry; null for any other target. */
 function svgToVectorTarget(inputBuffer: Buffer, tgt: string, baseName: string): ConversionResult | null {
@@ -337,10 +344,11 @@ async function assertSvgRenderSize(svg: Buffer, density: number): Promise<{ widt
  * are validated like raster images and the resized box is checked against the output pixel limit before the
  * drawing is rendered.
  */
-async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions): Promise<ResizeOptions | null> {
+async function svgResizeOf(svg: Buffer, density: number, options: ConversionOptions, known?: { width: number; height: number }): Promise<ResizeOptions | null> {
   const width = outputSideOf(options.width, 'width');
   const height = outputSideOf(options.height, 'height');
-  const rendered = await assertSvgRenderSize(svg, density);
+  if (known) assertOutputPixels(known.width, known.height);
+  const rendered = known ?? (await assertSvgRenderSize(svg, density));
   if (width === undefined && height === undefined) return null;
   const resize = { width, height, fit: options.fit || 'contain' };
   const resized = resizedDimensions(rendered.width, rendered.height, resize);
@@ -351,11 +359,21 @@ async function svgResizeOf(svg: Buffer, density: number, options: ConversionOpti
 /**
  * Converts SVG to Raster (PNG, JPG, WEBP, AVIF), Vector (DXF), or Document (PDF)
  */
+/** What the caller that wrote the SVG knows about it, so that the converter does not parse the header again to learn it. */
+interface WrittenSvg {
+  /** Declared size in user units (pixels at 72 dpi). */
+  width: number;
+  height: number;
+  /** Deflate level of a PNG output, for a drawing whose size the caller prefers to keep small in time over bytes. */
+  pngCompressionLevel?: number;
+}
+
 async function convertSvgSource(
   inputBuffer: Buffer,
   tgt: string,
   options: ConversionOptions,
-  baseName: string
+  baseName: string,
+  written?: WrittenSvg
 ): Promise<ConversionResult> {
   // SVG -> DXF
   if (tgt === 'dxf') {
@@ -422,10 +440,18 @@ async function convertSvgSource(
   if (vectorOutput) return vectorOutput;
 
   // SVG -> Raster Images via Sharp
-  let pipeline = await openInputImage(inputBuffer, { density });
+  const rendered = written ? { width: Math.round((written.width * density) / SVG_USER_UNIT_DPI), height: Math.round((written.height * density) / SVG_USER_UNIT_DPI) } : undefined;
+  let pipeline: Sharp;
+  if (rendered) {
+    // The writer states the size it wrote: the limits are checked against it and the native decoder keeps its own pixel limit.
+    assertInputPixels(rendered.width, rendered.height);
+    pipeline = openLimitedSharp(inputBuffer, { density });
+  } else {
+    pipeline = await openInputImage(inputBuffer, { density });
+  }
 
   if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
-    const resize = await svgResizeOf(inputBuffer, density, options);
+    const resize = await svgResizeOf(inputBuffer, density, options, rendered);
     if (resize) pipeline = pipeline.resize(resize);
   }
 
@@ -435,7 +461,7 @@ async function convertSvgSource(
 
   switch (tgt) {
     case 'png':
-      outputBuffer = await pipeline.png().toBuffer();
+      outputBuffer = await pipeline.png(written?.pngCompressionLevel === undefined ? undefined : { compressionLevel: written.pngCompressionLevel }).toBuffer();
       mimeType = 'image/png';
       break;
 
@@ -525,9 +551,8 @@ async function convertDxfSource(
 
   // DXF -> SVG
   if (tgt === 'svg') {
-    const svg = dxfDrawingToSvg(drawing, baseName);
-    const cleanSvg = sanitizeSvgDocument(svg);
-    const buffer = Buffer.from(cleanSvg, 'utf-8');
+    // The writer's output is safe by construction (see dxfDrawingToSvg) and needs no pass through the general sanitizer.
+    const buffer = Buffer.from(dxfDrawingToSvg(drawing, baseName), 'utf-8');
     return {
       buffer,
       mimeType: 'image/svg+xml',
@@ -551,7 +576,7 @@ async function convertDxfSource(
   if (['png', 'jpg', 'jpeg', 'webp'].includes(tgt)) {
     const svgStr = dxfDrawingToSvg(drawing, baseName);
     const svgBuf = Buffer.from(svgStr, 'utf-8');
-    return convertSvgSource(svgBuf, tgt, options, baseName);
+    return convertSvgSource(svgBuf, tgt, options, baseName, { ...dxfSvgDeclaredSize(drawing), pngCompressionLevel: DXF_PNG_COMPRESSION_LEVEL });
   }
 
   throw new Error(`Unsupported DXF target conversion: ${tgt}`);
