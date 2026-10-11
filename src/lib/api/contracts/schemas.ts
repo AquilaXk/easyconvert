@@ -586,7 +586,7 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       default: false,
       description:
-        'HTML to PDF: refuse a page that names an external resource with a 400 error. Resources are never fetched, so by default an external image is left out of the PDF and reported as a warning in the result.',
+        'HTML to PDF: refuse a page with an image that cannot be loaded with a 400 error. By default the public http and https images of a page are fetched and embedded; an image that is refused (a private, loopback or link-local address), too large, too slow or not an image is left out of the PDF and reported as a warning in the result.',
     },
 
     // Audio options
@@ -1293,7 +1293,7 @@ export const ConversionWarningsProperties = {
     type: 'array',
     maxItems: MAX_CONVERSION_WARNINGS,
     description:
-      'What the conversion left out of the document, one line each, for example an HTML image that is not embedded: resources are never fetched, so the image is omitted unless the request sets `requireResources`. The conversion succeeded. Present only when something was left out.',
+      'What the conversion left out of the document, one line each, for example an HTML image that could not be loaded: it is omitted unless the request sets `requireResources`. The conversion succeeded. Present only when something was left out.',
     items: { type: 'string', maxLength: MAX_CONVERSION_WARNING_CHARS },
   },
 } as const;

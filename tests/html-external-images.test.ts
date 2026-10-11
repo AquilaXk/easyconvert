@@ -3,22 +3,25 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
 import { MAX_REPORTED_OMISSIONS } from '../src/lib/conversions/html-omitted-resources';
+import { overrideImageFetchRules } from '../src/lib/conversions/html-image-fetch';
 import { executeWorkerConversion } from '../src/worker/engines';
 import { ConversionFailedError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
+import { noisyJpeg, solidPng, startImageServer, type ImageServer } from './helpers/image-server';
 
 /**
- * An HTML page whose images are not embedded still converts: the images are left out, never fetched, and each one is
- * reported in the result. Poppler (pdftotext, pdfimages) reads the PDFs; a stand-in LibreOffice records what the
- * native route hands it.
+ * An HTML page whose images are not embedded still converts. The images are fetched and embedded when they can be
+ * (second half of this file); one that cannot be loaded is left out and reported in the result. Poppler (pdftotext,
+ * pdfimages) reads the PDFs; a stand-in LibreOffice records what the native route hands it. No test reaches a real
+ * network: until a test installs its own lookup, every host name fails to resolve.
  */
 
 const PAGE_TEXT = 'Quarterly summary: revenue rose by twelve percent.';
@@ -51,9 +54,19 @@ function html(body: string): Buffer {
   return Buffer.from(`<html><head><title>Report</title></head><body>${body}</body></html>`, 'utf-8');
 }
 
+let restoreFetchEnvironment: (() => void) | undefined;
+
+beforeEach(() => {
+  restoreFetchEnvironment = overrideImageFetchRules({ hosts: {} });
+});
+
 afterEach(() => {
+  restoreFetchEnvironment?.();
   vi.restoreAllMocks();
 });
+
+const NOT_ABSOLUTE = 'only absolute http and https images are loaded';
+const UNRESOLVED = 'the host could not be resolved';
 
 describe('HTML to PDF with images that are not embedded', () => {
   oracleTest('keeps the page text, leaves the external images out and reports each one', ['pdftotext', 'pdfimages'], async () => {
@@ -69,9 +82,9 @@ describe('HTML to PDF with images that are not embedded', () => {
     expect(pdfText(result.buffer)).toBe(`${PAGE_TEXT} Details cell text Closing remark.`);
     expect(imageCount(result.buffer)).toBe(1);
     expect(result.metadata?.warnings).toEqual([
-      `Left out the image "${NO_NETWORK_REFERENCE}": external resources are not fetched.`,
-      'Left out the image "https://example.com/logo.png": external resources are not fetched.',
-      'Left out the image "//cdn.example.com/inline.png": external resources are not fetched.',
+      `Left out the image "${NO_NETWORK_REFERENCE}": ${NOT_ABSOLUTE}.`,
+      `Left out the image "https://example.com/logo.png": ${UNRESOLVED}.`,
+      `Left out the image "//cdn.example.com/inline.png": ${NOT_ABSOLUTE}.`,
     ]);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(connectSpy).not.toHaveBeenCalled();
@@ -96,8 +109,8 @@ describe('HTML to PDF with images that are not embedded', () => {
     const result = await withMissingBinary('SOFFICE_PATH', () => convertFile(html(`<p>${PAGE_TEXT}</p>${images}`), 'html', 'pdf', {}, 'many.html'));
     const warnings = result.metadata?.warnings as string[];
     expect(warnings).toHaveLength(MAX_REPORTED_OMISSIONS + 1);
-    expect(warnings[0]).toBe('Left out the image "img-0.png": external resources are not fetched.');
-    expect(warnings.at(-1)).toBe('Left out 7 more external images: external resources are not fetched.');
+    expect(warnings[0]).toBe(`Left out the image "img-0.png": ${NOT_ABSOLUTE}.`);
+    expect(warnings.at(-1)).toBe('Left out 7 more external images that could not be loaded.');
   });
 
   it('refuses the page with a typed error when every resource is required', async () => {
@@ -123,12 +136,12 @@ describe('both routes treat srcset images and picture sources alike', () => {
     [
       'a picture whose source is remote',
       (png) => `<picture><source srcset="${REMOTE_SOURCE}"><img src="${png}"></picture>`,
-      [`Left out the image "${REMOTE_SOURCE}": external resources are not fetched.`],
+      [`Left out the image "${REMOTE_SOURCE}": ${UNRESOLVED}.`],
     ],
     [
       'an img that only has a remote srcset',
       () => `<img srcset="${REMOTE_SOURCE}" alt="chart">`,
-      [`Left out the image "${REMOTE_SOURCE}": external resources are not fetched.`],
+      [`Left out the image "${REMOTE_SOURCE}": ${UNRESOLVED}.`],
     ],
   ];
 
@@ -148,9 +161,11 @@ describe('both routes treat srcset images and picture sources alike', () => {
 
   it('refuses both when every resource is required', async () => {
     const markup = `<p>text</p><picture><source srcset="${REMOTE_SOURCE}"></picture>`;
-    await expect(stageHtmlForNativeEngine(markup, { requireResources: true })).rejects.toThrow('https://example.com/wide.webp');
+    await expect(stageHtmlForNativeEngine(markup, { requireResources: true })).rejects.toThrow(
+      `could not be loaded: ${UNRESOLVED}`
+    );
     const inProcess = withMissingBinary('SOFFICE_PATH', () => convertFile(html(markup), 'html', 'pdf', { requireResources: true }, 'strict.html'));
-    await expect(inProcess).rejects.toThrow('is an external reference');
+    await expect(inProcess).rejects.toThrow(`could not be loaded: ${UNRESOLVED}`);
   });
 });
 
@@ -162,9 +177,9 @@ describe('HTML staged for the native engine with images that are not embedded', 
     expect(staged.html).toContain(PAGE_TEXT);
     expect(staged.html).not.toMatch(/<img|EIC012|etc\/hosts|192\.0\.2\.2/);
     expect(staged.warnings).toEqual([
-      `Left out the image "${NO_NETWORK_REFERENCE}": external resources are not fetched.`,
-      'Left out the image "file:///etc/hosts 1x": external resources are not fetched.',
-      'Left out the image "http://192.0.2.2:18765/m.png": external resources are not fetched.',
+      `Left out the image "${NO_NETWORK_REFERENCE}": ${NOT_ABSOLUTE}.`,
+      `Left out the image "file:///etc/hosts 1x": ${NOT_ABSOLUTE}.`,
+      'Left out the image "http://192.0.2.2:18765/m.png": the port is not allowed (only 80 and 443 are loaded).',
     ]);
   });
 
@@ -216,7 +231,7 @@ describe('HTML staged for the native engine with images that are not embedded', 
       const result = await executeWorkerConversion(source, 'html', 'pdf', {}, 'native.html');
       expect(result.engineUsed).toMatch(/^native-soffice/);
       expect(fs.readFileSync(capture, 'utf-8')).not.toMatch(/<img|example\.com/);
-      expect(result.metadata?.warnings).toEqual(['Left out the image "https://example.com/a.png": external resources are not fetched.']);
+      expect(result.metadata?.warnings).toEqual([`Left out the image "https://example.com/a.png": ${UNRESOLVED}.`]);
       const strict = executeWorkerConversion(source, 'html', 'pdf', { requireResources: true }, 'native.html');
       await expect(strict).rejects.toBeInstanceOf(ConversionFailedError);
     } finally {

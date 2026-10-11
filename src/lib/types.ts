@@ -219,8 +219,9 @@ export interface ConversionOptions {
   skipLinks?: boolean;
   repair?: boolean;
   /**
-   * HTML to PDF: refuse a document that names an external resource (400). Resources are never fetched, so
-   * by default an external image is left out and reported in `ConversionResult.metadata.warnings`.
+   * HTML to PDF: refuse a document with an image that cannot be loaded (400). By default the public http and https
+   * images of a page are fetched and embedded, and one that cannot be loaded is left out and reported in
+   * `ConversionResult.metadata.warnings`.
    */
   requireResources?: boolean;
   // Audio options

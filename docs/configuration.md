@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 112 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 113 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -53,12 +53,14 @@ Generate a secret with `openssl rand -hex 32`.
 | Variable | Type and rule | Default | Required in production | Process |
 | --- | --- | --- | --- | --- |
 | `STRICT_SANDBOX` | `true` or `false` | `false` | no | web, worker |
+| `HTML_IMAGE_FETCH` | one of `on`, `off` (any case) | `on` | no | web, worker |
 | `TRUSTED_PROXIES` | comma-separated IPv4/IPv6 addresses or CIDR ranges or `none`, at most 256 entries | none | no | web |
 | `TRUSTED_CDN` | one of `cloudflare` (any case) | none | no | web |
 | `TRUSTED_CDN_RANGES` | comma-separated IPv4/IPv6 addresses or CIDR ranges, at most 256 entries | none | no | web |
 | `TRUSTED_PROXY_HEADER` | one of `x-forwarded-for`, `forwarded` (any case) | none | no | web |
 
 - `STRICT_SANDBOX`: Set to `true` to refuse running native tools without the strict process sandbox.
+- `HTML_IMAGE_FETCH`: Whether the public http and https images of an HTML page are fetched and embedded when it is converted to PDF. `on` (the default) fetches them in a separate, credential-free child process that needs outbound TCP 80 and 443 to public addresses (see docker/AIRGAP.md for the network policy). `off` for deployments without egress: no image is fetched, and each external image is left out of the PDF with a warning (a request with `requireResources` is refused).
 - `TRUSTED_PROXIES`: Comma-separated IPv4/IPv6 addresses or CIDR ranges of the reverse proxies in front of the server, or `none` for a directly exposed server. Production should declare one of TRUSTED_PROXIES or TRUSTED_CDN; the edge middleware answers API requests with 503 until it does (docs/client-ip-trust.md).
 - `TRUSTED_CDN`: Name of the CDN whose edge ranges are trusted to forward client addresses.
 - `TRUSTED_CDN_RANGES`: CIDR ranges that replace the built-in edge ranges of TRUSTED_CDN.

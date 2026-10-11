@@ -2,14 +2,15 @@ import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
-import { findExternalImages, leaveOutImages, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
+import { loadExternalImages, type ImageCaps } from './html-image-loader';
+import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
  * text, quotes, rules and embedded (data: URI) PNG/JPEG images. Content the in-process renderer
  * cannot draw is refused with a typed error instead of being dropped. The one exception is an image
- * that is not embedded: resources are never fetched, so it is left out and reported (see
- * HtmlResourcePolicy) unless the caller requires every resource.
+ * that is not embedded: it is fetched and embedded first (see html-image-loader.ts), and one that cannot
+ * be loaded is left out and reported (see HtmlResourcePolicy) unless the caller requires every resource.
  */
 
 export interface HtmlElement {
@@ -32,7 +33,7 @@ export interface HtmlDocumentBlocks {
   /** Text of the <title> element, for PDF metadata. */
   title?: string;
   blocks: PdfBlock[];
-  /** One line per external image left out (see HtmlResourcePolicy); empty when none was. */
+  /** One line per external image that could not be loaded and was left out (see HtmlResourcePolicy); empty when none was. */
   warnings: string[];
 }
 
@@ -439,7 +440,7 @@ function unsupported(what: string): EngineUnavailableError {
 
 function externalImageRefusal(src: string): ConversionFailedError {
   return new ConversionFailedError(
-    `HTML image "${src}" is an external reference; external resources are not fetched, so embed the image as a data: URI`
+    `HTML image "${src}" is an external reference that was not loaded; embed the image as a data: URI`
   );
 }
 
@@ -741,6 +742,12 @@ const LOSSLESS_JPEG_QUALITY = 100;
 /** Most images one document may embed, and the most pixels they may hold together. */
 export const MAX_IMAGES_PER_DOCUMENT = 64;
 export const MAX_DOCUMENT_IMAGE_PIXELS = 100_000_000;
+/** What the loader of external images may add to a document: the limits of this renderer and of the staging for LibreOffice. */
+export const HTML_IMAGE_CAPS: ImageCaps = {
+  maxImages: MAX_IMAGES_PER_DOCUMENT,
+  maxImagePixels: MAX_IMAGE_PIXELS,
+  maxDocumentPixels: MAX_DOCUMENT_IMAGE_PIXELS,
+};
 
 /** The frame marker of a JPEG (0xC0 for baseline...), or null when none is found. */
 function jpegFrameMarker(data: Buffer): number | null {
@@ -877,15 +884,13 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
  * engine draws (embedded media, form fields, SVG, MathML, non-PNG/JPEG images) and
- * ConversionFailedError for embedded images that cannot be decoded, and for external images when the
- * policy requires every resource.
+ * ConversionFailedError for embedded images that cannot be decoded, and for external images that cannot
+ * be loaded when the policy requires every resource.
  */
 export async function parseHtmlToPdfBlocks(html: string, policy: HtmlResourcePolicy = {}): Promise<HtmlDocumentBlocks> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
-  const external = findExternalImages(tree.root);
-  if (policy.requireResources && external.length > 0) throw externalImageRefusal(external[0].reference);
   const omitted = new OmittedExternalImages();
-  leaveOutImages(external, omitted);
+  await loadExternalImages(tree.root, policy, omitted, HTML_IMAGE_CAPS);
   const builder = new HtmlBlockBuilder();
   const blocks = builder.blocks(tree.root.children);
   await verifyImages(builder.images);

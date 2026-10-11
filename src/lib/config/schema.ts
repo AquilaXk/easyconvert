@@ -480,6 +480,17 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
+  {
+    name: 'HTML_IMAGE_FETCH',
+    area: 'security',
+    description:
+      'Whether the public http and https images of an HTML page are fetched and embedded when it is converted to PDF. `on` (the default) fetches them in a separate, credential-free child process that needs outbound TCP 80 and 443 to public addresses (see docker/AIRGAP.md for the network policy). `off` for deployments without egress: no image is fetched, and each external image is left out of the PDF with a warning (a request with `requireResources` is refused).',
+    kind: { type: 'enum', values: ['on', 'off'], caseInsensitive: true },
+    default: 'on',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
 
   // ---- network ----------------------------------------------------------------------------------------
   {
