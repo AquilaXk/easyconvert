@@ -78,3 +78,6 @@ bench-results/
 
 # Reference-side measurements cached by the parity benchmark (npm run bench:quality -- --parity)
 .bench-cache/
+
+# Public benchmark samples fetched at run time
+/.bench-corpora/

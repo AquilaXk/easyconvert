@@ -36,10 +36,35 @@ export function decodeImageToPng(kind: ImageKind, input: string, output: string,
   } else if (kind === 'avif') {
     if (!tools.avifdec) throw new ToolRunError('avifdec is required to decode AVIF');
     runTool(tools.avifdec, [input, output]);
+    dropExifChunk(output);
   } else {
     runTool(tools.ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', input, '-frames:v', '1', output]);
   }
   if (!fs.existsSync(output)) throw new OutputIntegrityError(`${kind} decoder wrote no picture for ${path.basename(input)}`);
+}
+
+const PNG_SIGNATURE_BYTES = 8;
+const PNG_CHUNK_OVERHEAD_BYTES = 12;
+
+/**
+ * Removes the `eXIf` chunk from a PNG. avifdec copies the Exif item of an AVIF into the PNG it writes, and ffmpeg's PNG
+ * reader then rejects the whole picture when that item does not start with a TIFF header the way it expects. The benchmark
+ * measures pixels, so metadata is not part of what the picture is compared on; the chunk is dropped before the comparison.
+ */
+export function dropExifChunk(file: string): void {
+  const data = fs.readFileSync(file);
+  const kept: Buffer[] = [data.subarray(0, PNG_SIGNATURE_BYTES)];
+  let at = PNG_SIGNATURE_BYTES;
+  let dropped = false;
+  while (at + PNG_CHUNK_OVERHEAD_BYTES <= data.length) {
+    const length = data.readUInt32BE(at);
+    const end = at + PNG_CHUNK_OVERHEAD_BYTES + length;
+    if (end > data.length) throw new OutputIntegrityError(`${path.basename(file)} has a truncated PNG chunk`);
+    if (data.toString('latin1', at + 4, at + 8) === 'eXIf') dropped = true;
+    else kept.push(data.subarray(at, end));
+    at = end;
+  }
+  if (dropped) fs.writeFileSync(file, Buffer.concat(kept));
 }
 
 /** Mean video quality scores of `distorted` against `reference`: SSIM (All) and PSNR (average). */
@@ -123,8 +148,8 @@ export function measureAudioSnr(ffmpeg: string, distorted: string, source: strin
 }
 
 /** MD5 of the decoded PCM of an audio file, from ffmpeg's md5 muxer: equal hashes mean bit-exact audio. */
-export function decodedPcmHash(ffmpeg: string, file: string): string {
-  const out = runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-i', file, '-map', '0:a:0', '-c:a', 'pcm_s16le', '-f', 'md5', '-']).stdout.toString('utf8');
+export function decodedPcmHash(ffmpeg: string, file: string, pcmCodec: 'pcm_s16le' | 'pcm_s24le' = 'pcm_s16le'): string {
+  const out = runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-i', file, '-map', '0:a:0', '-c:a', pcmCodec, '-f', 'md5', '-']).stdout.toString('utf8');
   const match = /MD5=([0-9a-f]{32})/.exec(out);
   if (!match) throw new ToolRunError(`ffmpeg printed no PCM hash for ${path.basename(file)}`);
   return match[1];
@@ -132,4 +157,18 @@ export function decodedPcmHash(ffmpeg: string, file: string): string {
 
 export function fileSize(file: string): number {
   return fs.statSync(file).size;
+}
+
+const FLATTEN_BACKGROUND = '0x808080';
+
+/**
+ * Writes `input` composited over a mid-grey background as an opaque 8-bit PNG. SSIM and PSNR compare opaque pixels, so a
+ * picture with transparency is compared on what a viewer sees over a fixed background: both sides are judged on the same
+ * flattened pictures, and transparency that an encoder drops or keeps wrongly shows as a difference.
+ */
+export function flattenOnGrey(ffmpeg: string, ffprobe: string, input: string, output: string): void {
+  const stream = probeFile(ffprobe, input).streams[0];
+  const size = `${stream.width}x${stream.height}`;
+  runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${FLATTEN_BACKGROUND}:s=${size}`, '-i', input, '-filter_complex', '[0:v][1:v]overlay=format=auto,format=rgb24', '-frames:v', '1', output]);
+  if (!fs.existsSync(output)) throw new OutputIntegrityError(`ffmpeg wrote no flattened picture for ${path.basename(input)}`);
 }

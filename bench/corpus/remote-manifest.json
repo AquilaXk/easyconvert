@@ -1,0 +1,1959 @@
+{
+  "schemaVersion": 1,
+  "sets": {
+    "kodak-lossless": {
+      "title": "Kodak lossless true colour image suite (24 pictures, 768x512)",
+      "terms": "https://www.math.purdue.edu/~lucier/PHOTO_CD/RIGHTS/RIGHTS.USE"
+    },
+    "clic-professional": {
+      "title": "CLIC 2020 professional validation set (41 pictures); ten of them are used",
+      "terms": "https://archive.compression.cc/datasets/"
+    },
+    "wikimedia-commons": {
+      "title": "Files of Wikimedia Commons under open licences (screenshots, diagrams, 16-bit pictures, a studio recording)",
+      "terms": "https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia"
+    },
+    "aom-ctc": {
+      "title": "AV1 common test conditions sequences (first frames of each, 8-bit 4:2:0)",
+      "terms": "https://media.xiph.org/video/aomctc/test_set/"
+    },
+    "ebu-sqam": {
+      "title": "EBU SQAM sound quality assessment material (FLAC release of Tech 3253)",
+      "terms": "https://tech.ebu.ch/publications/sqamcd"
+    },
+    "silesia": {
+      "title": "Silesia compression corpus (12 files of 5 to 51 MB)",
+      "terms": "https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia"
+    }
+  },
+  "samples": [
+    {
+      "id": "kodim01.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 1 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim01.png"
+      },
+      "bytes": 736501,
+      "sha256": "a56e27cbf5f843c048b6af1d6e090760e9c92fadba88b7dee0205918a37523bd",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim02.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 2 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim02.png"
+      },
+      "bytes": 617995,
+      "sha256": "4f4b74a79237e311d72cad958237b5f7088d8bce1c82305ebefe1a70e3022dfd",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim03.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 3 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim03.png"
+      },
+      "bytes": 502888,
+      "sha256": "e25ca1ff2f0c0cb5fdfd5f9b0a0bb21ac4c3de3c84a67f35b09a85d3306249db",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim04.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 4 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim04.png"
+      },
+      "bytes": 637432,
+      "sha256": "e3b946107c5d3441c022f678d0c3caf1e224d81b1604ba840a4f88e562de61aa",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim05.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 5 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim05.png"
+      },
+      "bytes": 785610,
+      "sha256": "10349e963c5c813d327852f82c1795fa4148d69fedffc4c589bee458e3ac3d53",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim06.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 6 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim06.png"
+      },
+      "bytes": 618959,
+      "sha256": "363510303b715d4cbc384e1ce227e466b613a09e1b71ae985882bf8e7fbd9b18",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim07.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 7 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim07.png"
+      },
+      "bytes": 566322,
+      "sha256": "b77d3f006f42414bb242222e0482e750c0fb9e5ee8d4bed2f6f11c5605fe54a4",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim08.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 8 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim08.png"
+      },
+      "bytes": 788470,
+      "sha256": "ba23983c76b4832ee0e8af0592664756841a16779acd69f792e268fb6d13d6e7",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim09.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 9 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim09.png"
+      },
+      "bytes": 582899,
+      "sha256": "6a4361c2fc194feb4edaa9f9a4a0620fb9943e460ac7fdf037fb0f6dd6607a7d",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim10.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 10 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim10.png"
+      },
+      "bytes": 593463,
+      "sha256": "9dfb70f5867c29ff9ed6313683f19b3d867849e40fbc0c4c54a4a89df341cf23",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim11.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 11 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim11.png"
+      },
+      "bytes": 621023,
+      "sha256": "7936814b58b5387fce2e4e2488b4ec830dadd95fa9520f358ddb30990b50f2b6",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim12.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 12 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim12.png"
+      },
+      "bytes": 531024,
+      "sha256": "d78c37c2f04f23761ed2367dd77e2db584ddd4c3950833fecf89f199a8126980",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim13.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 13 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim13.png"
+      },
+      "bytes": 822712,
+      "sha256": "bc34a3ce58dea09dce1704c997171602de90cb34d0c8503a988b77f473d39b08",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim14.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 14 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim14.png"
+      },
+      "bytes": 692201,
+      "sha256": "55a94550ff18f3246c4074fd32b77b0c74447c26b6ad274d564d999c0450ba6e",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim15.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 15 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim15.png"
+      },
+      "bytes": 612582,
+      "sha256": "7538cbb80cb9103606c48b806eae57d56c885c7f90b9b3be70a41160f9cbb683",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim16.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 16 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim16.png"
+      },
+      "bytes": 534247,
+      "sha256": "a89c7268ccd4718ba424a99fc4643c572cf692ca6eae887185ceb4e9f11d2e54",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim17.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 17 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim17.png"
+      },
+      "bytes": 602078,
+      "sha256": "37afcc89fbdcb76d9518e04b2fc011027e2f4cd14b3b2f83cefd721641a47c5b",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim18.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 18 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim18.png"
+      },
+      "bytes": 780947,
+      "sha256": "1a9258c365988961d87a0598725b609139c303ad48a5aad6c503c3b1a87849aa",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim19.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 19 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim19.png"
+      },
+      "bytes": 671476,
+      "sha256": "b7450b264b1b0a411390d8931b112c27905a992520fc90569dc4b920aa32bbdc",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim20.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 20 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim20.png"
+      },
+      "bytes": 492462,
+      "sha256": "3b46c71e3b92a563820ba32936be8330c586c41f938efd94be938386aae4328a",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim21.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 21 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim21.png"
+      },
+      "bytes": 637051,
+      "sha256": "ac958597c82073f6bb65129c68f72b651db5b9efd82e11547d07350214bc268b",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim22.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 22 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim22.png"
+      },
+      "bytes": 701970,
+      "sha256": "1cee58eb1f2d9c7ebb254d208a03c783ce6cf2c4d8c2cf45e235dd23b4ce1b29",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim23.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 23 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim23.png"
+      },
+      "bytes": 557596,
+      "sha256": "e3111a2fd4da24af15d6459ef9eacfe54106b38e27b4a21821b75c3f5d2d5baf",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "kodim24.png",
+      "family": "image",
+      "class": "photo",
+      "set": "kodak-lossless",
+      "description": "Kodak lossless true colour suite picture 24 (768x512 or 512x768)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bdaehlie/lossy-compression-test/f60c926be2c62c320d962186e48f7d53cb9b852c/images/kodak/kodim24.png"
+      },
+      "bytes": 706397,
+      "sha256": "1071c68372cc5a01435c2c225a5cf7d4bb803846ec08bb6b3d6721b156d7cb96",
+      "licence": "Kodak-PhotoCD-rights",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-schicka-307.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture schicka-307",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "schicka-307.png",
+        "offset": 104904805,
+        "compressedSize": 253864,
+        "method": 0
+      },
+      "bytes": 253864,
+      "sha256": "04e0611bcd155a7613591504c51033a869360179b44aa51c4c0cea671563ebd5",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-todd-quackenbush-222.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture todd-quackenbush-222",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "todd-quackenbush-222.png",
+        "offset": 116731754,
+        "compressedSize": 630741,
+        "method": 0
+      },
+      "bytes": 630741,
+      "sha256": "0c63d9210463f36d2c564dd4d12ade884b1ee819dbdebbd210839eca5f2ab508",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-paul-itkin-46101.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture paul-itkin-46101",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "paul-itkin-46101.png",
+        "offset": 93917274,
+        "compressedSize": 1001544,
+        "method": 0
+      },
+      "bytes": 1001544,
+      "sha256": "f0a5cd1ea476b19e101f190212e9031dcbe956f44fac7d15fab24f243923a658",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-martin-wessely-211.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture martin-wessely-211",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "martin-wessely-211.png",
+        "offset": 79596561,
+        "compressedSize": 1373189,
+        "method": 0
+      },
+      "bytes": 1373189,
+      "sha256": "8c4791c5cb645198b3b12a884d33dac544a33763e1da0f59b86101c2af32e015",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-mullermarc-184.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture mullermarc-184",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "mullermarc-184.png",
+        "offset": 88972143,
+        "compressedSize": 1376326,
+        "method": 0
+      },
+      "bytes": 1376326,
+      "sha256": "9d7122af54918cd9b300444aa021a4825336b20e0a93c13d7b72a3d602025349",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-thong-vo-428.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture thong-vo-428",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "thong-vo-428.png",
+        "offset": 114964590,
+        "compressedSize": 1767090,
+        "method": 0
+      },
+      "bytes": 1767090,
+      "sha256": "f25a83aef7ed712d99d839127b4245e164fdce6a34cf0dfeb6fddc7aeec65357",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-sergey-zolkin-21232.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture sergey-zolkin-21232",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "sergey-zolkin-21232.png",
+        "offset": 109154129,
+        "compressedSize": 1896195,
+        "method": 0
+      },
+      "bytes": 1896195,
+      "sha256": "eb787c6f7cf15ba7c03107cb5d32e11b11b20451b5a18a5a1ae968a8a5be13a7",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-juskteez-vu-1041.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture juskteez-vu-1041",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "juskteez-vu-1041.png",
+        "offset": 68540112,
+        "compressedSize": 3806368,
+        "method": 0
+      },
+      "bytes": 3806368,
+      "sha256": "4edde2170e30a9c4b13a61c253f7207c1997e2e8c78ed72c78a116236ef579eb",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-veeterzy-82537.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture veeterzy-82537",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "veeterzy-82537.png",
+        "offset": 119898449,
+        "compressedSize": 4797369,
+        "method": 0
+      },
+      "bytes": 4797369,
+      "sha256": "bd71d3a9840a4acff75b0af0cfd227c49ea556d5e1ef68058f845934833b84de",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "clic-zugr-108.png",
+      "family": "image",
+      "class": "photo",
+      "set": "clic-professional",
+      "description": "CLIC 2020 professional validation picture zugr-108",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://downloads.compression.cc/clic2020_professional_valid.zip",
+        "entry": "zugr-108.png",
+        "offset": 131301297,
+        "compressedSize": 3557583,
+        "method": 0
+      },
+      "bytes": 3557583,
+      "sha256": "8dfb79901e629e69a28223c345a6859dd57c56d485b63c795679b05bf2cb4f37",
+      "licence": "Unsplash",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false
+      }
+    },
+    {
+      "id": "wm-screen-history.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Wikipedia page history screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/7/72/2025-01-25_screenshot_wikipedia_history_default.png"
+      },
+      "bytes": 440970,
+      "sha256": "eee9e8dc90f9a01b84937af8700054f076e4d41b93084f34dce7ab2a968ffae2",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:2025-01-25 screenshot wikipedia history default.png",
+        "author": "Lustiger seth"
+      }
+    },
+    {
+      "id": "wm-screen-wikibase.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Wikibase Registry web page screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/20200709_Screenshot_Wikibase_Registry.png"
+      },
+      "bytes": 295634,
+      "sha256": "4e1d6a1849b5aa5db0dc81e1181c8f8ca14980544ad3d0ddc4d114f5a3b45cf4",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:20200709 Screenshot Wikibase Registry.png",
+        "author": "Karsten Hoffmeyer"
+      }
+    },
+    {
+      "id": "wm-screen-open-xchange.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Web mail settings menu screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/Open-Xchange_Screenshot_Einstellungsmen%C3%BC.png"
+      },
+      "bytes": 242854,
+      "sha256": "2d5c50db04d5a25f831f1967dafe068dda8e5698f365ec602fcf1cfe00602fd2",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Open-Xchange Screenshot Einstellungsmenü.png",
+        "author": "Sphere231"
+      }
+    },
+    {
+      "id": "wm-screen-glazba.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Web page screenshot with large flat areas",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/5/58/Screenshot_of_Glazba_Link_Homepage.png"
+      },
+      "bytes": 26665,
+      "sha256": "4808b7bd185d13a244aef2d4f22cc9243d2c89d99ca152f6617eac9c13b8e301",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Screenshot of Glazba Link Homepage.png",
+        "author": "Glazba Corporation, LLC"
+      }
+    },
+    {
+      "id": "wm-screen-reasonator.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Wikidata item page screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/d/d1/Wikidata_%28Reasonator%29_screenshot_item_Q1339.png"
+      },
+      "bytes": 189778,
+      "sha256": "f9ebe667cb9bac562f87653958698c6217bd69c27a20557601bec3aa8748ec46",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Wikidata (Reasonator) screenshot item Q1339.png",
+        "author": "Magnus Manske and other Wikidata contributors"
+      }
+    },
+    {
+      "id": "wm-screen-fountain.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Editing tool screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/0/00/Fountain_tool_screenshot_01_Afrikamonat.png"
+      },
+      "bytes": 348743,
+      "sha256": "4f262ebd8877ccfd663f596bd920996456e4567b79a5766eb29533b6ee5b3c50",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Fountain tool screenshot 01 Afrikamonat.png",
+        "author": "de:Benutzer:Tetraeder"
+      }
+    },
+    {
+      "id": "wm-screen-mobile.png",
+      "family": "image",
+      "class": "screen",
+      "set": "wikimedia-commons",
+      "description": "Mobile app screenshot",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/4/41/CodeChef-Screenshot_2024-02-13-00-33.png"
+      },
+      "bytes": 111777,
+      "sha256": "b84cd38e101ca5265196a39fee0f27dfcd798424df70f85d4e28a5880539bc09",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:CodeChef-Screenshot 2024-02-13-00-33.png",
+        "author": "Fahian Al Fahim"
+      }
+    },
+    {
+      "id": "wm-lineart-containers.png",
+      "family": "image",
+      "class": "lineart",
+      "set": "wikimedia-commons",
+      "description": "Line-art icon with transparency",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b0/Containers_icon.png"
+      },
+      "bytes": 21029,
+      "sha256": "4aa0e664517c0927093c741bbc11b3d03e0e3d4c3aa50f1826a29c53723fcb88",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": true,
+        "title": "File:Containers icon.png",
+        "author": "AdmeLERT"
+      }
+    },
+    {
+      "id": "wm-lineart-family-tree.png",
+      "family": "image",
+      "class": "lineart",
+      "set": "wikimedia-commons",
+      "description": "Tree diagram with text and thin lines",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/e/ec/Family_tree_of_laestadianism_in_world.png"
+      },
+      "bytes": 71470,
+      "sha256": "9f0035cc6d8eb4b2ac713f86b8fc08ba2b491340fddb3416fd67eb9bb268712f",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Family tree of laestadianism in world.png",
+        "author": "Tietäjäiänikuinen"
+      }
+    },
+    {
+      "id": "wm-lineart-assembly.png",
+      "family": "image",
+      "class": "lineart",
+      "set": "wikimedia-commons",
+      "description": "Organisation diagram with text",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/e/e5/2009EcuadorNationalAeeseblyStructure.png"
+      },
+      "bytes": 75870,
+      "sha256": "01b6748bf5396dc78fb8429444f54953071b28359fb080c0b008438539d1b7fb",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:2009EcuadorNationalAeeseblyStructure.png",
+        "author": "Aricci526"
+      }
+    },
+    {
+      "id": "wm-lineart-chart.png",
+      "family": "image",
+      "class": "lineart",
+      "set": "wikimedia-commons",
+      "description": "Chart with thin lines and labels",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/f/f3/Doln%C3%AD_propust_graf.PNG"
+      },
+      "bytes": 16911,
+      "sha256": "7887d191bb31198583fdf45dd2de8b1901509fd9ec1d39ba9e00c1a314ed77c5",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": false,
+        "title": "File:Dolní propust graf.PNG",
+        "author": "Kukusak"
+      }
+    },
+    {
+      "id": "wm-alpha-graph.png",
+      "family": "image",
+      "class": "alpha",
+      "set": "wikimedia-commons",
+      "description": "Graph with a transparent background",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/8/8d/Graphesai.png"
+      },
+      "bytes": 58819,
+      "sha256": "1bea38d5a91f0f3331781aed8e040e0d753d73d8d391e9206347d56f1b736bae",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": true,
+        "title": "File:Graphesai.png",
+        "author": "Dimboukas"
+      }
+    },
+    {
+      "id": "wm-alpha-structure.png",
+      "family": "image",
+      "class": "alpha",
+      "set": "wikimedia-commons",
+      "description": "Structure diagram with a transparent background",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Images_estructura_EPO.png"
+      },
+      "bytes": 194551,
+      "sha256": "df439efa88cf055ea6087ade2f4af854108a1765c868523ff905e78259304a2c",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": true,
+        "title": "File:Images estructura EPO.png",
+        "author": "Julià Gotzens"
+      }
+    },
+    {
+      "id": "wm-deep-xray.png",
+      "family": "image",
+      "class": "deep",
+      "set": "wikimedia-commons",
+      "description": "16-bit grey radiograph",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/be/Bryconops_affinis_x-ray.png"
+      },
+      "bytes": 2723197,
+      "sha256": "b4f1549cb3c25733e265e7d3c52213b58cc637f9e13822e24e9f25808f045bc1",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 16,
+        "alpha": false,
+        "title": "File:Bryconops affinis x-ray.png",
+        "author": "The Trustees of the Natural History Museum, London"
+      }
+    },
+    {
+      "id": "wm-deep-moon.png",
+      "family": "image",
+      "class": "deep",
+      "set": "wikimedia-commons",
+      "description": "16-bit RGB astrophotograph",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b3/Moon_-_September_18_2023_%2853197333802%29.png"
+      },
+      "bytes": 3306750,
+      "sha256": "3ddb671e9ce4a09c760c6fa1607e8a42c238aac52c92146cb7824148d0775f7f",
+      "licence": "CC-BY-2.0",
+      "meta": {
+        "bitDepth": 16,
+        "alpha": false,
+        "title": "File:Moon - September 18 2023 (53197333802).png",
+        "author": "Kevin M. Gill"
+      }
+    },
+    {
+      "id": "wm-deep-dart.png",
+      "family": "image",
+      "class": "deep",
+      "set": "wikimedia-commons",
+      "description": "16-bit RGB space telescope composite",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/7/76/Webb%2C_Hubble_Capture_Detailed_Views_of_DART_Impact.png"
+      },
+      "bytes": 1146908,
+      "sha256": "b71e70c1d886904d1ddbbde094be9528dfb8065fb929ca682d0176063c901a31",
+      "licence": "Public-domain",
+      "meta": {
+        "bitDepth": 16,
+        "alpha": false,
+        "title": "File:Webb, Hubble Capture Detailed Views of DART Impact.png",
+        "author": "Science: NASA, ESA, CSA, Jian-Yang Li (PSI), Cristina Thomas (Northern Arizona U"
+      }
+    },
+    {
+      "id": "aom-fourpeople-270p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Video conference, 480x270, 60 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a5_270p/FourPeople_480x270_60.y4m",
+        "start": 0,
+        "end": 23328777
+      },
+      "bytes": 23328778,
+      "sha256": "87455a983df9439c97d82441f07fef76a62c0bada2b44a0503bd183a89d7705c",
+      "licence": "PD-Vidyo",
+      "meta": {
+        "source": "a5_270p/FourPeople_480x270_60.y4m",
+        "width": 480,
+        "height": 270,
+        "frames": 120,
+        "fps": "60:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-bayshore-270p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Portrait harbour scene, 270x480, 29.97 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a5_270p/Vertical_Bayshore_270x480_2997.y4m",
+        "start": 0,
+        "end": 17496603
+      },
+      "bytes": 17496604,
+      "sha256": "821f7237fc94e47d038f75f71210ecfb577deb6a16cf96b9a4bf19181f702718",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "source": "a5_270p/Vertical_Bayshore_270x480_2997.y4m",
+        "width": 270,
+        "height": 480,
+        "frames": 90,
+        "fps": "30000:1001",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-bluesky-360p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Tree tops against sky with camera rotation, 640x360, 25 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/BlueSky_360p25_v2.y4m",
+        "start": 0,
+        "end": 25920488
+      },
+      "bytes": 25920489,
+      "sha256": "a90f00af291a35d98fbe07127919c31895138627cfb0c95e83835e4c5d863c49",
+      "licence": "TUM-no-restrictions",
+      "meta": {
+        "source": "a4_360p/BlueSky_360p25_v2.y4m",
+        "width": 640,
+        "height": 360,
+        "frames": 75,
+        "fps": "25:1",
+        "chroma": "420mpeg2"
+      }
+    },
+    {
+      "id": "aom-stockholm-360p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Panning city view, 640x360, 59.94 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/Stockholm_640x360_5994.y4m",
+        "start": 0,
+        "end": 41472783
+      },
+      "bytes": 41472784,
+      "sha256": "d34cc9a46a31fe20031730e93fae27629beed9bab6dfecb321b4c159b4971792",
+      "licence": "SVT-no-restrictions",
+      "meta": {
+        "source": "a4_360p/Stockholm_640x360_5994.y4m",
+        "width": 640,
+        "height": 360,
+        "frames": 120,
+        "fps": "60000:1001",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-touchdown-360p.y4m",
+      "family": "video",
+      "class": "highmotion",
+      "set": "aom-ctc",
+      "description": "Football play, fast motion, 640x360, 29.97 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/TouchdownPass_640x360_2997.y4m",
+        "start": 0,
+        "end": 31104603
+      },
+      "bytes": 31104604,
+      "sha256": "c7caa37c02fb1442eac7a57fc243d2e3ecf3a9b0db521021127a9c493dfdacbe",
+      "licence": "NTIA-ITS-research",
+      "meta": {
+        "source": "a4_360p/TouchdownPass_640x360_2997.y4m",
+        "width": 640,
+        "height": 360,
+        "frames": 90,
+        "fps": "30000:1001",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-redkayak-360p.y4m",
+      "family": "video",
+      "class": "highmotion",
+      "set": "aom-ctc",
+      "description": "Kayak on moving water, 640x360, 29.97 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/RedKayak_360_2997.y4m",
+        "start": 0,
+        "end": 31104603
+      },
+      "bytes": 31104604,
+      "sha256": "f52269de97b36b6fc49841040805f79022e62b52bb1d7757fd31c220911b4157",
+      "licence": "NTIA-ITS-research",
+      "meta": {
+        "source": "a4_360p/RedKayak_360_2997.y4m",
+        "width": 640,
+        "height": 360,
+        "frames": 90,
+        "fps": "30000:1001",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-johnny-720p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Talking head, 1280x720, 60 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/Johnny_1280x720_60.y4m",
+        "start": 0,
+        "end": 55296298
+      },
+      "bytes": 55296299,
+      "sha256": "01b4dab0e9567c6f79c0f1313f77559ffa51be6fb058ec58f48adba6f7df21f7",
+      "licence": "PD-Vidyo",
+      "meta": {
+        "source": "a3_720p/Johnny_1280x720_60.y4m",
+        "width": 1280,
+        "height": 720,
+        "frames": 40,
+        "fps": "60:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-motorcycle-1080p.y4m",
+      "family": "video",
+      "class": "highmotion",
+      "set": "aom-ctc",
+      "description": "Motorcycle ride, fast camera motion, 1920x1080, 30 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a2_2k/Motorcycle_1920x1080_30fps_8bit.y4m",
+        "start": 0,
+        "end": 74649805
+      },
+      "bytes": 74649806,
+      "sha256": "ac0316172add23eebfb878ace4c01d9cb6366b8cd2528939b13e28056b15b15f",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "source": "a2_2k/Motorcycle_1920x1080_30fps_8bit.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "30:1",
+        "chroma": "420mpeg2"
+      }
+    },
+    {
+      "id": "aom-debugging-1080p.y4m",
+      "family": "video",
+      "class": "screen",
+      "set": "aom-ctc",
+      "description": "Software debugging screen recording, 1920x1080, 30 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b2_scc/Debugging_1920x1080_30fps_8bit_420.y4m",
+        "start": 0,
+        "end": 74649803
+      },
+      "bytes": 74649804,
+      "sha256": "6c974572f4ce234fdc38bfdc60d0a2bb6bfc2e087849b406513c4da16636b3f5",
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "source": "b2_scc/Debugging_1920x1080_30fps_8bit_420.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "30:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-dota2-1080p.y4m",
+      "family": "video",
+      "class": "screen",
+      "set": "aom-ctc",
+      "description": "Game capture, synthetic graphics, 1920x1080, 60 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b1_syn/DOTA2_1920x1080_60_8bit_420.y4m",
+        "start": 0,
+        "end": 74649803
+      },
+      "bytes": 74649804,
+      "sha256": "706c60736c4755ec567669900f2209eb46ba46a21e2db549b10024f77c86e8dc",
+      "licence": "PD-game-capture",
+      "meta": {
+        "source": "b1_syn/DOTA2_1920x1080_60_8bit_420.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "60:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-scenecomposition-1080p.y4m",
+      "family": "video",
+      "class": "screen",
+      "set": "aom-ctc",
+      "description": "Screen sharing composed with camera video, 1920x1080, 15 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b2_scc/SceneComposition_1.y4m",
+        "start": 0,
+        "end": 74649803
+      },
+      "bytes": 74649804,
+      "sha256": "e0cdc49041876c65fec766cdc7497ccac365ce17e42ff62ee0277606c2e16a6f",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "source": "b2_scc/SceneComposition_1.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "15:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-glasshalf-1080p.y4m",
+      "family": "video",
+      "class": "animation",
+      "set": "aom-ctc",
+      "description": "Computer animation (Blender), 1920x1080, 24 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b1_syn/GlassHalf_1920x1080p_24p_8bit_420.y4m",
+        "start": 0,
+        "end": 74649803
+      },
+      "bytes": 74649804,
+      "sha256": "90ca10235d0b4037dfeffe49289ec43f2d154b70548e702457c5c96675969269",
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "source": "b1_syn/GlassHalf_1920x1080p_24p_8bit_420.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "24:1",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "aom-noise-animation-720p.y4m",
+      "family": "video",
+      "class": "grain",
+      "set": "aom-ctc",
+      "description": "Hand-drawn animation with film grain and noise, 1280x720, 23.98 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/e_nonpristine/Noise_Animation_1280x720_2398fps.y4m",
+        "start": 0,
+        "end": 49766680
+      },
+      "bytes": 49766681,
+      "sha256": "9249c6ae1aa56915fca228f7454df18591d4864162c3d3c0740bff65421f2bdb",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "source": "e_nonpristine/Noise_Animation_1280x720_2398fps.y4m",
+        "width": 1280,
+        "height": 720,
+        "frames": 36,
+        "fps": "24000:1001",
+        "chroma": "420jpeg"
+      }
+    },
+    {
+      "id": "sqam-49-speech-en-f.flac",
+      "family": "audio",
+      "class": "speech",
+      "set": "ebu-sqam",
+      "description": "Female speech, English (track 49)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "49.flac",
+        "offset": 105155530,
+        "compressedSize": 1139398,
+        "method": 8
+      },
+      "bytes": 1150762,
+      "sha256": "c5bfb443cb6b08d0e5664a52aa2ffb7d290cf3f4362e7c00065d67d5e1211c36",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "49"
+      }
+    },
+    {
+      "id": "sqam-51-speech-fr-f.flac",
+      "family": "audio",
+      "class": "speech",
+      "set": "ebu-sqam",
+      "description": "Female speech, French (track 51)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "51.flac",
+        "offset": 107430773,
+        "compressedSize": 1436754,
+        "method": 8
+      },
+      "bytes": 1445976,
+      "sha256": "25ac75f603451c18ad96b27012f5a308756cf80ba4d9de254543d4902dee0146",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "51"
+      }
+    },
+    {
+      "id": "sqam-54-speech-de-m.flac",
+      "family": "audio",
+      "class": "speech",
+      "set": "ebu-sqam",
+      "description": "Male speech, German (track 54)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "54.flac",
+        "offset": 111305491,
+        "compressedSize": 953276,
+        "method": 8
+      },
+      "bytes": 966701,
+      "sha256": "f00051ec942fe79aed760bd5432adc7f663c7ed79aa69b11f23ffb8d4654b586",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "54"
+      }
+    },
+    {
+      "id": "sqam-10-cello.flac",
+      "family": "audio",
+      "class": "instrument",
+      "set": "ebu-sqam",
+      "description": "Violoncello, arpeggio and melodious passage (track 10)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "10.flac",
+        "offset": 10731515,
+        "compressedSize": 4613803,
+        "method": 8
+      },
+      "bytes": 4650469,
+      "sha256": "c75c285df27b0879d0469291ad076c0549cb264587719779cadb906271bdc7e8",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "10"
+      }
+    },
+    {
+      "id": "sqam-21-trumpet.flac",
+      "family": "audio",
+      "class": "instrument",
+      "set": "ebu-sqam",
+      "description": "Trumpet (track 21)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "21.flac",
+        "offset": 36981120,
+        "compressedSize": 1538362,
+        "method": 8
+      },
+      "bytes": 1562601,
+      "sha256": "8722c2047b3bb6daa114b308aec61b145562b09009e6b87966a0c89c97b8a2b3",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "21"
+      }
+    },
+    {
+      "id": "sqam-40-harpsichord.flac",
+      "family": "audio",
+      "class": "instrument",
+      "set": "ebu-sqam",
+      "description": "Harpsichord (track 40)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "40.flac",
+        "offset": 82496432,
+        "compressedSize": 3162684,
+        "method": 8
+      },
+      "bytes": 3192893,
+      "sha256": "776de68b7c4c56c04cfd3e6a30cae73816cc351834826fc67c0c47d3c94dfc6c",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "40"
+      }
+    },
+    {
+      "id": "sqam-44-soprano.flac",
+      "family": "audio",
+      "class": "vocal",
+      "set": "ebu-sqam",
+      "description": "Soprano voice (track 44)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "44.flac",
+        "offset": 96770983,
+        "compressedSize": 1620591,
+        "method": 8
+      },
+      "bytes": 1657499,
+      "sha256": "7fc632e21c41ae1a941ecaf46c44dbd1a9813a4317ccfd5eee06027d33d5ffab",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "44"
+      }
+    },
+    {
+      "id": "sqam-27-castanets.flac",
+      "family": "audio",
+      "class": "transient",
+      "set": "ebu-sqam",
+      "description": "Castanets, staccato and rhythm (track 27)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "27.flac",
+        "offset": 47008958,
+        "compressedSize": 1251093,
+        "method": 8
+      },
+      "bytes": 1265958,
+      "sha256": "59896d7540eede365428c5158ca5c9796f135eb53a18e052d99db58a4b90839d",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "27"
+      }
+    },
+    {
+      "id": "sqam-26-claves.flac",
+      "family": "audio",
+      "class": "transient",
+      "set": "ebu-sqam",
+      "description": "Claves (track 26)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "26.flac",
+        "offset": 45766867,
+        "compressedSize": 1242054,
+        "method": 8
+      },
+      "bytes": 1284366,
+      "sha256": "90617038337d9830db987a58325f88751b3b223e6feb0ae896cb12fc69028cac",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "26"
+      }
+    },
+    {
+      "id": "sqam-28-side-drum.flac",
+      "family": "audio",
+      "class": "transient",
+      "set": "ebu-sqam",
+      "description": "Side drum strokes and rolls (track 28)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "28.flac",
+        "offset": 48260088,
+        "compressedSize": 3317890,
+        "method": 8
+      },
+      "bytes": 3373778,
+      "sha256": "0b021f2e8e8e70276b19e9d5435d2ee0856002d1fd92628ec7b5f9d8b5ce5f0a",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "28"
+      }
+    },
+    {
+      "id": "sqam-65-orchestra-strauss.flac",
+      "family": "audio",
+      "class": "orchestra",
+      "set": "ebu-sqam",
+      "description": "Orchestra, R. Strauss (track 65)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "65.flac",
+        "offset": 145131408,
+        "compressedSize": 7166917,
+        "method": 8
+      },
+      "bytes": 7239542,
+      "sha256": "33513932ad1f196dae7ed316faf8d0d907c38a716f704936a9a0137314544f1a",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "65"
+      }
+    },
+    {
+      "id": "sqam-66-wind-ensemble-stravinsky.flac",
+      "family": "audio",
+      "class": "orchestra",
+      "set": "ebu-sqam",
+      "description": "Wind ensemble, Stravinsky (track 66)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "66.flac",
+        "offset": 152298362,
+        "compressedSize": 1200475,
+        "method": 8
+      },
+      "bytes": 1213614,
+      "sha256": "1151a90375031b52400d97a836cd7788d792b0be4ae9162cbad709a096a5d54f",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "66"
+      }
+    },
+    {
+      "id": "sqam-68-orchestra-baird.flac",
+      "family": "audio",
+      "class": "orchestra",
+      "set": "ebu-sqam",
+      "description": "Orchestra, Baird (track 68)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "68.flac",
+        "offset": 158358992,
+        "compressedSize": 7979282,
+        "method": 8
+      },
+      "bytes": 8135635,
+      "sha256": "75038d426ab6d3c06a96e0ae268da6cf6f6dc3cb47fe404fec8434f717dfb343",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "68"
+      }
+    },
+    {
+      "id": "sqam-69-pop-abba.flac",
+      "family": "audio",
+      "class": "pop",
+      "set": "ebu-sqam",
+      "description": "Pop music, ABBA (track 69)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "69.flac",
+        "offset": 166338311,
+        "compressedSize": 2372407,
+        "method": 8
+      },
+      "bytes": 2382509,
+      "sha256": "35d3a289e00ffba0533acaa7d62b5af669b5a029bf071bc075fe5a434856d4f0",
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16,
+        "track": "69"
+      }
+    },
+    {
+      "id": "pteraxys-part1.flac",
+      "family": "audio",
+      "class": "modern24",
+      "set": "wikimedia-commons",
+      "description": "Modern instrumental production (guitar, bass, programming), 24-bit 44.1 kHz stereo",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/bb/Pteraxys_Part1.flac"
+      },
+      "bytes": 19099976,
+      "sha256": "c9681527e4c61d7fecd8297f3cf78024a152b7ef619809ad0c525aeb5c861e1a",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 24,
+        "title": "File:Pteraxys Part1.flac",
+        "author": "Cyrille R W Chaussepied"
+      }
+    },
+    {
+      "id": "silesia-dickens",
+      "family": "compression",
+      "class": "text",
+      "set": "silesia",
+      "description": "Collected works of Charles Dickens (Project Gutenberg), plain text",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "dickens",
+        "offset": 0,
+        "compressedSize": 3871628,
+        "method": 8
+      },
+      "bytes": 10192446,
+      "sha256": "b24c37886142e11d0ee687db6ab06f936207aa7f2ea1fd1d9a36763c7a507e6a",
+      "licence": "Public-domain",
+      "meta": {
+        "member": "dickens"
+      }
+    },
+    {
+      "id": "silesia-webster",
+      "family": "compression",
+      "class": "text",
+      "set": "silesia",
+      "description": "The 1913 Webster Unabridged Dictionary, plain text",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "webster",
+        "offset": 49234145,
+        "compressedSize": 12213941,
+        "method": 8
+      },
+      "bytes": 41458703,
+      "sha256": "6a68f69b26daf09f9dd84f7470368553194a0b294fcfa80f1604efb11143a383",
+      "licence": "Public-domain",
+      "meta": {
+        "member": "webster"
+      }
+    },
+    {
+      "id": "silesia-xml",
+      "family": "compression",
+      "class": "markup",
+      "set": "silesia",
+      "description": "Concatenation of 21 XML files",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "xml",
+        "offset": 61448123,
+        "compressedSize": 688808,
+        "method": 8
+      },
+      "bytes": 5345280,
+      "sha256": "0e82e54e695c1938e4193448022543845b33020c8be6bf3bf3ead2224903e08c",
+      "licence": "Silesia-mixed",
+      "meta": {
+        "member": "xml"
+      }
+    },
+    {
+      "id": "silesia-samba",
+      "family": "compression",
+      "class": "source",
+      "set": "silesia",
+      "description": "Tarred source code of Samba 2-2.3",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "samba",
+        "offset": 38456085,
+        "compressedSize": 5446199,
+        "method": 8
+      },
+      "bytes": 21606400,
+      "sha256": "93ba07bc44d8267789c1d911992f40b089ffa2140b4a160fac11ccae9a40e7b2",
+      "licence": "GPL-2.0-or-later",
+      "meta": {
+        "member": "samba"
+      }
+    },
+    {
+      "id": "silesia-mozilla",
+      "family": "compression",
+      "class": "binary",
+      "set": "silesia",
+      "description": "Tarred executables of Mozilla 1.0 (Tru64 UNIX)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "mozilla",
+        "offset": 3871665,
+        "compressedSize": 19016809,
+        "method": 8
+      },
+      "bytes": 51220480,
+      "sha256": "657fc3764b0c75ac9de9623125705831ebbfbe08fed248df73bc2dc66e2a963b",
+      "licence": "MPL-1.1",
+      "meta": {
+        "member": "mozilla"
+      }
+    },
+    {
+      "id": "silesia-ooffice",
+      "family": "compression",
+      "class": "binary",
+      "set": "silesia",
+      "description": "A dynamic link library of Open Office.org 1.01",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "ooffice",
+        "offset": 29760353,
+        "compressedSize": 3096017,
+        "method": 8
+      },
+      "bytes": 6152192,
+      "sha256": "e7ee013880d34dd5208283d0d3d91b07f442e067454276095ded14f322a656eb",
+      "licence": "LGPL-2.1",
+      "meta": {
+        "member": "ooffice"
+      }
+    },
+    {
+      "id": "silesia-osdb",
+      "family": "compression",
+      "class": "database",
+      "set": "silesia",
+      "description": "Sample database in MySQL format from the Open Source Database Benchmark",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "osdb",
+        "offset": 32856407,
+        "compressedSize": 3739532,
+        "method": 8
+      },
+      "bytes": 10085684,
+      "sha256": "60f027179302ca3ad87c58ac90b6be72ec23588aaa7a3b7fe8ecc0f11def3fa3",
+      "licence": "GPL-2.0",
+      "meta": {
+        "member": "osdb"
+      }
+    },
+    {
+      "id": "silesia-nci",
+      "family": "compression",
+      "class": "database",
+      "set": "silesia",
+      "description": "Structure database of the National Cancer Institute (CACTVS)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "nci",
+        "offset": 26560138,
+        "compressedSize": 3200182,
+        "method": 8
+      },
+      "bytes": 33553445,
+      "sha256": "fc63a31770947b8c2062d3b19ca94c00485a232bb91b502021948fee983e1635",
+      "licence": "Public-domain",
+      "meta": {
+        "member": "nci"
+      }
+    },
+    {
+      "id": "silesia-sao",
+      "family": "compression",
+      "class": "data",
+      "set": "silesia",
+      "description": "The SAO star catalog (binary records)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "sao",
+        "offset": 43902319,
+        "compressedSize": 5331793,
+        "method": 8
+      },
+      "bytes": 7251944,
+      "sha256": "c2d0ea2cc59d4c21b7fe43a71499342a00cbe530a1d5548770e91ecd6214adcc",
+      "licence": "Public-domain",
+      "meta": {
+        "member": "sao"
+      }
+    },
+    {
+      "id": "silesia-mr",
+      "family": "compression",
+      "class": "medical",
+      "set": "silesia",
+      "description": "Magnetic resonance image of a head (3D, binary)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "mr",
+        "offset": 22888511,
+        "compressedSize": 3671595,
+        "method": 8
+      },
+      "bytes": 9970564,
+      "sha256": "68637ed52e3e4860174ed2dc0840ac77d5f1a60abbcb13770d5754e3774d53e6",
+      "licence": "Silesia-unstated",
+      "meta": {
+        "member": "mr"
+      }
+    },
+    {
+      "id": "silesia-x-ray",
+      "family": "compression",
+      "class": "medical",
+      "set": "silesia",
+      "description": "X-ray image of a child hand",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "x-ray",
+        "offset": 62136964,
+        "compressedSize": 6045111,
+        "method": 8
+      },
+      "bytes": 8474240,
+      "sha256": "7de9fce1405dc44ae5e6813ed21cd5751e761bd4265655a005d39b9685d1c9ad",
+      "licence": "Silesia-unstated",
+      "meta": {
+        "member": "x-ray"
+      }
+    },
+    {
+      "id": "silesia-reymont",
+      "family": "compression",
+      "class": "compressed",
+      "set": "silesia",
+      "description": "Book Chlopi by Wladyslaw Reymont stored as a PDF (already compressed streams)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "entry": "reymont",
+        "offset": 36595973,
+        "compressedSize": 1860075,
+        "method": 8
+      },
+      "bytes": 6627202,
+      "sha256": "0eac0114a3dfe6e2ee1f345a0f79d653cb26c3bc9f0ed79238af4933422b7578",
+      "licence": "Public-domain",
+      "meta": {
+        "member": "reymont"
+      }
+    },
+    {
+      "id": "wm-tmax100-grain.jpg",
+      "family": "compression",
+      "class": "compressed",
+      "set": "wikimedia-commons",
+      "description": "Scanned film photograph stored as JPEG (already compressed), 5603x3663",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/6/6f/Tmax100_Grain.jpg"
+      },
+      "bytes": 13142198,
+      "sha256": "0608a50c78e6bc5f8618b16de5981e45574b3b38e8c568a06716542de89ffd2e",
+      "licence": "CC0-1.0",
+      "meta": {
+        "title": "File:Tmax100 Grain.jpg"
+      }
+    },
+    {
+      "id": "wm-pteraxys-part1.flac",
+      "family": "compression",
+      "class": "compressed",
+      "set": "wikimedia-commons",
+      "description": "Modern production stored as FLAC (already compressed), 24-bit",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/bb/Pteraxys_Part1.flac"
+      },
+      "bytes": 19099976,
+      "sha256": "c9681527e4c61d7fecd8297f3cf78024a152b7ef619809ad0c525aeb5c861e1a",
+      "licence": "CC-BY-SA-4.0",
+      "meta": {
+        "title": "File:Pteraxys Part1.flac",
+        "author": "Cyrille R W Chaussepied"
+      }
+    }
+  ]
+}

@@ -23,6 +23,8 @@ export const SPEC = {
   snr: { metric: 'snr', unit: 'dB', direction: 'higher', kind: 'quality', tolerance: tol(0.5, 0) },
   loudnessShift: { metric: 'loudness_shift', unit: 'LU', direction: 'lower', kind: 'quality', tolerance: tol(0.3, 0) },
   truePeakShift: { metric: 'true_peak_shift', unit: 'dB', direction: 'lower', kind: 'quality', tolerance: tol(0.3, 0) },
+  /** 1 when the product converts the sample at all; a sample it rejects is a row below the reference, not a failed run. */
+  converts: { metric: 'converts', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   losslessExact: { metric: 'lossless_exact', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   cer: { metric: 'cer', unit: '%', direction: 'lower', kind: 'quality', tolerance: tol(0.75, 0) },
   wordF1: { metric: 'word_f1', unit: 'ratio', direction: 'higher', kind: 'quality', tolerance: tol(0.02, 0) },
@@ -98,4 +100,9 @@ export function capPsnr(psnr: number): number {
 /** SSIM in decibels, -10 log10(1 - SSIM): the scale on which SSIM differences are comparable across the range. */
 export function ssimDb(ssim: number): number {
   return -10 * Math.log10(Math.max(1 - ssim, SSIM_DISTANCE_FLOOR));
+}
+
+/** The BD-rate rows of a case whose rate-distortion points determine no curve: stated as not evaluated, with the reason. */
+export function undeterminedBdRows(family: Family, caseName: string, specs: readonly MetricSpec[], referenceTool: string, reason: string): BenchRow[] {
+  return specs.map((spec) => skippedRow(family, caseName, spec, referenceTool, 'unsupported', `no BD-rate: ${reason}`));
 }

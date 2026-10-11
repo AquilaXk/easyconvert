@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CORPUS_DIR } from './config';
+import { CorpusFetchError, ensureSample, type RemoteSample } from './corpora';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
 import type { BenchRow, Family } from './report';
@@ -63,6 +64,12 @@ export interface FamilyContext {
   plan: (required: readonly string[], context: string, options?: PlanOptions) => ToolPlan;
   corpusPath: (name: string) => string;
   corpusBuffer: (name: string) => Buffer;
+  /**
+   * The verified file of a public sample (bench/corpora.ts), fetched into the cache when absent. A digest that differs from the
+   * manifest fails the run. A host that cannot deliver the file fails it too under ORACLE_STRICT_MODE=1; otherwise the
+   * result is null and the caller reports the sample's rows as skipped.
+   */
+  remote: (sample: RemoteSample) => Promise<string | null>;
   /** A fresh scratch path inside `work`. */
   scratch: (name: string) => string;
 }
@@ -95,6 +102,15 @@ export function createContext(init: ContextInit): FamilyContext {
     plan: (required, context, options) => planTools(required, context, init.resolve, init.strict, options),
     corpusPath: (name) => path.join(CORPUS_DIR, name),
     corpusBuffer: (name) => fs.readFileSync(path.join(CORPUS_DIR, name)),
+    remote: async (sample) => {
+      try {
+        return await ensureSample(sample);
+      } catch (error) {
+        if (!(error instanceof CorpusFetchError) || init.strict) throw error;
+        init.log(`public sample ${sample.id} is not available, its rows are skipped: ${error.message}`);
+        return null;
+      }
+    },
     scratch: (name) => path.join(init.work, `${counter++}-${name}`),
   };
 }

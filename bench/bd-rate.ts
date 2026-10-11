@@ -139,3 +139,13 @@ export function bdPsnr(anchor: readonly RdPoint[], test: readonly RdPoint[]): nu
   const fitT = fitCubic(logRateT, test.map((p) => p.quality));
   return (integrate(fitT, lo, hi) - integrate(fitA, lo, hi)) / (hi - lo);
 }
+
+/** The BD-rate, or null with the reason when the points do not determine one (a curve that is flat or has no quality in common). */
+export function tryBdRate(anchor: readonly RdPoint[], test: readonly RdPoint[]): { value: number } | { reason: string } {
+  try {
+    return { value: bdRate(anchor, test) };
+  } catch (error) {
+    if (error instanceof BdRateInputError) return { reason: error.message };
+    throw error;
+  }
+}
