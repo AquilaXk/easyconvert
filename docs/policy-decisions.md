@@ -65,7 +65,7 @@ Quality evidence
 - **Why**: users compare our files with the ones the leading converters give them. Those use 4:2:0 for lossy AVIF and keep high-bit-depth sources at a matching depth. Matching this keeps file sizes comparable for every content class, so a user switching to us does not get files that are suddenly larger. 4:2:0 is also the layout every AVIF decoder handles fastest. Keeping 12 bits for 16-bit sources preserves gradations and editing headroom that a 10-bit cap would throw away.
 - **Trade-offs**:
   - At the same quality setting, 4:2:0 softens coloured edges in screenshots, text and line art. 4:4:4 would keep them sharp, at a larger file.
-  - 12-bit AVIF needs the AV1 Professional profile. Some hardware decoders and the mandatory Android baseline (AV1 Main) cannot open it, so a 16-bit source can produce a file that does not open on every device.
+  - 12-bit AVIF needs the AV1 Professional profile. Some hardware decoders, and decoders that implement only the AVIF Baseline profile (AV1 Main), cannot open it, so a 16-bit source can produce a file that does not open on every device.
 - **Alternatives rejected**:
   - **Graphics 4:4:4 with a 10-bit cap** (the previous policy). It gave sharper graphic edges and wider device support, but its file sizes and bit depths diverged from what users expect from converters.
   - **Always 4:4:4.** Larger photographs for no visible gain.
@@ -97,12 +97,20 @@ Quality evidence
 ## 3. Lossy audio resampling and sample format
 
 - **Status**: Implemented (#718).
-- **Decision**: lossy audio that needs a rate change uses the high-precision band-limited resampler (soxr at 28-bit precision) and dither for 16-bit output.
-- **Why**: a low-quality resampler adds aliasing that the codec then spends bits on. A precise resampler costs little next to the encoder, and keeps our output at or above the reference in measured quality.
-- **Trade-offs**: a few milliseconds more per minute of audio than the default resampler.
-- **Alternatives rejected**: the default resampler, which is faster but measurably worse on high-frequency content.
-- **Verified by**: the audio parity rows; #738 adds a perceptual quality metric.
-- **Revisit when**: a perceptual metric shows no audible difference at the target bit rates.
+- **Decision**:
+  - Audio that needs a rate change goes through the band-limited soxr resampler. Output for a lossy encoder uses 16-bit filter precision.
+  - Lossless and PCM outputs, normalised files, and callers who ask for soxr by name keep the full 28-bit precision.
+  - 16-bit output is dithered.
+- **Why**:
+  - At 16-bit precision the resampling error sits 83 dB below the signal. The coding noise of Opus at 64 kbit/s, and of AAC and MP3 at their usual rates, sits 25 to 40 dB below it. The resampler is therefore never what a listener hears, and the cheaper filter is built and run faster.
+  - Lossless outputs have no coding noise to hide the resampler, so they keep the full precision (97 dB).
+  - The default resampler's error is 64 dB below the signal, which is close enough to the coding noise to matter on bright material.
+- **Trade-offs**: lossy outputs could carry a measurably, though never audibly, cleaner resample at about 2 ms more per four seconds of stereo audio.
+- **Alternatives rejected**:
+  - **28-bit precision everywhere**: slower, with no audible gain on lossy outputs.
+  - **The default resampler**: faster, but nearer the codec's noise floor.
+- **Verified by**: `src/lib/conversions/media-audio-quality.ts` and the audio parity rows. #738 adds a perceptual quality metric.
+- **Revisit when**: a perceptual metric shows the precision choice matters at low bit rates.
 
 ## 4. Restricted and encrypted PDFs
 
@@ -158,7 +166,7 @@ Quality evidence
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725). Binary Word documents are tracked in #726.
+- **Status**: Implemented (#725). Legacy binary word-processing documents (`.doc`) are tracked in #726.
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
@@ -303,7 +311,7 @@ Quality evidence
 
 - **Status**: Implemented (#639, #700, #704, #723, #724).
 - **Decision**: every conversion change must keep its quality rows at or above the reference tools. Speed rows have two checks.
-  - **Base comparison**: a change may not make a row more than 10 % slower than the base branch. The comparison is measured in the same job.
+  - **Base comparison**: a change may not make a row slower than the base branch by more than the row's threshold, measured in the same job. The default threshold is 10 % (`AB_DEFAULT_REGRESSION`). A row whose measured noise needs a different threshold has its own entry in `AB_ROW_REGRESSION`; each entry records the measurement that justifies it, and no threshold may exceed the cap.
   - **Reference check**: rows below the reference must have a tracked gap entry and issue.
 
   Quality rows can never be excused by a gap entry. Gate files are taken from the base branch, so a change cannot weaken its own gate.
