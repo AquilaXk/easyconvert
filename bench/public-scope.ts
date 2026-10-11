@@ -23,11 +23,11 @@ export function corpusTier(env: Readonly<Record<string, string | undefined>> = p
 /** The public cases `--quick` measures, per family. A family absent here measures none of them quickly. */
 export const PUBLIC_QUICK_CASES: Readonly<Record<string, readonly string[]>> = {
   document: ['doc-poi-61787.docx->pdf', 'doc-poi-japanese.pptx->pdf', 'doc-poi-53446.doc->pdf', 'doc-gov-001858.rtf->pdf'],
-  'pdf-ops': ['pdf-pdfjs-form-test.pdf->extract', 'pdf-gov-000341.pdf->unlock', 'pdf-pdfjs-cjk-1.pdf->rotate', 'pdf-gov-000142.pdf->reorder'],
-  ebook: ['book-wasteland.epub->txt', 'book-pg11.mobi->epub', 'book-wasteland.fb2->txt'],
-  font: ['font-lato-regular.ttf->woff2', 'font-sourcecodepro-regular.otf->woff', 'font-amiri-regular.ttf->otf', 'font-lato-regular.ttf.woff2->ttf'],
+  'pdf-ops': ['pdf-pdfjs-form-test.pdf->extract', 'pdf-gov-000341.pdf->unlock', 'pdf-pdfjs-cjk-1.pdf->rotate'],
+  ebook: ['book-wasteland.epub->txt', 'book-wasteland.fb2->txt'],
+  font: ['font-lato-regular.ttf->woff2', 'font-sourcecodepro-regular.otf->woff', 'font-amiri-regular.ttf->otf'],
   cad: ['cad-openscad-export.dxf->svg', 'cad-circles-ellipses-arcs.dxf->pdf', 'cad-blocks.dxf->png'],
-  raw: ['raw-canon-g1.crw->jpg', 'raw-panasonic-lx7.rw2->png'],
+  raw: ['raw-canon-g1.crw->jpg'],
   vector: ['vec-path-M-C-S.svg->png', 'vec-radialGradient-fr-0.5.svg->png', 'vec-clipPath-clip-path-on-children.svg->pdf'],
   data: ['data-penguins.json->csv', 'data-delta-byte-array.csv->parquet', 'data-weather.csv->json'],
 };
