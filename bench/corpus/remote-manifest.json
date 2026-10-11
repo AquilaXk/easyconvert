@@ -42,7 +42,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -60,7 +61,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -78,7 +80,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -96,7 +99,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -114,7 +118,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -132,7 +137,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -150,7 +156,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -168,7 +175,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -186,7 +194,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -204,7 +213,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -222,7 +232,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -240,7 +251,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -258,7 +270,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -276,7 +289,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -294,7 +308,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -312,7 +327,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -330,7 +346,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -348,7 +365,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -366,7 +384,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -384,7 +403,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -402,7 +422,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -420,7 +441,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -438,7 +460,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -456,7 +479,8 @@
       "licence": "Kodak-PhotoCD-rights",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -478,7 +502,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -500,7 +525,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -522,7 +548,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -544,7 +571,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -566,7 +594,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -588,7 +617,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -610,7 +640,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -632,7 +663,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -654,7 +686,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -676,7 +709,8 @@
       "licence": "Unsplash",
       "meta": {
         "bitDepth": 8,
-        "alpha": false
+        "alpha": false,
+        "transparent": false
       }
     },
     {
@@ -694,7 +728,8 @@
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
-        "alpha": false,
+        "alpha": true,
+        "transparent": false,
         "title": "File:2025-01-25 screenshot wikipedia history default.png",
         "author": "Lustiger seth"
       }
@@ -714,7 +749,8 @@
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
-        "alpha": false,
+        "alpha": true,
+        "transparent": false,
         "title": "File:20200709 Screenshot Wikibase Registry.png",
         "author": "Karsten Hoffmeyer"
       }
@@ -734,7 +770,8 @@
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
-        "alpha": false,
+        "alpha": true,
+        "transparent": false,
         "title": "File:Open-Xchange Screenshot Einstellungsmenü.png",
         "author": "Sphere231"
       }
@@ -754,7 +791,8 @@
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
-        "alpha": false,
+        "alpha": true,
+        "transparent": false,
         "title": "File:Screenshot of Glazba Link Homepage.png",
         "author": "Glazba Corporation, LLC"
       }
@@ -775,6 +813,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": false,
+        "transparent": false,
         "title": "File:Wikidata (Reasonator) screenshot item Q1339.png",
         "author": "Magnus Manske and other Wikidata contributors"
       }
@@ -795,6 +834,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": false,
+        "transparent": false,
         "title": "File:Fountain tool screenshot 01 Afrikamonat.png",
         "author": "de:Benutzer:Tetraeder"
       }
@@ -815,6 +855,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": false,
+        "transparent": false,
         "title": "File:CodeChef-Screenshot 2024-02-13-00-33.png",
         "author": "Fahian Al Fahim"
       }
@@ -835,6 +876,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": true,
+        "transparent": true,
         "title": "File:Containers icon.png",
         "author": "AdmeLERT"
       }
@@ -855,6 +897,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": false,
+        "transparent": false,
         "title": "File:Family tree of laestadianism in world.png",
         "author": "Tietäjäiänikuinen"
       }
@@ -874,7 +917,8 @@
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
-        "alpha": false,
+        "alpha": true,
+        "transparent": true,
         "title": "File:2009EcuadorNationalAeeseblyStructure.png",
         "author": "Aricci526"
       }
@@ -895,6 +939,7 @@
       "meta": {
         "bitDepth": 8,
         "alpha": false,
+        "transparent": false,
         "title": "File:Dolní propust graf.PNG",
         "author": "Kukusak"
       }
@@ -915,28 +960,51 @@
       "meta": {
         "bitDepth": 8,
         "alpha": true,
+        "transparent": true,
         "title": "File:Graphesai.png",
         "author": "Dimboukas"
       }
     },
     {
-      "id": "wm-alpha-structure.png",
+      "id": "wm-alpha-comingsoon.png",
       "family": "image",
       "class": "alpha",
       "set": "wikimedia-commons",
-      "description": "Structure diagram with a transparent background",
+      "description": "Coming-soon notice with a transparent background",
       "origin": {
         "kind": "file",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Images_estructura_EPO.png"
+        "url": "https://upload.wikimedia.org/wikipedia/commons/8/80/Comingsoon.png"
       },
-      "bytes": 194551,
-      "sha256": "df439efa88cf055ea6087ade2f4af854108a1765c868523ff905e78259304a2c",
+      "bytes": 35823,
+      "sha256": "6421d6ff255acb18ba309c9482d16391f490bb7b3f369090534ddd88c8e5fe93",
       "licence": "CC0-1.0",
       "meta": {
         "bitDepth": 8,
         "alpha": true,
-        "title": "File:Images estructura EPO.png",
-        "author": "Julià Gotzens"
+        "transparent": true,
+        "title": "File:Comingsoon.png",
+        "author": "Mjw064 at English Wikipedia"
+      }
+    },
+    {
+      "id": "wm-alpha-banner.png",
+      "family": "image",
+      "class": "alpha",
+      "set": "wikimedia-commons",
+      "description": "Banner with a transparent background",
+      "origin": {
+        "kind": "file",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/2/24/American_Mime_Theatre.png"
+      },
+      "bytes": 33951,
+      "sha256": "fc1fe39b64d5c430decedd9dfb19817b9f9734229f9114d76c49cc5979f8825c",
+      "licence": "CC0-1.0",
+      "meta": {
+        "bitDepth": 8,
+        "alpha": true,
+        "transparent": true,
+        "title": "File:American Mime Theatre.png",
+        "author": "Mganne2000"
       }
     },
     {
@@ -955,6 +1023,7 @@
       "meta": {
         "bitDepth": 16,
         "alpha": false,
+        "transparent": false,
         "title": "File:Bryconops affinis x-ray.png",
         "author": "The Trustees of the Natural History Museum, London"
       }
@@ -975,6 +1044,7 @@
       "meta": {
         "bitDepth": 16,
         "alpha": false,
+        "transparent": false,
         "title": "File:Moon - September 18 2023 (53197333802).png",
         "author": "Kevin M. Gill"
       }
@@ -995,6 +1065,7 @@
       "meta": {
         "bitDepth": 16,
         "alpha": false,
+        "transparent": false,
         "title": "File:Webb, Hubble Capture Detailed Views of DART Impact.png",
         "author": "Science: NASA, ESA, CSA, Jian-Yang Li (PSI), Cristina Thomas (Northern Arizona U"
       }

@@ -66,7 +66,7 @@ jobs:
   # Output quality against reference encoders, gated on bench/baseline.json.
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
 
     services:
       redis:
@@ -95,14 +95,11 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
-      # The public sample sets (bench/corpus/remote-manifest.json), fetched by digest and cached.
-      - name: Restore the public samples
-        uses: ./.github/actions/bench-corpora
-        with:
-          families: image,video,audio,compression
-
+      # The generated corpus against the baseline, as it always was; the parity jobs below measure the public sample sets.
       - name: Run the quality benchmark
         shell: bash
+        env:
+          BENCH_CORPUS_TIER: pr
         run: |
           if node -e "process.exit(require('./package.json').scripts?.['bench:quality'] ? 0 : 1)"; then
             npm run bench:quality
@@ -125,7 +122,7 @@ jobs:
   # the timing job has the machine to itself. The plain baseline run above stays as it was.
   bench-parity-quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     services:
       redis:

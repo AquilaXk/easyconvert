@@ -6,7 +6,7 @@ import { PUBLIC_SPEED_SAMPLES } from '../config';
 import { convertWithProject } from '../convert';
 import { type FamilyRunner, INJECTED_WEBP_QUALITY_SHARE } from '../context';
 import { type RemoteSample, remoteSamples } from '../corpora';
-import { decodeImageToPng, fileSize, flattenOnGrey, measureSsimulacra2, pictureQuality, probeFile, type ImageKind } from '../measure';
+import { decodeImageToPng, fileSize, flattenOnGrey, measureSsimulacra2, pictureAlpha, pictureQuality, probeFile, type ImageKind } from '../measure';
 import { OutputIntegrityError } from '../errors';
 import { numberRecord, type RefSpec } from '../ref-cache';
 import type { BenchRow } from '../report';
@@ -25,7 +25,7 @@ interface ImageCase {
   format: 'jpg' | 'png';
   /** Bits per sample of the source (checked with ffprobe and identify). */
   bitDepth: 8 | 16;
-  /** The source has an alpha channel; it is judged flattened onto grey, and JPEG (no alpha) is not a target. */
+  /** Some pixel of the source is not opaque; it is judged flattened onto grey, and JPEG (no alpha) is not a target. A picture whose alpha channel is fully opaque is an ordinary picture. */
   alpha: boolean;
   /** Content class of a public sample; the generated corpus has none. */
   contentClass: string | null;
@@ -44,7 +44,7 @@ function publicCases(): ImageCase[] {
     file: sample.id,
     format: /\.jpe?g$/.test(sample.id) ? 'jpg' : 'png',
     bitDepth: sample.meta.bitDepth === 16 ? 16 : 8,
-    alpha: sample.meta.alpha === true,
+    alpha: sample.meta.transparent === true,
     contentClass: sample.class,
     remote: sample,
   }));
@@ -143,7 +143,7 @@ export const runImage: FamilyRunner = async (ctx) => {
       };
       const decodedSource = ctx.scratch(`${sample.file}.png`);
       decodeImageToPng(sample.format, sourcePath, decodedSource, decoders);
-      if (sample.remote) checkDeclaredDepth(plan.paths.ffprobe, decodedSource, sample);
+      if (sample.remote) checkDeclaredPicture(plan.paths.ffmpeg, plan.paths.ffprobe, decodedSource, sample);
       /** The picture the metrics read: a picture with transparency is compared flattened onto grey, any other as decoded. */
       const comparable = (png: string): string => {
         if (!sample.alpha) return png;
@@ -261,9 +261,14 @@ export const runImage: FamilyRunner = async (ctx) => {
   return rows;
 };
 
-/** A public sample's bit depth is part of the manifest; a file with another depth is not the file that was pinned. */
-function checkDeclaredDepth(ffprobe: string, decoded: string, sample: ImageCase): void {
+/** A public sample's bit depth and transparency are part of the manifest; a file that differs is not the file that was pinned. */
+function checkDeclaredPicture(ffmpeg: string, ffprobe: string, decoded: string, sample: ImageCase): void {
   const stream = probeFile(ffprobe, decoded).streams[0];
   const depth = /(16|48|64)/.test(String(stream.pix_fmt)) ? 16 : 8;
   if (depth !== sample.bitDepth) throw new OutputIntegrityError(`${sample.file} decodes as ${String(stream.pix_fmt)}, but the manifest says ${sample.bitDepth} bits`);
+  const alpha = pictureAlpha(ffmpeg, ffprobe, decoded);
+  const declared = sample.remote?.meta ?? {};
+  if (alpha.channel !== declared.alpha || alpha.transparent !== declared.transparent) {
+    throw new OutputIntegrityError(`${sample.file} has alpha channel ${alpha.channel} and transparency ${alpha.transparent}, but the manifest says ${String(declared.alpha)} and ${String(declared.transparent)}`);
+  }
 }

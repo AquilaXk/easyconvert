@@ -257,12 +257,16 @@ describe('the public benchmark samples in the workflows', () => {
     expect(stepNamed(ab, 'Measure the speed rows against that commit').env?.BENCH_CORPUS_TIER).toBe('pr');
   });
 
-  it('is restored by the nightly jobs that measure it, and the nightly run stays in the full tier', () => {
-    for (const job of [nightly.jobs.bench, nightlyQuality, nightlySpeed]) {
+  it('is restored by the nightly parity jobs, which stay in the full tier, while the plain baseline run keeps to the generated corpus', () => {
+    for (const job of [nightlyQuality, nightlySpeed]) {
       const restore = job.steps.find((step) => step.uses === './.github/actions/bench-corpora');
       expect(restore?.with?.families).toBe('image,video,audio,compression');
       expect(job.env?.BENCH_CORPUS_TIER).toBeUndefined();
     }
+    const plain = nightly.jobs.bench;
+    expect(plain.steps.some((step) => step.uses === './.github/actions/bench-corpora')).toBe(false);
+    expect(stepNamed(plain, 'Run the quality benchmark').env?.BENCH_CORPUS_TIER).toBe('pr');
+    expect(plain['timeout-minutes']).toBe(45);
   });
 });
 

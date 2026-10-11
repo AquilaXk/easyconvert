@@ -58,7 +58,7 @@ SHA-256, licence code); `bench/corpus/PROVENANCE.md` records the licence of each
 
 | Family | Samples | Classes |
 |---|---|---|
-| image | the Kodak lossless suite (24 pictures), ten pictures of the CLIC 2020 professional validation set (512x384 to 2048x1365), seven screenshots, four line-art pictures, two more diagrams with a transparent background (the line-art icon has one too), three 16-bit pictures (a grey radiograph, two RGB) | photo, screen, lineart, alpha, deep |
+| image | the Kodak lossless suite (24 pictures), ten pictures of the CLIC 2020 professional validation set (512x384 to 2048x1365), seven screenshots, four line-art pictures, three pictures with a transparent background (two line-art pictures are partly transparent too), three 16-bit pictures (a grey radiograph, two RGB) | photo, screen, lineart, alpha, deep |
 | video | the first frames of 13 sequences of the AV1 common test conditions (270p to 1080p, 0.7 to 3 s): natural scenes, fast motion, screen content and game capture, computer animation, film grain | natural, highmotion, screen, animation, grain |
 | audio | 14 tracks of the EBU SQAM material (speech in three languages, solo instruments, voice, castanets, claves and a side drum, orchestra, pop), a 24-bit studio production, and five edge cases built from them (a quiet passage with one burst, 8 kHz telephone speech, a 5.1 mix, a clipped signal, 96 kHz 24-bit) | speech, instrument, vocal, transient, orchestra, pop, modern24, edge |
 | compression | the 12 files of the Silesia corpus (5 to 51 MB: text, markup, source, executables, databases, medical images, a PDF), a JPEG and a FLAC file as already compressed members | text, markup, source, binary, database, data, medical, compressed |
@@ -92,7 +92,8 @@ fails the run. A host that does not deliver fails a run under `ORACLE_STRICT_MOD
 `PUBLIC_SPEED_SAMPLES` (`bench/config.ts`: a few per class, because speed follows the code path and the input size more than the picture,
 and a timed row costs many pairs). A pull request's quality job (`--quick`) measures the cases of `QUICK_PUBLIC_SUBSET`, whose
 reference side is read from the cache the nightly run keeps. A pull request's speed job sets `BENCH_CORPUS_TIER=pr` and times the
-generated corpus only, as before; a change that lands a speed gap on a public sample is found by the nightly run (the gate files
+generated corpus only, as before, and so does the plain baseline run of the nightly workflow (its gate then looks for the generated
+corpus' baseline entries only; the parity jobs of the night measure and judge the public samples); a change that lands a speed gap on a public sample is found by the nightly run (the gate files
 that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was).
 
 ## Gate

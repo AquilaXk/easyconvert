@@ -173,3 +173,20 @@ export function flattenOnGrey(ffmpeg: string, ffprobe: string, input: string, ou
   runTool(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${FLATTEN_BACKGROUND}:s=${size}`, '-i', input, '-filter_complex', '[0:v][1:v]overlay=format=auto,format=rgb24', '-frames:v', '1', output]);
   if (!fs.existsSync(output)) throw new OutputIntegrityError(`ffmpeg wrote no flattened picture for ${path.basename(input)}`);
 }
+
+const ALPHA_PIXEL_FORMAT = /^(rgba|bgra|argb|abgr|ya8|ya16|gbrap|yuva)/;
+const OPAQUE_ALPHA = 255;
+
+/** Whether a picture has an alpha channel, and whether any pixel of it is not opaque (the lowest alpha, from ffmpeg's `signalstats` of the extracted channel). */
+export function pictureAlpha(ffmpeg: string, ffprobe: string, file: string): { channel: boolean; transparent: boolean } {
+  const format = String(probeFile(ffprobe, file).streams[0].pix_fmt);
+  if (!ALPHA_PIXEL_FORMAT.test(format)) return { channel: false, transparent: false };
+  const run = spawnSync(ffmpeg, ['-hide_banner', '-nostdin', '-i', file, '-vf', 'alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN', '-f', 'null', '-'], {
+    encoding: 'utf8',
+    timeout: TOOL_TIMEOUT_MS,
+    maxBuffer: TOOL_MAX_BUFFER_BYTES,
+  });
+  const lowest = [...(run.stderr ?? '').matchAll(/YMIN=([0-9.]+)/g)].map((match) => Number.parseFloat(match[1]));
+  if (run.status !== 0 || lowest.length === 0) throw new ToolRunError(`ffmpeg printed no alpha statistics for ${path.basename(file)}`);
+  return { channel: true, transparent: Math.min(...lowest) < OPAQUE_ALPHA };
+}

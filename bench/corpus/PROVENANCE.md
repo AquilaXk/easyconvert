@@ -85,7 +85,7 @@ declared in the manifest and checked against the decoded file.
 | `clic-thong-vo-428.png`, `clic-sergey-zolkin-21232.png`, `clic-juskteez-vu-1041.png`, `clic-veeterzy-82537.png`, `clic-zugr-108.png` | photo | the same set; `Unsplash` |
 | `wm-screen-history.png`, `wm-screen-wikibase.png`, `wm-screen-open-xchange.png`, `wm-screen-glazba.png`, `wm-screen-reasonator.png`, `wm-screen-fountain.png`, `wm-screen-mobile.png` | screen | Screenshots of web pages, an editing tool and a phone app on Wikimedia Commons (https://commons.wikimedia.org, the file titles are in the manifest); `CC0-1.0` |
 | `wm-lineart-containers.png`, `wm-lineart-family-tree.png`, `wm-lineart-assembly.png`, `wm-lineart-chart.png` | lineart | An icon, a tree diagram, an organisation diagram and a chart on Wikimedia Commons; `CC0-1.0` |
-| `wm-alpha-graph.png`, `wm-alpha-structure.png` | alpha | Diagrams with a transparent background on Wikimedia Commons; `CC0-1.0` |
+| `wm-alpha-graph.png`, `wm-alpha-comingsoon.png`, `wm-alpha-banner.png` | alpha | A graph, a notice and a banner with a transparent background on Wikimedia Commons; `CC0-1.0` |
 | `wm-deep-xray.png` | deep | 16-bit grey radiograph (Natural History Museum, London) on Wikimedia Commons; `CC0-1.0` |
 | `wm-deep-moon.png` | deep | 16-bit RGB astrophotograph by Kevin M. Gill on Wikimedia Commons; `CC-BY-2.0` |
 | `wm-deep-dart.png` | deep | 16-bit RGB space telescope composite (NASA, ESA, CSA) on Wikimedia Commons; `Public-domain` |

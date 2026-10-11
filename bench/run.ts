@@ -344,7 +344,7 @@ export async function main(args: string[], out: (line: string) => void = (line) 
   if (options.compareReport) {
     const compared = readReport(options.compareReport);
     if (options.parity) return judgeParity(compared, options, out);
-    const result = evaluateGate(compared, readBaseline(options.baselinePath));
+    const result = evaluateGate(compared, readBaseline(options.baselinePath), { include: (id) => rowInScope(false, id) });
     printGate(result, out);
     return result.regressions.length > 0 ? EXIT_REGRESSION : EXIT_PASS;
   }
@@ -367,7 +367,8 @@ export async function main(args: string[], out: (line: string) => void = (line) 
   if (!options.gate) return EXIT_PASS;
   if (options.parity) return judgeParity(report, options, out);
   if (!fs.existsSync(options.baselinePath)) throw new BenchArgumentError(`no baseline at ${options.baselinePath}; create it with --update-baseline`);
-  const result = evaluateGate(report, readBaseline(options.baselinePath), { families: new Set(options.families) });
+  // BENCH_CORPUS_TIER=pr leaves the public samples out of the run, and then out of the baseline entries it must find.
+  const result = evaluateGate(report, readBaseline(options.baselinePath), { families: new Set(options.families), include: (id) => rowInScope(false, id) });
   printGate(result, out);
   return result.regressions.length > 0 ? EXIT_REGRESSION : EXIT_PASS;
 }
