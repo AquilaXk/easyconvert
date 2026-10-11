@@ -239,5 +239,6 @@ export async function loadExternalImages(
   const images = findExternalImages(root);
   if (images.length === 0) return;
   const loader = new ImageLoader(policy, omitted, caps, countEmbeddedImages(root));
-  for (const image of images) await loader.load(image);
+  // One after another on purpose: the size, count and time caps are shared, so the order decides which image is left out.
+  for (const image of images) await loader.load(image); // NOSONAR S9382
 }

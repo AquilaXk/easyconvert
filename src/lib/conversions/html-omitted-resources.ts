@@ -86,26 +86,38 @@ export interface SrcsetCandidate {
   readonly descriptor: string;
 }
 
+function skipWhile(value: string, from: number, test: (character: string) => boolean): number {
+  let i = from;
+  while (i < value.length && test(value[i])) i++;
+  return i;
+}
+
+/** The index of the comma that ends a descriptor; commas inside parentheses do not end it. */
+function descriptorEnd(value: string, from: number): number {
+  let depth = 0;
+  let i = from;
+  for (; i < value.length && (depth > 0 || value[i] !== ','); i++) {
+    if (value[i] === '(') depth++;
+    else if (value[i] === ')' && depth > 0) depth--;
+  }
+  return i;
+}
+
 /** The candidates of a srcset, skipping commas inside URLs and parentheses (data: URIs may contain commas). */
 export function srcsetCandidates(value: string): SrcsetCandidate[] {
   const candidates: SrcsetCandidate[] = [];
-  const length = value.length;
   let i = 0;
-  while (i < length) {
-    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
+  while (i < value.length) {
+    i = skipWhile(value, i, (character) => isHtmlSpace(character) || character === ',');
     const start = i;
-    while (i < length && !isHtmlSpace(value[i])) i++;
+    i = skipWhile(value, i, (character) => !isHtmlSpace(character));
     let end = i;
     let descriptor = '';
     if (end > start && value[end - 1] === ',') {
       while (end > start && value[end - 1] === ',') end--;
     } else {
       const descriptorStart = i;
-      let depth = 0;
-      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
-        if (value[i] === '(') depth++;
-        else if (value[i] === ')' && depth > 0) depth--;
-      }
+      i = descriptorEnd(value, i);
       descriptor = value.slice(descriptorStart, i).trim();
     }
     if (end > start) candidates.push({ url: value.slice(start, end), descriptor });

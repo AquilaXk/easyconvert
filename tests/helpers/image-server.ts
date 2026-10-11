@@ -31,7 +31,7 @@ export async function startImageServer(): Promise<ImageServer> {
   const sockets = new Set<import('node:net').Socket>();
   const server = http.createServer((request, response) => {
     requests.push({ method: request.method ?? '', url: request.url ?? '', headers: request.headers });
-    const path = new URL(request.url ?? '/', 'http://placeholder.invalid').pathname;
+    const path = new URL(request.url ?? '/', 'http://placeholder.invalid').pathname; // NOSONAR S5332: a parsing base for a request path, never connected to
     const handler = routes.get(path);
     if (!handler) {
       response.writeHead(404);
@@ -68,11 +68,11 @@ export async function startImageServer(): Promise<ImageServer> {
   };
 }
 
-export async function solidPng(width: number, height: number, rgb: { r: number; g: number; b: number }): Promise<Buffer> {
+export function solidPng(width: number, height: number, rgb: { r: number; g: number; b: number }): Promise<Buffer> {
   return sharp({ create: { width, height, channels: 3, background: rgb } }).png().toBuffer();
 }
 
-export async function noisyJpeg(width: number, height: number): Promise<Buffer> {
+export function noisyJpeg(width: number, height: number): Promise<Buffer> {
   const raw = Buffer.alloc(width * height * 3);
   for (let i = 0; i < raw.length; i++) raw[i] = (i * 37 + (i >> 5) * 11) & 0xff;
   return sharp(raw, { raw: { width, height, channels: 3 } }).jpeg({ quality: 90, chromaSubsampling: '4:4:4' }).toBuffer();
