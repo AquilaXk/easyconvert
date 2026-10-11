@@ -17,9 +17,16 @@ const SHARED_HARNESS_FILES = [
   'tests/helpers/ocr-cer.ts',
 ];
 
-/** SHA-256 over the shared harness files and `bench/families/<family>.ts`, in a fixed order. */
+/** Files a family's runner shares with its other runners or with a helper process, which a cached measurement also depends on. */
+const FAMILY_HARNESS_FILES: Readonly<Record<string, readonly string[]>> = {
+  compression: ['bench/families/compression-fixture.ts'],
+  data: ['bench/reference-server.ts', 'bench/reference-server.py'],
+  font: ['bench/reference-server.ts', 'bench/reference-server.py'],
+};
+
+/** SHA-256 over the shared harness files, `bench/families/<family>.ts` and the family's own helper files, in a fixed order. */
 export function harnessHash(family: string, root: string = REPO_ROOT): string {
-  const files = [...SHARED_HARNESS_FILES, `bench/families/${family}.ts`];
+  const files = [...SHARED_HARNESS_FILES, `bench/families/${family}.ts`, ...(FAMILY_HARNESS_FILES[family] ?? [])];
   const parts = files.map((file) => `${file}\n${sha256Hex(fs.readFileSync(path.join(root, file)))}`);
   return sha256Hex(parts.join('\n'));
 }

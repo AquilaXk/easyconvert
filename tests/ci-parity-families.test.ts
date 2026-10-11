@@ -27,7 +27,7 @@ import {
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
 const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
-const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'cad', 'raw', 'pdf-ops', 'vector'];
+const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
 describe('the map', () => {
@@ -51,7 +51,7 @@ describe('the map', () => {
 
   it('lists the conversion families that still have no reference-compared rows', () => {
     const unbenchmarked = [...MAP.families].filter(([, bench]) => bench === null).map(([name]) => name).sort();
-    expect(unbenchmarked).toEqual(['data', 'ebook', 'font', 'hdr-image']);
+    expect(unbenchmarked).toEqual(['hdr-image']);
   });
 
   it('has a quick subset for every family, and every named case exists in the recorded baseline', () => {
@@ -104,24 +104,26 @@ describe('classifying changed paths', () => {
     ['a file shared by audio and video', 'src/lib/conversions/media-ffprobe.ts', ['video', 'audio'], []],
     ['an OCR engine file', 'src/lib/conversions/ocr-text-layer.ts', ['ocr'], []],
     ['an OCR calibration table', 'src/lib/conversions/ocr-calibration/eng.cli.json', ['ocr'], []],
-    ['the office pipeline', 'src/lib/conversions/office.ts', ['document'], []],
+    ['the office pipeline, which also writes and reads the workbooks and the ebooks', 'src/lib/conversions/office.ts', ['document', 'data', 'ebook'], []],
     ['a legacy office reader', 'src/lib/conversions/office/doc-reader.ts', ['document'], []],
     ['the LibreOffice pool', 'src/worker/libreoffice-pool.ts', ['document'], []],
     ['the document model', 'src/lib/conversions/document-model/build.ts', ['document'], []],
     ['the document model for DOCX', 'src/lib/conversions/document-model/docx.ts', ['document'], []],
     ['the DOCX numbering reader', 'src/lib/conversions/docx-numbering.ts', ['document'], []],
-    ['the EPUB reader', 'src/lib/conversions/epub-reader.ts', ['document'], []],
+    ['the EPUB reader', 'src/lib/conversions/epub-reader.ts', ['document', 'ebook'], []],
     ['the package reader the document formats share', 'src/lib/conversions/package-access.ts', ['document'], []],
     ['the PDF text layout analysis', 'src/lib/conversions/pdf-layout/columns.ts', ['document'], []],
     ['the PDF text reader', 'src/lib/conversions/pdf-text-document.ts', ['document'], []],
     ['the complex-script shaper', 'src/lib/conversions/text-shaping/shape.ts', ['document'], []],
     ['the PDF font coverage', 'src/lib/conversions/pdf-fonts.ts', ['document'], []],
     ['a CAD file', 'src/lib/conversions/cad-nurbs.ts', ['cad'], []],
-    ['a font file', 'src/lib/conversions/font-woff2.ts', [], ['font']],
+    ['a font file', 'src/lib/conversions/font-woff2.ts', ['font'], []],
     ['a RAW file', 'src/lib/conversions/raw-demosaic.ts', ['raw'], []],
     ['the RAW decode worker', 'src/worker/raw-decode-worker.ts', ['raw'], []],
-    ['a data file', 'src/lib/conversions/parquet-writer.ts', [], ['data']],
-    ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', [], ['ebook']],
+    ['a data file', 'src/lib/conversions/parquet-writer.ts', ['data'], []],
+    ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', ['ebook'], []],
+    ['the FB2 structure reader', 'src/lib/conversions/fb2-model.ts', ['ebook'], []],
+    ['the MOBI structure reader', 'src/lib/conversions/mobi-model.ts', ['ebook'], []],
     ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', ['pdf-ops'], []],
     ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
     ['the PDF merge of the workflow graph', 'src/lib/jobs/artifact-helpers.ts', ['pdf-ops'], []],
@@ -185,8 +187,8 @@ describe('classifying changed paths', () => {
 
   it('combines the families of several changed files, benchmarked ones in harness order', () => {
     expect(classify('src/lib/conversions/zstd.ts', 'src/lib/conversions/image.ts', 'src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'docs/a.md')).toEqual({
-      benchmarked: ['image', 'compression', 'cad', 'raw'],
-      unmapped: ['font'],
+      benchmarked: ['image', 'compression', 'font', 'cad', 'raw'],
+      unmapped: [],
       unclassified: [],
     });
   });
@@ -256,9 +258,9 @@ describe('the command the changes job runs', () => {
     spawnSync('node', ['scripts/ci-parity-families.mjs'], { cwd: ROOT, input, encoding: 'utf-8' });
 
   it('prints the three lists the workflow reads', () => {
-    const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/font-woff2.ts\nREADME.md\n');
+    const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/openexr-decode.ts\nREADME.md\n');
     expect(result.status).toBe(0);
-    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=font', 'unclassified=']);
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=hdr-image', 'unclassified=']);
   });
 
   it('prints empty lists for a change outside the conversion code', () => {
@@ -303,8 +305,14 @@ describe('the files of the benchmark itself', () => {
 
   it.each<[string, string, string[]]>([
     ['the bench helper of the image, video, audio and RAW rate-distortion fits', 'bench/bd-rate.ts', ['image', 'video', 'audio', 'raw']],
-    ['the text scoring of OCR, documents and PDF operations', 'bench/text-metrics.ts', ['ocr', 'document', 'pdf-ops']],
-    ['the structure scoring of documents', 'bench/structure-metrics.ts', ['document']],
+    ['the text scoring of OCR, documents, ebooks and PDF operations', 'bench/text-metrics.ts', ['ocr', 'document', 'pdf-ops', 'ebook']],
+    ['the structure scoring of documents and ebooks', 'bench/structure-metrics.ts', ['document', 'ebook']],
+    ['the reference server of the data and font families', 'bench/reference-server.py', ['data', 'font']],
+    ['the client of the reference server', 'bench/reference-server.ts', ['data', 'font']],
+    ['the archive runner of the compression family', 'bench/families/compression-archives.ts', ['compression']],
+    ['the CAD ink oracle', 'bench/cad-ink.ts', ['cad']],
+    ['the metafile reader', 'bench/metafile-check.ts', ['vector']],
+    ['the rendering helpers of the CAD and vector families', 'bench/vector-raster.ts', ['cad', 'vector']],
     ['the PDF stamp reference', 'bench/pdf-stamp.ts', ['pdf-ops']],
     ['the stamp ink oracle', 'bench/pdf-ink.ts', ['pdf-ops']],
     ['the CAD ink oracle', 'bench/cad-ink.ts', ['cad']],

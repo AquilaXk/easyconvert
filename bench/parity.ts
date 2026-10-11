@@ -209,9 +209,11 @@ export interface ParityOptions {
    */
   baseGaps?: GapFile;
   /**
-   * The families this run is the shard of: the `--family` argument of the command, which the gate files of the base read
-   * and the change cannot write; neither the report's `families` field nor its rows say which family a shard is. Without
-   * it every family counts as measured, so every changed entry is checked.
+   * The families this run is the shard of: the `--family` argument of the command. `bench/run.ts` parses it, which is the
+   * change's own file and not a gate file, so the head decides what the base's judge receives; an empty list therefore
+   * counts as absent. Neither the report's `families` field nor its rows say which family a shard is. Without a list every
+   * family counts as measured, so every changed entry is checked; a list narrows the check to its families, which the
+   * workflow sets to the one family of each shard.
    */
   families?: readonly Family[];
 }
@@ -360,7 +362,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
     const baseById = gapIndex(options.baseGaps);
     const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
     // A shard backs the entries of its own families only; the shards of the others back theirs. A family that emitted no rows is still the shard's, so its entries are refused as unmeasured.
-    const shardFamilies = options.families === undefined ? null : new Set<string>(options.families);
+    const shardFamilies = options.families === undefined || options.families.length === 0 ? null : new Set<string>(options.families);
     for (const gap of gaps.gaps) {
       const base = baseById.get(gap.id);
       if ((shardFamilies !== null && !shardFamilies.has(gap.id.split('/')[0])) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;

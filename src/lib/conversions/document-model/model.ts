@@ -231,6 +231,8 @@ export interface DocumentModel {
   endnotes?: NoteDefinition[];
   title?: string;
   author?: string;
+  /** The picture that is the book's cover (an ebook source states one); an EPUB writer marks it as the cover image. */
+  coverImageId?: number;
   /** BCP 47 language tag of the content, when the source states one. */
   language?: string;
   /** Things the reader could not carry (unsupported image formats, shapes), for the caller to report. */

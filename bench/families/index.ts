@@ -3,7 +3,10 @@ import type { Family } from '../report';
 import { runAudio } from './audio';
 import { runCad } from './cad';
 import { runCompression } from './compression';
+import { runData } from './data';
 import { runDocument } from './document';
+import { runEbook } from './ebook';
+import { runFont } from './font';
 import { runImage } from './image';
 import { runOcr } from './ocr';
 import { runPdfOps } from './pdf-ops';
@@ -18,8 +21,11 @@ export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   ocr: runOcr,
   document: runDocument,
   compression: runCompression,
+  'pdf-ops': runPdfOps,
+  data: runData,
+  ebook: runEbook,
+  font: runFont,
   cad: runCad,
   raw: runRaw,
-  'pdf-ops': runPdfOps,
   vector: runVector,
 };

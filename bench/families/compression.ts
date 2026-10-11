@@ -3,11 +3,12 @@ import path from 'node:path';
 import { convertWithProject } from '../convert';
 import { IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
-import { OutputIntegrityError } from '../errors';
 import { numberRecord } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, throughputRow, speedRowId } from '../rows';
 import { runTool } from '../tools';
+import { runArchives } from './compression-archives';
+import { assertSame, buildMixedFixture, MIXED_INPUT_FILES, MIXED_NAME, tarMember, timeBoth } from './compression-fixture';
 
 /**
  * Compression family: a tar holding one file is converted to zst and 7z, which compress the member; size ratio, compress speed and decompress speed of the project's Zstandard and 7z paths
@@ -18,22 +19,11 @@ import { runTool } from '../tools';
 const ZSTD_LEVEL = '3';
 const SEVEN_ZIP_LEVEL = '6';
 const XZ_LEVEL = '6';
-const MIXED_NAME = 'mixed.bin';
-const MIXED_INPUT_FILES = ['data/records.jsonl', 'speech.wav'];
 const COMPRESS_SPECS: readonly MetricSpec[] = [SPEC.ratio, SPEC.throughput];
 const DECOMPRESS_SPECS: readonly MetricSpec[] = [SPEC.throughput];
 const parseSize = numberRecord(['bytes']);
 
-/** The single member of a tar, read with the system tar. */
-function tarMember(tar: Buffer, tarBin: string): Buffer {
-  return runTool(tarBin, ['-xOf', '-'], { input: tar }).stdout;
-}
-
-function assertSame(label: string, actual: Buffer, expected: Buffer): void {
-  if (!actual.equals(expected)) throw new OutputIntegrityError(`${label} does not decode to the original ${expected.length} bytes (got ${actual.length})`);
-}
-
-export const runCompression: FamilyRunner = async (ctx) => {
+async function runCodecs(ctx: FamilyContext): Promise<BenchRow[]> {
   const rows: BenchRow[] = [];
   const compressCases = ['zst', '7z', 'xz'].map((name) => `mixed.tar->${name}`);
   const decompressCases = ['zst', 'xz', '7z'].map((name) => `mixed.${name}->tar`);
@@ -51,14 +41,7 @@ export const runCompression: FamilyRunner = async (ctx) => {
   const { zstd, xz, tar: tarBin } = plan.paths;
   const sevenZip = plan.paths['7z'];
 
-  const mixedDir = ctx.scratch('mixed');
-  fs.mkdirSync(mixedDir);
-  const mixedPath = path.join(mixedDir, MIXED_NAME);
-  const original = Buffer.concat(MIXED_INPUT_FILES.map((file) => ctx.corpusBuffer(file)));
-  fs.writeFileSync(mixedPath, original);
-  const tarFile = ctx.scratch('mixed.tar');
-  runTool(tarBin, ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-cf', tarFile, '-C', mixedDir, MIXED_NAME]);
-  const tar = fs.readFileSync(tarFile);
+  const { dir: mixedDir, path: mixedPath, original, tar } = buildMixedFixture(ctx, tarBin);
 
   /** Size of the reference tool's output for the mixed input, cached: a function of the tool, its level and the input files. */
   const referenceSize = (tool: string, level: string, compute: () => number): Promise<number> =>
@@ -154,19 +137,6 @@ export const runCompression: FamilyRunner = async (ctx) => {
     }
   }
   return rows;
-};
-
-/** Interleaved timing of two actions whose results are not needed; `oursRepeats` calls of ours make one sample. */
-function timeBoth(ctx: FamilyContext, rowId: string, ours: () => Promise<unknown>, reference: () => unknown, oursRepeats = 1): ReturnType<FamilyContext['time']> {
-  return ctx.time(
-    rowId,
-    async () => {
-      await ours();
-    },
-    () => {
-      reference();
-    },
-    'light',
-    oursRepeats
-  );
 }
+
+export const runCompression: FamilyRunner = async (ctx) => [...(await runCodecs(ctx)), ...(await runArchives(ctx))];
