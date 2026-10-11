@@ -427,10 +427,10 @@ describe('the known gaps', () => {
     expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
-    // The document gaps: the PDF text reader (672) and the slide and sheet pages to PNG, tracked under the measurement issue.
-    expect(issuesOf('document/', true)).toEqual([672, 666]);
+    // The document gaps: the PDF text reader (672) and the slide and sheet pages to PNG, tracked under the render speed issue (735).
+    expect(issuesOf('document/', true)).toEqual([672, 735]);
     expect(issuesOf('raw/', true)).toEqual([686]);
-    expect(issuesOf('vector/', true)).toEqual([666]);
+    expect(issuesOf('vector/', true)).toEqual([735]);
     expect(issuesOf('cad/', true)).toEqual([]);
     for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
