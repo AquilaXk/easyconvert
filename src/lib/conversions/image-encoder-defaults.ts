@@ -111,10 +111,17 @@ export const AVIF_CLI_MAX_PIXELS = 48_000_000;
  * the process, the PNG hand-off and the temp files outweighed it (speed ratio 1.97 and 1.69, at parity), with
  * no change in photo BD-rate. Pictures above `AVIF_CLI_MAX_PIXELS` also stay on the image library, which encoded
  * them before the tool existed, so no picture size is refused that was accepted earlier.
+ *
+ * An untagged photograph with more than 8 bits per sample (a developed camera file, a 16-bit scan or render) is encoded by the
+ * command-line encoder with full chroma, 4:4:4 at 10 bits, and the encoder's own tuning. Measured on the 5-megapixel Sony
+ * sample of the benchmark against the same encoder at the same speed with its default layout, 4:2:0 costs 4.6% of the bytes in
+ * SSIM at equal SSIM (the metric reads chroma through a second 4:2:0 conversion, which a 4:2:0 file pays twice) and the image
+ * library's encoder at the same layout is 4.3% behind; the command-line encoder at 4:4:4 is the reference's own output, and
+ * the extra effort that would close the gap in 4:2:0 (speed 5) costs 3.7 times the time.
  */
-export function avifEncoderFor(content: ContentClass, grey: boolean, pixels: number, toolAvailable: boolean): AvifEncoder {
+export function avifEncoderFor(content: ContentClass, grey: boolean, pixels: number, toolAvailable: boolean, fullChroma = false): AvifEncoder {
   if (!toolAvailable || pixels > AVIF_CLI_MAX_PIXELS) return 'image-library';
-  return grey || content === 'graphic' ? 'library-cli' : 'image-library';
+  return grey || content === 'graphic' || fullChroma ? 'library-cli' : 'image-library';
 }
 
 export function avifEffortFor(pixels: number, content: ContentClass, encoder: AvifEncoder = 'image-library'): number {
@@ -126,9 +133,9 @@ export function avifEffortFor(pixels: number, content: ContentClass, encoder: Av
 }
 
 /** The tuning metric to ask the encoder for, or undefined to keep the tool's own. */
-export function avifTuneFor(encoder: AvifEncoder, content: ContentClass): string | undefined {
+export function avifTuneFor(encoder: AvifEncoder, content: ContentClass, fullChroma = false): string | undefined {
   if (encoder === 'image-library') return AVIF_TUNE;
-  return content === 'photo' ? AVIF_CLI_PHOTO_TUNE : undefined;
+  return content === 'photo' && !fullChroma ? AVIF_CLI_PHOTO_TUNE : undefined;
 }
 
 export function clampQuality(quality: number | undefined, fallback: number): number {
@@ -140,17 +147,17 @@ export function jpegChromaFor(quality: number): ChromaSubsampling {
   return quality >= JPEG_FULL_CHROMA_QUALITY ? '4:4:4' : '4:2:0';
 }
 
-export function avifChromaFor(quality: number, content: ContentClass): ChromaSubsampling {
+export function avifChromaFor(quality: number, content: ContentClass, fullChroma = false): ChromaSubsampling {
   if (quality >= AVIF_FULL_CHROMA_QUALITY) return '4:4:4';
-  return content === 'graphic' ? '4:4:4' : '4:2:0';
+  return content === 'graphic' || fullChroma ? '4:4:4' : '4:2:0';
 }
 
 /**
  * Layout of the AVIF planes: a grey source is monochrome (a colour layout spends bytes on two chroma planes that
  * carry nothing), anything else follows `avifChromaFor`.
  */
-export function avifLayoutFor(grey: boolean, quality: number, content: ContentClass): AvifPlaneLayout {
-  return grey ? '4:0:0' : avifChromaFor(quality, content);
+export function avifLayoutFor(grey: boolean, quality: number, content: ContentClass, fullChroma = false): AvifPlaneLayout {
+  return grey ? '4:0:0' : avifChromaFor(quality, content, fullChroma);
 }
 
 /**
@@ -242,7 +249,8 @@ export function avifPolicyFor(
   pixels: number,
   deep: boolean,
   grey: boolean,
-  encoder: AvifEncoder
+  encoder: AvifEncoder,
+  fullChroma = false
 ): AvifPolicy {
   const quality = clampQuality(requestedQuality, DEFAULT_QUALITY_BY_CODEC.avif);
   return {
@@ -250,9 +258,9 @@ export function avifPolicyFor(
     quality,
     effort: avifEffortFor(pixels, content, encoder),
     bitdepth: avifBitdepthFor(deep),
-    chroma: avifChromaFor(quality, content),
-    layout: avifLayoutFor(grey, quality, content),
-    tune: avifTuneFor(encoder, content),
+    chroma: avifChromaFor(quality, content, fullChroma),
+    layout: avifLayoutFor(grey, quality, content, fullChroma),
+    tune: avifTuneFor(encoder, content, fullChroma),
   };
 }
 

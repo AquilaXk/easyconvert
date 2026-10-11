@@ -11,8 +11,15 @@ export const GIF_MAX_COLORS = 256;
 
 const MAX_CODE_BITS = 12;
 const TABLE_LIMIT = 1 << MAX_CODE_BITS;
-/** Prime size of the code table's hash, as in the classic compress implementation. */
-const HASH_SIZE = 5003;
+/**
+ * Slots of the code table's hash: a power of two four times the 4096 codes the table can hold, so a probe ends within a
+ * step or two (the classic compress hash of 5003 slots is 82 percent full when the table is, and a lookup then runs a
+ * long chain per pixel). The slot is the multiplicative (Fibonacci) hash of the key.
+ */
+const HASH_BITS = 14;
+const HASH_SIZE = 1 << HASH_BITS;
+const HASH_MASK = HASH_SIZE - 1;
+const HASH_MULTIPLIER = 0x9e3779b1;
 const BLOCK_BYTES = 255;
 const GIF_TRAILER = 0x3b;
 const IMAGE_SEPARATOR = 0x2c;
@@ -90,18 +97,15 @@ function lzwEncode(indices: Uint8Array, minCodeSize: number): Uint8Array {
   for (let i = 1; i < indices.length; i += 1) {
     const byte = indices[i];
     const key = (byte << MAX_CODE_BITS) + prefix;
-    let slot = ((byte << 4) ^ prefix) % HASH_SIZE;
+    let slot = Math.imul(key, HASH_MULTIPLIER) >>> (32 - HASH_BITS);
     let found = false;
-    let probe = 0;
     while (hashKeys[slot] !== -1) {
       if (hashKeys[slot] === key) {
         prefix = hashCodes[slot];
         found = true;
         break;
       }
-      probe += 1;
-      slot = (slot + 1) % HASH_SIZE;
-      if (probe > HASH_SIZE) break;
+      slot = (slot + 1) & HASH_MASK;
     }
     if (found) continue;
     output(prefix);

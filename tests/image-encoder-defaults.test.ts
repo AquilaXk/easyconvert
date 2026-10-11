@@ -433,6 +433,24 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
 });
 
 describe('avifEncoderFor', () => {
+  it('sends an untagged photograph of more than 8 bits to the command-line encoder at full chroma, as the reference writes it', () => {
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, true)).toBe('library-cli');
+    expect(avifPolicyFor(70, 'photo', 5 * MEGAPIXEL, true, false, 'library-cli', true)).toEqual({
+      encoder: 'library-cli',
+      quality: 70,
+      effort: 3,
+      bitdepth: 10,
+      chroma: '4:4:4',
+      layout: '4:4:4',
+      tune: undefined,
+    });
+    // An 8-bit photograph, and a deep one without the full-chroma rule (an HDR picture), keep the image library at 4:2:0.
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, false)).toBe('image-library');
+    expect(avifPolicyFor(70, 'photo', 5 * MEGAPIXEL, true, false, 'image-library', false)).toMatchObject({ chroma: '4:2:0', layout: '4:2:0', tune: 'ssim' });
+    // Without the tool the image library writes it, at the same layout.
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, false, true)).toBe('image-library');
+  });
+
   it('gives grey and graphic pictures to the library encoder, colour photographs and oversized pictures to the image library, and everything to the image library without the tool', () => {
     expect(avifEncoderFor('graphic', false, 1_000, true)).toBe('library-cli');
     expect(avifEncoderFor('photo', true, 1_000, true)).toBe('library-cli');
