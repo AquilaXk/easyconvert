@@ -93,7 +93,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops
+          ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector
         run: |
           families=""
           unmapped=""

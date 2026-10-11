@@ -427,7 +427,12 @@ describe('the known gaps', () => {
     expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
-    expect(issuesOf('document/', true)).toEqual([672]);
+    // The document gaps: the PDF text reader (672) and the slide and sheet pages to PNG, tracked under the measurement issue.
+    expect(issuesOf('document/', true)).toEqual([672, 666]);
+    expect(issuesOf('raw/', true)).toEqual([686]);
+    expect(issuesOf('vector/', true)).toEqual([666]);
+    expect(issuesOf('cad/', true)).toEqual([]);
+    for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);

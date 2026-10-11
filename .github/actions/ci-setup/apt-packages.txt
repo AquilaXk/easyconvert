@@ -9,6 +9,7 @@ libreoffice-writer
 libreoffice-impress
 libreoffice-draw
 imagemagick
+librsvg2-bin
 tesseract-ocr
 tesseract-ocr-kor
 tesseract-ocr-jpn

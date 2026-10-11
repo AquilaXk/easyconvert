@@ -16,6 +16,7 @@ import {
   AVIF_TUNE,
   FALLBACK_QUALITY,
   avifLibraryOptionsOf,
+  AVIF_CLI_MAX_PIXELS,
   avifEncoderFor,
   avifPolicyFor,
   type AvifEncoder,
@@ -77,6 +78,8 @@ import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
 import { encode16BitPngAsync } from './png16';
+import { writePhotoPng16 } from './png-photo-bands';
+import { CPU_POOL_MIN_BYTES } from '../workers/cpu-pool';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -1653,6 +1656,12 @@ function assertAnimatableOptions(options: ConversionOptions): void {
 }
 
 /** The dither the request names for the Oklab palette quantizer; error diffusion in linear light by default. */
+/** Whether the picture of a pipeline is small enough for the Oklab quantizer (its size before any resize bounds its size after). */
+async function withinQuantizerBudget(pipeline: Sharp): Promise<boolean> {
+  const { width = 0, height = 0 } = await pipeline.clone().metadata();
+  return width * height <= QUANTIZER_PIXEL_BUDGET.maxPixels;
+}
+
 function ditherKindOf(options: ConversionOptions): DitherKind {
   if (options.dither === false) return 'none';
   if (options.ditherMethod === 'blue-noise') return 'blue-noise';
@@ -1737,8 +1746,34 @@ function isNeutralColour(colour: { r: number; g: number; b: number } | undefined
  */
 const CONTENT_CLASSIFIED_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'avif']);
 
-/** zlib level of the PNG handed to the AVIF encoder: it is read once and thrown away, so speed matters and size does not. */
-const AVIFENC_INPUT_PNG_COMPRESSION = 1;
+/**
+ * How much farther than its nearest palette colour a photograph's pixel may be from the colour of the pixel before it for the
+ * GIF to keep that colour (see `QuantizeOptions.runTolerance`). 0.25 takes the camera samples of the benchmark below the standard
+ * converter's size (a 960 x 540 file 7 percent smaller than without it) for 0.0006 of SSIM and 0.2 dB, far inside the 0.007 and 2 dB
+ * they lead that converter by.
+ */
+const GIF_PHOTO_RUN_TOLERANCE = 0.25;
+
+/** Deflate level of a 16-bit PNG: adaptive filtering makes level 6 as small as level 8 and faster. */
+const DEEP_PNG_COMPRESSION_LEVEL = 6;
+
+/** Deflate level 0 writes the pixels as stored blocks, which costs a copy and no compression. */
+const STORED_DEFLATE_LEVEL = 0;
+
+/**
+ * Largest 16-bit picture, in bytes of samples, that is written in bands on pool threads: the stored copy, the shared scanlines,
+ * the filtered bands and the compressed bands are alive together, about four times the samples (24 megapixels of RGB take 0.6 GB).
+ * A larger picture goes to the general encoder, which holds the samples once.
+ */
+const PHOTO_BANDS_MAX_BYTES = 150_000_000;
+
+/** Bytes of the 16-bit pixels of a decoded picture, from its metadata (0 when its size is not known). */
+function deepPixelBytes(meta: Metadata | undefined): number {
+  return meta?.width !== undefined && meta.height !== undefined ? meta.width * meta.height * (meta.channels ?? 1) * 2 : 0;
+}
+
+/** Deflate level of the PNG handed to the AVIF encoder: it is read once and thrown away, so it is written stored (level 0) and the encoder reads it back at memory speed. */
+const AVIFENC_INPUT_PNG_COMPRESSION = 0;
 /** Colour tags of an HDR AVIF: BT.2020 primaries, PQ transfer and the matching BT.2020 matrix. */
 const PQ_AVIF_CICP: AvifCicp = { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_BT2020_NCL };
 
@@ -1757,7 +1792,7 @@ interface EncodedAvif {
 async function encodeAvifFromPipeline(
   pipeline: Sharp,
   options: ConversionOptions,
-  content: ContentClass,
+  contentOf: ContentClass | Promise<ContentClass>,
   keepsGrey: boolean,
   cicp: AvifCicp | undefined,
   alphaIsOpaque: boolean | undefined
@@ -1772,11 +1807,16 @@ async function encodeAvifFromPipeline(
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
   const avifenc = await findAvifenc();
   const pixels = target.width * target.height;
-  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
+  const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
+  // An HDR picture (tagged by CICP) keeps its own route; an untagged deep photograph goes to the command-line encoder
+  // whatever its content, so the PNG the encoder reads is written while the content class is still being found.
+  const toCommandLine = avifenc !== null && deep && cicp === undefined && pixels <= AVIF_CLI_MAX_PIXELS;
+  const pendingPng = toCommandLine ? raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer() : null;
+  const [content, speculativePng] = await Promise.all([contentOf, pendingPng]);
+  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null, deep && cicp === undefined);
   const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
-    const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
-    const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();
+    const png = speculativePng ?? (await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer());
     const buffer = await encodeAvifWithCli(avifenc, {
       png,
       width: target.width,
@@ -2156,8 +2196,16 @@ export async function convertImage(
 
   // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline.
   let content: ContentClass = 'photo';
-  if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection?.keepsAnimation) {
-    content = decodedRaster ? classifyRaster(decodedRaster) : await classifyContent(pipeline);
+  // A deep picture written as AVIF is encoded by the command-line tool whatever its content, so its class is awaited
+  // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
+  let pendingContent: Promise<ContentClass> | undefined;
+  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation) {
+    if (decodedRaster) content = classifyRaster(decodedRaster);
+    else if (fmt === 'avif' && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) {
+      pendingContent = classifyContent(pipeline);
+      // Awaited by the encoder; a failure before that must not surface as an unhandled rejection.
+      pendingContent.catch(() => undefined);
+    } else content = await classifyContent(pipeline);
   }
 
   // Resize options
@@ -2271,7 +2319,24 @@ export async function convertImage(
               .toBuffer();
           }
         } else {
-          outputBuffer = await (deepColourspace ? pipeline.toColourspace(deepColourspace) : pipeline).png({ compressionLevel: 8 }).toBuffer();
+          // A 16-bit picture is mostly noise below its top byte: adaptive row filtering (the smallest-sum choice that libpng's
+          // heuristic makes) writes it 13 percent smaller, as the standard converters do, at deflate level 6, which is as small as 8 there.
+          let photoPng: Buffer | null = null;
+          if (deepColourspace && content === 'photo' && deepPixelBytes(inputMeta) >= CPU_POOL_MIN_BYTES && deepPixelBytes(inputMeta) <= PHOTO_BANDS_MAX_BYTES) {
+            // The samples, and a one-pixel picture from the same pipeline that carries the chunks it writes (profile, EXIF, resolution).
+            const raster = pipeline.toColourspace(deepColourspace);
+            const [{ data, info }, template] = await Promise.all([
+              raster.clone().raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true }),
+              raster.clone().extract({ left: 0, top: 0, width: 1, height: 1 }).png({ compressionLevel: STORED_DEFLATE_LEVEL }).toBuffer(),
+            ]);
+            photoPng = await writePhotoPng16({ samples: data, width: info.width, height: info.height, channels: info.channels, template });
+          }
+          outputBuffer =
+            photoPng ??
+            (await (deepColourspace
+              ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
+              : pipeline.png({ compressionLevel: 8 })
+            ).toBuffer());
         }
         if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });
         mimeType = 'image/png';
@@ -2284,7 +2349,7 @@ export async function convertImage(
         break;
 
       case 'avif': {
-        const avif = await encodeAvifFromPipeline(pipeline, options, content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize);
+        const avif = await encodeAvifFromPipeline(pipeline, options, pendingContent ?? content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize);
         // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
         // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
         // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
@@ -2410,6 +2475,18 @@ export async function convertImage(
             dither: ditherKindOf(options),
             transparency: 'threshold',
           });
+          outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
+        } else if (
+          content === 'photo' &&
+          !frameSelection?.keepsAnimation &&
+          options.dither === undefined &&
+          (await withinQuantizerBudget(pipeline))
+        ) {
+          // A photograph that asks for no dithering in particular: the Oklab quantizer's palette, each pixel mapped to its
+          // nearest colour. Error diffusion is noise to LZW (25 percent more bytes on the camera samples of the benchmark) and
+          // does not raise SSIM or PSNR there; the image library's palette quantizer spends the same bytes on both.
+          const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          const indexed = quantizeImage(data, info.width, info.height, colours, { dither: 'none', transparency: 'threshold', runTolerance: GIF_PHOTO_RUN_TOLERANCE });
           outputBuffer = encodeGif({ width: info.width, height: info.height, ...indexed });
         } else {
           outputBuffer = await pipeline.gif({ colours, dither: options.dither !== false ? 1.0 : 0.0 }).toBuffer();
