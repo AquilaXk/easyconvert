@@ -113,7 +113,10 @@ interface LogicalSpace {
   scale: number;
 }
 
-function computeLogicalSpace(ops: DrawOp[], width: number, height: number): LogicalSpace {
+/** The finest refinement of the logical space: 16 logical units per pixel keeps a vertex within 1/32 pixel of its position. */
+const MAX_REFINEMENT = 16;
+
+function computeLogicalSpace(ops: DrawOp[], width: number, height: number, refine = false): LogicalSpace {
   let maxAbs = Math.max(width, height);
   for (const op of ops) {
     const groups = op.kind === 'fill' ? op.rings : op.lines;
@@ -124,7 +127,11 @@ function computeLogicalSpace(ops: DrawOp[], width: number, height: number): Logi
   if (!Number.isFinite(maxAbs)) {
     throw new CadGeometryUnavailableError('Drawing extent is not a finite number.');
   }
-  if (maxAbs <= INT16_MAX) return { unitsPerInch: CSS_PX_PER_INCH, scale: 1 };
+  if (maxAbs <= INT16_MAX) {
+    // Whole-pixel vertices move every curved edge by up to half a pixel; a finer logical unit carries them to the metafile.
+    const scale = refine ? Math.max(1, Math.min(MAX_REFINEMENT, Math.floor(INT16_MAX / maxAbs))) : 1;
+    return { unitsPerInch: CSS_PX_PER_INCH * scale, scale };
+  }
   const unitsPerInch = Math.floor((CSS_PX_PER_INCH * INT16_MAX) / maxAbs);
   if (unitsPerInch < MIN_UNITS_PER_INCH) {
     throw new CadGeometryUnavailableError(
@@ -465,7 +472,7 @@ export function encodeEmf(svgBuffer: Buffer): Buffer {
 
   const deviceOps = planDocument(doc);
   assertEstimatedSize(deviceOps, 'emf');
-  const space = computeLogicalSpace(deviceOps, width, height);
+  const space = computeLogicalSpace(deviceOps, width, height, true);
   const records: Buffer[] = [...createEmfStateRecords(space)];
 
   const state: EmfState = { fillMode: EMF_POLYFILL_WINDING, scale: space.scale };
