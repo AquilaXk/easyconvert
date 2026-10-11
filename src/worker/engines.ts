@@ -75,6 +75,7 @@ import {
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
+import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -145,7 +146,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-postscript' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-postscript' | 'native-svg' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
   executionTimeMs: number;
   filePath?: string;
   metadata?: Record<string, unknown>;
@@ -210,6 +211,12 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/pdftops',
     '/opt/homebrew/bin/pdftops',
   ],
+  rsvgConvert: [
+    ...(process.env.RSVG_CONVERT_PATH ? [process.env.RSVG_CONVERT_PATH] : []),
+    '/usr/bin/rsvg-convert',
+    '/usr/local/bin/rsvg-convert',
+    '/opt/homebrew/bin/rsvg-convert',
+  ],
   dcrawEmu: [
     ...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []),
     '/usr/bin/dcraw_emu',
@@ -265,6 +272,7 @@ export type NativeBinaryName =
   | 'pdftotext'
   | 'tesseract'
   | 'ps2pdf'
+  | 'rsvgConvert'
   | 'dcrawEmu';
 
 /** The environment variable that overrides each native CLI's location. */
@@ -277,6 +285,7 @@ const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
   pdftotext: 'PDFTOTEXT_PATH',
   tesseract: 'TESSERACT_PATH',
   ps2pdf: 'PS2PDF_PATH',
+  rsvgConvert: 'RSVG_CONVERT_PATH',
   dcrawEmu: 'DCRAW_EMU_PATH',
 };
 
@@ -2075,6 +2084,74 @@ export async function convertWithNativeRaw(
   });
 }
 
+/** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
+const SVG_SOURCE = 'svg';
+const SVG_DEFAULT_TIMEOUT_MS = 60_000;
+const SVG_MAX_TIMEOUT_MS = 300_000;
+const SVG_MEMORY_LIMIT_MB = 2048;
+const SVG_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+const SVG_MAX_STDERR_CHARS = 300;
+
+/**
+ * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (an unmodified separate program, LGPL): paths stay paths and
+ * text stays text, the way the standard SVG renderer writes it, instead of a raster picture inside a PDF page. The SVG
+ * is sanitised first and the renderer runs in the sandbox without network. Returns null when the target is not PDF or
+ * `rsvg-convert` is missing and the caller did not ask for an error.
+ */
+export async function convertWithNativeSvg(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (src !== SVG_SOURCE || tgt !== PDF_SOURCE_FORMAT) return null;
+  const renderer = resolveBinary(BINARY_PATHS.rsvgConvert, process.env.RSVG_CONVERT_PATH);
+  if (!renderer) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('rsvg-convert', 'rsvg-convert (librsvg2-bin) is not installed or not in PATH');
+    }
+    return null;
+  }
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const startTime = Date.now();
+  const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
+  const svg = sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8'));
+
+  return withSandboxDir('easyconvert-svg-', async (tempDir) => {
+    const inputPath = path.join(tempDir, 'input.svg');
+    const outputPath = path.join(tempDir, 'output.pdf');
+    fs.writeFileSync(inputPath, svg);
+    try {
+      await executeSandboxedBinary(renderer, ['--format', 'pdf', '--output', outputPath, inputPath], {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        maxFileSize: SVG_MAX_OUTPUT_BYTES,
+        memoryLimitMb: SVG_MEMORY_LIMIT_MB,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+    } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
+      }
+      if (err instanceof SandboxedProcessError) {
+        const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
+      }
+      throw err;
+    }
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
+    }
+    const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
+    return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
+  });
+}
+
 /** PostScript sources: only an interpreter can draw them, so the worker runs ps2pdf and then Poppler. */
 const POSTSCRIPT_SOURCES: ReadonlySet<string> = new Set(['eps', 'ps']);
 const POSTSCRIPT_DEFAULT_TIMEOUT_MS = 120_000;
@@ -2480,6 +2557,9 @@ function hasNonWhitespaceText(buffer: Buffer): boolean {
   return buffer.toString('utf-8').trim().length > 0;
 }
 
+const ILLUSTRATOR_FORMAT = 'ai';
+const PDF_SOURCE_FORMAT = 'pdf';
+
 /** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
 function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
   if (!filePath) return;
@@ -2498,12 +2578,15 @@ export async function executeWorkerConversion(
   assertConversionOptionsObject(options);
   // An aborted job (deadline, cancel) starts no further stage: work that cannot be interrupted must not begin.
   options.signal?.throwIfAborted();
-  const src = validateFormat(sourceFormat);
+  const declaredSource = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
 
   // Fail-closed verification against spoofed file extensions before any native engine execution
-  assertNotSpoofedFileVfs(input, src, originalFilename);
+  assertNotSpoofedFileVfs(input, declaredSource, originalFilename);
+  // An Illustrator file is a PDF with private data; once the check above has seen the PDF signature, it takes the PDF path
+  // (Poppler pages, PostScript, the encoded rasters). Packaging keeps the file as it is.
+  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? PDF_SOURCE_FORMAT : declaredSource;
 
   let fallbackReason: string | undefined;
   let lastUnavailable: EngineUnavailableError | undefined;
@@ -2614,6 +2697,27 @@ export async function executeWorkerConversion(
     } catch (err) {
       if (err instanceof RawDecodeError && err.unrecognized && options.allowEmbeddedPreview) {
         fallbackChain.push(`native-raw: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 1c''. SVG drawings written as PDF: librsvg keeps the vectors and the text. A worker without it keeps the in-process raster page.
+  if (src === SVG_SOURCE && tgt === PDF_SOURCE_FORMAT) {
+    try {
+      const svgRes = await convertWithNativeSvg(input, src, tgt, nativeOptions, originalFilename);
+      if (svgRes) {
+        return {
+          ...svgRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      rethrowSandboxUnavailable(err);
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-svg: ${err.message}`);
         fallbackReason = err.message;
       } else {
         throw err;
