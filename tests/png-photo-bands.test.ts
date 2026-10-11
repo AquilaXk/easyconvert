@@ -3,7 +3,7 @@ import type { CreateRaw } from 'sharp';
 import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
-import { combineAdler32, filterBand, recompressStoredPng16 } from '../src/lib/conversions/png-photo-bands';
+import { combineAdler32, filterBand, writePhotoPng16 } from '../src/lib/conversions/png-photo-bands';
 import { ConversionFailedError } from '../src/lib/types';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 import { SeededRandom } from './helpers/archive-corpus';
@@ -137,13 +137,13 @@ function scanlinesOf(samples: Uint16Array, width: number, height: number, channe
 }
 
 /**
- * The picture as the image library writes it at compression level 0, built here from the specification: stored deflate
- * blocks of at most 65535 bytes in several IDAT chunks, after a colour profile and a resolution chunk.
+ * What the pipeline writes for a one-pixel crop of the picture, built here from the specification: the header, a colour
+ * profile and a resolution chunk, the one pixel (in several IDAT chunks, as libpng writes them) and the end.
  */
-function storedPng(samples: Uint16Array, width: number, height: number, channels: number): Buffer {
+function templatePng(channels: number): Buffer {
   const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
+  header.writeUInt32BE(1, 0);
+  header.writeUInt32BE(1, 4);
   header[8] = 16;
   header[9] = COLOUR_TYPE[channels];
   const resolution = Buffer.alloc(9);
@@ -151,10 +151,32 @@ function storedPng(samples: Uint16Array, width: number, height: number, channels
   resolution.writeUInt32BE(11811, 4);
   resolution[8] = 1;
   const profile = Buffer.concat([Buffer.from('test profile\0\0', 'latin1'), zlib.deflateSync(Buffer.from('profile-bytes-'.repeat(30)))]);
+  const pixel = zlib.deflateSync(Buffer.alloc(1 + channels * 2), { level: 0 });
+  return Buffer.concat([
+    SIGNATURE, chunkOf('IHDR', header), chunkOf('iCCP', profile), chunkOf('pHYs', resolution),
+    chunkOf('IDAT', pixel.subarray(0, 4)), chunkOf('IDAT', pixel.subarray(4)), chunkOf('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/** The picture as an uncompressed PNG written here from the specification: the reference the result is compared with. */
+function plainPng(samples: Uint16Array, width: number, height: number, channels: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 16;
+  header[9] = COLOUR_TYPE[channels];
   const stream = zlib.deflateSync(scanlinesOf(samples, width, height, channels), { level: 0 });
-  const idat: Buffer[] = [];
-  for (let at = 0; at < stream.length; at += 8192) idat.push(chunkOf('IDAT', stream.subarray(at, at + 8192)));
-  return Buffer.concat([SIGNATURE, chunkOf('IHDR', header), chunkOf('iCCP', profile), chunkOf('pHYs', resolution), ...idat, chunkOf('IEND', Buffer.alloc(0))]);
+  return Buffer.concat([SIGNATURE, chunkOf('IHDR', header), chunkOf('IDAT', stream), chunkOf('IEND', Buffer.alloc(0))]);
+}
+
+/** The samples as the image library's raw output hands them over: host byte order. */
+function nativeBytes(samples: Uint16Array): Buffer {
+  return Buffer.from(samples.buffer.slice(samples.byteOffset, samples.byteOffset + samples.byteLength));
+}
+
+/** Runs the writer on a copy of the samples (it puts them in place into PNG byte order). */
+async function write(samples: Uint16Array, width: number, height: number, channels: number): Promise<Buffer | null> {
+  return writePhotoPng16({ samples: nativeBytes(samples), width, height, channels, template: templatePng(channels) });
 }
 
 function bigEndian(samples: Uint16Array): Buffer {
@@ -167,8 +189,8 @@ async function decoded(png: Buffer): Promise<Buffer> {
   return sharp(png).raw({ depth: 'ushort' }).toBuffer();
 }
 
-async function rewritten(stored: Buffer): Promise<Buffer> {
-  const png = await recompressStoredPng16(stored);
+async function written(samples: Uint16Array, width: number, height: number, channels: number): Promise<Buffer> {
+  const png = await write(samples, width, height, channels);
   if (png === null) throw new Error('the picture was handed back to the general encoder');
   return png;
 }
@@ -180,7 +202,7 @@ function chunkTypes(png: Buffer): string[] {
     .filter((type, index, all) => type !== 'IDAT' || all[index - 1] !== 'IDAT');
 }
 
-describe('recompressStoredPng16', () => {
+describe('writePhotoPng16', () => {
   const cases: Array<[string, number, number, number]> = [
     ['grey', 1, 301, 190],
     ['RGB', 3, 301, 190],
@@ -192,31 +214,55 @@ describe('recompressStoredPng16', () => {
   for (const [name, channels, width, height] of cases) {
     it(`writes ${name} pixels exactly, as one zlib stream across bands`, async () => {
       const samples = photograph(width, height, channels, 5 + channels);
-      const stored = storedPng(samples, width, height, channels);
-      const png = await rewritten(stored);
+      const png = await written(samples, width, height, channels);
       const read = unfilter(png, channels);
       expect(read.width).toBe(width);
       expect(read.height).toBe(height);
       // The scanlines unfilter to the samples the picture was built from, byte for byte.
       expect(read.pixels.equals(bigEndian(samples))).toBe(true);
-      // libpng reads the rewritten picture to the samples of the picture it was handed.
-      expect((await decoded(png)).equals(await decoded(stored))).toBe(true);
+      // libpng reads the picture to the same samples as it reads the uncompressed reference.
+      expect((await decoded(png)).equals(await decoded(plainPng(samples, width, height, channels)))).toBe(true);
       const types = chunkTypes(png);
       expect(types[0]).toBe('IHDR');
       expect(types[types.length - 1]).toBe('IEND');
-      expect(types).toEqual(chunkTypes(stored));
+      expect(types).toEqual(chunkTypes(templatePng(channels)));
     });
   }
 
-  it('chooses among the filter types by the sum of absolute differences and writes the noise as small as libpng does', async () => {
+  it('writes the noise of a photograph as small as libpng does, with one filter for the picture', async () => {
     const width = 640;
     const height = 480;
-    const stored = storedPng(photograph(width, height, 3, 11), width, height, 3);
-    const png = await rewritten(stored);
-    expect(new Set(unfilter(png, 3).filters).size).toBeGreaterThanOrEqual(3);
-    const libpng = await sharp(stored).toColourspace('rgb16').png({ compressionLevel: 6, adaptiveFiltering: true }).toBuffer();
+    const samples = photograph(width, height, 3, 11);
+    const png = await written(samples, width, height, 3);
+    const filters = new Set(unfilter(png, 3).filters);
+    expect(filters.size).toBe(1);
+    const reference = plainPng(samples, width, height, 3);
+    const libpng = await sharp(reference).toColourspace('rgb16').png({ compressionLevel: 6, adaptiveFiltering: true }).toBuffer();
     expect(png.length).toBeLessThan(libpng.length * 1.03);
-    expect(png.length).toBeLessThan(stored.length * 0.9);
+    expect(png.length).toBeLessThan(reference.length * 0.9);
+  });
+
+  it('takes the filter with the smallest sum of absolute differences: Sub where rows differ and columns are smooth, Up where they are the other way', async () => {
+    const width = 400;
+    const height = 300;
+    const rng = mulberry32(31);
+    const rowLevel = Uint16Array.from({ length: height }, () => Math.floor(rng() * 40000));
+    const columnLevel = Uint16Array.from({ length: width }, () => Math.floor(rng() * 40000));
+    const alongRows = new Uint16Array(width * height * 3);
+    const alongColumns = new Uint16Array(width * height * 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        for (let c = 0; c < 3; c++) {
+          alongRows[(y * width + x) * 3 + c] = rowLevel[y] + x * 10 + Math.floor(rng() * 3000);
+          alongColumns[(y * width + x) * 3 + c] = columnLevel[x] + y * 10 + Math.floor(rng() * 3000);
+        }
+      }
+    }
+    const [sub, up] = await Promise.all([written(alongRows, width, height, 3), written(alongColumns, width, height, 3)]);
+    expect([...new Set(unfilter(sub, 3).filters)]).toEqual([1]);
+    expect([...new Set(unfilter(up, 3).filters)]).toEqual([2]);
+    expect(unfilter(sub, 3).pixels.equals(bigEndian(alongRows))).toBe(true);
+    expect(unfilter(up, 3).pixels.equals(bigEndian(alongColumns))).toBe(true);
   });
 
   it('hands a picture with structure back, because string matching writes it smaller', async () => {
@@ -228,35 +274,35 @@ describe('recompressStoredPng16', () => {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) for (let c = 0; c < 3; c++) samples[(y * width + x) * 3 + c] = tile[((y % 5) * 13 + (x % 13)) * 3 + c];
     }
-    expect(await recompressStoredPng16(storedPng(samples, width, height, 3))).toBeNull();
+    expect(await write(samples, width, height, 3)).toBeNull();
   });
 
-  it('keeps the colour profile and the other chunks of the picture in their place', async () => {
-    const stored = storedPng(photograph(200, 120, 3, 3), 200, 120, 3);
-    const before = readChunks(stored);
-    const after = readChunks(await rewritten(stored));
-    for (const type of ['IHDR', 'iCCP', 'sRGB', 'gAMA', 'cHRM', 'pHYs']) {
+  it('keeps the colour profile and the other chunks of the template, with the dimensions of the picture', async () => {
+    const before = readChunks(templatePng(3));
+    const png = await written(photograph(200, 120, 3, 3), 200, 120, 3);
+    const after = readChunks(png);
+    for (const type of ['iCCP', 'pHYs']) {
       expect(after.filter((chunk) => chunk.type === type).map((chunk) => chunk.data.toString('hex'))).toEqual(
         before.filter((chunk) => chunk.type === type).map((chunk) => chunk.data.toString('hex'))
       );
     }
-    expect(after.some((chunk) => chunk.type === 'iCCP' || chunk.type === 'sRGB')).toBe(true);
+    expect([after[0].data.readUInt32BE(0), after[0].data.readUInt32BE(4), after[0].data[8], after[0].data[9]]).toEqual([200, 120, 16, 2]);
   });
 
-  it('refuses a picture that is not 16-bit, not stored or not a picture, with the reason', async () => {
-    const failure = async (png: Buffer): Promise<string> => {
-      const error = await recompressStoredPng16(png).then(() => new Error('accepted'), (rejected: unknown) => rejected);
+  it('refuses samples that do not make the picture and a template that does not fit them, with the reason', async () => {
+    const failure = async (input: Parameters<typeof writePhotoPng16>[0]): Promise<string> => {
+      const error = await writePhotoPng16(input).then(() => new Error('accepted'), (rejected: unknown) => rejected);
       expect(error).toBeInstanceOf(ConversionFailedError);
       return (error as Error).message;
     };
-    const eightBit = await sharp(Buffer.alloc(30 * 20 * 3, 7), { raw: { width: 30, height: 20, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
-    expect(await failure(eightBit)).toBe('16-bit PNG: only a non-interlaced greyscale, grey-alpha, RGB or RGBA picture of 16 bits per sample is rewritten');
-    const compressed = await sharp(Buffer.from(photograph(30, 20, 3, 1).buffer), { raw: { width: 30, height: 20, channels: 3, depth: 'ushort' } as CreateRaw })
-      .toColourspace('rgb16')
-      .png({ compressionLevel: 6 })
-      .toBuffer();
-    expect(await failure(compressed)).toBe('16-bit PNG: the pixel stream is not stored');
-    expect(await failure(Buffer.concat([SIGNATURE, Buffer.from([0, 0, 0, 40, 73, 72, 68, 82])]))).toBe('16-bit PNG: the picture ends inside a chunk');
+    const samples = nativeBytes(photograph(30, 20, 3, 1));
+    const template = templatePng(3);
+    expect(await failure({ samples, width: 30, height: 20, channels: 5, template })).toBe('16-bit PNG: 5 channels are not a greyscale, grey-alpha, RGB or RGBA picture');
+    expect(await failure({ samples, width: 30, height: 21, channels: 3, template })).toBe('16-bit PNG: the samples do not make a 30 x 21 picture of 3 channels');
+    expect(await failure({ samples, width: 30, height: 20, channels: 3, template: templatePng(4) })).toBe('16-bit PNG: the template is not a non-interlaced 16-bit PNG of the same colour type as the samples');
+    const eightBit = await sharp(Buffer.alloc(3), { raw: { width: 1, height: 1, channels: 3 } }).png().toBuffer();
+    expect(await failure({ samples, width: 30, height: 20, channels: 3, template: eightBit })).toBe('16-bit PNG: the template is not a non-interlaced 16-bit PNG of the same colour type as the samples');
+    expect(await failure({ samples, width: 30, height: 20, channels: 3, template: Buffer.concat([SIGNATURE, Buffer.from([0, 0, 0, 40, 73, 72, 68, 82])]) })).toBe('16-bit PNG: the picture ends inside a chunk');
   });
 });
 
@@ -284,40 +330,24 @@ describe('combineAdler32', () => {
 });
 
 describe('filterBand', () => {
-  it('writes a filter type per row that the specification unfilter reverses, in any band of the picture', () => {
+  it('filters like the specification for every filter type, in any band of the picture', () => {
     const width = 70;
     const height = 33;
     const bytesPerPixel = 6;
     const rowBytes = width * bytesPerPixel;
     const samples = photograph(width, height, 3, 21);
     const scanlines = new Uint8Array(height * (rowBytes + 1));
-    for (let y = 0; y < height; y++) {
-      for (let i = 0; i < width * 3; i++) {
-        const sample = samples[y * width * 3 + i];
-        scanlines[y * (rowBytes + 1) + 1 + i * 2] = sample >> 8;
-        scanlines[y * (rowBytes + 1) + 2 + i * 2] = sample & 0xff;
-      }
-    }
+    scanlines.set(scanlinesOf(samples, width, height, 3));
     const layout = { rowBytes, bytesPerPixel, height };
-    const whole = filterBand(layout, scanlines, 0, height);
-    const lower = filterBand(layout, scanlines, 10, 25);
-    // A band reads the row above its first row from the whole picture, so it filters like the same rows of the whole.
-    expect(Buffer.from(lower).equals(Buffer.from(whole.subarray(10 * (rowBytes + 1), 25 * (rowBytes + 1))))).toBe(true);
+    for (const filter of [0, 1, 2, 3, 4]) {
+      const whole = filterBand(layout, scanlines, 0, height, filter);
+      // The filter byte of every row is the type; the unfilter of the specification returns the pixels.
+      for (let y = 0; y < height; y++) expect(whole[y * (rowBytes + 1)]).toBe(filter);
+      const png = Buffer.concat([SIGNATURE, chunkOf('IHDR', Buffer.from([0, 0, 0, width, 0, 0, 0, height, 16, 2, 0, 0, 0])), chunkOf('IDAT', zlib.deflateSync(whole)), chunkOf('IEND', Buffer.alloc(0))]);
+      expect(unfilter(png, 3).pixels.equals(bigEndian(samples)), `filter ${filter}`).toBe(true);
+      // A band reads the row above its first row from the whole picture, so it filters like the same rows of the whole.
+      const band = filterBand(layout, scanlines, 10, 25, filter);
+      expect(Buffer.from(band).equals(Buffer.from(whole.subarray(10 * (rowBytes + 1), 25 * (rowBytes + 1)))), `band of filter ${filter}`).toBe(true);
+    }
   });
-});
-
-describe('a noisy 16-bit photograph converted to PNG', () => {
-  it('keeps every sample and is no larger than the general encoder writes it', async () => {
-    const width = 400;
-    const height = 300;
-    const samples = photograph(width, height, 3, 77);
-    const source = storedPng(samples, width, height, 3);
-    const result = await convertFile(source, 'png', 'png', {}, 'photo.png');
-    const read = unfilter(result.buffer, 3);
-    expect(read.pixels.equals(bigEndian(samples))).toBe(true);
-    expect(new Set(read.filters).size).toBeGreaterThanOrEqual(2);
-    const general = await sharp(source).toColourspace('rgb16').png({ compressionLevel: 6, adaptiveFiltering: true }).toBuffer();
-    expect(result.buffer.length).toBeLessThan(general.length * 1.03);
-    expect(readChunks(result.buffer).filter((chunk) => chunk.type === 'IDAT').length).toBeGreaterThan(1);
-  }, 60_000);
 });

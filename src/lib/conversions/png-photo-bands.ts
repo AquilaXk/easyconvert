@@ -1,3 +1,4 @@
+import os from 'node:os';
 import zlib from 'node:zlib';
 import { ConversionFailedError } from '../types';
 import { getCpuPool, runCpuTask } from '../workers/cpu-pool';
@@ -6,12 +7,12 @@ import { crc32 } from './crc32';
 /**
  * Parallel writer for 16-bit photographic PNGs (PNG Third Edition, W3C, sections 7 and 12.8).
  *
- * The image library writes the picture once with stored (uncompressed) deflate blocks, which carries every chunk its
- * pipeline decided on (colour profile, EXIF, resolution) and the scanlines in PNG byte order. This module reads the
- * scanlines back, filters each row with the filter that has the smallest sum of absolute differences (the heuristic
- * of the specification, evaluated on a centred window of the row), and compresses horizontal bands of rows on pool
- * threads. Every band is a raw deflate segment ending in a sync flush, so the segments join into one zlib stream; the
- * Adler-32 of the whole stream is combined from the sums of the bands.
+ * The caller hands over the samples of the picture (as the image library's raw output returns them) and a template: a tiny
+ * PNG written by the same pipeline, which carries every chunk the pipeline decided on (colour profile, EXIF, resolution).
+ * This module chooses one filter for the picture, the one with the smallest sum of absolute differences on sample rows (the
+ * heuristic of the specification), applies it to every row, and compresses horizontal bands of rows on pool threads.
+ * Every band is a raw deflate segment ending in a sync flush, so the segments join into one zlib stream; the Adler-32 of
+ * the whole stream is combined from the sums of the bands.
  */
 
 const PNG_SIGNATURE_BYTES = 8;
@@ -26,16 +27,13 @@ const IHDR_INTERLACE_OFFSET = 12;
 const SIXTEEN_BITS = 16;
 const BYTES_PER_SAMPLE = 2;
 const ZLIB_HEADER = Uint8Array.of(0x78, 0x9c);
-const STORED_BLOCK_HEADER_BYTES = 5;
-const STORED_FINAL_FLAG = 1;
-const STORED_TYPE_MASK = 6;
+const IHDR_BYTES = 13;
+const COLOUR_TYPE_OF_CHANNELS: Readonly<Record<number, number>> = { 1: 0, 2: 4, 3: 2, 4: 6 };
 const ADLER_BASE = 65521;
-const ADLER_NMAX = 5552;
 const ADLER_BYTES = 4;
 const BAND_ROWS_TARGET = 128;
 const MAX_BANDS = 16;
 const IDAT = 'IDAT';
-const SAMPLES_OF_COLOUR_TYPE: Readonly<Record<number, number>> = { 0: 1, 2: 3, 4: 2, 6: 4 };
 
 const FILTER_NONE = 0;
 const FILTER_SUB = 1;
@@ -45,9 +43,6 @@ const FILTER_PAETH = 4;
 const BYTE_MASK = 0xff;
 const SIGNED_SPLIT = 128;
 const BYTE_RADIX = 256;
-/** Share of a row (an eighth) the filter choice reads, from its middle; the chosen filter is applied to the whole row. */
-const WINDOW_DIVISOR = 8;
-const MIN_WINDOW_PIXELS = 64;
 
 /** |v| of a byte read as signed: the weight a filtered byte adds to the cost of a row. */
 const MAGNITUDE = new Uint8Array(BYTE_RADIX);
@@ -63,6 +58,8 @@ export interface PngBandLayout {
 
 /** What a pool thread is asked to do: filter and compress rows [firstRow, endRow) of the scanlines. */
 export interface PngBandPayload extends PngBandLayout {
+  /** The filter type applied to every row of the picture. */
+  filter: number;
   /** The scanlines (filter byte 0 and the row, for every row) in memory shared with the calling thread. */
   scanlines: Uint8Array;
   firstRow: number;
@@ -81,20 +78,13 @@ function png16Failure(message: string): ConversionFailedError {
   return new ConversionFailedError(`16-bit PNG: ${message}`);
 }
 
+/**
+ * Adler-32 of `bytes`, from the trailer of a zlib stream of stored blocks: the library computes it at memory speed, where a
+ * loop in script costs as much as the compression of the same bytes.
+ */
 function adler32(bytes: Uint8Array): number {
-  let a = 1;
-  let b = 0;
-  const length = bytes.length;
-  for (let at = 0; at < length; ) {
-    const end = Math.min(at + ADLER_NMAX, length);
-    for (; at < end; at++) {
-      a += bytes[at];
-      b += a;
-    }
-    a %= ADLER_BASE;
-    b %= ADLER_BASE;
-  }
-  return ((b << 16) | a) >>> 0;
+  const stream = zlib.deflateSync(bytes, { level: 0 });
+  return stream.readUInt32BE(stream.length - ADLER_BYTES);
 }
 
 /** Adler-32 of two consecutive runs from the sums of each (the combination zlib uses; `length2` is the second run's length). */
@@ -111,66 +101,32 @@ export function combineAdler32(adler1: number, adler2: number, length2: number):
   return ((sum2 << 16) | sum1) >>> 0;
 }
 
+/** Rows of one picture filtered by the same filter type are cheapest for Sub, Up and Average; Paeth costs several times as much. */
+const PAETH_PENALTY = 1.015;
+
+/** |Paeth predictor error| inputs: the predictor of PNG (section 9.4) for left a, above b and above-left c. */
+function paethPredictor(a: number, b: number, c: number): number {
+  const pa = b > c ? b - c : c - b;
+  const pb = a > c ? a - c : c - a;
+  const pc = a + b - 2 * c;
+  const pcAbs = pc < 0 ? -pc : pc;
+  if (pa <= pb && pa <= pcAbs) return a;
+  return pb <= pcAbs ? b : c;
+}
+
 /**
- * Filters rows [firstRow, endRow) of `scanlines` (stride rowBytes + 1; the byte at the start of a row is its filter type,
- * written as the rows are filtered) into a new array. A row's filter is the one with the smallest sum of absolute
- * differences over a centred window of the row; ties go to the lower filter number, as in libpng.
+ * Filters rows [firstRow, endRow) of `scanlines` (stride rowBytes + 1; the byte at the start of a row is its filter type) with
+ * the filter `filter` into a new array that holds the filter byte and the filtered row of each.
  */
-export function filterBand(layout: PngBandLayout, scanlines: Uint8Array, firstRow: number, endRow: number): Uint8Array {
+export function filterBand(layout: PngBandLayout, scanlines: Uint8Array, firstRow: number, endRow: number, filter: number): Uint8Array {
   const { rowBytes, bytesPerPixel: bpp } = layout;
   const stride = rowBytes + 1;
   const out = new Uint8Array((endRow - firstRow) * stride);
   const zeroRow = new Uint8Array(rowBytes);
-  const windowPixels = Math.max(MIN_WINDOW_PIXELS, Math.floor(rowBytes / bpp / WINDOW_DIVISOR));
-  const windowBytes = Math.min(rowBytes - bpp, windowPixels * bpp);
-  // The window starts on a pixel boundary after the first pixel, so every byte in it has a left neighbour.
-  const windowStart = Math.max(bpp, Math.floor((rowBytes - windowBytes) / 2 / bpp) * bpp);
-  const windowEnd = Math.min(rowBytes, windowStart + windowBytes);
-  const magnitude = MAGNITUDE;
-
   for (let y = firstRow; y < endRow; y++) {
     const row = y * stride + 1;
     const above = y > 0 ? row - stride : 0;
     const prev = y > 0 ? scanlines : zeroRow;
-    let costNone = 0;
-    let costSub = 0;
-    let costUp = 0;
-    let costAverage = 0;
-    let costPaeth = 0;
-    for (let i = windowStart; i < windowEnd; i++) {
-      const x = scanlines[row + i];
-      const a = scanlines[row + i - bpp];
-      const b = prev[above + i];
-      const c = prev[above + i - bpp];
-      costNone += magnitude[x];
-      costSub += magnitude[(x - a) & BYTE_MASK];
-      costUp += magnitude[(x - b) & BYTE_MASK];
-      costAverage += magnitude[(x - ((a + b) >> 1)) & BYTE_MASK];
-      const p = a + b - c;
-      const pa = p > a ? p - a : a - p;
-      const pb = p > b ? p - b : b - p;
-      const pc = p > c ? p - c : c - p;
-      let predictor = c;
-      if (pa <= pb && pa <= pc) predictor = a;
-      else if (pb <= pc) predictor = b;
-      costPaeth += magnitude[(x - predictor) & BYTE_MASK];
-    }
-    let filter = FILTER_NONE;
-    let best = costNone;
-    if (costSub < best) {
-      filter = FILTER_SUB;
-      best = costSub;
-    }
-    if (costUp < best) {
-      filter = FILTER_UP;
-      best = costUp;
-    }
-    if (costAverage < best) {
-      filter = FILTER_AVERAGE;
-      best = costAverage;
-    }
-    if (costPaeth < best) filter = FILTER_PAETH;
-
     const target = (y - firstRow) * stride;
     out[target] = filter;
     const o = target + 1;
@@ -189,29 +145,57 @@ export function filterBand(layout: PngBandLayout, scanlines: Uint8Array, firstRo
         for (let i = 0; i < bpp; i++) out[o + i] = scanlines[row + i] - (prev[above + i] >> 1);
         for (let i = bpp; i < rowBytes; i++) out[o + i] = scanlines[row + i] - ((scanlines[row + i - bpp] + prev[above + i]) >> 1);
         break;
-      default:
+      case FILTER_PAETH:
         for (let i = 0; i < bpp; i++) out[o + i] = scanlines[row + i] - prev[above + i];
-        for (let i = bpp; i < rowBytes; i++) {
-          const a = scanlines[row + i - bpp];
-          const b = prev[above + i];
-          const c = prev[above + i - bpp];
-          const p = a + b - c;
-          const pa = p > a ? p - a : a - p;
-          const pb = p > b ? p - b : b - p;
-          const pc = p > c ? p - c : c - p;
-          let predictor = c;
-          if (pa <= pb && pa <= pc) predictor = a;
-          else if (pb <= pc) predictor = b;
-          out[o + i] = scanlines[row + i] - predictor;
-        }
+        for (let i = bpp; i < rowBytes; i++) out[o + i] = scanlines[row + i] - paethPredictor(scanlines[row + i - bpp], prev[above + i], prev[above + i - bpp]);
+        break;
+      default:
+        throw png16Failure(`filter type ${filter} does not exist`);
     }
   }
   return out;
 }
 
+/** The sum of the absolute values (bytes read as signed) of the rows [firstRow, endRow) filtered with `filter`. */
+function filterCost(layout: PngBandLayout, scanlines: Uint8Array, firstRow: number, endRow: number, filter: number): number {
+  const filtered = filterBand(layout, scanlines, firstRow, endRow, filter);
+  const stride = layout.rowBytes + 1;
+  let cost = 0;
+  for (let row = 0; row < endRow - firstRow; row++) for (let i = row * stride + 1; i < (row + 1) * stride; i++) cost += MAGNITUDE[filtered[i]];
+  return cost;
+}
+
+/** Rows read at each of the places of the picture that decide the filter and the compression. */
+const PROBE_ROWS = 8;
+const PROBE_PLACES: readonly number[] = [1 / 6, 1 / 2, 5 / 6];
+
+function probeRows(layout: PngBandLayout): number[] {
+  const rows = Math.min(PROBE_ROWS, layout.height);
+  return PROBE_PLACES.map((place) => Math.min(layout.height - rows, Math.floor(layout.height * place)));
+}
+
+/**
+ * The filter of the picture: the one with the smallest sum of absolute differences over sample rows from three places of the
+ * picture (PNG Third Edition, section 12.8). A 16-bit photograph is noise below its top byte, so one filter is within a
+ * percent of the best row-by-row choice, and applying one filter costs a fifth of choosing among five for every row.
+ * Paeth, which costs several times as much to apply, is chosen only when it saves more than `PAETH_PENALTY`.
+ */
+function chooseFilter(layout: PngBandLayout, scanlines: Uint8Array): number {
+  const rows = Math.min(PROBE_ROWS, layout.height);
+  const costs = new Map<number, number>();
+  for (const filter of [FILTER_SUB, FILTER_UP, FILTER_AVERAGE, FILTER_PAETH]) {
+    let cost = 0;
+    for (const first of probeRows(layout)) cost += filterCost(layout, scanlines, first, first + rows, filter);
+    costs.set(filter, filter === FILTER_PAETH ? cost * PAETH_PENALTY : cost);
+  }
+  let best = FILTER_SUB;
+  for (const [filter, cost] of costs) if (cost < (costs.get(best) as number)) best = filter;
+  return best;
+}
+
 /** The task of one pool thread: filter a band, compress it as a segment of the shared deflate stream. */
 export function encodePngBand(payload: PngBandPayload): PngBandResult {
-  const filtered = filterBand(payload, payload.scanlines, payload.firstRow, payload.endRow);
+  const filtered = filterBand(payload, payload.scanlines, payload.firstRow, payload.endRow, payload.filter);
   const last = payload.endRow === payload.height;
   const deflate = zlib.deflateRawSync(filtered, {
     strategy: zlib.constants.Z_RLE,
@@ -220,9 +204,6 @@ export function encodePngBand(payload: PngBandPayload): PngBandResult {
   return { deflate, adler: adler32(filtered), filteredBytes: filtered.length };
 }
 
-/** Rows read at each of the places of the picture that decide whether run-length matching is enough. */
-const PROBE_ROWS = 16;
-const PROBE_PLACES: readonly number[] = [1 / 6, 1 / 2, 5 / 6];
 /** Run-length matching is kept while it writes at most this much more than string matching on the probe. */
 const RUN_LENGTH_TOLERANCE = 1.02;
 const PROBE_MATCHING_LEVEL = 1;
@@ -231,16 +212,14 @@ const PROBE_MATCHING_LEVEL = 1;
  * Run-length matching with Huffman coding is about three times faster than string matching and writes the same bytes
  * when the filtered rows are sensor noise (the low byte of a 16-bit photograph), which string matching cannot use. A
  * picture with structure (smooth areas, repeated texture) is smaller with string matching, and the general encoder
- * writes it better. A sample of rows from three places of the picture says which kind this is.
+ * writes it better. The sample rows, filtered, say which kind this is.
  */
-function isNoiseDominated(layout: PngBandLayout, scanlines: Uint8Array): boolean {
+function isNoiseDominated(layout: PngBandLayout, scanlines: Uint8Array, filter: number): boolean {
   const stride = layout.rowBytes + 1;
   const rows = Math.min(PROBE_ROWS, layout.height);
-  const sample = new Uint8Array(PROBE_PLACES.length * rows * stride);
-  PROBE_PLACES.forEach((place, index) => {
-    const first = Math.min(layout.height - rows, Math.floor(layout.height * place));
-    sample.set(filterBand(layout, scanlines, first, first + rows), index * rows * stride);
-  });
+  const places = probeRows(layout);
+  const sample = new Uint8Array(places.length * rows * stride);
+  places.forEach((first, index) => sample.set(filterBand(layout, scanlines, first, first + rows, filter), index * rows * stride));
   const runLength = zlib.deflateRawSync(sample, { strategy: zlib.constants.Z_RLE }).length;
   const matched = zlib.deflateRawSync(sample, { level: PROBE_MATCHING_LEVEL, strategy: zlib.constants.Z_FILTERED }).length;
   return runLength <= matched * RUN_LENGTH_TOLERANCE;
@@ -271,25 +250,6 @@ function readChunks(png: Uint8Array): PngChunk[] {
   return chunks;
 }
 
-/** Joins the stored (uncompressed) deflate blocks of the zlib stream in `idat` into `target`; returns the bytes written. */
-function copyStoredPayload(idat: PngChunk[], target: Uint8Array): number {
-  const stream = idat.length === 1 ? idat[0].data : Buffer.concat(idat.map((chunk) => chunk.data));
-  let at = 2;
-  let written = 0;
-  for (;;) {
-    if (at + STORED_BLOCK_HEADER_BYTES > stream.length) throw png16Failure('the stored pixel stream ends inside a block');
-    const header = stream[at];
-    if ((header & STORED_TYPE_MASK) !== 0) throw png16Failure('the pixel stream is not stored');
-    const length = stream[at + 1] | (stream[at + 2] << 8);
-    at += STORED_BLOCK_HEADER_BYTES;
-    if (at + length > stream.length || written + length > target.length) throw png16Failure('the stored pixel stream does not match the picture size');
-    target.set(stream.subarray(at, at + length), written);
-    written += length;
-    at += length;
-    if ((header & STORED_FINAL_FLAG) !== 0) return written;
-  }
-}
-
 function chunkOf(type: string, parts: Uint8Array[]): Uint8Array {
   const length = parts.reduce((sum, part) => sum + part.length, 0);
   const out = new Uint8Array(CHUNK_OVERHEAD_BYTES + length);
@@ -305,38 +265,53 @@ function chunkOf(type: string, parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+export interface PhotoPng16Input {
+  /**
+   * The samples of the picture, rows of width x channels 16-bit values in the byte order of the host (the image library's
+   * `raw` output with depth `ushort`). They are put in PNG byte order in place: the caller does not use them afterwards.
+   */
+  samples: Buffer;
+  width: number;
+  height: number;
+  /** 1 (grey), 2 (grey and alpha), 3 (RGB) or 4 (RGB and alpha). */
+  channels: number;
+  /** A PNG written by the same pipeline: its chunks other than IHDR, IDAT and IEND are the chunks of the result, in their places. */
+  template: Uint8Array;
+}
+
 /**
- * Rewrites a 16-bit PNG whose pixels are stored uncompressed (the image library at compression level 0) as a filtered,
- * compressed one. Every chunk other than IDAT is kept as it is, in its place. Returns null for a picture with structure,
- * which string matching writes smaller than this writer does (see `isNoiseDominated`): the caller encodes that one with
- * the general encoder.
+ * Writes the picture as a 16-bit PNG: rows filtered and compressed in bands on pool threads. Returns null for a picture with
+ * structure, which string matching writes smaller than this writer does (see `isNoiseDominated`): the caller encodes that
+ * one with the general encoder.
  */
-export async function recompressStoredPng16(stored: Uint8Array, options: { signal?: AbortSignal } = {}): Promise<Buffer | null> {
-  const chunks = readChunks(stored);
-  const header = chunks[0];
-  if (header?.type !== 'IHDR' || header.data.length !== 13) throw png16Failure('the picture has no header');
-  const view = new DataView(header.data.buffer, header.data.byteOffset, header.data.byteLength);
-  const width = view.getUint32(IHDR_WIDTH_OFFSET);
-  const height = view.getUint32(IHDR_HEIGHT_OFFSET);
-  const samples = SAMPLES_OF_COLOUR_TYPE[header.data[IHDR_COLOUR_TYPE_OFFSET]];
-  if (header.data[IHDR_DEPTH_OFFSET] !== SIXTEEN_BITS || samples === undefined || header.data[IHDR_INTERLACE_OFFSET] !== 0) {
-    throw png16Failure('only a non-interlaced greyscale, grey-alpha, RGB or RGBA picture of 16 bits per sample is rewritten');
-  }
-  const bytesPerPixel = samples * BYTES_PER_SAMPLE;
+export async function writePhotoPng16(input: PhotoPng16Input, options: { signal?: AbortSignal } = {}): Promise<Buffer | null> {
+  const { samples, width, height, channels, template } = input;
+  const colourType = COLOUR_TYPE_OF_CHANNELS[channels];
+  if (colourType === undefined) throw png16Failure(`${channels} channels are not a greyscale, grey-alpha, RGB or RGBA picture`);
+  const bytesPerPixel = channels * BYTES_PER_SAMPLE;
   const layout: PngBandLayout = { rowBytes: width * bytesPerPixel, bytesPerPixel, height };
-  const scanlines = new Uint8Array(new SharedArrayBuffer((layout.rowBytes + 1) * height));
-  const written = copyStoredPayload(
-    chunks.filter((chunk) => chunk.type === IDAT),
-    scanlines
-  );
-  if (written !== scanlines.length) throw png16Failure('the stored pixel stream does not match the picture size');
-  if (!isNoiseDominated(layout, scanlines)) return null;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || samples.length !== layout.rowBytes * height) {
+    throw png16Failure(`the samples do not make a ${width} x ${height} picture of ${channels} channels`);
+  }
+  const chunks = readChunks(template);
+  const templateHeader = chunks[0];
+  if (templateHeader?.type !== 'IHDR' || templateHeader.data.length !== IHDR_BYTES || templateHeader.data[IHDR_DEPTH_OFFSET] !== SIXTEEN_BITS || templateHeader.data[IHDR_COLOUR_TYPE_OFFSET] !== colourType || templateHeader.data[IHDR_INTERLACE_OFFSET] !== 0) {
+    throw png16Failure('the template is not a non-interlaced 16-bit PNG of the same colour type as the samples');
+  }
+
+  // PNG samples are big-endian; the rows go into memory the pool threads share, each behind its filter byte.
+  if (os.endianness() === 'LE') samples.swap16();
+  const stride = layout.rowBytes + 1;
+  const scanlines = new Uint8Array(new SharedArrayBuffer(stride * height));
+  for (let y = 0; y < height; y++) scanlines.set(samples.subarray(y * layout.rowBytes, (y + 1) * layout.rowBytes), y * stride + 1);
+  const filter = chooseFilter(layout, scanlines);
+  if (!isNoiseDominated(layout, scanlines, filter)) return null;
 
   const bands = Math.min(MAX_BANDS, Math.max(getCpuPool().threadLimit, Math.ceil(height / BAND_ROWS_TARGET)));
   const rowsPerBand = Math.ceil(height / bands);
   const tasks: Promise<PngBandResult>[] = [];
   for (let firstRow = 0; firstRow < height; firstRow += rowsPerBand) {
-    const payload: PngBandPayload = { ...layout, scanlines, firstRow, endRow: Math.min(height, firstRow + rowsPerBand) };
+    const payload: PngBandPayload = { ...layout, filter, scanlines, firstRow, endRow: Math.min(height, firstRow + rowsPerBand) };
     tasks.push(runCpuTask<PngBandResult>('pngBand', payload, { signal: options.signal }));
   }
   const results = await Promise.all(tasks);
@@ -346,9 +321,14 @@ export async function recompressStoredPng16(stored: Uint8Array, options: { signa
   const trailer = new Uint8Array(ADLER_BYTES);
   new DataView(trailer.buffer).setUint32(0, adler);
 
-  const pieces: Uint8Array[] = [stored.subarray(0, PNG_SIGNATURE_BYTES)];
+  const header = Buffer.alloc(IHDR_BYTES);
+  header.writeUInt32BE(width, IHDR_WIDTH_OFFSET);
+  header.writeUInt32BE(height, IHDR_HEIGHT_OFFSET);
+  header[IHDR_DEPTH_OFFSET] = SIXTEEN_BITS;
+  header[IHDR_COLOUR_TYPE_OFFSET] = colourType;
+  const pieces: Uint8Array[] = [template.subarray(0, PNG_SIGNATURE_BYTES), chunkOf('IHDR', [header])];
   let placed = false;
-  for (const chunk of chunks) {
+  for (const chunk of chunks.slice(1)) {
     if (chunk.type !== IDAT) {
       pieces.push(chunk.bytes);
       continue;
@@ -363,5 +343,6 @@ export async function recompressStoredPng16(stored: Uint8Array, options: { signa
       pieces.push(chunkOf(IDAT, parts));
     });
   }
+  if (!placed) throw png16Failure('the template has no pixel data chunk to take the place of');
   return Buffer.concat(pieces);
 }
