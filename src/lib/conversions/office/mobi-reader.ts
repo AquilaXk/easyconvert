@@ -61,6 +61,19 @@ const PALMDOC_SPACE_XOR = 0x80;
 const PALMDOC_LITERAL_FIRST = 0x09;
 const PALMDOC_LITERAL_LAST = 0x7f;
 
+/** The book is intact but its text is in an encoding this reader does not decode (the format names UTF-8 and Windows-1252). HTTP 422. */
+export class UnsupportedMobiEncodingError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(encoding: number) {
+    super(`The e-book's text encoding ${encoding} is neither UTF-8 nor Windows-1252, which this reader does not decode.`);
+    this.name = 'UnsupportedMobiEncodingError';
+  }
+}
+
+function assertReadableEncoding(encoding: number): void {
+  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) throw new UnsupportedMobiEncodingError(encoding);
+}
+
 function malformed(reason: string): ConversionFailedError {
   return new ConversionFailedError(`The e-book is not a readable MOBI file: ${reason}.`);
 }
@@ -274,6 +287,7 @@ export function readMobiBook(file: Buffer): MobiBook {
   const first = db.record(0);
   const book: MobiBook = { ...raw, authors: [], image: () => undefined };
   if (!raw.isMobi) return book;
+  assertReadableEncoding(raw.encoding);
   const headerLength = first.readUInt32BE(MOBI_HEADER_LENGTH_OFFSET);
   const headerEnd = PALMDOC_HEADER_BYTES + headerLength;
   const has = (offset: number): boolean => headerLength >= offset + 4 - PALMDOC_HEADER_BYTES && first.length >= offset + 4;
@@ -332,9 +346,7 @@ function readExth(first: Buffer, at: number, encoding: number, book: MobiBook): 
 /** The plain text of a MOBI, AZW or AZW3 e-book. A book whose text records hold no text throws a typed error. */
 export function readMobiText(file: Buffer): string {
   const { bytes, encoding, isMobi } = readMobiRawText(file);
-  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) {
-    throw malformed(`text encoding ${encoding} is neither UTF-8 nor Windows-1252`);
-  }
+  assertReadableEncoding(encoding);
   const markup = encoding === ENCODING_UTF8 ? bytes.toString('utf-8') : decodeWindows1252(bytes);
   const withoutNulls = markup.replace(/\0/g, '');
   const text = isMobi ? htmlToText(withoutNulls) : withoutNulls.replace(/\r\n?/g, '\n').trim();

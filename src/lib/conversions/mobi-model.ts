@@ -18,13 +18,18 @@ import { readMobiBook, type MobiBook } from './office/mobi-reader';
 const ENCODING_UTF8 = 65001;
 const MAX_TOC_ENTRIES = 100_000;
 const MAX_TOC_LABEL_CHARS = 2000;
-const MAX_ELEMENT_SCAN_CHARS = 1_000_000;
+/** The most markup between the guide's position and the first link (the page's title), and between two links (their paragraph tags). */
+const MAX_TOC_GAP_CHARS = 4096;
+/** A chapter title element is short; its closing tag is looked for this far. */
+const MAX_HEADING_ELEMENT_CHARS = 4096;
 const IMAGE_SOURCE_PREFIX = 'mobi-image:';
 const COVER_SOURCE = 'mobi-cover';
-const HEADING_TAGS: ReadonlySet<string> = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div']);
-const TOC_REFERENCE = /<reference\b[^>]*\btype\s*=\s*["']?toc["']?[^>]*>/i;
+/** The elements a chapter title is written in; a `div` holds blocks, which a heading cannot. */
+const HEADING_TAGS: ReadonlySet<string> = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+// Every tag pattern excludes `<` as well as `>`: an unterminated tag then ends at the next `<` and a pattern never rescans the rest of the book.
+const TOC_REFERENCE = /<reference\b[^<>]*\btype\s*=\s*["']?toc["']?[^<>]*>/i;
 const FILEPOS = /\bfilepos\s*=\s*["']?0*(\d+)["']?/i;
-const ANCHOR_WITH_FILEPOS = /<a\b[^>]*\bfilepos\s*=\s*["']?0*\d+["']?[^>]*>/gi;
+const ANCHOR_WITH_FILEPOS = /<a\b[^<>]*\bfilepos\s*=\s*["']?0*\d+["']?[^<>]*>/gi;
 const HEADING_LEVEL = 1;
 
 interface Edit {
@@ -38,77 +43,82 @@ interface TocEntry {
   label: string;
 }
 
-const textOfMarkup = (markup: string): string => markup.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+const textOfMarkup = (markup: string): string => markup.replace(/<[^<>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
 
-/** The table of contents page of a book: the links with a `filepos` at or after the position the guide gives for it. */
-function tocEntries(markup: string): { start: number; entries: TocEntry[] } | undefined {
-  const reference = TOC_REFERENCE.exec(markup.slice(0, markup.indexOf('</head>') >= 0 ? markup.indexOf('</head>') : markup.length));
+/**
+ * The table of contents page of a book: the run of `filepos` links that starts where the guide says the page does, at the
+ * front or the back of the book. The run ends at the first link that never closes or the first text between two links, so
+ * a link elsewhere in the text (a note's) is not an entry; `end` is where the page ends.
+ */
+function tocPage(markup: string): { start: number; end: number; entries: TocEntry[] } | undefined {
+  const headEnd = markup.indexOf('</head>');
+  const reference = TOC_REFERENCE.exec(markup.slice(0, headEnd >= 0 ? headEnd : Math.min(markup.length, MAX_TOC_GAP_CHARS)));
   const start = reference ? Number(FILEPOS.exec(reference[0])?.[1] ?? Number.NaN) : Number.NaN;
   if (!Number.isInteger(start) || start <= 0 || start >= markup.length) return undefined;
   const entries: TocEntry[] = [];
   ANCHOR_WITH_FILEPOS.lastIndex = start;
+  let end = start;
   for (let match = ANCHOR_WITH_FILEPOS.exec(markup); match !== null && entries.length < MAX_TOC_ENTRIES; match = ANCHOR_WITH_FILEPOS.exec(markup)) {
-    const position = Number(FILEPOS.exec(match[0])?.[1]);
+    if (match.index - end > MAX_TOC_GAP_CHARS) break;
+    // Only the page's own title may stand before the first link; between two links there is markup and no text.
+    if (entries.length > 0 && textOfMarkup(markup.slice(end, match.index)) !== '') break;
     const labelStart = match.index + match[0].length;
-    const close = markup.indexOf('</a>', labelStart);
-    if (close < 0 || close - labelStart > MAX_TOC_LABEL_CHARS) continue;
-    const label = textOfMarkup(markup.slice(labelStart, close));
-    if (position < start && label !== '') entries.push({ position, label });
+    const close = markup.slice(labelStart, labelStart + MAX_TOC_LABEL_CHARS + 4).indexOf('</a>');
+    if (close < 0) break;
+    entries.push({ position: Number(FILEPOS.exec(match[0])?.[1]), label: textOfMarkup(markup.slice(labelStart, labelStart + close)) });
+    end = labelStart + close + 4;
   }
-  return { start, entries };
+  return entries.length === 0 ? undefined : { start, end, entries };
 }
 
-/** The element that starts at `position`, as the span `[position, end)` when it is a paragraph, heading or division. */
+/** The element that starts at `position`, as the span `[position, end)` when it is a paragraph or a heading. */
 function elementAt(markup: string, lower: string, position: number): { end: number; inner: string } | undefined {
   if (markup.charAt(position) !== '<') return undefined;
-  const tag = /^<([a-z][a-z0-9]*)\b[^>]*>/i.exec(markup.slice(position, position + 2000));
+  const tag = /^<([a-z][a-z0-9]*)\b[^<>]*>/i.exec(markup.slice(position, position + MAX_HEADING_ELEMENT_CHARS));
   if (!tag || !HEADING_TAGS.has(tag[1].toLowerCase())) return undefined;
   const closing = `</${tag[1].toLowerCase()}>`;
-  const limit = Math.min(markup.length, position + MAX_ELEMENT_SCAN_CHARS);
-  const close = lower.indexOf(closing, position + tag[0].length);
-  if (close < 0 || close + closing.length > limit) return undefined;
-  return { end: close + closing.length, inner: markup.slice(position + tag[0].length, close) };
+  const from = position + tag[0].length;
+  const found = lower.slice(from, from + MAX_HEADING_ELEMENT_CHARS).indexOf(closing);
+  if (found < 0) return undefined;
+  return { end: from + found + closing.length, inner: markup.slice(from, from + found) };
 }
 
 /** The markup with a heading at each table of contents target and without the table of contents page. */
 function withChapterHeadings(markup: string): string {
-  const toc = tocEntries(markup);
-  if (!toc || toc.entries.length === 0) return markup;
+  const toc = tocPage(markup);
+  if (!toc) return markup;
   const edits: Edit[] = [];
   const seen = new Set<number>();
   const lower = markup.toLowerCase();
   for (const entry of toc.entries) {
-    if (seen.has(entry.position) || entry.position >= markup.length) continue;
+    if (entry.label === '' || seen.has(entry.position) || entry.position >= markup.length) continue;
     seen.add(entry.position);
     const element = elementAt(markup, lower, entry.position);
     if (element) edits.push({ start: entry.position, end: element.end, replacement: `<h${HEADING_LEVEL}>${element.inner}</h${HEADING_LEVEL}>` });
     else edits.push({ start: entry.position, end: entry.position, replacement: `<h${HEADING_LEVEL}>${entry.label.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</h${HEADING_LEVEL}>` });
   }
-  // The page is dropped only when it holds nothing but the links: its text is the labels, in order.
-  const page = markup.slice(toc.start);
-  const body = page.indexOf('</body>') >= 0 ? page.slice(0, page.indexOf('</body>')) : page;
-  const dropPage = textOfMarkup(body) === toc.entries.map((entry) => entry.label).join(' ');
+  // The page is left to the navigation document the writer builds; a link of it that points into itself names no chapter.
   edits.sort((a, b) => a.start - b.start);
   let out = '';
   let cursor = 0;
   for (const edit of edits) {
-    if (edit.start < cursor || (dropPage && edit.start >= toc.start)) continue;
+    if (edit.start < cursor || (edit.start >= toc.start && edit.start < toc.end)) continue;
+    if (cursor < toc.start && edit.start >= toc.end) {
+      out += markup.slice(cursor, toc.start);
+      cursor = toc.end;
+    }
     out += markup.slice(cursor, edit.start) + edit.replacement;
     cursor = edit.end;
   }
-  if (dropPage) {
-    out += markup.slice(cursor, toc.start) + (page.indexOf('</body>') >= 0 ? page.slice(page.indexOf('</body>')) : '');
-  } else {
-    out += markup.slice(cursor);
-  }
-  return out;
+  if (cursor < toc.start) out += markup.slice(cursor, toc.start);
+  return out + markup.slice(Math.max(cursor, toc.end));
 }
 
 /** Plain XHTML for the HTML reader: pictures named by `src`, the MOBI-only elements removed. */
 function toHtml(markup: string): string {
   return markup
-    .replace(/<img\b[^>]*>/gi, (tag) => tag.replace(/\brecindex\s*=\s*["']?0*(\d+)["']?/i, `src="${IMAGE_SOURCE_PREFIX}$1"`))
-    .replace(/<\/?mbp:[^>]*>/gi, '');
+    .replace(/<img\b[^<>]*>/gi, (tag) => tag.replace(/\brecindex\s*=\s*["']?0*(\d+)["']?/i, `src="${IMAGE_SOURCE_PREFIX}$1"`))
+    .replace(/<\/?mbp:[^<>]*>/gi, '');
 }
 
 function decodeMarkup(book: MobiBook, latin1: string): string {

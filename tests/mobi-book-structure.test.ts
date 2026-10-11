@@ -5,6 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
+import { readMobiModel } from '../src/lib/conversions/mobi-model';
 import { ConversionFailedError } from '../src/lib/types';
 import { elementsOf, headingsOf, inspectEpub, packagedFile } from './helpers/epub-inspect';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -212,5 +213,141 @@ describe('a MOBI book whose headers or links lie', () => {
     // The damage is real: some books are refused, and some survive it.
     expect(outcomes.refused).toBeGreaterThan(5);
     expect(outcomes.converted).toBeGreaterThan(5);
+  }, 120_000);
+});
+
+
+/**
+ * Markup laid out from a template whose markers (`\u0001name\u0002`) stand for byte offsets: every `{{name}}` becomes the
+ * ten-digit `filepos` of the marker `name`, counted in bytes of the encoding the book is stored in, as a book's links are.
+ */
+function layout(template: string, encoding: 'utf-8' | 'latin1' = 'utf-8'): Buffer {
+  // A position is ten digits whatever its value, so filling it in moves nothing.
+  const sized = template.replace(/\{\{[^}]*\}\}/g, '0000000000');
+  const offsets = new Map<string, number>();
+  let bytes = 0;
+  for (const part of sized.split(/(\u0001[^\u0002]*\u0002)/)) {
+    if (part.startsWith('\u0001')) offsets.set(part.slice(1, -1), bytes);
+    else bytes += Buffer.byteLength(part, encoding);
+  }
+  const filled = template.replace(/\{\{([^}]*)\}\}/g, (_token, name: string) => String(offsets.get(name) ?? 0).padStart(10, '0'));
+  return Buffer.from(filled.replace(/\u0001[^\u0002]*\u0002/g, ''), encoding);
+}
+
+const mark = (name: string): string => `\u0001${name}\u0002`;
+const titleParagraph = (title: string): string => `<p height="2em" width="0pt"><font size="6"><b>${title}</b></font></p>`;
+const chapterTemplate = (titles: readonly string[]): string => titles.map((title, i) => `${mark(`c${i}`)}${titleParagraph(title)}<p>Text of ${title.toLowerCase()}.</p><mbp:pagebreak/>`).join('');
+const tocLinks = (titles: readonly string[]): string => titles.map((title, i) => `<p height="0pt" width="-14pt"><a filepos={{c${i}}}>${title}</a></p>`).join('');
+const guide = '<html><head><guide><reference type="toc" title="Table of Contents" filepos={{toc}} /></guide></head><body>';
+
+function bookOf(markup: Buffer, extra: Partial<Parameters<typeof buildMobi>[0]> = {}): Buffer {
+  return buildMobi({ textRecords: records(markup), compression: 2, encoding: 65001, textLength: markup.length, images: [], ...extra });
+}
+
+const chapterTexts = (html: string): string[] => elementsOf(html, new Set(['p'])).map((paragraph) => paragraph.text).filter((text) => text.startsWith('Text of'));
+const headingTexts = (html: string): string[] => headingsOf(html).map(([, text]) => text);
+const htmlOf = async (input: Buffer): Promise<string> => (await inspectEpub(await toEpub(input))).chapters.map((chapter) => chapter.html).join('\n');
+
+describe('the table of contents of a MOBI book', () => {
+  it('turns only the links with a label that point outside the contents page into headings', async () => {
+    const template = `${guide}${chapterTemplate(CHAPTERS).replace('<p>Text of chapter one.</p>', `<p>Text of chapter one.</p>${mark('plain')}<p>A plain paragraph.</p>`)}${mark('toc')}<mbp:pagebreak/>${tocLinks(CHAPTERS)}<p><a filepos={{plain}}><img recindex="00001"></img></a></p>${mark('note')}<p>Note on the contents.</p><p><a filepos={{note}}>Self link</a></p><mbp:pagebreak/></body></html>`;
+    const html = await htmlOf(bookOf(layout(template), { images: [PIXEL] }));
+    // The picture link has no label and the self link points into the contents page: neither names a chapter.
+    expect(headingTexts(html)).toEqual(CHAPTERS);
+    const paragraphs = elementsOf(html, new Set(['p'])).map((paragraph) => paragraph.text);
+    expect(paragraphs.filter((text) => text === 'A plain paragraph.' || text === 'Note on the contents.' || text === 'Self link')).toEqual(['A plain paragraph.', 'Note on the contents.', 'Self link']);
+  });
+
+  it.each([
+    ['a link that never closes ends the page', `<p><a filepos={{plain}}></p>${'<b></b>'.repeat(400)}<p><a filepos={{plain}}>Later link</a></p>`],
+    ['a link far from the others is not part of the page', `${'<i></i>'.repeat(700)}<p><a filepos={{plain}}>Far link</a></p>`],
+    ['a link that points beyond the book names no chapter', '<p><a filepos=0099999999>Beyond</a></p>'],
+  ])('keeps the paragraph a paragraph when %s', async (_name, extraLinks) => {
+    const template = `${guide}${chapterTemplate(CHAPTERS).replace('<p>Text of chapter one.</p>', `<p>Text of chapter one.</p>${mark('plain')}<p>A plain paragraph.</p>`)}${mark('toc')}<mbp:pagebreak/>${tocLinks(CHAPTERS)}${extraLinks}<mbp:pagebreak/></body></html>`;
+    const html = await htmlOf(bookOf(layout(template)));
+    expect(headingTexts(html)).toEqual(CHAPTERS);
+    expect(elementsOf(html, new Set(['p'])).filter((paragraph) => paragraph.text === 'A plain paragraph.')).toHaveLength(1);
+  });
+
+  it('makes one heading of two entries that name the same title, one at its start and one inside it', async () => {
+    const template = `${guide}${mark('start')}<p>Nested ${mark('inside')}title</p><p>Text of nested.</p>${mark('toc')}<mbp:pagebreak/><p><a filepos={{start}}>Outer</a></p><p><a filepos={{inside}}>Inner</a></p><mbp:pagebreak/></body></html>`;
+    const html = await htmlOf(bookOf(layout(template)));
+    expect(headingTexts(html)).toEqual(['Nested title']);
+    expect(elementsOf(html, new Set(['p'])).map((paragraph) => paragraph.text).filter((text) => text.startsWith('Nested'))).toEqual([]);
+  });
+
+  it('finds the chapters when the table of contents is at the front of the book', async () => {
+    const template = `${guide}${mark('toc')}${tocLinks(CHAPTERS)}<mbp:pagebreak/>${chapterTemplate(CHAPTERS)}</body></html>`;
+    const html = await htmlOf(bookOf(layout(template)));
+    expect(headingTexts(html)).toEqual(CHAPTERS);
+    expect(chapterTexts(html)).toEqual(CHAPTERS.map((title) => `Text of ${title.toLowerCase()}.`));
+    // The page of links is left to the navigation document: each title is shown once.
+    expect(elementsOf(html, new Set(['p', 'a', 'h1'])).filter((element) => CHAPTERS.includes(element.text))).toHaveLength(CHAPTERS.length);
+  });
+
+  it('counts the offsets in bytes: chapters after non-ASCII titles are still found', async () => {
+    const titles = ['Été à Zürich', '日本語の章', 'Chapter Three'];
+    const html = await htmlOf(bookOf(layout(`${guide}${chapterTemplate(titles)}${mark('toc')}<mbp:pagebreak/>${tocLinks(titles)}<mbp:pagebreak/></body></html>`)));
+    expect(headingTexts(html)).toEqual(titles);
+  });
+
+  it('reads a Windows-1252 book with its own characters and offsets counted in its bytes', async () => {
+    // Written as the Windows-1252 bytes 0x93 and 0x94 (curly quotes) and 0xE9 (é).
+    const titles = ['Caf\xe9', 'Chapter \x93Two\x94'];
+    const html = await htmlOf(bookOf(layout(`${guide}${chapterTemplate(titles)}${mark('toc')}<mbp:pagebreak/>${tocLinks(titles)}<mbp:pagebreak/></body></html>`, 'latin1'), { encoding: 1252 }));
+    expect(headingTexts(html)).toEqual(['Café', 'Chapter \u201cTwo\u201d']);
+  });
+
+  it('refuses a text encoding other than UTF-8 and Windows-1252 with a typed 422 error naming it', async () => {
+    const markup = layout(`${guide}${chapterTemplate(CHAPTERS)}</body></html>`);
+    for (const encoding of [936, 28591, 0]) {
+      const error = await convertFile(bookOf(markup, { encoding }), 'mobi', 'epub', {}, 'book.mobi').then(
+        () => undefined,
+        (caught: unknown) => caught as ConversionFailedError & { status?: number }
+      );
+      expect({ typed: error instanceof ConversionFailedError, status: error?.status, mentions: new RegExp(`text encoding ${encoding}\\b`).test(error?.message ?? '') }).toEqual({ typed: true, status: 422, mentions: true });
+    }
+  });
+});
+
+/** Time of the slowest of `runs` calls of the reader on the input of `size` bytes, in milliseconds (the reader's refusal counts: it did the work). */
+async function readTime(make: (size: number) => Buffer, size: number, runs = 3): Promise<number> {
+  const input = make(size);
+  let best = Number.POSITIVE_INFINITY;
+  for (let run = 0; run < runs; run += 1) {
+    const started = performance.now();
+    await readMobiModel(input, 'book').catch(() => undefined);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+describe('the time the reader takes on markup built to make it slow', () => {
+  const SMALL = 100_000;
+  const GROWTH = 4;
+  // A linear reader takes about GROWTH times as long on GROWTH times the input, a quadratic one GROWTH squared: the bound sits between.
+  const MAX_RATIO = 8;
+  const endBook = (tail: string, size: number): Buffer => {
+    const filler = tail.repeat(Math.ceil(size / tail.length));
+    return bookOf(layout(`${guide}${chapterTemplate(CHAPTERS)}${mark('toc')}<mbp:pagebreak/>${tocLinks(CHAPTERS)}${filler}<mbp:pagebreak/></body></html>`));
+  };
+  const afterMarkup = (tail: string, size: number): Buffer => bookOf(layout(`${guide}${chapterTemplate(CHAPTERS)}</body></html>${tail.repeat(Math.ceil(size / tail.length))}`));
+
+  it.each([
+    ['links of the contents page that never close', (size: number) => endBook('<a filepos=0000000100>x ', size)],
+    ['contents entries that point at paragraphs that never close', (size: number) => {
+      const count = Math.ceil(size / 40);
+      const paragraphs = Array.from({ length: count }, (_unused, i) => `${mark(`p${i}`)}<p>x`).join('');
+      const links = Array.from({ length: count }, (_unused, i) => `<p><a filepos={{p${i}}}>T${i}</a></p>`).join('');
+      return bookOf(layout(`${guide}${paragraphs}${mark('toc')}<mbp:pagebreak/>${links}<mbp:pagebreak/></body></html>`));
+    }],
+    ['picture tags that are never closed', (size: number) => afterMarkup('<img ', size)],
+    ['MOBI tags that are never closed', (size: number) => afterMarkup('<mbp:', size)],
+    ['link tags with a position that are never closed', (size: number) => afterMarkup('<a filepos=1 ', size)],
+  ])('grows in proportion to the input on %s', async (_name, make) => {
+    await readTime(make, SMALL / 4, 1);
+    const small = await readTime(make, SMALL);
+    const large = await readTime(make, SMALL * GROWTH);
+    expect(large / Math.max(small, 1)).toBeLessThan(MAX_RATIO);
   }, 120_000);
 });

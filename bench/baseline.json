@@ -1387,8 +1387,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9956940421200972,
-      "delta": 0,
+      "ours": 1,
+      "delta": 0.004305957879902844,
       "ratio": null
     },
     "ebook/book.mobi->pdf:images/structure_recall": {
@@ -1407,8 +1407,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.994908749118822,
-      "delta": 0,
+      "ours": 0.9985840151038389,
+      "delta": 0.0036752659850168845,
       "ratio": null
     },
     "ebook/book.mobi->txt/word_f1": {
