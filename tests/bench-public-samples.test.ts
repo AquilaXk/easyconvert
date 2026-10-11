@@ -198,6 +198,20 @@ describe('the scope of the public cases', () => {
     }
   });
 
+  it('names only quick cases that the baseline records, and gives every public speed row of the timed samples a recorded ratio', () => {
+    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, { ratio: number | null }> };
+    const ids = Object.keys(baseline.entries);
+    for (const [family, cases] of Object.entries(PUBLIC_QUICK_CASES)) {
+      for (const name of cases) expect(ids.some((id) => id.startsWith(`${family}/${name}/`)), `${family}/${name}`).toBe(true);
+    }
+    for (const [family, samples] of Object.entries(PUBLIC_SPEED_SAMPLES)) {
+      for (const id of samples) {
+        const recorded = ids.filter((entry) => entry.startsWith(`${family}/${id}-`) || entry.startsWith(`${family}/${id}.`)).filter((entry) => entry.endsWith('/throughput') && baseline.entries[entry].ratio !== null);
+        expect(recorded.length, `${family}/${id}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
   it('times only samples of the manifest', () => {
     for (const [family, ids] of Object.entries(PUBLIC_SPEED_SAMPLES)) {
       for (const id of ids) expect(MANIFEST.samples.find((item) => item.id === id)?.family, id).toBe(family);
