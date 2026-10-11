@@ -23,7 +23,7 @@ const BORDER_WIDTH = 0.5;
 /** Narrowest a column is squeezed to before the table continues in another column group. */
 const MIN_COLUMN_WIDTH = 64;
 /** Widest a column grows on its own; longer text wraps. */
-const MAX_COLUMN_WIDTH = 360;
+const MAX_COLUMN_WIDTH = 480;
 const SPREADSHEET_UNIT_HINT_MIN = 20;
 const DEFAULT_TEXT_COLOR = '#1F2340';
 const HEADER_FILL = '#F0F2FE';
@@ -47,6 +47,8 @@ export interface PdfTableSheet {
   readonly headerRows: number;
   /** Preferred column widths in points, where the source states them. */
   readonly widthHints?: readonly (number | undefined)[];
+  /** Draws what belongs to the sheet below its table (its charts); the cursor is at the left margin below the last row. */
+  readonly afterTable?: (doc: PDFKit.PDFDocument) => void;
 }
 
 export interface PdfTableDocumentOptions {
@@ -59,6 +61,8 @@ interface SheetMetrics {
   columnCount: number;
   /** Natural single-line width of each column in points, padding included. */
   natural: Float64Array;
+  /** Narrowest each column is squeezed to: MIN_COLUMN_WIDTH, or the widest word of the column when that is wider, never above its natural width. */
+  narrowest: Float64Array;
   /** Single-line width of every cell, row-major. */
   cellWidths: Float32Array;
   lineHeights: Float32Array;
@@ -79,10 +83,37 @@ function countCells(sheets: readonly PdfTableSheet[]): number {
   return cells;
 }
 
+const WHITESPACE_RUN = /\s+/;
+
+/**
+ * Width of the longest word of a cell that a line must not break, 0 when it has none: a run of characters between spaces stays whole
+ * (a sentence of a script written without spaces is one such run, which the column then fits up to MAX_COLUMN_WIDTH). The word longest
+ * in characters stands for the widest; its width is measured once per distinct word.
+ */
+function longestWholeWordWidth(text: string, width: number, writer: PdfUnicodeTextWriter, cache: Map<string, number>): number {
+  let longest = '';
+  let words = 0;
+  for (const word of text.split(WHITESPACE_RUN)) {
+    if (word.length === 0) continue;
+    words++;
+    if (word.length > longest.length) longest = word;
+  }
+  if (words === 0) return 0;
+  if (words === 1) return width;
+  let measured = cache.get(longest);
+  if (measured === undefined) {
+    measured = writer.measure(longest).width;
+    cache.set(longest, measured);
+  }
+  return measured;
+}
+
 /** Measures every cell once, in the font that will draw it. */
 function measureSheet(sheet: PdfTableSheet, writer: PdfUnicodeTextWriter): SheetMetrics {
   const columnCount = sheet.rows.reduce((widest, row) => Math.max(widest, row.length), 0);
   const natural = new Float64Array(columnCount);
+  const wholeWord = new Float64Array(columnCount);
+  const wordWidths = new Map<string, number>();
   const cellWidths = new Float32Array(columnCount * sheet.rows.length);
   const lineHeights = new Float32Array(columnCount * sheet.rows.length);
   sheet.rows.forEach((row, r) => {
@@ -92,6 +123,9 @@ function measureSheet(sheet: PdfTableSheet, writer: PdfUnicodeTextWriter): Sheet
       cellWidths[r * columnCount + c] = width;
       lineHeights[r * columnCount + c] = lineHeight;
       natural[c] = Math.max(natural[c], Math.min(width + 2 * CELL_PADDING_X, MAX_COLUMN_WIDTH));
+      if (width + 2 * CELL_PADDING_X > MIN_COLUMN_WIDTH) {
+        wholeWord[c] = Math.max(wholeWord[c], Math.min(longestWholeWordWidth(cell.text, width, writer, wordWidths) + 2 * CELL_PADDING_X, MAX_COLUMN_WIDTH));
+      }
     });
   });
   sheet.widthHints?.forEach((hint, c) => {
@@ -99,32 +133,32 @@ function measureSheet(sheet: PdfTableSheet, writer: PdfUnicodeTextWriter): Sheet
       natural[c] = Math.min(Math.max(natural[c], hint), MAX_COLUMN_WIDTH);
     }
   });
-  return { columnCount, natural, cellWidths, lineHeights };
+  const narrowest = natural.map((wanted, c) => Math.min(Math.max(wanted, 2 * CELL_PADDING_X), Math.max(MIN_COLUMN_WIDTH, wholeWord[c])));
+  return { columnCount, natural, narrowest, cellWidths, lineHeights };
 }
 
 /** Splits the columns into groups whose narrowest widths fit the page, in column order. */
-function groupColumns(natural: Float64Array, contentWidth: number): number[][] {
+function groupColumns(narrowest: Float64Array, contentWidth: number): number[][] {
   const groups: number[][] = [];
   let current: number[] = [];
   let used = 0;
-  for (let c = 0; c < natural.length; c++) {
-    const narrowest = Math.min(Math.max(natural[c], 2 * CELL_PADDING_X), MIN_COLUMN_WIDTH);
-    if (current.length > 0 && used + narrowest > contentWidth) {
+  for (let c = 0; c < narrowest.length; c++) {
+    if (current.length > 0 && used + narrowest[c] > contentWidth) {
       groups.push(current);
       current = [];
       used = 0;
     }
     current.push(c);
-    used += narrowest;
+    used += narrowest[c];
   }
   if (current.length > 0) groups.push(current);
   return groups;
 }
 
 /** Column widths of one group: natural widths when they fit, otherwise squeezed in proportion to what each can give up. */
-function groupWidths(natural: Float64Array, group: readonly number[], contentWidth: number): number[] {
+function groupWidths(natural: Float64Array, narrowestWidths: Float64Array, group: readonly number[], contentWidth: number): number[] {
   const wanted = group.map((c) => Math.max(natural[c], 2 * CELL_PADDING_X));
-  const narrowest = wanted.map((w) => Math.min(w, MIN_COLUMN_WIDTH));
+  const narrowest = group.map((c) => narrowestWidths[c]);
   const wantedTotal = wanted.reduce((sum, w) => sum + w, 0);
   if (wantedTotal <= contentWidth) return wanted;
   const spare = contentWidth - narrowest.reduce((sum, w) => sum + w, 0);
@@ -187,15 +221,16 @@ class SheetPainter {
     });
   }
 
-  /** Draws the whole sheet, group by group; `freshPage` says the open page is still empty and can be used. */
-  paint(freshPage: boolean): void {
+  /** Draws the whole sheet, group by group; `freshPage` says the open page is still empty and can be used. Returns where the last row ends on its page. */
+  paint(freshPage: boolean): number {
+    let lastRowBottom = this.pageOptions.margin;
     const contentWidth = this.doc.page.width - 2 * this.pageOptions.margin;
-    const groups = groupColumns(this.metrics.natural, contentWidth);
+    const groups = groupColumns(this.metrics.narrowest, contentWidth);
     const headerRows = Math.min(this.sheet.headerRows, this.sheet.rows.length);
     const usable = this.bottom - this.pageOptions.margin;
     let useOpenPage = freshPage;
     groups.forEach((group, groupIndex) => {
-      const widths = groupWidths(this.metrics.natural, group, contentWidth);
+      const widths = groupWidths(this.metrics.natural, this.metrics.narrowest, group, contentWidth);
       const headerHeights = Array.from({ length: headerRows }, (_, r) => this.rowHeight(r, group, widths));
       const headerTotal = headerHeights.reduce((sum, h) => sum + h, 0);
       let y = this.pageOptions.margin;
@@ -226,7 +261,9 @@ class SheetPainter {
         this.drawRow(r, group, widths, y, height, isHeader);
         y += height;
       }
+      lastRowBottom = y;
     });
+    return lastRowBottom;
   }
 }
 
@@ -256,8 +293,13 @@ export async function renderPdfTables(sheets: readonly PdfTableSheet[], options:
         if (sheet.rows.length === 0) continue;
         doc.fontSize(FONT_SIZE);
         const metrics = measureSheet(sheet, writer);
-        new SheetPainter(doc, writer, sheet, metrics, pageOptions).paint(freshPage);
+        const bottom = new SheetPainter(doc, writer, sheet, metrics, pageOptions).paint(freshPage);
         freshPage = false;
+        if (sheet.afterTable) {
+          doc.x = pageOptions.margin;
+          doc.y = bottom + CELL_PADDING_X * 2;
+          sheet.afterTable(doc);
+        }
       }
     } catch (err) {
       reject(err);

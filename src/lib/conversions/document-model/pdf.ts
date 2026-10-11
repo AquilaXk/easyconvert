@@ -55,7 +55,7 @@ class PdfBlockBuilder {
     for (const run of runs) {
       if (run.image || run.anchor !== undefined) continue;
       if (run.note) {
-        segments.push({ text: run.note.label });
+        segments.push({ text: run.note.label, superscript: true });
         continue;
       }
       const link = run.href !== undefined && LINK_SCHEME.test(run.href) ? run.href : undefined;
@@ -177,8 +177,19 @@ class PdfBlockBuilder {
     });
     const notes = ids.map((id) => (model.footnotes ?? []).find((note) => note.id === id)).filter((note): note is NoteDefinition => note !== undefined);
     if (notes.length === 0) return [];
-    return [{ kind: 'rule' }, ...notes.map((note): PdfBlock => ({ kind: 'paragraph', content: [{ text: `${note.label} ${noteText(note)}` }] }))];
+    return [{ kind: 'rule' }, noteList(notes)];
   }
+}
+
+/** Notes as a list that hangs each mark beside its text, the way printed notes are set; the marks are the document's own. */
+function noteList(notes: readonly NoteDefinition[]): PdfBlock {
+  return {
+    kind: 'list',
+    ordered: true,
+    start: 1,
+    items: notes.map((note): PdfBlock[] => [{ kind: 'paragraph', content: [{ text: noteText(note) }] }]),
+    markers: notes.map((note) => note.label),
+  };
 }
 
 function noteText(note: NoteDefinition): string {
@@ -223,7 +234,7 @@ export async function documentToPdf(model: DocumentModel, options: ConversionOpt
   const endnotes = model.endnotes ?? [];
   if (endnotes.length > 0) {
     blocks.push({ kind: 'pageBreak' });
-    for (const note of endnotes) blocks.push({ kind: 'paragraph', content: [{ text: `${note.label} ${noteText(note)}` }] });
+    blocks.push(noteList(endnotes));
   }
   return renderPdfBlocks(tidyPageBreaks(blocks), {
     orientation: options.orientation,

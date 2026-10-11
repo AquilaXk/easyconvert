@@ -33,6 +33,7 @@ import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
+import { readBiffCharts } from './office/biff-chart';
 import { readPptSlides } from './office/ppt-reader';
 import { readMobiText } from './office/mobi-reader';
 import { readPmlText } from './office/pml-reader';
@@ -898,6 +899,9 @@ export interface OpenXmlChartSeries {
 export interface OpenXmlChartData {
   type: 'bar' | 'line' | 'pie' | 'area' | 'doughnut' | 'scatter';
   title?: string;
+  /** Titles of the value axis and of the category axis, where the chart has them. */
+  valueAxisTitle?: string;
+  categoryAxisTitle?: string;
   categories: string[];
   series: OpenXmlChartSeries[];
 }
@@ -1418,9 +1422,27 @@ export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
   return {
     type,
     title,
+    ...axisTitlesOf(chartXml),
     categories: sharedCategories,
     series,
   };
+}
+
+/** The titles the value axis and the category axis carry (`c:title` inside `c:valAx` and `c:catAx`/`c:dateAx`). */
+function axisTitlesOf(chartXml: string): { valueAxisTitle?: string; categoryAxisTitle?: string } {
+  const titleOf = (axis: string | string[]): string | undefined => {
+    const axisEl = safeExtractFirstXmlElement(chartXml, axis);
+    const titleEl = axisEl ? safeExtractFirstXmlElement(axisEl.content, 'c:title') : null;
+    if (!titleEl) return undefined;
+    const text = safeExtractXmlElements(titleEl.content, 'a:t')
+      .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
+      .filter(Boolean)
+      .join(' ');
+    return text === '' ? undefined : text;
+  };
+  const valueAxisTitle = titleOf('c:valAx');
+  const categoryAxisTitle = titleOf(['c:catAx', 'c:dateAx']);
+  return { ...(valueAxisTitle ? { valueAxisTitle } : {}), ...(categoryAxisTitle ? { categoryAxisTitle } : {}) };
 }
 
 const CHART_PALETTE = [
@@ -3371,6 +3393,25 @@ export function measurePdfTextHeight(doc: PDFKit.PDFDocument, text: string, opti
   return unicodeTextWriterFor(doc).heightOf(text, options);
 }
 
+/** Tick values 0, step, 2 step ... up to the first multiple of a rounded step (1, 2 or 5 times a power of ten) that covers `max`, about five steps. */
+function niceAxisTicks(max: number): number[] {
+  const rough = max / 5;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const fraction = rough / magnitude;
+  const multiple = [1, 2, 5].find((candidate) => fraction <= candidate) ?? 10;
+  const step = multiple * magnitude;
+  const count = Math.ceil(max / step - 1e-9);
+  return Array.from({ length: count + 1 }, (_, i) => Number((i * step).toPrecision(12)));
+}
+
+function formatAxisTick(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(6)));
+}
+
+/** Share of a pie chart's width the list of its slice names takes, on the right. */
+const PIE_LEGEND_SHARE = 0.45;
+const PIE_LEGEND_FONT_SIZE = 7.5;
+
 export function renderPdfChart(
   doc: PDFKit.PDFDocument,
   chart: OpenXmlChartData,
@@ -3382,7 +3423,14 @@ export function renderPdfChart(
 ): void {
   const startX = x !== undefined ? x : 50;
   const chartWidth = width !== undefined ? width : doc.page.width - 100;
-  const chartHeight = height !== undefined ? height : 220;
+  const circularChart = chart.type === 'pie' || chart.type === 'doughnut';
+  const legendLabels = circularChart ? chart.categories : [];
+  const legendWidth = chartWidth * PIE_LEGEND_SHARE - 16;
+  doc.fontSize(PIE_LEGEND_FONT_SIZE);
+  const legendHeights = legendLabels.map((label) => Math.max(PIE_LEGEND_FONT_SIZE + 4, measurePdfTextHeight(doc, label, { width: legendWidth }) + 4));
+  const legendHeight = legendHeights.reduce((sum, h) => sum + h, 0);
+  // A chart whose size the caller did not give grows to hold the names of all its slices.
+  const chartHeight = height !== undefined ? height : Math.max(220, legendHeight + (chart.title ? 40 : 26));
 
   if (y === undefined && doc.y + chartHeight > doc.page.height - 60) {
     doc.addPage();
@@ -3410,12 +3458,16 @@ export function renderPdfChart(
   const plotLeft = startX + 45;
   const plotRight = startX + chartWidth - 25;
   const plotTop = startY + titleH;
-  const plotBottom = startY + chartHeight - 35;
+  const plotBottom = startY + chartHeight - (chart.categoryAxisTitle ? 47 : 35);
   const pw = Math.max(10, plotRight - plotLeft);
   const ph = Math.max(10, plotBottom - plotTop);
 
   const allVals = chart.series.flatMap((s) => s.values);
-  const maxVal = Math.max(1, ...allVals);
+  const dataMax = Math.max(1, ...allVals);
+  const circular = chart.type === 'pie' || chart.type === 'doughnut';
+  // Charts with axes scale to a rounded top value and label it, as every chart with a value axis does.
+  const ticks = circular ? [] : niceAxisTicks(dataMax);
+  const maxVal = ticks.length > 0 ? ticks[ticks.length - 1] : dataMax;
 
   // Axes
   doc
@@ -3426,11 +3478,15 @@ export function renderPdfChart(
     .strokeColor('#CCD2FC')
     .stroke();
 
-  // Gridlines
-  const gridSteps = 3;
+  // Gridlines and the value axis labels
+  const gridSteps = ticks.length > 1 ? ticks.length - 1 : 3;
   for (let i = 0; i <= gridSteps; i++) {
     const gy = plotBottom - (i / gridSteps) * ph;
     doc.moveTo(plotLeft, gy).lineTo(plotRight, gy).lineWidth(0.5).strokeColor('#E1E4EE').stroke();
+    if (ticks.length > 0) {
+      doc.fillColor('#4D536B').fontSize(7);
+      renderSafePdfText(doc, formatAxisTick(ticks[i]), hasUnicodeFont, { width: 36, align: 'right', lineBreak: false }, plotLeft - 40, gy - 4);
+    }
   }
 
   if (chart.type === 'bar') {
@@ -3534,9 +3590,10 @@ export function renderPdfChart(
       );
     });
   } else if (chart.type === 'pie' || chart.type === 'doughnut') {
-    const cx = plotLeft + pw / 2;
+    const pieWidth = pw * (1 - PIE_LEGEND_SHARE);
+    const cx = plotLeft + pieWidth / 2;
     const cy = plotTop + ph / 2;
-    const radius = (Math.min(pw, ph) / 2) * 0.8;
+    const radius = (Math.min(pieWidth, ph) / 2) * 0.8;
     const rInner = chart.type === 'doughnut' ? radius * 0.55 : 0;
     const total = allVals.reduce((a, b) => a + b, 0) || 1;
     let startAngle = -Math.PI / 2;
@@ -3581,12 +3638,32 @@ export function renderPdfChart(
       doc.restore();
       startAngle = endAngle;
     });
+
+    // The name of each slice, beside the swatch of its colour.
+    let legendY = plotTop;
+    const legendX = startX + chartWidth * (1 - PIE_LEGEND_SHARE);
+    legendLabels.forEach((label, index) => {
+      doc.rect(legendX, legendY + 1, 8, 8).fill(CHART_PALETTE[index % CHART_PALETTE.length]);
+      doc.fillColor('#4D536B').fontSize(PIE_LEGEND_FONT_SIZE);
+      renderSafePdfText(doc, label, hasUnicodeFont, { width: legendWidth }, legendX + 12, legendY);
+      legendY += legendHeights[index];
+    });
+  }
+
+  // The titles of the axes: the value axis above its labels, the category axis below the category labels.
+  if (chart.valueAxisTitle) {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(doc, chart.valueAxisTitle, hasUnicodeFont, { width: chartWidth - 20, lineBreak: false }, startX + 10, plotTop - 11);
+  }
+  if (chart.categoryAxisTitle) {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(doc, chart.categoryAxisTitle, hasUnicodeFont, { width: pw, align: 'center', lineBreak: false }, plotLeft, plotBottom + 17);
   }
 
   // Draw legend if multiple series
   if (chart.series.length > 1) {
     let lx = plotLeft;
-    const ly = startY + chartHeight - 12;
+    const ly = startY + chartHeight - 8;
     chart.series.forEach((s, sIdx) => {
       const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
       doc.rect(lx, ly - 6, 8, 8).fill(color);
@@ -4163,6 +4240,8 @@ async function generatePdfFromDocx(
     };
 
     const renderParagraph = (p: DocxParagraph) => {
+      // Cells, shapes and charts are drawn at absolute positions and leave doc.x at the last one; a paragraph starts at the margin.
+      doc.x = doc.page.margins.left;
       if (p.isHeading) {
         doc.moveDown(0.5);
         doc.fillColor('#5C6BC0').fontSize(p.headingLevel === 1 ? 16 : 14);
@@ -5193,6 +5272,8 @@ export interface OfficeWorksheetPrintArea {
 export interface OfficeWorksheet {
   name: string;
   rows: string[][];
+  /** The charts the sheet's drawing holds, in the order the drawing places them. */
+  charts?: OpenXmlChartData[];
   structuredRows?: OfficeWorksheetCell[][];
   columnWidths?: number[];
   printArea?: OfficeWorksheetPrintArea;
@@ -5321,6 +5402,39 @@ export function formatCsvCell(cell: string, delimiter: string): string {
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
  */
+/** The relationships of a package part: target by relationship id, with the relationship's type. */
+async function readPartRelationships(zip: JSZip, partPath: string): Promise<Map<string, { type: string; target: string }>> {
+  const slash = partPath.lastIndexOf('/');
+  const directory = partPath.slice(0, slash);
+  const relsFile = zip.file(`${directory}/_rels/${partPath.slice(slash + 1)}.rels`);
+  const relationships = new Map<string, { type: string; target: string }>();
+  if (!relsFile) return relationships;
+  for (const rel of safeExtractXmlElements(await readZipEntryText(relsFile), 'Relationship')) {
+    if (rel.attrs.Id && rel.attrs.Target && rel.attrs.TargetMode !== 'External') {
+      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: resolveZipPath(directory, rel.attrs.Target) });
+    }
+  }
+  return relationships;
+}
+
+/** The charts of the drawings a worksheet shows (worksheet to drawing to chart parts), in the order each drawing places them. */
+async function readWorksheetCharts(zip: JSZip, sheetPath: string): Promise<OpenXmlChartData[]> {
+  const charts: OpenXmlChartData[] = [];
+  for (const drawing of (await readPartRelationships(zip, sheetPath)).values()) {
+    if (!drawing.type.endsWith('/drawing')) continue;
+    const drawingFile = zip.file(drawing.target);
+    if (!drawingFile) continue;
+    const references = await readPartRelationships(zip, drawing.target);
+    const drawingXml = await readZipEntryText(drawingFile);
+    for (const match of drawingXml.matchAll(/<(?:\w+:)?chart\b[^>]*?\br:id="([^"]+)"/g)) {
+      const chartFile = zip.file(references.get(match[1])?.target ?? '');
+      const chart = chartFile ? parseOpenXmlChart(await readZipEntryText(chartFile)) : null;
+      if (chart) charts.push(chart);
+    }
+  }
+  return charts;
+}
+
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
@@ -5692,12 +5806,14 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       }
     }
 
+    const charts = await readWorksheetCharts(zip, entry.path);
     allSheets.push({
       name: entry.name,
       rows,
       structuredRows,
       columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
       printArea,
+      ...(charts.length > 0 ? { charts } : {}),
     });
   }
 
@@ -5726,6 +5842,7 @@ async function generatePdfFromWorksheets(
       name: sheet.name,
       headerRows: 1,
       widthHints: sheet.columnWidths,
+      afterTable: sheet.charts?.length ? (doc: PDFKit.PDFDocument) => sheet.charts?.forEach((chart) => renderPdfChart(doc, chart, true)) : undefined,
       rows: sheet.rows.map((row, r) => {
         const structured = sheet.structuredRows?.[r] ?? [];
         return Array.from({ length: Math.max(row.length, structured.length) }, (_, c) => {
@@ -6857,6 +6974,103 @@ async function convertOdpSource(
   throw unconvertibleOfficeTarget('odp', tgt);
 }
 
+const ODF_CHART_CLASSES: Readonly<Record<string, OpenXmlChartData['type']>> = {
+  'chart:bar': 'bar',
+  'chart:line': 'line',
+  'chart:area': 'area',
+  'chart:circle': 'pie',
+  'chart:ring': 'doughnut',
+  'chart:scatter': 'scatter',
+};
+const ODF_CHART_STORAGE_STREAM = 'package_stream';
+
+/** The text inside the first element `tag` of `xml`, or undefined when there is none or it is empty. */
+function odfElementText(xml: string, tag: string): string | undefined {
+  const element = safeExtractFirstXmlElement(xml, tag);
+  const text = element ? safeExtractAllText(element.content).trim() : '';
+  return text === '' ? undefined : text;
+}
+
+/**
+ * The chart in an OpenDocument chart package (the `package_stream` an office suite stores in the compound file of an embedded
+ * chart): its type, titles, and the table that holds its data (series names in the header row, categories in the first column).
+ */
+async function readOdfChartPackage(bytes: Buffer): Promise<OpenXmlChartData | null> {
+  const zip = await JSZip.loadAsync(bytes);
+  const contentFile = zip.file('content.xml');
+  if (!contentFile) return null;
+  const content = await readZipEntryText(contentFile);
+  const chartEl = safeExtractFirstXmlElement(content, 'chart:chart');
+  if (!chartEl) return null;
+  const plotStart = chartEl.content.indexOf('<chart:plot-area');
+  const title = odfElementText(plotStart < 0 ? chartEl.content : chartEl.content.slice(0, plotStart), 'chart:title');
+  const axisTitles = new Map<string, string>();
+  for (const axis of safeExtractXmlElements(chartEl.content, 'chart:axis')) {
+    const axisTitle = odfElementText(axis.content, 'chart:title');
+    if (axisTitle !== undefined && axis.attrs['chart:dimension']) axisTitles.set(axis.attrs['chart:dimension'], axisTitle);
+  }
+  const table = safeExtractFirstXmlElement(content, 'table:table');
+  const rows = table
+    ? safeExtractXmlElements(table.content, 'table:table-row').map((row) =>
+        safeExtractXmlElements(row.content, ['table:table-cell', 'table:covered-table-cell']).map((cell) => ({
+          text: safeExtractAllText(cell.content).trim(),
+          value: cell.attrs['office:value'],
+        }))
+      )
+    : [];
+  const [header, ...body] = rows;
+  const series = (header ?? []).slice(1).map((cell, index) => ({
+    name: cell.text || `Series ${index + 1}`,
+    values: body.map((row) => Number(row[index + 1]?.value)).filter((value) => !Number.isNaN(value)),
+  }));
+  const categories = body.map((row) => row[0]?.text ?? '');
+  const xTitle = axisTitles.get('x');
+  const yTitle = axisTitles.get('y');
+  return {
+    type: ODF_CHART_CLASSES[chartEl.attrs['chart:class'] ?? ''] ?? 'bar',
+    ...(title ? { title } : {}),
+    ...(yTitle ? { valueAxisTitle: yTitle } : {}),
+    ...(xTitle ? { categoryAxisTitle: xTitle } : {}),
+    categories,
+    series,
+  };
+}
+
+/**
+ * The charts of the compound files a slide embeds: the chart sheets of an Excel workbook (what PowerPoint stores) and the OpenDocument
+ * chart package an office suite stores. An object that is not a chart is left out, and one that cannot be read is reported.
+ */
+async function readEmbeddedCharts(objects: readonly Buffer[], slideNumber: number, warnings: string[]): Promise<OpenXmlChartData[]> {
+  const charts: OpenXmlChartData[] = [];
+  for (const object of objects) {
+    if (!isCfbfContainer(object)) continue;
+    try {
+      const container = parseCfbf(object);
+      const odfPackage = container.streams.get(ODF_CHART_STORAGE_STREAM);
+      if (odfPackage !== undefined) {
+        const chart = await readOdfChartPackage(odfPackage);
+        if (chart) charts.push(chart);
+        continue;
+      }
+      const stream = selectWorkbookStream(container);
+      if (stream === undefined) continue;
+      const worksheets = readBiff8Worksheets(stream);
+      charts.push(...readBiffCharts(stream, (worksheet, row, column) => worksheets[worksheet]?.cells.get(row)?.get(column)));
+    } catch (error) {
+      warnings.push(`Slide ${slideNumber}: an embedded chart could not be read (${error instanceof Error ? error.message : 'unreadable data'}).`);
+    }
+  }
+  return charts;
+}
+
+/** What a chart says as text: its title, axis titles, category labels and series names. */
+function chartTextLines(chart: OpenXmlChartData): string[] {
+  const lines = [chart.title, chart.valueAxisTitle, chart.categoryAxisTitle].filter((line): line is string => Boolean(line));
+  if (chart.categories.some(Boolean)) lines.push(chart.categories.filter(Boolean).join(', '));
+  if (chart.series.length > 0) lines.push(chart.series.map((series) => series.name).join(', '));
+  return lines;
+}
+
 /**
  * PowerPoint 97-2003 binary source. The slide text comes from the presentation's records in slide order
  * ([MS-PPT]); malformed or encrypted files throw typed errors instead of producing text.
@@ -6868,11 +7082,15 @@ async function convertPptSource(
   baseName: string
 ): Promise<ConversionResult> {
   const warnings: string[] = [];
-  const slides = readPptSlides(inputBuffer, warnings);
+  const readSlides = readPptSlides(inputBuffer, warnings);
+  const slides = [];
+  for (const slide of readSlides) slides.push({ ...slide, charts: await readEmbeddedCharts(slide.embedded, slide.number, warnings) });
+  // The text targets list what the charts say as lines of the slide; the PDF draws the charts.
+  const slidesWithChartText = slides.map((slide) => ({ ...slide, texts: [...slide.texts, ...slide.charts.flatMap(chartTextLines)] }));
   const withWarnings = (result: ConversionResult): ConversionResult => (warnings.length > 0 ? { ...result, metadata: { ...result.metadata, warnings } } : result);
 
   if (tgt === 'txt') {
-    const text = slides
+    const text = slidesWithChartText
       .filter((slide) => slide.texts.length > 0)
       .map((slide) => slide.texts.join('\n'))
       .join('\n\n');
@@ -6881,7 +7099,7 @@ async function convertPptSource(
   }
 
   if (tgt === 'html') {
-    const html = generateHtmlFromSlides(slides, baseName);
+    const html = generateHtmlFromSlides(slidesWithChartText, baseName);
     const buffer = Buffer.from(html, 'utf-8');
     return withWarnings({ buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length });
   }
@@ -6892,7 +7110,7 @@ async function convertPptSource(
   }
 
   if (tgt === 'pptx') {
-    const text = slides
+    const text = slidesWithChartText
       .filter((slide) => slide.texts.length > 0)
       .map((slide) => `# Slide ${slide.number}\n\n` + slide.texts.join('\n'))
       .join('\n\n---\n\n');
@@ -7068,6 +7286,8 @@ async function generatePdfFromSlides(
   slides: Array<{
     number: number;
     texts: string[];
+    /** Charts drawn below the text of a slide that has no shapes of its own. */
+    charts?: OpenXmlChartData[];
     shapes?: VisualSlideShape[];
     width?: number;
     height?: number;
@@ -7210,6 +7430,10 @@ async function generatePdfFromSlides(
           renderSafePdfText(doc, line, hasUnicodeFont, { width: sWidth - 2 * SLIDE_TEXT_MARGIN }, SLIDE_TEXT_MARGIN, doc.y);
           doc.moveDown(0.5);
         });
+        for (const chart of slide.charts ?? []) {
+          doc.x = SLIDE_TEXT_MARGIN;
+          renderPdfChart(doc, chart, hasUnicodeFont, SLIDE_TEXT_MARGIN, undefined, sWidth - 2 * SLIDE_TEXT_MARGIN);
+        }
       }
     });
 
@@ -8918,16 +9142,48 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
 /** The sheet of a stream that is not a BIFF workbook: no rows. */
 const EMPTY_XLS_SHEET: XlsSheet = { rowCount: 0, row: () => [], toRows: () => [] };
 
+const BIFF_RECORD_BOUNDSHEET = 0x0085;
+const BIFF_RECORD_COLINFO = 0x007d;
+const BIFF_COLUMN_WIDTH_UNITS_PER_CHARACTER = 256;
+/** Points a column of one character is drawn at, as for the columns of an XLSX sheet. */
+const POINTS_PER_COLUMN_CHARACTER = 7.5;
+const BIFF_SUBSTREAM_GLOBALS = 0x0005;
+const BIFF_SUBSTREAM_WORKSHEET = 0x0010;
+/** A BOF of BIFF2 to BIFF4 states no substream type before its type word; the stream is one worksheet. */
+const BIFF_BOF_TYPE_OFFSET = 2;
+
+/** The cells one worksheet substream wrote. */
+interface BiffWorksheet {
+  /** Name from the BOUNDSHEET record of the worksheet; absent for a stream that has none. */
+  name?: string;
+  readonly cells: Map<number, Map<number, string>>;
+  maxRow: number;
+  maxCol: number;
+  /** Width in points of each column the COLINFO records give one for. */
+  readonly columnWidths: number[];
+}
+
+/** A BOUNDSHEET name: [MS-XLS] 2.4.28 (BIFF8: character count, flag byte, characters) or the BIFF5 byte string. */
+function boundSheetName(data: Buffer, hasTextFlags: boolean): string | undefined {
+  if (data.length < 8) return undefined;
+  const count = data[6];
+  if (!hasTextFlags) return data.toString('latin1', 7, Math.min(data.length, 7 + count));
+  const wide = (data[7] & SST_FLAG_UTF16) !== 0;
+  return wide ? data.toString('utf16le', 8, Math.min(data.length, 8 + count * 2)) : data.toString('latin1', 8, Math.min(data.length, 8 + count));
+}
+
 /**
- * Reads the cells of a BIFF stream into a sparse sheet. The grid of the used range is never built here: a sheet
- * whose only cell sits at IV65536 would need 16.7 million entries.
+ * Reads the cells of a BIFF stream, one list entry per worksheet substream (`BOF` with the worksheet type until its `EOF`).
+ * The substreams of charts and macro sheets hold no cells and the globals substream holds none either. A stream whose cells
+ * come outside any worksheet substream (a hand-written or truncated one) keeps them in one worksheet of their own.
+ * The grid of the used range is never built here: a sheet whose only cell sits at IV65536 would need 16.7 million entries.
  */
-function readBiff8Sheet(stream: Buffer): XlsSheet {
-  if (stream.length < 4) return EMPTY_XLS_SHEET;
+function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
+  if (stream.length < 4) return [];
 
   const firstRec = stream.readUInt16LE(0);
   if (firstRec !== 0x0809 && firstRec !== 0x0409 && firstRec !== 0x0209 && firstRec !== 0x0009) {
-    return EMPTY_XLS_SHEET;
+    return [];
   }
 
   // BOF record id and version word ([MS-XLS] 2.4.21): only a BIFF8 BOF (id 0x0809, version 0x0600) writes text with option
@@ -8935,19 +9191,75 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
   const hasTextFlags = firstRec === 0x0809 && stream.length >= 6 && stream.readUInt16LE(4) >= BIFF8_BOF_VERSION;
 
   const sst: string[] = [];
-  const cells = new Map<number, Map<number, string>>();
-  let maxRow = -1;
-  let maxCol = -1;
-  let lastFormulaCell: { r: number; c: number } | null = null;
+  const worksheets: BiffWorksheet[] = [];
+  /** Names by the stream position of the substream they belong to (lbPlyPos), and in the order the workbook lists them. */
+  const namesByPosition = new Map<number, string>();
+  const namesInOrder: string[] = [];
+  let worksheetsStarted = 0;
+  /** What each open substream is: a worksheet, or anything else (globals, chart, macro sheet, VB module). */
+  const substreams: Array<'worksheet' | 'globals' | 'other'> = [];
+  let implicitWorksheet: BiffWorksheet | undefined;
+  let lastFormulaCell: { r: number; c: number; sheet: BiffWorksheet } | null = null;
+
+  /** The worksheet that cells are written to now; undefined inside a chart or macro substream. */
+  const activeWorksheet = (): BiffWorksheet | undefined => {
+    const kind = substreams[substreams.length - 1];
+    if (kind === 'worksheet') return worksheets[worksheets.length - 1];
+    if (kind === 'other') return undefined;
+    if (implicitWorksheet === undefined) {
+      implicitWorksheet = { cells: new Map(), maxRow: -1, maxCol: -1, columnWidths: [] };
+      worksheets.push(implicitWorksheet);
+    }
+    return implicitWorksheet;
+  };
 
   let pos = 0;
   while (pos + 4 <= stream.length) {
+    const recordStart = pos;
     const recId = stream.readUInt16LE(pos);
     const recLen = stream.readUInt16LE(pos + 2);
     pos += 4;
     if (pos + recLen > stream.length) break;
     const data = stream.subarray(pos, pos + recLen);
     pos += recLen;
+
+    if (BIFF_BOF_RECORDS.has(recId)) {
+      const type = data.length >= BIFF_BOF_TYPE_OFFSET + 2 ? data.readUInt16LE(BIFF_BOF_TYPE_OFFSET) : undefined;
+      lastFormulaCell = null;
+      if (type === BIFF_SUBSTREAM_GLOBALS) {
+        substreams.push('globals');
+      } else if (type === undefined || type === BIFF_SUBSTREAM_WORKSHEET) {
+        // A worksheet takes the name of its BOUNDSHEET: matched by position, else by order.
+        const name = namesByPosition.get(recordStart) ?? namesInOrder[worksheetsStarted];
+        worksheetsStarted++;
+        worksheets.push({ name, cells: new Map(), maxRow: -1, maxCol: -1, columnWidths: [] });
+        substreams.push('worksheet');
+      } else {
+        substreams.push('other');
+      }
+      continue;
+    }
+    if (recId === BIFF_RECORD_EOF) {
+      substreams.pop();
+      lastFormulaCell = null;
+      continue;
+    }
+    if (recId === BIFF_RECORD_COLINFO && data.length >= 6) {
+      // [MS-XLS] 2.4.48: the first and last column, then the width in 1/256 of the width of a character.
+      const sheet = activeWorksheet();
+      const last = Math.min(data.readUInt16LE(2), BIFF_MAX_COLUMN_INDEX);
+      if (sheet !== undefined) {
+        const points = Math.round((data.readUInt16LE(4) / BIFF_COLUMN_WIDTH_UNITS_PER_CHARACTER) * POINTS_PER_COLUMN_CHARACTER);
+        for (let column = data.readUInt16LE(0); column <= last; column++) sheet.columnWidths[column] = points;
+      }
+      continue;
+    }
+    if (recId === BIFF_RECORD_BOUNDSHEET && data.length >= 4) {
+      const name = boundSheetName(data, hasTextFlags) ?? '';
+      namesByPosition.set(data.readUInt32LE(0), name);
+      namesInOrder.push(name);
+      continue;
+    }
 
     // 0x002F: FILEPASS. Every record after it is obfuscated or encrypted, so reading it as cells yields garbage.
     if (recId === BIFF_RECORD_FILEPASS) {
@@ -8976,10 +9288,12 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
       if (c > BIFF_MAX_COLUMN_INDEX) {
         throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
       }
-      if (!cells.has(r)) cells.set(r, new Map());
-      cells.get(r)!.set(c, val);
-      if (r > maxRow) maxRow = r;
-      if (c > maxCol) maxCol = c;
+      const sheet = activeWorksheet();
+      if (sheet === undefined) return;
+      if (!sheet.cells.has(r)) sheet.cells.set(r, new Map());
+      sheet.cells.get(r)!.set(c, val);
+      if (r > sheet.maxRow) sheet.maxRow = r;
+      if (c > sheet.maxCol) sheet.maxCol = c;
     };
 
     // 0x00FD: LABELSST
@@ -9055,7 +9369,8 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
     else if (recId === 0x0006 && data.length >= 14) {
       const r = data.readUInt16LE(0);
       const c = data.readUInt16LE(2);
-      lastFormulaCell = { r, c };
+      const formulaSheet = activeWorksheet();
+      lastFormulaCell = formulaSheet === undefined ? null : { r, c, sheet: formulaSheet };
       if (data[12] === 0xff && data[13] === 0xff) {
         const fType = data[6];
         if (fType === 1) setCell(r, c, data[8] === 1 ? 'TRUE' : 'FALSE');
@@ -9078,14 +9393,18 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
       } else {
         str = data.toString('latin1', textStart, Math.min(data.length, textStart + len));
       }
-      setCell(lastFormulaCell.r, lastFormulaCell.c, str);
+      const owner = lastFormulaCell.sheet;
+      if (!owner.cells.has(lastFormulaCell.r)) owner.cells.set(lastFormulaCell.r, new Map());
+      owner.cells.get(lastFormulaCell.r)!.set(lastFormulaCell.c, str);
       lastFormulaCell = null;
     }
   }
 
-  if (maxRow < 0 || maxCol < 0) return EMPTY_XLS_SHEET;
+  return worksheets.filter((sheet) => sheet.maxRow >= 0 && sheet.maxCol >= 0);
+}
 
-  // Rows after the last one that holds text are not part of the sheet.
+/** The sheet of one worksheet's cells; rows after the last one that holds text are not part of it. */
+function sheetOfCells(cells: ReadonlyMap<number, ReadonlyMap<number, string>>, maxCol: number): XlsSheet {
   let rowCount = 0;
   for (const [r, rowMap] of cells) {
     if (r < rowCount) continue;
@@ -9097,6 +9416,35 @@ function readBiff8Sheet(stream: Buffer): XlsSheet {
     }
   }
   return sparseXlsSheet(cells, rowCount, maxCol + 1);
+}
+
+/** The worksheets, each as its own sheet with its name and column widths. */
+function namedSheetsOf(worksheets: readonly BiffWorksheet[]): Array<{ name: string; sheet: XlsSheet; columnWidths: number[] }> {
+  return worksheets.map((worksheet, index) => ({
+    name: worksheet.name || `Sheet${index + 1}`,
+    sheet: sheetOfCells(worksheet.cells, worksheet.maxCol),
+    columnWidths: worksheet.columnWidths,
+  }));
+}
+
+/**
+ * The cells of every worksheet laid over each other in one sparse sheet, as the text targets have always written them.
+ * The PDF target keeps the worksheets apart (namedSheetsOf).
+ */
+function mergedSheetOf(worksheets: readonly BiffWorksheet[]): XlsSheet {
+  if (worksheets.length === 0) return EMPTY_XLS_SHEET;
+  if (worksheets.length === 1) return sheetOfCells(worksheets[0].cells, worksheets[0].maxCol);
+  const cells = new Map<number, Map<number, string>>();
+  let maxCol = -1;
+  for (const worksheet of worksheets) {
+    for (const [r, rowMap] of worksheet.cells) {
+      const merged = cells.get(r) ?? new Map<number, string>();
+      cells.set(r, merged);
+      for (const [c, value] of rowMap) merged.set(c, value);
+    }
+    maxCol = Math.max(maxCol, worksheet.maxCol);
+  }
+  return sheetOfCells(cells, maxCol);
 }
 
 /** The workbook stream of a CFBF container: the BIFF8 `Workbook` of an Excel 97-2003 or Kingsoft file, or else the `Book` of an older one. */
@@ -9112,17 +9460,26 @@ function selectWorkbookStream(cfbf: CfbfContainer): Buffer | undefined {
   return workbookStream ?? bookStream;
 }
 
-/** The sheet of the BIFF workbook stream inside a CFBF container. */
-function readCfbfWorkbookSheet(inputBuffer: Buffer): XlsSheet {
+/** The worksheets of the BIFF workbook stream inside a CFBF container. */
+function readCfbfWorkbookSheets(inputBuffer: Buffer): BiffWorksheet[] {
   const workbookStream = selectWorkbookStream(parseCfbf(inputBuffer));
   if (!workbookStream) {
     throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
   }
-  const parsed = readBiff8Sheet(workbookStream);
-  if (parsed.rowCount === 0) {
+  const worksheets = readBiff8Worksheets(workbookStream);
+  if (mergedSheetOf(worksheets).rowCount === 0) {
     throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
   }
-  return parsed;
+  return worksheets;
+}
+
+/** The sheet of the BIFF workbook stream inside a CFBF container. */
+function readCfbfWorkbookSheet(inputBuffer: Buffer): XlsSheet {
+  return mergedSheetOf(readCfbfWorkbookSheets(inputBuffer));
+}
+
+function readBiff8Sheet(stream: Buffer): XlsSheet {
+  return mergedSheetOf(readBiff8Worksheets(stream));
 }
 
 /** True when the record after the BOF of a BIFF stream's globals is a FilePass: the workbook is password protected or obfuscated. */
@@ -9157,6 +9514,29 @@ export function assertXlsNotEncrypted(inputBuffer: Buffer): void {
 }
 
 /**
+ * The cells of a worksheet that a PDF page can show: columns without any text are left out, rows without any text are kept
+ * as one blank row between rows that have text (a run of them collapses to one) and are dropped before the first and after the
+ * last. A sheet whose only cell is at IV65536 would otherwise be 65535 blank rows long. No text is lost.
+ */
+function compactWorksheetForPdf(name: string, rows: string[][], columnWidths: readonly number[]): OfficeWorksheet {
+  const usedColumns = new Set<number>();
+  for (const row of rows) row.forEach((text, column) => text !== '' && usedColumns.add(column));
+  const used = [...usedColumns].sort((a, b) => a - b);
+  const compact: string[][] = [];
+  let pendingBlank = false;
+  for (const row of rows) {
+    if (row.every((text) => text === '')) {
+      pendingBlank = compact.length > 0;
+      continue;
+    }
+    if (pendingBlank) compact.push(used.map(() => ''));
+    pendingBlank = false;
+    compact.push(used.map((column) => row[column] ?? ''));
+  }
+  return { name, rows: compact, columnWidths: used.map((column) => columnWidths[column]) };
+}
+
+/**
  * Excel XLS Parser & Converter
  */
 export async function convertXlsSource(
@@ -9166,17 +9546,21 @@ export async function convertXlsSource(
   baseName: string
 ): Promise<ConversionResult> {
   let sheet: XlsSheet;
+  /** The worksheets of a BIFF workbook, kept apart for the PDF target. */
+  let worksheets: readonly BiffWorksheet[] | undefined;
 
   // 1. CFBF Compound File Binary Format containing Workbook stream
   if (isCfbfContainer(inputBuffer)) {
-    sheet = readCfbfWorkbookSheet(inputBuffer);
+    worksheets = readCfbfWorkbookSheets(inputBuffer);
+    sheet = mergedSheetOf(worksheets);
   }
   // 2. Raw BIFF stream (without CFBF container)
   else if (
     inputBuffer.length >= 4 &&
     (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
   ) {
-    sheet = readBiff8Sheet(inputBuffer);
+    worksheets = readBiff8Worksheets(inputBuffer);
+    sheet = mergedSheetOf(worksheets);
     if (sheet.rowCount === 0) {
       throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in raw BIFF stream');
     }
@@ -9231,6 +9615,14 @@ export async function convertXlsSource(
 
   if (tgt === 'xls') {
     return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
+  }
+
+  if (tgt === 'pdf' && worksheets !== undefined) {
+    const sheets: OfficeWorksheet[] = namedSheetsOf(worksheets)
+      .filter(({ sheet: worksheet }) => worksheet.rowCount > 0)
+      .map(({ name, sheet: worksheet, columnWidths }) => compactWorksheetForPdf(name, worksheet.toRows(PDF_TEXT_LIMIT), columnWidths));
+    const pdfBuffer = await generatePdfFromWorksheets(sheets, options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
   // The remaining targets build documents from the whole grid.
