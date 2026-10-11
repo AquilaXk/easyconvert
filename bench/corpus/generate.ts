@@ -2,12 +2,18 @@
  * Regenerates the committed benchmark corpus deterministically from standard tools: ImageMagick `convert`,
  * ffmpeg and jszip. Every pixel, sample and byte is a pure function of the constants below, so a re-run yields
  * files with the checksums listed in manifest.json. Run with `npx tsx bench/corpus/generate.ts`.
+ *
+ * The tabular data, the ebooks and the fonts are separate steps (`--only table,book,assets`, comma separated): `table` and
+ * `book` need only node; `assets` runs generate-assets.py, which needs pyarrow, openpyxl, fontTools and calibre and writes
+ * the Parquet, XLSX, font and MOBI files (those formats have no deterministic writer here, so the committed bytes are
+ * the record and manifest.json pins them). A run without `--only` makes everything.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { makeBook, makeTable } from './generate-text';
 
 const CORPUS_DIR = __dirname;
 const TOOL_TIMEOUT_MS = 120_000;
@@ -215,7 +221,7 @@ function writeManifest(): void {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (!/\.(ts|md)$|manifest\.json$/.test(entry.name)) {
+      else if (!/\.(ts|py|md)$|manifest\.json$/.test(entry.name)) {
         entries.push({ file: path.relative(CORPUS_DIR, full), bytes: fs.statSync(full).size, sha256: sha256(full) });
       }
     }
@@ -227,15 +233,31 @@ function writeManifest(): void {
   fs.writeFileSync(out('manifest.json'), `${JSON.stringify({ totalBytes: total, files: entries }, null, 2)}\n`);
 }
 
+/** Python assets: the Parquet, XLSX, font and MOBI files, written by libraries and tools with no deterministic mode. */
+function makeAssets(): void {
+  execFileSync('python3', ['-I', path.join(CORPUS_DIR, 'generate-assets.py'), CORPUS_DIR], { stdio: ['ignore', 'inherit', 'inherit'], timeout: TOOL_TIMEOUT_MS });
+}
+
+const STEPS: Readonly<Record<string, () => void | Promise<void>>> = {
+  photos: makePhotos,
+  screenshot: makeScreenshot,
+  lineart: makeLineArt,
+  scan: makeScan,
+  docx: makeDocx,
+  audio: makeAudio,
+  video: makeVideo,
+  records: makeRecords,
+  table: () => makeTable(CORPUS_DIR),
+  book: () => makeBook(CORPUS_DIR),
+  assets: makeAssets,
+};
+
 async function main(): Promise<void> {
-  makePhotos();
-  makeScreenshot();
-  makeLineArt();
-  makeScan();
-  await makeDocx();
-  makeAudio();
-  makeVideo();
-  makeRecords();
+  const only = process.argv.indexOf('--only');
+  const names = only >= 0 ? process.argv[only + 1].split(',') : Object.keys(STEPS);
+  const unknown = names.filter((name) => STEPS[name] === undefined);
+  if (unknown.length > 0) throw new Error(`unknown step ${unknown.join(', ')}; use ${Object.keys(STEPS).join(', ')}`);
+  for (const name of names) await STEPS[name]();
   writeManifest();
 }
 
