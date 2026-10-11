@@ -32,7 +32,7 @@ const RENDER_WIDTH_PX = 2400;
 const INK_SPECS: readonly MetricSpec[] = [SPEC.inkRecall, SPEC.inkPrecision, SPEC.extentError];
 const parseInk = numberRecord(['precision', 'recall', 'extentError', 'wordF1']);
 const DWG_REASON =
-  'the engine has no binary DWG reader (it fails closed), no licensed DWG sample is committed, and no open-source DWG converter is packaged for the runner image; the bar for DWG is the Open Design Specification once a reader exists';
+  'the engine has no binary DWG reader (it fails closed; issue #728), no licensed DWG sample is committed, and no open-source DWG converter is packaged for the runner image; the bar for DWG is the Open Design Specification once a reader exists';
 
 interface Measured {
   precision: number;

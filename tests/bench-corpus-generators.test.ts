@@ -12,14 +12,24 @@ import { vectorCadFiles } from '../bench/corpus/generate-vector-cad';
  */
 
 const CORPUS_DIR = path.join(__dirname, '..', 'bench', 'corpus');
+/** The analytic rasterisation takes a few seconds, and a loaded runner takes longer. */
+const GENERATOR_TIMEOUT_MS = 120_000;
+
+/** Each generator runs once for all the checks of this file. */
+const once = <T>(make: () => Promise<T>): (() => Promise<T>) => {
+  let pending: Promise<T> | undefined;
+  return () => (pending ??= make());
+};
+const vectorCad = once(vectorCadFiles);
+const office = once(officeFiles);
 
 async function pixels(file: Buffer): Promise<Buffer> {
   return sharp(file).raw().toBuffer();
 }
 
 describe.each([
-  ['vector and CAD', vectorCadFiles],
-  ['office', officeFiles],
+  ['vector and CAD', vectorCad],
+  ['office', office],
 ])('the %s generator', (_name, generate) => {
   it('writes the committed files', async () => {
     const files = await generate();
@@ -30,12 +40,12 @@ describe.each([
       else if (relative.endsWith('.xlsx')) expect(committed.length, relative).toBe((data as Buffer).length);
       else expect(committed.toString('utf8'), relative).toBe(data.toString());
     }
-  });
+  }, GENERATOR_TIMEOUT_MS);
 });
 
 describe('the ground truth of the vector and CAD parts', () => {
   it('draws the shapes the SVG and the EPS name, with exact coverage at the edges', async () => {
-    const files = await vectorCadFiles();
+    const files = await vectorCad();
     const { data, info } = await sharp(files.get('vector/shapes.truth.png') as Buffer).raw().toBuffer({ resolveWithObject: true });
     expect([info.width, info.height, info.channels]).toEqual([400, 300, 3]);
     const at = (x: number, y: number): number[] => [...data.subarray((y * info.width + x) * 3, (y * info.width + x) * 3 + 3)];
@@ -47,10 +57,10 @@ describe('the ground truth of the vector and CAD parts', () => {
     expect(at(20, 60)).toEqual([214, 39, 40]);
     expect(files.get('vector/shapes.svg')).toContain('<rect x="20" y="20" width="160" height="120" fill="#d62728"/>');
     expect(files.get('vector/shapes.eps')).toContain('0.84 0.15 0.16 setrgbcolor 20 160 160 120 rectfill');
-  });
+  }, GENERATOR_TIMEOUT_MS);
 
   it('lists in the truth of each plate every outline of its DXF, ellipse, spline and block included only in the full plate', async () => {
-    const files = await vectorCadFiles();
+    const files = await vectorCad();
     const count = (name: string): number => (JSON.parse(files.get(name) as string) as { strokes: unknown[] }).strokes.length;
     const entities = (name: string, type: string): number => (files.get(name) as string).split('\n').filter((line, i, lines) => line === type && lines[i - 1]?.trim() === '0').length;
     expect(count('cad/plate-basic.truth.json')).toBe(['LINE', 'ARC', 'CIRCLE', 'LWPOLYLINE'].reduce((sum, type) => sum + entities('cad/plate-basic.dxf', type), 0));
@@ -61,5 +71,5 @@ describe('the ground truth of the vector and CAD parts', () => {
     expect(entities('cad/plate-full.dxf', 'POLYLINE')).toBe(1);
     // Two block references of two outlines each, a spline, an ellipse and a polyline are strokes of the full plate only.
     expect(count('cad/plate-full.truth.json') - count('cad/plate-basic.truth.json')).toBe(2 * 2 + 1 + 1 + 1);
-  });
+  }, GENERATOR_TIMEOUT_MS);
 });
