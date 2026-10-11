@@ -53,13 +53,13 @@ function lazyModule<T>(relative: string): () => Promise<T> {
   return () => (loaded ??= importProduct<T>(relative));
 }
 
-const artifactHelpers = lazyModule<typeof import('../../src/lib/jobs/artifact-helpers')>('lib/jobs/artifact-helpers');
+export const artifactHelpers = lazyModule<typeof import('../../src/lib/jobs/artifact-helpers')>('lib/jobs/artifact-helpers');
 const watermarkModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/watermark')>('lib/conversions/pdf-postprocess/watermark');
-const protectModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/protect')>('lib/conversions/pdf-postprocess/protect');
+export const protectModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/protect')>('lib/conversions/pdf-postprocess/protect');
 const decryptModule = lazyModule<typeof import('../../src/worker/pdf-decrypt')>('worker/pdf-decrypt');
-const unlockModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/unlock')>('lib/conversions/pdf-postprocess/unlock');
-const pageOpsModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/page-ops')>('lib/conversions/pdf-postprocess/page-ops');
-const compressModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/compress')>('lib/conversions/pdf-postprocess/compress');
+export const unlockModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/unlock')>('lib/conversions/pdf-postprocess/unlock');
+export const pageOpsModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/page-ops')>('lib/conversions/pdf-postprocess/page-ops');
+export const compressModule = lazyModule<typeof import('../../src/lib/conversions/pdf-postprocess/compress')>('lib/conversions/pdf-postprocess/compress');
 
 const FIXTURE_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'pdf-text');
 const MERGE_SOURCES = ['latin', 'multipage', 'two-column'] as const;
@@ -76,18 +76,18 @@ const DELETE_CASE = 'delete.pdf->pdf';
 const REORDER_CASE = 'reorder.pdf->pdf';
 const ROTATE_CASE = 'rotate.pdf->pdf';
 const COMPRESS_CASE = 'compress.pdf->pdf';
-const REFERENCE_TOOL = 'qpdf';
-const GHOSTSCRIPT_TOOL = 'ghostscript';
+export const REFERENCE_TOOL = 'qpdf';
+export const GHOSTSCRIPT_TOOL = 'ghostscript';
 
 const MERGE_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.bytes, SPEC.throughput];
 const WATERMARK_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.ssim, SPEC.stampInkMatchesReference, SPEC.stampGeometryMatchesSpec, SPEC.renderMatchesReference, SPEC.bytes, SPEC.throughput];
 const ENCRYPTION_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.encryptionMatchesReference, SPEC.bytes, SPEC.throughput];
 
 /** How qpdf is asked to write the files a user keeps: compressed streams and the objects packed into object streams, its smallest ordinary output. */
-const COMPACT_OUTPUT = ['--object-streams=generate', '--compress-streams=y'] as const;
+export const COMPACT_OUTPUT = ['--object-streams=generate', '--compress-streams=y'] as const;
 
-const USER_PASSWORD = 'bench-user-secret';
-const OWNER_PASSWORD = 'bench-owner-secret';
+export const USER_PASSWORD = 'bench-user-secret';
+export const OWNER_PASSWORD = 'bench-owner-secret';
 const AES_256_KEY_BITS = 256;
 const RENDER_DPI = '72';
 
@@ -124,7 +124,7 @@ const PNG_HEIGHT_OFFSET = 20;
 const PAGE_SIZE_PATTERN = /Page size:\s+([0-9.]+) x ([0-9.]+) pts/;
 const PAGE_FILE_PATTERN = /-(\d+)\.png$/;
 
-interface PdfTools {
+export interface PdfTools {
   qpdf: string;
   pdftotext: string;
   pdftoppm: string;
@@ -265,7 +265,7 @@ function source(name: string): { file: string; bytes: Buffer } {
 }
 
 /** What qpdf prints about the encryption of a document under a password (an unaccepted password is part of the text). */
-function encryptionReport(tools: PdfTools, file: string, password?: string): string {
+export function encryptionReport(tools: PdfTools, file: string, password?: string): string {
   const run = runTool(tools.qpdf, [...passwordArgs('--password=', password), '--show-encryption', file]);
   return `${run.stdout.toString('utf8')}${run.stderr}`;
 }
@@ -291,11 +291,11 @@ function reportHolds(report: string, password: 'user' | 'owner'): boolean {
 }
 
 /** Both passwords are honoured with the requested rights; true for a file that reports as the spec says under each. */
-function protectionHolds(tools: PdfTools, file: string): boolean {
+export function protectionHolds(tools: PdfTools, file: string): boolean {
   return reportHolds(encryptionReport(tools, file, USER_PASSWORD), 'user') && reportHolds(encryptionReport(tools, file, OWNER_PASSWORD), 'owner');
 }
 
-function encryptWithReference(tools: PdfTools, input: string, output: string): void {
+export function encryptWithReference(tools: PdfTools, input: string, output: string): void {
   runTool(tools.qpdf, ['--encrypt', USER_PASSWORD, OWNER_PASSWORD, String(AES_256_KEY_BITS), '--print=full', '--modify=none', '--extract=n', '--', input, output]);
 }
 
@@ -533,7 +533,7 @@ const ROTATED_PAGE_NUMBERS: ReadonlySet<number> = new Set([2, 3]);
 /** SSIM of a rendered page of ours against the same page of the reference at or above which the two render alike. */
 const ROTATE_MATCH_FLOOR = 0.999;
 
-const GHOSTSCRIPT_REFERENCE_ARGS = ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/ebook'] as const;
+export const GHOSTSCRIPT_REFERENCE_ARGS = ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', '-dPDFSETTINGS=/ebook'] as const;
 const PHOTO_PAGE_COUNT = 3;
 const PHOTO_PAGE_WIDTH = 612;
 const PHOTO_PAGE_HEIGHT = 792;

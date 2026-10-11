@@ -155,7 +155,7 @@ jobs:
       - name: Restore the public samples
         uses: ./.github/actions/bench-corpora
         with:
-          families: image,video,audio,compression
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Fingerprint the reference tools
         id: tools
@@ -230,7 +230,7 @@ jobs:
       - name: Restore the public samples
         uses: ./.github/actions/bench-corpora
         with:
-          families: image,video,audio,compression
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Run the speed parity benchmark
         env:

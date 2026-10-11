@@ -10,6 +10,7 @@ import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, 
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import { cropToContent, renderPdfPage } from '../vector-raster';
+import { runVectorPublic } from './vector-public';
 
 /**
  * Vector graphics family: SVG, EPS, an Illustrator file and the Windows metafiles we write, against librsvg
@@ -359,4 +360,5 @@ export const runVector: FamilyRunner = async (ctx) => [
   ...(await runMetafiles(ctx)),
   ...(await runEps(ctx)),
   ...(await runIllustrator(ctx)),
+  ...(await runVectorPublic(ctx)),
 ];

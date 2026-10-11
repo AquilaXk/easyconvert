@@ -3,9 +3,13 @@ import path from 'node:path';
 import { IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { convertWithProject } from '../convert';
+import { ToolRunError } from '../errors';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { FONTTOOLS_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -24,6 +28,13 @@ import { FONTTOOLS_PSEUDO_TOOL, runTool } from '../tools';
  * required tables, and each outline keeps its shape, which is read as the exact area, centroid and second moments of the
  * curves (a converter that moves a curve by a thousandth of the em moves them by far less than the tolerance, a wrong
  * contour moves them by far more; converting cubic curves to quadratic ones, which approximates, stays well inside it). They have no speed row.
+ *
+ * The public samples (bench/corpus/remote-manifest.json) are open-licence families that the committed pair does not cover:
+ * hinted TrueType, a face with Arabic shaping tables, variable fonts, OpenType/CFF, CJK faces of 2 to 4.5 MB, and colour
+ * fonts (COLR/CPAL and CBDT/CBLC). Each one goes through the wrapper cases; the outline conversion runs on the static Latin and
+ * Arabic faces only, since the check reads every glyph and has no reference for variation or colour tables. A file the product
+ * refuses, or one the reference tool cannot wrap, is a `converts` row instead of a stopped run. The per-class rows pool the size
+ * ratio and average the table mismatches over a class.
  */
 
 const WOFF2_TOOLS = { encode: 'woff2_compress', decode: 'woff2_decompress' } as const;
@@ -40,12 +51,36 @@ type Sfnt = 'ttf' | 'otf';
 interface Face {
   name: string;
   sfnt: Sfnt;
+  /** Path in the generated corpus, or the file name of a public sample. */
   file: string;
+  sample: RemoteSample | null;
+  /** Whether the outline conversion is measured on it. */
+  outlines: boolean;
 }
-const FACES: readonly Face[] = [
-  { name: 'sans', sfnt: 'ttf', file: 'fonts/sans.ttf' },
-  { name: 'sans-cff', sfnt: 'otf', file: 'fonts/sans-cff.otf' },
+const FIXTURE_FACES: readonly Face[] = [
+  { name: 'sans', sfnt: 'ttf', file: 'fonts/sans.ttf', sample: null, outlines: true },
+  { name: 'sans-cff', sfnt: 'otf', file: 'fonts/sans-cff.otf', sample: null, outlines: true },
 ];
+const publicFace = (sample: RemoteSample): Face => ({
+  name: path.parse(sample.id).name,
+  sfnt: sample.meta.sfnt === 'otf' ? 'otf' : 'ttf',
+  file: sample.id,
+  sample,
+  outlines: sample.meta.outlines === true,
+});
+const faces = (): readonly Face[] => [...FIXTURE_FACES, ...remoteSamples('font').map(publicFace)];
+
+/** The case names of a face. A public sample's start with its id, which is what puts them in the scope of the public sets. */
+const compressCase = (face: Face, wrapper: Wrapper): string => (face.sample ? `${face.sample.id}->${wrapper}` : `${face.name}.${face.sfnt}->${wrapper}`);
+const decompressCase = (face: Face, wrapper: Wrapper): string => (face.sample ? `${face.sample.id}.${wrapper}->${face.sfnt}` : `${face.name}.${wrapper}->${face.sfnt}`);
+const outlineCase = (face: Face): string => (face.sample ? `${face.sample.id}->${OTHER_SFNT[face.sfnt]}` : `${face.name}.${face.sfnt}->${OTHER_SFNT[face.sfnt]}`);
+
+/** Where the face is, once fetched: a path in the generated corpus, or the verified cache file of a public sample. */
+interface Located {
+  face: Face;
+  path: string;
+}
+const faceBytes = (located: Located): Buffer => fs.readFileSync(located.path);
 const OTHER_SFNT: Readonly<Record<Sfnt, Sfnt>> = { ttf: 'otf', otf: 'ttf' };
 
 interface CompareResult {
@@ -91,12 +126,27 @@ function decodeWoff2(ctx: FamilyContext, tools: Tools, wrapped: Buffer, name: st
   return path.join(staged.dir, `${name}.ttf`);
 }
 
+const COMPRESS_METRICS: readonly MetricSpec[] = [SPEC.ratio, SPEC.tableMismatches];
+const DECOMPRESS_METRICS: readonly MetricSpec[] = [SPEC.tableMismatches];
+
+/** Runs a reference tool on a public sample; a tool that refuses the file is a reference that does not convert it, which the sample's `converts` row says. */
+function referenceAttempt(face: Face, action: () => void): boolean {
+  try {
+    action();
+    return true;
+  } catch (error) {
+    if (face.sample === null || !(error instanceof ToolRunError)) throw error;
+    return false;
+  }
+}
+
 /** The sfnt to a wrapper: ours against the reference encoder, size and tables. */
-async function runCompress(ctx: FamilyContext, tools: Tools, face: Face, wrapper: Wrapper): Promise<BenchRow[]> {
-  const caseName = `${face.name}.${face.sfnt}->${wrapper}`;
+async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: ClassRows): Promise<BenchRow[]> {
+  const { face } = located;
+  const caseName = compressCase(face, wrapper);
   if (!ctx.inScope('font', caseName)) return [];
   ctx.log(`font ${caseName}`);
-  const source = ctx.corpusBuffer(face.file);
+  const source = faceBytes(located);
   const filename = path.basename(face.file);
   const staged = stage(ctx, `${caseName}-reference`, filename, source);
   const referenceFile = path.join(staged.dir, `${face.name}.${wrapper}`);
@@ -104,26 +154,36 @@ async function runCompress(ctx: FamilyContext, tools: Tools, face: Face, wrapper
     runTool(tools.paths[toolsOf(wrapper).encode], [staged.file]);
   };
   const rows: BenchRow[] = [];
+  const classKey = `->${wrapper}`;
   if (ctx.quality) {
-    encode();
-    const oursBytes = await convertOurs(source, face.sfnt, wrapper, filename);
-    const referenceBytes = fs.readFileSync(referenceFile);
-    let oursTables: number;
-    let referenceTables: number;
-    if (wrapper === 'woff2') {
-      // Both files go through the one reference decoder, so a table that differs was encoded differently.
-      oursTables = await differingTables(tools.server, decodeWoff2(ctx, tools, oursBytes, face.name), decodeWoff2(ctx, tools, referenceBytes, face.name));
-      referenceTables = 0;
-    } else {
-      oursTables = await differingTables(tools.server, stage(ctx, 'ours-woff', `${face.name}.woff`, oursBytes).file, staged.file);
-      referenceTables = await differingTables(tools.server, referenceFile, staged.file);
+    if (face.sample) classRows.expect(face.sample.class, classKey, [...COMPRESS_METRICS, SPEC.converts].map((spec) => spec.metric));
+    const referenceConverted = referenceAttempt(face, encode);
+    const attempt = await attemptOurs(() => convertOurs(source, face.sfnt, wrapper, filename), face.sample !== null);
+    if (face.sample) {
+      if (!attempt.ok) ctx.log(`font ${caseName}: the product does not convert it (${attempt.reason})`);
+      rows.push(convertsRow('font', caseName, attempt.ok, referenceConverted, REFERENCE[wrapper]));
     }
-    rows.push(
-      measuredRow('font', caseName, SPEC.ratio, oursBytes.length / source.length, referenceBytes.length / source.length, REFERENCE[wrapper]),
-      measuredRow('font', caseName, SPEC.tableMismatches, oursTables, referenceTables, REFERENCE[wrapper])
-    );
+    if (attempt.ok && referenceConverted) {
+      const oursBytes = attempt.value;
+      const referenceBytes = fs.readFileSync(referenceFile);
+      let oursTables: number;
+      let referenceTables: number;
+      if (wrapper === 'woff2') {
+        // Both files go through the one reference decoder, so a table that differs was encoded differently.
+        oursTables = await differingTables(tools.server, decodeWoff2(ctx, tools, oursBytes, face.name), decodeWoff2(ctx, tools, referenceBytes, face.name));
+        referenceTables = 0;
+      } else {
+        oursTables = await differingTables(tools.server, stage(ctx, 'ours-woff', `${face.name}.woff`, oursBytes).file, staged.file);
+        referenceTables = await differingTables(tools.server, referenceFile, staged.file);
+      }
+      rows.push(
+        measuredRow('font', caseName, SPEC.ratio, oursBytes.length / source.length, referenceBytes.length / source.length, REFERENCE[wrapper]),
+        measuredRow('font', caseName, SPEC.tableMismatches, oursTables, referenceTables, REFERENCE[wrapper])
+      );
+    }
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows, (row) => (row.metric === SPEC.ratio.metric ? source.length : 1));
   }
-  if (ctx.speed) {
+  if (ctx.speed && (face.sample === null || speedSample('font', face.sample.id))) {
     const timing = await ctx.time(
       speedRowId('font', caseName),
       async () => {
@@ -139,12 +199,16 @@ async function runCompress(ctx: FamilyContext, tools: Tools, face: Face, wrapper
 }
 
 /** A wrapper to its sfnt: ours against the reference decoder, tables. The wrapped file is the reference encoder's. */
-async function runDecompress(ctx: FamilyContext, tools: Tools, face: Face, wrapper: Wrapper): Promise<BenchRow[]> {
-  const caseName = `${face.name}.${wrapper}->${face.sfnt}`;
+async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: ClassRows): Promise<BenchRow[]> {
+  const { face } = located;
+  const caseName = decompressCase(face, wrapper);
   if (!ctx.inScope('font', caseName)) return [];
   ctx.log(`font ${caseName}`);
-  const source = stage(ctx, `${caseName}-source`, path.basename(face.file), ctx.corpusBuffer(face.file));
-  runTool(tools.paths[toolsOf(wrapper).encode], [source.file]);
+  const source = stage(ctx, `${caseName}-source`, path.basename(face.file), faceBytes(located));
+  if (!referenceAttempt(face, () => runTool(tools.paths[toolsOf(wrapper).encode], [source.file]))) {
+    // The reference encoder refuses the file, so there is no wrapped file to decode; the compress case carries the row.
+    return face.sample && ctx.quality ? [convertsRow('font', caseName, false, false, REFERENCE[wrapper])] : [];
+  }
   const wrapped = fs.readFileSync(path.join(source.dir, `${face.name}.${wrapper}`));
   const filename = `${face.name}.${wrapper}`;
   // The reference decoder's output: WOFF2 is rebuilt by it next to the file it reads, WOFF is printed.
@@ -155,14 +219,24 @@ async function runDecompress(ctx: FamilyContext, tools: Tools, face: Face, wrapp
     else fs.writeFileSync(decodedFile, runTool(tools.paths[WOFF_TOOLS.decode], [decoding.file]).stdout);
   };
   const rows: BenchRow[] = [];
+  const classKey = `.${wrapper}->${face.sfnt}`;
   if (ctx.quality) {
-    decode();
-    const oursFile = stage(ctx, 'ours-sfnt', `${face.name}.${face.sfnt}`, await convertOurs(wrapped, wrapper, face.sfnt, filename)).file;
-    // WOFF2 is judged against the reference decoder's output, WOFF (whose tables are stored as they were) against the source font.
-    const expected = wrapper === 'woff2' ? decodedFile : source.file;
-    rows.push(measuredRow('font', caseName, SPEC.tableMismatches, await differingTables(tools.server, oursFile, expected), await differingTables(tools.server, decodedFile, expected), REFERENCE[wrapper]));
+    if (face.sample) classRows.expect(face.sample.class, classKey, [...DECOMPRESS_METRICS, SPEC.converts].map((spec) => spec.metric));
+    const referenceConverted = referenceAttempt(face, decode);
+    const attempt = await attemptOurs(() => convertOurs(wrapped, wrapper, face.sfnt, filename), face.sample !== null);
+    if (face.sample) {
+      if (!attempt.ok) ctx.log(`font ${caseName}: the product does not convert it (${attempt.reason})`);
+      rows.push(convertsRow('font', caseName, attempt.ok, referenceConverted, REFERENCE[wrapper]));
+    }
+    if (attempt.ok && referenceConverted) {
+      const oursFile = stage(ctx, 'ours-sfnt', `${face.name}.${face.sfnt}`, attempt.value).file;
+      // WOFF2 is judged against the reference decoder's output, WOFF (whose tables are stored as they were) against the source font.
+      const expected = wrapper === 'woff2' ? decodedFile : source.file;
+      rows.push(measuredRow('font', caseName, SPEC.tableMismatches, await differingTables(tools.server, oursFile, expected), await differingTables(tools.server, decodedFile, expected), REFERENCE[wrapper]));
+    }
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows);
   }
-  if (ctx.speed) {
+  if (ctx.speed && (face.sample === null || speedSample('font', face.sample.id))) {
     const timing = await ctx.time(
       speedRowId('font', caseName),
       async () => {
@@ -178,20 +252,30 @@ async function runDecompress(ctx: FamilyContext, tools: Tools, face: Face, wrapp
 }
 
 /** TrueType to CFF and back: spec conformance of the output, no reference converter. */
-async function runOutlines(ctx: FamilyContext, tools: Tools, face: Face): Promise<BenchRow[]> {
+async function runOutlines(ctx: FamilyContext, tools: Tools, located: Located, classRows: ClassRows): Promise<BenchRow[]> {
+  const { face } = located;
   const to = OTHER_SFNT[face.sfnt];
-  const caseName = `${face.name}.${face.sfnt}->${to}`;
-  if (!ctx.inScope('font', caseName)) return [];
+  const caseName = outlineCase(face);
+  if (!face.outlines || !ctx.inScope('font', caseName)) return [];
   ctx.log(`font ${caseName}`);
   const rows: BenchRow[] = [];
+  const classKey = `->${to}`;
   if (ctx.quality) {
-    const converted = await convertOurs(ctx.corpusBuffer(face.file), face.sfnt, to, path.basename(face.file));
-    const oursFile = stage(ctx, 'ours-outlines', `${face.name}.${to}`, converted).file;
-    const result = await tools.server.call<ValidateResult>('font.validate', { file: oursFile, expected: ctx.corpusPath(face.file), tolerance: OUTLINE_TOLERANCE });
-    rows.push(
-      measuredRow('font', caseName, SPEC.fontValidationFailures, result.failures.length, 0, REFERENCE_SPEC),
-      measuredRow('font', caseName, SPEC.outlineMismatches, result.mismatchedGlyphs, 0, REFERENCE_SPEC)
-    );
+    if (face.sample) classRows.expect(face.sample.class, classKey, [SPEC.fontValidationFailures, SPEC.outlineMismatches, SPEC.converts].map((spec) => spec.metric));
+    const attempt = await attemptOurs(() => convertOurs(faceBytes(located), face.sfnt, to, path.basename(face.file)), face.sample !== null);
+    if (face.sample) {
+      if (!attempt.ok) ctx.log(`font ${caseName}: the product does not convert it (${attempt.reason})`);
+      rows.push(convertsRow('font', caseName, attempt.ok, true, REFERENCE_SPEC));
+    }
+    if (attempt.ok) {
+      const oursFile = stage(ctx, 'ours-outlines', `${face.name}.${to}`, attempt.value).file;
+      const result = await tools.server.call<ValidateResult>('font.validate', { file: oursFile, expected: located.path, tolerance: OUTLINE_TOLERANCE });
+      rows.push(
+        measuredRow('font', caseName, SPEC.fontValidationFailures, result.failures.length, 0, REFERENCE_SPEC),
+        measuredRow('font', caseName, SPEC.outlineMismatches, result.mismatchedGlyphs, 0, REFERENCE_SPEC)
+      );
+    }
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows);
   }
   if (ctx.speed) rows.push(skippedRow('font', caseName, SPEC.throughput, REFERENCE_SPEC, 'unsupported', NO_REFERENCE_CONVERTER));
   return rows;
@@ -205,18 +289,33 @@ interface CaseSummary {
 
 function summariesOf(face: Face): CaseSummary[] {
   const wrapped = (wrapper: Wrapper): CaseSummary[] => [
-    { name: `${face.name}.${face.sfnt}->${wrapper}`, metrics: [SPEC.ratio, SPEC.tableMismatches, SPEC.throughput], reference: REFERENCE[wrapper] },
-    { name: `${face.name}.${wrapper}->${face.sfnt}`, metrics: [SPEC.tableMismatches, SPEC.throughput], reference: REFERENCE[wrapper] },
+    { name: compressCase(face, wrapper), metrics: [SPEC.ratio, SPEC.tableMismatches, SPEC.throughput], reference: REFERENCE[wrapper] },
+    { name: decompressCase(face, wrapper), metrics: [SPEC.tableMismatches, SPEC.throughput], reference: REFERENCE[wrapper] },
   ];
   return [
     ...wrapped('woff2'),
     ...wrapped('woff'),
-    { name: `${face.name}.${face.sfnt}->${OTHER_SFNT[face.sfnt]}`, metrics: [SPEC.fontValidationFailures, SPEC.outlineMismatches, SPEC.throughput], reference: REFERENCE_SPEC },
+    ...(face.outlines ? [{ name: outlineCase(face), metrics: [SPEC.fontValidationFailures, SPEC.outlineMismatches, SPEC.throughput], reference: REFERENCE_SPEC }] : []),
   ];
 }
 
+/** The reference of a class row, from the part of the case name after the class (`->woff2`, `.woff->ttf`, `->otf`). */
+function referenceOfSuffix(suffix: string): string {
+  if (suffix.includes('woff2')) return REFERENCE.woff2;
+  if (suffix.includes('woff')) return REFERENCE.woff;
+  return REFERENCE_SPEC;
+}
+
+/** The path of a face: the generated corpus, or the verified download of a public sample (null when the host did not deliver it). */
+async function locate(ctx: FamilyContext, face: Face): Promise<Located | null> {
+  if (face.sample === null) return { face, path: ctx.corpusPath(face.file) };
+  const file = await ctx.remote(face.sample);
+  return file === null ? null : { face, path: file };
+}
+
 export const runFont: FamilyRunner = async (ctx) => {
-  const wanted = FACES.flatMap(summariesOf).filter((item) => ctx.inScope('font', item.name));
+  const all = faces();
+  const wanted = all.flatMap(summariesOf).filter((item) => ctx.inScope('font', item.name));
   if (wanted.length === 0) return [];
   const plan = ctx.plan([...Object.values(WOFF2_TOOLS), ...Object.values(WOFF_TOOLS), 'python3', FONTTOOLS_PSEUDO_TOOL], 'font');
   if (!plan.ok) return wanted.flatMap((item) => skippedGroup('font', item.name, item.metrics, item.reference, plan));
@@ -224,11 +323,26 @@ export const runFont: FamilyRunner = async (ctx) => {
   try {
     const tools: Tools = { server, paths: plan.paths };
     const rows: BenchRow[] = [];
-    for (const face of FACES) {
-      for (const wrapper of ['woff2', 'woff'] as const) {
-        rows.push(...(await runCompress(ctx, tools, face, wrapper)), ...(await runDecompress(ctx, tools, face, wrapper)));
+    const classRows = new ClassRows();
+    for (const face of all) {
+      const mine = summariesOf(face).filter((item) => ctx.inScope('font', item.name));
+      if (mine.length === 0) continue;
+      // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+      if (face.sample && !ctx.quality && !speedSample('font', face.sample.id)) continue;
+      const located = await locate(ctx, face);
+      if (located === null) {
+        for (const item of mine) rows.push(...unavailableSampleRows('font', item.name, item.metrics, item.reference, face.file));
+        continue;
       }
-      rows.push(...(await runOutlines(ctx, tools, face)));
+      for (const wrapper of ['woff2', 'woff'] as const) {
+        rows.push(...(await runCompress(ctx, tools, located, wrapper, classRows)), ...(await runDecompress(ctx, tools, located, wrapper, classRows)));
+      }
+      rows.push(...(await runOutlines(ctx, tools, located, classRows)));
+    }
+    if (ctx.quality) {
+      for (const row of classRows.rows('font', referenceOfSuffix)) {
+        if (ctx.inScope('font', row.case)) rows.push(row);
+      }
     }
     return rows;
   } finally {

@@ -230,18 +230,21 @@ describe('what the parity jobs add to the actions in use', () => {
   });
 });
 
+/** The families whose public samples the cache action restores: the four of phase 1 and the eight of phase 2 of #733. */
+const SAMPLE_FAMILIES = ['image', 'video', 'audio', 'compression', 'document', 'pdf-ops', 'ebook', 'font', 'cad', 'raw', 'vector', 'data'];
+
 describe('the public benchmark samples in the workflows', () => {
   const action = parse(read('.github', 'actions', 'bench-corpora', 'action.yml')) as { runs: { steps: Step[] } };
   const nightlyQuality = nightly.jobs['bench-parity-quality'];
   const nightlySpeed = nightly.jobs['bench-parity-speed'];
 
   it('caches one directory per family, keyed by the hash of the manifest that pins the files, and only for the families a job names', () => {
-    expect(action.runs.steps.map((step) => step.with?.path)).toEqual(['.bench-corpora/image', '.bench-corpora/video', '.bench-corpora/audio', '.bench-corpora/compression']);
+    expect(action.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
     for (const step of action.runs.steps) {
       expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/remote-manifest.json')");
       expect(step.uses).toMatch(/^actions\/cache@[0-9a-f]{40}$/);
     }
-    expect(action.runs.steps.map((step) => step.if)).toEqual(['image', 'video', 'audio', 'compression'].map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
+    expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
   });
 
   it('is restored before the quick quality run, for the families of the change', () => {
@@ -260,7 +263,7 @@ describe('the public benchmark samples in the workflows', () => {
   it('is restored by the nightly parity jobs, which stay in the full tier, while the plain baseline run keeps to the generated corpus', () => {
     for (const job of [nightlyQuality, nightlySpeed]) {
       const restore = job.steps.find((step) => step.uses === './.github/actions/bench-corpora');
-      expect(restore?.with?.families).toBe('image,video,audio,compression');
+      expect(restore?.with?.families).toBe(SAMPLE_FAMILIES.join(','));
       expect(job.env?.BENCH_CORPUS_TIER).toBeUndefined();
     }
     const plain = nightly.jobs.bench;

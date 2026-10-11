@@ -554,7 +554,7 @@
     },
     {
       "id": "vector/shapes.svg->pdf/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.89,
       "note": "ours is slower than the reference tool: the SVG is sanitised and the renderer starts in the sandbox, where the reference starts the renderer alone",
       "history": [
@@ -567,7 +567,7 @@
     },
     {
       "id": "vector/shapes.eps->png/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.49,
       "note": "ours is slower than the reference tool: the page path starts the PostScript interpreter and then the PDF page tool, where the reference starts one",
       "history": [
@@ -580,7 +580,7 @@
     },
     {
       "id": "vector/shapes.eps->pdf/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.89,
       "note": "ours is slower than the reference tool: the PostScript interpreter starts in the sandbox with the safe-mode flags, where the reference starts it plain",
       "history": [
@@ -593,7 +593,7 @@
     },
     {
       "id": "vector/shapes.ai->png/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.62,
       "note": "ours is slower than the reference tool: the page path starts the PDF page tool in the sandbox and encodes the picture, where the reference starts the page tool alone",
       "history": [
@@ -606,7 +606,7 @@
     },
     {
       "id": "document/drawingml-shapes-presentation.pptx->png/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.96,
       "note": "ours is slower than the reference tool: the office pool is no faster than one cold office process, and the pages are drawn by a second tool and zipped",
       "history": [
@@ -619,7 +619,7 @@
     },
     {
       "id": "document/workbook.xlsx->png/throughput",
-      "issue": 666,
+      "issue": 735,
       "ratio": 0.95,
       "note": "ours is slower than the reference tool: the office pool is no faster than one cold office process, and the pages are drawn by a second tool and zipped",
       "history": [

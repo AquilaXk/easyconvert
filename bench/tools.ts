@@ -96,11 +96,15 @@ export const PYARROW_PSEUDO_TOOL = 'python3-pyarrow';
 export const DUCKDB_PSEUDO_TOOL = 'python3-duckdb';
 export const OPENPYXL_PSEUDO_TOOL = 'python3-openpyxl';
 export const FONTTOOLS_PSEUDO_TOOL = 'python3-fonttools';
+export const EZDXF_PSEUDO_TOOL = 'python3-ezdxf';
+export const XLRD_PSEUDO_TOOL = 'python3-xlrd';
 const PYTHON_LIBRARY_OF: Readonly<Record<string, string>> = {
   [PYARROW_PSEUDO_TOOL]: 'pyarrow',
   [DUCKDB_PSEUDO_TOOL]: 'duckdb',
   [OPENPYXL_PSEUDO_TOOL]: 'openpyxl',
   [FONTTOOLS_PSEUDO_TOOL]: 'fontTools',
+  [EZDXF_PSEUDO_TOOL]: 'ezdxf',
+  [XLRD_PSEUDO_TOOL]: 'xlrd',
 };
 
 const TESSDATA_DIRS = [

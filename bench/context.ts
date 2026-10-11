@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CORPUS_DIR } from './config';
-import { CorpusFetchError, ensureSample, type RemoteSample } from './corpora';
+import { CorpusFetchError, ensureSample, type PinnedFile } from './corpora';
 import { BenchArgumentError } from './errors';
 import type { ReferenceCache } from './ref-cache';
 import type { BenchRow, Family } from './report';
@@ -69,7 +69,7 @@ export interface FamilyContext {
    * manifest fails the run. A host that cannot deliver the file fails it too under ORACLE_STRICT_MODE=1; otherwise the
    * result is null and the caller reports the sample's rows as skipped.
    */
-  remote: (sample: RemoteSample) => Promise<string | null>;
+  remote: (sample: PinnedFile) => Promise<string | null>;
   /** A fresh scratch path inside `work`. */
   scratch: (name: string) => string;
 }

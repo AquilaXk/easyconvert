@@ -100,6 +100,15 @@ export function skippedGroup(
   return specs.map((spec) => skippedRow(family, caseName, spec, referenceTool, kind, plan.reason));
 }
 
+/**
+ * The rows of a public sample that the host did not deliver: skipped as a missing optional tool is (the run is not strict, or the
+ * context would have thrown). `unsupported` is for what the product cannot do, and a baselined row that is skipped as unsupported
+ * reads as lost, which a run without network is not.
+ */
+export function unavailableSampleRows(family: Family, caseName: string, specs: readonly MetricSpec[], referenceTool: string, sampleId: string): BenchRow[] {
+  return specs.map((spec) => skippedRow(family, caseName, spec, referenceTool, 'optional-tool', `public sample ${sampleId} could not be fetched`));
+}
+
 /** PSNR with the infinite value of a lossless result recorded at a finite cap, so the report stays valid JSON. */
 export function capPsnr(psnr: number): number {
   return Math.min(psnr, PSNR_CAP_DB);

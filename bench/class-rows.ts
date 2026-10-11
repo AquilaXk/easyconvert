@@ -57,6 +57,25 @@ export class ClassRows {
     this.pools.set(key, pool);
   }
 
+  /** Expects the rows of a sample whose cases are named `<sampleId><suffix>` (`->pdf`, `->epub:headings`): one entry per row it will produce. */
+  expectCases(className: string, plan: ReadonlyArray<{ suffix: string; metric: string }>): void {
+    for (const entry of plan) this.expect(className, entry.suffix, [entry.metric]);
+  }
+
+  /**
+   * Adds the measured quality rows of a sample, each under the part of its case name after the sample's id, so that sub-cases
+   * (`->epub:headings`, `->epub:images`) stay apart. `weightOf` gives a row the weight it has in its pool (default 1, a plain mean);
+   * `add` itself takes values that are already weighted, and this method does the weighting.
+   */
+  addCases(className: string, sampleId: string, rows: readonly BenchRow[], weightOf: (row: BenchRow) => number = () => 1): void {
+    for (const row of rows) {
+      if (row.status !== 'measured' || row.ours === null || row.reference === null || row.kind === 'throughput' || !row.case.startsWith(sampleId)) continue;
+      const spec: MetricSpec = { metric: row.metric, unit: row.unit, direction: row.direction, kind: row.kind, tolerance: row.tolerance };
+      const weight = weightOf(row);
+      this.add(className, row.case.slice(sampleId.length), spec, row.ours * weight, row.reference * weight, weight);
+    }
+  }
+
   rows(family: Family, referenceTool: (suffix: string) => string): BenchRow[] {
     const rows: BenchRow[] = [];
     for (const [key, pool] of this.pools) {

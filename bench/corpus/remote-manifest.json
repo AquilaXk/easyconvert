@@ -27,6 +27,93 @@
     "silesia": {
       "title": "Silesia compression corpus (12 files of 5 to 51 MB)",
       "terms": "https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia"
+    },
+    "pixls": {
+      "title": "raw.pixls.us open camera sample archive (every sample is CC0)",
+      "terms": "https://raw.pixls.us/"
+    },
+    "ofl-fonts": {
+      "title": "Open-licence font families of the Google Fonts catalogue (SIL Open Font License 1.1; each family directory ships its OFL.txt)",
+      "terms": "https://github.com/google/fonts/blob/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/lato/OFL.txt"
+    },
+    "noto-cjk": {
+      "title": "Noto Sans CJK subset OpenType/CFF fonts (SIL Open Font License 1.1)",
+      "terms": "https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE"
+    },
+    "adobe-fonts": {
+      "title": "Adobe Source family OpenType/CFF fonts (SIL Open Font License 1.1)",
+      "terms": "https://github.com/adobe-fonts/source-serif/blob/80d3f8894c09c937bebfa9011247d2e1c79fd6f4/LICENSE.md"
+    },
+    "noto-emoji": {
+      "title": "Noto Color Emoji fonts of the Noto emoji project (SIL Open Font License 1.1)",
+      "terms": "https://github.com/googlefonts/noto-emoji/blob/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/LICENSE"
+    },
+    "frictionless-datasets": {
+      "title": "Open data packages of the frictionless data community (each datapackage.json states its licence)",
+      "terms": "https://github.com/datasets"
+    },
+    "vega-datasets": {
+      "title": "Datasets of the Vega visualization project (datapackage.json states a licence per resource)",
+      "terms": "https://github.com/vega/vega-datasets/blob/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/datapackage.json"
+    },
+    "parquet-testing": {
+      "title": "Test files of the Apache Parquet format (Apache License 2.0)",
+      "terms": "https://github.com/apache/parquet-testing/blob/56653c437c8092f704a092d0d1d4e600124cd49f/LICENSE.txt"
+    },
+    "openai-gsm8k": {
+      "title": "Grade school math problems (MIT License)",
+      "terms": "https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/LICENSE"
+    },
+    "dxf-libraries": {
+      "title": "Test drawings of an open-source DXF parser (MIT License), written by AutoCAD, OpenSCAD and other programs",
+      "terms": "https://github.com/skymakerolof/dxf/blob/cb571d1d7631dd0daaf923a256d75ef0917ff806/LICENSE"
+    },
+    "ezdxf-examples": {
+      "title": "Example drawings of the ezdxf library (MIT License), some written by commercial CAD programs",
+      "terms": "https://github.com/mozman/ezdxf/blob/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/LICENSE"
+    },
+    "resvg-tests": {
+      "title": "SVG rendering tests of the resvg project, each with the reference picture of the suite (licensed under Apache-2.0 or MIT)",
+      "terms": "https://github.com/linebender/resvg/blob/77b12f4951a7b75d759c42e8c9497cff7c839c3c/LICENSE-MIT"
+    },
+    "gutenberg": {
+      "title": "Project Gutenberg EPUB and Kindle files of public-domain books",
+      "terms": "https://www.gutenberg.org/policy/permission.html"
+    },
+    "idpf-epub3-samples": {
+      "title": "EPUB 3 sample publications of the IDPF (CC BY-SA 3.0 unless the sample table says otherwise)",
+      "terms": "https://github.com/IDPF/epub3-samples/blob/7651e2002b631e6577fadf7e9e0692fa6efb8746/README.md",
+      "redirectHosts": [
+        "githubusercontent.com"
+      ]
+    },
+    "fb2-files": {
+      "title": "FictionBook 2 files from open-source repositories",
+      "terms": "https://github.com/phiresky/ripgrep-all/blob/fce1a28683142b3dbd6ea2f7b719d89c90aee227/LICENSE.md"
+    },
+    "govdocs1": {
+      "title": "Documents collected from public .gov web servers (the govdocs1 research corpus; also the source of the real-world corpus run)",
+      "terms": "https://digitalcorpora.org/corpora/file-corpora/files/"
+    },
+    "verapdf-corpus": {
+      "title": "veraPDF test corpus for ISO 19005 (PDF/A) and ISO 14289 (PDF/UA), CC BY 4.0",
+      "terms": "https://github.com/veraPDF/veraPDF-corpus/blob/bb75f4f0073d9350dfd058c0162a367e6fadf25e/README.md"
+    },
+    "pdfjs-corpus": {
+      "title": "PDF files of the PDF.js regression suite (Apache License 2.0)",
+      "terms": "https://github.com/mozilla/pdf.js/blob/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/LICENSE"
+    },
+    "poi-test-data": {
+      "title": "Office documents from the test data of Apache POI (Apache License 2.0), also part of the real-world corpus",
+      "terms": "https://www.apache.org/licenses/LICENSE-2.0"
+    },
+    "libreoffice-tests": {
+      "title": "Test documents of the LibreOffice source tree (MPL-2.0)",
+      "terms": "https://github.com/LibreOffice/core/blob/4f93a10d5279c2fd403ececfefe6b85349e3522d/COPYING.MPL"
+    },
+    "openxml-sdk-tests": {
+      "title": "Test data of the Open XML SDK (MIT License)",
+      "terms": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE"
     }
   },
   "samples": [
@@ -2028,6 +2115,3505 @@
         "title": "File:Pteraxys Part1.flac",
         "author": "Cyrille R W Chaussepied"
       }
+    },
+    {
+      "id": "raw-canon-eos450d.cr2",
+      "family": "raw",
+      "class": "canon",
+      "set": "pixls",
+      "description": "Canon EOS 450D, CR2 (14-bit, 12 MP)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Canon/EOS%20450D/_MG_7191.CR2"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "cr2",
+        "targets": "jpg,png"
+      },
+      "bytes": 17582091,
+      "sha256": "e975f71429b939701dd618a7bac4709c1409f4bb6aa1c3607ceeaa86031c1c4a"
+    },
+    {
+      "id": "raw-canon-eos5d3-m24.dng",
+      "family": "raw",
+      "class": "dng",
+      "set": "pixls",
+      "description": "Canon EOS 5D Mark III, DNG written by a DNG converter",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Canon/EOS%205D%20Mark%20III/M24-1221_000202.dng"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "dng",
+        "targets": "jpg,png,avif,gif"
+      },
+      "bytes": 1831164,
+      "sha256": "bc29ac8a37c800346749b9a5a1adc2722357f7f0e49df05a7104454881604b92"
+    },
+    {
+      "id": "raw-canon-eos5d3-compress.dng",
+      "family": "raw",
+      "class": "dng",
+      "set": "pixls",
+      "description": "Canon EOS 5D Mark III, DNG with lossless JPEG compression",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Canon/EOS%205D%20Mark%20III/compress.dng"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "dng",
+        "targets": "jpg,png,avif,gif"
+      },
+      "bytes": 1538165,
+      "sha256": "1d77dcc6cdb839b10c1948f0b4471984ab48cf15e973fb77520584cee72b603e"
+    },
+    {
+      "id": "raw-nikon-d90.nef",
+      "family": "raw",
+      "class": "nikon",
+      "set": "pixls",
+      "description": "Nikon D90, NEF (12-bit compressed)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Nikon/D90/00001.NEF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "nef",
+        "targets": "jpg,png"
+      },
+      "bytes": 11653767,
+      "sha256": "9eb3daa4e3d1c1614bccc4c6d136c4166960f936f17c437cc4d11a5786b2df06"
+    },
+    {
+      "id": "raw-nikon-d70.nef",
+      "family": "raw",
+      "class": "nikon",
+      "set": "pixls",
+      "description": "Nikon D70, NEF (12-bit, 6 MP)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Nikon/D70/20170902_0047.NEF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "nef",
+        "targets": "jpg,png"
+      },
+      "bytes": 5488179,
+      "sha256": "dd6405aeb33b0cd5bf66c98ba98ccbb478a765450cfd130810e470dab8d1f4b4"
+    },
+    {
+      "id": "raw-olympus-epl1.orf",
+      "family": "raw",
+      "class": "olympus",
+      "set": "pixls",
+      "description": "Olympus E-PL1, ORF (12-bit)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Olympus/E-PL1/PB120976.ORF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "orf",
+        "targets": "jpg,png"
+      },
+      "bytes": 13984788,
+      "sha256": "d8895526c8215925468d503d1879b18c2e3e38140bffeba77351b9e55683aac9"
+    },
+    {
+      "id": "raw-panasonic-g1.rw2",
+      "family": "raw",
+      "class": "panasonic",
+      "set": "pixls",
+      "description": "Panasonic DMC-G1, RW2 (12-bit)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Panasonic/DMC-G1/RAW_PANASONIC_G1.RW2"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "rw2",
+        "targets": "jpg,png"
+      },
+      "bytes": 14697984,
+      "sha256": "aa3b92d6592744a889d7ea50aaf3ea55e0ec961d04c740d437d3396ca79757be"
+    },
+    {
+      "id": "raw-pentax-k5.pef",
+      "family": "raw",
+      "class": "pentax",
+      "set": "pixls",
+      "description": "Pentax K-5, PEF (12-bit compressed)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Pentax/K-5/_MAR0544.PEF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "pef",
+        "targets": "jpg,png"
+      },
+      "bytes": 18852928,
+      "sha256": "1fefefbccd73ba05c71f49b724e1f52bb343e2ac4f52f3bc93d828f5ee02cf6c"
+    },
+    {
+      "id": "raw-pentax-k5.dng",
+      "family": "raw",
+      "class": "dng",
+      "set": "pixls",
+      "description": "Pentax K-5, native DNG",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Pentax/K-5/_MAR0543.DNG"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "dng",
+        "targets": "jpg,png"
+      },
+      "bytes": 18952092,
+      "sha256": "6f6419209340d07d597ccca66dc367d64cff3308ef2694c8f90c6259f3a5c431"
+    },
+    {
+      "id": "raw-fujifilm-xe1.raf",
+      "family": "raw",
+      "class": "xtrans",
+      "set": "pixls",
+      "description": "Fujifilm X-E1, RAF (X-Trans sensor, 16 MP)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Fujifilm/X-E1/DSCF6490.RAF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "raf",
+        "targets": "jpg,png"
+      },
+      "bytes": 26146816,
+      "sha256": "0fa01fa1a674bcfa40f659225b4e66c5bedf15d2f78407ca1966dc8f38cd0e9f"
+    },
+    {
+      "id": "raw-sony-a7m2.arw",
+      "family": "raw",
+      "class": "sony",
+      "set": "pixls",
+      "description": "Sony ILCE-7M2, ARW (24 MP, daylight white balance)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Sony/ILCE-7M2/SONY%20ILCE-7M2%20daylight.arw"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "arw",
+        "targets": "jpg,png"
+      },
+      "bytes": 25165824,
+      "sha256": "891b098c6cad16f01af4cbbe229d89652008b0108ad343079a4fc688b320fa14"
+    },
+    {
+      "id": "raw-canon-g1.crw",
+      "family": "raw",
+      "class": "canon",
+      "set": "pixls",
+      "description": "Canon PowerShot G1, CRW (ciff container)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/getfile.php/2073/nice/Canon%20-%20PowerShot%20G1%20-%20RAW%20(4:3).crw"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "crw",
+        "targets": "jpg,png,avif,gif"
+      },
+      "bytes": 2300702,
+      "sha256": "f39be5acf14057ce04527fd8d0574e57ec8ed5fed082d7bfaff763075a44ee8a"
+    },
+    {
+      "id": "raw-canon-r6.cr3",
+      "family": "raw",
+      "class": "canon",
+      "set": "pixls",
+      "description": "Canon EOS R6, CR3 (ISO BMFF container)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/getfile.php/4659/nice/Canon%20-%20EOS%20R6%20-%203:2.CR3"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "cr3",
+        "targets": "jpg,png"
+      },
+      "bytes": 5273174,
+      "sha256": "74abb0a113d075ad9887a058082f40dd2a938c4813a08474d82356f11a027778"
+    },
+    {
+      "id": "raw-panasonic-lx7.rw2",
+      "family": "raw",
+      "class": "panasonic",
+      "set": "pixls",
+      "description": "Panasonic DMC-LX7, RW2 (1:1 crop)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/getfile.php/7008/nice/Panasonic%20-%20DMC-LX7%20-%201:1.RW2"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "rw2",
+        "targets": "jpg,png,avif,gif"
+      },
+      "bytes": 3249664,
+      "sha256": "d142a23aca836053ed53e9ce3cb3ed2d434541d734d71a94a6eefadcd08bd31b"
+    },
+    {
+      "id": "font-lato-regular.ttf",
+      "family": "font",
+      "class": "truetype",
+      "set": "ofl-fonts",
+      "description": "Lato Regular, hinted TrueType outlines, Latin",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/lato/Lato-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": true
+      },
+      "bytes": 656568,
+      "sha256": "d636e4683231f931eda222d588e944d082bfd3bdba02f928bee461c0f185b251"
+    },
+    {
+      "id": "font-anonymouspro-regular.ttf",
+      "family": "font",
+      "class": "truetype",
+      "set": "ofl-fonts",
+      "description": "Anonymous Pro Regular, monospaced TrueType outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/anonymouspro/AnonymousPro-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": true
+      },
+      "bytes": 158100,
+      "sha256": "46d8b9a5f4b38fc9d30f3cdd676d4c6f78a9bef949bb1a8304216cc731eb87f8"
+    },
+    {
+      "id": "font-ibmplexmono-regular.ttf",
+      "family": "font",
+      "class": "truetype",
+      "set": "ofl-fonts",
+      "description": "IBM Plex Mono Regular, monospaced TrueType outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/ibmplexmono/IBMPlexMono-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": true
+      },
+      "bytes": 135580,
+      "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46"
+    },
+    {
+      "id": "font-amiri-regular.ttf",
+      "family": "font",
+      "class": "complex",
+      "set": "ofl-fonts",
+      "description": "Amiri Regular, Arabic naskh with contextual shaping tables",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/amiri/Amiri-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": true
+      },
+      "bytes": 431116,
+      "sha256": "ab391c4147d054c48976e98322ad0eefe1427aa0e0502a12a4c75d80a70cfcd7"
+    },
+    {
+      "id": "font-notosans-var.ttf",
+      "family": "font",
+      "class": "variable",
+      "set": "ofl-fonts",
+      "description": "Noto Sans variable (width and weight axes), glyf outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/notosans/NotoSans%5Bwdth,wght%5D.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 2049096,
+      "sha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d"
+    },
+    {
+      "id": "font-jetbrainsmono-var.ttf",
+      "family": "font",
+      "class": "variable",
+      "set": "ofl-fonts",
+      "description": "JetBrains Mono variable (weight axis), programming ligatures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 187208,
+      "sha256": "48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"
+    },
+    {
+      "id": "font-sourceserif4-var.ttf",
+      "family": "font",
+      "class": "variable",
+      "set": "ofl-fonts",
+      "description": "Source Serif 4 variable (optical size and weight axes)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/sourceserif4/SourceSerif4%5Bopsz,wght%5D.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 1209508,
+      "sha256": "97b2d4da6e3cb494b5a1e66ae176914d852ccabef49e0c02c0df25f3e39aca0b"
+    },
+    {
+      "id": "font-notoserifdevanagari-var.ttf",
+      "family": "font",
+      "class": "variable",
+      "set": "ofl-fonts",
+      "description": "Noto Serif Devanagari variable, Indic conjunct and mark positioning tables",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/notoserifdevanagari/NotoSerifDevanagari%5Bwdth,wght%5D.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 757692,
+      "sha256": "1191e07bfeb062d80e252eb85b0eafdfbda1e350707a2a60628668e8f677dbbb"
+    },
+    {
+      "id": "font-zenkakugothicnew-regular.ttf",
+      "family": "font",
+      "class": "cjk",
+      "set": "ofl-fonts",
+      "description": "Zen Kaku Gothic New Regular, Japanese TrueType outlines (kana, kanji)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/zenkakugothicnew/ZenKakuGothicNew-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 2360248,
+      "sha256": "b840cd07a67d89cacca44249ae49aa99ee7640eb5ce623be8d8983d6aabac801"
+    },
+    {
+      "id": "font-mplus1p-regular.ttf",
+      "family": "font",
+      "class": "cjk",
+      "set": "ofl-fonts",
+      "description": "M PLUS 1p Regular, Japanese TrueType outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/google/fonts/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/mplus1p/MPLUS1p-Regular.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 1758688,
+      "sha256": "2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1"
+    },
+    {
+      "id": "font-notosansjp-regular.otf",
+      "family": "font",
+      "class": "cjk",
+      "set": "noto-cjk",
+      "description": "Noto Sans CJK JP Regular, CFF outlines, Japanese subset",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "otf",
+        "outlines": false
+      },
+      "bytes": 4533028,
+      "sha256": "dff723ba59d57d136764a04b9b2d03205544f7cd785a711442d6d2d085ac5073"
+    },
+    {
+      "id": "font-sourceserif4-regular.otf",
+      "family": "font",
+      "class": "cff",
+      "set": "adobe-fonts",
+      "description": "Source Serif 4 Regular, CFF outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/adobe-fonts/source-serif/80d3f8894c09c937bebfa9011247d2e1c79fd6f4/OTF/SourceSerif4-Regular.otf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "otf",
+        "outlines": true
+      },
+      "bytes": 241392,
+      "sha256": "edf160d0d584deee8a3bb2c3371b2a7624ca63580fbe02c57c1f4c91e84d8787"
+    },
+    {
+      "id": "font-sourcecodepro-regular.otf",
+      "family": "font",
+      "class": "cff",
+      "set": "adobe-fonts",
+      "description": "Source Code Pro Regular, CFF outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/adobe-fonts/source-code-pro/803b7e23ec97ae58b6232ea76519a76d428ba268/OTF/SourceCodePro-Regular.otf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "otf",
+        "outlines": true
+      },
+      "bytes": 131128,
+      "sha256": "9f9664e2edf6f045c11e774f9bd0be6993971f2544a39061a5ce478b96b051f8"
+    },
+    {
+      "id": "font-sourcesans3-regular.otf",
+      "family": "font",
+      "class": "cff",
+      "set": "adobe-fonts",
+      "description": "Source Sans 3 Regular, CFF outlines",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/adobe-fonts/source-sans/87b37a2daaed80fcb8e8ccb0085c4d72ddade12e/OTF/SourceSans3-Regular.otf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "otf",
+        "outlines": true
+      },
+      "bytes": 334924,
+      "sha256": "08df266400933d3178d081a45f94a08814c3e55b4b7dd2e0ff69cb1329f13ab6"
+    },
+    {
+      "id": "font-notocoloremoji-colrv1.ttf",
+      "family": "font",
+      "class": "colour",
+      "set": "noto-emoji",
+      "description": "Noto Color Emoji, COLR version 1 and CPAL colour tables (no flags)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/2D/fonts/Noto-COLRv1-noflags.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 3038756,
+      "sha256": "741815c198323b067670a1cfe6660ad8463ffcb8733314af30868eab9c4eb18b"
+    },
+    {
+      "id": "font-notocoloremoji-flags.ttf",
+      "family": "font",
+      "class": "colour",
+      "set": "noto-emoji",
+      "description": "Noto Color Emoji flags, CBDT and CBLC colour bitmap tables",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/googlefonts/noto-emoji/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/2D/fonts/NotoColorEmoji-flagsonly.ttf"
+      },
+      "licence": "OFL-1.1",
+      "meta": {
+        "sfnt": "ttf",
+        "outlines": false
+      },
+      "bytes": 872100,
+      "sha256": "6d3b266ee9631119cd6fea9eea7ea2226874a441532e18908c5b839322f3c5dd"
+    },
+    {
+      "id": "data-airport-codes.csv",
+      "family": "data",
+      "class": "tall",
+      "set": "frictionless-datasets",
+      "description": "Airport codes of the world, 57,000 rows with empty cells, accented names and numeric strings",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/datasets/airport-codes/817ed4bf8303371e7e27a3e1f987fe97036419e2/data/airport-codes.csv"
+      },
+      "licence": "ODC-PDDL-1.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": false
+      },
+      "bytes": 8819037,
+      "sha256": "b0175c535740ffdacee336dcc476d6cbbe5a38dd2f1e17c37a2dacb6a27de7a4"
+    },
+    {
+      "id": "data-sp500-constituents.csv",
+      "family": "data",
+      "class": "mixed",
+      "set": "frictionless-datasets",
+      "description": "S&P 500 constituents with dates and CIK numbers that start with zeros",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/36472b57910842f4025e8ca8303b93a692d2bbae/data/constituents.csv"
+      },
+      "licence": "ODC-PDDL-1.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 53632,
+      "sha256": "a8045f043ea7e68d4254a07470a5e95ca5759ded4656657eac514162e6e82e06"
+    },
+    {
+      "id": "data-world-cities.csv",
+      "family": "data",
+      "class": "unicode",
+      "set": "frictionless-datasets",
+      "description": "World cities with names in many scripts and empty subcountry cells",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/datasets/world-cities/9aed79dc1401599172fe61a8b9a1bdea414acb49/data/world-cities.csv"
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 1335139,
+      "sha256": "2dd022b636b2edf3226e4d52065d9f2f10c1373e1865f50e91518510a2ead9a3"
+    },
+    {
+      "id": "data-gdp.csv",
+      "family": "data",
+      "class": "numeric",
+      "set": "frictionless-datasets",
+      "description": "Gross domestic product by country and year, long numeric table",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/datasets/gdp/36d761dc5617982d3e50b213e02b9a1b47c4e958/data/gdp.csv"
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 562767,
+      "sha256": "8d84ef6bcaccf740c01c5ed7566aae8f7b149d0e2c20001e441efd3cb5b2fa86"
+    },
+    {
+      "id": "data-penguins.json",
+      "family": "data",
+      "class": "nulls",
+      "set": "vega-datasets",
+      "description": "Palmer penguins measurements as a JSON array with null measurements",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/vega/vega-datasets/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/data/penguins.json"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "json"
+      },
+      "bytes": 67119,
+      "sha256": "0facf769609f1205b82cbceb8238c36af3e6147a0ca0e163902cc6281ce3e917"
+    },
+    {
+      "id": "data-gapminder.json",
+      "family": "data",
+      "class": "numeric",
+      "set": "vega-datasets",
+      "description": "Gapminder life expectancy, fertility and population as a JSON array",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/vega/vega-datasets/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/data/gapminder.json"
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "format": "json"
+      },
+      "bytes": 75201,
+      "sha256": "70630efd862153116c1518a098a5a3bc4ca8c9f037306f86fba282a2720909b9"
+    },
+    {
+      "id": "data-budget.json",
+      "family": "data",
+      "class": "wide",
+      "set": "vega-datasets",
+      "description": "US federal budget receipts as a JSON array with long text fields",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/vega/vega-datasets/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/data/budget.json"
+      },
+      "licence": "LicenseRef-US-Government-public-domain",
+      "meta": {
+        "format": "json"
+      },
+      "bytes": 391353,
+      "sha256": "13eeecc0993fc767df37eac8e151522a5bdaee78adcd3e7e37fe10c9ca71ea96"
+    },
+    {
+      "id": "data-weather.csv",
+      "family": "data",
+      "class": "mixed",
+      "set": "vega-datasets",
+      "description": "NOAA daily weather with dates, floats and station names",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/vega/vega-datasets/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/data/weather.csv"
+      },
+      "licence": "LicenseRef-US-Government-public-domain",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 121417,
+      "sha256": "27219f1ca8dbd94c9b6f4b9f4f52ab2f1eb33dfdcf719cd9fc6481ed50b74549"
+    },
+    {
+      "id": "data-delta-binary-packed.csv",
+      "family": "data",
+      "class": "wide",
+      "set": "parquet-testing",
+      "description": "Expected values of the delta binary packed Parquet file: 66 integer columns",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/delta_binary_packed_expect.csv"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 159803,
+      "sha256": "9384cc177b54ca364ffdf1e4d0390acddc55f42a0e149300934c70b4946c444b"
+    },
+    {
+      "id": "data-delta-byte-array.csv",
+      "family": "data",
+      "class": "strings",
+      "set": "parquet-testing",
+      "description": "Expected values of the delta byte array Parquet file: customer strings with empty cells",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/delta_byte_array_expect.csv"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "csv",
+        "xlsx": true
+      },
+      "bytes": 98369,
+      "sha256": "2c53dd42a37deb70f23e8463e4293a05bbe06200f55d84b346bc9c0e4ad48b85"
+    },
+    {
+      "id": "data-delta-binary-packed.parquet",
+      "family": "data",
+      "class": "wide",
+      "set": "parquet-testing",
+      "description": "Parquet with delta binary packed integers, 66 columns",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/delta_binary_packed.parquet"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "parquet",
+        "truth": "data-delta-binary-packed.csv"
+      },
+      "bytes": 72971,
+      "sha256": "d1c2173fe97255959e3d087b3fa5b7b5c27b2aac135337b2896772d7bbdc31b4"
+    },
+    {
+      "id": "data-delta-byte-array.parquet",
+      "family": "data",
+      "class": "strings",
+      "set": "parquet-testing",
+      "description": "Parquet with delta byte array strings and nulls",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/delta_byte_array.parquet"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "parquet",
+        "truth": "data-delta-byte-array.csv"
+      },
+      "bytes": 68353,
+      "sha256": "a400b789aef5cde88551f25cdd9bba8f0ff0fe01c48ddc5303c26edf119ee279"
+    },
+    {
+      "id": "data-alltypes-tiny-pages.parquet",
+      "family": "data",
+      "class": "types",
+      "set": "parquet-testing",
+      "description": "Parquet with every flat physical type in tiny data pages",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/alltypes_tiny_pages.parquet"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "parquet",
+        "truth": "parquet"
+      },
+      "bytes": 454233,
+      "sha256": "f7a7678a53bfdb434d9a51f7f42a71365eae807b3f8e16bfcad67cd623748228"
+    },
+    {
+      "id": "data-lz4-raw-larger.parquet",
+      "family": "data",
+      "class": "codecs",
+      "set": "parquet-testing",
+      "description": "Parquet with LZ4_RAW compressed pages, 10,000 rows",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/lz4_raw_compressed_larger.parquet"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "parquet",
+        "truth": "parquet"
+      },
+      "bytes": 380836,
+      "sha256": "2c65cd301a9d8b4b4ff408089113ed5a91a99aaeb70ecf587018f3c4f6c1d01e"
+    },
+    {
+      "id": "data-byte-stream-split.parquet",
+      "family": "data",
+      "class": "codecs",
+      "set": "parquet-testing",
+      "description": "Parquet with byte stream split floats and gzip pages",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/parquet-testing/56653c437c8092f704a092d0d1d4e600124cd49f/data/byte_stream_split_extended.gzip.parquet"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "parquet",
+        "truth": "parquet"
+      },
+      "bytes": 15659,
+      "sha256": "86a96259c2c82e50aa2826b91d6de9514e538235343eed9c2a98318424b46cd8"
+    },
+    {
+      "id": "data-gsm8k-test.jsonl",
+      "family": "data",
+      "class": "text",
+      "set": "openai-gsm8k",
+      "description": "Grade school math test questions and answers: line breaks, quotes, dollar signs and typographic characters inside strings",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/openai/grade-school-math/3101c7d5072418e28b9008a6636bde82a006892c/grade_school_math/data/test.jsonl"
+      },
+      "licence": "MIT",
+      "meta": {
+        "format": "jsonl"
+      },
+      "bytes": 749738,
+      "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14"
+    },
+    {
+      "id": "cad-openscad-export.dxf",
+      "family": "cad",
+      "class": "basic",
+      "set": "dxf-libraries",
+      "description": "OpenSCAD export, DXF R12 (AC1009), 452 line segments",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/openscad_export.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1009"
+      },
+      "bytes": 28956,
+      "sha256": "dfe3b732026b655dc89ad2b985944ccd96d4ab7429f2adb1ccc7df36c8686364"
+    },
+    {
+      "id": "cad-lines.dxf",
+      "family": "cad",
+      "class": "basic",
+      "set": "dxf-libraries",
+      "description": "LINE entities with colours and linetypes, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/lines.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 17195,
+      "sha256": "052d8246dcf762c4100a4df8a68bed1964da5d1ee087a86af9996c7b6c6e6a30"
+    },
+    {
+      "id": "cad-lwpolylines.dxf",
+      "family": "cad",
+      "class": "basic",
+      "set": "dxf-libraries",
+      "description": "Closed and open lightweight polylines with bulges, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/lwpolylines.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 16235,
+      "sha256": "cbc8fbf3016fd7b580f3a077092c63d1903728111f283e9907c774ce94e7a3e4"
+    },
+    {
+      "id": "cad-polylines.dxf",
+      "family": "cad",
+      "class": "basic",
+      "set": "dxf-libraries",
+      "description": "Heavy POLYLINE entities with vertex and SEQEND records, DXF 2004 (AC1018)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/polylines.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1018"
+      },
+      "bytes": 167837,
+      "sha256": "af6d2781d7961e531c34e27c7d0f8a4c4b885e579cdcbcd5e5a41766074851a0"
+    },
+    {
+      "id": "cad-splines.dxf",
+      "family": "cad",
+      "class": "curves",
+      "set": "dxf-libraries",
+      "description": "SPLINE entities with fit and control points, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/splines.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 16576,
+      "sha256": "9f672526c3e6b35c60ed958650a5c35fe3ee4f8df76d1f8b25b31f2f6d293406"
+    },
+    {
+      "id": "cad-circles-ellipses-arcs.dxf",
+      "family": "cad",
+      "class": "curves",
+      "set": "dxf-libraries",
+      "description": "CIRCLE, ARC and ELLIPSE entities, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/circlesellipsesarcs.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 16650,
+      "sha256": "0580d6ae3df2afe8f35e57970fa0d4556450cf4b17d519b6b7380814ae49ce78"
+    },
+    {
+      "id": "cad-elliptical-arcs.dxf",
+      "family": "cad",
+      "class": "curves",
+      "set": "dxf-libraries",
+      "description": "Nine partial ellipses with rotated major axes, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/ellipticalarcs.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 17395,
+      "sha256": "eff79f24ba4c8ac1ccfa1d82d0cdd42c5e9b2b027d275f1704248accf422acbf"
+    },
+    {
+      "id": "cad-blocks.dxf",
+      "family": "cad",
+      "class": "blocks",
+      "set": "dxf-libraries",
+      "description": "Block definitions with lines, polylines and MTEXT inserted with scale and rotation, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/blocks2.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 20507,
+      "sha256": "5d847d833dd444fbe8a85def5881a4f9055e47d06c41ca009c9e40784e92f91f"
+    },
+    {
+      "id": "cad-entities.dxf",
+      "family": "cad",
+      "class": "architecture",
+      "set": "dxf-libraries",
+      "description": "Sheet of 29 inserted title blocks with MTEXT and polylines, DXF 2010 (AC1024)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/entities.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1024"
+      },
+      "bytes": 194947,
+      "sha256": "fa0b296dc6c060ce8d79c61dd6461c9e1523a15ae33cdc650175ee8b9270d1d8"
+    },
+    {
+      "id": "cad-floorplan.dxf",
+      "family": "cad",
+      "class": "architecture",
+      "set": "dxf-libraries",
+      "description": "Architectural floor plan with 624 lines, dimensions, hatches and text, DXF 2004 (AC1018)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/bjnortier/dxf/cb571d1d7631dd0daaf923a256d75ef0917ff806/test/resources/floorplan.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1018"
+      },
+      "bytes": 1117143,
+      "sha256": "6d761ecb1ab59664425eb1dcc6837a12611536c8e03e3f7855951a76786d159c"
+    },
+    {
+      "id": "cad-insert-bricscad.dxf",
+      "family": "cad",
+      "class": "blocks",
+      "set": "ezdxf-examples",
+      "description": "Nested block inserts with attributes written by BricsCAD, DXF 2013 (AC1027)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozman/ezdxf/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/examples_dxf/insert_bricscad_level_1.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1027"
+      },
+      "bytes": 91914,
+      "sha256": "c2597f95c007852db2ba82dedd9558f9318981115dda82fccfc0267ca60e5a56"
+    },
+    {
+      "id": "cad-text-alignments.dxf",
+      "family": "cad",
+      "class": "text",
+      "set": "ezdxf-examples",
+      "description": "TEXT entities in all 15 alignments with their anchor circles, DXF 2004 (AC1018)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozman/ezdxf/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/examples_dxf/text_alignments.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1018"
+      },
+      "bytes": 21536,
+      "sha256": "cacf3083c17c8d3836c23c6356edcb6f70db2949ed61875c2572911719a61353"
+    },
+    {
+      "id": "cad-text-fonts.dxf",
+      "family": "cad",
+      "class": "text",
+      "set": "ezdxf-examples",
+      "description": "384 TEXT entities in many fonts and styles, DXF 2013 (AC1027)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozman/ezdxf/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/examples_dxf/text_fonts.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1027"
+      },
+      "bytes": 301744,
+      "sha256": "c69dbb759042ebdb3e23047e61f4053cfcd48d210ca846490d3c3ffc64d56ea1"
+    },
+    {
+      "id": "cad-columns-r2007.dxf",
+      "family": "cad",
+      "class": "text",
+      "set": "ezdxf-examples",
+      "description": "MTEXT with columns and frames, DXF 2007 (AC1021)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozman/ezdxf/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/examples_dxf/columns_R2007.dxf"
+      },
+      "licence": "MIT",
+      "meta": {
+        "version": "AC1021"
+      },
+      "bytes": 195808,
+      "sha256": "31d4d411982821a3db75854f90108e15f867ecdd619d526fb3c9bd761b92095c"
+    },
+    {
+      "id": "vec-path-M-C-S.svg",
+      "family": "vector",
+      "class": "shapes",
+      "set": "resvg-tests",
+      "description": "resvg test shapes/path/M-C-S: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/path/M-C-S.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 348,
+      "sha256": "83342ecc875030cedd67bb651ba97893e4693889a1ed085c54c393789fcb3840",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/path/M-C-S.png"
+          },
+          "bytes": 2032,
+          "sha256": "b41c5e3b493f31c6a72a91e1a7257327193f328c19663b6caf190581cc9122cb"
+        }
+      ]
+    },
+    {
+      "id": "vec-path-M-A.svg",
+      "family": "vector",
+      "class": "shapes",
+      "set": "resvg-tests",
+      "description": "resvg test shapes/path/M-A: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/path/M-A.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 329,
+      "sha256": "de631a773ed9952ef721425f1c2c2fef13aa9669cf281e43aa83b3c08e5342a7",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/path/M-A.png"
+          },
+          "bytes": 1678,
+          "sha256": "99dc57ee6cf7568e22cb7ce2c0b4108ad4ef123474317d7b8b318972e9a64ffc"
+        }
+      ]
+    },
+    {
+      "id": "vec-rect-mm-values.svg",
+      "family": "vector",
+      "class": "shapes",
+      "set": "resvg-tests",
+      "description": "resvg test shapes/rect/mm-values: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/rect/mm-values.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 313,
+      "sha256": "7d0714b3a806478aef012053ff44ca3178c869f8442f368b18b1742cff8e7f34",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/rect/mm-values.png"
+          },
+          "bytes": 1110,
+          "sha256": "79dc040d9402aca00b5ce2959ee7c2275e989902dbd3b3435cca5b5a667d569c"
+        }
+      ]
+    },
+    {
+      "id": "vec-rect-negative-rx-and-ry-attributes-resolving.svg",
+      "family": "vector",
+      "class": "shapes",
+      "set": "resvg-tests",
+      "description": "resvg test shapes/rect/negative-rx-and-ry-attributes-resolving: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/rect/negative-rx-and-ry-attributes-resolving.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 512,
+      "sha256": "a354eb20256bcda3a44b444d377dbe0e9d3dd02c5bb9768e469a5ca09b854d9e",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/shapes/rect/negative-rx-and-ry-attributes-resolving.png"
+          },
+          "bytes": 348,
+          "sha256": "5137bb82421031c4b1a73ab07cf13598070af22c51474c1711935028a6ce584f"
+        }
+      ]
+    },
+    {
+      "id": "vec-stroke-linejoin-miter.svg",
+      "family": "vector",
+      "class": "strokes",
+      "set": "resvg-tests",
+      "description": "resvg test painting/stroke-linejoin/miter: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-linejoin/miter.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 381,
+      "sha256": "d5fe8610fd9d0a45d4737a1a7923d4d0634c020b2f78b42ab96c40f62ec98473",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-linejoin/miter.png"
+          },
+          "bytes": 1601,
+          "sha256": "6866b23e850525505212e80c19298eb2f3ab357db857dcaef504d47593239e06"
+        }
+      ]
+    },
+    {
+      "id": "vec-stroke-linejoin-round.svg",
+      "family": "vector",
+      "class": "strokes",
+      "set": "resvg-tests",
+      "description": "resvg test painting/stroke-linejoin/round: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-linejoin/round.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 381,
+      "sha256": "3b761d48e7177085bd4358cdfa6d5be7fa316112ec4fd1bb62276db0e9db78df",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-linejoin/round.png"
+          },
+          "bytes": 1602,
+          "sha256": "ab68e34323c077c8e152cf9a1f013328890170abfb6b072067e29aff9edd3b40"
+        }
+      ]
+    },
+    {
+      "id": "vec-stroke-dasharray-odd-count.svg",
+      "family": "vector",
+      "class": "strokes",
+      "set": "resvg-tests",
+      "description": "resvg test painting/stroke-dasharray/odd-count: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-dasharray/odd-count.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 360,
+      "sha256": "f4fa5d59e08d7b97598e8c5666cb4afe6dcec355367d8eec31335d632dce7664",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-dasharray/odd-count.png"
+          },
+          "bytes": 2239,
+          "sha256": "2cec5c553c777258c184382ede964eec93c1934d3825c25502be27843a9a6199"
+        }
+      ]
+    },
+    {
+      "id": "vec-stroke-dasharray-on-a-circle.svg",
+      "family": "vector",
+      "class": "strokes",
+      "set": "resvg-tests",
+      "description": "resvg test painting/stroke-dasharray/on-a-circle: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-dasharray/on-a-circle.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 421,
+      "sha256": "8a51c99a39994873b9b521a9870669447f89d52eae10bac2c9dea90d89be4847",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/stroke-dasharray/on-a-circle.png"
+          },
+          "bytes": 1814,
+          "sha256": "7c196a74f342390d6a9bd4d4dcf84d39e0b8aacfb11a061186ac750819013d02"
+        }
+      ]
+    },
+    {
+      "id": "vec-marker-nested.svg",
+      "family": "vector",
+      "class": "markers",
+      "set": "resvg-tests",
+      "description": "resvg test painting/marker/nested: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/nested.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 879,
+      "sha256": "d60279502463a7354584bc56597211228521dba22acb6ef3704abefaa3d33f7d",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/nested.png"
+          },
+          "bytes": 3398,
+          "sha256": "fe0d010ec48eeec3af2728ce52e8e2c11768c039d0abca3876a96b1d112015a1"
+        }
+      ]
+    },
+    {
+      "id": "vec-marker-on-ArcTo.svg",
+      "family": "vector",
+      "class": "markers",
+      "set": "resvg-tests",
+      "description": "resvg test painting/marker/on-ArcTo: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/on-ArcTo.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 592,
+      "sha256": "64af39616996e73ece542b53da3dae862bd27f2be800e7421af9bacf3ad1ac6e",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/on-ArcTo.png"
+          },
+          "bytes": 1951,
+          "sha256": "5f0bf846e816ac97f9fb681f625b7274ea6566df3263549c86ab815bd4c465f0"
+        }
+      ]
+    },
+    {
+      "id": "vec-marker-inheritance-1.svg",
+      "family": "vector",
+      "class": "markers",
+      "set": "resvg-tests",
+      "description": "resvg test painting/marker/inheritance-1: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/inheritance-1.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 608,
+      "sha256": "e9e9488b30ba8bad9ada2bb8c4d6222d80e786672dbf1bcfaaeb0493af7f2475",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/marker/inheritance-1.png"
+          },
+          "bytes": 3039,
+          "sha256": "2e119283217edc86ae0905eaed530e40ecb5e4b26e12fda75cd906b7c8411438"
+        }
+      ]
+    },
+    {
+      "id": "vec-linearGradient-gradientTransform.svg",
+      "family": "vector",
+      "class": "gradients",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/linearGradient/gradientTransform: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/linearGradient/gradientTransform.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 494,
+      "sha256": "9dac29457a15f4c47fa255dad0e17ff281b5830fae086296c349343965fb2286",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/linearGradient/gradientTransform.png"
+          },
+          "bytes": 1906,
+          "sha256": "b53954d53b8e0d80fd7cf2e7116978f22c58441eafb9a2e144f087fa0febf36a"
+        }
+      ]
+    },
+    {
+      "id": "vec-linearGradient-default-attributes.svg",
+      "family": "vector",
+      "class": "gradients",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/linearGradient/default-attributes: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/linearGradient/default-attributes.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 456,
+      "sha256": "cd708a7c8acb93a426a02067a748ce95e43dcbdf399c7e3568ab8f51661a5417",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/linearGradient/default-attributes.png"
+          },
+          "bytes": 669,
+          "sha256": "551297199ab1b875d24d35e0028978f4bad42eef96fe94a1b2737909073fa3a7"
+        }
+      ]
+    },
+    {
+      "id": "vec-radialGradient-fr-0.5.svg",
+      "family": "vector",
+      "class": "gradients",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/radialGradient/fr=0.5: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/radialGradient/fr=0.5.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 466,
+      "sha256": "482cc8a682d34c9fc40000a5b235c401c7c0ef3e344dc01c94ca3a518f8c9899",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/radialGradient/fr=0.5.png"
+          },
+          "bytes": 2061,
+          "sha256": "7257c517be507b914a7e16bb82104998859ebfe0b05b55ed4e805ed93a736bb4"
+        }
+      ]
+    },
+    {
+      "id": "vec-radialGradient-focal-point-correction.svg",
+      "family": "vector",
+      "class": "gradients",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/radialGradient/focal-point-correction: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/radialGradient/focal-point-correction.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 788,
+      "sha256": "fffc695a5f20ac548031d2b8b709fe35ba36d105a6fd6c9d04bbf9c7725303b7",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/radialGradient/focal-point-correction.png"
+          },
+          "bytes": 2153,
+          "sha256": "b64f79198de9f53832d24edecab7a24f276263ea6aa519f5a99748fb6c8396db"
+        }
+      ]
+    },
+    {
+      "id": "vec-pattern-overflow-visible.svg",
+      "family": "vector",
+      "class": "patterns",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/pattern/overflow=visible: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/pattern/overflow=visible.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 659,
+      "sha256": "d8fafc2364f6ed52179ebe113fc06427aea7b019240e87e65aa7c1f94cc6aeb7",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/pattern/overflow=visible.png"
+          },
+          "bytes": 1599,
+          "sha256": "4f702a15b0a4774c7e10f34f620d665e67be11a547c648fb6792dcb66803541c"
+        }
+      ]
+    },
+    {
+      "id": "vec-pattern-nested-objectBoundingBox.svg",
+      "family": "vector",
+      "class": "patterns",
+      "set": "resvg-tests",
+      "description": "resvg test paint-servers/pattern/nested-objectBoundingBox: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/pattern/nested-objectBoundingBox.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 825,
+      "sha256": "4d356e0e4276690eabf4df4030a9540f609bfdd07df11a66fbca6b8df7d94d6f",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/paint-servers/pattern/nested-objectBoundingBox.png"
+          },
+          "bytes": 1601,
+          "sha256": "a58761701353b482220a2e33127ff214b026a0f4738c28eb14a61d5f3207b4d8"
+        }
+      ]
+    },
+    {
+      "id": "vec-clipPath-clip-path-on-children.svg",
+      "family": "vector",
+      "class": "masking",
+      "set": "resvg-tests",
+      "description": "resvg test masking/clipPath/clip-path-on-children: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/clipPath/clip-path-on-children.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 761,
+      "sha256": "157dbda906001c5834fb1e602b6d7d2a31e2190b6bdd299029c75dc845859ddf",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/clipPath/clip-path-on-children.png"
+          },
+          "bytes": 2482,
+          "sha256": "ef132287d2687247a0b94d711b06f06a4cebd2df6c6ab21e0de1dd3f978e1bf1"
+        }
+      ]
+    },
+    {
+      "id": "vec-clipPath-clip-rule-evenodd.svg",
+      "family": "vector",
+      "class": "masking",
+      "set": "resvg-tests",
+      "description": "resvg test masking/clipPath/clip-rule=evenodd: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/clipPath/clip-rule=evenodd.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 486,
+      "sha256": "bfee28a6407ee4cbd283a30288697f9ca968cb961ecbb78c4ea916b9dfcea828",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/clipPath/clip-rule=evenodd.png"
+          },
+          "bytes": 2869,
+          "sha256": "5b08f3136d6535d01f3258a7c18a8cf9bc2a2eef360644ee3dfd2b40d0f04297"
+        }
+      ]
+    },
+    {
+      "id": "vec-mask-mask-on-self.svg",
+      "family": "vector",
+      "class": "masking",
+      "set": "resvg-tests",
+      "description": "resvg test masking/mask/mask-on-self: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/mask/mask-on-self.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 593,
+      "sha256": "e972e51ff3c547ae136b2554cdf77cff09790095a9307fb86c483622d6d49d9d",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/mask/mask-on-self.png"
+          },
+          "bytes": 348,
+          "sha256": "a7b3cee00e8c7ff24838d23e53c87465ed60df39668c3857e441a967cc91775f"
+        }
+      ]
+    },
+    {
+      "id": "vec-mask-mask-type-alpha.svg",
+      "family": "vector",
+      "class": "masking",
+      "set": "resvg-tests",
+      "description": "resvg test masking/mask/mask-type=alpha: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/mask/mask-type=alpha.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 625,
+      "sha256": "63812fe9d70621284b3117cdde2a5f39b582e8b009db73669b303a8b88adfe72",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/masking/mask/mask-type=alpha.png"
+          },
+          "bytes": 1512,
+          "sha256": "fb92e3fdd33f08d6cf64bedf8e43ad33c48959f4375a7f947ad8beb0b1c410bf"
+        }
+      ]
+    },
+    {
+      "id": "vec-feGaussianBlur-simple-case.svg",
+      "family": "vector",
+      "class": "filters",
+      "set": "resvg-tests",
+      "description": "resvg test filters/feGaussianBlur/simple-case: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/feGaussianBlur/simple-case.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 409,
+      "sha256": "95468e1dff6e43bc0dd702796cc0b4c5242e2fa46a0909ff7fe7a20416fd1f19",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/feGaussianBlur/simple-case.png"
+          },
+          "bytes": 6225,
+          "sha256": "11f993cace731a4b44ec755cd6522d997efde0f16d7c7030aafd6176325385e4"
+        }
+      ]
+    },
+    {
+      "id": "vec-feDropShadow-with-offset.svg",
+      "family": "vector",
+      "class": "filters",
+      "set": "resvg-tests",
+      "description": "resvg test filters/feDropShadow/with-offset: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/feDropShadow/with-offset.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 487,
+      "sha256": "52ae121fdc6257468dae9b0b3f825c7a5cc2e1046677ea730ca752eb65a1b323",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/feDropShadow/with-offset.png"
+          },
+          "bytes": 8038,
+          "sha256": "e1674442e17d293edfa2debfa2211bcfb5e929a63b0214d2452eed98658d1302"
+        }
+      ]
+    },
+    {
+      "id": "vec-filter-functions-blur-function.svg",
+      "family": "vector",
+      "class": "filters",
+      "set": "resvg-tests",
+      "description": "resvg test filters/filter-functions/blur-function: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/filter-functions/blur-function.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 332,
+      "sha256": "a8177431c561ac34f44da4d587eba4c2789781962f85a33adf1918e0d434014b",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/filters/filter-functions/blur-function.png"
+          },
+          "bytes": 6311,
+          "sha256": "691a35ac9be32c0c6208133558f46edea9bee2ff166ce9337e0d48c840cf1a8b"
+        }
+      ]
+    },
+    {
+      "id": "vec-use-from-defs.svg",
+      "family": "vector",
+      "class": "structure",
+      "set": "resvg-tests",
+      "description": "resvg test structure/use/from-defs: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/use/from-defs.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 427,
+      "sha256": "dd97872db6eadd0ad8711eab6dc5d2368e2a1d120afda551ba56f804eb913dca",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/use/from-defs.png"
+          },
+          "bytes": 348,
+          "sha256": "5137bb82421031c4b1a73ab07cf13598070af22c51474c1711935028a6ce584f"
+        }
+      ]
+    },
+    {
+      "id": "vec-symbol-simple-case.svg",
+      "family": "vector",
+      "class": "structure",
+      "set": "resvg-tests",
+      "description": "resvg test structure/symbol/simple-case: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/symbol/simple-case.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 435,
+      "sha256": "a6cd13cb63132b2ce1142d30aa6724bc4a5a34fee6b384669d7c9fa5040d5726",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/symbol/simple-case.png"
+          },
+          "bytes": 348,
+          "sha256": "5137bb82421031c4b1a73ab07cf13598070af22c51474c1711935028a6ce584f"
+        }
+      ]
+    },
+    {
+      "id": "vec-style-class-selector.svg",
+      "family": "vector",
+      "class": "structure",
+      "set": "resvg-tests",
+      "description": "resvg test structure/style/class-selector: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/style/class-selector.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 369,
+      "sha256": "a20748d3f27d4181eb004d4069b8f20154849e760d7bd65c7b4316f0fbe3aa1f",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/style/class-selector.png"
+          },
+          "bytes": 348,
+          "sha256": "5137bb82421031c4b1a73ab07cf13598070af22c51474c1711935028a6ce584f"
+        }
+      ]
+    },
+    {
+      "id": "vec-image-embedded-png.svg",
+      "family": "vector",
+      "class": "images",
+      "set": "resvg-tests",
+      "description": "resvg test structure/image/embedded-png: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/image/embedded-png.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 4350,
+      "sha256": "abb62267d5367f53962aef841fd2a8635db12e92635ba0f4c67c6271b29937ae",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/image/embedded-png.png"
+          },
+          "bytes": 30464,
+          "sha256": "085cc9454c31a9f764870f3dc20cf7353ab8e439b4dc9e01e2e37dae73bf0916"
+        }
+      ]
+    },
+    {
+      "id": "vec-image-embedded-svg.svg",
+      "family": "vector",
+      "class": "images",
+      "set": "resvg-tests",
+      "description": "resvg test structure/image/embedded-svg: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/image/embedded-svg.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 5403,
+      "sha256": "71c025f83d74e8aa0b83fad3d1dfe366073da6428b86bd18b69712deb394f696",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/structure/image/embedded-svg.png"
+          },
+          "bytes": 5495,
+          "sha256": "80090c8d3e951b929e352dc2a89e630fe31c5492f30cfae5f42c23c56b65e6da"
+        }
+      ]
+    },
+    {
+      "id": "vec-mix-blend-mode-multiply.svg",
+      "family": "vector",
+      "class": "blend",
+      "set": "resvg-tests",
+      "description": "resvg test painting/mix-blend-mode/multiply: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/mix-blend-mode/multiply.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 591,
+      "sha256": "850fda73631517dc90f6161ddbe00e6688f95aebd7c3ce0be2156b4e4019a5e8",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/mix-blend-mode/multiply.png"
+          },
+          "bytes": 1417,
+          "sha256": "ef969a1fc8af80db7d9ad1f40a13b505d2397f6041074596f62c2ee24ea9ef8f"
+        }
+      ]
+    },
+    {
+      "id": "vec-fill-rule-evenodd.svg",
+      "family": "vector",
+      "class": "shapes",
+      "set": "resvg-tests",
+      "description": "resvg test painting/fill-rule/evenodd: 200 by 200 SVG with the reference picture of the test suite",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/fill-rule/evenodd.svg"
+      },
+      "licence": "Apache-2.0 OR MIT",
+      "meta": {
+        "width": 200,
+        "height": 200
+      },
+      "bytes": 344,
+      "sha256": "8b49835c2f6f3efb06e8d94b8f0be3280745eadceb2e2956d43524a2a7ecd8b8",
+      "companions": [
+        {
+          "role": "truth",
+          "origin": {
+            "kind": "file",
+            "url": "https://raw.githubusercontent.com/linebender/resvg/77b12f4951a7b75d759c42e8c9497cff7c839c3c/crates/resvg/tests/tests/painting/fill-rule/evenodd.png"
+          },
+          "bytes": 2877,
+          "sha256": "5e23920d8396ef8a7ddf6a30a1b57be885d5aaa0f90f7fa953065a11d8a0807e"
+        }
+      ]
+    },
+    {
+      "id": "book-pg11.epub",
+      "family": "ebook",
+      "class": "illustrated",
+      "set": "gutenberg",
+      "description": "Alice's Adventures in Wonderland, Project Gutenberg EPUB with images and a linked table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 187950,
+      "sha256": "e332bfce56f79897138d73e7b698dc59bd073d932acb87897606aa7b5df96dac"
+    },
+    {
+      "id": "book-pg1661.epub",
+      "family": "ebook",
+      "class": "illustrated",
+      "set": "gutenberg",
+      "description": "The Adventures of Sherlock Holmes, Project Gutenberg EPUB with images and a linked table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 378476,
+      "sha256": "f441042ace4506f5921318b5ee3deaf52169a59be31f0629b9082e27f8bba3f1"
+    },
+    {
+      "id": "book-pg84.epub",
+      "family": "ebook",
+      "class": "novel",
+      "set": "gutenberg",
+      "description": "Frankenstein, Project Gutenberg EPUB with images and a linked table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/84/pg84-images.epub"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 474012,
+      "sha256": "7ae81b2a5cdb7ac08f39429784874157accb749dfd303e384f983ef31226d8f4"
+    },
+    {
+      "id": "book-pg2701.epub",
+      "family": "ebook",
+      "class": "novel",
+      "set": "gutenberg",
+      "description": "Moby Dick, Project Gutenberg EPUB with images and a linked table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/2701/pg2701-images.epub"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 837210,
+      "sha256": "e6eae4579c8f249c37d601c70cdaf42f64159ff1862114937e6cb6217b52a16d"
+    },
+    {
+      "id": "book-pg345.epub",
+      "family": "ebook",
+      "class": "novel",
+      "set": "gutenberg",
+      "description": "Dracula, Project Gutenberg EPUB with images and a linked table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 602043,
+      "sha256": "02a852bab9d8464f93fc253925646e847dcc334012a289ab57ecd5df27c3003e"
+    },
+    {
+      "id": "book-pg11.mobi",
+      "family": "ebook",
+      "class": "illustrated",
+      "set": "gutenberg",
+      "description": "Alice's Adventures in Wonderland, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.mobi"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "mobi"
+      },
+      "bytes": 241000,
+      "sha256": "1b4222ffdf1862a39d0fae6d42c588f28a34c12ad73cc21c2849fe2646cac3e1",
+      "companions": [
+        {
+          "role": "text",
+          "origin": {
+            "kind": "file",
+            "url": "https://www.gutenberg.org/cache/epub/11/pg11-images.epub"
+          },
+          "bytes": 187950,
+          "sha256": "e332bfce56f79897138d73e7b698dc59bd073d932acb87897606aa7b5df96dac"
+        }
+      ]
+    },
+    {
+      "id": "book-pg1661.mobi",
+      "family": "ebook",
+      "class": "illustrated",
+      "set": "gutenberg",
+      "description": "The Adventures of Sherlock Holmes, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.mobi"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "mobi"
+      },
+      "bytes": 529430,
+      "sha256": "a374b1c7ccd719d6d4d557ee8fcce694f09ed26bc82e2b9a830dba884c994b53",
+      "companions": [
+        {
+          "role": "text",
+          "origin": {
+            "kind": "file",
+            "url": "https://www.gutenberg.org/cache/epub/1661/pg1661-images.epub"
+          },
+          "bytes": 378476,
+          "sha256": "f441042ace4506f5921318b5ee3deaf52169a59be31f0629b9082e27f8bba3f1"
+        }
+      ]
+    },
+    {
+      "id": "book-pg345.mobi",
+      "family": "ebook",
+      "class": "novel",
+      "set": "gutenberg",
+      "description": "Dracula, Project Gutenberg Kindle file with images; its text truth is the EPUB of the same book",
+      "origin": {
+        "kind": "file",
+        "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.mobi"
+      },
+      "licence": "LicenseRef-Project-Gutenberg",
+      "meta": {
+        "format": "mobi"
+      },
+      "bytes": 774463,
+      "sha256": "84bd1163151294df61dd57c34b6faf325bab35da8bdffefd5a22ad730367e8f6",
+      "companions": [
+        {
+          "role": "text",
+          "origin": {
+            "kind": "file",
+            "url": "https://www.gutenberg.org/cache/epub/345/pg345-images.epub"
+          },
+          "bytes": 602043,
+          "sha256": "02a852bab9d8464f93fc253925646e847dcc334012a289ab57ecd5df27c3003e"
+        }
+      ]
+    },
+    {
+      "id": "book-childrens-literature.epub",
+      "family": "ebook",
+      "class": "illustrated",
+      "set": "idpf-epub3-samples",
+      "description": "Children's Literature, public-domain text with illustrations, nested table of contents",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/childrens-literature.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 161291,
+      "sha256": "191d14d07bcaefde647e494256f73d789f265c8edc46c404320641b23c86b76a"
+    },
+    {
+      "id": "book-wasteland.epub",
+      "family": "ebook",
+      "class": "poetry",
+      "set": "idpf-epub3-samples",
+      "description": "The Waste Land, public-domain poem with notes",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/wasteland.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 101904,
+      "sha256": "1653b9fbe225b89a008f980744d6b89940504a4533b9036821f9d99daf8f6c9c"
+    },
+    {
+      "id": "book-trees.epub",
+      "family": "ebook",
+      "class": "poetry",
+      "set": "idpf-epub3-samples",
+      "description": "Trees, short EPUB 3 sample",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/trees.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 75717,
+      "sha256": "4fbaa5713555ea104b2aed8fc6182700225416b0ab5369f0cb7293d486bb718f"
+    },
+    {
+      "id": "book-regime-anticancer-arabic.epub",
+      "family": "ebook",
+      "class": "rtl",
+      "set": "idpf-epub3-samples",
+      "description": "Anti-cancer diet in Arabic, right-to-left text",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/regime-anticancer-arabic.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 110694,
+      "sha256": "5d10bf6a73f461b7b23294b6e34b72f2a1184c9543a424b4a0f737ed33967e96"
+    },
+    {
+      "id": "book-linear-algebra.epub",
+      "family": "ebook",
+      "class": "technical",
+      "set": "idpf-epub3-samples",
+      "description": "Linear algebra textbook with MathML",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/linear-algebra.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 1075489,
+      "sha256": "87e523d8e16c2d1f4b211b47c0495841687a3573c828d3ef36b1f77f91b2abd4"
+    },
+    {
+      "id": "book-epub30-spec.epub",
+      "family": "ebook",
+      "class": "technical",
+      "set": "idpf-epub3-samples",
+      "description": "EPUB 3.0 specification as an EPUB, many headings and code samples",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/epub30-spec.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 227821,
+      "sha256": "def6a7a1d2302689c77d7c04585f9eb2da825a7ef546888cfe2f5fbba92d51ce"
+    },
+    {
+      "id": "book-wasteland.fb2",
+      "family": "ebook",
+      "class": "poetry",
+      "set": "fb2-files",
+      "description": "The Waste Land as a FictionBook 2 file (public-domain text of 1922)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/phiresky/ripgrep-all/fce1a28683142b3dbd6ea2f7b719d89c90aee227/exampledir/wasteland.fb2"
+      },
+      "licence": "LicenseRef-Public-domain-text",
+      "meta": {
+        "format": "fb2"
+      },
+      "bytes": 182038,
+      "sha256": "fa42a06d4581b25ba6f6e25542370059fb2a7042e0c6963465bc8366556bd48a"
+    },
+    {
+      "id": "book-help-ru.fb2",
+      "family": "ebook",
+      "class": "technical",
+      "set": "fb2-files",
+      "description": "E-reader user manual in Russian as a FictionBook 2 file",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/buggins/coolreader/dcc2d4c88b7ee66b8ee1223833c1a72cad3cdbc5/android/res/raw/help_template_ru.fb2"
+      },
+      "licence": "GPL-2.0",
+      "meta": {
+        "format": "fb2"
+      },
+      "bytes": 54227,
+      "sha256": "14f1fc80a95f730ee3ac4f457b7c57376cc9452cc88898cf28f2d5c8cb4898f9"
+    },
+    {
+      "id": "book-word-sample.fb2",
+      "family": "ebook",
+      "class": "novel",
+      "set": "fb2-files",
+      "description": "FictionBook 2 document with sections, images and notes from a word-processing library test set",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/aspose-words/Aspose.Words-for-.NET/299c4f0037b8c90ccbf82dd24e4cb1286a24aaf9/Examples/Data/FB2%20document.fb2"
+      },
+      "licence": "MIT",
+      "meta": {
+        "format": "fb2"
+      },
+      "bytes": 275044,
+      "sha256": "a4944358f701e8e2675415e995e40e13f387a93f6e5ca2bd467731e27c34ed87"
+    },
+    {
+      "id": "book-internallinks.epub",
+      "family": "ebook",
+      "class": "technical",
+      "set": "idpf-epub3-samples",
+      "description": "Internal links between sections, footnotes and an index in an EPUB 3 sample",
+      "origin": {
+        "kind": "file",
+        "url": "https://github.com/IDPF/epub3-samples/releases/download/20230704/internallinks.epub"
+      },
+      "licence": "CC-BY-SA-3.0",
+      "meta": {
+        "format": "epub"
+      },
+      "bytes": 663694,
+      "sha256": "deaf03a1843f52cc5e4cedb226ca8659610efe1be5e810fccf615bcb549238aa"
+    },
+    {
+      "id": "pdf-gov-000142.pdf",
+      "family": "pdf-ops",
+      "class": "tagged",
+      "set": "govdocs1",
+      "description": "Tagged PDF of a government report, 5 pages, text and figures",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000142.pdf",
+        "offset": 68470559,
+        "compressedSize": 401869,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "password": ""
+      },
+      "bytes": 445338,
+      "sha256": "bdd62b32cf5211cda13f9bdfe850456f661d0d8692c883056174fdfd289b2268"
+    },
+    {
+      "id": "pdf-gov-000147.pdf",
+      "family": "pdf-ops",
+      "class": "tagged",
+      "set": "govdocs1",
+      "description": "Tagged PDF of a government brochure, 4 pages",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000147.pdf",
+        "offset": 77085817,
+        "compressedSize": 568076,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 622082,
+      "sha256": "823321cb76913c61f37e5509df48ce87cc319f160e3b62b9111fdaca698697fc"
+    },
+    {
+      "id": "pdf-vera-ua1-annotations.pdf",
+      "family": "pdf-ops",
+      "class": "tagged",
+      "set": "verapdf-corpus",
+      "description": "PDF/UA-1 conforming test file (annotations), tagged, 1 page",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/veraPDF/veraPDF-corpus/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_UA-1/7.18%20Annotations/7.18.1%20General/7.18.1-t02-pass-h.pdf"
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {},
+      "bytes": 1475131,
+      "sha256": "d39c58600f04eb80684ee007bf679d3d1a918c1605a7335ecfef4343c3823bc5"
+    },
+    {
+      "id": "pdf-pdfjs-form-test.pdf",
+      "family": "pdf-ops",
+      "class": "forms",
+      "set": "pdfjs-corpus",
+      "description": "AcroForm with text fields, check boxes and a combo box, 5 pages",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/file_pdfjs_test.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 150611,
+      "sha256": "851fb6bfa4143203a284833c38138df1914a7ccca5e911dfaef8eb4e17e66b49"
+    },
+    {
+      "id": "pdf-gov-000280.pdf",
+      "family": "pdf-ops",
+      "class": "forms",
+      "set": "govdocs1",
+      "description": "Government form with fields, 8 pages, repaired by qpdf on reading",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000280.pdf",
+        "offset": 123447185,
+        "compressedSize": 1094260,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 1174312,
+      "sha256": "c09898bf4ab58a9d9dec1de08ec8aa7948962a804573dc6cdf9d601d5a861103"
+    },
+    {
+      "id": "pdf-gov-000314.pdf",
+      "family": "pdf-ops",
+      "class": "forms",
+      "set": "govdocs1",
+      "description": "Tagged government form with fields, 7 pages",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000314.pdf",
+        "offset": 151110566,
+        "compressedSize": 538764,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 735686,
+      "sha256": "9d2cc79506c446c1c3ac12c94ad13ece315cb319dba67289dfcf947ab603062d"
+    },
+    {
+      "id": "pdf-pdfjs-issue9972.pdf",
+      "family": "pdf-ops",
+      "class": "encrypted",
+      "set": "pdfjs-corpus",
+      "description": "Tagged AcroForm encrypted with RC4 or AES (revision 4) and an empty user password",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue9972-1.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "password": ""
+      },
+      "bytes": 80970,
+      "sha256": "dc072721f16954e5625e10df7c3d103e74454dd43395e98b68ddfb75d4b40379"
+    },
+    {
+      "id": "pdf-gov-000341.pdf",
+      "family": "pdf-ops",
+      "class": "encrypted",
+      "set": "govdocs1",
+      "description": "RC4 40-bit encrypted report (revision 2), 6 pages, empty user password",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000341.pdf",
+        "offset": 170588386,
+        "compressedSize": 100147,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "password": ""
+      },
+      "bytes": 109065,
+      "sha256": "cb3536e7070a8a08d0e4d85a4420cdc83b5fd068cc05f9290b81d7dc50ab9763"
+    },
+    {
+      "id": "pdf-gov-000342.pdf",
+      "family": "pdf-ops",
+      "class": "encrypted",
+      "set": "govdocs1",
+      "description": "RC4 128-bit encrypted report (revision 3), 4 pages, empty user password",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000342.pdf",
+        "offset": 170688605,
+        "compressedSize": 33883,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "password": ""
+      },
+      "bytes": 41343,
+      "sha256": "14b447aa995bb91955bba0233cb488202dca3f09e5d117a2868d4daa871dd12c"
+    },
+    {
+      "id": "pdf-pdfjs-aes256.pdf",
+      "family": "pdf-ops",
+      "class": "encrypted",
+      "set": "pdfjs-corpus",
+      "description": "AES-256 encrypted file (revision 6) with an empty user password",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue7665.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "password": ""
+      },
+      "bytes": 1472,
+      "sha256": "cd1d57895ba287085780a752be15293983b5d3733e2d62428e6083331ca336ec"
+    },
+    {
+      "id": "pdf-gov-004306.pdf",
+      "family": "pdf-ops",
+      "class": "scanned",
+      "set": "govdocs1",
+      "description": "Scanned pages without a text layer, 18 pages",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/004.zip",
+        "entry": "004/004306.pdf",
+        "offset": 79525118,
+        "compressedSize": 448101,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 472789,
+      "sha256": "d7b07f9f748ec213b133820a95443b5453552c016877d78b0856285f83db2f32"
+    },
+    {
+      "id": "pdf-gov-001657.pdf",
+      "family": "pdf-ops",
+      "class": "scanned",
+      "set": "govdocs1",
+      "description": "Scanned pages without a text layer, 9 pages",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001657.pdf",
+        "offset": 196886011,
+        "compressedSize": 552913,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 590536,
+      "sha256": "bb27396ff231d5fa173a556953c508eb727f442ee5665f39c9987e3da49596c8"
+    },
+    {
+      "id": "pdf-gov-004749.pdf",
+      "family": "pdf-ops",
+      "class": "scanned",
+      "set": "govdocs1",
+      "description": "Scanned pages without a text layer, 17 pages and 120 image objects",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/004.zip",
+        "entry": "004/004749.pdf",
+        "offset": 235301303,
+        "compressedSize": 419529,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 549312,
+      "sha256": "6e7b2cf76feb3254d095af54c4f0efe52bcd7ed7544100c1d0f3e7551fef28b4"
+    },
+    {
+      "id": "pdf-gov-000009.pdf",
+      "family": "pdf-ops",
+      "class": "broken",
+      "set": "govdocs1",
+      "description": "Report with a damaged cross-reference table, 4 pages, 12,000 words",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000009.pdf",
+        "offset": 568322,
+        "compressedSize": 32635,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 39586,
+      "sha256": "3fcfd899850be006b2d6616f8161e49479bc41424fa80e404f41233b77256ff3"
+    },
+    {
+      "id": "pdf-gov-000012.pdf",
+      "family": "pdf-ops",
+      "class": "broken",
+      "set": "govdocs1",
+      "description": "Report that qpdf repairs on reading, 6 pages",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000012.pdf",
+        "offset": 735855,
+        "compressedSize": 16400,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 22857,
+      "sha256": "1138e868dc3e44bd3f1dafd60ff3ed0d14a42ab1b17964ac475edac46789b5d0"
+    },
+    {
+      "id": "pdf-pdfjs-basicapi.pdf",
+      "family": "pdf-ops",
+      "class": "broken",
+      "set": "pdfjs-corpus",
+      "description": "Three-page file with a wrong page count and damaged references",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/basicapi.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 105779,
+      "sha256": "925853d98d67d5dae7473c635f932958e1695ce1029d23b2ecd2531cb65f1f14"
+    },
+    {
+      "id": "pdf-gov-001071.pdf",
+      "family": "pdf-ops",
+      "class": "huge",
+      "set": "govdocs1",
+      "description": "Report of 357 pages, text only",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001071.pdf",
+        "offset": 30982893,
+        "compressedSize": 371192,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 499725,
+      "sha256": "768da0d4ebba9d0c5dcff1cfc185ea1e2998425bb0c8c0e4da4c8b9f6ec24ef8"
+    },
+    {
+      "id": "pdf-gov-003966.pdf",
+      "family": "pdf-ops",
+      "class": "huge",
+      "set": "govdocs1",
+      "description": "Report of 304 pages, text only",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/003.zip",
+        "entry": "003/003966.pdf",
+        "offset": 285874133,
+        "compressedSize": 284873,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {},
+      "bytes": 388556,
+      "sha256": "73038e18af046c93b350304f48d71baaace987f9b1d304369f3467e6600f512e"
+    },
+    {
+      "id": "pdf-pdfjs-pdkids.pdf",
+      "family": "pdf-ops",
+      "class": "huge",
+      "set": "pdfjs-corpus",
+      "description": "Illustrated report of 55 pages",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/pdkids.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 546144,
+      "sha256": "c4ea5ccc138bb58109aba4ec33c7841bf9bda637b20cec932904cbee700845b5"
+    },
+    {
+      "id": "pdf-pdfjs-cjk-1.pdf",
+      "family": "pdf-ops",
+      "class": "cjk",
+      "set": "pdfjs-corpus",
+      "description": "Single page set in a CJK font (Chinese or Japanese text)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue16538.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 60516,
+      "sha256": "308a2cabdc09425e52c08582fe7ab8183f507d3748a6e393ea9ebe8b5f752c5d"
+    },
+    {
+      "id": "pdf-pdfjs-cjk-2.pdf",
+      "family": "pdf-ops",
+      "class": "cjk",
+      "set": "pdfjs-corpus",
+      "description": "Single page set in a CJK font, vertical and horizontal text",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue6387.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 66117,
+      "sha256": "b13c79f463e65a9bf1ed082145f32eb8f8a415f8190d7a0c90dafc8499de4e29"
+    },
+    {
+      "id": "pdf-pdfjs-cjk-3.pdf",
+      "family": "pdf-ops",
+      "class": "cjk",
+      "set": "pdfjs-corpus",
+      "description": "Single page set in a CJK font (Korean or Japanese text)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue16063.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 58483,
+      "sha256": "8b2332e9c1ba48f221e8688ba0478499f6a87a151bdcedffe789a6ae358db7e3"
+    },
+    {
+      "id": "pdf-pdfjs-tamreview.pdf",
+      "family": "pdf-ops",
+      "class": "long",
+      "set": "pdfjs-corpus",
+      "description": "Magazine issue of 23 pages with columns and figures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/TAMReview.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 674629,
+      "sha256": "a6db6d2f5e4f97e1e28a5919a875a40b89e38d0229b33cc023ca4d353f3ab3ec"
+    },
+    {
+      "id": "doc-poi-bug57031.docx",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Word document with tables and pictures, 1,900 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/bug57031.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 55889,
+      "sha256": "bbd88b16a90c65b46e1a6922f7017e8d4cc0bc8f62ac28619c2d367d37d6754b"
+    },
+    {
+      "id": "doc-poi-60329.docx",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "Word document with a table and inline pictures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/60329.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 31124,
+      "sha256": "e5b4e66038f92ef589e12ea870b24cc7a3e0005cd7a53817abff1307404f7aa3"
+    },
+    {
+      "id": "doc-poi-61787.docx",
+      "family": "document",
+      "class": "rtl",
+      "set": "poi-test-data",
+      "description": "Word document with right-to-left paragraphs",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/61787.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 7047,
+      "sha256": "eaea73fcee1225c17d55fdd363444ee34ce8a4eb2358b2ec2e5d835f24691227"
+    },
+    {
+      "id": "doc-poi-delins.docx",
+      "family": "document",
+      "class": "tracked",
+      "set": "poi-test-data",
+      "description": "Word document with deleted and inserted revisions and fields",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/delins.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 17720,
+      "sha256": "7ecad102602586be7f1371f117fc567ea47f3ed0ca703b353e003002f1ff8d3f"
+    },
+    {
+      "id": "doc-poi-form-footnotes.docx",
+      "family": "document",
+      "class": "footnotes",
+      "set": "poi-test-data",
+      "description": "Word form with footnotes, tables, pictures and fields",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/form_footnotes.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 27824,
+      "sha256": "a890294bfbdc63f6d03eab61efc1e98cb51d59f0920541150dd7082f9bdf31f1"
+    },
+    {
+      "id": "doc-poi-bug59058.docx",
+      "family": "document",
+      "class": "fields",
+      "set": "poi-test-data",
+      "description": "Long Word document with fields, tables and pictures, 19,000 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/bug59058.docx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 210256,
+      "sha256": "89d0abb8eed1a58f262c49c386f74d8a82798d6344bed690d66b389514f0751c"
+    },
+    {
+      "id": "doc-lo-embedded-fonts.docx",
+      "family": "document",
+      "class": "embedded-fonts",
+      "set": "libreoffice-tests",
+      "description": "Word document with embedded restricted and unrestricted fonts",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/embedded_fonts/data/embed-restricted%2Bunrestricted.docx"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "docx",
+        "recall": false
+      },
+      "bytes": 28262,
+      "sha256": "952d4ca3c7138f47d7922408373f4b963ccc4ee4fa662f5eb944ac1c1346c27e"
+    },
+    {
+      "id": "doc-lo-redline.docx",
+      "family": "document",
+      "class": "tracked",
+      "set": "libreoffice-tests",
+      "description": "Word document with hidden tracked changes",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/layout/data/merge_hidden_redline.docx"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 15478,
+      "sha256": "ec231ad7c5f06e26be6fcd8bfd5261ff22e6fac926031880540a58af6ffa0a4d"
+    },
+    {
+      "id": "doc-ox-chart.docx",
+      "family": "document",
+      "class": "charts",
+      "set": "openxml-sdk-tests",
+      "description": "Word document with a 2-D column chart (ISO strict OOXML)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/dotnet/Open-XML-SDK/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Graphics/2D%20Column-O12-Word-Charts.docx"
+      },
+      "licence": "MIT",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 45855,
+      "sha256": "12c5c01309a8ddec5215ba21e5e84c4250f400ea51d15041b4b96e00382e2050"
+    },
+    {
+      "id": "doc-poi-45544.xlsx",
+      "family": "document",
+      "class": "charts",
+      "set": "poi-test-data",
+      "description": "Workbook with a chart on several sheets and headers",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/45544.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 43042,
+      "sha256": "a6ed1a727f7b741128565512d4b55d9cb74b52efec391109d783ece5dcbe81d8"
+    },
+    {
+      "id": "doc-poi-datatablecities.xlsx",
+      "family": "document",
+      "class": "charts",
+      "set": "poi-test-data",
+      "description": "Workbook with a pivot table and a chart",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/DataTableCities.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 23936,
+      "sha256": "3b17486d4015b124423d38966a0aa88757b2177087941a905704b634204aed4e"
+    },
+    {
+      "id": "doc-poi-56644.xlsx",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "Workbook with pictures in a drawing",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/56644.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 34412,
+      "sha256": "ea2c622a3123d258d09fa47c68822978054c9b43975722362a535e4a01ce10fa"
+    },
+    {
+      "id": "doc-poi-kyc-structure.xlsx",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Wide workbook of 3,800 words of field descriptions",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/CVLKRA-KYC_Download_File_Structure_V3.1.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 204480,
+      "sha256": "a6a7bf557df8048108502973ecedc31d96f27d09ac166eedeae32fc96c13e8db"
+    },
+    {
+      "id": "doc-poi-monthly-budget.xlsx",
+      "family": "document",
+      "class": "charts",
+      "set": "poi-test-data",
+      "description": "Budget workbook with a chart and a picture",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/simple-monthly-budget.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 18700,
+      "sha256": "cae00c6894b95743017aeded4186f15a12c2d8382d71760029df490d58197db6"
+    },
+    {
+      "id": "doc-poi-formula-data.xlsx",
+      "family": "document",
+      "class": "formulas",
+      "set": "poi-test-data",
+      "description": "Workbook of formula test data, 1,600 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/FormulaEvalTestData_Copy.xlsx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsx"
+      },
+      "bytes": 65011,
+      "sha256": "01b21647d53501e8ec10f4eb522945d41ea3c8d1fdd57f8b0142ec34884c33eb"
+    },
+    {
+      "id": "doc-poi-57181.xlsm",
+      "family": "document",
+      "class": "macros",
+      "set": "poi-test-data",
+      "description": "Macro-enabled workbook with a chart, a picture and VBA",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/57181.xlsm"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xlsm"
+      },
+      "bytes": 334727,
+      "sha256": "2cf7459faa9d15c1deef4c410fc05142c4f57ebee622668e2526d7b3e34e08fa"
+    },
+    {
+      "id": "doc-poi-aascu.pptx",
+      "family": "document",
+      "class": "charts",
+      "set": "poi-test-data",
+      "description": "Long presentation with a chart, tables and pictures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/aascu.org_workarea_downloadasset.aspx_id%3D5864.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 403643,
+      "sha256": "5df09eff2c5fbb2bea72971421dc5507d68cab10ce3af8791969fdee35e76991"
+    },
+    {
+      "id": "doc-poi-ececapstone.pptx",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "Presentation with pictures on many slides",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/ececapstonespring2012.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 178541,
+      "sha256": "dfbe5d5ba7ca5f718858250dedb30c1da3e3a28cb1ecfebd9ca96d4e58fa7051"
+    },
+    {
+      "id": "doc-poi-keyframes.pptx",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "Presentation with pictures and speaker notes",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/keyframes.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 389330,
+      "sha256": "bc9dd90cee7318ef1637c4e6175d44756004e67c7cb68c2e320f62ff2e7ce6a0"
+    },
+    {
+      "id": "doc-poi-shapes.pptx",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Presentation with shapes and a table",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/shapes.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 68822,
+      "sha256": "19fde9b87e33dd1a95fdbba0cf6abc2278bf03874f4665c7f8b88b6afe4a2571"
+    },
+    {
+      "id": "doc-poi-japanese.pptx",
+      "family": "document",
+      "class": "cjk",
+      "set": "poi-test-data",
+      "description": "Presentation with a table of Japanese text",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/with_japanese.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 48011,
+      "sha256": "f0b1efbfbd70f7ee2395dc2505639f99449971ba404a6ec8cf1b97d82cf45c10"
+    },
+    {
+      "id": "doc-poi-table-test2.pptx",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Presentation with a table in several fonts",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/table_test2.pptx"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 33414,
+      "sha256": "e80d09a5fa767f6ee2d024f3a4198f1e8b3241cc638183e5ebafdbacf1fb2838"
+    },
+    {
+      "id": "doc-ox-chart.pptx",
+      "family": "document",
+      "class": "charts",
+      "set": "openxml-sdk-tests",
+      "description": "Presentation with a 2-D area chart (ISO strict OOXML)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/dotnet/Open-XML-SDK/431ab05cf160248cc3885a4a766026d4f8243792/test/DocumentFormat.OpenXml.Tests.Assets/assets/TestDataStorage/O14ISOStrict/Graphics/2D%20Area-O12-PPT-Charts.pptx"
+      },
+      "licence": "MIT",
+      "meta": {
+        "format": "pptx"
+      },
+      "bytes": 81167,
+      "sha256": "36b0cf11905bb3a0c58a415a06968466f15ba13960b4ceeed526152ea8bb7b5b"
+    },
+    {
+      "id": "doc-lo-cjk.odt",
+      "family": "document",
+      "class": "cjk",
+      "set": "libreoffice-tests",
+      "description": "Writer document with CJK text and ruby",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/cjk/data/tdf101729.odt"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "odt"
+      },
+      "bytes": 23101,
+      "sha256": "9a58da0e474aba4ccaf7880886eb00b2efa533cd8ef7ad3c6bebb6cb22a926d4"
+    },
+    {
+      "id": "doc-poi-53446.doc",
+      "family": "document",
+      "class": "long",
+      "set": "poi-test-data",
+      "description": "Word 97-2003 document of 2,600 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/53446.doc"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "doc"
+      },
+      "bytes": 77312,
+      "sha256": "c3d3ae0680800703c15c2c709796288a3b1beaecaa805e5866a35659e495f22a"
+    },
+    {
+      "id": "doc-poi-aioob-tap.doc",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Word 97-2003 document with tables, 930 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/AIOOB-Tap.doc"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "doc"
+      },
+      "bytes": 57856,
+      "sha256": "17d6b1596f539c53f06f3c84402b63bb13c38dcea14c2f71d87b87da925d2a01"
+    },
+    {
+      "id": "doc-poi-travel-form.doc",
+      "family": "document",
+      "class": "forms",
+      "set": "poi-test-data",
+      "description": "Word 97-2003 form with tables and fields",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/document/au.edu.utas.www___data_assets_word_doc_0003_154335_International-Travel-Approval-Request-Form.doc"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "doc"
+      },
+      "bytes": 86528,
+      "sha256": "b75b0afb94d942d583f5c0bd71dc85774e5477425bda576ec19b26a66d291112"
+    },
+    {
+      "id": "doc-lo-cjk.doc",
+      "family": "document",
+      "class": "cjk",
+      "set": "libreoffice-tests",
+      "description": "Word 97-2003 document with CJK list numbering",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/cjk/data/cjklist30.doc"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "doc"
+      },
+      "bytes": 24064,
+      "sha256": "fc42656d6fdb0ae9caa1812a11b7c6889038e29a587f0b048c6b43820abc0ea8"
+    },
+    {
+      "id": "doc-poi-12561-2.xls",
+      "family": "document",
+      "class": "cjk",
+      "set": "poi-test-data",
+      "description": "Excel 97-2003 workbook with Japanese text",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/12561-2.xls"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xls"
+      },
+      "bytes": 50176,
+      "sha256": "1a2fdc800386fc055abd3c7360402aa65d9fbee2a5d260629a7381b1b85442b6"
+    },
+    {
+      "id": "doc-poi-19599-1.xls",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Excel 97-2003 workbook with 2,800 words of cells",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/19599-1.xls"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xls"
+      },
+      "bytes": 128512,
+      "sha256": "6d67f7eee018e8bb0eb8173e3e0510847324f03047f35d0645097eb7e46cdbde"
+    },
+    {
+      "id": "doc-poi-29942.xls",
+      "family": "document",
+      "class": "tables",
+      "set": "poi-test-data",
+      "description": "Excel 97-2003 workbook with 2,100 words of cells",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/spreadsheet/29942.xls"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "xls"
+      },
+      "bytes": 109056,
+      "sha256": "653a49926c3aa25e330ef35d81af4559f82542a77ac56e100e8656629cbf9a0e"
+    },
+    {
+      "id": "doc-poi-41246-2.ppt",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "PowerPoint 97-2003 presentation with pictures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/41246-2.ppt"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "ppt"
+      },
+      "bytes": 145920,
+      "sha256": "6204faae7bcaf1f1a30263e71f19b2a169dd3dd424cc62e85ae6cd45152ce8ec"
+    },
+    {
+      "id": "doc-poi-tvcamboriu.ppt",
+      "family": "document",
+      "class": "images",
+      "set": "poi-test-data",
+      "description": "PowerPoint 97-2003 slide show with pictures",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/br.com.tvcamboriu.www_pps_Pensar_5b1_5d.ppt"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "ppt"
+      },
+      "bytes": 120833,
+      "sha256": "1310acbce4231a56014f59eba9ac701c1da3f2730081f883885b6f3df478cd5d"
+    },
+    {
+      "id": "doc-poi-60345.ppt",
+      "family": "document",
+      "class": "long",
+      "set": "poi-test-data",
+      "description": "PowerPoint 97-2003 presentation of 700 words",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/apache/poi/ae62bb5116b9aee19ebd5834e3a82066132c9f7f/test-data/slideshow/bug60345_suba.ppt"
+      },
+      "licence": "Apache-2.0",
+      "meta": {
+        "format": "ppt"
+      },
+      "bytes": 150016,
+      "sha256": "57150740d7f79363a21dedc4384cbf016caa647ec8537af60a07c9ad7400059c"
+    },
+    {
+      "id": "doc-gov-001858.rtf",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "RTF document from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001858.rtf",
+        "offset": 248925631,
+        "compressedSize": 1866,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "rtf"
+      },
+      "bytes": 5112,
+      "sha256": "fb56002fbc80cfa332713405e17b3440c4e6677989b63617262907ca00672ec8"
+    },
+    {
+      "id": "doc-gov-001857.rtf",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "RTF document from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001857.rtf",
+        "offset": 248923182,
+        "compressedSize": 2377,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "rtf"
+      },
+      "bytes": 6876,
+      "sha256": "829d59419c82dc87888c15d8e626c6f1c8059b3aa3641fb0afb68d726a05cc36"
+    },
+    {
+      "id": "doc-gov-001963.rtf",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "RTF document from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001963.rtf",
+        "offset": 284015371,
+        "compressedSize": 2473,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "rtf"
+      },
+      "bytes": 7995,
+      "sha256": "a1b106863797af9fd0eefc49219b6ca62fd5796a990d6e3ed816abc20a053294"
+    },
+    {
+      "id": "doc-lo-footnotes.rtf",
+      "family": "document",
+      "class": "footnotes",
+      "set": "libreoffice-tests",
+      "description": "RTF document with footnote frames",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/layout/data/forcepoint-swfootnoteframe-1.rtf"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "rtf"
+      },
+      "bytes": 95711,
+      "sha256": "2b8a257d7c4412a6eef2e2534019cba7a5512d5d81109eae91f2bf8287728891"
+    },
+    {
+      "id": "doc-gov-000429.html",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "HTML page from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000429.html",
+        "offset": 188775879,
+        "compressedSize": 3356,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "html"
+      },
+      "bytes": 7991,
+      "sha256": "4263fc03b8afbd3f2da790d7ff99fd13f710ff33d5491c2f52b9df4e171f694e"
+    },
+    {
+      "id": "doc-gov-000824.html",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "HTML page from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/000.zip",
+        "entry": "000/000824.html",
+        "offset": 319260103,
+        "compressedSize": 3484,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "html"
+      },
+      "bytes": 8441,
+      "sha256": "be895f7921253ddfdeefcafd0be2d5a3a14be4c5747056f35df5df10944cbfd8"
+    },
+    {
+      "id": "doc-gov-001709.html",
+      "family": "document",
+      "class": "real-world",
+      "set": "govdocs1",
+      "description": "HTML page from a government web server",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles/001.zip",
+        "entry": "001/001709.html",
+        "offset": 212984536,
+        "compressedSize": 2598,
+        "method": 8
+      },
+      "licence": "LicenseRef-govdocs1",
+      "meta": {
+        "format": "html"
+      },
+      "bytes": 6231,
+      "sha256": "be5ee9d738ae7c1edf2efd930aaf6e5656cfe4bb9df2882b7419e09b7b507ae5"
+    },
+    {
+      "id": "doc-lo-footnote.docx",
+      "family": "document",
+      "class": "footnotes",
+      "set": "libreoffice-tests",
+      "description": "Word document with footnotes in columns",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/layout/data/tdf139336_ColumnsWithFootnoteDoNotOccupyEntirePage.docx"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "docx"
+      },
+      "bytes": 10724,
+      "sha256": "9749f2b54199da9cf0126c0c7588e57ae3a1356838dcab033e725663976fc1cd"
+    },
+    {
+      "id": "doc-lo-columns.odt",
+      "family": "document",
+      "class": "columns",
+      "set": "libreoffice-tests",
+      "description": "Writer document of 1,700 words in six columns",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/layout/data/many-paragraphs-per-page-in-6-columns.odt"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "odt"
+      },
+      "bytes": 13786,
+      "sha256": "499dcdd0cd0a1659ce2769988c8213aec291e5a70e1dab171e07d258398c6c1c"
+    },
+    {
+      "id": "doc-lo-embedded-fonts.odt",
+      "family": "document",
+      "class": "embedded-fonts",
+      "set": "libreoffice-tests",
+      "description": "Writer document with a table and the fonts it uses embedded (no text truth: only the fonts of the PDF are measured)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sw/qa/extras/odfexport/data/tdf124470TableAndEmbeddedUsedFonts.odt"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "odt",
+        "recall": false
+      },
+      "bytes": 10880,
+      "sha256": "6f6eb1cefe34399d600ebc66e7bf4d890639dd03d987dbc83bc2bbf322e62aaf"
+    },
+    {
+      "id": "doc-lo-embedded-fonts.pptx",
+      "family": "document",
+      "class": "embedded-fonts",
+      "set": "libreoffice-tests",
+      "description": "Presentation with an embedded display font (no text truth: only the fonts of the PDF are measured)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/LibreOffice/core/4f93a10d5279c2fd403ececfefe6b85349e3522d/sd/qa/unit/data/BoldonseFontEmbedded.pptx"
+      },
+      "licence": "MPL-2.0",
+      "meta": {
+        "format": "pptx",
+        "recall": false
+      },
+      "bytes": 67477,
+      "sha256": "9801672f6c932e218e044df19608d1f31629fee5c87af0bc7c04bfc9f84dbb69"
     }
   ]
 }

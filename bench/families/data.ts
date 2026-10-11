@@ -3,10 +3,13 @@ import path from 'node:path';
 import { CORPUS_DIR, IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner, RowWeight } from '../context';
 import { convertWithProject } from '../convert';
-import { OutputIntegrityError } from '../errors';
+import { OutputIntegrityError, ToolRunError } from '../errors';
+import { ClassRows } from '../class-rows';
+import { remoteSample, remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, PYARROW_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -23,10 +26,17 @@ import { DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, PYARROW_PSEUDO_TOOL, runTool 
  * compared with the text of the source cell. A converter that turns "007" into 7, "1e5" into 100000.0 or an ISO timestamp
  * into a database timestamp has changed the cell, and the count says by how many. The sizes of the Parquet and XLSX outputs
  * are measured against the reference's.
+ *
+ * The public samples (bench/corpus/remote-manifest.json) are open datasets in CSV, JSON, JSON lines and Parquet (tall, wide,
+ * unicode, empty cells, digit strings with leading zeros, long text with line breaks) and the test files of the Parquet format's
+ * own repository (page encodings, codecs). Their truth is the text of the file itself (CSV, JSON, JSON lines), the expected-values
+ * CSV that ships with a Parquet test file, or, for a Parquet file with neither, DuckDB's reading of it, while pyarrow is the
+ * reference converter. A file the product refuses, or one that its output cannot be read back from, is a `converts` row instead
+ * of a stopped run; the per-class rows average the cell mismatches over a class.
  */
 
 type OutputKind = 'json' | 'csv' | 'parquet' | 'xlsx';
-type Truth = { kind: 'csv' | 'jsonl'; file: string };
+type Truth = { kind: 'csv' | 'jsonl' | 'json' | 'parquet'; file: string };
 type Producer = 'duckdb' | 'pyarrow' | 'soffice';
 
 interface DataCase {
@@ -40,6 +50,8 @@ interface DataCase {
   weight: RowWeight;
   /** Whether the size of the output is a row (formats with their own compression). */
   size: boolean;
+  /** The public sample the case reads; null for the generated table. */
+  sample?: RemoteSample;
 }
 
 const TABLE = 'data/table';
@@ -54,9 +66,35 @@ const CASES: readonly DataCase[] = [
 ];
 const REFERENCE_TOOL: Readonly<Record<Producer, string>> = { duckdb: 'DuckDB', pyarrow: 'Apache Arrow (pyarrow)', soffice: 'soffice' };
 const NATIVE_ENGINE_PREFIX = 'native-';
+/** A class row pools samples whose pairs have different reference tools; the sample rows name each one. */
+const CLASS_REFERENCE = 'DuckDB, Apache Arrow (pyarrow), soffice';
 
 const caseName = (item: DataCase): string => `${path.basename(item.source)}->${item.target}`;
 const formatOf = (file: string): string => path.extname(file).slice(1);
+
+/** The conversions of a public sample, by the format of the file: the reference tool of each is the one the generated table uses for the same pair. */
+function publicCases(sample: RemoteSample): DataCase[] {
+  const format = String(sample.meta.format);
+  const base = { source: sample.id, sample, size: false } as const;
+  const truth: Truth = { kind: format === 'jsonl' || format === 'json' ? format : 'csv', file: sample.id };
+  if (format === 'csv') {
+    return [
+      { ...base, target: 'json', truth, producer: 'duckdb', conversion: 'csv-json', weight: 'light' },
+      { ...base, target: 'parquet', truth, producer: 'pyarrow', conversion: 'csv-parquet', weight: 'light', size: true },
+      ...(sample.meta.xlsx === true ? [{ ...base, target: 'xlsx' as const, truth, producer: 'soffice' as const, weight: 'heavy' as const, size: true }] : []),
+    ];
+  }
+  if (format === 'json' || format === 'jsonl') {
+    return [{ ...base, target: 'csv', truth, producer: 'duckdb', conversion: format === 'json' ? 'json-csv' : 'jsonl-csv', weight: 'light' }];
+  }
+  // Parquet: the truth is a text twin that is another sample, or DuckDB's reading of the file.
+  const twin = typeof sample.meta.truth === 'string' ? sample.meta.truth : 'parquet';
+  const parquetTruth: Truth = twin === 'parquet' ? { kind: 'parquet', file: sample.id } : { kind: 'csv', file: twin };
+  return [
+    { ...base, target: 'csv', truth: parquetTruth, producer: 'pyarrow', conversion: 'parquet-csv', weight: 'light' },
+    { ...base, target: 'json', truth: parquetTruth, producer: 'duckdb', conversion: 'parquet-json', weight: 'light' },
+  ];
+}
 
 interface ReaderScore {
   cells: number;
@@ -73,8 +111,8 @@ function specsOf(item: DataCase): MetricSpec[] {
 }
 
 /** The cells the output gets wrong according to the worst of the independent readers. */
-async function mismatchesOf(server: ReferenceServer, kind: OutputKind, file: string, truth: Truth): Promise<number> {
-  const result = await server.call<CheckResult>('data.check', { kind, file, truth: { kind: truth.kind, file: path.join(CORPUS_DIR, truth.file) } });
+async function mismatchesOf(server: ReferenceServer, kind: OutputKind, file: string, truthKind: Truth['kind'], truthFile: string): Promise<number> {
+  const result = await server.call<CheckResult>('data.check', { kind, file, truth: { kind: truthKind, file: truthFile } });
   return Math.max(...Object.values(result.readers).map((reader) => reader.mismatches));
 }
 
@@ -89,12 +127,21 @@ function sofficeConvert(soffice: string, profile: string, input: string, item: D
   return path.join(outDir, `${path.parse(input).name}.${item.target}`);
 }
 
-async function runCase(ctx: FamilyContext, item: DataCase, tools: { server: ReferenceServer; soffice: string; profile: string }): Promise<BenchRow[]> {
+/** The files a case reads: the source under its own name (the office suite takes the format from the extension), and the truth. */
+interface CaseFiles {
+  source: string;
+  truth: string;
+}
+
+const MEASURED_SPECS = (item: DataCase): MetricSpec[] => specsOf(item).filter((spec) => spec.kind !== 'throughput');
+
+async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, tools: { server: ReferenceServer; soffice: string; profile: string }, classRows: ClassRows): Promise<BenchRow[]> {
   const name = caseName(item);
   const referenceTool = REFERENCE_TOOL[item.producer];
+  const sample = item.sample ?? null;
   ctx.log(`data ${name}`);
-  const sourceFile = ctx.corpusPath(item.source);
-  const input = ctx.corpusBuffer(item.source);
+  const sourceFile = files.source;
+  const input = fs.readFileSync(sourceFile);
   const convertOurs = async (): Promise<Buffer> => {
     const converted = await convertWithProject(input, formatOf(item.source), item.target, {}, path.basename(item.source));
     if (converted.engineUsed.startsWith(NATIVE_ENGINE_PREFIX)) {
@@ -113,17 +160,45 @@ async function runCase(ctx: FamilyContext, item: DataCase, tools: { server: Refe
   };
 
   const rows: BenchRow[] = [];
+  const classKey = `->${item.target}`;
+  let converted = true;
   if (ctx.quality) {
-    const oursBytes = await convertOurs();
-    const oursFile = ctx.scratch(`ours.${item.target}`);
-    fs.writeFileSync(oursFile, oursBytes);
-    await produceReference();
-    rows.push(
-      measuredRow('data', name, SPEC.cellMismatches, await mismatchesOf(tools.server, item.target, oursFile, item.truth), await mismatchesOf(tools.server, item.target, referenceOut, item.truth), referenceTool)
-    );
-    if (item.size) rows.push(measuredRow('data', name, SPEC.bytes, oursBytes.length, fs.statSync(referenceOut).size, referenceTool));
+    if (sample) classRows.expect(sample.class, classKey, [...MEASURED_SPECS(item), SPEC.converts].map((spec) => spec.metric));
+    const attempt = await attemptOurs(convertOurs, sample !== null);
+    let referenceConverted = true;
+    try {
+      await produceReference();
+    } catch (error) {
+      if (sample === null || !(error instanceof ToolRunError)) throw error;
+      referenceConverted = false;
+      ctx.log(`data ${name}: the reference tool does not convert it (${error.message.slice(0, 160)})`);
+    }
+    if (sample) {
+      if (!attempt.ok) ctx.log(`data ${name}: the product does not convert it (${attempt.reason})`);
+      rows.push(convertsRow('data', name, attempt.ok, referenceConverted, referenceTool));
+    }
+    converted = attempt.ok;
+    if (attempt.ok && referenceConverted) {
+      const oursFile = ctx.scratch(`ours.${item.target}`);
+      fs.writeFileSync(oursFile, attempt.value);
+      let oursMismatches: number | null = null;
+      try {
+        oursMismatches = await mismatchesOf(tools.server, item.target, oursFile, item.truth.kind, files.truth);
+      } catch (error) {
+        // An output that the independent readers cannot read is a conversion that failed, not a run that failed.
+        if (sample === null || !(error instanceof ToolRunError)) throw error;
+        ctx.log(`data ${name}: the output is not readable (${error.message.slice(0, 160)})`);
+        converted = false;
+        rows.splice(rows.findIndex((row) => row.metric === SPEC.converts.metric), 1, convertsRow('data', name, false, true, referenceTool));
+      }
+      if (oursMismatches !== null) {
+        rows.push(measuredRow('data', name, SPEC.cellMismatches, oursMismatches, await mismatchesOf(tools.server, item.target, referenceOut, item.truth.kind, files.truth), referenceTool));
+        if (item.size) rows.push(measuredRow('data', name, SPEC.bytes, attempt.value.length, fs.statSync(referenceOut).size, referenceTool));
+      }
+    }
+    if (sample) classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed) {
+  if (ctx.speed && converted && (sample === null || speedSample('data', sample.id))) {
     const timing = await ctx.time(
       speedRowId('data', name),
       async () => {
@@ -138,16 +213,54 @@ async function runCase(ctx: FamilyContext, item: DataCase, tools: { server: Refe
   return rows;
 }
 
+/** The files of a public case, or null when the host did not deliver one of them. */
+async function publicFiles(ctx: FamilyContext, item: DataCase): Promise<CaseFiles | null> {
+  const sample = item.sample as RemoteSample;
+  const cached = await ctx.remote(sample);
+  if (cached === null) return null;
+  const staged = ctx.scratch(`source-${sample.id}`);
+  fs.copyFileSync(cached, staged);
+  let truth = staged;
+  if (item.truth.file !== sample.id) {
+    const twin = remoteSample(item.truth.file);
+    if (twin === undefined) throw new OutputIntegrityError(`${sample.id}: the truth sample ${item.truth.file} is not in the public manifest`);
+    const twinFile = await ctx.remote(twin);
+    if (twinFile === null) return null;
+    truth = twinFile;
+  }
+  return { source: staged, truth };
+}
+
 export const runData: FamilyRunner = async (ctx) => {
-  const cases = CASES.filter((item) => ctx.inScope('data', caseName(item)));
-  if (cases.length === 0) return [];
+  const generated = CASES.filter((item) => ctx.inScope('data', caseName(item)));
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  const published = remoteSamples('data')
+    .filter((sample) => ctx.quality || speedSample('data', sample.id))
+    .flatMap(publicCases)
+    .filter((item) => ctx.inScope('data', caseName(item)));
+  if (generated.length + published.length === 0) return [];
   const plan = ctx.plan(['python3', PYARROW_PSEUDO_TOOL, DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, 'soffice'], 'data');
-  if (!plan.ok) return cases.flatMap((item) => skippedGroup('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], plan));
+  if (!plan.ok) return [...generated, ...published].flatMap((item) => skippedGroup('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], plan));
   const server = ReferenceServer.start(plan.paths.python3);
   try {
     const profile = `file://${path.join(ctx.work, 'soffice-profile')}`;
+    const tools = { server, soffice: plan.paths.soffice, profile };
     const rows: BenchRow[] = [];
-    for (const item of cases) rows.push(...(await runCase(ctx, item, { server, soffice: plan.paths.soffice, profile })));
+    const classRows = new ClassRows();
+    for (const item of generated) rows.push(...(await runCase(ctx, item, { source: ctx.corpusPath(item.source), truth: ctx.corpusPath(item.truth.file) }, tools, classRows)));
+    for (const item of published) {
+      const files = await publicFiles(ctx, item);
+      if (files === null) {
+        rows.push(...unavailableSampleRows('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], item.source));
+        continue;
+      }
+      rows.push(...(await runCase(ctx, item, files, tools, classRows)));
+    }
+    if (ctx.quality) {
+      for (const row of classRows.rows('data', () => CLASS_REFERENCE)) {
+        if (ctx.inScope('data', row.case)) rows.push(row);
+      }
+    }
     return rows;
   } finally {
     await server.close();

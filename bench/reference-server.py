@@ -6,8 +6,8 @@ and a timed reference call measures the conversion and not the interpreter start
 ({"id", "op", ...arguments}); one per line on stdout ({"id", "ok": true, "result"} or {"id", "ok": false, "error"}).
 
 Reference tools: DuckDB (CSV and JSON), Apache Arrow (Parquet). Oracles: the Python standard library (csv, json), pyarrow and
-DuckDB as two independent Parquet readers, openpyxl (XLSX), fontTools (fonts). None of them is
-this project's code.
+DuckDB as two independent Parquet readers, openpyxl (XLSX), fontTools (fonts), ezdxf (the geometry and text of a DXF drawing),
+olefile and xlrd (the text of Word, Excel and PowerPoint 97-2003 files). None of them is this project's code.
 """
 import csv
 import json
@@ -55,6 +55,8 @@ def data_convert(args):
         duckdb_connection().execute("COPY (SELECT * FROM read_csv(%s)) TO %s (FORMAT JSON, ARRAY true)" % (literal(src), literal(dst)))
     elif kind == "jsonl-csv":
         duckdb_connection().execute("COPY (SELECT * FROM read_json(%s, format = 'newline_delimited')) TO %s (FORMAT CSV, HEADER)" % (literal(src), literal(dst)))
+    elif kind == "json-csv":
+        duckdb_connection().execute("COPY (SELECT * FROM read_json(%s)) TO %s (FORMAT CSV, HEADER)" % (literal(src), literal(dst)))
     elif kind == "parquet-json":
         duckdb_connection().execute("COPY (SELECT * FROM read_parquet(%s)) TO %s (FORMAT JSON, ARRAY true)" % (literal(src), literal(dst)))
     elif kind == "csv-parquet":
@@ -107,6 +109,16 @@ def read_csv_text(path):
 def read_truth(spec):
     if spec["kind"] == "csv":
         return read_csv_text(spec["file"])
+    if spec["kind"] == "json":
+        with open(spec["file"], encoding="utf-8") as handle:
+            records = json.load(handle)
+        header = []
+        for record in records:
+            header.extend(key for key in record if key not in header)
+        return header, [[render(record.get(key)) for key in header] for record in records]
+    if spec["kind"] == "parquet":
+        # A Parquet file that has no text twin: DuckDB reads it, and the outputs are read by pyarrow and DuckDB and by the text readers.
+        return read_parquet_duckdb(spec["file"])
     with open(spec["file"], encoding="utf-8") as handle:
         records = [json.loads(line) for line in handle if line.strip()]
     header = list(records[0])
@@ -298,6 +310,196 @@ def font_validate(args):
     ours_outlines, source_outlines = glyph_statistics(out), glyph_statistics(source)
     mismatched = sum(1 for got, expected in zip(ours_outlines, source_outlines) if outline_differs(got, expected, args["tolerance"]))
     return {"failures": failures, "glyphs": len(source_outlines), "mismatchedGlyphs": mismatched}
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# CAD: the stroke geometry and the text of a DXF drawing, read by ezdxf
+# --------------------------------------------------------------------------------------------------------------------
+
+STROKE_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE"}
+TEXT_TYPES = {"TEXT", "MTEXT"}
+FLATTEN_SHARE = 1 / 4000
+MAX_INSERT_DEPTH = 8
+
+
+def visible(doc, entity):
+    """False for an entity that sits on a layer that is off or frozen, or that is itself invisible."""
+    if entity.dxf.hasattr("invisible") and entity.dxf.invisible:
+        return False
+    layer = doc.layers.get(entity.dxf.layer) if doc.layers.has_entry(entity.dxf.layer) else None
+    return layer is None or not (layer.is_off() or layer.is_frozen())
+
+
+def cad_entities(doc, space, depth=0):
+    """The stroke and text entities of a layout, blocks inserted (arrays and nested blocks too) and dimensions exploded."""
+    for entity in space:
+        kind = entity.dxftype()
+        if not visible(doc, entity):
+            continue
+        if kind in STROKE_TYPES or kind in TEXT_TYPES:
+            yield entity
+        elif kind in ("INSERT", "DIMENSION") and depth < MAX_INSERT_DEPTH:
+            try:
+                parts = list(entity.virtual_entities())
+            except Exception:  # noqa: BLE001 - a block the library cannot expand adds nothing to the truth
+                continue
+            yield from cad_entities(doc, parts, depth + 1)
+
+
+@op("cad.truth")
+def cad_truth(args):
+    import ezdxf
+    from ezdxf import bbox, path as ezpath
+
+    # The library's recovery mode reads what CAD programs read: a drawing that misses a required group (a hand-written or generated
+    # file) is repaired on the way in, and a valid one comes out the same.
+    from ezdxf import recover
+
+    doc, _auditor = recover.readfile(args["file"])
+    entities = list(cad_entities(doc, doc.modelspace()))
+    strokes_of = [entity for entity in entities if entity.dxftype() in STROKE_TYPES]
+    extent = bbox.extents(strokes_of, fast=True)
+    if not extent.has_data:
+        raise ValueError("the drawing has no strokes")
+    size = max(extent.size.x, extent.size.y)
+    distance = max(size * FLATTEN_SHARE, 1e-9)
+    strokes, text_boxes, words = [], [], []
+    for entity in strokes_of:
+        try:
+            drawn = ezpath.make_path(entity)
+        except Exception:  # noqa: BLE001 - an entity the library cannot turn into a path is not in the truth
+            continue
+        for sub in drawn.sub_paths():
+            points = [(round(point.x, 6), round(point.y, 6)) for point in sub.flattening(distance, segments=4)]
+            if len(points) >= 2:
+                strokes.append([list(point) for point in points])
+    for entity in entities:
+        if entity.dxftype() not in TEXT_TYPES:
+            continue
+        text = entity.dxf.text if entity.dxftype() == "TEXT" else entity.plain_text()
+        words.append(text)
+        try:
+            box = bbox.extents([entity], fast=True)
+            if box.has_data:
+                text_boxes.append([box.extmin.x, box.extmin.y, box.extmax.x, box.extmax.y])
+        except Exception:  # noqa: BLE001 - the size of a text is an estimate; without it the text is not excluded from precision
+            continue
+    return {"strokes": strokes, "textBoxes": text_boxes, "words": " ".join(words).split()}
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Office: the text of the 97-2003 binary formats, read from the file format and not from a converter
+# --------------------------------------------------------------------------------------------------------------------
+
+import struct
+
+DOC_FIB_FLAGS_OFFSET = 0x0A
+DOC_FIB_CCP_TEXT_OFFSET = 0x4C
+DOC_FIB_FC_CLX_OFFSET = 0x1A2
+DOC_FIELD_BEGIN, DOC_FIELD_SEPARATOR, DOC_FIELD_END = "\x13", "\x14", "\x15"
+
+
+def doc_text(ole):
+    """The main text of a Word 97-2003 file: the pieces of its piece table in order, field codes left out."""
+    word = ole.openstream("WordDocument").read()
+    if struct.unpack_from("<H", word, 0)[0] != 0xA5EC:
+        raise ValueError("not a Word binary file")
+    flags = struct.unpack_from("<H", word, DOC_FIB_FLAGS_OFFSET)[0]
+    table = ole.openstream("1Table" if flags & 0x0200 else "0Table").read()
+    characters = struct.unpack_from("<I", word, DOC_FIB_CCP_TEXT_OFFSET)[0]
+    fc_clx, lcb_clx = struct.unpack_from("<II", word, DOC_FIB_FC_CLX_OFFSET)
+    clx = table[fc_clx : fc_clx + lcb_clx]
+    position = 0
+    while clx[position] == 1:  # a Prc: skip it
+        position += 3 + struct.unpack_from("<H", clx, position + 1)[0]
+    if clx[position] != 2:
+        raise ValueError("no piece table")
+    length = struct.unpack_from("<I", clx, position + 1)[0]
+    plc = clx[position + 5 : position + 5 + length]
+    pieces = (length - 4) // 12
+    cps = struct.unpack_from("<%dI" % (pieces + 1), plc, 0)
+    out = []
+    for index in range(pieces):
+        fc = struct.unpack_from("<I", plc, 4 * (pieces + 1) + 8 * index + 2)[0]
+        count = cps[index + 1] - cps[index]
+        if fc & 0x40000000:
+            start = (fc & 0x3FFFFFFF) // 2
+            out.append(word[start : start + count].decode("cp1252", "replace"))
+        else:
+            out.append(word[fc : fc + 2 * count].decode("utf-16-le", "replace"))
+    text = "".join(out)[:characters]
+    cleaned, depth, in_code = [], 0, False
+    for character in text:
+        if character == DOC_FIELD_BEGIN:
+            depth += 1
+            in_code = True
+        elif character == DOC_FIELD_SEPARATOR:
+            in_code = False
+        elif character == DOC_FIELD_END:
+            depth = max(0, depth - 1)
+            in_code = False
+        elif not in_code:
+            cleaned.append(character if character >= " " else " ")
+    return "".join(cleaned)
+
+
+def ppt_text(ole):
+    """
+    The text of the slides of a PowerPoint 97-2003 file. Text atoms sit twice in a file written by PowerPoint (in the outline list of
+    the slides and in the text boxes of the slides); the text boxes are the text a slide shows, and the outline list stands in
+    for them when a writer left them out. Masters and notes are not slides.
+    """
+    stream = ole.openstream("PowerPoint Document").read()
+    in_boxes, in_list = [], []
+
+    def walk(start, end, place):
+        position = start
+        while position + 8 <= end:
+            header, kind, size = struct.unpack_from("<HHI", stream, position)
+            body = position + 8
+            version, instance = header & 0xF, header >> 4
+            if version == 0xF:
+                if kind == 0x03EE:  # a Slide
+                    walk(body, min(end, body + size), "boxes")
+                elif kind == 0x0FF0 and instance == 0:  # the SlideListWithText of the slides
+                    walk(body, min(end, body + size), "list")
+                elif kind in (0x03F8, 0x03F0, 0x0FF0, 0x0FF1):  # a master, a notes page, or the other lists
+                    pass
+                else:
+                    walk(body, min(end, body + size), place)
+            elif place is not None and kind in (0x0FA0, 0x0FA8):
+                text = stream[body : body + size].decode("utf-16-le" if kind == 0x0FA0 else "cp1252", "replace")
+                (in_boxes if place == "boxes" else in_list).append(text)
+            position = body + size
+
+    walk(0, len(stream), None)
+    return "\n".join(in_boxes or in_list).replace("\r", "\n").replace("\x0b", " ")
+
+
+def xls_text(path):
+    """The text cells of every sheet of an Excel 97-2003 file, as xlrd reads them (numbers are not words)."""
+    import xlrd
+
+    book = xlrd.open_workbook(path, on_demand=True)
+    out = []
+    for sheet in book.sheets():
+        for row in range(sheet.nrows):
+            out.extend(str(value) for value in sheet.row_values(row) if isinstance(value, str))
+    return "\n".join(out)
+
+
+@op("office.text")
+def office_text(args):
+    import olefile
+
+    kind, path = args["format"], args["file"]
+    if kind == "xls":
+        return {"text": xls_text(path)}
+    ole = olefile.OleFileIO(path)
+    try:
+        return {"text": doc_text(ole) if kind == "doc" else ppt_text(ole)}
+    finally:
+        ole.close()
 
 
 def main():
