@@ -1,9 +1,9 @@
 import type { HtmlElement } from './html-blocks';
 
 /**
- * Policy and report for the resources an HTML document names but the converter never fetches. Network access is
- * never granted to a conversion, so an image that is not embedded as a data: URI cannot be drawn. By default it is
- * left out and reported as a warning in the result; with `requireResources` the conversion refuses instead.
+ * Policy and report for the images an HTML document names without embedding them. They are fetched before rendering
+ * (see html-image-loader.ts) and staged as data: URIs, so the renderers never touch the network. An image that cannot be
+ * loaded is left out and reported as a warning in the result; with `requireResources` the conversion refuses instead.
  */
 
 /** Longest reference a warning quotes, in characters. */
@@ -13,11 +13,13 @@ export const MAX_REPORTED_OMISSIONS = 50;
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
 
 export interface HtmlResourcePolicy {
-  /** Refuse a document with an external resource (400) instead of leaving the resource out. */
+  /** Refuse a document with an image that cannot be loaded (400) instead of leaving the image out. */
   requireResources?: boolean;
+  /** The job's signal: once it fires, no further image is fetched. */
+  signal?: AbortSignal;
 }
 
-function quoted(reference: string): string {
+export function quoted(reference: string): string {
   const text = [...reference.replaceAll(CONTROL_CHARACTERS, ' ').trim()];
   return text.length > MAX_REFERENCE_CHARS ? `${text.slice(0, MAX_REFERENCE_CHARS).join('')}…` : text.join('');
 }
@@ -27,9 +29,9 @@ export class OmittedExternalImages {
   private readonly listed: string[] = [];
   private total = 0;
 
-  add(reference: string): void {
+  add(reference: string, reason: string): void {
     this.total++;
-    if (this.listed.length < MAX_REPORTED_OMISSIONS) this.listed.push(quoted(reference));
+    if (this.listed.length < MAX_REPORTED_OMISSIONS) this.listed.push(`Left out the image "${quoted(reference)}": ${reason}.`);
   }
 
   get count(): number {
@@ -38,9 +40,9 @@ export class OmittedExternalImages {
 
   /** One warning per listed image, then one for the images beyond the limit. */
   warnings(): string[] {
-    const lines = this.listed.map((reference) => `Left out the image "${reference}": external resources are not fetched.`);
+    const lines = [...this.listed];
     const unlisted = this.total - this.listed.length;
-    if (unlisted > 0) lines.push(`Left out ${unlisted} more external images: external resources are not fetched.`);
+    if (unlisted > 0) lines.push(`Left out ${unlisted} more external images that could not be loaded.`);
     return lines;
   }
 }
@@ -80,28 +82,54 @@ export function normalizeUrl(value: string): string {
   return trimUrl(stripControls(value)).replace(URL_IGNORED_CHARACTERS, '');
 }
 
-/** The URLs of a srcset: each candidate's URL, skipping its descriptors (data: URIs may contain commas). */
-export function srcsetUrls(value: string): string[] {
-  const urls: string[] = [];
-  const length = value.length;
+/** One candidate of a srcset: its URL and the descriptor text after it ("2x", "480w", or empty). */
+export interface SrcsetCandidate {
+  readonly url: string;
+  readonly descriptor: string;
+}
+
+function skipWhile(value: string, from: number, test: (character: string) => boolean): number {
+  let i = from;
+  while (i < value.length && test(value[i])) i++;
+  return i;
+}
+
+/** The index of the comma that ends a descriptor; commas inside parentheses do not end it. */
+function descriptorEnd(value: string, from: number): number {
+  let depth = 0;
+  let i = from;
+  for (; i < value.length && (depth > 0 || value[i] !== ','); i++) {
+    if (value[i] === '(') depth++;
+    else if (value[i] === ')' && depth > 0) depth--;
+  }
+  return i;
+}
+
+/** The candidates of a srcset, skipping commas inside URLs and parentheses (data: URIs may contain commas). */
+export function srcsetCandidates(value: string): SrcsetCandidate[] {
+  const candidates: SrcsetCandidate[] = [];
   let i = 0;
-  while (i < length) {
-    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
+  while (i < value.length) {
+    i = skipWhile(value, i, (character) => isHtmlSpace(character) || character === ',');
     const start = i;
-    while (i < length && !isHtmlSpace(value[i])) i++;
+    i = skipWhile(value, i, (character) => !isHtmlSpace(character));
     let end = i;
+    let descriptor = '';
     if (end > start && value[end - 1] === ',') {
       while (end > start && value[end - 1] === ',') end--;
     } else {
-      let depth = 0;
-      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
-        if (value[i] === '(') depth++;
-        else if (value[i] === ')' && depth > 0) depth--;
-      }
+      const descriptorStart = i;
+      i = descriptorEnd(value, i);
+      descriptor = value.slice(descriptorStart, i).trim();
     }
-    if (end > start) urls.push(value.slice(start, end));
+    if (end > start) candidates.push({ url: value.slice(start, end), descriptor });
   }
-  return urls;
+  return candidates;
+}
+
+/** The URLs of a srcset: each candidate's URL, skipping its descriptors. */
+export function srcsetUrls(value: string): string[] {
+  return srcsetCandidates(value).map((candidate) => candidate.url);
 }
 
 /** Whether an `<img>`, or a `<source>` of a `<picture>`, names something other than an embedded data: image. */
@@ -141,12 +169,4 @@ export function findExternalImages(root: HtmlElement): ExternalImage[] {
   };
   visit(root);
   return found;
-}
-
-/** Removes the images from the tree and records each one; nothing in the document refers to them afterwards. */
-export function leaveOutImages(images: readonly ExternalImage[], omitted: OmittedExternalImages): void {
-  for (const image of images) {
-    omitted.add(image.reference);
-    image.parent.children[image.index] = '';
-  }
 }

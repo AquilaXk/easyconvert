@@ -777,7 +777,7 @@ async function generatePdfFromText(
   if (HTML_SOURCE_FORMATS.has(sourceType) || sourceType === MARKDOWN_SOURCE_FORMAT) {
     // Markdown goes through the escaping renderer: raw HTML and `<...>` text stay literal.
     const html = sourceType === MARKDOWN_SOURCE_FORMAT ? markdownToSafeHtml(text, baseName) : text;
-    const parsed = await parseHtmlToPdfBlocks(html, { requireResources: options.requireResources });
+    const parsed = await parseHtmlToPdfBlocks(html, { requireResources: options.requireResources, signal: options.signal });
     blocks = parsed.blocks;
     title = parsed.title || baseName;
     warnings = parsed.warnings;

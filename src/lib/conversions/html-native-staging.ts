@@ -3,6 +3,7 @@ import { ConversionFailedError, EngineUnavailableError } from '../types';
 import { scanCss } from './css-references';
 import {
   asciiLowerCase,
+  HTML_IMAGE_CAPS,
   MAX_DOCUMENT_IMAGE_PIXELS,
   MAX_IMAGE_PIXELS,
   MAX_IMAGES_PER_DOCUMENT,
@@ -10,9 +11,8 @@ import {
   type HtmlElement,
   type HtmlNode,
 } from './html-blocks';
+import { loadExternalImages } from './html-image-loader';
 import {
-  findExternalImages,
-  leaveOutImages,
   normalizeUrl,
   OmittedExternalImages,
   srcsetUrls,
@@ -29,8 +29,9 @@ import {
  * value is escaped. Any URL that leaves the document is refused with a typed 400 first: on every
  * element (inline SVG included) URL attributes must be data: URIs or `#fragment`s, image sources
  * must be base64 PNG, JPEG or GIF data that decodes, and only `<a href>` may link to http, https
- * or mailto. The exception is an `<img>` that is not embedded: resources are never fetched, so it is left out of
- * the staged document and reported, unless the caller requires every resource. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
+ * or mailto. The exception is an `<img>` that is not embedded: it is fetched and embedded first (see
+ * html-image-loader.ts), and one that cannot be loaded is left out of the staged document and reported, unless the
+ * caller requires every resource. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
  * form controls) is refused with EngineUnavailableError rather than dropped; only elements that
  * render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
  */
@@ -442,7 +443,7 @@ class StagedHtmlWriter {
 export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourcePolicy = {}): Promise<StagedHtml> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
   const omitted = new OmittedExternalImages();
-  if (!policy.requireResources) leaveOutImages(findExternalImages(document.root), omitted);
+  await loadExternalImages(document.root, policy, omitted, HTML_IMAGE_CAPS);
   assertTreeStaysInDocument(document.root);
   const writer = new StagedHtmlWriter(document.title);
   const staged = writer.write(document.root);

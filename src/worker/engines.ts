@@ -38,6 +38,7 @@ import { encodeSvgPageToDxf } from '../lib/conversions/vector-dxf';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
+import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
 import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resources';
 import { parseHwpDocument } from '../lib/conversions/hwp';
@@ -2495,7 +2496,22 @@ function discardPersistedOutput(filePath: string | undefined, input: Buffer | Wo
   fs.rmSync(filePath, { force: true });
 }
 
-export async function executeWorkerConversion(
+/**
+ * Converts one file. The images an HTML page names are fetched through one session for the whole call, so the caps on
+ * their number, size and time hold across the LibreOffice route and the in-process route that may follow it.
+ */
+export function executeWorkerConversion(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult> {
+  // Options that are not an object are refused by the conversion itself; here only their signal is read.
+  return runWithImageFetchSession(options?.signal, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename));
+}
+
+async function convertWithinImageSession(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
@@ -2516,7 +2532,10 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation, { requireResources: options.requireResources });
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation, {
+    requireResources: options.requireResources,
+    signal: options.signal,
+  });
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 

@@ -942,14 +942,14 @@ describe('HTML to PDF keeps document structure', () => {
   });
 
   it('refuses external image references instead of dropping them when every resource is required', async () => {
-    const html = '<p>Logo below</p><img src="https://example.com/logo.png" alt="logo">';
+    const html = '<p>Logo below</p><img src="logo.png" alt="logo">';
     const error = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', { requireResources: true }, 'remote.html').then(
       () => null,
       (err: unknown) => err
     );
     expect(error).toBeInstanceOf(ConversionFailedError);
     expect((error as Error).name).toBe('ConversionFailedError');
-    expect((error as Error).message).toMatch(/"https:\/\/example\.com\/logo\.png" is an external reference/);
+    expect((error as Error).message).toMatch(/"logo\.png" is an external reference/);
   });
 
   it('refuses embedded media the in-process renderer cannot draw when LibreOffice is absent', async () => {
