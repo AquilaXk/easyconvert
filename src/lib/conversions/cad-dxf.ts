@@ -1,5 +1,5 @@
 import PDFDocument from 'pdfkit';
-import { ConversionFailedError } from '../types';
+import { CadExpansionLimitError, CadGeometryError, ConversionFailedError } from '../types';
 import { configurePdfKitFontFallback, renderSafePdfText } from './office';
 
 /**
@@ -51,6 +51,20 @@ export interface DxfDrawing {
 
 const MAX_BLOCK_DEPTH = 8;
 const MAX_STROKES = 500_000;
+/**
+ * The budget of one drawing's expansion, shared by every nested INSERT and checked inside the walk: entities visited and
+ * block copies made (an empty block in a 1000 x 500 array costs 500,000 visits), points of all strokes, text items and
+ * characters. Each is far above what a drawing of a few megabytes holds and far below what exhausts a worker's memory
+ * or a job's time.
+ */
+const MAX_VISITS = 2_000_000;
+const MAX_STROKE_POINTS = 3_000_000;
+const MAX_TEXTS = 100_000;
+const MAX_TEXT_CHARACTERS = 5_000_000;
+/** Highest spline degree read: CAD programs draw degrees 1 to 10, DXF writers go to about 25, and the cost of a point grows with its square. */
+const MAX_SPLINE_DEGREE = 25;
+const DEGREES_PER_TURN = 360;
+const MAX_ARC_QUARTERS = 8;
 const MAX_SAMPLED_POINTS_PER_CURVE = 20_000;
 const SAMPLE_STEP_RADIANS = Math.PI / 180;
 const SPLINE_SAMPLES_PER_SPAN = 24;
@@ -140,12 +154,21 @@ function readRecords(text: string): { section: string; records: GroupRecord[] }[
 }
 
 const first = (record: GroupRecord, code: number): string | undefined => record.find((pair) => pair.code === code)?.value;
+/** A group value as a number; a value that is not a finite number is a damaged drawing, never a coordinate. */
+function finite(value: string, code: number): number {
+  const parsed = NUMBER(value);
+  if (!Number.isFinite(parsed)) throw new CadGeometryError(`The DXF holds "${value.slice(0, 24)}" in group ${code}, which is not a finite number`);
+  return parsed;
+}
 const num = (record: GroupRecord, code: number, fallback: number): number => {
   const raw = first(record, code);
-  const value = raw === undefined ? Number.NaN : NUMBER(raw);
-  return Number.isFinite(value) ? value : fallback;
+  return raw === undefined ? fallback : finite(raw, code);
 };
-const all = (record: GroupRecord, code: number): number[] => record.filter((pair) => pair.code === code).map((pair) => NUMBER(pair.value)).filter(Number.isFinite);
+const all = (record: GroupRecord, code: number): number[] => record.filter((pair) => pair.code === code).map((pair) => finite(pair.value, code));
+/** An angle in degrees reduced into [0, 360), so arithmetic on it stays exact however large the file states it. */
+const turnDegrees = (degrees: number): number => ((degrees % DEGREES_PER_TURN) + DEGREES_PER_TURN) % DEGREES_PER_TURN;
+/** The same for an angle in radians. */
+const turnRadians = (radians: number): number => ((radians % FULL_TURN) + FULL_TURN) % FULL_TURN;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Curves
@@ -183,14 +206,16 @@ interface Vertex {
   bulge: number;
 }
 
-function polylinePoints(vertices: Vertex[], closed: boolean): Point[] {
+function polylinePoints(vertices: Vertex[], closed: boolean, chargePoints: (count: number) => void): Point[] {
   const points: Point[] = [];
   const segments = closed ? vertices.length : vertices.length - 1;
   for (let i = 0; i < segments; i++) {
     const from = vertices[i];
     const to = vertices[(i + 1) % vertices.length];
     const piece = bulgeArc(from.point, to.point, from.bulge);
-    points.push(...(i === 0 ? piece : piece.slice(1)));
+    // Charged as it is made, so a polyline of thousands of bulged vertices stops at the budget and not after it.
+    chargePoints(piece.length);
+    for (const point of i === 0 ? piece : piece.slice(1)) points.push(point);
   }
   return points.length > 0 ? points : vertices.map((vertex) => vertex.point);
 }
@@ -249,7 +274,8 @@ function nurbsPoint(degree: number, knots: number[], control: Point[], weights: 
 }
 
 function sampleSpline(record: GroupRecord): Point[] {
-  const degree = Math.max(1, Math.trunc(num(record, 71, 3)));
+  const degree = Math.trunc(num(record, 71, 3));
+  if (degree < 1 || degree > MAX_SPLINE_DEGREE) throw new CadGeometryError(`The DXF has a SPLINE of degree ${degree}; degrees 1 to ${MAX_SPLINE_DEGREE} are read`);
   const knots = all(record, 40);
   const xs = all(record, 10);
   const ys = all(record, 20);
@@ -257,8 +283,13 @@ function sampleSpline(record: GroupRecord): Point[] {
   const fitX = all(record, 11);
   const fitY = all(record, 21);
   const fit: Point[] = fitX.map((x, i) => [x, fitY[i] ?? 0] as Point);
-  const validKnots = control.length > degree && knots.length === control.length + degree + 1 && knots[control.length] > knots[degree];
-  if (!validKnots) return control.length > 1 ? control : fit;
+  if (control.length === 0) return fit;
+  if (control.length <= degree) throw new CadGeometryError(`The DXF has a SPLINE of degree ${degree} with ${control.length} control points, which needs at least ${degree + 1}`);
+  if (knots.length !== control.length + degree + 1) throw new CadGeometryError(`The DXF has a SPLINE with ${knots.length} knots, but ${control.length} control points of degree ${degree} need ${control.length + degree + 1}`);
+  for (let i = 1; i < knots.length; i++) {
+    if (knots[i] < knots[i - 1]) throw new CadGeometryError('The DXF has a SPLINE whose knots decrease');
+  }
+  if (!(knots[control.length] > knots[degree])) throw new CadGeometryError('The DXF has a SPLINE with an empty parameter range');
   const stated = all(record, 41);
   const weights = control.map((_, i) => (stated.length === control.length && stated[i] > 0 ? stated[i] : 1));
   const spans = control.length - degree;
@@ -336,14 +367,29 @@ const MTEXT_ANCHORS: Readonly<Record<number, DxfText['anchor']>> = { 1: 'start',
 class Builder {
   readonly strokes: DxfStroke[] = [];
   readonly texts: DxfText[] = [];
+  private visits = 0;
+  private strokePoints = 0;
+  private textCharacters = 0;
 
   constructor(
     private readonly blocks: ReadonlyMap<string, Block>,
     private readonly layers: Layers
   ) {}
 
+  /** Entities visited and block copies made, across every nested INSERT. */
+  private charge(count: number): void {
+    this.visits += count;
+    if (this.visits > MAX_VISITS) throw new CadExpansionLimitError(`The DXF expands to more than ${MAX_VISITS} entities and block copies (blocks inserted into blocks or arrays of them), which is over the limit`);
+  }
+
+  private chargePoints(count: number): void {
+    this.strokePoints += count;
+    if (this.strokePoints > MAX_STROKE_POINTS) throw new CadExpansionLimitError(`The DXF expands to more than ${MAX_STROKE_POINTS} stroke points, which is over the limit`);
+  }
+
   private add(stroke: DxfStroke): void {
-    if (this.strokes.length >= MAX_STROKES) throw new ConversionFailedError(`The DXF expands to more than ${MAX_STROKES} strokes (blocks inserted into blocks), which is over the limit`);
+    if (this.strokes.length >= MAX_STROKES) throw new CadExpansionLimitError(`The DXF expands to more than ${MAX_STROKES} strokes (blocks inserted into blocks), which is over the limit`);
+    this.chargePoints(stroke.kind === 'poly' ? stroke.points.length : 2);
     this.strokes.push(stroke);
   }
 
@@ -353,7 +399,10 @@ class Builder {
   }
 
   entities(records: GroupRecord[], t: Affine, depth: number): void {
-    for (const { record, vertices } of groupPolylines(records)) this.entity(record, vertices, t, depth);
+    for (const { record, vertices } of groupPolylines(records)) {
+      this.charge(1);
+      this.entity(record, vertices, t, depth);
+    }
   }
 
   private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number): void {
@@ -375,8 +424,8 @@ class Builder {
       case 'ARC': {
         const radius = num(record, 40, 0);
         if (!(radius > 0)) return;
-        const start = num(record, 50, 0) * DEGREES;
-        const sweep = sweepOf(start, num(record, 51, 360) * DEGREES);
+        const start = turnDegrees(num(record, 50, 0)) * DEGREES;
+        const sweep = sweepOf(start, turnDegrees(num(record, 51, DEGREES_PER_TURN)) * DEGREES);
         if (similar) this.add({ kind: 'arc', centre: apply(t, at), radius: radius * similar.scale, start: start + similar.rotation, end: start + similar.rotation + sweep });
         else this.curve(sampleArc(at, radius, start, sweep), false, t);
         return;
@@ -384,12 +433,12 @@ class Builder {
       case 'LWPOLYLINE': {
         const list: Vertex[] = [];
         for (const pair of record) {
-          if (pair.code === 10) list.push({ point: [NUMBER(pair.value), 0], bulge: 0 });
-          else if (pair.code === 20 && list.length > 0) list[list.length - 1].point = [list[list.length - 1].point[0], NUMBER(pair.value)];
-          else if (pair.code === 42 && list.length > 0) list[list.length - 1].bulge = NUMBER(pair.value) || 0;
+          if (pair.code === 10) list.push({ point: [finite(pair.value, 10), 0], bulge: 0 });
+          else if (pair.code === 20 && list.length > 0) list[list.length - 1].point = [list[list.length - 1].point[0], finite(pair.value, 20)];
+          else if (pair.code === 42 && list.length > 0) list[list.length - 1].bulge = finite(pair.value, 42);
         }
         const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
-        if (list.length > 1) this.curve(polylinePoints(list, closed), closed, t);
+        if (list.length > 1) this.curve(polylinePoints(list, closed, (count) => this.chargePoints(count)), closed, t);
         return;
       }
       case 'POLYLINE': {
@@ -397,14 +446,14 @@ class Builder {
           .filter((vertex) => (Math.trunc(num(vertex, 70, 0)) & SPLINE_FRAME_VERTEX_FLAG) === 0)
           .map((vertex) => ({ point: [num(vertex, 10, 0), num(vertex, 20, 0)] as Point, bulge: num(vertex, 42, 0) }));
         const closed = (Math.trunc(num(record, 70, 0)) & POLYLINE_CLOSED_FLAG) !== 0;
-        if (list.length > 1) this.curve(polylinePoints(list, closed), closed, t);
+        if (list.length > 1) this.curve(polylinePoints(list, closed, (count) => this.chargePoints(count)), closed, t);
         return;
       }
       case 'ELLIPSE': {
         const ratio = num(record, 40, 1);
         const major: Point = [num(record, 11, 0), num(record, 21, 0)];
         if (!(ratio > 0) || (major[0] === 0 && major[1] === 0)) return;
-        this.curve(sampleEllipse(at, major, ratio, num(record, 41, 0), num(record, 42, FULL_TURN)), false, t);
+        this.curve(sampleEllipse(at, major, ratio, turnRadians(num(record, 41, 0)), turnRadians(num(record, 42, FULL_TURN))), false, t);
         return;
       }
       case 'SPLINE': {
@@ -436,15 +485,16 @@ class Builder {
     const name = first(record, 2);
     const block = name === undefined ? undefined : this.blocks.get(name);
     if (!block) return;
-    if (depth >= MAX_BLOCK_DEPTH) throw new ConversionFailedError(`The DXF nests blocks deeper than ${MAX_BLOCK_DEPTH} levels (block ${name})`);
+    if (depth >= MAX_BLOCK_DEPTH) throw new CadExpansionLimitError(`The DXF nests blocks deeper than ${MAX_BLOCK_DEPTH} levels (block ${name})`);
     const scaleX = num(record, 41, 1);
     const scaleY = num(record, 42, 1);
-    const rotation = num(record, 50, 0) * DEGREES;
+    const rotation = turnDegrees(num(record, 50, 0)) * DEGREES;
     const columns = Math.max(1, Math.trunc(num(record, 70, 1)));
     const rows = Math.max(1, Math.trunc(num(record, 71, 1)));
     const columnSpacing = num(record, 44, 0);
     const rowSpacing = num(record, 45, 0);
-    if (columns * rows > MAX_STROKES) throw new ConversionFailedError('The DXF inserts a block array of more than the limit of copies');
+    // Every copy is a visit, drawn or not: an array of an empty block costs what it walks.
+    this.charge(columns * rows);
     const cos = Math.cos(rotation);
     const sin = Math.sin(rotation);
     for (let row = 0; row < rows; row++) {
@@ -472,18 +522,22 @@ class Builder {
     const horizontal = Math.trunc(num(record, 72, 0));
     const aligned = (horizontal !== 0 || Math.trunc(num(record, 73, 0)) !== 0) && first(record, 11) !== undefined;
     const origin: Point = aligned ? [num(record, 11, 0), num(record, 21, 0)] : [num(record, 10, 0), num(record, 20, 0)];
-    this.place({ at: origin, height, rotation: num(record, 50, 0) * DEGREES, lines: [value], anchor: TEXT_ANCHORS[horizontal] ?? 'start', hangsFromTop: false }, t);
+    this.place({ at: origin, height, rotation: turnDegrees(num(record, 50, 0)) * DEGREES, lines: [value], anchor: TEXT_ANCHORS[horizontal] ?? 'start', hangsFromTop: false }, t);
   }
 
   private mtext(record: GroupRecord, at: Point, t: Affine): void {
     const height = num(record, 40, 0);
     const raw = `${record.filter((pair) => pair.code === 3).map((pair) => pair.value).join('')}${first(record, 1) ?? ''}`;
     if (!(height > 0) || raw.trim() === '') return;
-    const direction = first(record, 11) === undefined ? num(record, 50, 0) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
+    const direction = first(record, 11) === undefined ? turnDegrees(num(record, 50, 0)) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
     this.place({ at, height, rotation: direction, lines: stripMtext(raw), anchor: MTEXT_ANCHORS[Math.trunc(num(record, 71, 1))] ?? 'start', hangsFromTop: true }, t);
   }
 
   private place(text: DxfText, t: Affine): void {
+    this.textCharacters += text.lines.reduce((sum, line) => sum + line.length, 0);
+    if (this.texts.length >= MAX_TEXTS || this.textCharacters > MAX_TEXT_CHARACTERS) {
+      throw new CadExpansionLimitError(`The DXF expands to more than ${MAX_TEXTS} text items or ${MAX_TEXT_CHARACTERS} characters of text, which is over the limit`);
+    }
     const similar = similarity(t);
     const scale = similar ? similar.scale : Math.hypot(t.c, t.d);
     this.texts.push({ ...text, at: apply(t, text.at), height: text.height * scale, rotation: text.rotation + (similar ? similar.rotation : Math.atan2(t.b, t.a)) });
@@ -494,7 +548,7 @@ class Builder {
 // Extents
 
 function textBox(text: DxfText): Point[] {
-  const longest = Math.max(...text.lines.map((line) => line.length));
+  const longest = text.lines.reduce((most, line) => Math.max(most, line.length), 0);
   const width = longest * text.height * TEXT_WIDTH_PER_CHARACTER;
   const heightTotal = text.height * (1 + (text.lines.length - 1) * MTEXT_LINE_PITCH);
   const left = -width * ANCHOR_SHARE[text.anchor];
@@ -517,7 +571,10 @@ function strokePoints(stroke: DxfStroke): Point[] {
       const at = (angle: number): Point => [stroke.centre[0] + stroke.radius * Math.cos(angle), stroke.centre[1] + stroke.radius * Math.sin(angle)];
       const points = [at(stroke.start), at(stroke.end)];
       // The axis extremes the arc passes through.
-      for (let quarter = Math.ceil(stroke.start / (Math.PI / 2)); quarter * (Math.PI / 2) <= stroke.end; quarter++) points.push(at(quarter * (Math.PI / 2)));
+      // The angles are reduced into a turn when read (and by a similarity's rotation of at most a half turn), so the arc
+      // crosses a handful of quarter turns; the bound makes that a fact of the loop and not of its input.
+      const firstQuarter = Math.ceil(stroke.start / (Math.PI / 2));
+      for (let quarter = firstQuarter; quarter <= firstQuarter + MAX_ARC_QUARTERS && quarter * (Math.PI / 2) <= stroke.end; quarter++) points.push(at(quarter * (Math.PI / 2)));
       return points;
     }
   }
@@ -525,6 +582,9 @@ function strokePoints(stroke: DxfStroke): Point[] {
 
 function extentsOf(strokes: DxfStroke[], texts: DxfText[]): DxfDrawing['extents'] {
   const points = [...strokes.flatMap(strokePoints), ...texts.flatMap(textBox)];
+  if (points.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) {
+    throw new CadGeometryError('The DXF has coordinates that overflow once its blocks and scales are applied, so it has no drawable extent');
+  }
   if (points.length === 0) throw new ConversionFailedError('The DXF holds no drawable entities (LINE, CIRCLE, ARC, polyline, ELLIPSE, SPLINE, INSERT or text on a visible layer)');
   let minX = Infinity;
   let minY = Infinity;
@@ -536,6 +596,7 @@ function extentsOf(strokes: DxfStroke[], texts: DxfText[]): DxfDrawing['extents'
     if (x > maxX) maxX = x;
     if (y > maxY) maxY = y;
   }
+  if (!Number.isFinite(maxX - minX) || !Number.isFinite(maxY - minY)) throw new CadGeometryError('The DXF is so large that its extent overflows');
   return { minX, minY, maxX, maxY };
 }
 

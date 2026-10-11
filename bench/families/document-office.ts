@@ -57,6 +57,9 @@ function goldenFile(name: string): string {
   return file;
 }
 
+/** Names in reading order: slide2 before slide10, page-9 before page-10. */
+const byNumberedName = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true });
+
 const decodeEntities = (text: string): string => text.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) => XML_ENTITIES[name]);
 
 function textOf(xml: string, element: RegExp): string[] {
@@ -66,7 +69,7 @@ function textOf(xml: string, element: RegExp): string[] {
 /** The words of a deck, read from the text runs of its slides. */
 async function slideWords(file: string): Promise<string[]> {
   const zip = await JSZip.loadAsync(fs.readFileSync(file));
-  const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort();
+  const slides = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort(byNumberedName);
   const texts = await Promise.all(slides.map(async (name) => textOf((await zip.file(name)?.async('string')) ?? '', /<a:t>([^<]*)<\/a:t>/g)));
   return wordsOf(texts.flat().join(' '));
 }
@@ -119,7 +122,7 @@ function sofficePdf(soffice: string, profile: string, input: string, outDir: str
 function pages(pdftoppm: string, pdf: string, outDir: string): string[] {
   fs.mkdirSync(outDir, { recursive: true });
   runTool(pdftoppm, ['-r', PDFTOPPM_DPI, '-png', pdf, path.join(outDir, 'page')]);
-  return fs.readdirSync(outDir).filter((name) => name.endsWith('.png')).sort().map((name) => path.join(outDir, name));
+  return fs.readdirSync(outDir).filter((name) => name.endsWith('.png')).sort(byNumberedName).map((name) => path.join(outDir, name));
 }
 
 export const runDocumentOffice: FamilyRunner = async (ctx) => {
@@ -181,7 +184,7 @@ async function runCase(ctx: FamilyContext, source: (typeof SOURCES)[number], tar
     const oursPages = await Promise.all(
       Object.keys(archive.files)
         .filter((entry) => entry.endsWith('.png'))
-        .sort()
+        .sort(byNumberedName)
         .map(async (entry) => {
           const target = path.join(oursDir, path.basename(entry));
           fs.writeFileSync(target, await (archive.file(entry) as JSZip.JSZipObject).async('nodebuffer'));

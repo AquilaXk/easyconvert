@@ -779,6 +779,18 @@ export class CadGeometryError extends ConversionFailedError {
   }
 }
 
+/**
+ * A drawing that is intact but expands past what the engine draws: blocks inserted into blocks, or arrays of them, that
+ * would visit more entities, strokes, points or text than the budget. Maps to HTTP 422.
+ */
+export class CadExpansionLimitError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'CadExpansionLimitError';
+  }
+}
+
 export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
