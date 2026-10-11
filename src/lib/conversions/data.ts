@@ -41,6 +41,7 @@ import {
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
+import { delimitedToParquet } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
 
@@ -375,6 +376,8 @@ function resolveDelimiter(text: string, src: string, requested?: string): string
   return requested ?? detectDelimiter(text, nominalDelimiter(src));
 }
 
+/** Source formats read as delimited text. */
+const DELIMITED_SOURCES: ReadonlySet<string> = new Set(['csv', 'tsv', 'tab']);
 const ALLOWED_DELIMITERS: ReadonlySet<string> = new Set(DELIMITER_CANDIDATES);
 const BOOLEAN_DATA_OPTIONS = ['bom', 'escapeFormulas'] as const;
 
@@ -956,6 +959,13 @@ export async function convertData(
     // Decoding re-infers column types (INT32 -> INT64, FLOAT -> DOUBLE) and drops the codec, so a
     // re-encode would not reproduce the file; returning the input unchanged is not a conversion.
     throw new UnsupportedTargetError('Parquet to Parquet is not a supported conversion.');
+  }
+
+  if (tgt === 'parquet' && DELIMITED_SOURCES.has(src)) {
+    const parquetBuffer = delimitedToParquet(inputBuffer, src, options);
+    if (parquetBuffer !== null) {
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
+    }
   }
 
   if (src === 'parquet') {

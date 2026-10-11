@@ -44,7 +44,7 @@ export interface ParquetWriteOptions {
   dictionaryMaxBytes?: number;
 }
 
-interface ResolvedOptions {
+export interface ResolvedOptions {
   codec: CompressionCodec;
   rowGroupMaxRows: number;
   rowGroupMaxBytes: number;
@@ -161,7 +161,7 @@ function inferType(flags: number): ParquetType {
   return ParquetType.BYTE_ARRAY;
 }
 
-function schemaFor(name: string, type: ParquetType): ColumnSchema {
+export function schemaFor(name: string, type: ParquetType): ColumnSchema {
   if (type === ParquetType.BYTE_ARRAY) {
     return { name, type, convertedType: ConvertedType.UTF8, repetitionType: FieldRepetitionType.OPTIONAL };
   }
@@ -248,7 +248,7 @@ function planColumn(column: AnalyzedColumn): ColumnPlan {
 // Statistics
 // ==========================================
 
-interface ChunkStatistics {
+export interface ChunkStatistics {
   nullCount: number;
   min: Buffer | null;
   max: Buffer | null;
@@ -339,7 +339,7 @@ interface DictionaryResult {
   pageBody: Buffer;
 }
 
-interface EncodedChunk {
+export interface EncodedChunk {
   schema: ColumnSchema;
   parts: Buffer[];
   numValues: number;
@@ -516,7 +516,7 @@ function splitPages(g: Gathered, dictionary: boolean, maxRows: number): PageSlic
   return pages;
 }
 
-function pageHeaderBytes(
+export function pageHeaderBytes(
   pageType: PageType,
   uncompressedSize: number,
   compressedSize: number,
@@ -727,7 +727,7 @@ function encodeColumnChunk(
 // Footer
 // ==========================================
 
-interface EncodedRowGroup {
+export interface EncodedRowGroup {
   chunks: EncodedChunk[];
   numRows: number;
   startOffset: number;
@@ -875,7 +875,7 @@ function resolveLimit(name: string, value: number | undefined, fallback: number,
   return value;
 }
 
-function resolveOptions(options: ParquetWriteOptions): ResolvedOptions {
+export function resolveOptions(options: ParquetWriteOptions): ResolvedOptions {
   const codec = options.codec ?? CompressionCodec.SNAPPY;
   if (!SUPPORTED_WRITE_CODECS.has(codec)) {
     throw new ParquetCodecUnavailableError(
@@ -973,7 +973,18 @@ export function encodeParquet(records: Record<string, unknown>[], options: Parqu
     rowGroups.push(group);
   }
 
-  const footer = buildFooter(schemas, rowGroups, numRows, resolved.codec);
+  return finishParquetFile(body, schemas, rowGroups, numRows, resolved.codec);
+}
+
+/** Appends the footer, its length and the closing magic to the file body and joins the parts. */
+export function finishParquetFile(
+  body: Buffer[],
+  schemas: ColumnSchema[],
+  rowGroups: EncodedRowGroup[],
+  numRows: number,
+  codec: CompressionCodec
+): Buffer {
+  const footer = buildFooter(schemas, rowGroups, numRows, codec);
   const footerLength = Buffer.alloc(BYTE_ARRAY_LENGTH_PREFIX_BYTES);
   footerLength.writeUInt32LE(footer.length, 0);
   body.push(footer, footerLength, Buffer.from(PARQUET_MAGIC, 'ascii'));
