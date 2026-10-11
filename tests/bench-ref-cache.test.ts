@@ -80,6 +80,7 @@ describe('the hashes that feed the key', () => {
       };
       for (const file of ['bench/measure.ts', 'bench/rows.ts', 'bench/text-metrics.ts', 'bench/tools.ts', 'tests/helpers/ffmpeg-measure.ts', 'tests/helpers/ocr-cer.ts']) write(file, `// ${file}\n`);
       write('bench/families/image.ts', 'image v1\n');
+      write('bench/png-metadata.ts', 'png metadata v1\n');
       write('bench/families/audio.ts', 'audio v1\n');
       const first = harnessHash('image', root);
       expect(harnessHash('image', root)).toBe(first);
@@ -90,6 +91,11 @@ describe('the hashes that feed the key', () => {
       expect(harnessHash('image', root)).toBe(first);
       write('bench/measure.ts', '// changed\n');
       expect(harnessHash('image', root)).not.toBe(first);
+      write('bench/measure.ts', '// bench/measure.ts\n');
+      expect(harnessHash('image', root)).toBe(first);
+      write('bench/png-metadata.ts', 'png metadata v2\n');
+      expect(harnessHash('image', root)).not.toBe(first);
+      expect(harnessHash('audio', root)).toBe(harnessHash('audio', root));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

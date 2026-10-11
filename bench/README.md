@@ -78,6 +78,17 @@ the same entries, and the check compares the files, not the padding. A picture w
 mid-grey and is not converted to JPEG. A product output that the oracle cannot read, or a sample the product rejects, is a row
 (`converts` or `lossless_exact` at 0, below the reference), not an ended run, so one sample cannot hide the others.
 
+**What the reference is given.** The reference encoders run at the product's output constraints. AVIF: 4:2:0 for every lossy quality
+(`-y 420`; 4:4:4 only at quality 100, and a grey picture is monochrome for both) and 12 bits for a source of 11 bits or more
+(`-d 12`; an 8-bit source stays 8-bit), QA decision 2026-10-11: match the reference service. Metadata: the reference gets the decoded pixels with the EXIF, XMP and ICC blocks of a PNG source
+(`bench/png-metadata.ts`; the original file cannot be given as it is, because `cwebp` applies its `gAMA` chunk and changes the pixels the
+rows are scored against), as `avifenc` and ImageMagick keep them by default and `cwebp` does with `-metadata all`. The product keeps
+the EXIF and XMP blocks and applies an ICC profile to the pixels without writing it, so its files of a tagged picture are smaller by
+the profile (3 kB for the sRGB profile of the photographs, 4.5 kB for the grey profile of the radiograph). A decoded copy without
+the blocks made the reference files 3 to 7 kB smaller than any encoder that keeps a picture's metadata can write (the 16-bit
+samples carry 3.5 to 6.9 kB of XMP). The rows score the pixels against the unconverted samples, so a profile that is not sRGB
+costs the product a little similarity that a viewer applying the profile to the reference's pixels does not see.
+
 **Per sample and per class.** Quality verdicts are never one number for the whole set. Every sample has its own rows and is judged
 alone, like the BD-rate over the four-point curve of a codec comparison. Beside them each content class has rows named
 `class-<class>-><target>`: the mean of the BD-rates of its samples without weights (the average over a class that video codec
@@ -361,8 +372,8 @@ never a stale hit; an entry that fails its checksum or schema is reported, measu
 `--print-tool-fingerprint` and the corpus manifest; the nightly run is the only writer.
 
 **`--quick`** measures a representative subset per family, listed as `QUICK_SUBSET` in `bench/config.ts`: the image
-cases `photo-a.jpg->webp`, `photo-b.png->avif` (photographs, 4:2:0), `screenshot.png->avif` (graphics, 4:4:4),
-`lineart.png->avif` (grey, 4:0:0), `lineart.png->jpg` and `lineart.png->webp`, so every target format and AVIF chroma path
+cases `photo-a.jpg->webp`, `photo-b.png->avif` (photographs, 4:2:0, the image library), `screenshot.png->avif` (graphics, 4:2:0, the library's command-line encoder),
+`lineart.png->avif` (grey, 4:0:0), `lineart.png->jpg` and `lineart.png->webp`, so every target format and AVIF encoder path
 has a quality row (`tests/bench-quick-subset.test.ts`); the video cases for H.264 and VP9; the audio
 cases `music.wav->opus`, `speech.wav->aac` and `music.wav->flac`; and every case of OCR, office, compression, PDF operations, data, ebooks, fonts, CAD, RAW and vector graphics, which
 are one case or seconds each. The per-push quality gate uses it; the nightly run measures everything.

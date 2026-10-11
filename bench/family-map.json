@@ -34,7 +34,7 @@
     },
     {
       "families": ["image"],
-      "match": "^bench/families/image\\.ts$"
+      "match": "^bench/families/image\\.ts$|^bench/png-metadata\\.ts$"
     },
     {
       "families": ["video"],
