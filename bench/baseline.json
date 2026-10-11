@@ -307,8 +307,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.5914267015706807,
-      "delta": 0.5902588183590018,
+      "ours": 0.0010086455331412836,
+      "delta": -0.00015923767853753823,
       "ratio": null
     },
     "cad/plate-basic.dxf->pdf/ink_precision": {
@@ -317,8 +317,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.42948643298008615,
-      "delta": -0.5705135670199138,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/plate-basic.dxf->pdf/ink_recall": {
@@ -327,8 +327,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5132981027462531,
-      "delta": -0.36972122984825495,
+      "ours": 1,
+      "delta": 0.11698066740549196,
       "ratio": null
     },
     "cad/plate-basic.dxf->pdf/word_f1": {
@@ -337,8 +337,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7058823529411764,
-      "delta": -0.2941176470588236,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/plate-basic.dxf->png/extent_error": {
@@ -347,8 +347,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.006324110671936833,
-      "delta": 0.005443053403214382,
+      "ours": 0.0022955523672884004,
+      "delta": 0.0014144950985659488,
       "ratio": null
     },
     "cad/plate-basic.dxf->png/ink_precision": {
@@ -357,8 +357,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9763886529641583,
-      "delta": -0.023611347035841668,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/plate-basic.dxf->png/ink_recall": {
@@ -367,8 +367,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9296732459777741,
-      "delta": -0.06995775033218898,
+      "ours": 1,
+      "delta": 0.00036900369003689537,
       "ratio": null
     },
     "cad/plate-basic.dxf->svg/extent_error": {
@@ -377,8 +377,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.005132075471698139,
-      "delta": 0.002229317851959345,
+      "ours": 0.0032951289398281958,
+      "delta": 0.0003923713200894019,
       "ratio": null
     },
     "cad/plate-basic.dxf->svg/ink_precision": {
@@ -387,8 +387,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9775322283609577,
-      "delta": 0.02702736557213281,
+      "ours": 1,
+      "delta": 0.049495137211175155,
       "ratio": null
     },
     "cad/plate-basic.dxf->svg/ink_recall": {
@@ -397,8 +397,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9265446661990691,
-      "delta": -0.07345533380093094,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/extent_error": {
@@ -407,8 +407,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.5914267015706807,
-      "delta": 0.5902588183590018,
+      "ours": 0.0010086455331412836,
+      "delta": -0.00015923767853753823,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/ink_precision": {
@@ -417,8 +417,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.4950193548387097,
-      "delta": -0.5049806451612904,
+      "ours": 0.9821667409719126,
+      "delta": -0.01783325902808741,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/ink_recall": {
@@ -427,8 +427,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.43337507253458757,
-      "delta": -0.3473877214405732,
+      "ours": 1,
+      "delta": 0.2192372060248392,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/word_f1": {
@@ -437,8 +437,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.375,
-      "delta": -0.17045454545454541,
+      "ours": 1,
+      "delta": 0.4545454545454546,
       "ratio": null
     },
     "cad/plate-full.dxf->png/extent_error": {
@@ -447,8 +447,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.006324110671936833,
-      "delta": 0.005443053403214382,
+      "ours": 0.0022955523672884004,
+      "delta": 0.0014144950985659488,
       "ratio": null
     },
     "cad/plate-full.dxf->png/ink_precision": {
@@ -457,8 +457,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9879097884212974,
-      "delta": -0.012090211578702603,
+      "ours": 0.9932710960232783,
+      "delta": -0.006728903976721656,
       "ratio": null
     },
     "cad/plate-full.dxf->png/ink_recall": {
@@ -467,8 +467,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7211061214842827,
-      "delta": -0.1421237575267642,
+      "ours": 1,
+      "delta": 0.13677012098895314,
       "ratio": null
     },
     "cad/plate-full.dxf->svg/extent_error": {
@@ -477,8 +477,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.005132075471698139,
-      "delta": 0.002229317851959345,
+      "ours": 0.0032951289398281958,
+      "delta": 0.0003923713200894019,
       "ratio": null
     },
     "cad/plate-full.dxf->svg/ink_precision": {
@@ -487,8 +487,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.988438057161381,
-      "delta": 0.03099940685463254,
+      "ours": 0.9936409421580099,
+      "delta": 0.03620229185126145,
       "ratio": null
     },
     "cad/plate-full.dxf->svg/ink_recall": {
@@ -497,8 +497,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7197929437406347,
-      "delta": -0.14901851045981374,
+      "ours": 1,
+      "delta": 0.13118854579955153,
       "ratio": null
     },
     "compression/mixed.7z->tar/throughput": {
@@ -2457,8 +2457,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.42197527781343,
-      "delta": -8.42197527781343,
+      "ours": 0.46353484700956127,
+      "delta": 0.46353484700956127,
       "ratio": null
     },
     "raw/arw->avif/bd_rate_ssim": {
@@ -2467,8 +2467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 4.699318718923129,
-      "delta": 4.699318718923129,
+      "ours": 0.35217305178938396,
+      "delta": 0.35217305178938396,
       "ratio": null
     },
     "raw/arw->avif/bytes": {
@@ -2477,8 +2477,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 358951,
-      "delta": -111495,
+      "ours": 357685,
+      "delta": -344,
       "ratio": null
     },
     "raw/arw->avif/psnr": {
@@ -2487,8 +2487,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.512127,
-      "delta": -0.6218760000000003,
+      "ours": 44.495418,
+      "delta": -0.021158999999997263,
       "ratio": null
     },
     "raw/arw->avif/ssim": {
@@ -2497,8 +2497,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.982652,
-      "delta": -0.0037090000000000733,
+      "ours": 0.982568,
+      "delta": -0.00006300000000003525,
       "ratio": null
     },
     "raw/arw->gif/bytes": {
@@ -2507,8 +2507,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 2972149,
-      "delta": 198340,
+      "ours": 2448938,
+      "delta": -324582,
       "ratio": null
     },
     "raw/arw->gif/psnr": {
@@ -2517,8 +2517,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.132684,
-      "delta": 1.3078730000000007,
+      "ours": 44.789229,
+      "delta": 1.9761409999999984,
       "ratio": null
     },
     "raw/arw->gif/ssim": {
@@ -2527,8 +2527,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.984309,
-      "delta": 0.005805999999999978,
+      "ours": 0.984795,
+      "delta": 0.006379999999999941,
       "ratio": null
     },
     "raw/arw->jpg/bd_rate_psnr": {
@@ -2537,8 +2537,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.9746589964276917,
-      "delta": -1.9746589964276917,
+      "ours": 0.01411129025266078,
+      "delta": 0.01411129025266078,
       "ratio": null
     },
     "raw/arw->jpg/bd_rate_ssim": {
@@ -2547,8 +2547,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.023181322898854,
-      "delta": -9.023181322898854,
+      "ours": -8.887784627650685,
+      "delta": -8.887784627650685,
       "ratio": null
     },
     "raw/arw->jpg/bytes": {
@@ -2557,8 +2557,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 425652,
-      "delta": -45092,
+      "ours": 425607,
+      "delta": -45081,
       "ratio": null
     },
     "raw/arw->jpg/psnr": {
@@ -2567,8 +2567,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 42.218484,
-      "delta": -0.4336280000000059,
+      "ours": 41.380671,
+      "delta": -0.43829600000000113,
       "ratio": null
     },
     "raw/arw->jpg/ssim": {
@@ -2577,8 +2577,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.976357,
-      "delta": -0.00016300000000002424,
+      "ours": 0.9763,
+      "delta": -0.000200000000000089,
       "ratio": null
     },
     "raw/arw->png/bytes": {
@@ -2587,8 +2587,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 29531138,
-      "delta": 3945405,
+      "ours": 25675151,
+      "delta": 88550,
       "ratio": null
     },
     "raw/arw->png/ssim": {
@@ -2597,8 +2597,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.999798,
-      "delta": -0.00020200000000003548,
+      "ours": 0.999785,
+      "delta": -0.00021499999999996522,
       "ratio": null
     },
     "raw/dng->avif/bd_rate_psnr": {
@@ -2607,8 +2607,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.759594186078328,
-      "delta": -12.759594186078328,
+      "ours": 0.12859470483488344,
+      "delta": 0.12859470483488344,
       "ratio": null
     },
     "raw/dng->avif/bd_rate_ssim": {
@@ -2617,8 +2617,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.8433323314146932,
-      "delta": -1.8433323314146932,
+      "ours": -0.3951115402589189,
+      "delta": -0.3951115402589189,
       "ratio": null
     },
     "raw/dng->avif/bytes": {
@@ -2627,8 +2627,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 15040,
-      "delta": -9844,
+      "ours": 14602,
+      "delta": 9,
       "ratio": null
     },
     "raw/dng->avif/psnr": {
@@ -2637,8 +2637,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.820829,
-      "delta": -0.49954699999999974,
+      "ours": 44.802971,
+      "delta": -0.006543000000000632,
       "ratio": null
     },
     "raw/dng->avif/ssim": {
@@ -2647,8 +2647,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.971325,
-      "delta": -0.003442000000000056,
+      "ours": 0.9712,
+      "delta": -0.000030000000000085514,
       "ratio": null
     },
     "raw/dng->gif/bytes": {
@@ -2657,8 +2657,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 448163,
-      "delta": 99057,
+      "ours": 350850,
+      "delta": 1645,
       "ratio": null
     },
     "raw/dng->gif/psnr": {
@@ -2667,8 +2667,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.600652,
-      "delta": 1.7656259999999975,
+      "ours": 47.795837,
+      "delta": 1.9757040000000003,
       "ratio": null
     },
     "raw/dng->gif/ssim": {
@@ -2677,8 +2677,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.98884,
-      "delta": 0.008090000000000042,
+      "ours": 0.987727,
+      "delta": 0.007062000000000013,
       "ratio": null
     },
     "raw/dng->jpg/bd_rate_psnr": {
@@ -2687,8 +2687,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.062064116348678,
-      "delta": -8.062064116348678,
+      "ours": -20.699000750961805,
+      "delta": -20.699000750961805,
       "ratio": null
     },
     "raw/dng->jpg/bd_rate_ssim": {
@@ -2697,8 +2697,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.135509975689011,
-      "delta": -4.135509975689011,
+      "ours": -4.420618598530024,
+      "delta": -4.420618598530024,
       "ratio": null
     },
     "raw/dng->jpg/bytes": {
@@ -2707,8 +2707,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 23570,
-      "delta": -4949,
+      "ours": 23568,
+      "delta": -4954,
       "ratio": null
     },
     "raw/dng->jpg/psnr": {
@@ -2717,8 +2717,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.092935,
-      "delta": -0.2184790000000021,
+      "ours": 42.903598,
+      "delta": 0.11750700000000336,
       "ratio": null
     },
     "raw/dng->jpg/ssim": {
@@ -2727,8 +2727,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.967443,
-      "delta": -0.0019489999999999785,
+      "ours": 0.967357,
+      "delta": -0.0019040000000000168,
       "ratio": null
     },
     "raw/dng->png/bytes": {
@@ -2737,8 +2737,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 3012767,
-      "delta": 469833,
+      "ours": 2552423,
+      "delta": 9482,
       "ratio": null
     },
     "raw/dng->png/ssim": {
@@ -2747,8 +2747,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.999873,
-      "delta": -0.00012699999999998823,
+      "ours": 0.999862,
+      "delta": -0.00013799999999997148,
       "ratio": null
     },
     "vector/label.svg->pdf/cer": {
@@ -2757,8 +2757,8 @@
         "abs": 0.75,
         "rel": 0
       },
-      "ours": 100,
-      "delta": 100,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "vector/label.svg->pdf/word_f1": {
@@ -2767,8 +2767,28 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "vector/shapes.ai->png/psnr": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.3,
+        "rel": 0
+      },
+      "ours": 47.308936,
+      "delta": 0,
+      "ratio": null
+    },
+    "vector/shapes.ai->png/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.998703,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.eps->pdf/pdf_embedded_images": {
@@ -2787,7 +2807,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.48219,
+      "ours": 47.308936,
       "delta": 0,
       "ratio": null
     },
@@ -2797,7 +2817,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998704,
+      "ours": 0.998703,
       "delta": 0,
       "ratio": null
     },
@@ -2807,8 +2827,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.48219,
-      "delta": 1.7720500000000001,
+      "ours": 47.308936,
+      "delta": 1.7163160000000062,
       "ratio": null
     },
     "vector/shapes.eps->png/ssim": {
@@ -2817,8 +2837,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998704,
-      "delta": -0.00015799999999999148,
+      "ours": 0.998703,
+      "delta": -0.000156000000000045,
       "ratio": null
     },
     "vector/shapes.svg->emf/metafile_violations": {
@@ -2837,8 +2857,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.971273,
-      "delta": -0.011185,
+      "ours": 0.986805,
+      "delta": 0.0043600000000000305,
       "ratio": null
     },
     "vector/shapes.svg->pdf/pdf_embedded_images": {
@@ -2847,8 +2867,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 2,
-      "delta": 2,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.svg->pdf/psnr": {
@@ -2857,8 +2877,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 34.703311,
-      "delta": -13.159505000000003,
+      "ours": 47.864813,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.svg->pdf/ssim": {
@@ -2867,8 +2887,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.984322,
-      "delta": -0.014324999999999921,
+      "ours": 0.998646,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.svg->png/psnr": {
@@ -2877,7 +2897,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 57.788308,
+      "ours": 57.791877,
       "delta": 0,
       "ratio": null
     },
@@ -2907,8 +2927,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.983151,
-      "delta": 0.0006929999999999437,
+      "ours": 0.983157,
+      "delta": 0.0007119999999999349,
       "ratio": null
     },
     "video/clip.mp4->h264/bd_rate_psnr": {
