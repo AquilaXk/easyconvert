@@ -18,10 +18,9 @@ function applyTestRules(rules: ImageFetchTestRules): void {
   overrideImageFetchEnvironment({
     ...(hosts
       ? {
-          resolve: async (hostname) => {
+          resolve: (hostname) => {
             const answer = hosts[hostname];
-            if (!answer) throw new Error(`no such host ${hostname}`);
-            return answer;
+            return answer ? Promise.resolve(answer) : Promise.reject(new Error(`no such host ${hostname}`));
           },
         }
       : {}),
