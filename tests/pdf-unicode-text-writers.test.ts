@@ -474,15 +474,16 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
     }
   });
 
-  it('rejects unassigned, private-use and noncharacter code points with ConversionFailedError (400)', async () => {
+  oracleTest('replaces unassigned, private-use and noncharacter code points with U+FFFD and names each one in the warnings', POPPLER_TOOLS, async () => {
     for (const [label, ch] of [
       ['U+0378', UNASSIGNED_CODE_POINT],
       ['U+E000', '\ue000'],
+      ['U+E037', '\ue037'],
       ['U+FFFF', '\uffff'],
     ]) {
-      const { error } = await settle(convertFile(Buffer.from(`Latin text then ${ch} then more`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt'));
-      expect({ label, name: (error as Error)?.name }).toEqual({ label, name: 'ConversionFailedError' });
-      expect((error as Error).message).toContain(label);
+      const result = await convertFile(Buffer.from(`Latin text then ${ch}${ch} then more`, 'utf-8'), 'txt', 'pdf', {}, 'gap.txt');
+      expect({ label, text: normalizeText(pdfText(result.buffer)) }).toEqual({ label, text: 'Latin text then \ufffd\ufffd then more' });
+      expect({ label, warnings: result.metadata?.warnings }).toEqual({ label, warnings: [`Replaced ${label} with U+FFFD: no font can draw this unassigned or private-use code point.`] });
     }
   });
 
@@ -1195,24 +1196,20 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     }
   });
 
-  it('rejects Latin-1 HTML and Markdown with a typed 400 on both the in-process and worker routes', async () => {
+  it('rejects Latin-1 Markdown with a typed 400 on both the in-process and worker routes', async () => {
+    const bytes = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\n')]);
+    const direct = await settle(convertFile(bytes, 'md', 'pdf', {}, 'latin1.md'));
+    const routed = await settle(withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(bytes, 'md', 'pdf', {}, 'latin1.md')));
+    expect({ direct: (direct.error as Error)?.name, routed: (routed.error as Error)?.name }).toEqual({ direct: 'ConversionFailedError', routed: 'ConversionFailedError' });
+    expect((routed.error as Error).message).toMatch(/UTF-8/);
+  });
+
+  oracleTest('reads Latin-1 HTML as its declared encoding on both the in-process and worker routes', ['pdftotext'], async () => {
     const latin1Html = Buffer.concat([Buffer.from('<meta charset="iso-8859-1"><p>caf'), Buffer.from([0xe9]), Buffer.from('</p>')]);
-    const latin1Markdown = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\n')]);
-    for (const [label, source, bytes] of [
-      ['html', 'html', latin1Html],
-      ['md', 'md', latin1Markdown],
-    ] as const) {
-      const direct = await settle(convertFile(bytes, source, 'pdf', {}, `latin1.${source}`));
-      const routed = await settle(
-        withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(bytes, source, 'pdf', {}, `latin1.${source}`))
-      );
-      expect({ label, direct: (direct.error as Error)?.name, routed: (routed.error as Error)?.name }).toEqual({
-        label,
-        direct: 'ConversionFailedError',
-        routed: 'ConversionFailedError',
-      });
-      expect((routed.error as Error).message).toMatch(/UTF-8/);
-    }
+    const direct = await convertFile(latin1Html, 'html', 'pdf', {}, 'latin1.html');
+    const routed = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(latin1Html, 'html', 'pdf', {}, 'latin1.html'));
+    expect(normalizeText(pdfText(direct.buffer))).toBe('café');
+    expect(normalizeText(pdfText(routed.buffer))).toBe('café');
   });
 
   oracleTest('decodes UTF-16 HTML with a byte order mark', ['pdftotext'], async () => {
