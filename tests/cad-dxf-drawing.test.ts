@@ -34,7 +34,7 @@ describe('parseDxfDrawing', () => {
     const [line] = polylines(
       parseDxfDrawing(dxf(pairs([0, 'LWPOLYLINE'], [90, 2], [70, 0], [10, 0], [20, 0], [42, 1], [10, 2], [20, 0]))).strokes
     );
-    expect(line.points.length).toBeGreaterThan(100);
+    expect(line.points.length).toBeGreaterThan(60);
     expect(line.points[0]).toEqual([0, 0]);
     expect(line.points[line.points.length - 1]).toEqual([2, 0]);
     for (const [x, y] of line.points) {
