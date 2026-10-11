@@ -31,7 +31,7 @@ describe('the families that must have a shard', () => {
   });
 
   it('are every family for an entry of a family the base map does not know, and when a gap file cannot be read', () => {
-    const every = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops'];
+    const every = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font'];
     expect(requiredShards(BASE_MAP, gaps(), gaps(gap('sound/a/throughput', 0.5)))).toEqual(every);
     expect(requiredShards(BASE_MAP, { gaps: 1 }, gaps())).toEqual(every);
   });

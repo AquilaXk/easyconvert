@@ -388,11 +388,11 @@ describe('the step that maps changed paths to families', () => {
 
   only('reports a changed family with no bench rows, so the parity jobs can fail it', () => {
     expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: 'cad', changed: 'true' });
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', families_json: '["ocr"]', unmapped: 'cad,font', changed: 'true' });
+    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/raw-demosaic.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', families_json: '["ocr"]', unmapped: 'cad,raw', changed: 'true' });
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {

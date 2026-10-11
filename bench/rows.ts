@@ -43,6 +43,10 @@ export const SPEC = {
   stampGeometryMatchesSpec: { metric: 'stamp_geometry_matches_spec', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   encryptionMatchesReference: { metric: 'encryption_matches_reference', unit: 'bool', direction: 'higher', kind: 'exact', tolerance: tol(0, 0) },
   ratio: { metric: 'compression_ratio', unit: 'ratio', direction: 'lower', kind: 'size', tolerance: tol(0, 0.01) },
+  cellMismatches: { metric: 'cell_mismatches', unit: 'cells', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  tableMismatches: { metric: 'font_table_mismatches', unit: 'tables', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  fontValidationFailures: { metric: 'font_validation_failures', unit: 'count', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
+  outlineMismatches: { metric: 'glyph_outline_mismatches', unit: 'glyphs', direction: 'lower', kind: 'quality', tolerance: tol(0, 0) },
   throughput: THROUGHPUT_SPEC,
 } as const satisfies Record<string, MetricSpec>;
 

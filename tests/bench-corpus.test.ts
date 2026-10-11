@@ -46,4 +46,34 @@ describe('benchmark corpus', () => {
     expect(head('clip.mp4', 12).subarray(4, 8).toString('latin1')).toBe('ftyp');
     expect(head('report.docx', 2).toString('latin1')).toBe('PK');
   });
+
+  it('holds real table, font and ebook payloads in the formats their names say', () => {
+    const head = (name: string, length: number): Buffer => fs.readFileSync(path.join(CORPUS_DIR, name)).subarray(0, length);
+    const tail = (name: string, length: number): Buffer => fs.readFileSync(path.join(CORPUS_DIR, name)).subarray(-length);
+    expect(head('data/table.parquet', 4).toString('latin1')).toBe('PAR1');
+    expect(tail('data/table.parquet', 4).toString('latin1')).toBe('PAR1');
+    expect(head('data/table.xlsx', 2).toString('latin1')).toBe('PK');
+    expect(head('fonts/sans.ttf', 4).equals(Buffer.from([0x00, 0x01, 0x00, 0x00]))).toBe(true);
+    expect(head('fonts/sans-cff.otf', 4).toString('latin1')).toBe('OTTO');
+    expect(head('ebooks/book.epub', 2).toString('latin1')).toBe('PK');
+    expect(head('ebooks/book.epub', 58).subarray(30).toString('latin1')).toContain('mimetype');
+    expect(head('ebooks/book.fb2', 5).toString('latin1')).toBe('<?xml');
+    // A MOBI file is a PalmDB whose first record header carries the type and creator at offset 60.
+    expect(head('ebooks/book.mobi', 68).subarray(60, 68).toString('latin1')).toBe('BOOKMOBI');
+  });
+
+  it('keeps the table, its JSON lines and its CSV the same 2,500 records', () => {
+    const lines = fs.readFileSync(path.join(CORPUS_DIR, 'data/table.jsonl'), 'utf8').trimEnd().split('\n');
+    expect(lines).toHaveLength(2_500);
+    const records = lines.map((line) => JSON.parse(line) as Record<string, string | number | boolean | null>);
+    expect(Object.keys(records[0])).toEqual(['id', 'code', 'name', 'city', 'amount', 'score', 'active', 'note', 'ts']);
+    expect(records.map((record) => record.id)).toEqual(Array.from({ length: 2_500 }, (_, index) => index + 1));
+    const csv = fs.readFileSync(path.join(CORPUS_DIR, 'data/table.csv'), 'utf8');
+    expect(csv.startsWith('id,code,name,city,amount,score,active,note,ts\r\n')).toBe(true);
+    // The cells that break converters are in the table.
+    expect(records.some((record) => record.code === '00004' || /^0\d+$/.test(String(record.code)))).toBe(true);
+    expect(records.some((record) => /^\de\d$/.test(String(record.code)))).toBe(true);
+    expect(records.some((record) => String(record.name).includes('\n'))).toBe(true);
+    expect(records.some((record) => record.note === null)).toBe(true);
+  });
 });

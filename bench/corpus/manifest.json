@@ -1,5 +1,5 @@
 {
-  "totalBytes": 2804887,
+  "totalBytes": 4032995,
   "files": [
     {
       "file": "clip.mp4",
@@ -10,6 +10,56 @@
       "file": "data/records.jsonl",
       "bytes": 651013,
       "sha256": "d561dceeb0cfde354fdd9400661788f17d7e4b99d8e9d73dbbe19c6e3dacc78c"
+    },
+    {
+      "file": "data/table.csv",
+      "bytes": 228903,
+      "sha256": "b49d4a69f210683567238102ae8aa3aa98aaffb055c2bef84480a0e047ccc225"
+    },
+    {
+      "file": "data/table.jsonl",
+      "bytes": 416152,
+      "sha256": "3817c9248b5497531c2f3390a6ef921e5ffc999cf4ed671a8e8d5929ae5aef65"
+    },
+    {
+      "file": "data/table.parquet",
+      "bytes": 87515,
+      "sha256": "3af39f582592f9ddf8b015d5ae660611307a40c41435d7f12253b8401259c64d"
+    },
+    {
+      "file": "data/table.xlsx",
+      "bytes": 147030,
+      "sha256": "a51e76f195bd0ee876515cd178b23a85d27dbcfb7e86a73d1c5605db3cfda55d"
+    },
+    {
+      "file": "ebooks/book.epub",
+      "bytes": 29716,
+      "sha256": "7c5a5ba45141db52829bc9fbc9a8655a5a0facb11bf11f836683481cefcaceb2"
+    },
+    {
+      "file": "ebooks/book.fb2",
+      "bytes": 59449,
+      "sha256": "aa4e57a24251834d68202abbfd569f460096635427855898839f57628933ff1a"
+    },
+    {
+      "file": "ebooks/book.gt.txt",
+      "bytes": 38220,
+      "sha256": "68e639e981d29bdf5abc6696e790680faf95ba27716938b567bcebc37eaafee4"
+    },
+    {
+      "file": "ebooks/book.mobi",
+      "bytes": 46699,
+      "sha256": "bdcd52e4ffad518e173084b56d12ed0d0a277c10ce6b4a88bba278974e6acd28"
+    },
+    {
+      "file": "fonts/sans-cff.otf",
+      "bytes": 84268,
+      "sha256": "046297ff837128fbd8525100bacc8fce2a7e1bd5d949cf70eb7f071cc0c01ea9"
+    },
+    {
+      "file": "fonts/sans.ttf",
+      "bytes": 90156,
+      "sha256": "d30984cf26bec0f6f9402f9c731ed41cfaae4062633188010f5fbb197420d216"
     },
     {
       "file": "lineart.png",

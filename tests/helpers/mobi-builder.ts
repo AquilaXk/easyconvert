@@ -73,30 +73,70 @@ export interface MobiOptions {
   textLength: number;
   /** A plain PalmDOC book: type TEXt, creator REAd, no MOBI header. */
   plainPalmDoc?: boolean;
+  /** EXTH metadata records (100 author, 201 cover offset, 503 title, 524 language) written after the MOBI header. */
+  exth?: Array<{ type: number; data: Buffer }>;
+  /** The book's full name, stored after the headers of record 0. */
+  fullName?: string;
+  /** Picture records, stored right after the text; the MOBI header names the first of them. */
+  images?: Buffer[];
+  /** Overrides the first picture index the header states (to test an index that lies). */
+  firstImageIndex?: number;
+  /** Overrides the declared full name offset and length. */
+  fullNameField?: { offset: number; length: number };
+}
+
+function exthBlock(records: Array<{ type: number; data: Buffer }>): Buffer {
+  const body = Buffer.concat(
+    records.map((record) => {
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(record.type, 0);
+      head.writeUInt32BE(8 + record.data.length, 4);
+      return Buffer.concat([head, record.data]);
+    })
+  );
+  const padding = (4 - ((12 + body.length) % 4)) % 4;
+  const head = Buffer.alloc(12);
+  head.write('EXTH', 0, 'latin1');
+  head.writeUInt32BE(12 + body.length + padding, 4);
+  head.writeUInt32BE(records.length, 8);
+  return Buffer.concat([head, body, Buffer.alloc(padding)]);
 }
 
 function record0(options: MobiOptions): Buffer {
-  const length = options.plainPalmDoc ? PALMDOC_HEADER_BYTES : RECORD0_BYTES;
-  const record = Buffer.alloc(length);
+  if (options.plainPalmDoc) {
+    const plain = Buffer.alloc(PALMDOC_HEADER_BYTES);
+    plain.writeUInt16BE(options.compression, 0);
+    plain.writeUInt32BE(options.textLength, 4);
+    plain.writeUInt16BE(options.textRecords.length, 8);
+    plain.writeUInt16BE(4096, 10);
+    plain.writeUInt16BE(options.encryption ?? 0, 12);
+    return plain;
+  }
+  const exth = options.exth ? exthBlock(options.exth) : Buffer.alloc(0);
+  const name = Buffer.from(options.fullName ?? '', 'utf-8');
+  const nameOffset = RECORD0_BYTES + exth.length;
+  const record = Buffer.concat([Buffer.alloc(RECORD0_BYTES), exth, name, Buffer.alloc(2)]);
   record.writeUInt16BE(options.compression, 0);
   record.writeUInt32BE(options.textLength, 4);
   record.writeUInt16BE(options.textRecords.length, 8);
   record.writeUInt16BE(4096, 10);
   record.writeUInt16BE(options.encryption ?? 0, 12);
-  if (!options.plainPalmDoc) {
-    record.write('MOBI', 16, 'latin1');
-    record.writeUInt32BE(MOBI_HEADER_BYTES, 20);
-    record.writeUInt32BE(2, 24);
-    record.writeUInt32BE(options.encoding, 28);
-    record.writeUInt32BE(6, 36);
-    record.writeUInt16BE(options.extraFlags ?? 0, EXTRA_FLAGS_OFFSET);
-  }
+  record.write('MOBI', 16, 'latin1');
+  record.writeUInt32BE(MOBI_HEADER_BYTES, 20);
+  record.writeUInt32BE(2, 24);
+  record.writeUInt32BE(options.encoding, 28);
+  record.writeUInt32BE(6, 36);
+  record.writeUInt32BE(options.fullNameField?.offset ?? nameOffset, 0x54);
+  record.writeUInt32BE(options.fullNameField?.length ?? name.length, 0x58);
+  record.writeUInt32BE(options.firstImageIndex ?? (options.images && options.images.length > 0 ? 1 + options.textRecords.length : 0xffffffff), 0x6c);
+  if (options.exth) record.writeUInt32BE(0x40, 0x80);
+  record.writeUInt16BE(options.extraFlags ?? 0, EXTRA_FLAGS_OFFSET);
   return record;
 }
 
 /** A complete PalmDB file holding the record 0 headers, the text records and any extra records. */
 export function buildMobi(options: MobiOptions): Buffer {
-  const records = [record0(options), ...options.textRecords, ...(options.extraRecords ?? [Buffer.from('INDX-record')])];
+  const records = [record0(options), ...options.textRecords, ...(options.images ?? []), ...(options.extraRecords ?? [Buffer.from('INDX-record')])];
   const listEnd = PALMDB_HEADER_BYTES + records.length * RECORD_ENTRY_BYTES + 2;
   const header = Buffer.alloc(listEnd);
   header.write('Test book', 0, 'latin1');

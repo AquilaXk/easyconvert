@@ -2,7 +2,10 @@ import type { FamilyRunner } from '../context';
 import type { Family } from '../report';
 import { runAudio } from './audio';
 import { runCompression } from './compression';
+import { runData } from './data';
 import { runDocument } from './document';
+import { runEbook } from './ebook';
+import { runFont } from './font';
 import { runImage } from './image';
 import { runOcr } from './ocr';
 import { runPdfOps } from './pdf-ops';
@@ -16,4 +19,7 @@ export const FAMILY_RUNNERS: Record<Family, FamilyRunner> = {
   document: runDocument,
   compression: runCompression,
   'pdf-ops': runPdfOps,
+  data: runData,
+  ebook: runEbook,
+  font: runFont,
 };
