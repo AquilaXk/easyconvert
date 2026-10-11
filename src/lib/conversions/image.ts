@@ -1789,10 +1789,8 @@ async function encodeAvifFromPipeline(
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
   const avifenc = await findAvifenc();
   const pixels = target.width * target.height;
-  // Full chroma for deep photographs is the rule for untagged pictures; an HDR picture (tagged by CICP) keeps its own route.
-  const fullChroma = deep && cicp === undefined;
-  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null, fullChroma);
-  const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder, fullChroma);
+  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
+  const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
     const png = await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer();

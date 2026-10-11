@@ -40,6 +40,8 @@ const QUALITY_POINTS = [40, 55, 70, 85] as const;
 const QUALITY = 70;
 const AVIF_SPEED = '6';
 const AVIF_DEPTH = '10';
+/** The product's output constraint for photographs: 4:2:0 (its AVIF policy), at the same bit depth as the reference. */
+const AVIF_CHROMA = '420';
 const SAMPLES = ['dng', 'arw'] as const;
 const TARGETS = ['jpg', 'png', 'avif', 'gif'] as const;
 type Target = (typeof TARGETS)[number];
@@ -115,7 +117,7 @@ async function runSample(ctx: FamilyContext, format: string, file: string, tools
     if (target === 'avif') {
       const png = ctx.scratch(`${format}-${name}-intermediate.png`);
       runTool(tools.magick, [tiff, ...TO_SRGB, png]);
-      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
+      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', AVIF_CHROMA, '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
     } else if (target === 'jpg') {
       runTool(tools.magick, [tiff, ...TO_SRGB, '-quality', String(quality), output]);
     } else {
