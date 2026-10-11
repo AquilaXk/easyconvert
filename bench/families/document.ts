@@ -11,6 +11,7 @@ import { emptyStructure, normalizeText, scoreStructure, STRUCTURE_CATEGORIES, st
 import { characterErrorRatePercent, wordF1 } from '../text-metrics';
 import { OLEFILE_PSEUDO_TOOL, runTool } from '../tools';
 import { richStructureTruth } from '../../tests/helpers/document-fixtures';
+import { runDocumentOffice } from './document-office';
 import { runDocumentPdf } from './document-pdf';
 import { runDocumentShaping } from './document-shaping';
 
@@ -322,4 +323,5 @@ export const runDocument: FamilyRunner = async (ctx) => [
   ...(await runHwp(ctx)),
   ...(await runDocumentPdf(ctx)),
   ...(await runDocumentShaping(ctx)),
+  ...(await runDocumentOffice(ctx)),
 ];
