@@ -8,13 +8,13 @@
     "ocr": { "bench": "ocr" },
     "document": { "bench": "document" },
     "compression": { "bench": "compression" },
-    "cad": { "bench": null },
+    "cad": { "bench": "cad" },
     "font": { "bench": null },
-    "raw": { "bench": null },
+    "raw": { "bench": "raw" },
     "data": { "bench": null },
     "ebook": { "bench": null },
     "pdf-ops": { "bench": "pdf-ops" },
-    "vector": { "bench": null },
+    "vector": { "bench": "vector" },
     "hdr-image": { "bench": null }
   },
   "rules": [
@@ -45,8 +45,24 @@
       "match": "^bench/families/audio\\.ts$"
     },
     {
-      "families": ["image", "video", "audio"],
+      "families": ["image", "video", "audio", "raw"],
       "match": "^bench/bd-rate\\.ts$"
+    },
+    {
+      "families": ["cad"],
+      "match": "^bench/families/cad\\.ts$|^bench/cad-ink\\.ts$"
+    },
+    {
+      "families": ["vector"],
+      "match": "^bench/families/vector\\.ts$|^bench/metafile-check\\.ts$"
+    },
+    {
+      "families": ["cad", "vector"],
+      "match": "^bench/vector-raster\\.ts$"
+    },
+    {
+      "families": ["raw"],
+      "match": "^bench/families/raw\\.ts$"
     },
     {
       "families": ["ocr"],
@@ -89,7 +105,7 @@
       "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
     },
     {
-      "families": ["image"],
+      "families": ["image", "vector"],
       "match": "^src/lib/security/svg-sanitizer\\.ts$"
     },
     {
@@ -97,7 +113,7 @@
       "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
     },
     {
-      "families": ["image"],
+      "families": ["image", "raw"],
       "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-reader|ico|image[^/]*|kd-tree|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {

@@ -382,17 +382,17 @@ describe('the step that maps changed paths to families', () => {
 
   only('measures the family of a changed conversion file, and nothing for a change outside the conversion code', () => {
     expect(outputs(['src/lib/conversions/zstd-encoder.ts']).outputs).toEqual({ families: 'compression', families_json: '["compression"]', unmapped: '', changed: 'true' });
-    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video', families_json: '["image","video"]', unmapped: '', changed: 'true' });
+    expect(outputs(['src/lib/conversions/image.ts', 'src/lib/conversions/media-encoder.ts']).outputs).toEqual({ families: 'image,video,raw', families_json: '["image","video","raw"]', unmapped: '', changed: 'true' });
     expect(outputs(['src/app/page.tsx', 'docs/guide.md', 'tests/a.test.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
   });
 
   only('reports a changed family with no bench rows, so the parity jobs can fail it', () => {
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: 'cad', changed: 'true' });
-    expect(outputs(['src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', families_json: '["ocr"]', unmapped: 'cad,font', changed: 'true' });
+    expect(outputs(['src/lib/conversions/font-woff2.ts']).outputs).toEqual({ families: '', families_json: '[]', unmapped: 'font', changed: 'true' });
+    expect(outputs(['src/lib/conversions/parquet-writer.ts', 'src/lib/conversions/font.ts', 'src/lib/conversions/ocr.ts']).outputs).toEqual({ families: 'ocr', families_json: '["ocr"]', unmapped: 'data,font', changed: 'true' });
   });
 
   only('measures every family when the dispatcher changes', () => {
-    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,pdf-ops');
+    expect(outputs(['src/lib/conversions/dispatch.ts']).outputs.families).toBe('image,video,audio,ocr,document,compression,cad,raw,pdf-ops,vector');
   });
 
   only('fails the job on a conversion file that no rule classifies', () => {
@@ -400,7 +400,7 @@ describe('the step that maps changed paths to families', () => {
   });
 
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
-    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops', families_json: '["image","video","audio","ocr","document","compression","pdf-ops"]', unmapped: '', changed: 'true' });
+    expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,cad,raw,pdf-ops,vector', families_json: '["image","video","audio","ocr","document","compression","cad","raw","pdf-ops","vector"]', unmapped: '', changed: 'true' });
     expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
   });
 
@@ -454,7 +454,7 @@ describe('the nightly run', () => {
     expect(speedJob.if).toBe("inputs.ab_base_ref == ''");
     const ab = nightly.jobs['bench-ab-speed'];
     expect(ab.if).toBe("inputs.ab_base_ref != ''");
-    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops']);
+    expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'cad', 'raw', 'pdf-ops', 'vector']);
     expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('cd ab-base && npm ci --ignore-scripts');
     const measure = stepNamed(ab, 'Measure the speed rows against that commit');
     expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base', FAMILY: '${{ matrix.family }}' });

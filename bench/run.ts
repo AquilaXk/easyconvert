@@ -40,7 +40,7 @@ import { rowInScope } from './scope';
 import { defaultResolver, LIBVMAF_PSEUDO_TOOL, toolVersion } from './tools';
 
 const FAMILY_SET: ReadonlySet<string> = new Set(FAMILIES);
-const REPORTED_TOOLS = ['ffmpeg', 'ffprobe', 'cwebp', 'dwebp', 'avifenc', 'avifdec', 'magick', 'zstd', 'xz', '7z', 'pdftotext', 'tesseract', 'soffice', 'pdfimages', 'epubcheck', 'ssimulacra2'] as const;
+const REPORTED_TOOLS = ['ffmpeg', 'ffprobe', 'cwebp', 'dwebp', 'avifenc', 'avifdec', 'magick', 'zstd', 'xz', '7z', 'pdftotext', 'tesseract', 'soffice', 'pdfimages', 'epubcheck', 'ssimulacra2', 'rsvg-convert', 'gs', 'pdftoppm', 'dcraw_emu'] as const;
 const EXIT_ERROR = 2;
 const DATE_LENGTH = 10;
 

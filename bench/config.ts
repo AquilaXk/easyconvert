@@ -74,5 +74,8 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
   ocr: null,
   document: null,
   compression: null,
+  cad: null,
+  raw: null,
   'pdf-ops': null,
+  vector: null,
 };

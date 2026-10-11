@@ -30,6 +30,9 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   epubcheck: ['epubcheck'],
   python3: ['python3'],
   ssimulacra2: ['ssimulacra2', 'ssimulacra2_rs'],
+  dcraw_emu: ['dcraw_emu'],
+  'rsvg-convert': ['rsvg-convert'],
+  gs: ['gs'],
 };
 
 /** Arguments that make each tool print its version, and the first line of output is kept. */
@@ -51,6 +54,10 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   pdfimages: ['-v'],
   epubcheck: ['--version'],
   ssimulacra2: ['--version'],
+  'rsvg-convert': ['--version'],
+  gs: ['--version'],
+  pdftoppm: ['-v'],
+  qpdf: ['--version'],
 };
 
 const VERSION_TIMEOUT_MS = 20_000;

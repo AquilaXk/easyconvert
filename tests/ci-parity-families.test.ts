@@ -27,7 +27,7 @@ import {
 const ROOT = path.resolve(__dirname, '..');
 const MAP = loadFamilyMap();
 const classify = (...paths: string[]): ReturnType<typeof classifyPaths> => classifyPaths(paths, MAP);
-const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops'];
+const BENCH_FAMILIES: readonly string[] = ['image', 'video', 'audio', 'ocr', 'document', 'compression', 'cad', 'raw', 'pdf-ops', 'vector'];
 const benchEntries = Object.fromEntries(BENCH_FAMILIES.map((name) => [name, { bench: name }]));
 
 describe('the map', () => {
@@ -51,7 +51,7 @@ describe('the map', () => {
 
   it('lists the conversion families that still have no reference-compared rows', () => {
     const unbenchmarked = [...MAP.families].filter(([, bench]) => bench === null).map(([name]) => name).sort();
-    expect(unbenchmarked).toEqual(['cad', 'data', 'ebook', 'font', 'hdr-image', 'raw', 'vector']);
+    expect(unbenchmarked).toEqual(['data', 'ebook', 'font', 'hdr-image']);
   });
 
   it('has a quick subset for every family, and every named case exists in the recorded baseline', () => {
@@ -93,8 +93,8 @@ describe('every file of the conversion code is classified', () => {
 
 describe('classifying changed paths', () => {
   it.each<[string, string, string[], string[]]>([
-    ['an image engine file', 'src/lib/conversions/image-resample.ts', ['image'], []],
-    ['the AVIF colour code', 'src/lib/conversions/avif-colour.ts', ['image'], []],
+    ['an image engine file', 'src/lib/conversions/image-resample.ts', ['image', 'raw'], []],
+    ['the AVIF colour code', 'src/lib/conversions/avif-colour.ts', ['image', 'raw'], []],
     ['the zstd encoder', 'src/lib/conversions/zstd-encoder.ts', ['compression'], []],
     ['the LZMA decoder', 'src/lib/conversions/lzma-decoder.ts', ['compression'], []],
     ['the 7z reader', 'src/lib/conversions/sevenzip-reader.ts', ['compression'], []],
@@ -116,16 +116,16 @@ describe('classifying changed paths', () => {
     ['the PDF text reader', 'src/lib/conversions/pdf-text-document.ts', ['document'], []],
     ['the complex-script shaper', 'src/lib/conversions/text-shaping/shape.ts', ['document'], []],
     ['the PDF font coverage', 'src/lib/conversions/pdf-fonts.ts', ['document'], []],
-    ['a CAD file', 'src/lib/conversions/cad-nurbs.ts', [], ['cad']],
+    ['a CAD file', 'src/lib/conversions/cad-nurbs.ts', ['cad'], []],
     ['a font file', 'src/lib/conversions/font-woff2.ts', [], ['font']],
-    ['a RAW file', 'src/lib/conversions/raw-demosaic.ts', [], ['raw']],
-    ['the RAW decode worker', 'src/worker/raw-decode-worker.ts', [], ['raw']],
+    ['a RAW file', 'src/lib/conversions/raw-demosaic.ts', ['raw'], []],
+    ['the RAW decode worker', 'src/worker/raw-decode-worker.ts', ['raw'], []],
     ['a data file', 'src/lib/conversions/parquet-writer.ts', [], ['data']],
     ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', [], ['ebook']],
     ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', ['pdf-ops'], []],
     ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
     ['the PDF merge of the workflow graph', 'src/lib/jobs/artifact-helpers.ts', ['pdf-ops'], []],
-    ['a vector file', 'src/lib/conversions/svg-geometry.ts', [], ['vector']],
+    ['a vector file', 'src/lib/conversions/svg-geometry.ts', ['vector'], []],
     ['an HDR file', 'src/lib/conversions/openexr-decode.ts', [], ['hdr-image']],
   ])('maps %s', (_name, file, benchmarked, unmapped) => {
     expect(classify(file)).toEqual({ benchmarked, unmapped, unclassified: [] });
@@ -158,13 +158,13 @@ describe('classifying changed paths', () => {
   });
 
   it('sends the SVG sanitizer to the image family that renders through it', () => {
-    expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+    expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image', 'vector'], unmapped: [], unclassified: [] });
   });
 
   it('puts the new media modules under their families', () => {
     expect(classify('src/lib/conversions/mp4-layout.ts')).toEqual({ benchmarked: ['video'], unmapped: [], unclassified: [] });
     expect(classify('src/lib/conversions/media-encoder-threads.ts')).toEqual({ benchmarked: ['video', 'audio'], unmapped: [], unclassified: [] });
-    expect(classify('src/lib/conversions/avif-cli.ts')).toEqual({ benchmarked: ['image'], unmapped: [], unclassified: [] });
+    expect(classify('src/lib/conversions/avif-cli.ts')).toEqual({ benchmarked: ['image', 'raw'], unmapped: [], unclassified: [] });
   });
 
   it('leaves unrelated files at the repository root and under .github alone', () => {
@@ -185,15 +185,15 @@ describe('classifying changed paths', () => {
 
   it('combines the families of several changed files, benchmarked ones in harness order', () => {
     expect(classify('src/lib/conversions/zstd.ts', 'src/lib/conversions/image.ts', 'src/lib/conversions/cad-nurbs.ts', 'src/lib/conversions/font.ts', 'docs/a.md')).toEqual({
-      benchmarked: ['image', 'compression'],
-      unmapped: ['cad', 'font'],
+      benchmarked: ['image', 'compression', 'cad', 'raw'],
+      unmapped: ['font'],
       unclassified: [],
     });
   });
 
   it('reports a path inside the scope that no rule covers', () => {
     expect(classify('src/lib/conversions/brand-new-engine.ts', 'src/lib/conversions/image.ts')).toEqual({
-      benchmarked: ['image'],
+      benchmarked: ['image', 'raw'],
       unmapped: [],
       unclassified: ['src/lib/conversions/brand-new-engine.ts'],
     });
@@ -214,13 +214,13 @@ describe('classifying changed paths', () => {
   });
 
   it('stops being unmapped, and is measured, once the map benchmarks the family', () => {
-    const rules = [{ families: ['cad'], match: '^src/cad\\.ts$' }];
-    const before = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: null } }, rules });
-    expect(classifyPaths(['src/cad.ts'], before)).toEqual({ benchmarked: [], unmapped: ['cad'], unclassified: [] });
-    const after = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: 'cad' } }, rules });
-    expect(classifyPaths(['src/cad.ts'], after)).toEqual({ benchmarked: ['cad'], unmapped: [], unclassified: [] });
+    const rules = [{ families: ['sample'], match: '^src/sample\\.ts$' }];
+    const before = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, sample: { bench: null } }, rules });
+    expect(classifyPaths(['src/sample.ts'], before)).toEqual({ benchmarked: [], unmapped: ['sample'], unclassified: [] });
+    const after = validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, sample: { bench: 'sample' } }, rules });
+    expect(classifyPaths(['src/sample.ts'], after)).toEqual({ benchmarked: ['sample'], unmapped: [], unclassified: [] });
     // The family joins "every benchmarked family" too.
-    expect(classifyPaths(['src/x.ts'], validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, cad: { bench: 'cad' } }, rules: [{ families: ['*'], match: '^src/' }] })).benchmarked).toEqual([...BENCH_FAMILIES, 'cad']);
+    expect(classifyPaths(['src/x.ts'], validateFamilyMap({ schemaVersion: 1, scope: '^src/', families: { ...benchEntries, sample: { bench: 'sample' } }, rules: [{ families: ['*'], match: '^src/' }] })).benchmarked).toEqual([...BENCH_FAMILIES, 'sample']);
   });
 
   it('bounds the number and the length of the paths it reads', () => {
@@ -256,9 +256,9 @@ describe('the command the changes job runs', () => {
     spawnSync('node', ['scripts/ci-parity-families.mjs'], { cwd: ROOT, input, encoding: 'utf-8' });
 
   it('prints the three lists the workflow reads', () => {
-    const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/cad-nurbs.ts\nREADME.md\n');
+    const result = run('src/lib/conversions/zstd.ts\nsrc/lib/conversions/font-woff2.ts\nREADME.md\n');
     expect(result.status).toBe(0);
-    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=cad', 'unclassified=']);
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual(['families=compression', 'unmapped=font', 'unclassified=']);
   });
 
   it('prints empty lists for a change outside the conversion code', () => {
@@ -302,11 +302,14 @@ describe('the files of the benchmark itself', () => {
   });
 
   it.each<[string, string, string[]]>([
-    ['the bench helper of the image, video and audio rate-distortion fits', 'bench/bd-rate.ts', ['image', 'video', 'audio']],
+    ['the bench helper of the image, video, audio and RAW rate-distortion fits', 'bench/bd-rate.ts', ['image', 'video', 'audio', 'raw']],
     ['the text scoring of OCR, documents and PDF operations', 'bench/text-metrics.ts', ['ocr', 'document', 'pdf-ops']],
     ['the structure scoring of documents', 'bench/structure-metrics.ts', ['document']],
     ['the PDF stamp reference', 'bench/pdf-stamp.ts', ['pdf-ops']],
     ['the stamp ink oracle', 'bench/pdf-ink.ts', ['pdf-ops']],
+    ['the CAD ink oracle', 'bench/cad-ink.ts', ['cad']],
+    ['the metafile reader', 'bench/metafile-check.ts', ['vector']],
+    ['the rendering helpers of the CAD and vector families', 'bench/vector-raster.ts', ['cad', 'vector']],
   ])('sends %s to its families', (_name, file, families) => {
     expect(classify(file)).toEqual({ benchmarked: families, unmapped: [], unclassified: [] });
   });

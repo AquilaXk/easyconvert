@@ -256,7 +256,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        family: [image, video, audio, ocr, document, compression, pdf-ops]
+        family: [image, video, audio, ocr, document, compression, cad, raw, pdf-ops, vector]
 
     services:
       redis:
