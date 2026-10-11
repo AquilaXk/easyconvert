@@ -111,10 +111,16 @@ export const AVIF_CLI_MAX_PIXELS = 48_000_000;
  * the process, the PNG hand-off and the temp files outweighed it (speed ratio 1.97 and 1.69, at parity), with
  * no change in photo BD-rate. Pictures above `AVIF_CLI_MAX_PIXELS` also stay on the image library, which encoded
  * them before the tool existed, so no picture size is refused that was accepted earlier.
+ *
+ * An untagged photograph with more than 8 bits per sample (a developed camera file, a 16-bit scan or render) also goes
+ * to the command-line encoder, at the layout the policy gives a photograph (4:2:0) and 10 bits: on the 2.7 and 0.5 megapixel
+ * camera samples of the benchmark the image library's encoder at the same layout and speed was 5.7 to 11.8% behind the
+ * command-line encoder in BD-rate (and 3.6 to 20.6% without the tuning), while the command-line encoder matched the
+ * reference's own output at the same constraints.
  */
-export function avifEncoderFor(content: ContentClass, grey: boolean, pixels: number, toolAvailable: boolean): AvifEncoder {
+export function avifEncoderFor(content: ContentClass, grey: boolean, pixels: number, toolAvailable: boolean, deepPhoto = false): AvifEncoder {
   if (!toolAvailable || pixels > AVIF_CLI_MAX_PIXELS) return 'image-library';
-  return grey || content === 'graphic' ? 'library-cli' : 'image-library';
+  return grey || content === 'graphic' || deepPhoto ? 'library-cli' : 'image-library';
 }
 
 export function avifEffortFor(pixels: number, content: ContentClass, encoder: AvifEncoder = 'image-library'): number {

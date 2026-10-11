@@ -433,6 +433,15 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
 });
 
 describe('avifEncoderFor', () => {
+  it('sends an untagged photograph of more than 8 bits to the command-line encoder at the photograph layout, and an 8-bit one to the image library', () => {
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, true)).toBe('library-cli');
+    expect(avifPolicyFor(70, 'photo', 5 * MEGAPIXEL, true, false, 'library-cli')).toMatchObject({ encoder: 'library-cli', bitdepth: 10, chroma: '4:2:0', layout: '4:2:0', effort: 3 });
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, false)).toBe('image-library');
+    // Without the tool, or above the tool's size limit, the image library writes it.
+    expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, false, true)).toBe('image-library');
+    expect(avifEncoderFor('photo', false, AVIF_CLI_MAX_PIXELS + 1, true, true)).toBe('image-library');
+  });
+
   it('gives grey and graphic pictures to the library encoder, colour photographs and oversized pictures to the image library, and everything to the image library without the tool', () => {
     expect(avifEncoderFor('graphic', false, 1_000, true)).toBe('library-cli');
     expect(avifEncoderFor('photo', true, 1_000, true)).toBe('library-cli');

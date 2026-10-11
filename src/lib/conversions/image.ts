@@ -1789,7 +1789,8 @@ async function encodeAvifFromPipeline(
   const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
   const avifenc = await findAvifenc();
   const pixels = target.width * target.height;
-  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null);
+  // An HDR picture (tagged by CICP) keeps its own route; an untagged deep photograph goes to the command-line encoder.
+  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null, deep && cicp === undefined);
   const policy = avifPolicyFor(options.quality, content, pixels, deep, grey, encoder);
   if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
     const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;

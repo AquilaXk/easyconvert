@@ -40,8 +40,9 @@ const QUALITY_POINTS = [40, 55, 70, 85] as const;
 const QUALITY = 70;
 const AVIF_SPEED = '6';
 const AVIF_DEPTH = '10';
-/** The product's output constraint for photographs: 4:2:0 (its AVIF policy), at the same bit depth as the reference. */
-const AVIF_CHROMA = '420';
+/** The product's chroma layout for a photograph (its AVIF policy): 4:2:0 below this quality, 4:4:4 from it, at the same bit depth as the reference. */
+const AVIF_FULL_CHROMA_QUALITY = 80;
+const avifChroma = (quality: number): string => (quality >= AVIF_FULL_CHROMA_QUALITY ? '444' : '420');
 const SAMPLES = ['dng', 'arw'] as const;
 const TARGETS = ['jpg', 'png', 'avif', 'gif'] as const;
 type Target = (typeof TARGETS)[number];
@@ -117,7 +118,7 @@ async function runSample(ctx: FamilyContext, format: string, file: string, tools
     if (target === 'avif') {
       const png = ctx.scratch(`${format}-${name}-intermediate.png`);
       runTool(tools.magick, [tiff, ...TO_SRGB, png]);
-      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', AVIF_CHROMA, '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
+      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', avifChroma(quality), '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
     } else if (target === 'jpg') {
       runTool(tools.magick, [tiff, ...TO_SRGB, '-quality', String(quality), output]);
     } else {
@@ -148,7 +149,12 @@ async function runSample(ctx: FamilyContext, format: string, file: string, tools
         const decoded = `${picture}.png`;
         decodeImageToPng(kindOf(target), picture, decoded, decoders);
         const score = pictureQuality(tools.ffmpeg, decoded, source());
-        return { ssim: score.ssim, psnr: capPsnr(score.psnr), bytes: fileSize(picture) };
+        return { ssim: score.ssim, psnr: capPsnr(score.psnr), bytes: fileSize(picture) - (target === 'avif' ? metadataBytes(picture) : 0) };
+      };
+      /** The camera's EXIF that the product keeps in an AVIF and the reference's stripped output does not carry (180 bytes: 6 percent of a small file), as the decoder reports it; the rows judge the encoder. */
+      const metadataBytes = (picture: string): number => {
+        const report = runTool(tools.avifdec, ['--info', picture]).stdout.toString('utf8');
+        return Number(/Exif Metadata\s*:\s*Present \((\d+) bytes\)/.exec(report)?.[1] ?? 0);
       };
       const points = LOSSY_TARGETS.has(target) ? QUALITY_POINTS : [QUALITY];
       const ours = new Map<number, Encoded>();
