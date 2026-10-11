@@ -68,12 +68,9 @@ describe('SVG to PDF', () => {
     expect(result.fallbackChain?.some((step) => step.startsWith('native-svg:'))).toBe(true);
   });
 
-  it('rejects a drawing the renderer cannot read as a failed conversion, not as a missing engine', async () => {
-    const failure = await dispatchConversion(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect'), 'svg', 'pdf', {}, 'broken.svg').then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure).not.toBeInstanceOf(EngineUnavailableError);
+  oracleTest('answers a drawing the renderer cannot read with a failed conversion that names the renderer, not with a missing engine', ['rsvg-convert'], async () => {
+    const run = dispatchConversion(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect'), 'svg', 'pdf', {}, 'broken.svg');
+    await expect(run).rejects.toThrow(/^The SVG renderer rejected the drawing/);
+    await expect(run).rejects.not.toBeInstanceOf(EngineUnavailableError);
   });
 });
