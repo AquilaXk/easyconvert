@@ -77,6 +77,8 @@ import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
 import { encode16BitPngAsync } from './png16';
+import { recompressStoredPng16 } from './png-photo-bands';
+import { CPU_POOL_MIN_BYTES } from '../workers/cpu-pool';
 import {
   demosaicRcdBayerCfa,
   processFloat32LinearPipeline,
@@ -1754,8 +1756,16 @@ const GIF_PHOTO_RUN_TOLERANCE = 0.25;
 /** Deflate level of a 16-bit PNG: adaptive filtering makes level 6 as small as level 8 and faster. */
 const DEEP_PNG_COMPRESSION_LEVEL = 6;
 
-/** zlib level of the PNG handed to the AVIF encoder: it is read once and thrown away, so speed matters and size does not. */
-const AVIFENC_INPUT_PNG_COMPRESSION = 1;
+/** Deflate level 0 writes the pixels as stored blocks: the picture the encoder returns carries its chunks and the scanlines at memory speed. */
+const STORED_DEFLATE_LEVEL = 0;
+
+/** Bytes of the 16-bit pixels of a decoded picture, from its metadata (0 when its size is not known). */
+function deepPixelBytes(meta: Metadata | undefined): number {
+  return meta?.width !== undefined && meta.height !== undefined ? meta.width * meta.height * (meta.channels ?? 1) * 2 : 0;
+}
+
+/** Deflate level of the PNG handed to the AVIF encoder: it is read once and thrown away, so it is written stored (level 0) and the encoder reads it back at memory speed. */
+const AVIFENC_INPUT_PNG_COMPRESSION = 0;
 /** Colour tags of an HDR AVIF: BT.2020 primaries, PQ transfer and the matching BT.2020 matrix. */
 const PQ_AVIF_CICP: AvifCicp = { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_BT2020_NCL };
 
@@ -2291,10 +2301,17 @@ export async function convertImage(
         } else {
           // A 16-bit picture is mostly noise below its top byte: adaptive row filtering (the smallest-sum choice that libpng's
           // heuristic makes) writes it 13 percent smaller, as the standard converters do, at deflate level 6, which is as small as 8 there.
-          outputBuffer = await (deepColourspace
-            ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
-            : pipeline.png({ compressionLevel: 8 })
-          ).toBuffer();
+          let photoPng: Buffer | null = null;
+          if (deepColourspace && content === 'photo' && deepPixelBytes(inputMeta) >= CPU_POOL_MIN_BYTES) {
+            const stored = await pipeline.toColourspace(deepColourspace).png({ compressionLevel: STORED_DEFLATE_LEVEL }).toBuffer();
+            photoPng = await recompressStoredPng16(stored);
+          }
+          outputBuffer =
+            photoPng ??
+            (await (deepColourspace
+              ? pipeline.toColourspace(deepColourspace).png({ compressionLevel: DEEP_PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
+              : pipeline.png({ compressionLevel: 8 })
+            ).toBuffer());
         }
         if (tagsPq) outputBuffer = writePngCicp(outputBuffer, { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_IDENTITY, fullRange: true });
         mimeType = 'image/png';
