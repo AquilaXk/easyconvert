@@ -1,6 +1,26 @@
 {
-  "totalBytes": 2804887,
+  "totalBytes": 2871990,
   "files": [
+    {
+      "file": "cad/plate-basic.dxf",
+      "bytes": 3207,
+      "sha256": "94f9b3cf811aecbc27d43ee5a904b8fe29b83d35211299e67182705eab04910e"
+    },
+    {
+      "file": "cad/plate-basic.truth.json",
+      "bytes": 17705,
+      "sha256": "f52ef69a0fd809cd7dc8c8638ac3908747ccaa86b6f5d5848e03ccce1ca6d0ce"
+    },
+    {
+      "file": "cad/plate-full.dxf",
+      "bytes": 4824,
+      "sha256": "52c55dfae58564141e5f432bdc73b67985499a61bf11758b80eb6b3e96b586c4"
+    },
+    {
+      "file": "cad/plate-full.truth.json",
+      "bytes": 28579,
+      "sha256": "cc408da867baf15bb88aeed15ded1ab0a8134e7f79d890cf6473c762c0446f09"
+    },
     {
       "file": "clip.mp4",
       "bytes": 374912,
@@ -20,6 +40,16 @@
       "file": "music.wav",
       "bytes": 705644,
       "sha256": "6b62570f08055f9f2b3c376381b0134b4a29f35a5f3d01348d04b61dfb7bdd16"
+    },
+    {
+      "file": "office/workbook.gt.txt",
+      "bytes": 769,
+      "sha256": "d75b296b1ef2ec6c1779e39ce3e65805ea50452aedfaa6cf3b8f4b307a253b51"
+    },
+    {
+      "file": "office/workbook.xlsx",
+      "bytes": 3961,
+      "sha256": "97055834e69dce57b2e16a6fd38a9e6e6a10729bf3e5c304bda22e6dca0d3278"
     },
     {
       "file": "photo-a.jpg",
@@ -60,6 +90,31 @@
       "file": "speech.wav",
       "bytes": 252364,
       "sha256": "ea112972d60fc21150f64e3e1a3cf3c7dab1b46d1b0e99fb214f690ffd5020c3"
+    },
+    {
+      "file": "vector/label.gt.txt",
+      "bytes": 57,
+      "sha256": "7adbedaf47715b698abda0eb3ce98b9498d0299e35291b23923b93813d660479"
+    },
+    {
+      "file": "vector/label.svg",
+      "bytes": 494,
+      "sha256": "baa191673a95249b8611925a3dfc639ae2b9f13a10a2e50fb7b51d66941c5afd"
+    },
+    {
+      "file": "vector/shapes.eps",
+      "bytes": 740,
+      "sha256": "8a3f257fdc4a3daedc24b08655ff8a20621257fcd0866bb8b36b6a4eca78a1f7"
+    },
+    {
+      "file": "vector/shapes.svg",
+      "bytes": 637,
+      "sha256": "b0953d6373741ec5888501808f500e15851b6da2cccd6145078cb25343a511f2"
+    },
+    {
+      "file": "vector/shapes.truth.png",
+      "bytes": 6130,
+      "sha256": "46a738e72dec3da03989af93382588e6691807941abcbe6bbbae07382345914e"
     }
   ]
 }
