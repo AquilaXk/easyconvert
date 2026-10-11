@@ -218,6 +218,11 @@ export interface ConversionOptions {
    */
   skipLinks?: boolean;
   repair?: boolean;
+  /**
+   * HTML to PDF: refuse a document that names an external resource (400). Resources are never fetched, so
+   * by default an external image is left out and reported in `ConversionResult.metadata.warnings`.
+   */
+  requireResources?: boolean;
   // Audio options
   audio?: AudioEncodingOptions;
   audioBitrate?: '64k' | '96k' | '128k' | '192k' | '256k' | '320k';
@@ -473,7 +478,8 @@ export interface ConversionResult {
   skippedLinks?: string[];
   /**
    * Engine and post-processing facts about the result, such as the PDF/A verdict. A media conversion lists the
-   * input streams the output lacks as `droppedStreams` (see DroppedStream).
+   * input streams the output lacks as `droppedStreams` (see DroppedStream). `warnings` lists, one line each,
+   * what a document conversion left out, such as an external image of an HTML page.
    */
   metadata?: Record<string, unknown>;
 }
@@ -565,6 +571,8 @@ export interface ConversionJobResult {
   fallbackReason?: string;
   /** Input streams the output lacks because the target cannot carry them; absent when nothing was left out. */
   droppedStreams?: DroppedStream[];
+  /** What the conversion left out of the document, one line each (an HTML image that is not embedded); absent when nothing was. */
+  warnings?: string[];
   /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
   optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
 }

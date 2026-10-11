@@ -31,11 +31,33 @@ const PHOTO_WIDTHS_POINTS = [180, 200, 220];
 const RENDER_DPI = '72';
 /** Mean absolute difference, in gray levels of 255, that a lossy profile may add to the render of a page. */
 const WEB_RENDER_TOLERANCE = 6;
+/** Most compression passes the settling test allows; each pass of a lossy profile strictly shrinks the file or stops. */
+const MAX_SETTLING_PASSES = 8;
+const BARE_PDF_MAX_BYTES = 400;
 const USER_PASSWORD = 'user-secret-696';
 const OWNER_PASSWORD = 'owner-secret-696';
 
 const photoPdf = (): Buffer =>
   buildPhotoPdf({ jpeg: PHOTO, pageWidth: 612, pageHeight: 792, pages: PHOTO_WIDTHS_POINTS.map((width, index) => ({ text: PAGE_TEXTS[index], photoWidthPoints: width })) });
+
+/** A one-page PDF written by hand: a catalog, a page tree and an empty page, with a classic cross-reference table. */
+function bareOnePagePdf(): Buffer {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>',
+  ];
+  let body = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objects.forEach((object, index) => {
+    offsets.push(body.length);
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefAt = body.length;
+  const entries = offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${entries}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+  return Buffer.from(body, 'latin1');
+}
 
 function pageTexts(pdf: Buffer): string[] {
   return withTempDir((dir) => {
@@ -140,12 +162,36 @@ describe.skipIf(toolsMissing)('PDF compression', () => {
       expect(result.buffer.length).toBeLessThanOrEqual(input.length);
       if (!result.optimized) expect(result.buffer.equals(input)).toBe(true);
     }
-    // A document that is already compact: the output of a profile, compressed by it again.
-    const once = await compressPdf(input, { profile: 'max' });
-    const twice = await compressPdf(once.buffer, { profile: 'max' });
-    expect(twice.optimized).toBe(false);
-    expect(twice.buffer.equals(once.buffer)).toBe(true);
-    // A small text document that pdf-lib already packed.
+  });
+
+  it.each(['web', 'print', 'archive', 'max'] as const)(
+    '%s: a document with nothing to compress comes back byte for byte, not optimized',
+    async (profile) => {
+      // Three objects and no streams: every rewrite adds a document information dictionary, object streams or a
+      // cross-reference stream, so no profile can make it smaller than the 300 bytes it is.
+      const bare = bareOnePagePdf();
+      expect(bare.length).toBeLessThan(BARE_PDF_MAX_BYTES);
+      const result = await compressPdf(bare, { profile });
+      expect(result.optimized).toBe(false);
+      expect(result.buffer.equals(bare)).toBe(true);
+    }
+  );
+
+  it('settles: compressing the output of a profile again ends at a document it returns unchanged', async () => {
+    let current = input;
+    let settled = false;
+    for (let pass = 0; pass < MAX_SETTLING_PASSES && !settled; pass++) {
+      const result = await compressPdf(current, { profile: 'max' });
+      expect(result.buffer.length).toBeLessThanOrEqual(current.length);
+      settled = !result.optimized;
+      if (settled) expect(result.buffer.equals(current)).toBe(true);
+      current = result.buffer;
+    }
+    expect(settled).toBe(true);
+    expect(pageTexts(current)).toEqual(PAGE_TEXTS);
+  });
+
+  it('does not enlarge a small text document that pdf-lib already packed', async () => {
     const text = await plainPdf(['Only text here']);
     const textResult = await compressPdf(text, { profile: 'web' });
     expect(textResult.buffer.length).toBeLessThanOrEqual(text.length);

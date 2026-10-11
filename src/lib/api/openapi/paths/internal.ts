@@ -14,6 +14,7 @@ import {
   multipartBody,
   requireScope,
   FRAME_RESPONSE_HEADERS,
+  CONVERSION_WARNINGS_RESPONSE_HEADERS,
   DROPPED_STREAMS_RESPONSE_HEADERS,
   CLIENT_CLOSED_DESCRIPTION,
   CONCURRENCY_LIMIT_NOTE,
@@ -243,7 +244,7 @@ export const internalPaths = {
       responses: {
         '200': {
           ...binaryResponse('Converted file.'),
-          headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS },
+          headers: { ...FRAME_RESPONSE_HEADERS, ...DROPPED_STREAMS_RESPONSE_HEADERS, ...CONVERSION_WARNINGS_RESPONSE_HEADERS },
         },
         '400': createErrorResponse('Invalid input, unsupported conversion, or spoofed file.'),
         '401': createProblemResponse('Authentication required.'),

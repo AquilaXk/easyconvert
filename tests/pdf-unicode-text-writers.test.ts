@@ -941,9 +941,9 @@ describe('HTML to PDF keeps document structure', () => {
     expect(normalizeText(pdfText(result.buffer))).toBe('Before image After image');
   });
 
-  it('refuses external image references instead of dropping them', async () => {
+  it('refuses external image references instead of dropping them when every resource is required', async () => {
     const html = '<p>Logo below</p><img src="https://example.com/logo.png" alt="logo">';
-    const error = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'remote.html').then(
+    const error = await convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', { requireResources: true }, 'remote.html').then(
       () => null,
       (err: unknown) => err
     );
@@ -1037,8 +1037,6 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-marker-')), 'invoked');
     const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
     for (const html of [
-      '<p>remote</p><img src="http://192.0.2.2:18765/m.png">',
-      '<p>local</p><img srcset="file:///etc/hosts 1x">',
       '<p>frame</p><iframe src="http://192.0.2.2:18765/"></iframe>',
       '<link rel="stylesheet" href="http://192.0.2.2:18765/s.css"><p>styled</p>',
     ]) {
@@ -1105,11 +1103,9 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
       ['<form><button formaction="file:///etc/hosts">go</button></form>', 'file:///etc/hosts'],
       ['<blockquote cite="http://192.0.2.2:18765/q">quote</blockquote>', 'http://192.0.2.2:18765/q'],
       ['<script src="http://192.0.2.2:18765/s.js"></script><p>script</p>', 'http://192.0.2.2:18765/s.js'],
-      ['<p>relative</p><img src="images/logo.png">', 'images/logo.png'],
       ['<p><a href="file:///etc/hosts">local link</a></p>', 'file:///etc/hosts'],
       ['<p><a href="java\tscript:alert(1)">script link</a></p>', 'java\tscript:alert(1)'],
       ['<p><a href="https://example.com/" ping="http://192.0.2.2:18765/ping">ping</a></p>', 'http://192.0.2.2:18765/ping'],
-      [`<p>srcset</p><img srcset="data:image/png;base64,${buildRgbPng(1, 1).toString('base64')} 1x, file:///etc/hosts 2x">`, 'file:///etc/hosts'],
       ['<meta http-equiv="refresh" content="0; url=file:///etc/hosts"><p>refresh</p>', 'file:///etc/hosts'],
     ];
     for (const [html, reference] of cases) {

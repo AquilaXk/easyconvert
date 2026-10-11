@@ -4,6 +4,7 @@ import { ARCHIVE_COMPRESSION_LEVEL_MAX, ARCHIVE_COMPRESSION_LEVEL_MIN } from '@/
 import { OCR_MAX_LANGUAGES_PER_REQUEST } from '@/lib/conversions/ocr-languages';
 
 import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_DROPPED_TEXT_CHARS } from '../dropped-streams';
+import { MAX_CONVERSION_WARNING_CHARS, MAX_CONVERSION_WARNINGS } from '../conversion-warnings';
 import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
 
@@ -580,6 +581,12 @@ export const ConversionOptionsSchema = {
     repair: {
       type: 'boolean',
       description: 'Attempt archive repair mode (supported for ZIP via zip -FF).',
+    },
+    requireResources: {
+      type: 'boolean',
+      default: false,
+      description:
+        'HTML to PDF: refuse a page that names an external resource with a 400 error. Resources are never fetched, so by default an external image is left out of the PDF and reported as a warning in the result.',
     },
 
     // Audio options
@@ -1280,6 +1287,17 @@ export const EngineTraceProperties = {
   },
 } as const;
 
+/** What a document conversion left out, such as the images of an HTML page that are not embedded; absent when nothing was. */
+export const ConversionWarningsProperties = {
+  warnings: {
+    type: 'array',
+    maxItems: MAX_CONVERSION_WARNINGS,
+    description:
+      'What the conversion left out of the document, one line each, for example an HTML image that is not embedded: resources are never fetched, so the image is omitted unless the request sets `requireResources`. The conversion succeeded. Present only when something was left out.',
+    items: { type: 'string', maxLength: MAX_CONVERSION_WARNING_CHARS },
+  },
+} as const;
+
 /** Input streams a media conversion left out because the target container cannot carry them; absent when none. */
 export const DroppedStreamsProperties = {
   droppedStreams: {
@@ -1383,12 +1401,14 @@ export const JobResourceSchema = {
     },
     ...EngineTraceProperties,
     ...DroppedStreamsProperties,
+    ...ConversionWarningsProperties,
     result: {
       type: 'object',
       description: 'Job execution result metadata.',
       properties: {
         ...EngineTraceProperties,
         ...DroppedStreamsProperties,
+        ...ConversionWarningsProperties,
         sourceFrameCount: {
           type: 'integer',
           minimum: 2,

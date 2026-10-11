@@ -26,6 +26,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { frameMetadataHeaders } from '@/lib/api/frame-headers';
+import { conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
@@ -226,6 +227,7 @@ export async function POST(req: NextRequest) {
         'X-Storage-Footprint': '0-bytes',
         ...frameMetadataHeaders(result),
         ...droppedStreamsHeaders(result),
+        ...conversionWarningsHeaders(result),
       },
     });
   } catch (error: unknown) {
