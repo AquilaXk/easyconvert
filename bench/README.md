@@ -114,6 +114,40 @@ generated corpus only, as before, and so does the plain baseline run of the nigh
 corpus' baseline entries only; the parity jobs of the night measure and judge the public samples); a change that lands a speed gap on a public sample is found by the nightly run (the gate files
 that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was).
 
+### Documents, PDF, ebooks, fonts, CAD, RAW, vector and data
+
+The generated corpus (`bench/corpus/`) is small by design. For the document, PDF, ebook, font, CAD, RAW, vector and data
+families the benchmark also measures public files, because a verdict from one or two inputs can flip on another: published
+converter evaluations report per-document results and an average per document class (a macro average over the documents of
+a class, so that a long file does not outweigh a short one), and this benchmark does the same.
+
+| Family | Samples (classes) | Sources | What a sample is judged by |
+|---|---|---|---|
+| document | 45 office files: DOCX, XLSX/XLSM, PPTX, ODT, DOC, XLS, PPT, RTF, HTML (tables, pictures, charts, footnotes, tracked changes, fields, RTL, CJK, embedded fonts, macros, columns, real-world) | the test files of an office suite, an Apache-licensed office-format library (also the real-world corpus) and an MIT-licensed Open XML test set; government pages and RTF files of the real-world corpus | share of the words of the source that survive in the PDF (the text of the source read from the format, bench/office-words.ts), fonts not embedded, `qpdf --check` faults, against the office suite's PDF export |
+| pdf-ops | 23 PDFs (tagged, forms, encrypted, scanned, damaged, very long, CJK) | the PDF.js regression suite, the PDF/UA conformance corpus, the government corpus | extract, delete, reorder, rotate, split, compress, protect and (encrypted files) unlock against qpdf and Ghostscript: check failures, page count, text of every page and render of sampled pages against the source |
+| ebook | 18 books (illustrated, novels, poetry, RTL, technical) in EPUB, Kindle and FictionBook | public-domain books with images, EPUB 3 sample publications, FB2 files of open repositories | word F1 against the text read from the source (the EPUB of the same book for a Kindle file), EPUBCheck, headings and pictures, against calibre |
+| font | 16 faces (hinted TrueType, Arabic shaping, variable, CFF, CJK, colour COLR/CBDT) | open-licence families | size and table differences of WOFF and WOFF2 against the reference encoders and decoders; outline conversion by spec conformance on the static faces |
+| cad | 14 DXF drawings (R12 to 2018; basic geometry, curves, blocks, text, architecture) | test drawings of two MIT-licensed DXF libraries | ink recall and precision against the strokes and text that ezdxf reads from the file, against the office suite's import |
+| raw | 14 camera files (Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans, DNG) | the open camera sample archive (CC0) | JPEG and PNG for all, AVIF and GIF too for the four smallest (a 24-megapixel AVIF encode at four quality points would hold the nightly run for an hour); as the generated samples: SSIM, PSNR, bytes and BD-rate against LibRaw + ImageMagick/avifenc |
+| vector | 31 SVG tests (shapes, strokes, markers, gradients, patterns, masking, filters, structure, images, blend) | the rendering tests of an open SVG renderer, each with its reference picture | SSIM and PSNR of the PNG and of the PDF page against the reference picture of the suite, against librsvg |
+| data | 16 datasets (tall, wide, unicode, nulls, mixed types, text with line breaks) in CSV, JSON, JSON lines and Parquet, with the format's own test files | open datasets, Parquet test files | cells that differ from the text of the file (or its expected-values CSV, or DuckDB's reading of a Parquet file with no text twin), against DuckDB, Arrow and the office suite |
+
+Every sample has a `converts` row beside its quality rows (1 when the product converts it): a refusal of the product is a row below the
+reference, not a stopped run. A sample the reference cannot convert states that in the same row. The per-class rows (`class-<class><target>`)
+are the mean over the samples of the class (a pooled ratio for sizes), and exist only when every sample of the class was measured.
+
+These families use the sample system described above: the one manifest `bench/corpus/remote-manifest.json` (its samples carry the
+family they belong to, and a sample may list companion files such as the reference picture of an SVG test), the one fetcher
+`bench/corpora.ts` with its redirect and size guards, the one class-row pool `bench/class-rows.ts`, and the one quick list and speed list
+in `bench/config.ts` (`QUICK_PUBLIC_SUBSET`, `PUBLIC_SPEED_SAMPLES`). A sample the host does not deliver is skipped as a missing optional
+tool is, and fails the run under `ORACLE_STRICT_MODE=1`. The cases named in `QUICK_PUBLIC_SUBSET` run in the pull request quality job;
+the speed jobs of a pull request time the generated corpus only, so the public samples of these families have no known-gap entries
+(their speed gaps are tracked in the issues), and the nightly run measures the full sets and the throughput rows of the samples in
+`PUBLIC_SPEED_SAMPLES`.
+
+The python libraries behind the oracles (ezdxf for the geometry of a drawing, olefile and xlrd for the text of the binary office formats) are
+pinned in `.github/actions/ci-setup/install-tools.sh`.
+
 ## Gate
 
 Each baseline entry has a direction (`higher` or `lower` is better) and a tolerance (`abs`, `rel`; the larger

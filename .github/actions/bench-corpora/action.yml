@@ -7,7 +7,7 @@ description: >-
 
 inputs:
   families:
-    description: Comma-separated benchmark families the job measures (image, video, audio, compression); others are ignored.
+    description: Comma-separated benchmark families the job measures (image, video, audio, compression, document, pdf-ops, ebook, font, cad, raw, vector, data); others are ignored.
     required: true
 
 runs:
@@ -40,3 +40,59 @@ runs:
       with:
         path: .bench-corpora/compression
         key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the document samples
+      if: contains(format(',{0},', inputs.families), ',document,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/document
+        key: bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the pdf-ops samples
+      if: contains(format(',{0},', inputs.families), ',pdf-ops,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/pdf-ops
+        key: bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the ebook samples
+      if: contains(format(',{0},', inputs.families), ',ebook,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/ebook
+        key: bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the font samples
+      if: contains(format(',{0},', inputs.families), ',font,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/font
+        key: bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the cad samples
+      if: contains(format(',{0},', inputs.families), ',cad,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/cad
+        key: bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the raw samples
+      if: contains(format(',{0},', inputs.families), ',raw,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/raw
+        key: bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the vector samples
+      if: contains(format(',{0},', inputs.families), ',vector,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/vector
+        key: bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+
+    - name: Cache the data samples
+      if: contains(format(',{0},', inputs.families), ',data,')
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/data
+        key: bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}

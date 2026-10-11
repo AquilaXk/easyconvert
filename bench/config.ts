@@ -122,6 +122,14 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
     ...['tar->zst', 'tar->7z', 'tar->zip', 'tar->gz', 'tar->tar.bz2', 'zst->tar', 'xz->tar', '7z->tar', 'zip->tar', 'gz->tar', 'bz2->tar', 'rar->tar'].map((pair) => `silesia-ooffice.${pair}`),
     ...['tar->zst', 'tar->7z', 'tar->zip'].map((pair) => `wm-tmax100-grain.jpg.${pair}`),
   ],
+  document: ['doc-poi-61787.docx->pdf', 'doc-poi-japanese.pptx->pdf', 'doc-poi-53446.doc->pdf', 'doc-gov-001858.rtf->pdf'],
+  'pdf-ops': ['pdf-pdfjs-form-test.pdf->extract', 'pdf-gov-000341.pdf->unlock', 'pdf-pdfjs-cjk-1.pdf->rotate'],
+  ebook: ['book-wasteland.epub->txt', 'book-wasteland.fb2->txt'],
+  font: ['font-lato-regular.ttf->woff2', 'font-sourcecodepro-regular.otf->woff', 'font-amiri-regular.ttf->otf'],
+  cad: ['cad-openscad-export.dxf->svg', 'cad-circles-ellipses-arcs.dxf->pdf', 'cad-blocks.dxf->png'],
+  raw: ['raw-canon-g1.crw->png'],
+  vector: ['vec-path-M-C-S.svg->png', 'vec-radialGradient-fr-0.5.svg->png', 'vec-clipPath-clip-path-on-children.svg->pdf'],
+  data: ['data-penguins.json->csv', 'data-delta-byte-array.csv->parquet', 'data-weather.csv->json'],
 };
 
 /**
@@ -134,6 +142,14 @@ export const PUBLIC_SPEED_SAMPLES: Readonly<Record<string, readonly string[]>> =
   video: ['aom-fourpeople-270p.y4m', 'aom-touchdown-360p.y4m', 'aom-debugging-1080p.y4m'],
   audio: ['sqam-49-speech-en-f.flac', 'sqam-27-castanets.flac', 'sqam-65-orchestra-strauss.flac', 'pteraxys-part1.flac', 'edge-surround-5.1.wav'],
   compression: ['silesia-xml', 'silesia-ooffice'],
+  document: ['doc-poi-61787.docx', 'doc-poi-45544.xlsx', 'doc-poi-japanese.pptx', 'doc-poi-53446.doc'],
+  'pdf-ops': ['pdf-pdfjs-form-test.pdf', 'pdf-gov-000142.pdf'],
+  ebook: ['book-wasteland.epub'],
+  font: ['font-lato-regular.ttf', 'font-sourcecodepro-regular.otf'],
+  cad: ['cad-openscad-export.dxf', 'cad-circles-ellipses-arcs.dxf'],
+  raw: ['raw-canon-eos5d3-compress.dng'],
+  vector: ['vec-path-M-C-S.svg'],
+  data: ['data-penguins.json', 'data-delta-byte-array.csv'],
 };
 
 /**

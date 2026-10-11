@@ -94,12 +94,12 @@ select_tasks() {
   fi
 }
 
-# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB and OLE2 readers): the tests run python3 -I, which ignores user
+# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers): the tests run python3 -I, which ignores user
 # site-packages, so the pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
 task_pip() {
   sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
-    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47
+    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4
 }
 
 task_apt() {
