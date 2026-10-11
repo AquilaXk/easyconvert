@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -8,12 +8,12 @@
     "ocr": { "bench": "ocr" },
     "document": { "bench": "document" },
     "compression": { "bench": "compression" },
-    "cad": { "bench": null },
-    "font": { "bench": null },
-    "raw": { "bench": null },
-    "data": { "bench": null },
-    "ebook": { "bench": null },
     "pdf-ops": { "bench": "pdf-ops" },
+    "data": { "bench": "data" },
+    "ebook": { "bench": "ebook" },
+    "font": { "bench": "font" },
+    "cad": { "bench": null },
+    "raw": { "bench": null },
     "vector": { "bench": null },
     "hdr-image": { "bench": null }
   },
@@ -54,15 +54,35 @@
     },
     {
       "families": ["document"],
-      "match": "^bench/families/document[^/]*\\.ts$|^bench/structure-(extract|metrics)\\.ts$"
+      "match": "^bench/families/document[^/]*\\.ts$"
     },
     {
-      "families": ["ocr", "document", "pdf-ops"],
+      "families": ["document", "ebook"],
+      "match": "^bench/structure-(extract|metrics)\\.ts$"
+    },
+    {
+      "families": ["ocr", "document", "ebook", "pdf-ops"],
       "match": "^bench/text-metrics\\.ts$"
     },
     {
       "families": ["compression"],
-      "match": "^bench/families/compression\\.ts$"
+      "match": "^bench/families/compression[^/]*\\.ts$"
+    },
+    {
+      "families": ["data"],
+      "match": "^bench/families/data\\.ts$"
+    },
+    {
+      "families": ["ebook"],
+      "match": "^bench/families/ebook\\.ts$"
+    },
+    {
+      "families": ["font"],
+      "match": "^bench/families/font\\.ts$"
+    },
+    {
+      "families": ["data", "font"],
+      "match": "^bench/reference-server\\.(ts|py)$"
     },
     {
       "families": ["pdf-ops"],
@@ -125,8 +145,16 @@
       "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts|pdf-page-render\\.ts)$"
     },
     {
+      "families": ["document", "ebook", "data"],
+      "match": "^src/lib/conversions/(office|office/spreadsheet-limits)\\.ts$"
+    },
+    {
+      "families": ["document", "ebook"],
+      "match": "^src/lib/conversions/(epub-reader|document-model/epub)\\.ts$"
+    },
+    {
       "families": ["ebook"],
-      "match": "^src/lib/conversions/office/(mobi-reader|pml-reader)\\.ts$"
+      "match": "^src/lib/conversions/(office/(mobi-reader|pml-reader)|fb2-model|mobi-model)\\.ts$"
     },
     {
       "families": ["document"],

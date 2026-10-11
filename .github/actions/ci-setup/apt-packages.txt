@@ -37,3 +37,13 @@ pngcheck
 webp
 python3-pil
 python3-numpy
+zip
+unzip
+bzip2
+woff-tools
+libegl1
+libopengl0
+libnss3
+libxkbcommon0
+libasound2t64
+libxcb-cursor0

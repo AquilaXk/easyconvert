@@ -5,6 +5,7 @@
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
+#   calibre   the ebook converter the ebook benchmark compares against, from its release archive checked against a pinned SHA-256
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # Every part runs under `timeout` with its own limit, so a part that hangs fails the step by name once its limit has
@@ -35,6 +36,8 @@ S3_SIGV4_CURL_TIMEOUT_SECONDS=10
 S3_LOCAL_IMAGE_TAG=easyconvert-s3-test-server:pinned
 EPUBCHECK_VERSION=5.2.1
 EPUBCHECK_SHA256=0532f6291faa2bb729dd253f958868a2a57dbd2c32f881a97c7c980c5940309e
+CALIBRE_VERSION=9.15.0
+CALIBRE_SHA256=3f5301c0aa51e5fb2d5f6dcd04024ba4e86501ab328ce5d9d6760efccb887990
 set +a
 
 # Seconds each task may run. The whole step of a job took 119 s at most over the last 64 successful runs, with the
@@ -46,6 +49,7 @@ declare -A task_limit_seconds=(
   [pip]=180
   [verapdf]=240
   [epubcheck]=120
+  [calibre]=240
   [raw]=240
   [s3]=360
 )
@@ -84,18 +88,18 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck raw)
+  tasks=(apt pip verapdf epubcheck calibre raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
 }
 
-# Python format oracles (columnar readers, PDF text extraction, Word, EPUB and OLE2 readers): the tests run python3 -I, which ignores user
+# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB and OLE2 readers): the tests run python3 -I, which ignores user
 # site-packages, so the pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
 task_pip() {
   sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
-    python-docx==1.2.0 ebooklib==0.20 olefile==0.47
+    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47
 }
 
 task_apt() {
@@ -125,6 +129,21 @@ task_epubcheck() {
   printf '#!/bin/sh\nexec java -Djava.awt.headless=true -jar %s/epubcheck-%s/epubcheck.jar "$@"\n' "$dir" "$EPUBCHECK_VERSION" | sudo tee /usr/local/bin/epubcheck > /dev/null
   sudo chmod 755 /usr/local/bin/epubcheck
   epubcheck --version
+}
+
+# Ebook conversions are compared with calibre's `ebook-convert` (GPL-3.0, run as a separate process). The release archive carries
+# its own Python and Qt, so the system Python packages that the oracles install cannot shadow its libraries; it is checked
+# before anything in it runs.
+task_calibre() {
+  local archive dir
+  archive="$(mktemp --suffix=.txz)"
+  dir=/opt/calibre
+  curl -fsSL --proto =https --proto-redir =https --retry 3 -o "$archive" "https://download.calibre-ebook.com/$CALIBRE_VERSION/calibre-$CALIBRE_VERSION-x86_64.txz" || return 1
+  echo "$CALIBRE_SHA256  $archive" | sha256sum -c - || return 1
+  sudo rm -rf "$dir" && sudo mkdir -p "$dir" && sudo tar -xJf "$archive" -C "$dir" || return 1
+  rm -f "$archive"
+  sudo ln -sf "$dir/ebook-convert" /usr/local/bin/ebook-convert
+  ebook-convert --version
 }
 
 task_raw() {
@@ -219,7 +238,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_verapdf task_epubcheck task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

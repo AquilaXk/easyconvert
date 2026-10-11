@@ -238,6 +238,7 @@ export async function documentToEpub(model: DocumentModel, options: EpubWriteOpt
   const title = (model.title ?? options.title).trim() || options.title;
   const bookId = `urn:uuid:${crypto.randomUUID()}`;
   const { byId, list: images } = await packageImages(model);
+  const cover = model.coverImageId === undefined ? undefined : byId.get(model.coverImageId);
   const imageIndex = imagesById(model);
 
   // Headings in document order, each with the content document that holds it.
@@ -315,13 +316,14 @@ export async function documentToEpub(model: DocumentModel, options: EpubWriteOpt
     `<item id="nav" href="${NAV_DOCUMENT_PATH}" media-type="${XHTML_MEDIA_TYPE}" properties="nav"/>`,
     `<item id="ncx" href="${NCX_PATH}" media-type="application/x-dtbncx+xml"/>`,
     `<item id="css" href="${STYLESHEET_PATH}" media-type="text/css"/>`,
-    ...images.map((image) => `<item id="${image.id}" href="${image.path}" media-type="${image.mediaType}"/>`),
+    ...images.map((image) => `<item id="${image.id}" href="${image.path}" media-type="${image.mediaType}"${image === cover ? ' properties="cover-image"' : ''}/>`),
   ];
   const metadata = [
     `<dc:identifier id="BookId">${bookId}</dc:identifier>`,
     `<dc:title>${escapeXmlText(title)}</dc:title>`,
     `<dc:language>${escapeXmlText(language)}</dc:language>`,
     ...(model.author ? [`<dc:creator>${escapeXmlText(model.author)}</dc:creator>`] : []),
+    ...(cover ? [`<meta name="cover" content="${cover.id}"/>`] : []),
     `<meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>`,
     ...accessibilityMetadata(model, hasHeadings),
   ];

@@ -61,6 +61,19 @@ const PALMDOC_SPACE_XOR = 0x80;
 const PALMDOC_LITERAL_FIRST = 0x09;
 const PALMDOC_LITERAL_LAST = 0x7f;
 
+/** The book is intact but its text is in an encoding this reader does not decode (the format names UTF-8 and Windows-1252). HTTP 422. */
+export class UnsupportedMobiEncodingError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(encoding: number) {
+    super(`The e-book's text encoding ${encoding} is neither UTF-8 nor Windows-1252, which this reader does not decode.`);
+    this.name = 'UnsupportedMobiEncodingError';
+  }
+}
+
+function assertReadableEncoding(encoding: number): void {
+  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) throw new UnsupportedMobiEncodingError(encoding);
+}
+
 function malformed(reason: string): ConversionFailedError {
   return new ConversionFailedError(`The e-book is not a readable MOBI file: ${reason}.`);
 }
@@ -138,8 +151,13 @@ export interface MobiRawText {
   isMobi: boolean;
 }
 
-/** Reads and decompresses every text record of a MOBI, AZW, AZW3 or AZW4 book. */
-export function readMobiRawText(file: Buffer): MobiRawText {
+/** The PalmDB container of a book: its records, each a slice of the file. */
+interface PalmDb {
+  recordCount: number;
+  record: (index: number) => Buffer;
+}
+
+function readPalmDb(file: Buffer): PalmDb {
   if (file.length < PALMDB_HEADER_BYTES) throw malformed('the file is shorter than a PalmDB header');
   const type = file.toString('latin1', PALMDB_TYPE_OFFSET, PALMDB_TYPE_OFFSET + 4);
   const creator = file.toString('latin1', PALMDB_CREATOR_OFFSET, PALMDB_CREATOR_OFFSET + 4);
@@ -156,8 +174,17 @@ export function readMobiRawText(file: Buffer): MobiRawText {
     if (offset >= file.length || (i > 0 && offset < offsets[i - 1])) throw malformed(`record ${i} starts outside the file or out of order`);
     offsets.push(offset);
   }
-  const recordBytes = (index: number): Buffer => file.subarray(offsets[index], index + 1 < recordCount ? offsets[index + 1] : file.length);
+  return { recordCount, record: (index) => file.subarray(offsets[index], index + 1 < recordCount ? offsets[index + 1] : file.length) };
+}
 
+/** Reads and decompresses every text record of a MOBI, AZW, AZW3 or AZW4 book. */
+export function readMobiRawText(file: Buffer): MobiRawText {
+  return readMobiRecords(file, readPalmDb(file));
+}
+
+function readMobiRecords(file: Buffer, db: PalmDb): MobiRawText {
+  const { recordCount } = db;
+  const recordBytes = db.record;
   const first = recordBytes(0);
   if (first.length < PALMDOC_HEADER_BYTES) throw malformed('record 0 is shorter than the PalmDOC header');
   const compression = first.readUInt16BE(RECORD0_COMPRESSION_OFFSET);
@@ -204,12 +231,122 @@ export function readMobiRawText(file: Buffer): MobiRawText {
   return { bytes: Buffer.concat(parts), encoding, isMobi };
 }
 
+const MOBI_FULL_NAME_OFFSET = 0x54;
+const MOBI_FULL_NAME_LENGTH_OFFSET = 0x58;
+const MOBI_FIRST_IMAGE_OFFSET = 0x6c;
+const MOBI_EXTH_FLAGS_OFFSET = 0x80;
+const MOBI_EXTH_FLAG = 0x40;
+const NO_RECORD = 0xffffffff;
+const EXTH_MAGIC = 'EXTH';
+const EXTH_HEADER_BYTES = 12;
+const EXTH_RECORD_HEADER_BYTES = 8;
+const EXTH_MAX_RECORDS = 1024;
+const EXTH_AUTHOR = 100;
+const EXTH_COVER_OFFSET = 201;
+const EXTH_UPDATED_TITLE = 503;
+const EXTH_LANGUAGE = 524;
+const MOBI_MAX_METADATA_CHARS = 1024;
+/** One picture record is at most this large; a book's pictures are limited again by the document model. */
+const MOBI_MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+const IMAGE_MAGICS: ReadonlyArray<readonly number[]> = [
+  [0xff, 0xd8, 0xff],
+  [0x89, 0x50, 0x4e, 0x47],
+  [0x47, 0x49, 0x46, 0x38],
+  [0x42, 0x4d],
+];
+
+/** A MOBI book with its markup as stored (offsets in it are what the book's `filepos` links name) and its pictures and metadata. */
+export interface MobiBook extends MobiRawText {
+  title?: string;
+  authors: string[];
+  language?: string;
+  /** Index (0-based, among the picture records) of the cover picture the book names. */
+  coverIndex?: number;
+  /** Bytes of picture number `index` (1-based, as `recindex` in the markup counts them); undefined when there is none or the record is not a picture. */
+  image: (index: number) => Buffer | undefined;
+}
+
+function decodeMetadata(bytes: Buffer, encoding: number): string {
+  const limited = bytes.subarray(0, MOBI_MAX_METADATA_CHARS * 4);
+  const text = encoding === ENCODING_UTF8 ? limited.toString('utf-8') : decodeWindows1252(limited);
+  return text.replace(/\0/g, '').replace(/\s+/g, ' ').trim().slice(0, MOBI_MAX_METADATA_CHARS);
+}
+
+function isPictureRecord(record: Buffer): boolean {
+  return record.length > 0 && record.length <= MOBI_MAX_IMAGE_BYTES && IMAGE_MAGICS.some((magic) => magic.every((byte, at) => record[at] === byte));
+}
+
+/**
+ * Reads a MOBI or AZW book with the markup, the pictures its `recindex` attributes number, the title, the authors, the
+ * language and the cover the headers name. Metadata and pictures are optional: a header field or record that points
+ * outside the book is ignored, never followed.
+ */
+export function readMobiBook(file: Buffer): MobiBook {
+  const db = readPalmDb(file);
+  const raw = readMobiRecords(file, db);
+  const first = db.record(0);
+  const book: MobiBook = { ...raw, authors: [], image: () => undefined };
+  if (!raw.isMobi) return book;
+  assertReadableEncoding(raw.encoding);
+  const headerLength = first.readUInt32BE(MOBI_HEADER_LENGTH_OFFSET);
+  const headerEnd = PALMDOC_HEADER_BYTES + headerLength;
+  const has = (offset: number): boolean => headerLength >= offset + 4 - PALMDOC_HEADER_BYTES && first.length >= offset + 4;
+
+  let fullName: string | undefined;
+  if (has(MOBI_FULL_NAME_LENGTH_OFFSET)) {
+    const start = first.readUInt32BE(MOBI_FULL_NAME_OFFSET);
+    const length = first.readUInt32BE(MOBI_FULL_NAME_LENGTH_OFFSET);
+    if (length > 0 && start >= headerEnd && start + length <= first.length) fullName = decodeMetadata(first.subarray(start, start + length), raw.encoding);
+  }
+  if (has(MOBI_EXTH_FLAGS_OFFSET) && (first.readUInt32BE(MOBI_EXTH_FLAGS_OFFSET) & MOBI_EXTH_FLAG) !== 0 && first.toString('latin1', headerEnd, headerEnd + 4) === EXTH_MAGIC) {
+    readExth(first, headerEnd, raw.encoding, book);
+  }
+  book.title = book.title ?? (fullName === '' ? undefined : fullName);
+
+  if (has(MOBI_FIRST_IMAGE_OFFSET)) {
+    const firstImage = first.readUInt32BE(MOBI_FIRST_IMAGE_OFFSET);
+    if (firstImage !== NO_RECORD && firstImage > 0 && firstImage < db.recordCount) {
+      book.image = (index) => {
+        if (!Number.isInteger(index) || index < 1 || firstImage + index - 1 >= db.recordCount) return undefined;
+        const record = db.record(firstImage + index - 1);
+        return isPictureRecord(record) ? record : undefined;
+      };
+    }
+  }
+  return book;
+}
+
+/** The metadata records of the EXTH header: a record that is cut off ends the list, and so does an implausible count. */
+function readExth(first: Buffer, at: number, encoding: number, book: MobiBook): void {
+  if (at + EXTH_HEADER_BYTES > first.length) return;
+  const count = Math.min(first.readUInt32BE(at + 8), EXTH_MAX_RECORDS);
+  let position = at + EXTH_HEADER_BYTES;
+  for (let i = 0; i < count; i += 1) {
+    if (position + EXTH_RECORD_HEADER_BYTES > first.length) return;
+    const type = first.readUInt32BE(position);
+    const length = first.readUInt32BE(position + 4);
+    if (length < EXTH_RECORD_HEADER_BYTES || position + length > first.length) return;
+    const data = first.subarray(position + EXTH_RECORD_HEADER_BYTES, position + length);
+    if (type === EXTH_AUTHOR) {
+      const author = decodeMetadata(data, encoding);
+      if (author !== '') book.authors.push(author);
+    } else if (type === EXTH_UPDATED_TITLE) {
+      const title = decodeMetadata(data, encoding);
+      if (title !== '') book.title = title;
+    } else if (type === EXTH_LANGUAGE) {
+      const language = decodeMetadata(data, encoding);
+      if (language !== '') book.language = language;
+    } else if (type === EXTH_COVER_OFFSET && data.length >= 4) {
+      book.coverIndex = data.readUInt32BE(0);
+    }
+    position += length;
+  }
+}
+
 /** The plain text of a MOBI, AZW or AZW3 e-book. A book whose text records hold no text throws a typed error. */
 export function readMobiText(file: Buffer): string {
   const { bytes, encoding, isMobi } = readMobiRawText(file);
-  if (encoding !== ENCODING_UTF8 && encoding !== ENCODING_WINDOWS_1252) {
-    throw malformed(`text encoding ${encoding} is neither UTF-8 nor Windows-1252`);
-  }
+  assertReadableEncoding(encoding);
   const markup = encoding === ENCODING_UTF8 ? bytes.toString('utf-8') : decodeWindows1252(bytes);
   const withoutNulls = markup.replace(/\0/g, '');
   const text = isMobi ? htmlToText(withoutNulls) : withoutNulls.replace(/\r\n?/g, '\n').trim();

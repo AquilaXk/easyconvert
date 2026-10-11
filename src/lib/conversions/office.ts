@@ -52,6 +52,8 @@ import { plainTextModel } from './document-model/plain';
 import type { DocumentModel } from './document-model/model';
 import { renderModelTarget } from './document-targets';
 import { htmlToDocumentModel } from './html-model';
+import { readFb2Model } from './fb2-model';
+import { readMobiModel } from './mobi-model';
 import { markdownToDocumentModel, readEpubModel } from './source-model';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
 
@@ -7355,15 +7357,9 @@ async function convertFb2Source(
     return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
   }
 
-  if (tgt === 'epub') {
-    let md = `# ${bookTitle}\n\n` + fullText;
-    for (const t of tables) {
-      if (t.length > 0) {
-        md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
-      }
-    }
-    const epubBuffer = await generateEpubFromText(md, 'fb2', options, bookTitle);
-    return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
+  // The structured targets are written from the book's own structure: sections, headings, pictures, notes.
+  if (tgt === 'epub' || tgt === 'pdf') {
+    return convertModelTarget(await readFb2Model(xml, bookTitle), tgt, options, baseName);
   }
 
   if (tgt === 'docx') {
@@ -7380,34 +7376,6 @@ async function convertFb2Source(
       filename: `${baseName}.docx`,
       size: docxBuffer.length,
     };
-  }
-
-  if (tgt === 'pdf') {
-    if (fullText.trim().length === 0) {
-      throw new ConversionFailedError('The FB2 book holds no text to draw in a PDF.');
-    }
-    const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: bookTitle } });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-    doc.fillColor('#1F2340').fontSize(18);
-    renderSafePdfText(doc, bookTitle, hasUnicodeFont);
-    if (authorStr) {
-      doc.moveDown(0.3);
-      doc.fillColor('#5C6BC0').fontSize(12);
-      renderSafePdfText(doc, authorStr, hasUnicodeFont);
-    }
-    doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, fullText, hasUnicodeFont);
-    doc.end();
-
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from FB2 to ${tgt}`);
@@ -7557,6 +7525,12 @@ async function convertMobiSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
+  if ((src === 'mobi' || src === 'azw') && (tgt === 'epub' || tgt === 'pdf')) {
+    // A book with markup is written from its structure (chapters, headings, pictures, cover); a plain PalmDOC book has none.
+    const structured = await readMobiModel(inputBuffer, baseName);
+    if (structured) return convertModelTarget(structured, tgt, options, baseName);
+  }
+
   // A MOBI, AZW or AZW3 book is read from its PalmDB records; callers that already hold the text pass it with the source `txt`.
   const fullText = src === 'txt' ? inputBuffer.toString('utf-8').trim() : readMobiText(inputBuffer);
   if (fullText === '') throw new ConversionFailedError(`There is no text to write as .${tgt}.`);

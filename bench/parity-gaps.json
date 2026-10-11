@@ -244,24 +244,6 @@
       ]
     },
     {
-      "id": "pdf-ops/watermark.pdf->pdf/throughput",
-      "issue": 695,
-      "ratio": 0.78,
-      "note": "speed ratio 0.78 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.8318,
-          "at": "2026-10-10T02:16:29.414Z",
-          "commit": "46ccbccefd9672017b7e24298d335aaaa256d82a"
-        },
-        {
-          "ratio": 0.7823,
-          "at": "2026-10-10T03:04:37.950Z",
-          "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
-        }
-      ]
-    },
-    {
       "id": "pdf-ops/protect.pdf->pdf/throughput",
       "issue": 695,
       "ratio": 0.91,
@@ -411,6 +393,136 @@
           "ratio": 0.975,
           "at": "2026-10-10T08:43:44.112Z",
           "commit": "d37723fe7831b6f053faf67b043e69d887be3dc8"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.tar->zip/throughput",
+      "issue": 685,
+      "ratio": 0.26,
+      "note": "speed ratio 0.26 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.2631,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.tar->gz/throughput",
+      "issue": 685,
+      "ratio": 0.26,
+      "note": "speed ratio 0.26 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.2617,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.tar->tar.bz2/throughput",
+      "issue": 685,
+      "ratio": 0.46,
+      "note": "speed ratio 0.46 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.4676,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.zip->tar/throughput",
+      "issue": 685,
+      "ratio": 0.32,
+      "note": "speed ratio 0.32 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.3229,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.gz->tar/throughput",
+      "issue": 685,
+      "ratio": 0.75,
+      "note": "speed ratio 0.75 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.7511,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "compression/mixed.rar->tar/throughput",
+      "issue": 685,
+      "ratio": 0.28,
+      "note": "speed ratio 0.28 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.2821,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "data/table.jsonl->csv/throughput",
+      "issue": 730,
+      "ratio": 0.64,
+      "note": "speed ratio 0.64 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.6436,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "data/table.csv->parquet/throughput",
+      "issue": 730,
+      "ratio": 0.12,
+      "note": "speed ratio 0.12 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.1211,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "data/table.parquet->csv/throughput",
+      "issue": 730,
+      "ratio": 0.24,
+      "note": "speed ratio 0.24 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.2423,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        }
+      ]
+    },
+    {
+      "id": "data/table.parquet->json/throughput",
+      "issue": 730,
+      "ratio": 0.34,
+      "note": "speed ratio 0.34 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.3479,
+          "at": "2026-10-11T02:07:19.470Z",
+          "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
         }
       ]
     }

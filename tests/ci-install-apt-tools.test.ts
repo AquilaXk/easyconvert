@@ -147,7 +147,7 @@ describe('the committed package list and scripts', () => {
   });
 
   it('still installs every tool family the oracle suites call', () => {
-    for (const required of ['ffmpeg', '7zip', 'poppler-utils', 'zstd', 'libreoffice-writer', 'imagemagick', 'tesseract-ocr', 'qpdf', 'unrar', 'flac', 'libraw-bin', 'python3-fitz']) {
+    for (const required of ['ffmpeg', '7zip', 'poppler-utils', 'zstd', 'libreoffice-writer', 'imagemagick', 'tesseract-ocr', 'qpdf', 'unrar', 'flac', 'libraw-bin', 'python3-fitz', 'zip', 'unzip', 'bzip2', 'woff-tools']) {
       expect(names, required).toContain(required);
     }
   });
@@ -162,7 +162,7 @@ describe('the committed package list and scripts', () => {
 
   it('starts every part of the setup in the background and fails the step when any part failed', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
-    expect(script).toContain('tasks=(apt pip verapdf epubcheck raw)');
+    expect(script).toContain('tasks=(apt pip verapdf epubcheck calibre raw)');
     expect(script).toContain('tasks+=(s3)');
     expect(script).toContain('run_bounded "$task" > "$task_logs/$task.log" 2>&1 &');
     expect(script).toContain('failed+=("$task")');
@@ -178,5 +178,16 @@ describe('the committed package list and scripts', () => {
     const check = script.indexOf('sha256sum -c -');
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(script.indexOf('unzip -q "$archive"'));
+  });
+
+  it('installs the ebook converter from a pinned archive over HTTPS only and checks its digest before unpacking it', () => {
+    const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    expect(script).toMatch(/^CALIBRE_VERSION=\d+\.\d+\.\d+$/m);
+    expect(script).toMatch(/^CALIBRE_SHA256=[0-9a-f]{64}$/m);
+    const task = script.slice(script.indexOf('task_calibre() {'), script.indexOf('task_raw() {'));
+    expect(task).toContain('curl -fsSL --proto =https --proto-redir =https');
+    expect(task.indexOf('sha256sum -c -')).toBeGreaterThan(-1);
+    expect(task.indexOf('sha256sum -c -')).toBeLessThan(task.indexOf('tar -xJf "$archive"'));
+    expect(task).toContain('ebook-convert --version');
   });
 });
