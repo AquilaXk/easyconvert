@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
@@ -15,26 +15,38 @@ import {
   conversionWarningsFields,
   conversionWarningsHeaders,
 } from '../src/lib/api/conversion-warnings';
+import { overrideImageFetchEnvironment } from '../src/lib/conversions/html-image-fetch';
 import { withMissingBinary } from './helpers/native-tools';
 
 /**
  * A conversion that leaves part of the document out says so on every surface that reports its result: the v1 convert
  * JSON and headers, the internal convert headers, the job view and its result, and the OpenAPI document. The page
- * below has two images that are not embedded (resources are never fetched) and one that is.
+ * below has two images that cannot be loaded (a relative reference, and a host that does not resolve: no test reaches a
+ * real network) and one that is embedded.
  */
 
 const BASE_URL = 'http://localhost:3000';
 const HTTP_OK = 200;
 const PAGE = '<html><body><p>Quarterly summary text.</p><img src="Images/EIC012-1.GIF"><img src="https://example.com/logo.png"></body></html>';
 const EXPECTED_WARNINGS = [
-  'Left out the image "Images/EIC012-1.GIF": external resources are not fetched.',
-  'Left out the image "https://example.com/logo.png": external resources are not fetched.',
+  'Left out the image "Images/EIC012-1.GIF": only absolute http and https images are loaded.',
+  'Left out the image "https://example.com/logo.png": the host could not be resolved.',
 ];
 
 let secretKey: string;
 let userId: string;
+let restoreFetchEnvironment: (() => void) | undefined;
+
+afterEach(() => {
+  restoreFetchEnvironment?.();
+});
 
 beforeEach(async () => {
+  restoreFetchEnvironment = overrideImageFetchEnvironment({
+    resolve: async () => {
+      throw new Error('offline');
+    },
+  });
   const user = await userStore.createUser({
     name: 'Warnings Tester',
     email: `warnings_${Date.now()}_${Math.random().toString(36).slice(2)}@easyconvert.local`,
