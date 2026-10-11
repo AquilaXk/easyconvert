@@ -75,11 +75,13 @@ describe.skipIf(skipWithoutTools('exiftool'))('metadata the conversion adds to a
     expect(listing).not.toMatch(/XResolution/);
   });
 
-  it.each(['webp', 'avif'])('writes no EXIF block into a %s of a picture whose only metadata is an ICC profile', async (target) => {
-    const source = await base().withIccProfile('srgb').png().toBuffer();
-    expect((await sharp(source).metadata()).hasProfile).toBe(true);
-    const listing = exiftoolGroups((await convertImage(source, target, { quality: 70 }, 'i.png', 'png')).buffer, target);
-    expect(listing).not.toMatch(/\[(EXIF|IFD0|ExifIFD)\]/);
+  it.each(['webp', 'avif', 'jpg'])('keeps the ICC profile of a source as it is in a %s, with its pixels, and adds no EXIF block', async (target) => {
+    const p3 = await base().withIccProfile('p3').png().toBuffer();
+    const profile = (await sharp(p3).metadata()).icc as Buffer;
+    expect(profile).toBeDefined();
+    const out = (await convertImage(p3, target, { quality: 100 }, 'i.png', 'png')).buffer;
+    expect((await sharp(out).metadata()).icc?.equals(profile)).toBe(true);
+    expect(exiftoolGroups(out, target === 'jpg' ? 'jpg' : target)).not.toMatch(/\[(EXIF|IFD0|ExifIFD)\]/);
   });
 
   it.each(['webp', 'avif'])('carries the XMP block of the source into a %s without adding an EXIF block of its own', async (target) => {
@@ -90,6 +92,14 @@ describe.skipIf(skipWithoutTools('exiftool'))('metadata the conversion adds to a
     const listing = exiftoolGroups((await convertImage(source, target, { quality: 70 }, 'x.png', 'png')).buffer, target);
     expect(listing).toMatch(/\[XMP-x\]\s+XMPToolkit\s*:\s*metadata overhead test/);
     expect(listing).not.toMatch(/\[(EXIF|IFD0|ExifIFD)\]/);
+  });
+
+  it.each(['webp', 'avif', 'jpg'])('writes no ICC profile into a %s of a source whose profile describes sRGB, and no EXIF block either', async (target) => {
+    const source = await base().withIccProfile('srgb').png().toBuffer();
+    expect((await sharp(source).metadata()).hasProfile).toBe(true);
+    const out = (await convertImage(source, target, { quality: 70 }, 's.png', 'png')).buffer;
+    expect((await sharp(out).metadata()).icc).toBeUndefined();
+    expect(exiftoolGroups(out, target)).not.toMatch(/\[(EXIF|IFD0|ExifIFD)\]/);
   });
 
   it('keeps the density of a JPEG in its JFIF header', async () => {

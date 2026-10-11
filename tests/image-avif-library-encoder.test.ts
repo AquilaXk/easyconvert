@@ -484,7 +484,7 @@ describe('encoder arguments', () => {
       const args = readFileSync(wrapper.argsFile, 'utf-8').trim().split('\n');
       const valueOf = (flag: string): string | undefined => args[args.indexOf(flag) + 1];
       expect(valueOf('-q')).toBe('55');
-      expect(valueOf('--qalpha')).toBe('100');
+      expect(valueOf('--qalpha')).toBe('55');
       expect(valueOf('-s')).toBe(String(avifSpeedFor(avifEffortFor(width * height, 'graphic', 'library-cli'))));
       expect(valueOf('-d')).toBe('12');
       expect(valueOf('-y')).toBe('420');

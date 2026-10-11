@@ -74,6 +74,8 @@ import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { decodePlainPngOnce } from './image-decoded-source';
+import { isSrgbProfile } from './icc-srgb';
+import { EIGHT_BIT_ONLY_TARGETS, roundedToEightBits } from './image-depth';
 import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
@@ -1550,56 +1552,53 @@ const SRGB_TAGGED_TARGETS: ReadonlySet<string> = new Set(['tiff', 'tif']);
 const DEFAULT_DENSITY_PPI = 72;
 
 /**
- * Targets that can only hold a pixel density inside an EXIF block. JPEG keeps it in the JFIF header and PNG in `pHYs`, both
- * free; WebP and AVIF would need a synthesised EXIF block (about 190 bytes, 2% of a small file), and their viewers ignore a print
- * density. A picture whose only metadata is its density therefore carries none into them; the EXIF block of a source that has
- * one is kept, with the density inside it.
+ * Targets that carry the source's own EXIF block, XMP packet and ICC profile exactly as they are, the way the reference
+ * service's engine writes them with its default (metadata kept): the profile is attached and the pixels are not converted through
+ * it, and no block is made up. A profile that describes sRGB is not written (`isSrgbProfile`). The library's "keep metadata" switch makes it write an EXIF block of its own for a source that has
+ * none (about 190 bytes, from the density; 2% of a small file), so the blocks are kept one by one. WebP and AVIF viewers
+ * ignore a print density, which only an EXIF block could hold there; a JPEG keeps it (see `keepSourceBlocks`).
  */
-const DENSITY_IN_EXIF_ONLY_TARGETS: ReadonlySet<string> = new Set(['webp', 'avif']);
+const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp', 'avif']);
 
 /**
- * Keeps EXIF, XMP and IPTC metadata on the output and converts the pixels to sRGB through the input's ICC
- * profile. The sRGB profile is attached only for the targets in `SRGB_TAGGED_TARGETS`. An input with no metadata
- * block and the default density keeps nothing: asking the encoder to keep metadata makes it write an EXIF block
- * synthesised from the density (186 bytes, 3.5% of a small AVIF). The same holds for an input whose only extra is an ICC
- * profile: without keeping metadata the library applies the profile to the pixels and writes no profile, which is the
- * very output `withIccProfile('srgb', { attach: false })` gives, minus the synthesised block; an input with an XMP packet or an EXIF block
- * and nothing else keeps just those blocks (`keepBlocksOf`). Samples deeper than 8 bit that carry no
- * profile are another exception: with the profile kept, sharp renders such 16-bit RGB through a wide-gamut
- * working profile and tags the result sRGB, which shifts every colour (red drops, saturation rises). Those
- * images keep only their EXIF block and reach the encoder as plain device RGB, so the high byte of each sample
- * is what reaches an 8-bit output. The pipeline has already been auto-oriented, which removes the Orientation
- * tag from the kept EXIF block.
+ * Keeps the metadata of the input. The targets of `SOURCE_BLOCK_TARGETS` carry the source's EXIF, XMP and ICC profile unchanged
+ * (see `keepSourceBlocks`; an sRGB profile is the exception: it is applied to the pixels and not written). For the others, EXIF, XMP and IPTC are kept and the pixels are converted to sRGB through the input's
+ * ICC profile; the sRGB profile is attached only for the targets in `SRGB_TAGGED_TARGETS`. An input with no metadata block and
+ * the default density keeps nothing: asking the encoder to keep metadata makes it write an EXIF block synthesised from the
+ * density (186 bytes, 3.5% of a small AVIF). Samples deeper than 8 bit that carry no profile are another exception: with the
+ * profile kept, sharp renders such 16-bit RGB through a wide-gamut working profile and tags the result sRGB, which shifts every
+ * colour (red drops, saturation rises). Those images keep only their blocks and reach the encoder as plain device RGB. The
+ * pipeline has already been auto-oriented, which removes the Orientation tag from the kept EXIF block.
  */
 async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
   if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await pipeline.metadata();
+  if (SOURCE_BLOCK_TARGETS.has(target)) return keepSourceBlocks(pipeline, meta, target);
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
-  const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI && !DENSITY_IN_EXIF_ONLY_TARGETS.has(target);
+  const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
   const tagsSrgb = SRGB_TAGGED_TARGETS.has(target);
   if (isDeepWithoutProfile) return hasMetadataBlock || hasCustomDensity ? pipeline.keepExif() : pipeline;
-  if (!hasMetadataBlock && !hasCustomDensity && !tagsSrgb) return appliedProfileOf(pipeline, meta);
-  // Keeping all metadata also makes the library write an EXIF block of its own (about 190 bytes) for a source that has none,
-  // from its density: a source with an XMP packet only keeps just the packet.
-  if (meta.iptc === undefined && !hasCustomDensity && !tagsSrgb) return appliedProfileOf(keepBlocksOf(pipeline, meta), meta);
+  if (!hasMetadataBlock && !hasCustomDensity && !meta.hasProfile && !tagsSrgb) return pipeline;
   return pipeline.keepMetadata().withIccProfile('srgb', { attach: tagsSrgb });
 }
 
 /**
- * The pipeline with the input's ICC profile applied to the pixels and not written. Said explicitly: a 16-bit picture with a profile that
- * reaches the encoder without it goes through the library's default reduction, which shifts its colours (PSNR 41 dB against 43 dB).
+ * The pipeline keeping the EXIF block, XMP packet and ICC profile the input has, and no block it has not. A source with an
+ * IPTC block keeps it in a JPEG, which the library can only do by keeping everything.
  */
-function appliedProfileOf(pipeline: Sharp, meta: Metadata): Sharp {
-  return meta.hasProfile ? pipeline.withIccProfile('srgb', { attach: false }) : pipeline;
-}
-
-/** The pipeline keeping the EXIF and XMP blocks the input has, and no block it has not. */
-function keepBlocksOf(pipeline: Sharp, meta: Metadata): Sharp {
+function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string): Sharp {
+  if (meta.iptc !== undefined && (target === 'jpg' || target === 'jpeg')) return pipeline.keepMetadata();
   let kept = pipeline;
-  if (meta.exif !== undefined) kept = kept.keepExif();
+  // The library writes a JPEG's print density only along with an EXIF block (made from the density when the source has none):
+  // the one block this adds, for a picture whose density says it is meant for print.
+  const keepsDensity = (target === 'jpg' || target === 'jpeg') && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
+  if (meta.exif !== undefined || keepsDensity) kept = kept.keepExif();
   if (meta.xmp !== undefined) kept = kept.keepXmp();
+  // A profile that describes sRGB says nothing a viewer does not assume (and the reference service's engine does not carry the usual 3 kB
+  // one either: its PNG reader rejects it); the pixels go through it explicitly, as in the other targets, and none is written.
+  if (meta.hasProfile) kept = meta.icc !== undefined && !isSrgbProfile(meta.icc) ? kept.keepIccProfile() : kept.withIccProfile('srgb', { attach: false });
   return kept;
 }
 
@@ -2218,9 +2217,14 @@ export async function convertImage(
   // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
   // The pipeline below reduces a 16-bit picture to 8 bits, which would hide its tones from the classifier: it keeps the 16-bit one.
   let deepPipeline: Sharp | undefined;
+  // A 16-bit picture on its way to an 8-bit target is reduced with rounding at the end of the pipeline (see image-depth.ts), so it is
+  // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane or a
+  // background to flatten onto needs the 8-bit pipeline and keeps the library's reduction.
+  const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
+  const roundsToEightBits = reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
     if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
-    pipeline = pipeline.pipelineColourspace('srgb');
+    if (!roundsToEightBits) pipeline = pipeline.pipelineColourspace('srgb');
   }
 
   // The kernel is checked even when the request does not resize, so a typo is never silently ignored.
@@ -2247,6 +2251,7 @@ export async function convertImage(
   }
 
   // Resize options
+  let reducesInLinearLight = false;
   const resizeOptions = resizeOptionsOf(options, background, isOpaqueTarget);
   if (resizeOptions) {
     const canvas = frameSelection?.keepsAnimation ? frameSelection.canvas : undefined;
@@ -2269,7 +2274,9 @@ export async function convertImage(
     if (linearLight !== undefined) {
       pipeline = pipeline.pipelineColourspace(LINEAR_PIPELINE_SPACE).toColourspace(colourspaceAfterLinearResize(linearLight));
     }
+    reducesInLinearLight = linearLight !== undefined;
   }
+  if (roundsToEightBits && !reducesInLinearLight) pipeline = roundedToEightBits(pipeline, reductionMeta?.channels ?? 3);
 
   // Targets without an alpha channel would turn transparent pixels black: flatten them onto the background.
   if (isOpaqueTarget) {
