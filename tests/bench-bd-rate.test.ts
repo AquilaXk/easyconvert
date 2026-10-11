@@ -105,13 +105,13 @@ describe('the BD-rate of a curve that states a trade-off', () => {
       { rate: 87, quality: -3.164 },
     ];
     const result = tryBdRate(flat, flat);
-    expect(result).toEqual({ reason: `the reference curve gains 0.093 dB across its rates, less than the ${BD_MIN_QUALITY_SPAN} dB that makes a trade-off` });
+    expect(result).toEqual({ fault: 'reference', reason: `the reference curve gains 0.093 dB across its rates, less than the ${BD_MIN_QUALITY_SPAN} dB that makes a trade-off` });
   });
 
   it('states none for a curve whose quality falls as its rate grows, or for curves that share no quality', () => {
     const noisy = [anchor[0], { rate: 200, quality: 29 }, anchor[2], anchor[3]];
-    expect(tryBdRate(anchor, noisy)).toEqual({ reason: 'the our curve does not gain quality with its rate' });
+    expect(tryBdRate(anchor, noisy)).toEqual({ fault: 'ours', reason: 'the our curve does not gain quality with its rate' });
     const apart = anchor.map((point) => ({ rate: point.rate, quality: point.quality + 20 }));
-    expect(tryBdRate(anchor, apart)).toEqual({ reason: 'the two curves have no overlapping interval to integrate over' });
+    expect(tryBdRate(anchor, apart)).toEqual({ fault: 'curves', reason: 'the two curves have no overlapping interval to integrate over' });
   });
 });

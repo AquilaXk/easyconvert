@@ -144,6 +144,9 @@ export function evaluateGate(report: BenchReport, baseline: Baseline, options: G
     if (options.include && !options.include(id, entry)) continue;
     if (!row) {
       regressions.push({ id, check: 'missing', baseline: entry.ours ?? entry.ratio, current: null, allowedWorsening: 0, message: `${id}: baseline metric is missing from the report` });
+    } else if (row.status === 'skipped' && row.skipKind === 'unsupported') {
+      // A row the product could not be measured on any more (a BD-rate whose curve broke) is not a tool a laptop lacks.
+      regressions.push({ id, check: 'missing', baseline: entry.ours ?? entry.ratio, current: null, allowedWorsening: 0, message: `${id}: baseline metric is no longer produced (skipped as unsupported: ${row.skipReason ?? 'no reason given'})` });
     } else if (row.status === 'skipped') {
       skipped.push(id);
     }

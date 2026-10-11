@@ -269,7 +269,7 @@ export const runAudio: FamilyRunner = async (ctx) => {
             rows.push(measuredRow('audio', caseName, SPEC.bdRateSnr, bd.value, 0, lossy.tool));
             if (source.contentClass !== null) classes.add(source.contentClass, `->${lossy.target}`, SPEC.bdRateSnr, bd.value, 0);
           } else {
-            rows.push(...undeterminedBdRows('audio', caseName, [SPEC.bdRateSnr], lossy.tool, bd.reason));
+            rows.push(...undeterminedBdRows('audio', caseName, [SPEC.bdRateSnr], lossy.tool, bd));
             if (source.contentClass !== null) classes.exclude(source.contentClass, `->${lossy.target}`, SPEC.bdRateSnr.metric);
           }
         } catch (error) {

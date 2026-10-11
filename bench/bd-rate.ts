@@ -149,6 +149,10 @@ export function bdPsnr(anchor: readonly RdPoint[], test: readonly RdPoint[]): nu
  */
 export const BD_MIN_QUALITY_SPAN = 0.5;
 
+/** Whose curve prevents a BD-rate: the reference's states no trade-off (not evaluated), ours falls or stays flat while the reference's is sound (our regression), or both are sound but share no quality. */
+export type BdFault = 'reference' | 'ours' | 'curves';
+export type BdResult = { value: number } | { reason: string; fault: BdFault };
+
 function curveProblem(name: string, points: readonly RdPoint[]): string | null {
   const byRate = [...points].sort((a, b) => a.rate - b.rate);
   for (let i = 1; i < byRate.length; i++) {
@@ -159,14 +163,20 @@ function curveProblem(name: string, points: readonly RdPoint[]): string | null {
   return null;
 }
 
-/** The BD-rate, or the reason when the points determine none (a curve that is flat, falls with its rate, or shares no quality with the other). */
-export function tryBdRate(anchor: readonly RdPoint[], test: readonly RdPoint[]): { value: number } | { reason: string } {
-  const problem = curveProblem('reference', anchor) ?? curveProblem('our', test);
-  if (problem !== null) return { reason: problem };
+/**
+ * The BD-rate, or the reason when the points determine none and whose curve is at fault. The reference's curve is judged first: a
+ * reference that states no trade-off leaves nothing to compare with, but a sound reference against a curve of ours that falls or stays
+ * flat is a regression of ours, which the caller reports as a failing row and not as a skip.
+ */
+export function tryBdRate(anchor: readonly RdPoint[], test: readonly RdPoint[]): BdResult {
+  const anchorProblem = curveProblem('reference', anchor);
+  if (anchorProblem !== null) return { reason: anchorProblem, fault: 'reference' };
+  const testProblem = curveProblem('our', test);
+  if (testProblem !== null) return { reason: testProblem, fault: 'ours' };
   try {
     return { value: bdRate(anchor, test) };
   } catch (error) {
-    if (error instanceof BdRateInputError) return { reason: error.message };
+    if (error instanceof BdRateInputError) return { reason: error.message, fault: 'curves' };
     throw error;
   }
 }

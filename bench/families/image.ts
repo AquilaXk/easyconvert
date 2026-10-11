@@ -213,7 +213,7 @@ export const runImage: FamilyRunner = async (ctx) => {
               rows.push(measuredRow('image', caseName, spec, bd.value, 0, tool));
               if (sample.contentClass !== null) classes.add(sample.contentClass, `->${target}`, spec, bd.value, 0);
             } else {
-              rows.push(...undeterminedBdRows('image', caseName, [spec], tool, bd.reason));
+              rows.push(...undeterminedBdRows('image', caseName, [spec], tool, bd));
               if (sample.contentClass !== null) classes.exclude(sample.contentClass, `->${target}`, spec.metric);
             }
           }

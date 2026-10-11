@@ -187,7 +187,7 @@ export const runVideo: FamilyRunner = async (ctx) => {
               rows.push(measuredRow('video', caseName, spec, bd.value, 0, codec.tool));
               if (sample.contentClass !== null) classes.add(sample.contentClass, `->${codec.name}`, spec, bd.value, 0);
             } else {
-              rows.push(...undeterminedBdRows('video', caseName, [spec], codec.tool, bd.reason));
+              rows.push(...undeterminedBdRows('video', caseName, [spec], codec.tool, bd));
               if (sample.contentClass !== null) classes.exclude(sample.contentClass, `->${codec.name}`, spec.metric);
             }
           }
