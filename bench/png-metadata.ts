@@ -1,15 +1,12 @@
-import { crc32 } from 'node:zlib';
+import { crc32, inflateSync } from 'node:zlib';
 
 /**
  * The metadata blocks a PNG carries besides its pixels, for the image benchmark's reference encoders. A decoded copy of a
  * picture (the one the metrics read) has none, and the original file cannot be given to the encoders as it is: they read its
  * `gAMA` chunk and change the pixels (`cwebp` applies it), so the reference would encode another picture than the one it is
  * scored against. The reference is therefore given the decoded pixels with the EXIF block, the XMP packet and the ICC profile of
- * the original: the reference tools keep all three by default (`cwebp` when asked), where the product keeps the first two and
- * applies the profile to the pixels without writing it, which makes its files of a tagged picture smaller by the profile
- * (3 kB for the sRGB profile of the photographs, 4.5 kB for the grey profile of the radiograph) for the same displayed colours.
- * The rows still score the pixels against the unconverted samples, so a profile that is not sRGB costs the product a little
- * similarity that a viewer applying the profile to the reference's pixels does not see.
+ * the original: the reference tools keep all three by default (`cwebp` when asked), and so does the product, which attaches the
+ * profile without converting the pixels. The one profile the service's engine does not read is left out (see below).
  */
 
 const PNG_SIGNATURE_BYTES = 8;
@@ -38,9 +35,26 @@ function chunksOf(png: Buffer): Chunk[] {
   return chunks;
 }
 
+/**
+ * The usual profile of cameras and editors, "sRGB IEC61966-2.1" (3 kB), is one the PNG reader of the reference service's engine
+ * rejects ("known incorrect sRGB profile"), so that engine writes no profile for a picture that has it. The reference is
+ * given none either.
+ */
+const REJECTED_PROFILE_DESCRIPTION = 'sRGB IEC61966-2.1';
+
+function isRejectedProfile(chunk: Chunk): boolean {
+  try {
+    const keywordEnd = chunk.data.indexOf(0);
+    return inflateSync(chunk.data.subarray(keywordEnd + 2)).includes(REJECTED_PROFILE_DESCRIPTION);
+  } catch {
+    return false;
+  }
+}
+
 /** An EXIF chunk, an ICC profile, or a text chunk whose keyword says it holds an XMP packet or an EXIF block. */
 function isMetadataChunk(chunk: Chunk): boolean {
-  if (chunk.type === 'eXIf' || chunk.type === 'iCCP') return true;
+  if (chunk.type === 'eXIf') return true;
+  if (chunk.type === 'iCCP') return !isRejectedProfile(chunk);
   if (!TEXT_CHUNK_TYPES.has(chunk.type)) return false;
   const end = chunk.data.indexOf(0);
   return end > 0 && METADATA_KEYWORDS.has(chunk.data.toString('latin1', 0, end));

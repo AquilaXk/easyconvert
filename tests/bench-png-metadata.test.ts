@@ -1,3 +1,4 @@
+import { crc32, deflateSync } from 'node:zlib';
 import sharp, { type Sharp } from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { hasValidChunkChecksums, metadataChunksOf, withMetadataOf } from '../bench/png-metadata';
@@ -19,7 +20,28 @@ function pixels(): Buffer {
 
 const base = (): Sharp => sharp(pixels(), { raw: { width: SIDE, height: SIDE, channels: 3 } });
 
+/** A PNG with an `iCCP` chunk holding `profile` (not a real profile: the benchmark reads only its text) inserted after IHDR. */
+function withProfileChunk(png: Buffer, profile: Buffer): Buffer {
+  const data = Buffer.concat([Buffer.from('prof\0\0', 'latin1'), deflateSync(profile)]);
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  chunk.write('iCCP', 4, 'latin1');
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4, 8 + data.length)), 8 + data.length);
+  return Buffer.concat([png.subarray(0, 33), chunk, png.subarray(33)]);
+}
+
 describe('metadata of a PNG for the reference encoders', () => {
+  it('leaves out the usual sRGB profile, which the reference service reads as incorrect, and keeps any other', async () => {
+    const decoded = await base().png().toBuffer();
+    const rejected = withProfileChunk(decoded, Buffer.from('....desc....sRGB IEC61966-2.1....'));
+    const other = withProfileChunk(decoded, Buffer.from('....desc....Display P3....'));
+    expect(withMetadataOf(decoded, rejected).includes(Buffer.from('iCCP'))).toBe(false);
+    const kept = withMetadataOf(decoded, other);
+    expect(kept.includes(Buffer.from('iCCP'))).toBe(true);
+    expect(hasValidChunkChecksums(kept)).toBe(true);
+  });
+
   it('puts the EXIF, XMP and ICC blocks of the original into the decoded copy, with the pixels of the copy and valid checksums', async () => {
     const original = await base().withExif({ IFD0: { Copyright: 'reference test' } }).withXmp(XMP_PACKET).png().toBuffer();
     const decoded = await base().png().toBuffer();

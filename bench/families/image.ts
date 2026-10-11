@@ -71,7 +71,7 @@ const AVIFENC_LOSSLESS_QUALITY = 100;
 
 /**
  * The reference encoders get the decoded pixels with the EXIF, XMP and ICC blocks of the source (bench/png-metadata.ts): the tools keep
- * all three by default. The product keeps the first two and applies the profile to the pixels instead of writing it. `avifenc` and ImageMagick keep the
+ * all three by default, and so does the product (the profile attached, the pixels not converted). `avifenc` and ImageMagick keep the
  * metadata of their input by default and `cwebp` does when asked (`-metadata all`). Without the blocks the reference files were
  * smaller than any encoder that keeps the picture's metadata can write: the XMP block alone is 3.5 to 6.9 kB of an 8 to 25 kB file
  * of the 16-bit samples.
@@ -100,7 +100,8 @@ function referenceEncode(target: Target, binary: string, sourcePng: string, qual
   } else if (target === 'avif') {
     const depthArgs = bitDepth > 8 ? ['-d', AVIFENC_DEEP_DEPTH] : [];
     const chromaArgs = grey ? [] : ['-y', quality >= AVIFENC_LOSSLESS_QUALITY ? '444' : '420'];
-    runTool(binary, [...depthArgs, ...chromaArgs, '-q', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
+    // The alpha plane at the colour quality, as the service's engine encodes it (the encoder alone would write it losslessly).
+    runTool(binary, [...depthArgs, ...chromaArgs, '-q', q, '--qalpha', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
   } else {
     runTool(binary, [sourcePng, '-quality', q, output]);
   }
@@ -194,7 +195,7 @@ export const runImage: FamilyRunner = async (ctx) => {
         kind,
         tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target]],
         files: [sample.file],
-        settings: { case: caseName, quality, referenceInput: REFERENCE_INPUT_SETTING, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source', avifencChroma: grey ? 'monochrome' : '420', avifencLosslessQuality: AVIFENC_LOSSLESS_QUALITY },
+        settings: { case: caseName, quality, referenceInput: REFERENCE_INPUT_SETTING, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source', avifencChroma: grey ? 'monochrome' : '420', avifencLosslessQuality: AVIFENC_LOSSLESS_QUALITY, avifencAlpha: 'colour quality' },
       });
       const tool = REFERENCE_NAME[target];
 

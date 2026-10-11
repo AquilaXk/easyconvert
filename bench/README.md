@@ -80,14 +80,13 @@ mid-grey and is not converted to JPEG. A product output that the oracle cannot r
 
 **What the reference is given.** The reference encoders run at the product's output constraints. AVIF: 4:2:0 for every lossy quality
 (`-y 420`; 4:4:4 only at quality 100, and a grey picture is monochrome for both) and 12 bits for a source of 11 bits or more
-(`-d 12`; an 8-bit source stays 8-bit), QA decision 2026-10-11: match the reference service. Metadata: the reference gets the decoded pixels with the EXIF, XMP and ICC blocks of a PNG source
-(`bench/png-metadata.ts`; the original file cannot be given as it is, because `cwebp` applies its `gAMA` chunk and changes the pixels the
-rows are scored against), as `avifenc` and ImageMagick keep them by default and `cwebp` does with `-metadata all`. The product keeps
-the EXIF and XMP blocks and applies an ICC profile to the pixels without writing it, so its files of a tagged picture are smaller by
-the profile (3 kB for the sRGB profile of the photographs, 4.5 kB for the grey profile of the radiograph). A decoded copy without
-the blocks made the reference files 3 to 7 kB smaller than any encoder that keeps a picture's metadata can write (the 16-bit
-samples carry 3.5 to 6.9 kB of XMP). The rows score the pixels against the unconverted samples, so a profile that is not sRGB
-costs the product a little similarity that a viewer applying the profile to the reference's pixels does not see.
+(`-d 12`; an 8-bit source stays 8-bit), QA decision 2026-10-11: match the reference service. Alpha: at the colour quality (`--qalpha` as `-q`), as the service's engine encodes it. Metadata: the reference gets the decoded pixels with the
+EXIF, XMP and ICC blocks of a PNG source (`bench/png-metadata.ts`; the original file cannot be given as it is, because `cwebp` applies its
+`gAMA` chunk and changes the pixels the rows are scored against), as `avifenc` and ImageMagick keep them by default and `cwebp` does
+with `-metadata all`, except the usual 3 kB sRGB profile, which the service's engine rejects on read ("known incorrect sRGB profile") and so never writes. The
+product does the same for JPEG, WebP and AVIF: the blocks of the source, a profile that is not sRGB attached and the pixels not converted, nothing
+made up, and no sRGB profile. A decoded copy without the blocks made the reference files 3 to 7 kB smaller than any encoder that keeps a
+picture's metadata can write (the 16-bit samples carry 3.5 to 6.9 kB of XMP).
 
 **Per sample and per class.** Quality verdicts are never one number for the whole set. Every sample has its own rows and is judged
 alone, like the BD-rate over the four-point curve of a codec comparison. Beside them each content class has rows named
