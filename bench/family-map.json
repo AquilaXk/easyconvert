@@ -154,7 +154,7 @@
     },
     {
       "families": ["ebook"],
-      "match": "^src/lib/conversions/office/(mobi-reader|pml-reader)\\.ts$"
+      "match": "^src/lib/conversions/(office/(mobi-reader|pml-reader)|fb2-model|mobi-model)\\.ts$"
     },
     {
       "families": ["document"],

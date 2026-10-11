@@ -122,6 +122,8 @@ describe('classifying changed paths', () => {
     ['the RAW decode worker', 'src/worker/raw-decode-worker.ts', [], ['raw']],
     ['a data file', 'src/lib/conversions/parquet-writer.ts', ['data'], []],
     ['an ebook reader', 'src/lib/conversions/office/mobi-reader.ts', ['ebook'], []],
+    ['the FB2 structure reader', 'src/lib/conversions/fb2-model.ts', ['ebook'], []],
+    ['the MOBI structure reader', 'src/lib/conversions/mobi-model.ts', ['ebook'], []],
     ['a PDF operation', 'src/lib/conversions/pdf-postprocess/watermark.ts', ['pdf-ops'], []],
     ['the PDF decryption of the worker', 'src/worker/pdf-decrypt.ts', ['pdf-ops'], []],
     ['the PDF merge of the workflow graph', 'src/lib/jobs/artifact-helpers.ts', ['pdf-ops'], []],
