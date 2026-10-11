@@ -525,6 +525,110 @@
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
         }
       ]
+    },
+    {
+      "id": "raw/dng->gif/throughput",
+      "issue": 686,
+      "ratio": 0.7,
+      "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
+      "history": [
+        {
+          "ratio": 0.7061,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "raw/arw->gif/throughput",
+      "issue": 686,
+      "ratio": 0.88,
+      "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
+      "history": [
+        {
+          "ratio": 0.8826,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "vector/shapes.svg->pdf/throughput",
+      "issue": 666,
+      "ratio": 0.89,
+      "note": "ours is slower than the reference tool: the SVG is sanitised and the renderer starts in the sandbox, where the reference starts the renderer alone",
+      "history": [
+        {
+          "ratio": 0.8957,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "vector/shapes.eps->png/throughput",
+      "issue": 666,
+      "ratio": 0.49,
+      "note": "ours is slower than the reference tool: the page path starts the PostScript interpreter and then the PDF page tool, where the reference starts one",
+      "history": [
+        {
+          "ratio": 0.4908,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "vector/shapes.eps->pdf/throughput",
+      "issue": 666,
+      "ratio": 0.89,
+      "note": "ours is slower than the reference tool: the PostScript interpreter starts in the sandbox with the safe-mode flags, where the reference starts it plain",
+      "history": [
+        {
+          "ratio": 0.8961,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "vector/shapes.ai->png/throughput",
+      "issue": 666,
+      "ratio": 0.62,
+      "note": "ours is slower than the reference tool: the page path starts the PDF page tool in the sandbox and encodes the picture, where the reference starts the page tool alone",
+      "history": [
+        {
+          "ratio": 0.626,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "document/drawingml-shapes-presentation.pptx->png/throughput",
+      "issue": 666,
+      "ratio": 0.96,
+      "note": "ours is slower than the reference tool: the office pool is no faster than one cold office process, and the pages are drawn by a second tool and zipped",
+      "history": [
+        {
+          "ratio": 0.9647,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
+    },
+    {
+      "id": "document/workbook.xlsx->png/throughput",
+      "issue": 666,
+      "ratio": 0.95,
+      "note": "ours is slower than the reference tool: the office pool is no faster than one cold office process, and the pages are drawn by a second tool and zipped",
+      "history": [
+        {
+          "ratio": 0.9529,
+          "at": "2026-10-11T03:10:11.413Z",
+          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        }
+      ]
     }
   ]
 }

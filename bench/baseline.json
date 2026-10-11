@@ -331,6 +331,16 @@
       "delta": 0.11698066740549196,
       "ratio": null
     },
+    "cad/plate-basic.dxf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 11.008612446459203
+    },
     "cad/plate-basic.dxf->pdf/word_f1": {
       "direction": "higher",
       "tolerance": {
@@ -371,6 +381,16 @@
       "delta": 0.00036900369003689537,
       "ratio": null
     },
+    "cad/plate-basic.dxf->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 33.52813150832077
+    },
     "cad/plate-basic.dxf->svg/extent_error": {
       "direction": "lower",
       "tolerance": {
@@ -401,6 +421,16 @@
       "delta": 0,
       "ratio": null
     },
+    "cad/plate-basic.dxf->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 549.2944590085989
+    },
     "cad/plate-full.dxf->pdf/extent_error": {
       "direction": "lower",
       "tolerance": {
@@ -430,6 +460,16 @@
       "ours": 1,
       "delta": 0.2192372060248392,
       "ratio": null
+    },
+    "cad/plate-full.dxf->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 10.689610058008434
     },
     "cad/plate-full.dxf->pdf/word_f1": {
       "direction": "higher",
@@ -471,6 +511,16 @@
       "delta": 0.13677012098895314,
       "ratio": null
     },
+    "cad/plate-full.dxf->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 23.715970284466554
+    },
     "cad/plate-full.dxf->svg/extent_error": {
       "direction": "lower",
       "tolerance": {
@@ -500,6 +550,16 @@
       "ours": 1,
       "delta": 0.13118854579955153,
       "ratio": null
+    },
+    "cad/plate-full.dxf->svg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 318.63346633654817
     },
     "compression/mixed.7z->tar/throughput": {
       "direction": "higher",
@@ -1011,6 +1071,16 @@
       "delta": 0,
       "ratio": null
     },
+    "document/drawingml-shapes-presentation.pptx->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9981927795490356
+    },
     "document/drawingml-shapes-presentation.pptx->pdf/unembedded_fonts": {
       "direction": "lower",
       "tolerance": {
@@ -1030,6 +1100,16 @@
       "ours": 1,
       "delta": 0,
       "ratio": null
+    },
+    "document/drawingml-shapes-presentation.pptx->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9650036959047967
     },
     "document/drawingml-shapes-presentation.pptx->png/word_recall": {
       "direction": "higher",
@@ -1621,6 +1701,16 @@
       "delta": 0,
       "ratio": null
     },
+    "document/workbook.xlsx->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.0099737104182225
+    },
     "document/workbook.xlsx->pdf/unembedded_fonts": {
       "direction": "lower",
       "tolerance": {
@@ -1640,6 +1730,16 @@
       "ours": 0.9940828402366864,
       "delta": 0,
       "ratio": null
+    },
+    "document/workbook.xlsx->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.9531847245112771
     },
     "document/workbook.xlsx->png/word_recall": {
       "direction": "higher",
@@ -3341,6 +3441,16 @@
       "delta": -0.00006300000000003525,
       "ratio": null
     },
+    "raw/arw->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.9423675572341192
+    },
     "raw/arw->gif/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -3370,6 +3480,16 @@
       "ours": 0.984795,
       "delta": 0.006379999999999941,
       "ratio": null
+    },
+    "raw/arw->gif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8831837044834339
     },
     "raw/arw->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -3421,6 +3541,16 @@
       "delta": -0.000200000000000089,
       "ratio": null
     },
+    "raw/arw->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.4415185662730814
+    },
     "raw/arw->png/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -3440,6 +3570,16 @@
       "ours": 0.999785,
       "delta": -0.00021499999999996522,
       "ratio": null
+    },
+    "raw/arw->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.7605798212487644
     },
     "raw/dng->avif/bd_rate_psnr": {
       "direction": "lower",
@@ -3491,6 +3631,16 @@
       "delta": -0.000030000000000085514,
       "ratio": null
     },
+    "raw/dng->avif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.4481749826207608
+    },
     "raw/dng->gif/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -3520,6 +3670,16 @@
       "ours": 0.987727,
       "delta": 0.007062000000000013,
       "ratio": null
+    },
+    "raw/dng->gif/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.707229205109998
     },
     "raw/dng->jpg/bd_rate_psnr": {
       "direction": "lower",
@@ -3571,6 +3731,16 @@
       "delta": -0.0019040000000000168,
       "ratio": null
     },
+    "raw/dng->jpg/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.2387328160936186
+    },
     "raw/dng->png/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -3590,6 +3760,16 @@
       "ours": 0.999862,
       "delta": -0.00013799999999997148,
       "ratio": null
+    },
+    "raw/dng->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 1.435399179587705
     },
     "vector/label.svg->pdf/cer": {
       "direction": "lower",
@@ -3631,6 +3811,16 @@
       "delta": 0,
       "ratio": null
     },
+    "vector/shapes.ai->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.6301216577316875
+    },
     "vector/shapes.eps->pdf/pdf_embedded_images": {
       "direction": "lower",
       "tolerance": {
@@ -3661,6 +3851,16 @@
       "delta": 0,
       "ratio": null
     },
+    "vector/shapes.eps->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.8963473668617609
+    },
     "vector/shapes.eps->png/psnr": {
       "direction": "higher",
       "tolerance": {
@@ -3681,6 +3881,16 @@
       "delta": -0.000156000000000045,
       "ratio": null
     },
+    "vector/shapes.eps->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.4887109836087614
+    },
     "vector/shapes.svg->emf/metafile_violations": {
       "direction": "lower",
       "tolerance": {
@@ -3700,6 +3910,16 @@
       "ours": 0.986805,
       "delta": 0.0043600000000000305,
       "ratio": null
+    },
+    "vector/shapes.svg->emf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 446.2962099887031
     },
     "vector/shapes.svg->pdf/pdf_embedded_images": {
       "direction": "lower",
@@ -3731,6 +3951,16 @@
       "delta": 0,
       "ratio": null
     },
+    "vector/shapes.svg->pdf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 0.894368840413348
+    },
     "vector/shapes.svg->png/psnr": {
       "direction": "higher",
       "tolerance": {
@@ -3751,6 +3981,16 @@
       "delta": 0,
       "ratio": null
     },
+    "vector/shapes.svg->png/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 6.134610207258548
+    },
     "vector/shapes.svg->wmf/metafile_violations": {
       "direction": "lower",
       "tolerance": {
@@ -3770,6 +4010,16 @@
       "ours": 0.983157,
       "delta": 0.0007119999999999349,
       "ratio": null
+    },
+    "vector/shapes.svg->wmf/throughput": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.35
+      },
+      "ours": null,
+      "delta": null,
+      "ratio": 781.545938919554
     },
     "video/clip.mp4->h264/bd_rate_psnr": {
       "direction": "lower",
