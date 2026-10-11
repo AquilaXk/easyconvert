@@ -1,5 +1,6 @@
 import { ALL_API_KEY_SCOPES } from '@/lib/api-keys/types';
 import { ENGINE_USED_HEADER, FALLBACK_REASON_HEADER, MAX_FALLBACK_REASON_CHARS } from '@/lib/api/engine-trace';
+import { CONVERSION_WARNINGS_HEADER } from '@/lib/api/conversion-warnings';
 import { DROPPED_STREAMS_HEADER } from '@/lib/api/dropped-streams';
 import { FRAME_USED_HEADER, SOURCE_FRAMES_HEADER } from '@/lib/api/frame-headers';
 import { PDFA_VALIDATION_PROBLEM_TYPE, PDF_POSTPROCESS_PROBLEM_TYPE } from '@/lib/api/problem-details';
@@ -43,6 +44,15 @@ export const DROPPED_STREAMS_RESPONSE_HEADERS = {
   [DROPPED_STREAMS_HEADER]: {
     description:
       'Streams of the input the output lacks, as comma-separated `kind[#index]:reason` entries, for example `subtitle#3:container_unsupported,chapters:container_unsupported`. Sent only when something was left out; the JSON response lists the same streams as `droppedStreams`.',
+    schema: { type: 'string' },
+  },
+} as const;
+
+/** Response header listing what a document conversion left out (raw binary responses). */
+export const CONVERSION_WARNINGS_RESPONSE_HEADERS = {
+  [CONVERSION_WARNINGS_HEADER]: {
+    description:
+      'What the conversion left out of the document, as comma-separated percent-encoded lines, for example an HTML image that is not embedded. Sent only when something was left out; the JSON response lists the same lines as `warnings`.',
     schema: { type: 'string' },
   },
 } as const;

@@ -94,9 +94,9 @@ async function withSoffice<T>(binary: string, operation: () => Promise<T>): Prom
   }
 }
 
-/** Stages HTML, whether staging returns the document or a promise of it. */
+/** Stages HTML and returns the staged document. */
 async function stage(html: string): Promise<string> {
-  return stageHtmlForNativeEngine(html);
+  return (await stageHtmlForNativeEngine(html)).html;
 }
 
 function errorOutcome(error: unknown): { name?: string; message: string } {

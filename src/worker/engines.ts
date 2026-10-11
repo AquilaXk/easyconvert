@@ -39,6 +39,7 @@ import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } fro
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
+import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resources';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
 import { readPersistedOutput } from './persisted-output';
@@ -2334,6 +2335,8 @@ interface TextPdfRoute {
   readonly orientation?: PageOrientation;
   /** The checked HTML LibreOffice renders, rebuilt from the parsed input (absent when it reads the text file itself). */
   readonly stagedHtml?: Buffer;
+  /** Warnings the staging produced, one per external image it left out of the HTML. */
+  readonly stagedWarnings?: readonly string[];
 }
 
 /** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
@@ -2383,7 +2386,8 @@ async function planTextPdfRoute(
   src: string,
   tgt: string,
   originalFilename: string,
-  orientation?: PageOrientation
+  orientation?: PageOrientation,
+  policy: HtmlResourcePolicy = {}
 ): Promise<TextPdfRoute | null> {
   if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
   await loadFontCoverageIndex();
@@ -2400,7 +2404,8 @@ async function planTextPdfRoute(
   const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
   if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
   // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
-  return { ...route, stagedHtml: await stageTextPdfHtml(input, src, originalFilename, route.orientation) };
+  const staged = await stageTextPdfHtml(input, src, originalFilename, route.orientation, policy);
+  return { ...route, stagedHtml: staged.html, stagedWarnings: staged.warnings };
 }
 
 /**
@@ -2412,8 +2417,9 @@ async function stageTextPdfHtml(
   input: Buffer | WorkerVfsPayload,
   src: string,
   originalFilename: string,
-  orientation?: PageOrientation
-): Promise<Buffer> {
+  orientation?: PageOrientation,
+  policy: HtmlResourcePolicy = {}
+): Promise<{ html: Buffer; warnings: string[] }> {
   const raw = readRawInputBuffer(input);
   let html: string;
   if (HTML_SOURCES.has(src)) {
@@ -2427,7 +2433,8 @@ async function stageTextPdfHtml(
   }
   // Appended last so it overrides any @page rule of the document.
   const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';
-  return Buffer.from((await stageHtmlForNativeEngine(html)) + pageSize, 'utf-8');
+  const staged = await stageHtmlForNativeEngine(html, policy);
+  return { html: Buffer.from(staged.html + pageSize, 'utf-8'), warnings: staged.warnings };
 }
 
 function planTextPdfEngine(
@@ -2509,7 +2516,7 @@ export async function executeWorkerConversion(
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation);
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation, { requireResources: options.requireResources });
   const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
@@ -2524,8 +2531,10 @@ export async function executeWorkerConversion(
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
         : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
+        const stagedWarnings = isNativeTextPdf ? (textPdfRoute?.stagedWarnings ?? []) : [];
         return {
           ...officeRes,
+          ...(stagedWarnings.length > 0 ? { metadata: { ...officeRes.metadata, warnings: stagedWarnings } } : {}),
           fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
         };
       }

@@ -10,6 +10,16 @@ import {
   type HtmlElement,
   type HtmlNode,
 } from './html-blocks';
+import {
+  findExternalImages,
+  leaveOutImages,
+  normalizeUrl,
+  OmittedExternalImages,
+  srcsetUrls,
+  stripControls,
+  trimUrl,
+  type HtmlResourcePolicy,
+} from './html-omitted-resources';
 
 /**
  * Rebuilds HTML bound for LibreOffice from the parsed tree, so LibreOffice reads exactly what was
@@ -19,7 +29,8 @@ import {
  * value is escaped. Any URL that leaves the document is refused with a typed 400 first: on every
  * element (inline SVG included) URL attributes must be data: URIs or `#fragment`s, image sources
  * must be base64 PNG, JPEG or GIF data that decodes, and only `<a href>` may link to http, https
- * or mailto. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
+ * or mailto. The exception is an `<img>` that is not embedded: resources are never fetched, so it is left out of
+ * the staged document and reported, unless the caller requires every resource. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
  * form controls) is refused with EngineUnavailableError rather than dropped; only elements that
  * render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
  */
@@ -93,6 +104,7 @@ const ANIMATION_VALUE_SEPARATOR = ';';
 const ANCHOR_ELEMENT = 'a';
 const HREF_ATTRIBUTE = 'href';
 const SRC_ATTRIBUTE = 'src';
+const SRCSET_ATTRIBUTE = 'srcset';
 const IMAGE_ELEMENT = 'img';
 const NAMESPACED_HREF_SUFFIX = ':href';
 const META_ELEMENT = 'meta';
@@ -107,7 +119,6 @@ const FRAGMENT_PREFIX = '#';
 const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
 /** Tab and newlines, which URL parsers drop from anywhere inside a URL. */
 const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
-const LAST_C0_OR_SPACE = 0x20;
 const URL_LIST_SEPARATOR = /[ \t\n\f\r]+/;
 const ASCII_WHITESPACE = /[ \t\n\f\r]+/g;
 
@@ -125,54 +136,8 @@ const MAX_REFERENCE_PREVIEW = 80;
 
 type UrlKind = 'anchor' | 'image' | 'other';
 
-function stripControls(text: string): string {
-  return text.replace(CONTROL_CHARACTERS, '');
-}
-
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function isHtmlSpace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\f' || ch === '\r';
-}
-
-/** Strips leading and trailing C0 controls and spaces, as URL parsers do. */
-function trimUrl(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value.charCodeAt(start) <= LAST_C0_OR_SPACE) start++;
-  while (end > start && value.charCodeAt(end - 1) <= LAST_C0_OR_SPACE) end--;
-  return value.slice(start, end);
-}
-
-/** The URL a parser reads from an attribute value: no control characters, trimmed, without tabs or newlines. */
-function normalizeUrl(value: string): string {
-  return trimUrl(stripControls(value)).replace(URL_IGNORED_CHARACTERS, '');
-}
-
-/** The URLs of a srcset: each candidate's URL, skipping its descriptors (data: URIs may contain commas). */
-function srcsetUrls(value: string): string[] {
-  const urls: string[] = [];
-  const length = value.length;
-  let i = 0;
-  while (i < length) {
-    while (i < length && (isHtmlSpace(value[i]) || value[i] === ',')) i++;
-    const start = i;
-    while (i < length && !isHtmlSpace(value[i])) i++;
-    let end = i;
-    if (end > start && value[end - 1] === ',') {
-      while (end > start && value[end - 1] === ',') end--;
-    } else {
-      let depth = 0;
-      for (; i < length && (depth > 0 || value[i] !== ','); i++) {
-        if (value[i] === '(') depth++;
-        else if (value[i] === ')' && depth > 0) depth--;
-      }
-    }
-    if (end > start) urls.push(value.slice(start, end));
-  }
-  return urls;
 }
 
 function isUrlAttribute(name: string): boolean {
@@ -372,6 +337,12 @@ function assertElementStaysInDocument(element: HtmlElement): void {
   if (element.tag === STYLE_ELEMENT) checkedStyleSheet(element);
 }
 
+/** The staged document and one warning per external image that was left out of it. */
+export interface StagedHtml {
+  html: string;
+  warnings: string[];
+}
+
 /** Checks every element of the tree, written or not, so a refused reference is a 400 wherever it is. */
 function assertTreeStaysInDocument(root: HtmlElement): void {
   const pending: HtmlNode[] = [...root.children];
@@ -468,11 +439,13 @@ class StagedHtmlWriter {
  * (escapes, imports, non-ASCII outside strings, a stray "<"), for images that do not decode and
  * for documents nested too deeply; EngineUnavailableError for content it would have to drop.
  */
-export async function stageHtmlForNativeEngine(html: string): Promise<string> {
+export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourcePolicy = {}): Promise<StagedHtml> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
+  const omitted = new OmittedExternalImages();
+  if (!policy.requireResources) leaveOutImages(findExternalImages(document.root), omitted);
   assertTreeStaysInDocument(document.root);
   const writer = new StagedHtmlWriter(document.title);
   const staged = writer.write(document.root);
   await verifyEmbeddedImages(writer.images);
-  return staged;
+  return { html: staged, warnings: omitted.warnings() };
 }

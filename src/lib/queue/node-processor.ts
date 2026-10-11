@@ -22,6 +22,7 @@ import { pageCappedEngine, pageLimitForOwner } from './page-cap';
 import { deadlineBoundEngine } from './job-deadline';
 import { frameMetadataFields } from '../api/frame-headers';
 import { engineTraceFields } from '../api/engine-trace';
+import { conversionWarningsFields } from '../api/conversion-warnings';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 import { openPasswordOption } from './option-secrets';
@@ -301,6 +302,12 @@ export async function processNodeJob(
         `[${engine.name}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
       );
     }
+    const warnings = finalResult.metadata?.warnings;
+    if (Array.isArray(warnings)) {
+      for (const warning of warnings) {
+        if (typeof warning === 'string') await job.log(`[${engine.name}] Warning: ${warning}`);
+      }
+    }
     if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
       for (const step of finalResult.fallbackChain) {
         await job.log(`[${engine.name}] Engine fallback: ${step}`);
@@ -366,6 +373,7 @@ export async function processNodeJob(
       ...frameMetadataFields(finalResult),
       ...engineTraceFields(finalResult),
       ...droppedStreamsFields(finalResult),
+      ...conversionWarningsFields(finalResult),
     };
   } catch (err) {
     failure = err;
