@@ -140,8 +140,29 @@ export function bdPsnr(anchor: readonly RdPoint[], test: readonly RdPoint[]): nu
   return (integrate(fitT, lo, hi) - integrate(fitA, lo, hi)) / (hi - lo);
 }
 
-/** The BD-rate, or null with the reason when the points do not determine one (a curve that is flat or has no quality in common). */
+/**
+ * A rate-distortion curve states a trade-off only when its quality grows with its rate and gains enough along the way. A curve
+ * that is flat (the SNR of a perceptual audio codec stays within a tenth of a decibel across its rates; a graphic coded without
+ * loss at every quality) fits a cubic of rate against quality that explodes, and the BD-rate it gives is a number of the fit and
+ * not of the codec. Below this span of quality (in the unit of the curve, decibels for every curve the benchmark fits) no
+ * BD-rate is stated.
+ */
+export const BD_MIN_QUALITY_SPAN = 0.5;
+
+function curveProblem(name: string, points: readonly RdPoint[]): string | null {
+  const byRate = [...points].sort((a, b) => a.rate - b.rate);
+  for (let i = 1; i < byRate.length; i++) {
+    if (!(byRate[i].quality > byRate[i - 1].quality)) return `the ${name} curve does not gain quality with its rate`;
+  }
+  const span = byRate[byRate.length - 1].quality - byRate[0].quality;
+  if (span < BD_MIN_QUALITY_SPAN) return `the ${name} curve gains ${Number(span.toPrecision(2))} dB across its rates, less than the ${BD_MIN_QUALITY_SPAN} dB that makes a trade-off`;
+  return null;
+}
+
+/** The BD-rate, or the reason when the points determine none (a curve that is flat, falls with its rate, or shares no quality with the other). */
 export function tryBdRate(anchor: readonly RdPoint[], test: readonly RdPoint[]): { value: number } | { reason: string } {
+  const problem = curveProblem('reference', anchor) ?? curveProblem('our', test);
+  if (problem !== null) return { reason: problem };
   try {
     return { value: bdRate(anchor, test) };
   } catch (error) {

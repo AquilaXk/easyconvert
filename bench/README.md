@@ -116,6 +116,13 @@ reference tool and, for tracked rows, with their own history (below). Quality ro
 overlapping quality range, reported as a percentage (negative: ours needs fewer bits). `tests/bench-bd-rate.test.ts`
 checks it against published curve pairs and an exact closed-form case.
 
+A BD-rate is stated only for curves that state a trade-off: quality must grow with the rate at all four points, and gain at least
+`BD_MIN_QUALITY_SPAN` (0.5 dB) across them (`tryBdRate`). A flat curve fits a cubic that explodes, and the number it gives
+belongs to the fit and not to the codec: on the SQAM tracks the SNR of Opus stays within 0.1 dB from 32 to 96 kbit/s (it is a
+perceptual codec, and its output is not waveform-matched), and the unvalidated BD-rate of two encodes that agree to the third
+decimal came out as 1e14 percent. Such a case has skipped BD rows that say why, and is judged on its point rows (SNR, loudness,
+bit rate) against the reference within their allowances, like any case without a curve.
+
 ## Baseline and tool versions
 
 `bench/baseline.json` was recorded with the tool versions listed in the report's `tools` block (see the `.md`
