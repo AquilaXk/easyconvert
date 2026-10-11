@@ -4,6 +4,7 @@ import { compressLzma, compressLzma2, type LzmaCompressOptions } from '../conver
 import { compressZstd, type ZstdCompressOptions } from '../conversions/zstd';
 import { encodeZstdJob, planZstdJobs } from '../conversions/zstd-jobs';
 import { encodeWoff2Container, type Woff2InputTable } from '../conversions/font-woff2';
+import { encodePngBand, type PngBandPayload } from '../conversions/png-photo-bands';
 import { assemblePng16, filterPng16Scanlines, PNG16_DEFAULT_LEVEL } from '../conversions/png16';
 import { runDemosaicTiles, type DemosaicTilesPayload } from '../conversions/raw-demosaic-tiles';
 import { deriveSevenZipKey, SEVENZIP_KDF_TASK, type AesKeyRequest } from '../conversions/archive-sevenzip-aes';
@@ -137,6 +138,12 @@ export const CPU_TASK_HANDLERS: Record<string, CpuTaskHandler> = {
     const scanlines = filterPng16Scanlines(payload.width, payload.height, payload.rgb16);
     const idat = zlib.deflateSync(scanlines, { level: payload.level ?? PNG16_DEFAULT_LEVEL });
     return transferableBytes(assemblePng16(payload.width, payload.height, idat, payload.iccProfile));
+  },
+
+  pngBand: (raw): HandlerResult => {
+    const band = encodePngBand(raw as PngBandPayload);
+    const deflate = transferableBytes(band.deflate);
+    return { result: { ...band, deflate: deflate.result }, transfer: deflate.transfer };
   },
 
   bzip2Block: (raw): HandlerResult => {

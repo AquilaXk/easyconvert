@@ -1,0 +1,73 @@
+Region
+Quarter
+Units
+Revenue
+Margin
+North America
+Q1
+900
+106,650.00
+21.0%
+North America
+Q2
+1,037
+119,255.00
+22.1%
+North America
+Q3
+1,174
+130,901.00
+23.2%
+Europe
+Q1
+1,352
+170,014.00
+22.7%
+Europe
+Q2
+1,489
+182,030.25
+23.8%
+Europe
+Q3
+1,626
+193,087.50
+24.9%
+Asia Pacific
+Q1
+1,804
+239,932.00
+24.4%
+Asia Pacific
+Q2
+1,941
+251,359.50
+25.5%
+Asia Pacific
+Q3
+2,078
+261,828.00
+26.6%
+Latin America
+Q1
+2,256
+316,404.00
+26.1%
+Latin America
+Q2
+2,393
+327,242.75
+27.2%
+Latin America
+Q3
+2,530
+337,122.50
+28.3%
+Total
+20,580
+2,635,826.50
+24.6%
+Method notes
+Revenue is booked in euros at the monthly average rate of the quarter.
+Units count shipped devices; returned devices are subtracted in the quarter of the return.
+Margin is operating income divided by revenue before group allocations.

@@ -168,6 +168,13 @@ export interface QuantizeOptions {
    * `QUANT_ALPHA_THRESHOLD` maps to a reserved transparent index and leaves the palette and dither alone.
    */
   transparency?: 'ignore' | 'threshold';
+  /**
+   * Without dithering only: a pixel keeps the colour of the pixel before it when that colour is at most (1 + runTolerance)
+   * times as far from it as the nearest colour is (0, the default, maps every pixel to its nearest colour). Where the
+   * nearest colour flips between two neighbours of nearly equal distance the file gains a run for the LZW coder, as
+   * a lossy GIF writer does, and the picture moves by less than the palette's own rounding.
+   */
+  runTolerance?: number;
 }
 
 export interface IndexedImage {
@@ -490,25 +497,37 @@ function paletteSpacing(model: PaletteModel): { linear: number; oklab: number } 
   return { linear: median(linear), oklab: median(perceptual) };
 }
 
-function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number): Uint8Array {
+function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number, runTolerance = 0): Uint8Array {
   const out = new Uint8Array(pixelCount);
   if (pixelCount >= GRID_MIN_PIXELS) model.tree.enableGrid();
   const lab = new Float64Array(RGB_STRIDE);
+  const keepsRuns = runTolerance > 0;
+  const distanceFactor = (1 + runTolerance) ** 2;
   let lastKey = -1;
   let lastIndex = 0;
+  let previousIndex = -1;
   for (let p = 0; p < pixelCount; p += 1) {
     const i = p * RGBA_STRIDE;
     if (transparentIndex >= 0 && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) {
       out[p] = transparentIndex;
+      previousIndex = -1;
       continue;
     }
     const key = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
     if (key !== lastKey) {
       linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
       lastIndex = model.tree.nearestIndex(lab[0], lab[1], lab[2], lastIndex);
+      if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex) {
+        const at = previousIndex * RGB_STRIDE;
+        const dx = lab[0] - model.oklab[at];
+        const dy = lab[1] - model.oklab[at + 1];
+        const dz = lab[2] - model.oklab[at + 2];
+        if (dx * dx + dy * dy + dz * dz <= model.tree.lastDistance2 * distanceFactor) lastIndex = previousIndex;
+      }
       lastKey = key;
     }
     out[p] = lastIndex;
+    previousIndex = lastIndex;
   }
   return out;
 }
@@ -736,7 +755,7 @@ export function quantizeImage(
   const transparentIndex = hasTransparent ? opaqueSize : -1;
   const palette = new Uint8Array((opaqueSize + (hasTransparent ? 1 : 0)) * RGB_STRIDE);
   palette.set(opaque);
-  const indices = mapToPalette(pixels, width, height, opaque, opaqueSize, options.dither ?? 'none', transparentIndex);
+  const indices = mapToPalette(pixels, width, height, opaque, opaqueSize, options.dither ?? 'none', transparentIndex, options.runTolerance);
   return { palette, paletteSize: palette.length / RGB_STRIDE, indices, transparentIndex };
 }
 
@@ -752,7 +771,8 @@ export function mapToPalette(
   palette: Uint8Array,
   paletteSize: number,
   dither: DitherKind = 'none',
-  transparentIndex: number = -1
+  transparentIndex: number = -1,
+  runTolerance: number = 0
 ): Uint8Array {
   assertRaster(pixels, width, height);
   if (!Number.isInteger(paletteSize) || paletteSize < 1 || paletteSize > QUANT_MAX_COLORS || palette.length < paletteSize * RGB_STRIDE) {
@@ -762,7 +782,7 @@ export function mapToPalette(
   if (dither === 'floyd-steinberg') return mapFloydSteinberg(pixels, width, height, model, transparentIndex);
   if (dither === 'riemersma') return mapRiemersma(pixels, width, height, model, transparentIndex);
   if (dither === 'blue-noise') return mapBlueNoise(pixels, width, height, model, transparentIndex);
-  return mapNearest(pixels, width * height, model, transparentIndex);
+  return mapNearest(pixels, width * height, model, transparentIndex, runTolerance);
 }
 
 function paletteColours(image: IndexedImage): RgbColor[] {

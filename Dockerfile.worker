@@ -101,6 +101,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         tesseract-ocr-jpn \
         qpdf \
         ghostscript \
+        librsvg2-bin \
         default-jre-headless \
         unzip \
     && apt-get clean \

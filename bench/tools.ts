@@ -40,6 +40,9 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   'ebook-convert': ['ebook-convert'],
   python3: ['python3'],
   ssimulacra2: ['ssimulacra2', 'ssimulacra2_rs'],
+  dcraw_emu: ['dcraw_emu'],
+  'rsvg-convert': ['rsvg-convert'],
+  gs: ['gs'],
 };
 
 /** Arguments that make each tool print its version, and the first line of output is kept. */
@@ -67,6 +70,10 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   epubcheck: ['--version'],
   'ebook-convert': ['--version'],
   ssimulacra2: ['--version'],
+  'rsvg-convert': ['--version'],
+  gs: ['--version'],
+  pdftoppm: ['-v'],
+  qpdf: ['--version'],
 };
 
 /** Tools that print no version: the Debian package that ships them is asked instead. */
