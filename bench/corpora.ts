@@ -90,6 +90,8 @@ export interface RemoteSet {
   title: string;
   /** Page of the publisher that states the terms. */
   terms: string;
+  /** Host suffixes (like `amazonaws.com`) the publisher's download link may redirect to besides its own domain. */
+  redirectHosts?: string[];
 }
 
 export interface RemoteManifest {
@@ -160,6 +162,9 @@ export function validateRemoteManifest(value: unknown): RemoteManifest {
   for (const [name, set] of Object.entries(manifest.sets)) {
     if (typeof set.title !== 'string' || set.title === '') throw new CorpusError(`set ${name} needs a title`);
     requireHttps(set.terms, `set ${name} terms`);
+    for (const host of set.redirectHosts ?? []) {
+      if (typeof host !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(host)) throw new CorpusError(`set ${name} redirectHosts holds ${JSON.stringify(host)}, which is not a host suffix`);
+    }
   }
   if (!Array.isArray(manifest.samples)) throw new CorpusError('remote manifest needs samples');
   const seen = new Set<string>();
@@ -200,27 +205,85 @@ export function isRemoteCase(caseName: string, manifest: RemoteManifest = readRe
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function attempt(url: string, range: [number, number] | null, maxBytes: number): Promise<Buffer> {
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECTS = 5;
+
+/** The last two labels of a host name, the part a publisher owns (a name with a public suffix of two labels is read as that suffix, which only makes the rule stricter for it). */
+function registrableDomain(hostname: string): string {
+  return hostname.split('.').slice(-2).join('.');
+}
+
+/**
+ * Whether a download that started at `from` may be sent on to `to`: to the same host, or over https to the same registrable domain
+ * or to a host suffix the set lists (the publisher's storage). A host that answers with a redirect elsewhere does not get to choose
+ * what the benchmark reads; the digest would catch other bytes, but the fetch should not go there at all.
+ */
+export function redirectAllowed(from: URL, to: URL, extraHosts: readonly string[]): boolean {
+  if (to.hostname === from.hostname) return to.protocol === from.protocol || to.protocol === 'https:';
+  if (to.protocol !== 'https:') return false;
+  if (registrableDomain(to.hostname) === registrableDomain(from.hostname) && /[a-z]/.test(from.hostname)) return true;
+  return extraHosts.some((host) => to.hostname === host || to.hostname.endsWith(`.${host}`));
+}
+
+/** The final response of a GET, following at most MAX_REDIRECTS redirects that `redirectAllowed` accepts. */
+async function fetchPinned(url: string, headers: Record<string, string>, extraHosts: readonly string[]): Promise<Response> {
+  const start = new URL(url);
+  let current = start;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const response = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    await response.body?.cancel();
+    const location = response.headers.get('location');
+    if (location === null) throw new CorpusFetchError(`${url}: HTTP ${response.status} without a location`);
+    const next = new URL(location, current);
+    if (!redirectAllowed(start, next, extraHosts)) throw new CorpusFetchError(`${url}: the redirect to ${next.hostname} is not allowed (${start.hostname} may send a download to its own domain, or to ${extraHosts.join(', ') || 'no listed host'})`);
+    current = next;
+  }
+  throw new CorpusFetchError(`${url}: more than ${MAX_REDIRECTS} redirects`);
+}
+
+/** The body of a response, read in pieces and abandoned as soon as it is longer than `maxBytes`. */
+async function readCapped(url: string, response: Response, maxBytes: number): Promise<Buffer> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return Buffer.alloc(0);
+  const pieces: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new CorpusFetchError(`${url}: the body exceeds the ${maxBytes}-byte cap`);
+    }
+    pieces.push(Buffer.from(value));
+  }
+  return Buffer.concat(pieces);
+}
+
+async function attempt(url: string, range: [number, number] | null, maxBytes: number, extraHosts: readonly string[]): Promise<Buffer> {
   const headers: Record<string, string> = { 'user-agent': USER_AGENT };
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
-  const response = await fetch(url, { headers, redirect: 'follow', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  const response = await fetchPinned(url, headers, extraHosts);
   const expected = range ? HTTP_PARTIAL : HTTP_OK;
   if (response.status !== expected) throw new CorpusFetchError(`${url}: HTTP ${response.status}, expected ${expected}`);
   const declared = Number(response.headers.get('content-length') ?? '0');
-  if (declared > maxBytes) throw new CorpusFetchError(`${url}: ${declared} bytes exceeds the ${maxBytes}-byte cap`);
-  const body = Buffer.from(await response.arrayBuffer());
-  if (body.length > maxBytes) throw new CorpusFetchError(`${url}: ${body.length} bytes exceeds the ${maxBytes}-byte cap`);
+  if (declared > maxBytes) {
+    await response.body?.cancel();
+    throw new CorpusFetchError(`${url}: ${declared} bytes exceeds the ${maxBytes}-byte cap`);
+  }
+  const body = await readCapped(url, response, maxBytes);
   if (range && body.length !== range[1] - range[0] + 1) throw new CorpusFetchError(`${url}: the range returned ${body.length} bytes, expected ${range[1] - range[0] + 1}`);
   return body;
 }
 
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
-export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES): Promise<Buffer> {
+export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
   let last: unknown;
   const retries = process.env.BENCH_CORPUS_RETRIES === undefined ? DEFAULT_RETRIES : Number(process.env.BENCH_CORPUS_RETRIES);
   for (let tryNumber = 0; tryNumber <= retries; tryNumber++) {
     try {
-      return await attempt(url, range, maxBytes);
+      return await attempt(url, range, maxBytes, extraHosts);
     } catch (error) {
       last = error;
       if (tryNumber < retries) await sleep(BACKOFF_BASE_MS * 2 ** tryNumber);
@@ -229,14 +292,20 @@ export async function httpBytes(url: string, range: [number, number] | null, max
   throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${last instanceof Error ? last.message : String(last)}`);
 }
 
+/** The redirect targets the sample's set allows besides its own domain. */
+function redirectHostsOf(sample: Pick<RemoteSample, 'set'>): readonly string[] {
+  return readRemoteManifest().sets[sample.set]?.redirectHosts ?? [];
+}
+
 /** The sample's bytes from its origin, before any digest check. */
 export async function downloadSample(sample: RemoteSample): Promise<Buffer> {
   const origin = sample.origin;
-  if (origin.kind === 'file') return httpBytes(origin.url, null, sample.bytes);
-  if (origin.kind === 'range') return httpBytes(origin.url, [origin.start, origin.end], sample.bytes);
-  const head = await httpBytes(origin.archive, [origin.offset, origin.offset + ZIP_LOCAL_HEADER_PROBE_BYTES - 1], ZIP_LOCAL_HEADER_PROBE_BYTES);
+  const hosts = redirectHostsOf(sample);
+  if (origin.kind === 'file') return httpBytes(origin.url, null, sample.bytes, hosts);
+  if (origin.kind === 'range') return httpBytes(origin.url, [origin.start, origin.end], sample.bytes, hosts);
+  const head = await httpBytes(origin.archive, [origin.offset, origin.offset + ZIP_LOCAL_HEADER_PROBE_BYTES - 1], ZIP_LOCAL_HEADER_PROBE_BYTES, hosts);
   const dataStart = origin.offset + localHeaderLength(head);
-  const data = origin.compressedSize === 0 ? Buffer.alloc(0) : await httpBytes(origin.archive, [dataStart, dataStart + origin.compressedSize - 1], origin.compressedSize);
+  const data = origin.compressedSize === 0 ? Buffer.alloc(0) : await httpBytes(origin.archive, [dataStart, dataStart + origin.compressedSize - 1], origin.compressedSize, hosts);
   return inflateEntry({ name: origin.entry, method: origin.method, compressedSize: origin.compressedSize, size: sample.bytes, localHeaderOffset: origin.offset }, data);
 }
 
@@ -311,16 +380,17 @@ export function y4mLayout(header: string): { width: number; height: number; fram
 
 async function resolveOrigin(seed: Seed): Promise<{ origin: RemoteOrigin; meta: RemoteMeta }> {
   const origin = seed.origin;
+  const hosts = redirectHostsOf(seed);
   if (origin.kind === 'file') return { origin, meta: seed.meta };
   if (origin.kind === 'zip') {
-    const tail = await tailOf(origin.archive);
+    const tail = await tailOf(origin.archive, hosts);
     const location = locateCentralDirectory(tail.bytes);
-    const directory = await httpBytes(origin.archive, [location.offset, location.offset + location.size - 1], location.size);
+    const directory = await httpBytes(origin.archive, [location.offset, location.offset + location.size - 1], location.size, hosts);
     const entry = parseCentralDirectory(directory, location.entries).find((item) => item.name === origin.entry);
     if (entry === undefined) throw new CorpusError(`${seed.id}: ${origin.entry} is not in ${origin.archive}`);
     return { origin: { kind: 'zip', archive: origin.archive, entry: origin.entry, offset: entry.localHeaderOffset, compressedSize: entry.compressedSize, method: entry.method }, meta: seed.meta };
   }
-  const head = await httpBytes(origin.url, [0, Y4M_HEADER_PROBE_BYTES - 1], Y4M_HEADER_PROBE_BYTES);
+  const head = await httpBytes(origin.url, [0, Y4M_HEADER_PROBE_BYTES - 1], Y4M_HEADER_PROBE_BYTES, hosts);
   const newline = head.indexOf(0x0a);
   const layout = y4mLayout(head.subarray(0, newline).toString('latin1'));
   const frameStride = Y4M_FRAME_MARKER.length + layout.frameBytes;
@@ -330,14 +400,14 @@ async function resolveOrigin(seed: Seed): Promise<{ origin: RemoteOrigin; meta: 
   return { origin: { kind: 'range', url: origin.url, start: 0, end }, meta: { ...seed.meta, width: layout.width, height: layout.height, frames: origin.frames, fps: layout.fps, chroma: layout.chroma } };
 }
 
-async function tailOf(url: string): Promise<{ bytes: Buffer }> {
-  const probe = await fetch(url, { headers: { range: 'bytes=0-0', 'user-agent': USER_AGENT }, redirect: 'follow', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+async function tailOf(url: string, hosts: readonly string[]): Promise<{ bytes: Buffer }> {
+  const probe = await fetchPinned(url, { range: 'bytes=0-0', 'user-agent': USER_AGENT }, hosts);
   await probe.arrayBuffer();
   const total = /\/(\d+)$/.exec(probe.headers.get('content-range') ?? '');
   if (probe.status !== HTTP_PARTIAL || total === null) throw new CorpusFetchError(`${url}: the host does not answer range requests (HTTP ${probe.status})`);
   const size = Number(total[1]);
   const start = Math.max(0, size - EOCD_SEARCH_BYTES);
-  return { bytes: await httpBytes(url, [start, size - 1], EOCD_SEARCH_BYTES) };
+  return { bytes: await httpBytes(url, [start, size - 1], EOCD_SEARCH_BYTES, hosts) };
 }
 
 /** Samples for the seeds: the origin resolved, the bytes fetched once and pinned by size and SHA-256. */
@@ -345,7 +415,7 @@ export async function pinSeeds(seeds: readonly Seed[], log: (line: string) => vo
   const pinned: RemoteSample[] = [];
   for (const seed of seeds) {
     const { origin, meta } = await resolveOrigin(seed);
-    const expectedBytes = origin.kind === 'zip' ? await zipEntrySize(origin) : MAX_REMOTE_SAMPLE_BYTES;
+    const expectedBytes = origin.kind === 'zip' ? await zipEntrySize(origin, redirectHostsOf(seed)) : MAX_REMOTE_SAMPLE_BYTES;
     const draft = { ...seed, origin, meta, bytes: expectedBytes, sha256: '0'.repeat(64) } as RemoteSample;
     const bytes = await downloadSample(draft);
     log(`pinned ${seed.id}: ${bytes.length} bytes`);
@@ -354,10 +424,10 @@ export async function pinSeeds(seeds: readonly Seed[], log: (line: string) => vo
   return pinned;
 }
 
-async function zipEntrySize(origin: ZipOrigin): Promise<number> {
-  const tail = await tailOf(origin.archive);
+async function zipEntrySize(origin: ZipOrigin, hosts: readonly string[]): Promise<number> {
+  const tail = await tailOf(origin.archive, hosts);
   const location = locateCentralDirectory(tail.bytes);
-  const directory = await httpBytes(origin.archive, [location.offset, location.offset + location.size - 1], location.size);
+  const directory = await httpBytes(origin.archive, [location.offset, location.offset + location.size - 1], location.size, hosts);
   const entry = parseCentralDirectory(directory, location.entries).find((item) => item.name === origin.entry);
   if (entry === undefined) throw new CorpusError(`${origin.entry} is not in ${origin.archive}`);
   return entry.size;

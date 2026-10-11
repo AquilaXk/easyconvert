@@ -19,7 +19,10 @@
     },
     "ebu-sqam": {
       "title": "EBU SQAM sound quality assessment material (FLAC release of Tech 3253)",
-      "terms": "https://tech.ebu.ch/publications/sqamcd"
+      "terms": "https://tech.ebu.ch/publications/sqamcd",
+      "redirectHosts": [
+        "amazonaws.com"
+      ]
     },
     "silesia": {
       "title": "Silesia compression corpus (12 files of 5 to 51 MB)",

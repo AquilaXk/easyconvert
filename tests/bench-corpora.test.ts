@@ -15,9 +15,11 @@ import {
   CorpusFetchError,
   downloadSample,
   ensureSample,
+  httpBytes,
   isRemoteCase,
   pinSeeds,
   readRemoteManifest,
+  redirectAllowed,
   type RemoteManifest,
   type RemoteSample,
   remoteSamples,
@@ -298,6 +300,67 @@ describe('fetching a sample', () => {
     } finally {
       delete process.env.BENCH_CORPUS_RETRIES;
     }
+  });
+});
+
+describe('what a host may make the fetcher read', () => {
+  it('follows a redirect only to the host it started from, to the same registrable domain over https, or to a host the set lists', () => {
+    const from = new URL('https://qc.ebu.io/testmaterials/523/1/download/');
+    expect(redirectAllowed(from, new URL('https://qc.ebu.io/other'), [])).toBe(true);
+    expect(redirectAllowed(from, new URL('https://static.ebu.io/file.zip'), [])).toBe(true);
+    expect(redirectAllowed(from, new URL('https://qc-v4-static.s3.amazonaws.com/file.zip?sig=1'), [])).toBe(false);
+    expect(redirectAllowed(from, new URL('https://qc-v4-static.s3.amazonaws.com/file.zip?sig=1'), ['amazonaws.com'])).toBe(true);
+    expect(redirectAllowed(from, new URL('https://evilamazonaws.com/file.zip'), ['amazonaws.com'])).toBe(false);
+    expect(redirectAllowed(from, new URL('http://static.ebu.io/file.zip'), [])).toBe(false);
+    expect(redirectAllowed(from, new URL('https://ebu.io.attacker.example/file.zip'), [])).toBe(false);
+    expect(redirectAllowed(new URL('http://127.0.0.1:8080/a'), new URL('http://127.0.0.1:8080/b'), [])).toBe(true);
+  });
+
+  describe('over HTTP', () => {
+    let server: http.Server;
+    let base: string;
+    let endlessClosed: Promise<number>;
+    let sent = 0;
+    beforeAll(async () => {
+      server = http.createServer((request, response) => {
+        if (request.url === '/away') {
+          response.writeHead(302, { location: 'http://evil.invalid/payload' }).end();
+        } else if (request.url === '/near') {
+          response.writeHead(302, { location: '/body' }).end();
+        } else if (request.url === '/endless') {
+          // No content-length: the body is as long as the client keeps reading.
+          response.writeHead(200);
+          const chunk = Buffer.alloc(64 * 1024, 1);
+          endlessClosed = new Promise((resolve) => response.on('close', () => resolve(sent)));
+          const write = (): void => {
+            while (!response.destroyed && response.write(chunk)) sent += chunk.length;
+            if (!response.destroyed) response.once('drain', write);
+          };
+          write();
+        } else {
+          response.writeHead(200, { 'content-length': 4 }).end('body');
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      process.env.BENCH_CORPUS_RETRIES = '0';
+    });
+    afterAll(async () => {
+      delete process.env.BENCH_CORPUS_RETRIES;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('refuses a redirect to another host, naming it, and follows one on the same host', async () => {
+      await expect(httpBytes(`${base}/away`, null, 1000)).rejects.toThrow(/redirect to evil\.invalid is not allowed/);
+      expect((await httpBytes(`${base}/near`, null, 1000)).toString()).toBe('body');
+    });
+
+    it('stops reading a body once it is longer than the size the manifest pins, without taking the rest', async () => {
+      await expect(httpBytes(`${base}/endless`, null, 100_000)).rejects.toThrow(/exceeds the 100000-byte cap/);
+      const total = await endlessClosed;
+      // The server could have written without end; it was cut off within a few buffers of the cap.
+      expect(total).toBeLessThan(100_000 + 64 * 1024 * 64);
+    });
   });
 });
 

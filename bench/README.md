@@ -89,7 +89,9 @@ rows are judged at the headline quality.
 
 **Fetching.** A sample is fetched from the host that publishes it the first time a run needs it and kept in
 `.bench-corpora/<family>/<sha256>` (git-ignored; `BENCH_CORPUS_CACHE` moves it). A digest or size that differs from the manifest
-fails the run. A host that does not deliver fails a run under `ORACLE_STRICT_MODE=1` and otherwise skips the rows of that sample
+fails the run, a body is abandoned as soon as it is longer than the size the manifest pins, and a redirect is followed only to the host the
+download started from, over https to the same registrable domain, or to a host suffix the set lists (`redirectHosts`: the EBU download
+links to its storage). A host that does not deliver fails a run under `ORACLE_STRICT_MODE=1` and otherwise skips the rows of that sample
 (listed in the report). CI caches the directory per family with `actions/cache`, keyed by the hash of the manifest
 (`.github/actions/bench-corpora`); `npx tsx bench/corpora.ts verify` fetches and checks everything, and
 `npx tsx bench/corpora.ts pin <seeds.json>` resolves the origin, size and digest of new samples.
@@ -127,8 +129,11 @@ A BD-rate is stated only for curves that state a trade-off: quality must grow wi
 `BD_MIN_QUALITY_SPAN` (0.5 dB) across them (`tryBdRate`). A flat curve fits a cubic that explodes, and the number it gives
 belongs to the fit and not to the codec: on the SQAM tracks the SNR of Opus stays within 0.1 dB from 32 to 96 kbit/s (it is a
 perceptual codec, and its output is not waveform-matched), and the unvalidated BD-rate of two encodes that agree to the third
-decimal came out as 1e14 percent. Such a case has skipped BD rows that say why, and is judged on its point rows (SNR, loudness,
-bit rate) against the reference within their allowances, like any case without a curve.
+decimal came out as 1e14 percent. When the reference's curve is the one that states no trade-off, the case has skipped BD rows that say why and is judged on its point rows
+(SNR, loudness, bit rate) against the reference within their allowances, like any case without a curve. When the reference's curve is sound and
+ours falls or stays flat as the rate grows, that is our regression: the case gets a failing `rd_curve_*` row (ours 0, the reference 1), and a BD-rate
+row that has a baseline entry and is skipped as unsupported is a gate regression, so a change that breaks the curve of an encoder cannot turn its
+BD-rate into a skip.
 
 ## Baseline and tool versions
 
