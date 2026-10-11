@@ -18,6 +18,8 @@ import { convertFile } from '../src/lib/conversions';
 const WIDTH = 256;
 const HEIGHT = 192;
 const SIXTEEN_BIT_MAX = 65535;
+/** Each test converts a photograph two or three times, which a loaded runner takes longer than the 5 s default over. */
+const CONVERSION_TIMEOUT_MS = 60_000;
 
 function grain(seed: number): () => number {
   let state = seed;
@@ -70,7 +72,7 @@ describe('a 16-bit picture to PNG', () => {
     const filters = new Set<number>();
     for (let row = 0; row < HEIGHT; row++) filters.add(raw[row * rowBytes]);
     expect([...filters].some((filter) => filter !== 0)).toBe(true);
-  });
+  }, CONVERSION_TIMEOUT_MS);
 });
 
 describe('a photograph to GIF', () => {
@@ -96,7 +98,7 @@ describe('a photograph to GIF', () => {
     const pixels = await decoded(plain.buffer);
     for (let i = 0; i < pixels.length; i += 3) colours.add((pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2]);
     expect(colours.size).toBeLessThanOrEqual(256);
-  });
+  }, CONVERSION_TIMEOUT_MS);
 
   it('keeps the dithering a request names', async () => {
     const source = fs.readFileSync(PHOTO);
@@ -104,5 +106,5 @@ describe('a photograph to GIF', () => {
     const on = await convertFile(source, 'jpg', 'gif', { dither: true }, 'photo-a.jpg');
     expect(on.buffer.equals(off.buffer)).toBe(false);
     expect(on.buffer.length).toBeGreaterThan(off.buffer.length);
-  });
+  }, CONVERSION_TIMEOUT_MS);
 });
